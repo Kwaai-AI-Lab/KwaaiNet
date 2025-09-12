@@ -150,10 +150,12 @@ impl VeridaIntegration {
 
 **Integration Requirements**:
 - **Verida SDK**: Full integration with Verida Client SDK and protocol
+- **Verida Wallet**: Complete VDA token management and multi-chain support
 - **Identity Management**: Self-sovereign identity with user-controlled keys
 - **Private Storage**: End-to-end encrypted database storage for AI model data
-- **Multi-Chain Support**: Cross-blockchain data verification and portability
-- **Progressive Auth**: Anonymous → Email → Full identity verification flow
+- **Token Economics**: VDA token staking, rewards, and payment integration
+- **Multi-Chain Support**: Cross-blockchain data verification and portability (Polygon POS: 0x683565196c3eab450003c964d4bad1fd3068d4cc)
+- **Progressive Auth**: Anonymous → Email → Full identity → Wallet connection flow
 
 **Privacy & Security**:
 - **Encryption**: User-controlled private keys, zero-knowledge architecture
@@ -163,11 +165,13 @@ impl VeridaIntegration {
 
 **Deliverables**:
 1. Protocol bridge between KwaaiNet and Verida networks
-2. Self-sovereign identity management system
-3. Private data storage with user-controlled encryption
-4. Multi-chain data verification protocols
-5. Progressive authentication UI/UX flows
-6. Privacy compliance framework and documentation
+2. Verida wallet integration for seamless VDA token management
+3. Self-sovereign identity management system with single sign-on
+4. Private data storage with user-controlled encryption
+5. VDA token economics integration (staking, rewards, payments)
+6. Multi-chain data verification protocols
+7. Progressive authentication: Anonymous → Email → Identity → Wallet connection
+8. Privacy compliance framework and documentation
 
 ---
 
