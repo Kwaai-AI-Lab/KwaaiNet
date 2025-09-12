@@ -1,0 +1,96 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# WASM
+/pkg/
+wasm-pack.log
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+/dist/
+/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+logs/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+
+# Mobile development
+# iOS
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData
+*.hmap
+*.ipa
+*.xcuserstate
+
+# Android
+*.apk
+*.ap_
+*.dex
+.gradle/
+build/
+local.properties
+proguard/
+
+# Secrets and keys
+*.pem
+*.key
+secrets/
+keys/
+
+# Documentation build
+/book/
+/_book/
+
+# Backup files
+*.bak
+*.backup
+
+# OS generated
+.Trash-*
