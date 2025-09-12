@@ -1,0 +1,2 @@
+# KwaaiNet
+Decentralized AI Infrastructure
