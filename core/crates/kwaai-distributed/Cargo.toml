@@ -1,0 +1,43 @@
+[package]
+name = "kwaai-distributed"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Distributed ML operations for KwaaiNet - MoE, parameter averaging (Hivemind patterns)"
+keywords = ["distributed", "moe", "mixture-of-experts", "federated", "averaging"]
+
+[dependencies]
+# Internal crates
+kwaai-p2p = { path = "../kwaai-p2p" }
+kwaai-inference = { path = "../kwaai-inference" }
+kwaai-compression = { path = "../kwaai-compression" }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# ML
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+half = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber = { workspace = true }
+
+[features]
+default = []

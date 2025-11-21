@@ -1,0 +1,39 @@
+[package]
+name = "kwaai-p2p"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "P2P networking layer for KwaaiNet - libp2p with Kademlia DHT"
+keywords = ["p2p", "dht", "kademlia", "networking", "decentralized"]
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# P2P
+libp2p = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+prost = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber = { workspace = true }
+
+[features]
+default = ["tcp"]
+tcp = []
+webrtc = ["libp2p/webrtc-websys"]

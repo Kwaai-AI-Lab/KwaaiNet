@@ -1,0 +1,46 @@
+[package]
+name = "kwaai-inference"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Inference engine for KwaaiNet - Candle-based ML runtime"
+keywords = ["inference", "ml", "candle", "gguf", "transformers"]
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# ML
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+half = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "inference_bench"
+harness = false
+
+[features]
+default = ["cpu"]
+cpu = []
+cuda = ["candle-core/cuda"]
+metal = ["candle-core/metal"]

@@ -1,7 +1,10 @@
 # Rust
 /target/
+**/target/
 **/*.rs.bk
-Cargo.lock
+
+# Keep workspace Cargo.lock (for reproducible builds)
+# Cargo.lock  # Commented - we want to track the lock file
 
 # WASM
 /pkg/
