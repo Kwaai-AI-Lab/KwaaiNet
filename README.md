@@ -67,6 +67,57 @@ graph TB
 
 **The shift is simple**: Instead of Big Tech profiting from your data and compute, **you own it, you control it, you earn from it**.
 
+---
+
+## Guiding Principles: GliaNet Fiduciary Pledge
+
+Kwaai is a proud signatory of the [**GliaNet Fiduciary Pledge**](https://www.glianetalliance.org/pledge), committing KwaaiNet to the highest standards of user protection. This pledge becomes a foundational principle for the entire network.
+
+### The PEP Model
+
+| Duty | Commitment | How KwaaiNet Honors It |
+|------|------------|----------------------|
+| **🛡️ Protect** (Guardian) | Safeguard user data and well-being | E2E encryption, user-controlled keys, data minimization, no data leaves without consent |
+| **⚖️ Enhance** (Mediator) | Resolve conflicts favoring users | No surveillance, no profiling, no third-party data sharing, privacy-by-design |
+| **📣 Promote** (Advocate) | Advance user interests proactively | Token rewards, transparent governance, open source, user sovereignty first |
+
+### Node Operator Trust Hierarchy
+
+The GliaNet Fiduciary Pledge is **optional for node operators** but directly impacts network trust:
+
+```mermaid
+graph LR
+    subgraph "Trust Levels"
+        Pledged[🏅 Fiduciary Node<br/>Signed GliaNet Pledge]
+        Standard[📦 Standard Node<br/>No Pledge]
+    end
+
+    subgraph "Benefits"
+        Priority[Priority Routing]
+        Premium[Premium Task Allocation]
+        Badge[Trust Badge Display]
+        Basic[Basic Participation]
+    end
+
+    Pledged -->|Higher Trust| Priority
+    Pledged -->|More Rewards| Premium
+    Pledged -->|Visible Status| Badge
+    Standard -->|Participates| Basic
+
+    style Pledged fill:#10B981,color:#fff
+    style Standard fill:#6B7280,color:#fff
+```
+
+**Fiduciary Nodes** that sign the pledge receive:
+- 🏅 **Trust Badge**: Visible "GliaNet Fiduciary" status on the network map
+- ⚡ **Priority Routing**: Preferred for sensitive/enterprise workloads
+- 💰 **Enhanced Rewards**: Bonus VDA allocation for maintaining fiduciary standards
+- 🤝 **Enterprise Eligibility**: Required for GDPR/HIPAA compliant workloads
+
+> *"By signing the GliaNet Fiduciary Pledge, node operators commit to putting users first—protecting their data, enhancing their experience, and promoting their interests above all else."*
+
+---
+
 ## Architecture
 
 KwaaiNet represents a fundamental shift from traditional centralized AI to a **triple-service sovereign model**:
