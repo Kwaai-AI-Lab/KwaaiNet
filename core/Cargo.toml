@@ -23,6 +23,7 @@ kwaai-compression = { path = "crates/kwaai-compression" }
 tokio = { version = "1.35", features = ["full"] }
 libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros"] }
 futures = "0.3"
+candle-core = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -37,6 +38,10 @@ path = "examples/dht_node.rs"
 [[example]]
 name = "peer_discovery"
 path = "examples/peer_discovery.rs"
+
+[[example]]
+name = "tensor_ops"
+path = "examples/tensor_ops.rs"
 
 [workspace.package]
 version = "0.1.0"

@@ -56,9 +56,20 @@ cargo run --example peer_discovery -- --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/<P
 # Should print: SUCCESS: Found 1 provider(s)
 ```
 
-### Day 4: Tensor Operations (Coming)
+### Day 4: Tensor Operations
 
 Basic Candle tensor operations.
+
+```bash
+cargo run --example tensor_ops
+# Shows:
+# - Tensor creation (zeros, ones, from_vec)
+# - Matrix multiplication
+# - Softmax
+# - Element-wise operations
+# - Reductions (sum, mean, max, min)
+# - Performance benchmarks
+```
 
 ### Day 5: Forward Pass (Coming)
 
