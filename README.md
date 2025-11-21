@@ -263,6 +263,7 @@ KwaaiNet is built by and for the community that believes in **democratizing AI**
 | Document | Description |
 |----------|-------------|
 | [Candle Engine](./docs/CANDLE_ENGINE.md) | Rust/WASM inference engine technical details |
+| [Hivemind Rust Architecture](./docs/HIVEMIND_RUST_ARCHITECTURE.md) | Distributed deep learning patterns (MoE, DHT, parameter averaging) |
 | [Verida Integration](./docs/VERIDA_INTEGRATION.md) | Complete Verida Network integration guide |
 
 ## License

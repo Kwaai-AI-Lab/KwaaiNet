@@ -82,45 +82,113 @@ graph TB
 
 #### Technical Requirements
 
-**Primary Objective**: Universal AI inference engine that runs everywhere
+**Primary Objective**: Universal AI inference engine with distributed deep learning capabilities, inspired by [Hivemind](https://github.com/learning-at-home/hivemind) patterns, that runs everywhere
+
+> **Reference**: See [HIVEMIND_RUST_ARCHITECTURE.md](docs/HIVEMIND_RUST_ARCHITECTURE.md) for complete technical specifications on replicating Hivemind's distributed deep learning in Rust/WASM.
 
 **Core Components**:
 ```rust
 pub struct KwaaiNetCore {
+    // Core Inference (existing)
     pub inference_engine: CandelEngine,
     pub model_manager: ModelManager,
-    pub network_layer: P2PNetwork,
     pub resource_manager: ResourceManager,
+
+    // P2P Networking (enhanced with Hivemind patterns)
+    pub network_layer: P2PNetwork,         // libp2p with WebRTC
+    pub dht: KademliaDHT,                  // Peer discovery & model registry
+
+    // Distributed ML (new - from Hivemind)
+    pub moe: MixtureOfExperts,             // Distributed model layers
+    pub averager: DecentralizedAverager,   // Parameter sync without master
+    pub compressor: BlockwiseQuantizer,    // 8-bit gradient compression
 }
 
 impl KwaaiNetCore {
     pub async fn initialize(config: NodeConfig) -> Result<Self>;
     pub async fn load_model(model_id: &str) -> Result<ModelHandle>;
-    pub async fn run_inference(request: InferenceRequest) -> Result<InferenceResponse>;
     pub async fn join_network(bootstrap_peers: Vec<PeerAddr>) -> Result<()>;
+
+    // Local inference
+    pub async fn run_inference(request: InferenceRequest) -> Result<InferenceResponse>;
+
+    // Distributed inference (new - Hivemind patterns)
+    pub async fn run_distributed_inference(request: InferenceRequest) -> Result<InferenceResponse>;
+    pub async fn register_as_expert(expert_id: ExpertId, layer: ModelLayer) -> Result<()>;
+    pub async fn participate_in_averaging() -> Result<AveragingResult>;
 }
+```
+
+**Architecture Diagram**:
+```mermaid
+graph TB
+    subgraph "KwaaiNet Core (Rust/WASM)"
+        subgraph "Inference Layer"
+            Candle[Candle Engine<br/>ML Operations]
+            MoE[Mixture of Experts<br/>Distributed Layers]
+        end
+
+        subgraph "Network Layer"
+            P2P[libp2p<br/>WebRTC/QUIC]
+            DHT[Kademlia DHT<br/>Peer Discovery]
+        end
+
+        subgraph "Distributed ML (Hivemind)"
+            Router[Expert Router<br/>Token Assignment]
+            Avg[Parameter Averaging<br/>No Master]
+            Compress[8-bit Quantization<br/>Bandwidth Opt]
+        end
+    end
+
+    Candle --> MoE
+    MoE --> Router
+    Router --> DHT
+    DHT --> P2P
+    Avg --> Compress
+    Compress --> P2P
+
+    style MoE fill:#3B82F6,color:#fff
+    style Avg fill:#10B981,color:#fff
+    style DHT fill:#8B5CF6,color:#fff
 ```
 
 **Technical Specifications**:
 - **Framework**: Rust with `candle-core` for ML operations
 - **WASM Target**: `wasm32-unknown-unknown` with WebRTC support
-- **P2P Networking**: `libp2p` with WebRTC transport for browser compatibility
+- **P2P Networking**: `rust-libp2p` (native, not go-libp2p-daemon) with WebRTC transport
+- **DHT**: Kademlia for peer discovery and expert registry
 - **Model Loading**: GGUF format with IPFS/HTTP fallback
 - **Memory Management**: Efficient model sharding for low-resource devices
+- **Distributed ML**: Mixture of Experts (MoE) for distributed inference
+- **Compression**: Blockwise 8-bit quantization (~4x bandwidth reduction)
 
 **Performance Requirements**:
 - **Browser**: < 100MB WASM bundle, < 2GB RAM for 7B parameter models
 - **Mobile**: Background inference with < 5% battery drain per hour
 - **Desktop**: Match or exceed current Python implementation performance
 - **Edge**: ARM/MIPS support with < 1GB RAM requirements
+- **Distributed**: < 200ms P2P latency, support for 10,000+ concurrent nodes
 
 **Deliverables**:
+
+*Core Infrastructure (400K VDA)*:
 1. Core Rust library with comprehensive test suite
 2. WASM build pipeline and browser integration example
-3. P2P networking implementation with NAT traversal
-4. Model loading and sharding system
-5. Performance benchmarks vs existing Python implementation
-6. Documentation and API specification
+3. Model loading and sharding system
+4. Performance benchmarks vs existing Python implementation
+5. Documentation and API specification
+
+*P2P Networking (200K VDA)*:
+6. libp2p networking with WebRTC transport (browser-native)
+7. Kademlia DHT for peer discovery and model registry
+8. NAT traversal (hole punching, relay circuits)
+
+*Distributed ML - Hivemind Patterns (150K VDA)*:
+9. Mixture of Experts (MoE) distributed layer implementation
+10. Expert router with load balancing
+11. Decentralized parameter averaging
+12. Blockwise 8-bit gradient compression
+13. Fault-tolerant expert calling with retry/fallback
 
 ---
 
@@ -503,9 +571,20 @@ Deep dive into Verida Network integration:
 - Token Economics Integration: VDA contract interaction, reward distribution, staking
 - Security Architecture: E2E encryption, zero-knowledge auth, threat model
 
+### Distributed Deep Learning (Hivemind Patterns)
+**[docs/HIVEMIND_RUST_ARCHITECTURE.md](docs/HIVEMIND_RUST_ARCHITECTURE.md)**
+
+Comprehensive plan for replicating Hivemind's distributed deep learning in Rust/WASM:
+- Component Mapping: Python → Rust translation for all Hivemind modules
+- P2P Networking: Native rust-libp2p (replacing go-libp2p-daemon)
+- Mixture of Experts: Distributed model layers across network participants
+- Parameter Averaging: Decentralized gradient sync without master node
+- Compression: Blockwise 8-bit quantization for bandwidth efficiency
+- WASM Compilation: Full browser support via WebAssembly
+
 ### Supporting Documentation
 - **[HACKATHONS.md](HACKATHONS.md)** - Community structure and prize distribution
-- **[docs/CANDLE_ENGINE.md](docs/CANDLE_ENGINE.md)** - Candle framework technical details
+- **[docs/CANDLE_ENGINE.md](docs/CANDLE_ENGINE.md)** - Candle framework technical details (includes distributed inference patterns)
 - **[docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md)** - Integration implementation guide
 
 ---

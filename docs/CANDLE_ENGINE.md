@@ -484,6 +484,456 @@ impl ModelVerifier {
 
 ---
 
+## Distributed Inference (Hivemind Patterns)
+
+KwaaiNet incorporates battle-tested patterns from [Hivemind](https://github.com/learning-at-home/hivemind) for distributed deep learning, reimplemented in native Rust for full WASM compatibility. See [HIVEMIND_RUST_ARCHITECTURE.md](./HIVEMIND_RUST_ARCHITECTURE.md) for complete details.
+
+### Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "Distributed Candle Engine"
+        Local[Local Inference<br/>Single Node]
+        MoE[Mixture of Experts<br/>Distributed Layers]
+        Avg[Parameter Averaging<br/>Decentralized Sync]
+    end
+
+    subgraph "Network Layer"
+        DHT[Kademlia DHT<br/>Peer Discovery]
+        WebRTC[WebRTC Transport<br/>Browser P2P]
+        Compress[8-bit Compression<br/>Bandwidth Optimization]
+    end
+
+    Local --> MoE
+    MoE --> DHT
+    DHT --> WebRTC
+    Avg --> Compress
+    Compress --> WebRTC
+
+    style MoE fill:#3B82F6,color:#fff
+    style Avg fill:#10B981,color:#fff
+```
+
+### Mixture of Experts (MoE)
+
+Enables arbitrarily large models by distributing "expert" sublayers across network participants:
+
+```rust
+use candle_core::{Tensor, Device};
+use kwaai_distributed::moe::{DistributedMoE, Router, Expert};
+
+/// Distributed Mixture of Experts layer
+pub struct MoELayer {
+    /// Router determines which expert handles each token
+    router: Router,
+
+    /// Local experts (layers we host)
+    local_experts: Vec<Expert>,
+
+    /// Remote expert registry (discovered via DHT)
+    remote_registry: ExpertRegistry,
+}
+
+impl MoELayer {
+    /// Forward pass through MoE layer
+    ///
+    /// Tokens are routed to different experts based on learned gating
+    /// Local experts process immediately, remote experts called via P2P
+    pub async fn forward(
+        &mut self,
+        input: &Tensor,
+        p2p: &mut KwaaiP2P,
+    ) -> Result<Tensor> {
+        // 1. Router assigns tokens to experts (top-k selection)
+        let routing = self.router.route(input)?;
+
+        // 2. Separate local vs remote work
+        let (local_tokens, remote_tokens) = self.partition_by_locality(&routing);
+
+        // 3. Process local experts (fast path)
+        let local_outputs = self.process_local_experts(&local_tokens, input)?;
+
+        // 4. Call remote experts via P2P (parallel, fault-tolerant)
+        let remote_outputs = self.call_remote_experts(p2p, &remote_tokens, input).await?;
+
+        // 5. Combine results weighted by router probabilities
+        self.combine_expert_outputs(&routing, local_outputs, remote_outputs)
+    }
+
+    /// Call remote experts with automatic failover
+    async fn call_remote_experts(
+        &self,
+        p2p: &mut KwaaiP2P,
+        tokens: &TokenAssignment,
+        input: &Tensor,
+    ) -> Result<Vec<Tensor>> {
+        let mut futures = Vec::new();
+
+        for (expert_id, token_indices) in &tokens.assignments {
+            let peer = self.remote_registry.find_peer(*expert_id)?;
+            let input_slice = input.index_select(token_indices)?;
+
+            // Parallel calls with timeout
+            futures.push(async move {
+                match timeout(Duration::from_secs(5),
+                    p2p.call_expert(peer, *expert_id, input_slice)
+                ).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        // Timeout: try fallback expert
+                        let fallback = self.remote_registry.get_fallback(*expert_id)?;
+                        p2p.call_expert(fallback.peer, fallback.expert_id, input_slice).await
+                    }
+                }
+            });
+        }
+
+        futures::future::try_join_all(futures).await
+    }
+}
+```
+
+### Expert Router
+
+The gating network that determines token-to-expert assignment:
+
+```mermaid
+graph LR
+    subgraph "Router Architecture"
+        Input[Input Tokens] --> Gate[Gating Network]
+        Gate --> Softmax[Softmax + Top-K]
+        Softmax --> Expert1[Expert 1<br/>Local]
+        Softmax --> Expert2[Expert 2<br/>Local]
+        Softmax --> Expert3[Expert 3<br/>Remote]
+        Softmax --> Expert4[Expert 4<br/>Remote]
+    end
+
+    subgraph "Load Balancing"
+        Balancer[Auxiliary Loss<br/>Even Distribution]
+    end
+
+    Gate --> Balancer
+    Balancer -.->|Regularization| Gate
+
+    style Expert1 fill:#10B981,color:#fff
+    style Expert2 fill:#10B981,color:#fff
+    style Expert3 fill:#3B82F6,color:#fff
+    style Expert4 fill:#3B82F6,color:#fff
+```
+
+```rust
+/// Expert router with load balancing
+pub struct Router {
+    /// Gating weights [hidden_size, num_experts]
+    gate_weights: Tensor,
+
+    /// Number of experts to select per token
+    top_k: usize,
+
+    /// Auxiliary loss coefficient for load balancing
+    aux_loss_coef: f32,
+}
+
+impl Router {
+    /// Route tokens to top-k experts
+    pub fn route(&self, hidden_states: &Tensor) -> Result<Routing> {
+        // Compute expert scores: [batch, seq_len, num_experts]
+        let scores = hidden_states.matmul(&self.gate_weights)?;
+
+        // Softmax over experts
+        let probs = candle_nn::ops::softmax(&scores, D::Minus1)?;
+
+        // Select top-k experts per token
+        let (topk_probs, topk_indices) = self.topk(&probs, self.top_k)?;
+
+        // Normalize selected probabilities
+        let topk_probs = &topk_probs / topk_probs.sum_keepdim(D::Minus1)?;
+
+        Ok(Routing {
+            expert_indices: topk_indices,
+            expert_weights: topk_probs,
+            aux_loss: self.compute_load_balance_loss(&probs)?,
+        })
+    }
+
+    /// Compute auxiliary loss to encourage even expert utilization
+    fn compute_load_balance_loss(&self, probs: &Tensor) -> Result<f32> {
+        // Mean probability per expert
+        let expert_usage = probs.mean(vec![0, 1])?;
+
+        // Variance of usage (want to minimize)
+        let variance = expert_usage.var(0)?;
+
+        Ok(variance.to_scalar::<f32>()? * self.aux_loss_coef)
+    }
+}
+```
+
+### Decentralized Parameter Averaging
+
+Hivemind-style gradient averaging without a central server:
+
+```mermaid
+sequenceDiagram
+    participant N1 as Node 1
+    participant N2 as Node 2
+    participant N3 as Node 3
+    participant DHT as DHT Network
+
+    Note over N1,N3: Independent local training
+
+    N1->>N1: Accumulate gradients
+    N2->>N2: Accumulate gradients
+    N3->>N3: Accumulate gradients
+
+    N1->>DHT: Ready to average
+    N2->>DHT: Ready to average
+    N3->>DHT: Ready to average
+
+    DHT-->>N1: Peers: [N2, N3]
+
+    par Parallel Exchange
+        N1->>N2: Compressed gradients
+        N1->>N3: Compressed gradients
+        N2->>N1: Compressed gradients
+        N3->>N1: Compressed gradients
+    end
+
+    N1->>N1: Average & apply
+    N2->>N2: Average & apply
+    N3->>N3: Average & apply
+
+    Note over N1,N3: Continue with averaged params
+```
+
+```rust
+/// Decentralized parameter averaging (from Hivemind)
+pub struct DecentralizedAverager {
+    /// Local gradient buffer
+    accumulator: GradientAccumulator,
+
+    /// Peer matching for forming groups
+    matchmaker: Matchmaker,
+
+    /// Compression for bandwidth efficiency
+    compressor: BlockwiseQuantizer,
+
+    /// Target group size
+    group_size: usize,
+}
+
+impl DecentralizedAverager {
+    /// Accumulate local gradients
+    pub fn accumulate(&mut self, gradients: &[Tensor]) -> Result<()> {
+        self.accumulator.add(gradients)
+    }
+
+    /// Attempt averaging step (non-blocking)
+    pub async fn step(&mut self, p2p: &mut KwaaiP2P) -> Result<AveragingResult> {
+        // 1. Find peers ready to average
+        let peers = self.matchmaker
+            .find_ready_peers(p2p, self.group_size)
+            .await?;
+
+        if peers.is_empty() {
+            return Ok(AveragingResult::NoPeersAvailable);
+        }
+
+        // 2. Compress local gradients (8-bit quantization)
+        let local = self.compressor.quantize(self.accumulator.get())?;
+
+        // 3. Exchange with peers (parallel)
+        let remote = self.exchange_gradients(p2p, &peers, &local).await?;
+
+        // 4. Average all gradients
+        let averaged = self.average(&local, &remote)?;
+
+        // 5. Decompress and apply
+        let decompressed = self.compressor.dequantize(&averaged)?;
+        self.accumulator.apply_averaged(&decompressed)?;
+
+        Ok(AveragingResult::Success {
+            peers_count: remote.len() + 1,
+            compression_ratio: local.compression_ratio(),
+        })
+    }
+}
+```
+
+### Compression for Distributed Communication
+
+8-bit blockwise quantization reduces bandwidth by ~4x with minimal accuracy loss:
+
+```mermaid
+graph TB
+    subgraph "Compression Pipeline"
+        Full[Full Precision<br/>Float32 Tensor]
+        Block[Block Division<br/>64 elements/block]
+        Scale[Per-Block Scaling<br/>max(abs(block))]
+        Quant[Quantization<br/>-127 to 127]
+        Pack[Packed Output<br/>Int8 + F16 scales]
+    end
+
+    Full --> Block
+    Block --> Scale
+    Scale --> Quant
+    Quant --> Pack
+
+    subgraph "Size Comparison"
+        Original[Original: 4 bytes/elem]
+        Compressed[Compressed: ~1.03 bytes/elem]
+        Ratio[Compression: ~3.9x]
+    end
+
+    Pack --> Compressed
+    Full --> Original
+    Original -.-> Ratio
+    Compressed -.-> Ratio
+```
+
+```rust
+/// Blockwise 8-bit quantization
+pub struct BlockwiseQuantizer {
+    block_size: usize, // typically 64 or 128
+}
+
+impl BlockwiseQuantizer {
+    /// Quantize tensor to 8-bit with per-block scaling
+    pub fn quantize(&self, tensor: &Tensor) -> Result<QuantizedTensor> {
+        let data = tensor.to_vec1::<f32>()?;
+        let mut quantized = Vec::with_capacity(data.len());
+        let mut scales = Vec::new();
+
+        for block in data.chunks(self.block_size) {
+            // Per-block scaling factor
+            let max_abs = block.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+            let scale = max_abs / 127.0;
+            scales.push(half::f16::from_f32(scale));
+
+            // Quantize to int8
+            for &val in block {
+                let q = if scale > 0.0 {
+                    (val / scale).round().clamp(-127.0, 127.0) as i8
+                } else {
+                    0i8
+                };
+                quantized.push(q);
+            }
+        }
+
+        Ok(QuantizedTensor { data: quantized, scales, shape: tensor.dims().to_vec() })
+    }
+
+    /// Dequantize back to full precision
+    pub fn dequantize(&self, quantized: &QuantizedTensor) -> Result<Tensor> {
+        let mut data = Vec::with_capacity(quantized.data.len());
+
+        for (i, block) in quantized.data.chunks(self.block_size).enumerate() {
+            let scale = quantized.scales[i].to_f32();
+            for &q in block {
+                data.push(q as f32 * scale);
+            }
+        }
+
+        Tensor::from_vec(data, &quantized.shape, &Device::Cpu)
+    }
+}
+```
+
+### Fault Tolerance
+
+Graceful handling of node failures during distributed inference:
+
+```rust
+/// Fault-tolerant expert calling with retry and fallback
+pub struct FaultTolerantCaller {
+    /// Maximum retry attempts
+    max_retries: usize,
+
+    /// Timeout per call
+    timeout: Duration,
+
+    /// Exponential backoff base
+    backoff_base: Duration,
+}
+
+impl FaultTolerantCaller {
+    /// Call expert with automatic retry and fallback
+    pub async fn call_expert(
+        &self,
+        p2p: &mut KwaaiP2P,
+        registry: &ExpertRegistry,
+        expert_id: ExpertId,
+        input: &Tensor,
+    ) -> Result<Tensor> {
+        let mut last_error = None;
+
+        for attempt in 0..self.max_retries {
+            // Exponential backoff
+            if attempt > 0 {
+                let backoff = self.backoff_base * 2u32.pow(attempt as u32 - 1);
+                tokio::time::sleep(backoff).await;
+            }
+
+            // Get peer for this expert (may change between attempts)
+            let peer = match registry.find_peer(expert_id) {
+                Ok(p) => p,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+
+            // Attempt call with timeout
+            match timeout(self.timeout, p2p.call_expert(peer, expert_id, input)).await {
+                Ok(Ok(result)) => return Ok(result),
+                Ok(Err(e)) => {
+                    tracing::warn!("Expert {} call failed: {}", expert_id, e);
+                    last_error = Some(e);
+                }
+                Err(_) => {
+                    tracing::warn!("Expert {} call timed out", expert_id);
+                    last_error = Some(Error::Timeout);
+                }
+            }
+
+            // Mark peer as potentially unhealthy
+            registry.report_failure(peer);
+        }
+
+        // All retries exhausted, try fallback expert
+        if let Some(fallback) = registry.get_fallback(expert_id)? {
+            tracing::info!("Using fallback expert {}", fallback.expert_id);
+            return p2p.call_expert(fallback.peer, fallback.expert_id, input).await;
+        }
+
+        Err(last_error.unwrap_or(Error::NoExpertsAvailable))
+    }
+}
+```
+
+### Performance Characteristics (Distributed)
+
+| Metric | Local Only | With MoE (3 experts) | With Averaging |
+|--------|------------|---------------------|----------------|
+| Latency | Baseline | +50-150ms | N/A (async) |
+| Throughput | 1x | 2-3x (larger models) | 1x |
+| Model Size | Limited by RAM | Unlimited | N/A |
+| Bandwidth | None | ~1MB/request | ~100KB/step |
+
+### Integration with Challenge 1
+
+The distributed inference patterns enhance Challenge 1 (Rust/WASM Core Engine) with:
+
+| Component | Original Spec | Hivemind Enhancement |
+|-----------|--------------|---------------------|
+| Inference Engine | Single-node | + MoE distributed layers |
+| P2P Networking | Basic mesh | + Kademlia DHT, expert discovery |
+| Model Loading | Local/IPFS | + Distributed sharding |
+| Resource Mgmt | Memory limits | + Expert load balancing |
+
+---
+
 ## Future Enhancements
 
 ### Planned Features
