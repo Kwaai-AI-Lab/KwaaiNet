@@ -29,9 +29,19 @@ cargo run --example p2p_node -- /ip4/0.0.0.0/tcp/4001
 cargo run --example p2p_node -- /ip4/127.0.0.1/tcp/4001/p2p/<PEER_ID>
 ```
 
-### Day 2: DHT Operations (Coming)
+### Day 2: DHT Operations
 
 Store and retrieve values via distributed hash table.
+
+```bash
+# Terminal 1: Start node and store a value
+cargo run --example dht_node -- --listen 4001 --put hello world
+# Note the bootstrap address printed
+
+# Terminal 2: Connect and retrieve the value
+cargo run --example dht_node -- --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/<PEER_ID> --get hello
+# Should print: SUCCESS: Retrieved 'world'
+```
 
 ### Day 3: Peer Discovery (Coming)
 

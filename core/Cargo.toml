@@ -30,6 +30,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 name = "p2p_node"
 path = "examples/p2p_node.rs"
 
+[[example]]
+name = "dht_node"
+path = "examples/dht_node.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
