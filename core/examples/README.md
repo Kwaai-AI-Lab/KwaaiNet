@@ -1,0 +1,56 @@
+# KwaaiNet Core Examples
+
+Runnable examples demonstrating KwaaiNet functionality.
+
+## Prerequisites
+
+```bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Navigate to core directory
+cd core
+```
+
+## Examples
+
+### Day 1: P2P Node Startup
+
+Basic P2P node that starts, listens, and logs peer information.
+
+```bash
+# Start a node on random port
+cargo run --example p2p_node
+
+# Start on specific port
+cargo run --example p2p_node -- /ip4/0.0.0.0/tcp/4001
+
+# Connect to another node
+cargo run --example p2p_node -- /ip4/127.0.0.1/tcp/4001/p2p/<PEER_ID>
+```
+
+### Day 2: DHT Operations (Coming)
+
+Store and retrieve values via distributed hash table.
+
+### Day 3: Peer Discovery (Coming)
+
+Discover peers by capability using DHT providers.
+
+### Day 4: Tensor Operations (Coming)
+
+Basic Candle tensor operations.
+
+### Day 5: Forward Pass (Coming)
+
+Simple neural network forward pass.
+
+## Environment Variables
+
+- `RUST_LOG=info` - Set log level (trace, debug, info, warn, error)
+
+## Troubleshooting
+
+**Port already in use**: Use a different port or let the system assign one with `/ip4/0.0.0.0/tcp/0`
+
+**Connection refused**: Ensure the target node is running and the address is correct

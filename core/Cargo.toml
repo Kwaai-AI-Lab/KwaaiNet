@@ -8,6 +8,28 @@ members = [
     "crates/kwaai-wasm",
 ]
 
+# Root package for examples
+[package]
+name = "kwaai-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+kwaai-p2p = { path = "crates/kwaai-p2p" }
+kwaai-inference = { path = "crates/kwaai-inference" }
+kwaai-distributed = { path = "crates/kwaai-distributed" }
+kwaai-compression = { path = "crates/kwaai-compression" }
+tokio = { version = "1.35", features = ["full"] }
+libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "p2p_node"
+path = "examples/p2p_node.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
