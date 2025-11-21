@@ -34,6 +34,10 @@ path = "examples/p2p_node.rs"
 name = "dht_node"
 path = "examples/dht_node.rs"
 
+[[example]]
+name = "peer_discovery"
+path = "examples/peer_discovery.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

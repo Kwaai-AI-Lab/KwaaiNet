@@ -43,9 +43,18 @@ cargo run --example dht_node -- --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/<PEER_ID
 # Should print: SUCCESS: Retrieved 'world'
 ```
 
-### Day 3: Peer Discovery (Coming)
+### Day 3: Peer Discovery
 
 Discover peers by capability using DHT providers.
+
+```bash
+# Terminal 1: Register as provider for a capability
+cargo run --example peer_discovery -- --listen 4001 --provide inference:llama2
+
+# Terminal 2: Find providers for the capability
+cargo run --example peer_discovery -- --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/<PEER_ID> --find inference:llama2
+# Should print: SUCCESS: Found 1 provider(s)
+```
 
 ### Day 4: Tensor Operations (Coming)
 
