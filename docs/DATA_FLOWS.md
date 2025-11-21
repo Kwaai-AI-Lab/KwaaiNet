@@ -24,29 +24,70 @@
 
 ```mermaid
 graph LR
-    A[Anonymous] -->|Email Verification| B[Email Verified]
-    B -->|Biometric Setup| C[Biometric Verified]
-    C -->|Create Verida DID| D[Full Sovereign]
+    A[Anonymous] -->|PassKey Registration| P[PassKey Verified]
+    A -->|Email Verification| B[Email Verified]
+    P -->|Create Verida DID| D[Full Sovereign]
+    B -.->|Direct path| D
     D -->|Connect Wallet| E[Wallet Connected]
 
     style A fill:#E0E0E0,color:#000
+    style P fill:#81C784,color:#000
     style B fill:#B3E5FC,color:#000
-    style C fill:#81C784,color:#000
     style D fill:#FFD54F,color:#000
     style E fill:#FFD700,color:#000
 ```
 
+**Primary Path (Recommended):** Anonymous → PassKey → Sovereign → Wallet
+**Legacy Path:** Anonymous → Email → Sovereign → Wallet
+
 **Access Levels by Authentication State:**
 
-| Level | Data Access | AI Capabilities | Rewards | Identity |
-|-------|------------|----------------|---------|----------|
-| **Anonymous** | None | Basic inference | None | Session only |
-| **Email Verified** | Basic profile | Enhanced inference | 10% rewards | Email-based |
-| **Biometric Verified** | Device storage | Personal AI | 50% rewards | Device-bound |
-| **Full Sovereign** | Private datastore | Fully personal AI | 100% rewards | Self-sovereign DID |
-| **Wallet Connected** | Multi-chain data | Premium AI | 100% + bonuses | Multi-chain verified |
+| Level | Data Access | AI Capabilities | Rewards | Identity | Security |
+|-------|-------------|-----------------|---------|----------|----------|
+| **Anonymous** | None | Basic inference | 0% | Session only | None |
+| **PassKey Verified** | Device + cloud sync | Personal AI | **50%** | FIDO2 credential | Phishing-resistant |
+| **Email Verified** *(legacy)* | Basic profile | Enhanced inference | 10% | Email-based | Medium |
+| **Full Sovereign** | Private datastore | Fully personal AI | 100% | Self-sovereign DID | High |
+| **Wallet Connected** | Multi-chain data | Premium AI | 100% + bonuses | Multi-chain verified | Maximum |
 
-### 1.2 Complete Authentication Flow
+### 1.2 PassKey Technology Overview
+
+```mermaid
+graph TB
+    subgraph "PassKey Architecture (FIDO2/WebAuthn)"
+        User[User Device]
+        Authenticator[Platform Authenticator<br/>Face ID / Touch ID / Windows Hello]
+        KeyPair[Asymmetric Key Pair<br/>Private key never leaves device]
+    end
+
+    subgraph "PassKey Sync Ecosystems"
+        Apple[Apple Keychain<br/>iCloud sync]
+        Google[Google Password Manager<br/>Chrome sync]
+        Microsoft[Microsoft Authenticator<br/>Windows sync]
+    end
+
+    subgraph "Security Properties"
+        Phishing[Phishing Resistant<br/>Origin-bound credentials]
+        Replay[Replay Resistant<br/>Challenge-response]
+        Privacy[Privacy Preserving<br/>No shared secrets]
+    end
+
+    User --> Authenticator
+    Authenticator --> KeyPair
+
+    KeyPair -.Synced via.-> Apple
+    KeyPair -.Synced via.-> Google
+    KeyPair -.Synced via.-> Microsoft
+
+    KeyPair --> Phishing
+    KeyPair --> Replay
+    KeyPair --> Privacy
+
+    style Authenticator fill:#4A90E2,color:#fff
+    style Phishing fill:#50C878,color:#fff
+```
+
+### 1.3 Complete Authentication Flow (Primary Path with PassKeys)
 
 ```mermaid
 sequenceDiagram
@@ -54,17 +95,86 @@ sequenceDiagram
     participant User
     participant App as KwaaiNet App
     participant Auth as Auth Controller
+    participant WebAuthn as WebAuthn API
     participant Verida
-    participant Email as Email Service
-    participant Biometric as Device Biometrics
     participant Wallet as VDA Wallet
 
-    Note over User,Wallet: Level 1: Anonymous → Email Verified
+    Note over User,Wallet: Level 1: Anonymous → PassKey Verified
 
     User->>App: First Launch
     App->>Auth: initialize(anonymous)
     Auth-->>App: anonymous_session
-    App-->>User: Basic AI Available
+    App-->>User: Basic AI Available (0% rewards)
+
+    User->>App: Create PassKey
+    App->>Auth: request_passkey_registration()
+    Auth->>Auth: generate_challenge()
+    Auth->>WebAuthn: navigator.credentials.create()
+
+    WebAuthn-->>User: Biometric Prompt<br/>(Face ID / Touch ID / Windows Hello)
+    User->>WebAuthn: Authenticate with biometric
+    WebAuthn->>WebAuthn: Generate key pair<br/>(private key stays on device)
+    WebAuthn-->>Auth: PublicKeyCredential<br/>{id, publicKey, attestation}
+
+    Auth->>Auth: store_public_key(credential)
+    Auth->>Auth: create_passkey_profile()
+    Auth-->>App: passkey_verified_session
+    App-->>User: Personal AI + 50% Rewards
+
+    Note over User,Wallet: Level 2: PassKey → Full Sovereign
+
+    User->>App: Create Sovereign Identity
+    App->>Auth: upgrade_to_sovereign()
+
+    Auth->>WebAuthn: navigator.credentials.get()
+    WebAuthn-->>User: Biometric confirmation
+    User->>WebAuthn: Confirm identity
+    WebAuthn-->>Auth: Signed assertion
+
+    Auth->>Verida: create_did(passkey_credential)
+    Verida->>Verida: generate_did()
+    Verida->>Verida: link_passkey_to_did()
+    Verida->>Verida: register_on_chain()
+    Verida-->>Auth: did_created(did:vda:polpos:0x...)
+
+    Auth->>Verida: initialize_storage_endpoints()
+    Verida-->>Auth: endpoints_configured
+
+    Auth-->>App: sovereign_session(did)
+    App-->>User: Full Sovereign AI + 100% Rewards
+
+    Note over User,Wallet: Level 3: Sovereign → Wallet Connected
+
+    User->>App: Connect VDA Wallet
+    App->>Wallet: request_connection(did)
+    Wallet-->>User: Wallet Connect QR / Deep Link
+    User->>Wallet: Approve Connection
+    Wallet-->>App: wallet_connected(address)
+
+    App->>Auth: upgrade_to_wallet(wallet_address)
+    Auth->>Verida: link_wallet_to_did(did, address)
+    Verida-->>Auth: wallet_linked
+
+    Auth-->>App: wallet_session(did, wallet)
+    App-->>User: Premium AI + Staking + Multi-Chain + Bonuses
+```
+
+### 1.4 Legacy Authentication Flow (Email Fallback)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User
+    participant App as KwaaiNet App
+    participant Auth as Auth Controller
+    participant Email as Email Service
+    participant Verida
+
+    Note over User,Verida: For devices without PassKey support
+
+    User->>App: First Launch (no WebAuthn)
+    App->>App: detect_webauthn_support()
+    App-->>User: Offer Email Registration
 
     User->>App: Sign Up with Email
     App->>Auth: upgrade_to_email(email)
@@ -77,82 +187,48 @@ sequenceDiagram
     Auth-->>App: email_verified_session
     App-->>User: Enhanced AI + 10% Rewards
 
-    Note over User,Wallet: Level 2: Email → Biometric
-
-    User->>App: Enable Biometric Auth
-    App->>Biometric: request_biometric_setup()
-    Biometric-->>User: Face ID / Fingerprint Prompt
-    User->>Biometric: Authenticate
-    Biometric-->>App: biometric_token
-
-    App->>Auth: upgrade_to_biometric(token)
-    Auth->>Auth: create_device_bound_keys()
-    Auth-->>App: biometric_session
-    App-->>User: Personal AI + 50% Rewards
-
-    Note over User,Wallet: Level 3: Biometric → Sovereign
+    Note over User,Verida: Direct to Sovereign (skip biometric)
 
     User->>App: Create Sovereign Identity
     App->>Auth: upgrade_to_sovereign()
-    Auth->>Verida: create_did(user_info)
-
+    Auth->>Verida: create_did(email_credential)
     Verida->>Verida: generate_did()
-    Verida->>Verida: register_on_chain()
     Verida-->>Auth: did_created(did:vda:polpos:0x...)
-
-    Auth->>Verida: initialize_storage_endpoints()
-    Verida-->>Auth: endpoints_configured
-
     Auth-->>App: sovereign_session(did)
     App-->>User: Full Sovereign AI + 100% Rewards
-
-    Note over User,Wallet: Level 4: Sovereign → Wallet Connected
-
-    User->>App: Connect VDA Wallet
-    App->>Wallet: request_connection(did)
-    Wallet-->>User: Wallet Connect QR
-    User->>Wallet: Approve Connection
-    Wallet-->>App: wallet_connected(address)
-
-    App->>Auth: upgrade_to_wallet(wallet_address)
-    Auth->>Verida: link_wallet_to_did(did, address)
-    Verida-->>Auth: wallet_linked
-
-    Auth-->>App: wallet_session(did, wallet)
-    App-->>User: Premium AI + Staking + Multi-Chain + Bonuses
 ```
 
-### 1.3 Authentication State Machine
+### 1.5 Authentication State Machine
 
 ```mermaid
 stateDiagram-v2
     [*] --> Anonymous
 
-    Anonymous --> EmailVerified: Email Verification
-    Anonymous --> EmailVerified: Social Login
+    Anonymous --> PassKeyVerified: PassKey Registration<br/>(recommended)
+    Anonymous --> EmailVerified: Email Verification<br/>(legacy fallback)
 
-    EmailVerified --> BiometricVerified: Biometric Setup
-    EmailVerified --> FullSovereign: Skip Biometric
-
-    BiometricVerified --> FullSovereign: Create DID
+    PassKeyVerified --> FullSovereign: Create DID
+    EmailVerified --> FullSovereign: Create DID
 
     FullSovereign --> WalletConnected: Connect Wallet
 
     state Anonymous {
         [*] --> SessionOnly
         SessionOnly --> BasicAI
+        BasicAI --> NoRewards
+    }
+
+    state PassKeyVerified {
+        [*] --> FIDO2Credential
+        FIDO2Credential --> CrossDeviceSync
+        CrossDeviceSync --> PersonalAI
+        PersonalAI --> MediumRewards
     }
 
     state EmailVerified {
         [*] --> EmailProfile
         EmailProfile --> BasicStorage
         BasicStorage --> LimitedRewards
-    }
-
-    state BiometricVerified {
-        [*] --> DeviceKeys
-        DeviceKeys --> LocalStorage
-        LocalStorage --> MediumRewards
     }
 
     state FullSovereign {
@@ -176,31 +252,89 @@ stateDiagram-v2
         AI Access: Basic
         Data: None
         Rewards: 0%
+        Security: None
+    end note
+
+    note right of PassKeyVerified
+        AI Access: Personal
+        Data: Device + Cloud Sync
+        Rewards: 50%
+        Security: Phishing-resistant
     end note
 
     note right of EmailVerified
         AI Access: Enhanced
         Data: Basic Profile
         Rewards: 10%
-    end note
-
-    note right of BiometricVerified
-        AI Access: Personal
-        Data: Device Storage
-        Rewards: 50%
+        Security: Medium
     end note
 
     note right of FullSovereign
         AI Access: Fully Personal
         Data: Private Datastore
         Rewards: 100%
+        Security: High (DID)
     end note
 
     note right of WalletConnected
         AI Access: Premium
         Data: Multi-Chain
         Rewards: 100% + Bonuses
+        Security: Maximum
     end note
+```
+
+### 1.6 PassKey Registration & Authentication Detail
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User
+    participant Browser
+    participant App as KwaaiNet App
+    participant WebAuthn as WebAuthn API
+    participant Platform as Platform Authenticator<br/>(Secure Enclave / TPM)
+    participant Server as Auth Server
+
+    Note over User,Server: PassKey Registration (One-time setup)
+
+    User->>App: Click "Create PassKey"
+    App->>Server: POST /auth/passkey/register/begin
+    Server->>Server: Generate challenge & user ID
+    Server-->>App: {challenge, rpId, user, pubKeyCredParams}
+
+    App->>WebAuthn: navigator.credentials.create(options)
+    WebAuthn->>Platform: Request key generation
+    Platform-->>User: Biometric prompt (Face ID / Touch ID)
+    User->>Platform: Authenticate
+    Platform->>Platform: Generate P-256 key pair in secure hardware
+    Platform-->>WebAuthn: PublicKeyCredential
+
+    WebAuthn-->>App: {id, rawId, response: {clientDataJSON, attestationObject}}
+    App->>Server: POST /auth/passkey/register/complete
+    Server->>Server: Verify attestation & store public key
+    Server-->>App: {success: true, credentialId}
+    App-->>User: PassKey created! 50% rewards unlocked
+
+    Note over User,Server: PassKey Authentication (Subsequent logins)
+
+    User->>App: Click "Sign in with PassKey"
+    App->>Server: POST /auth/passkey/login/begin
+    Server->>Server: Generate challenge
+    Server-->>App: {challenge, allowCredentials, rpId}
+
+    App->>WebAuthn: navigator.credentials.get(options)
+    WebAuthn->>Platform: Request signature
+    Platform-->>User: Biometric prompt
+    User->>Platform: Authenticate
+    Platform->>Platform: Sign challenge with private key
+    Platform-->>WebAuthn: AuthenticatorAssertionResponse
+
+    WebAuthn-->>App: {id, response: {authenticatorData, signature, clientDataJSON}}
+    App->>Server: POST /auth/passkey/login/complete
+    Server->>Server: Verify signature with stored public key
+    Server-->>App: {success: true, sessionToken}
+    App-->>User: Signed in! Welcome back
 ```
 
 ---
