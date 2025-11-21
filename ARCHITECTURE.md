@@ -458,6 +458,58 @@ const GREEN_BONUS: f64 = 0.5;  // 50% bonus for renewable energy
 
 ---
 
+## Detailed Architecture Documentation
+
+For comprehensive architectural diagrams and detailed technical specifications, see the following documentation:
+
+### Challenge-Specific Architectures
+**[docs/CHALLENGE_ARCHITECTURES.md](docs/CHALLENGE_ARCHITECTURES.md)**
+
+Detailed Mermaid diagrams for each of the 6 hackathon challenges:
+- Challenge 1: Rust/WASM Core Engine component architecture, model loading flows, platform compilation targets
+- Challenge 2: Verida Integration Layer protocol bridge, progressive authentication, VDA token economics
+- Challenge 3: Browser SDK architecture, one-line integration flow, service worker patterns
+- Challenge 4: Enterprise Compliance framework, GDPR flows, data residency enforcement
+- Challenge 5: Mobile Foundation cross-platform architecture, battery-aware contribution patterns
+- Challenge 6: Environmental Gamification system, renewable energy detection, carbon calculation
+
+### Data Flows & Authentication
+**[docs/DATA_FLOWS.md](docs/DATA_FLOWS.md)**
+
+Comprehensive data flow and authentication diagrams:
+- Progressive Authentication: Anonymous → Email → Biometric → Sovereign → Wallet flows
+- Personal Data Integration: Multi-source data sync with privacy controls
+- VDA Token Economics: Triple service rewards, staking tiers, payment flows
+- Privacy-Preserving AI Inference: End-to-end encryption and zero-knowledge patterns
+- Multi-Chain Identity: Cross-blockchain verification and data portability
+
+### Deployment Architecture
+**[docs/DEPLOYMENT_ARCHITECTURE.md](docs/DEPLOYMENT_ARCHITECTURE.md)**
+
+Platform-specific deployment patterns:
+- Browser Deployment: WASM loading, WebRTC mesh, service worker architecture
+- Mobile Deployment: iOS (BGTaskScheduler, Metal) and Android (Foreground Service, Vulkan)
+- Desktop Deployment: Cross-platform daemon, auto-update system, GPU acceleration
+- Edge Device Deployment: Router firmware, IoT devices, resource-constrained patterns
+- Enterprise/Server Deployment: Kubernetes, compliance integration, high availability
+
+### Verida Integration Architecture
+**[docs/VERIDA_ARCHITECTURE.md](docs/VERIDA_ARCHITECTURE.md)**
+
+Deep dive into Verida Network integration:
+- Protocol Bridge Design: Message translation, state synchronization
+- Identity Management: DID architecture, key management, multi-context identity
+- Storage Layer: Private datastores, data schemas, sync engine
+- Token Economics Integration: VDA contract interaction, reward distribution, staking
+- Security Architecture: E2E encryption, zero-knowledge auth, threat model
+
+### Supporting Documentation
+- **[HACKATHONS.md](HACKATHONS.md)** - Community structure and prize distribution
+- **[docs/CANDLE_ENGINE.md](docs/CANDLE_ENGINE.md)** - Candle framework technical details
+- **[docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md)** - Integration implementation guide
+
+---
+
 **This architecture represents the foundation for building the world's first sovereign AI infrastructure. Each challenge contributes to a unified vision of user-owned, privacy-preserving, environmentally sustainable AI platform.**
 
 *Ready to build the future of decentralized AI? Let's democratize AI infrastructure together.*
