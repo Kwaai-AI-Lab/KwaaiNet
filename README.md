@@ -7,9 +7,65 @@
 KwaaiNet is creating a new paradigm for AI infrastructure - one where **users maintain complete sovereignty** over their computational contributions and personal data. Through the integration with Verida Network, we're building the first truly **sovereign AI platform** that combines:
 
 - **Decentralized AI Compute**: Distributed inference and training across millions of devices
-- **Private Data Storage**: End-to-end encrypted databases with user-controlled keys  
+- **Private Data Storage**: End-to-end encrypted databases with user-controlled keys
 - **Self-Sovereign Identity**: Multi-chain identity verification and data ownership
 - **Environmental Impact**: Carbon-negative computing with renewable energy incentives
+
+```mermaid
+graph TB
+    subgraph "🏢 Traditional AI (Big Tech)"
+        BigTech[Corporation Controls Everything]
+        TheirData[They Own Your Data]
+        TheirCompute[They Own Compute]
+        TheirProfit[They Keep Profits]
+    end
+
+    subgraph "👤 KwaaiNet Sovereign AI (You)"
+        You[You Control Everything]
+        YourData[Your Data, Your Keys]
+        YourCompute[Your Device Contributes]
+        YourRewards[You Earn VDA Tokens]
+    end
+
+    subgraph "🌍 Triple-Service Platform"
+        AI[🤖 AI Compute<br/>Distributed Inference]
+        Storage[🔐 Private Storage<br/>E2E Encrypted]
+        Identity[🆔 Self-Sovereign ID<br/>Multi-Chain Verified]
+    end
+
+    subgraph "💰 Token Economics"
+        Contribute[Contribute Resources]
+        Earn[Earn 100+ VDA/hour]
+        Green[+50% Green Energy Bonus]
+    end
+
+    BigTech -.->|❌ Extracted| TheirData
+    BigTech -.->|❌ Centralized| TheirCompute
+    BigTech -.->|❌ Captured| TheirProfit
+
+    You -->|✅ Sovereign| YourData
+    You -->|✅ Distributed| YourCompute
+    You -->|✅ Rewarded| YourRewards
+
+    YourData --> Storage
+    YourCompute --> AI
+    YourRewards --> Identity
+
+    AI --> Contribute
+    Storage --> Contribute
+    Identity --> Contribute
+    Contribute --> Earn
+    Earn --> Green
+
+    style You fill:#10B981,color:#fff,stroke:#059669
+    style BigTech fill:#EF4444,color:#fff,stroke:#DC2626
+    style AI fill:#3B82F6,color:#fff
+    style Storage fill:#8B5CF6,color:#fff
+    style Identity fill:#F59E0B,color:#fff
+    style Earn fill:#10B981,color:#fff
+```
+
+**The shift is simple**: Instead of Big Tech profiting from your data and compute, **you own it, you control it, you earn from it**.
 
 ## Architecture
 
