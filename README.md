@@ -123,14 +123,40 @@ KwaaiNet is built by and for the community that believes in **democratizing AI**
 
 **For Developers:**
 1. Review [ARCHITECTURE.md](./ARCHITECTURE.md) for technical specifications
-2. Check [HACKATHONS.md](./HACKATHONS.md) for active challenges
-3. Follow [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines
-4. Join community discussions and mentorship programs
+2. Explore the [detailed architecture diagrams](#-documentation) below
+3. Check [HACKATHONS.md](./HACKATHONS.md) for active challenges
+4. Follow [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines
+5. Join community discussions and mentorship programs
 
 **For Users:**
 - Browser extension (Coming Q2 2026)
-- Mobile apps (Coming Q2 2026) 
+- Mobile apps (Coming Q2 2026)
 - Website integration SDK (Coming Q2 2026)
+
+---
+
+## 📚 Documentation
+
+### Architecture Overview
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | High-level system architecture and challenge specifications |
+| [HACKATHONS.md](./HACKATHONS.md) | Community structure and prize distribution |
+
+### Detailed Architecture Diagrams
+
+| Document | Diagrams | Coverage |
+|----------|----------|----------|
+| [Challenge Architectures](./docs/CHALLENGE_ARCHITECTURES.md) | 24 | Component diagrams for all 6 hackathon challenges |
+| [Data Flows](./docs/DATA_FLOWS.md) | 16 | Authentication, personal data, token economics, privacy |
+| [Deployment Architecture](./docs/DEPLOYMENT_ARCHITECTURE.md) | 18 | Browser, mobile, desktop, edge, enterprise patterns |
+| [Verida Architecture](./docs/VERIDA_ARCHITECTURE.md) | 14 | Protocol bridge, identity, storage, security |
+
+### Technical Deep Dives
+| Document | Description |
+|----------|-------------|
+| [Candle Engine](./docs/CANDLE_ENGINE.md) | Rust/WASM inference engine technical details |
+| [Verida Integration](./docs/VERIDA_INTEGRATION.md) | Complete Verida Network integration guide |
 
 ## License
 
