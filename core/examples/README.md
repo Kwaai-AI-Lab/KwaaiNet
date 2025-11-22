@@ -71,9 +71,18 @@ cargo run --example tensor_ops
 # - Performance benchmarks
 ```
 
-### Day 5: Forward Pass (Coming)
+### Day 5: Forward Pass
 
-Simple neural network forward pass.
+Simple neural network forward pass with Candle.
+
+```bash
+cargo run --example forward_pass
+# Shows:
+# - 2-layer MLP creation with Xavier initialization
+# - Forward pass with ReLU activation
+# - Performance benchmarking (10 iterations)
+# - Throughput calculation (tokens/sec)
+```
 
 ## Environment Variables
 

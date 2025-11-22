@@ -43,6 +43,10 @@ path = "examples/peer_discovery.rs"
 name = "tensor_ops"
 path = "examples/tensor_ops.rs"
 
+[[example]]
+name = "forward_pass"
+path = "examples/forward_pass.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
