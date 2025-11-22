@@ -21,7 +21,7 @@ kwaai-inference = { path = "crates/kwaai-inference" }
 kwaai-distributed = { path = "crates/kwaai-distributed" }
 kwaai-compression = { path = "crates/kwaai-compression" }
 tokio = { version = "1.35", features = ["full"] }
-libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response"] }
+libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response", "rsa"] }
 futures = "0.3"
 candle-core = "0.8"
 tracing = "0.1"
@@ -68,6 +68,10 @@ path = "examples/local_averaging.rs"
 [[example]]
 name = "tensor_exchange"
 path = "examples/tensor_exchange.rs"
+
+[[example]]
+name = "petals_bootstrap"
+path = "examples/petals_bootstrap.rs"
 
 [workspace.package]
 version = "0.1.0"
