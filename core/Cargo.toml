@@ -73,6 +73,10 @@ path = "examples/tensor_exchange.rs"
 name = "petals_bootstrap"
 path = "examples/petals_bootstrap.rs"
 
+[[example]]
+name = "petals_dht"
+path = "examples/petals_dht.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
