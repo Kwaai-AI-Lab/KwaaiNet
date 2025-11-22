@@ -3,6 +3,14 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Petals/Hivemind bootstrap servers for DHT discovery.
+/// These enable KwaaiNet nodes to join the broader distributed ML network.
+pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
+    // bootstrap1.petals.dev - Primary Petals bootstrap
+    "/ip4/159.89.214.152/tcp/31337/p2p/QmedTaZXmULqwspJXz44SsPZyTNKxhnnFvYRajfH7MGhCY",
+    // Note: bootstrap2 (159.203.156.48:31338) was offline as of Nov 2024
+];
+
 /// Configuration for the P2P network
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
@@ -63,6 +71,17 @@ impl NetworkConfig {
     pub fn builder() -> NetworkConfigBuilder {
         NetworkConfigBuilder::default()
     }
+
+    /// Create config with Petals bootstrap servers included.
+    /// This enables DHT discovery via the Petals/Hivemind network.
+    pub fn with_petals_bootstrap() -> Self {
+        let mut config = Self::default();
+        config.bootstrap_peers = PETALS_BOOTSTRAP_SERVERS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        config
+    }
 }
 
 /// Builder for NetworkConfig
@@ -99,6 +118,16 @@ impl NetworkConfigBuilder {
     /// Set maximum connections
     pub fn max_connections(mut self, max: usize) -> Self {
         self.config.max_connections = max;
+        self
+    }
+
+    /// Include Petals bootstrap servers for DHT discovery
+    pub fn with_petals_bootstrap(mut self) -> Self {
+        self.config.bootstrap_peers.extend(
+            PETALS_BOOTSTRAP_SERVERS
+                .iter()
+                .map(|s| s.to_string())
+        );
         self
     }
 

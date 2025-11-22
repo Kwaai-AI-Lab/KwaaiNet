@@ -36,7 +36,7 @@ pub mod network;
 pub mod protocol;
 pub mod transport;
 
-pub use config::NetworkConfig;
+pub use config::{NetworkConfig, PETALS_BOOTSTRAP_SERVERS};
 pub use error::{P2PError, P2PResult};
 pub use network::KwaaiNetwork;
 
