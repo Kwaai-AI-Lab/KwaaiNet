@@ -141,6 +141,20 @@ cargo run --example local_averaging
 # - Bandwidth analysis
 ```
 
+### Day 10: P2P Tensor Exchange
+
+Send compressed tensors between P2P nodes.
+
+```bash
+# Terminal 1: Start receiver
+cargo run --example tensor_exchange -- --listen 4001
+# Note the connect address printed
+
+# Terminal 2: Send tensor
+cargo run --example tensor_exchange -- --connect /ip4/127.0.0.1/tcp/4001/p2p/<PEER_ID> --send
+# Sends compressed tensor and receives ACK
+```
+
 ## Environment Variables
 
 - `RUST_LOG=info` - Set log level (trace, debug, info, warn, error)
