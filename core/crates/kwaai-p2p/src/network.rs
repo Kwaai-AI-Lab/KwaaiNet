@@ -17,7 +17,8 @@ use libp2p::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 /// The main KwaaiNet P2P network manager
@@ -28,8 +29,8 @@ pub struct KwaaiNetwork {
     /// Network configuration
     config: NetworkConfig,
 
-    /// Swarm (wrapped for async access)
-    swarm: Option<Swarm<KwaaiBehaviour>>,
+    /// Swarm (wrapped in Arc<Mutex> for thread-safe async access)
+    swarm: Arc<Mutex<Option<Swarm<KwaaiBehaviour>>>>,
 
     /// DHT manager
     dht: Arc<RwLock<DhtManager>>,
@@ -37,8 +38,8 @@ pub struct KwaaiNetwork {
     /// Connected peers
     connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
 
-    /// Is network running
-    is_running: bool,
+    /// Is network running (atomic for thread-safe access)
+    is_running: AtomicBool,
 }
 
 /// Information about a connected peer
@@ -108,10 +109,10 @@ impl KwaaiNetwork {
         Ok(Self {
             local_peer_id,
             config,
-            swarm: Some(swarm),
+            swarm: Arc::new(Mutex::new(Some(swarm))),
             dht: Arc::new(RwLock::new(DhtManager::new())),
             connected_peers: Arc::new(RwLock::new(HashMap::new())),
-            is_running: false,
+            is_running: AtomicBool::new(false),
         })
     }
 
@@ -166,8 +167,9 @@ impl KwaaiNetwork {
     }
 
     /// Start listening on configured addresses
-    pub async fn start(&mut self) -> P2PResult<()> {
-        let swarm = self.swarm.as_mut().ok_or(P2PError::NotInitialized)?;
+    pub async fn start(&self) -> P2PResult<()> {
+        let mut swarm_guard = self.swarm.lock().await;
+        let swarm = swarm_guard.as_mut().ok_or(P2PError::NotInitialized)?;
 
         for addr_str in &self.config.listen_addrs {
             let addr: Multiaddr = addr_str.parse().map_err(|e: libp2p::multiaddr::Error| {
@@ -179,7 +181,7 @@ impl KwaaiNetwork {
             info!("Listening on {}", addr);
         }
 
-        self.is_running = true;
+        self.is_running.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -190,14 +192,15 @@ impl KwaaiNetwork {
 
     /// Check if network is running
     pub fn is_running(&self) -> bool {
-        self.is_running
+        self.is_running.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
 impl NetworkBehaviour for KwaaiNetwork {
     async fn bootstrap(&mut self, peers: Vec<Multiaddr>) -> P2PResult<()> {
-        let swarm = self.swarm.as_mut().ok_or(P2PError::NotInitialized)?;
+        let mut swarm_guard = self.swarm.lock().await;
+        let swarm = swarm_guard.as_mut().ok_or(P2PError::NotInitialized)?;
 
         for addr in peers {
             info!("Dialing bootstrap peer: {}", addr);
@@ -239,7 +242,7 @@ impl NetworkBehaviour for KwaaiNetwork {
     }
 
     fn is_connected(&self) -> bool {
-        self.is_running
+        self.is_running.load(Ordering::SeqCst)
     }
 }
 

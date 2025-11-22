@@ -42,6 +42,7 @@ pub use model::{ModelFormat, ModelHandle, ModelInfo};
 
 use async_trait::async_trait;
 use candle_core::Tensor;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Core trait for inference operations
@@ -127,7 +128,7 @@ impl Default for ModelConfig {
 }
 
 /// Device type for inference
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceType {
     /// CPU inference
     Cpu,

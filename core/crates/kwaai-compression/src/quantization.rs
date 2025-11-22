@@ -84,7 +84,7 @@ impl Compressor for BlockwiseQuantizer {
             }
         }
 
-        Tensor::from_vec(data, &compressed.shape, &Device::Cpu)
+        Tensor::from_vec(data, compressed.shape.as_slice(), &Device::Cpu)
             .map_err(|e| CompressionError::TensorError(e.to_string()))
     }
 }

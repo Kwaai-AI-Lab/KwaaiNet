@@ -92,7 +92,7 @@ libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "t
 candle-core = "0.8"
 candle-nn = "0.8"
 candle-transformers = "0.8"
-half = { version = "2.4", features = ["std"] }
+half = { version = "2.4", features = ["std", "serde"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

@@ -36,4 +36,4 @@ tracing-subscriber = { workspace = true }
 [features]
 default = ["tcp"]
 tcp = []
-webrtc = ["libp2p/webrtc-websys"]
+# webrtc = ["libp2p/webrtc-websys"]  # Disabled: feature not available in libp2p 0.53

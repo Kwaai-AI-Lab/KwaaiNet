@@ -63,7 +63,7 @@ enum TensorMessageType {
 }
 
 /// Codec for tensor messages
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct TensorCodec;
 
 #[derive(Debug, Clone)]
