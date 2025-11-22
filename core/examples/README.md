@@ -126,6 +126,21 @@ cargo run --example expert_registry
 # - Token distribution analysis
 ```
 
+### Day 9: Local Averaging
+
+Decentralized parameter averaging (Hivemind pattern).
+
+```bash
+cargo run --example local_averaging
+# Shows:
+# - Gradient accumulation over steps
+# - Gradient compression for transfer
+# - Multi-peer averaging simulation
+# - Averaging configuration options
+# - Training loop simulation
+# - Bandwidth analysis
+```
+
 ## Environment Variables
 
 - `RUST_LOG=info` - Set log level (trace, debug, info, warn, error)

@@ -59,6 +59,10 @@ path = "examples/sparse_gradients.rs"
 name = "expert_registry"
 path = "examples/expert_registry.rs"
 
+[[example]]
+name = "local_averaging"
+path = "examples/local_averaging.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
