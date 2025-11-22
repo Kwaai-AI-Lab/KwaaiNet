@@ -84,6 +84,20 @@ cargo run --example forward_pass
 # - Throughput calculation (tokens/sec)
 ```
 
+### Day 6: 8-bit Quantization
+
+Blockwise 8-bit quantization for tensor compression.
+
+```bash
+cargo run --example quantization
+# Shows:
+# - Basic compress/decompress cycle
+# - Block size comparison
+# - Gradient compression simulation
+# - Performance benchmarks
+# - Bandwidth savings calculation
+```
+
 ## Environment Variables
 
 - `RUST_LOG=info` - Set log level (trace, debug, info, warn, error)

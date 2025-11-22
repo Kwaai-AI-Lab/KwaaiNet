@@ -47,6 +47,10 @@ path = "examples/tensor_ops.rs"
 name = "forward_pass"
 path = "examples/forward_pass.rs"
 
+[[example]]
+name = "quantization"
+path = "examples/quantization.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
