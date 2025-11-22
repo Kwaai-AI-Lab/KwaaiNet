@@ -32,6 +32,7 @@
 pub mod config;
 pub mod dht;
 pub mod error;
+pub mod hivemind;
 pub mod network;
 pub mod protocol;
 pub mod transport;

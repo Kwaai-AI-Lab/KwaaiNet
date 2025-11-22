@@ -28,6 +28,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bincode = "1.3"
 serde = { version = "1.0", features = ["derive"] }
+prost = "0.12"
+async-trait = "0.1"
 
 [[example]]
 name = "p2p_node"
@@ -77,6 +79,10 @@ path = "examples/petals_bootstrap.rs"
 name = "petals_dht"
 path = "examples/petals_dht.rs"
 
+[[example]]
+name = "petals_visible"
+path = "examples/petals_visible.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -107,6 +113,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = "1.3"
 prost = "0.12"
+rmp-serde = "1.1"
 
 # Error handling
 thiserror = "1.0"

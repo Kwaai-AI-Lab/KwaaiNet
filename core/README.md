@@ -13,9 +13,14 @@ Rust/WASM core implementation for KwaaiNet sovereign AI infrastructure.
 | Expert Registry | ✅ Working | MoE infrastructure with fault tolerance |
 | Parameter Averaging | ✅ Working | Decentralized gradient averaging |
 | P2P Tensor Exchange | ✅ Working | Compressed tensor transmission between nodes |
+| Petals Integration | ✅ Working | DHT bootstrap via Petals network |
 | WASM Build | 🔧 Scaffold | Browser bindings (interface defined) |
 
-**Last tested:** Two-machine P2P tensor exchange verified working (Nov 2024)
+**Latest (Nov 22, 2024):**
+- ✅ Two-machine P2P tensor exchange verified
+- ✅ Connected to Petals/Hivemind network via shared DHT
+- ✅ Transport layer (TCP/noise/yamux) compatible with Petals
+- 🚧 Petals protocol bridge in progress ([roadmap](docs/PETALS_BRIDGE_ROADMAP.md))
 
 ## Quick Start
 
@@ -86,6 +91,16 @@ cargo run --release --example tensor_exchange -- \
 ```
 
 See [examples/TWO_MACHINE_TEST.md](examples/TWO_MACHINE_TEST.md) for multi-machine testing.
+
+### Petals Network Integration
+
+```bash
+# Test Petals DHT connectivity
+cargo run --example petals_dht
+
+# Make node visible on map.kwaai.ai
+cargo run --release --example petals_visible -- --name "My-Node"
+```
 
 ## Crate Structure
 
