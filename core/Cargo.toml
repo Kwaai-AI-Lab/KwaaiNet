@@ -55,6 +55,10 @@ path = "examples/quantization.rs"
 name = "sparse_gradients"
 path = "examples/sparse_gradients.rs"
 
+[[example]]
+name = "expert_registry"
+path = "examples/expert_registry.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

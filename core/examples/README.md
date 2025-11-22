@@ -112,6 +112,20 @@ cargo run --example sparse_gradients
 # - Distributed training scenario
 ```
 
+### Day 8: Expert Registry
+
+Mixture of Experts (MoE) infrastructure.
+
+```bash
+cargo run --example expert_registry
+# Shows:
+# - Local and remote expert registration
+# - Fault tolerance with fallbacks
+# - MoE configuration
+# - Expert routing simulation
+# - Token distribution analysis
+```
+
 ## Environment Variables
 
 - `RUST_LOG=info` - Set log level (trace, debug, info, warn, error)
