@@ -98,6 +98,20 @@ cargo run --example quantization
 # - Bandwidth savings calculation
 ```
 
+### Day 7: Sparse Gradients
+
+Top-K gradient compression for bandwidth efficiency.
+
+```bash
+cargo run --example sparse_gradients
+# Shows:
+# - Basic Top-K compression
+# - K-fraction comparison (0.1% to 20%)
+# - Error feedback (residual accumulation)
+# - Performance benchmarks
+# - Distributed training scenario
+```
+
 ## Environment Variables
 
 - `RUST_LOG=info` - Set log level (trace, debug, info, warn, error)

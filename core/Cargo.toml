@@ -51,6 +51,10 @@ path = "examples/forward_pass.rs"
 name = "quantization"
 path = "examples/quantization.rs"
 
+[[example]]
+name = "sparse_gradients"
+path = "examples/sparse_gradients.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
