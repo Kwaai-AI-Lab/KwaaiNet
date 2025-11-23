@@ -16,10 +16,12 @@ Rust/WASM core implementation for KwaaiNet sovereign AI infrastructure.
 | Petals Integration | ✅ Working | DHT bootstrap via Petals network |
 | WASM Build | 🔧 Scaffold | Browser bindings (interface defined) |
 
-**Latest (Nov 22, 2024):**
+**Latest (Nov 22, 2025):**
 - ✅ Two-machine P2P tensor exchange verified
 - ✅ Connected to Petals/Hivemind network via shared DHT
 - ✅ Transport layer (TCP/noise/yamux) compatible with Petals
+- ✅ Hivemind protocol module added (ServerInfo, MessagePack serialization)
+- ✅ `petals_visible` example: DHT announcement for map.kwaai.ai discovery
 - 🚧 Petals protocol bridge in progress ([roadmap](docs/PETALS_BRIDGE_ROADMAP.md))
 
 ## Quick Start
