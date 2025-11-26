@@ -10,7 +10,9 @@ KwaaiNet is creating a new paradigm for AI infrastructure - one where **users ma
 - **Private Data Storage**: End-to-end encrypted databases with user-controlled keys
 - **Self-Sovereign Identity**: Multi-chain identity verification and data ownership
 - **Environmental Impact**: Carbon-negative computing with renewable energy incentives
+  
 https://youtu.be/ES9iQWkAFeY
+
 ```mermaid
 graph TB
     subgraph "🏢 Traditional AI (Big Tech)"
