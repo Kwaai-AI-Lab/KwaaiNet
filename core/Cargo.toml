@@ -100,7 +100,7 @@ futures = "0.3"
 async-trait = "0.1"
 
 # P2P networking
-libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros"] }
+libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response"] }
 
 # ML/Inference
 candle-core = "0.8"

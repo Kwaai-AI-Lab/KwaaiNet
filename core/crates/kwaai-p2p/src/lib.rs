@@ -35,6 +35,7 @@ pub mod error;
 pub mod hivemind;
 pub mod network;
 pub mod protocol;
+pub mod rpc;
 pub mod transport;
 
 pub use config::{NetworkConfig, PETALS_BOOTSTRAP_SERVERS};
