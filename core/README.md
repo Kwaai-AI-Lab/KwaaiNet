@@ -13,16 +13,16 @@ Rust/WASM core implementation for KwaaiNet sovereign AI infrastructure.
 | Expert Registry | ✅ Working | MoE infrastructure with fault tolerance |
 | Parameter Averaging | ✅ Working | Decentralized gradient averaging |
 | P2P Tensor Exchange | ✅ Working | Compressed tensor transmission between nodes |
-| Petals Integration | ✅ Working | DHT bootstrap via Petals network |
+| Petals Integration | ✅ Complete | DHT + RPC handler for map.kwaai.ai visibility |
 | WASM Build | 🔧 Scaffold | Browser bindings (interface defined) |
 
-**Latest (Nov 22, 2025):**
-- ✅ Two-machine P2P tensor exchange verified
-- ✅ Connected to Petals/Hivemind network via shared DHT
-- ✅ Transport layer (TCP/noise/yamux) compatible with Petals
-- ✅ Hivemind protocol module added (ServerInfo, MessagePack serialization)
-- ✅ `petals_visible` example: DHT announcement for map.kwaai.ai discovery
-- 🚧 Petals protocol bridge in progress ([roadmap](docs/PETALS_BRIDGE_ROADMAP.md))
+**Latest (Dec 3, 2025):**
+- ✅ **Hivemind RPC protocol implementation complete**
+- ✅ Nodes respond to health monitor queries via `/hivemind/0.0.0/rpc`
+- ✅ Full compatibility with Petals/Hivemind protocol (MessagePack + protobuf)
+- ✅ KwaaiNet nodes now visible on map.kwaai.ai
+- ✅ libp2p 0.53 Codec trait correctly implemented
+- ✅ `petals_visible` example with integrated RPC handler ready to run
 
 ## Quick Start
 
@@ -100,8 +100,17 @@ See [examples/TWO_MACHINE_TEST.md](examples/TWO_MACHINE_TEST.md) for multi-machi
 # Test Petals DHT connectivity
 cargo run --example petals_dht
 
-# Make node visible on map.kwaai.ai
-cargo run --release --example petals_visible -- --name "My-Node"
+# Make node visible on map.kwaai.ai (full RPC implementation)
+cargo run --release --example petals_visible -- \
+  --name "My-KwaaiNode" \
+  --model "Llama-3.3-70B-Instruct" \
+  --port 31337
+
+# Your node will:
+# 1. Connect to Petals DHT via bootstrap servers
+# 2. Announce itself with ServerInfo
+# 3. Accept RPC queries from health monitor
+# 4. Appear on map.kwaai.ai within 5-10 minutes
 ```
 
 ## Crate Structure
@@ -125,7 +134,8 @@ core/
 P2P networking layer using libp2p:
 - Kademlia DHT for peer discovery
 - Request-response protocol for tensor exchange
-- TCP transport for native applications
+- **Hivemind RPC protocol** for Petals/map.kwaai.ai integration
+- TCP transport with Noise encryption and Yamux multiplexing
 - NAT traversal support
 
 ### kwaai-inference
