@@ -5,14 +5,12 @@
 //! Hivemind protocol requests.
 
 use crate::hivemind::{
-    decode_length, decode_message, encode_error, encode_message, ExpertInfo, ExpertUID,
-    ServerInfo, HIVEMIND_PROTOCOL,
+    encode_error, encode_message, ExpertInfo, ExpertUID, ServerInfo, HIVEMIND_PROTOCOL,
 };
 use async_trait::async_trait;
 use futures::prelude::*;
 use libp2p::{
-    core::{upgrade, ProtocolName},
-    request_response::{self, ProtocolSupport, RequestResponseCodec},
+    request_response::{self, Codec, ProtocolSupport},
     StreamProtocol,
 };
 use prost::Message;
@@ -29,18 +27,12 @@ use tracing::{debug, error, info};
 /// - 8 bytes: length (big-endian)
 /// - 1 byte: marker (0x00=message, 0x01=error)
 /// - N bytes: protobuf payload
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HivemindCodec;
 
-impl ProtocolName for HivemindCodec {
-    fn protocol_name(&self) -> &[u8] {
-        HIVEMIND_PROTOCOL.as_bytes()
-    }
-}
-
 #[async_trait]
-impl RequestResponseCodec for HivemindCodec {
-    type Protocol = HivemindCodec;
+impl Codec for HivemindCodec {
+    type Protocol = StreamProtocol;
     type Request = RpcRequest;
     type Response = RpcResponse;
 
@@ -274,7 +266,8 @@ pub fn create_hivemind_protocol() -> (
     let protocol = StreamProtocol::new(HIVEMIND_PROTOCOL);
     let codec = HivemindCodec;
 
-    let behaviour = request_response::Behaviour::new(
+    let behaviour = request_response::Behaviour::with_codec(
+        codec,
         [(protocol.clone(), ProtocolSupport::Full)],
         request_response::Config::default(),
     );

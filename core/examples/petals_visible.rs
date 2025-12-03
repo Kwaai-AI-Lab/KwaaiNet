@@ -11,11 +11,15 @@
 //! Note: The health monitor needs to discover and query your node.
 
 use futures::StreamExt;
-use kwaai_p2p::{hivemind::ServerInfo, NetworkConfig};
+use kwaai_p2p::{
+    hivemind::ServerInfo,
+    rpc::{create_hivemind_protocol, RpcHandler},
+    NetworkConfig,
+};
 use libp2p::{
     identify, identity,
     kad::{self, store::MemoryStore, Mode, Record, RecordKey},
-    noise,
+    noise, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
@@ -31,6 +35,7 @@ use tracing_subscriber::EnvFilter;
 struct PetalsBehaviour {
     kademlia: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
+    rpc: request_response::Behaviour<kwaai_p2p::rpc::HivemindCodec>,
 }
 
 // =============================================================================
@@ -114,7 +119,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .with_agent_version(format!("kwaai/{}", env!("CARGO_PKG_VERSION"))),
     );
 
-    let behaviour = PetalsBehaviour { kademlia, identify };
+    // Setup RPC handler for responding to health monitor queries
+    let (rpc, _protocol) = create_hivemind_protocol();
+
+    let behaviour = PetalsBehaviour {
+        kademlia,
+        identify,
+        rpc,
+    };
 
     // Build swarm
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
@@ -147,6 +159,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut connected = false;
     let mut bootstrap_done = false;
     let mut announced = false;
+
+    // Create RPC handler for responding to health monitor queries
+    let rpc_handler = RpcHandler::new(server_info.clone());
 
     println!("Waiting for connections...");
     println!("Once connected, node info will be announced to DHT.\n");
@@ -235,6 +250,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("[DHT] Inbound request: {:?}", request);
                     }
 
+                    SwarmEvent::Behaviour(PetalsBehaviourEvent::Rpc(
+                        request_response::Event::Message { peer, message },
+                    )) => {
+                        match message {
+                            request_response::Message::Request {
+                                request,
+                                channel,
+                                ..
+                            } => {
+                                println!("[RPC] Received request from {}", peer);
+                                let response = rpc_handler.handle_request(request);
+                                if let Err(e) = swarm.behaviour_mut().rpc.send_response(channel, response) {
+                                    warn!("Failed to send RPC response: {:?}", e);
+                                }
+                            }
+                            request_response::Message::Response { .. } => {
+                                // We don't send requests, so we shouldn't get responses
+                                info!("[RPC] Unexpected response from {}", peer);
+                            }
+                        }
+                    }
+
+                    SwarmEvent::Behaviour(PetalsBehaviourEvent::Rpc(
+                        request_response::Event::InboundFailure { peer, error, .. },
+                    )) => {
+                        warn!("[RPC] Inbound failure from {}: {:?}", peer, error);
+                    }
+
+                    SwarmEvent::Behaviour(PetalsBehaviourEvent::Rpc(
+                        request_response::Event::OutboundFailure { peer, error, .. },
+                    )) => {
+                        warn!("[RPC] Outbound failure to {}: {:?}", peer, error);
+                    }
+
                     _ => {}
                 }
             }
@@ -288,7 +337,7 @@ fn announce_to_dht(
     println!("  Announcement sent!");
     println!("\n[STATUS] Node is now announcing itself to the Petals DHT.");
     println!("         Check map.kwaai.ai in a few minutes to see if it appears.");
-    println!("         Note: Full visibility requires implementing rpc_info handler.");
+    println!("         RPC handler is active and ready to respond to health monitor queries.");
     println!("         Keep this node running for discovery.\n");
 }
 
