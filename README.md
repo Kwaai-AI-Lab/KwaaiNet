@@ -267,6 +267,7 @@ KwaaiNet is built by and for the community that believes in **democratizing AI**
 | [Candle Engine](./docs/CANDLE_ENGINE.md) | Rust/WASM inference engine technical details |
 | [Hivemind Rust Architecture](./docs/HIVEMIND_RUST_ARCHITECTURE.md) | Distributed deep learning patterns (MoE, DHT, parameter averaging) |
 | [Verida Integration](./docs/VERIDA_INTEGRATION.md) | Complete Verida Network integration guide |
+| [Debugging Map Visibility](./docs/DEBUGGING_MAP_VISIBILITY.md) | Why Rust nodes don't appear on map.kwaai.ai and how to fix it |
 
 ## License
 
