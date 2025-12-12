@@ -19,7 +19,7 @@ use kwaai_p2p::{
 use libp2p::{
     identify, identity,
     kad::{self, store::MemoryStore, Mode, Record, RecordKey},
-    noise, request_response,
+    noise, relay, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
@@ -36,6 +36,7 @@ struct PetalsBehaviour {
     kademlia: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
     rpc: request_response::Behaviour<kwaai_p2p::rpc::HivemindCodec>,
+    relay_client: relay::client::Behaviour,
 }
 
 // =============================================================================
@@ -62,7 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .position(|a| a == "--port")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
-        .unwrap_or(31337);
+        .unwrap_or(8080);
 
     // Model to announce (must match a model the health monitor tracks)
     let model_name = args
@@ -80,7 +81,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_span(0, 8) // Blocks we "serve"
         .with_cache_tokens(10000)
         .with_throughput(10.0)
-        .with_dtype("float16");
+        .with_dtype("float16")
+        .with_relay(true); // Using relay for NAT traversal
 
     println!("Node Configuration:");
     println!("  Name: {}", public_name);
@@ -90,8 +92,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("  Blocks: {:?}", server_info.spans);
     println!();
 
-    // Use Petals bootstrap
-    let config = NetworkConfig::with_petals_bootstrap();
+    // Use KwaaiNet bootstrap servers
+    let config = NetworkConfig::with_kwaai_bootstrap();
     println!("Bootstrap servers:");
     for server in &config.bootstrap_peers {
         println!("  {}", server);
@@ -103,46 +105,59 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key.public());
     println!("Local Peer ID: {}\n", local_peer_id);
 
-    // Setup Kademlia with IPFS-compatible protocol
-    let kademlia = {
-        let store = MemoryStore::new(local_peer_id);
-        let mut kad_config = kad::Config::default();
-        kad_config.set_protocol_names(vec![StreamProtocol::new("/ipfs/kad/1.0.0")]);
-        let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, kad_config);
-        behaviour.set_mode(Some(Mode::Server)); // Be a DHT server
-        behaviour
-    };
-
-    // Setup Identify with Petals-like agent version
-    let identify = identify::Behaviour::new(
-        identify::Config::new("/hivemind/0.0.0".to_string(), local_key.public())
-            .with_agent_version(format!("kwaai/{}", env!("CARGO_PKG_VERSION"))),
-    );
-
-    // Setup RPC handler for responding to health monitor queries
-    let (rpc, _protocol) = create_hivemind_protocol();
-
-    let behaviour = PetalsBehaviour {
-        kademlia,
-        identify,
-        rpc,
-    };
-
-    // Build swarm
-    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
+    // Build swarm with relay support
+    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key.clone())
         .with_tokio()
         .with_tcp(
             tcp::Config::default(),
             noise::Config::new,
             yamux::Config::default,
         )?
-        .with_behaviour(|_| Ok(behaviour))?
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|key, relay_client| {
+            // Setup Kademlia with IPFS-compatible protocol
+            let kademlia = {
+                let store = MemoryStore::new(local_peer_id);
+                let mut kad_config = kad::Config::default();
+                kad_config.set_protocol_names(vec![StreamProtocol::new("/ipfs/kad/1.0.0")]);
+                let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, kad_config);
+                behaviour.set_mode(Some(Mode::Server)); // Be a DHT server
+                behaviour
+            };
+
+            // Setup Identify with Petals-like agent version
+            let identify = identify::Behaviour::new(
+                identify::Config::new("/hivemind/0.0.0".to_string(), key.public())
+                    .with_agent_version(format!("kwaai/{}", env!("CARGO_PKG_VERSION"))),
+            );
+
+            // Setup RPC handler for responding to health monitor queries
+            let (rpc, _protocol) = create_hivemind_protocol();
+
+            Ok(PetalsBehaviour {
+                kademlia,
+                identify,
+                rpc,
+                relay_client,
+            })
+        })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(300)))
         .build();
 
-    // Listen on specified port
-    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", listen_port).parse()?;
-    swarm.listen_on(listen_addr)?;
+    // Listen on both IPv4 and IPv6
+    let listen_addr_v4: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", listen_port).parse()?;
+    let listen_addr_v6: Multiaddr = format!("/ip6/::/tcp/{}", listen_port).parse()?;
+
+    swarm.listen_on(listen_addr_v4)?;
+    swarm.listen_on(listen_addr_v6)?;
+
+    // Add external address for NAT traversal (health monitor needs to reach us)
+    // This allows peers to discover our public address
+    if let Ok(external_ip) = std::env::var("EXTERNAL_IP") {
+        let external_addr: Multiaddr = format!("/ip4/{}/tcp/{}", external_ip, listen_port).parse()?;
+        swarm.add_external_address(external_addr);
+        println!("Added external address: /ip4/{}/tcp/{}\n", external_ip, listen_port);
+    }
 
     // Connect to Petals bootstrap
     println!("Connecting to Petals network...\n");
@@ -163,11 +178,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create RPC handler for responding to health monitor queries
     let rpc_handler = RpcHandler::new(server_info.clone());
 
+    // DHT heartbeat timer - re-announce every 4 minutes to prevent expiration
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(240));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     println!("Waiting for connections...");
     println!("Once connected, node info will be announced to DHT.\n");
 
     loop {
         tokio::select! {
+            _ = heartbeat_interval.tick() => {
+                // Periodic DHT re-announcement to keep records alive
+                if bootstrap_done {
+                    println!("[HEARTBEAT] Re-announcing to DHT...");
+                    announce_to_dht(
+                        &mut swarm,
+                        &model_name,
+                        &local_peer_id,
+                        &server_info,
+                    );
+                }
+            }
+
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
@@ -284,6 +316,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         warn!("[RPC] Outbound failure to {}: {:?}", peer, error);
                     }
 
+                    SwarmEvent::IncomingConnection { local_addr, send_back_addr, .. } => {
+                        println!("[CONNECTION] Incoming from {} to {}", send_back_addr, local_addr);
+                    }
+
+                    SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                        info!("[CONNECTION] Closed with {}: {:?}", peer_id, cause);
+                    }
+
                     _ => {}
                 }
             }
@@ -300,10 +340,6 @@ fn announce_to_dht(
 ) {
     println!("\n[ANNOUNCE] Announcing node to DHT...");
 
-    // Petals uses specific DHT key patterns for server discovery
-    // Format: {model_name}.{peer_id}
-    let server_key = format!("{}.{}", model_name, peer_id);
-
     // Serialize server info
     let info_bytes = match server_info.to_msgpack() {
         Ok(bytes) => bytes,
@@ -313,29 +349,53 @@ fn announce_to_dht(
         }
     };
 
-    println!("  Key: {}", server_key);
+    println!("  Model: {}", model_name);
+    println!("  Blocks: {} to {}", server_info.start_block, server_info.end_block);
     println!("  Info size: {} bytes", info_bytes.len());
 
-    // Put the record in DHT
-    let record = Record {
-        key: RecordKey::new(&server_key),
+    // Petals DHT key format: announce each block as {model_name}.{block_index}
+    // This matches Petals' declare_active_modules pattern
+    for block_idx in server_info.start_block..server_info.end_block {
+        let module_uid = format!("{}.{}", model_name, block_idx);
+
+        let record = Record {
+            key: RecordKey::new(&module_uid),
+            value: info_bytes.clone(),
+            publisher: Some(*peer_id),
+            expires: None,
+        };
+
+        if let Err(e) = swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+            warn!("Failed to put record for {}: {}", module_uid, e);
+        } else {
+            println!("  [DHT] Announced module: {}", module_uid);
+        }
+
+        // Also announce as a content provider (for Petals compatibility)
+        let key = RecordKey::new(&module_uid);
+        if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(key) {
+            warn!("Failed to start providing {}: {}", module_uid, e);
+        }
+    }
+
+    // Also announce model metadata key (Petals uses this for discovery)
+    let model_metadata_key = format!("_petals.models.{}", model_name);
+    let model_record = Record {
+        key: RecordKey::new(&model_metadata_key),
         value: info_bytes,
         publisher: Some(*peer_id),
         expires: None,
     };
 
-    if let Err(e) = swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
-        warn!("Failed to put record: {}", e);
+    if let Err(e) = swarm.behaviour_mut().kademlia.put_record(model_record, kad::Quorum::One) {
+        warn!("Failed to put model metadata record: {}", e);
+    } else {
+        println!("  [DHT] Announced model metadata: {}", model_metadata_key);
     }
 
-    // Also start providing the model key so we're discoverable
-    let model_key = RecordKey::new(&model_name);
-    if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(model_key) {
-        warn!("Failed to start providing: {}", e);
-    }
-
-    println!("  Announcement sent!");
+    println!("  Announcement complete!");
     println!("\n[STATUS] Node is now announcing itself to the Petals DHT.");
+    println!("         DHT records will be refreshed every 4 minutes (heartbeat).");
     println!("         Check map.kwaai.ai in a few minutes to see if it appears.");
     println!("         RPC handler is active and ready to respond to health monitor queries.");
     println!("         Keep this node running for discovery.\n");
