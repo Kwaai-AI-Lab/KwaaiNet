@@ -2,23 +2,24 @@
 
 use crate::{
     config::NetworkConfig,
-    dht::DhtManager,
+    dht::{DhtCommand, DhtManager},
     error::{P2PError, P2PResult},
     protocol::KwaaiProtocol,
+    rpc::HivemindCodec,
     DhtOperations, NetworkBehaviour, NodeCapabilities, Request, Response,
 };
 use async_trait::async_trait;
 use libp2p::{
     identify, identity,
-    kad::{self, store::MemoryStore, Mode},
-    noise,
+    kad::{self, store::MemoryStore, Mode, Quorum, Record, RecordKey},
+    noise, request_response,
     swarm::{NetworkBehaviour as SwarmBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 /// The main KwaaiNet P2P network manager
@@ -40,6 +41,9 @@ pub struct KwaaiNetwork {
 
     /// Is network running (atomic for thread-safe access)
     is_running: AtomicBool,
+
+    /// DHT command receiver
+    dht_command_rx: Arc<Mutex<mpsc::UnboundedReceiver<DhtCommand>>>,
 }
 
 /// Information about a connected peer
@@ -63,6 +67,8 @@ pub struct KwaaiBehaviour {
     pub identify: identify::Behaviour,
     /// Custom KwaaiNet protocol
     pub kwaai: KwaaiProtocol,
+    /// Hivemind RPC protocol for health monitor queries
+    pub rpc: request_response::Behaviour<HivemindCodec>,
 }
 
 /// Events from the combined behaviour
@@ -74,6 +80,8 @@ pub enum KwaaiBehaviourEvent {
     Identify(identify::Event),
     /// KwaaiNet protocol event
     Kwaai(()),
+    /// RPC event
+    Rpc(request_response::Event<crate::rpc::RpcRequest, crate::rpc::RpcResponse>),
 }
 
 impl From<kad::Event> for KwaaiBehaviourEvent {
@@ -94,6 +102,16 @@ impl From<()> for KwaaiBehaviourEvent {
     }
 }
 
+impl From<request_response::Event<crate::rpc::RpcRequest, crate::rpc::RpcResponse>>
+    for KwaaiBehaviourEvent
+{
+    fn from(
+        event: request_response::Event<crate::rpc::RpcRequest, crate::rpc::RpcResponse>,
+    ) -> Self {
+        KwaaiBehaviourEvent::Rpc(event)
+    }
+}
+
 impl KwaaiNetwork {
     /// Create a new network instance
     pub async fn new(config: NetworkConfig) -> P2PResult<Self> {
@@ -103,6 +121,9 @@ impl KwaaiNetwork {
 
         info!("Local peer ID: {}", local_peer_id);
 
+        // Create DHT command channel
+        let (dht_command_tx, dht_command_rx) = mpsc::unbounded_channel();
+
         // Create the swarm
         let swarm = Self::create_swarm(local_key.clone(), &config)?;
 
@@ -110,9 +131,10 @@ impl KwaaiNetwork {
             local_peer_id,
             config,
             swarm: Arc::new(Mutex::new(Some(swarm))),
-            dht: Arc::new(RwLock::new(DhtManager::new())),
+            dht: Arc::new(RwLock::new(DhtManager::with_channel(dht_command_tx))),
             connected_peers: Arc::new(RwLock::new(HashMap::new())),
             is_running: AtomicBool::new(false),
+            dht_command_rx: Arc::new(Mutex::new(dht_command_rx)),
         })
     }
 
@@ -144,10 +166,14 @@ impl KwaaiNetwork {
         // Create custom protocol
         let kwaai = KwaaiProtocol::new();
 
+        // Create RPC protocol for Hivemind compatibility
+        let (rpc, _protocol) = crate::rpc::create_hivemind_protocol();
+
         let behaviour = KwaaiBehaviour {
             kademlia,
             identify,
             kwaai,
+            rpc,
         };
 
         // Build the swarm
@@ -193,6 +219,135 @@ impl KwaaiNetwork {
     /// Check if network is running
     pub fn is_running(&self) -> bool {
         self.is_running.load(Ordering::SeqCst)
+    }
+
+    /// Announce blocks to the DHT (Petals-compatible)
+    ///
+    /// This announces the node's availability to serve specific model blocks,
+    /// making it discoverable on map.kwaai.ai
+    pub async fn announce_blocks(
+        &self,
+        model_name: &str,
+        server_info: &crate::hivemind::ServerInfo,
+    ) -> P2PResult<()> {
+        use crate::hivemind::ServerInfo;
+
+        info!("Announcing blocks to DHT for model: {}", model_name);
+
+        // Serialize server info to MessagePack
+        let info_bytes = server_info
+            .to_msgpack()
+            .map_err(|e| P2PError::Serialization(e.to_string()))?;
+
+        info!(
+            "Announcing {} blocks ({}..{}), info size: {} bytes",
+            server_info.end_block - server_info.start_block,
+            server_info.start_block,
+            server_info.end_block,
+            info_bytes.len()
+        );
+
+        // Get DHT manager with write lock
+        let mut dht = self.dht.write().await;
+
+        // Announce each block: {model_name}.{block_index}
+        for block_idx in server_info.start_block..server_info.end_block {
+            let module_uid = format!("{}.{}", model_name, block_idx);
+
+            // Put DHT record
+            dht.put(&module_uid, info_bytes.clone()).await?;
+
+            // Start providing
+            dht.provide(&module_uid).await?;
+
+            debug!("Announced module: {}", module_uid);
+        }
+
+        // Also announce model metadata key
+        let model_metadata_key = format!("_petals.models.{}", model_name);
+        dht.put(&model_metadata_key, info_bytes).await?;
+
+        info!("Block announcement complete for {}", model_name);
+
+        Ok(())
+    }
+
+    /// Process a single DHT command from the channel
+    pub async fn process_dht_command(&self) -> P2PResult<bool> {
+        let mut rx = self.dht_command_rx.lock().await;
+
+        match rx.try_recv() {
+            Ok(command) => {
+                let mut swarm_guard = self.swarm.lock().await;
+                let swarm = swarm_guard.as_mut().ok_or(P2PError::NotInitialized)?;
+
+                match command {
+                    DhtCommand::PutRecord { key, value, publisher } => {
+                        info!("Processing DHT PutRecord: {}", key);
+
+                        let record = Record {
+                            key: RecordKey::new(&key),
+                            value,
+                            publisher: publisher.or(Some(self.local_peer_id)),
+                            expires: None,
+                        };
+
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .put_record(record, Quorum::One)
+                            .map_err(|e| P2PError::DhtError(e.to_string()))?;
+
+                        debug!("DHT record stored: {}", key);
+                    }
+
+                    DhtCommand::StartProviding { key } => {
+                        info!("Processing DHT StartProviding: {}", key);
+
+                        let record_key = RecordKey::new(&key);
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .start_providing(record_key)
+                            .map_err(|e| P2PError::DhtError(e.to_string()))?;
+
+                        debug!("Started providing: {}", key);
+                    }
+
+                    DhtCommand::GetRecord { key } => {
+                        info!("Processing DHT GetRecord: {}", key);
+
+                        let record_key = RecordKey::new(&key);
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .get_record(record_key);
+
+                        debug!("DHT get record query sent: {}", key);
+                    }
+
+                    DhtCommand::GetProviders { key } => {
+                        info!("Processing DHT GetProviders: {}", key);
+
+                        let record_key = RecordKey::new(&key);
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .get_providers(record_key);
+
+                        debug!("DHT get providers query sent: {}", key);
+                    }
+                }
+
+                Ok(true) // Command processed
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                Ok(false) // No commands available
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                Err(P2PError::Internal("DHT command channel disconnected".to_string()))
+            }
+        }
     }
 }
 

@@ -40,6 +40,7 @@ pub mod transport;
 
 pub use config::{NetworkConfig, PETALS_BOOTSTRAP_SERVERS};
 pub use error::{P2PError, P2PResult};
+pub use hivemind::ServerInfo;
 pub use network::KwaaiNetwork;
 
 use async_trait::async_trait;
