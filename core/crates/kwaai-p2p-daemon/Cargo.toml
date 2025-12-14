@@ -24,6 +24,10 @@ libp2p = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1.35", features = ["net", "io-util"] }
 
+# Unix process management (for libc::kill)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 prost-build = "0.13"
 

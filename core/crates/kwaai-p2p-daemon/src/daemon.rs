@@ -122,12 +122,22 @@ impl DaemonBuilder {
             }
             #[cfg(unix)]
             {
-                "/unix/tmp/kwaai-p2pd.sock".to_string()  // Use Unix socket on Linux/macOS
+                "/unix//tmp/kwaai-p2pd.sock".to_string()  // Use Unix socket on Linux/macOS
             }
         });
 
         info!("Starting p2pd daemon from: {}", binary_path.display());
         info!("Listen address: {}", listen_addr);
+
+        // Clean up stale Unix socket if it exists
+        #[cfg(unix)]
+        if listen_addr.starts_with("/unix/") {
+            let socket_path = &listen_addr[6..]; // Skip "/unix/"
+            if std::path::Path::new(socket_path).exists() {
+                debug!("Removing stale Unix socket: {}", socket_path);
+                let _ = std::fs::remove_file(socket_path);
+            }
+        }
 
         // Build command
         let mut cmd = Command::new(&binary_path);
