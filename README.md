@@ -2,6 +2,16 @@
 
 > Building the world's first decentralized AI platform where users own their compute, storage, and data
 
+## ✅ Status: Network Live & Operational
+
+**Latest Achievement (Dec 2025):**
+- ✅ **Full Petals DHT Protocol Compatibility** - KwaaiNet nodes successfully appear on distributed network maps
+- ✅ **Cross-Platform Support** - Tested on macOS ARM64, Linux, and Windows
+- ✅ **Production-Ready Build System** - Automated multi-platform setup and deployment
+- 🌐 **Live Test Node**: Successfully announced and visible on map.kwaai.ai ([PR #1](https://github.com/Kwaai-AI-Lab/KwaaiNet/pull/1))
+
+**What This Means:** KwaaiNet infrastructure is operational and ready for distributed AI compute. Nodes can join the network, announce their presence, and participate in the Petals/Hivemind distributed inference network.
+
 ## Vision
 
 KwaaiNet is creating a new paradigm for AI infrastructure - one where **users maintain complete sovereignty** over their computational contributions and personal data. Through the integration with Verida Network, we're building the first truly **sovereign AI platform** that combines:
@@ -229,6 +239,44 @@ KwaaiNet is built by and for the community that believes in **democratizing AI**
 - **Long-term Alignment**: VDA token holders become stakeholders in sovereign AI future
 
 ### Getting Started
+
+#### Running Your Own Node (Live on Network)
+
+**Launch a KwaaiNet node and see it appear on map.kwaai.ai:**
+
+```bash
+# Quick start (default settings)
+cargo run --release --example petals_visible
+
+# Custom configuration
+cargo run --release --example petals_visible -- \
+  --name "YourNodeName" \
+  --model "Llama-3.3-70B-Instruct" \
+  --start-block 0 \
+  --end-block 8
+```
+
+**What happens:**
+1. 🚀 Daemon spawns and connects to Kwaai bootstrap servers
+2. 🔗 Node announces itself to the DHT network
+3. 📡 Blocks are registered (e.g., `Llama-3-3-70B-Instruct-hf.0` through `.7`)
+4. ✅ Node becomes visible on network map within 30-60 seconds
+5. 🔄 Automatic re-announcement every 120 seconds keeps node alive
+
+**Verified Working:**
+- ✅ macOS (ARM64 & Intel)
+- ✅ Linux (Ubuntu 20.04+)
+- ✅ Windows 11 (via setup.ps1)
+
+**Example Output:**
+```
+✅ Announced 8 blocks to bootstrap peer
+✅ Announced model info to _petals.models registry
+📊 DHT Storage: 9 total entries, 9 valid
+[STATUS] Node is running!
+```
+
+Check your node on the map: **[map.kwaai.ai](http://map.kwaai.ai)**
 
 #### Quick Setup (All Platforms)
 

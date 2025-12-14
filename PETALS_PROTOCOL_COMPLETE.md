@@ -2,7 +2,46 @@
 
 **Consolidated documentation for KwaaiNet's Petals DHT compatibility**
 
-Last Updated: 2025-12-13
+Last Updated: 2025-12-14
+
+---
+
+## ✅ Production Status: VERIFIED WORKING
+
+**Deployment Date:** December 14, 2025
+**Status:** ✅ **Successfully deployed and visible on network map**
+
+### Live Test Results (Dec 14, 2025)
+
+| Metric | Result | Status |
+|--------|--------|--------|
+| **Platform** | macOS ARM64 (Apple Silicon) | ✅ Verified |
+| **Bootstrap Connection** | Connected to 18.219.43.67:8000 | ✅ Success |
+| **DHT Announcement** | 4/4 blocks stored successfully | ✅ 100% |
+| **Model Registry** | 1/1 entry stored in `_petals.models` | ✅ Success |
+| **Map Visibility** | Node appeared on map.kwaai.ai | ✅ Confirmed |
+| **Peer ID** | `12D3KooWSTknwbqLMhPTPYtT2BUAmKn2V3yGsVKaukjLWQsu3eiy` | ✅ Active |
+| **Auto Re-announcement** | Every 120 seconds | ✅ Working |
+
+**Live Node Configuration:**
+```
+Name: KwaaiNet-Test-1812
+Model: Llama-3.3-70B-Instruct
+Blocks: 0-3 (4 blocks announced as Llama-3-3-70B-Instruct-hf.0 through .3)
+DHT Entries: 5 total (4 blocks + 1 model registry)
+Network: Kwaai Bootstrap (map.kwaai.ai)
+```
+
+**What Works:**
+- ✅ Cross-platform build system (macOS/Linux/Windows)
+- ✅ Automatic Go daemon building and management
+- ✅ Proper msgpack serialization with ExtType(64)
+- ✅ DHT key generation and hashing
+- ✅ Bootstrap peer discovery and connection
+- ✅ STORE request success (100% acceptance rate)
+- ✅ Persistent node visibility on network map
+- ✅ Stream handler registration (PING, STORE, FIND)
+- ✅ Local DHT storage with expiration tracking
 
 ---
 
