@@ -25,7 +25,7 @@ kwaai-compression = { path = "crates/kwaai-compression" }
 kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht" }
 kwaai-p2p-daemon = { path = "crates/kwaai-p2p-daemon" }
 tokio = { version = "1.35", features = ["full"] }
-libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response", "rsa"] }
+libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response", "rsa", "relay"] }
 futures = "0.3"
 candle-core = "0.8"
 tracing = "0.1"
@@ -130,7 +130,7 @@ futures = "0.3"
 async-trait = "0.1"
 
 # P2P networking
-libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response"] }
+libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response", "relay"] }
 
 # ML/Inference
 candle-core = "0.8"

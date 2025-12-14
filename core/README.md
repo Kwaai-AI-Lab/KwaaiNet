@@ -2,6 +2,18 @@
 
 Rust/WASM core implementation for KwaaiNet sovereign AI infrastructure.
 
+## ⚠️ Project Mission
+
+**This project is replacing the Python Hivemind/Petals stack with Rust/WASM.**
+
+The user already has working bare metal nodes on map.kwaai.ai built with Python code from the [OpenAI-Petal project](https://github.com/Kwaai-AI-Lab/OpenAI-Petal). The mission is to:
+1. Achieve 100% protocol compatibility with Petals/Hivemind DHT and RPC
+2. Replace Python dependencies with pure Rust implementation
+3. Enable WASM deployment for browser-based nodes
+4. Do NOT go backward by adding Docker or Python dependencies
+
+**Reference Implementation**: `/Users/rezarassool/Source/OpenAI-Petal/` - Python wrapper that calls standard `petals.cli.run_server`
+
 ## Status
 
 | Component | Status | Description |

@@ -56,34 +56,59 @@ pub struct ExpertInfo {
 /// This is serialized as MessagePack inside ExpertInfo.serialized_info
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
-    /// Server version (e.g., "kwaai-0.1.0")
+    /// Server state: "online", "offline", "joining"
+    pub state: String,
+
+    /// Server version (e.g., "2.3.0.dev2")
     pub version: String,
-
-    /// Whether this node is in DHT client mode only
-    pub dht_client_mode: bool,
-
-    /// Available cache tokens for inference
-    pub cache_tokens_available: u64,
-
-    /// PyTorch dtype equivalent (e.g., "float16", "bfloat16")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub torch_dtype: Option<String>,
-
-    /// Quantization type (e.g., "none", "int8")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quant_type: Option<String>,
 
     /// Public display name for the node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_name: Option<String>,
 
-    /// Block span this server provides [start, end)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spans: Option<Vec<(u32, u32)>>,
+    /// Start of block range
+    pub start_block: u32,
+
+    /// End of block range
+    pub end_block: u32,
 
     /// Current throughput (tokens per second)
+    pub throughput: f32,
+
+    /// Network RPS (requests per second)
+    pub network_rps: f32,
+
+    /// Forward pass RPS
+    pub forward_rps: f32,
+
+    /// Inference RPS
+    pub inference_rps: f32,
+
+    /// PyTorch dtype equivalent (e.g., "float16", "bfloat16")
+    pub torch_dtype: String,
+
+    /// Quantization type (e.g., "none", "nf4")
+    pub quant_type: String,
+
+    /// Available cache tokens for inference
+    pub cache_tokens_left: u64,
+
+    /// Whether this node is using libp2p relay
+    pub using_relay: bool,
+
+    /// Whether this node is in DHT client mode only
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub throughput: Option<f32>,
+    pub dht_client_mode: Option<bool>,
+
+    /// LoRA adapters list
+    pub adapters: Vec<String>,
+
+    /// Next ping targets (peer_id -> optional latency)
+    pub next_pings: HashMap<String, Option<f64>>,
+
+    /// Block span this server provides [start, end) - legacy field
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spans: Option<Vec<(u32, u32)>>,
 
     /// Additional metadata
     #[serde(flatten)]
@@ -93,14 +118,23 @@ pub struct ServerInfo {
 impl Default for ServerInfo {
     fn default() -> Self {
         Self {
-            version: format!("kwaai-{}", env!("CARGO_PKG_VERSION")),
-            dht_client_mode: false,
-            cache_tokens_available: 0,
-            torch_dtype: Some("float16".to_string()),
-            quant_type: Some("none".to_string()),
+            state: "online".to_string(),
+            version: "2.3.0.dev2".to_string(), // Match Petals version
             public_name: None,
-            spans: None,
-            throughput: None,
+            start_block: 0,
+            end_block: 1,
+            throughput: 10.0,
+            network_rps: 100.0,
+            forward_rps: 50.0,
+            inference_rps: 10.0,
+            torch_dtype: "float16".to_string(),
+            quant_type: "none".to_string(),
+            cache_tokens_left: 32768,
+            using_relay: false,
+            dht_client_mode: Some(false),
+            adapters: Vec::new(),
+            next_pings: HashMap::new(),
+            spans: Some(vec![(0, 1)]),
             extra: HashMap::new(),
         }
     }
@@ -117,25 +151,33 @@ impl ServerInfo {
 
     /// Set the block span this server provides
     pub fn with_span(mut self, start: u32, end: u32) -> Self {
+        self.start_block = start;
+        self.end_block = end;
         self.spans = Some(vec![(start, end)]);
         self
     }
 
     /// Set available cache tokens
     pub fn with_cache_tokens(mut self, tokens: u64) -> Self {
-        self.cache_tokens_available = tokens;
+        self.cache_tokens_left = tokens;
         self
     }
 
     /// Set throughput
     pub fn with_throughput(mut self, tps: f32) -> Self {
-        self.throughput = Some(tps);
+        self.throughput = tps;
         self
     }
 
     /// Set torch dtype
     pub fn with_dtype(mut self, dtype: impl Into<String>) -> Self {
-        self.torch_dtype = Some(dtype.into());
+        self.torch_dtype = dtype.into();
+        self
+    }
+
+    /// Set relay usage flag
+    pub fn with_relay(mut self, using_relay: bool) -> Self {
+        self.using_relay = using_relay;
         self
     }
 
@@ -232,8 +274,10 @@ mod tests {
 
         assert_eq!(decoded.public_name, Some("test-node".to_string()));
         assert_eq!(decoded.spans, Some(vec![(0, 8)]));
-        assert_eq!(decoded.cache_tokens_available, 1000);
-        assert_eq!(decoded.throughput, Some(15.5));
+        assert_eq!(decoded.start_block, 0);
+        assert_eq!(decoded.end_block, 8);
+        assert_eq!(decoded.cache_tokens_left, 1000);
+        assert_eq!(decoded.throughput, 15.5);
     }
 
     #[test]
