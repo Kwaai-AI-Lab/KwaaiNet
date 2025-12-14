@@ -230,6 +230,54 @@ KwaaiNet is built by and for the community that believes in **democratizing AI**
 
 ### Getting Started
 
+#### Quick Setup (All Platforms)
+
+**Automated setup scripts handle all prerequisites:**
+
+**Linux / macOS:**
+```bash
+chmod +x setup.sh
+./setup.sh
+cargo build
+cargo run --example petals_visible
+```
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1
+cargo build
+cargo run --example petals_visible
+```
+
+The setup scripts automatically install:
+- ✅ **Rust** 1.80+ (for edition2024 support)
+- ✅ **Go** 1.20+ (for go-libp2p-daemon)
+- ✅ **Git** (for repository management)
+- ✅ **System tools** (curl, unzip, etc.)
+
+**Manual Prerequisites (if needed):**
+
+| Tool | Minimum Version | Purpose |
+|------|----------------|---------|
+| [Rust](https://rustup.rs/) | 1.80+ | Core codebase |
+| [Go](https://golang.org/dl/) | 1.20+ | p2p daemon |
+| [Git](https://git-scm.com/) | Any recent | Version control |
+
+#### Build System Architecture
+
+KwaaiNet uses a **multi-tiered cross-platform build system**:
+
+1. **build.rs automation** - Handles platform detection, downloads binaries, compiles dependencies
+2. **Platform-specific scripts** - `setup.sh` (Linux/macOS), `setup.ps1` (Windows)
+3. **Cargo workspace** - Unified build across all crates
+
+**Key cross-platform features:**
+- Auto-detects OS (Windows/Linux/macOS) and architecture (x86_64/aarch64)
+- Downloads platform-specific protoc compiler automatically
+- Builds go-libp2p-daemon using system Go toolchain
+- Handles Windows (TCP) vs Unix (socket) IPC automatically
+- Cleans up stale resources (Unix sockets, etc.)
+
 **For Developers:**
 1. Review [ARCHITECTURE.md](./ARCHITECTURE.md) for technical specifications
 2. Explore the [detailed architecture diagrams](#-documentation) below

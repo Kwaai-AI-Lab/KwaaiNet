@@ -1,0 +1,36 @@
+[package]
+name = "kwaai-hivemind-dht"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hivemind DHT protocol implementation for KwaaiNet - compatible with Petals network"
+keywords = ["dht", "p2p", "hivemind", "petals", "distributed"]
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# P2P networking
+libp2p = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }  # MessagePack
+prost = { workspace = true }       # Protobuf
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

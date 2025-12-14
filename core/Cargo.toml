@@ -6,6 +6,8 @@ members = [
     "crates/kwaai-distributed",
     "crates/kwaai-compression",
     "crates/kwaai-wasm",
+    "crates/kwaai-hivemind-dht",
+    "crates/kwaai-p2p-daemon",
 ]
 
 # Root package for examples
@@ -20,6 +22,8 @@ kwaai-p2p = { path = "crates/kwaai-p2p" }
 kwaai-inference = { path = "crates/kwaai-inference" }
 kwaai-distributed = { path = "crates/kwaai-distributed" }
 kwaai-compression = { path = "crates/kwaai-compression" }
+kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht" }
+kwaai-p2p-daemon = { path = "crates/kwaai-p2p-daemon" }
 tokio = { version = "1.35", features = ["full"] }
 libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response", "rsa", "relay"] }
 futures = "0.3"
@@ -28,8 +32,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bincode = "1.3"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 prost = "0.12"
 async-trait = "0.1"
+chrono = "0.4"
+hex = "0.4"
+sha1 = "0.10"
+rmp-serde = "1.1"
+rmpv = "1.0"
 
 [[example]]
 name = "p2p_node"
@@ -82,6 +92,26 @@ path = "examples/petals_dht.rs"
 [[example]]
 name = "petals_visible"
 path = "examples/petals_visible.rs"
+
+[[example]]
+name = "daemon_test"
+path = "examples/daemon_test.rs"
+
+[[example]]
+name = "dht_test"
+path = "examples/dht_test.rs"
+
+[[example]]
+name = "petals_dht_connect"
+path = "examples/petals_dht_connect.rs"
+
+[[example]]
+name = "query_dht"
+path = "examples/query_dht.rs"
+
+[[example]]
+name = "query_dht_state"
+path = "examples/query_dht_state.rs"
 
 [workspace.package]
 version = "0.1.0"
