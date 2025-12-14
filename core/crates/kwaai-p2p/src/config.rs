@@ -6,9 +6,12 @@ use std::time::Duration;
 /// Petals/Hivemind bootstrap servers for DHT discovery.
 /// These enable KwaaiNet nodes to join the broader distributed ML network.
 pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
-    // bootstrap1.petals.dev - Primary Petals bootstrap
-    "/ip4/159.89.214.152/tcp/31337/p2p/QmedTaZXmULqwspJXz44SsPZyTNKxhnnFvYRajfH7MGhCY",
-    // Note: bootstrap2 (159.203.156.48:31338) was offline as of Nov 2024
+    // bootstrap-1.kwaai.ai - Primary Kwaai bootstrap
+    "/ip4/18.219.43.67/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
+    
+    // uncomment for local developemnt bootstrap server
+    //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
+    
 ];
 
 /// Configuration for the P2P network

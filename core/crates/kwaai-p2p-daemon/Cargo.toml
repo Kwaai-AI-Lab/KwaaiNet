@@ -1,0 +1,32 @@
+[package]
+name = "kwaai-p2p-daemon"
+version = "0.1.0"
+edition = "2021"
+authors = ["KwaaiNet Contributors"]
+description = "Rust wrapper for go-libp2p-daemon providing Hivemind DHT compatibility"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.35", features = ["process", "net", "io-util", "sync", "rt", "macros", "time"] }
+prost = "0.13"
+futures = "0.3"
+tracing = "0.1"
+thiserror = "1.0"
+async-trait = "0.1"
+bytes = "1.5"
+unsigned-varint = { version = "0.8", features = ["codec"] }
+hex = "0.4"
+uuid = { version = "1.0", features = ["v4"] }
+# Only used for multiaddr parsing/encoding (not for actual p2p networking)
+libp2p = { workspace = true }
+
+# Windows named pipe support
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "1.35", features = ["net", "io-util"] }
+
+[build-dependencies]
+prost-build = "0.13"
+
+[dev-dependencies]
+tokio-test = "0.4"
+env_logger = "0.11"
