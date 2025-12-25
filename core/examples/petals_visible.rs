@@ -267,6 +267,61 @@ fn generate_dht_id(raw_key: &str) -> Vec<u8> {
     hash.to_vec()
 }
 
+/// Map API response structure
+#[derive(Debug, Deserialize)]
+struct MapApiResponse {
+    model_reports: Vec<ModelReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelReport {
+    short_name: String,
+    server_rows: Vec<ServerRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRow {
+    // We only need to count servers, so minimal fields
+}
+
+/// Fetch the most popular model from map.kwaai.ai
+/// Returns the model name with the most active servers
+async fn fetch_most_popular_model() -> Result<String, Box<dyn Error>> {
+    info!("🔍 Discovering most popular model from map.kwaai.ai...");
+
+    let url = "https://map.kwaai.ai/api/v1/state";
+
+    // Fetch the map API
+    let response = reqwest::get(url).await?;
+
+    if !response.status().is_success() {
+        warn!("Failed to fetch map API: status {}", response.status());
+        return Err("Map API unavailable".into());
+    }
+
+    let api_response: MapApiResponse = response.json().await?;
+
+    // Find model with most servers
+    let mut best_model = String::new();
+    let mut max_servers = 0;
+
+    for model_report in api_response.model_reports {
+        let server_count = model_report.server_rows.len();
+        if server_count > max_servers {
+            max_servers = server_count;
+            best_model = model_report.short_name.clone();
+        }
+    }
+
+    if best_model.is_empty() {
+        warn!("No models found on network map");
+        return Err("No models available".into());
+    }
+
+    info!("✅ Most popular model: {} ({} servers)", best_model, max_servers);
+    Ok(best_model)
+}
+
 /// Announce server blocks and model info to the DHT
 async fn announce_to_dht(
     client: &mut kwaai_p2p_daemon::P2PClient,
@@ -453,12 +508,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("kwaai-node-{}", &uuid()[..8]));
 
-    let model_name = args
+    // Check if user specified a model
+    let user_model = args
         .iter()
         .position(|a| a == "--model")
         .and_then(|i| args.get(i + 1))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "Llama-3.3-70B-Instruct".to_string());
+        .map(|s| s.to_string());
+
+    // If no model specified, fetch the most popular from map.kwaai.ai
+    let model_name = if let Some(model) = user_model {
+        info!("Using user-specified model: {}", model);
+        model
+    } else {
+        match fetch_most_popular_model().await {
+            Ok(popular_model) => {
+                info!("Auto-selected popular model: {}", popular_model);
+                popular_model
+            }
+            Err(e) => {
+                warn!("Failed to fetch popular model: {}. Using default.", e);
+                "Llama-3.3-70B-Instruct".to_string()
+            }
+        }
+    };
 
     let version = args
         .iter()
