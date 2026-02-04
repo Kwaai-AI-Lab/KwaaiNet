@@ -193,39 +193,15 @@ Carbon-negative computing platform:
 - Carbon footprint tracking
 - Green energy marketplace integration
 
-## Token Economics
-
-**Unified VDA Token Economy** powers all sovereign AI services:
-
-```
-Contribute 1 hour AI compute = 100 VDA tokens
-Host 1GB private storage = 50 VDA tokens  
-Identity verification service = 25 VDA tokens per verification
-Multi-chain identity service = 2 VDA tokens per verification
-```
-
-**Revenue Model**: Triple service earnings (AI + Storage + Identity) with environmental bonuses (+30-70% for renewable energy)
-
 ## Development Roadmap
 
 ### Q4 2025: Architecture & Community Preparation
 - Technical specification finalization
-- 4000+ developer community engagement (900 Kwaai + 3000+ Verida)
-- Hackathon infrastructure and governance frameworks
-
-### Q1 2026: Foundation Hackathon Series
-**6 Parallel Challenges - 3M+ VDA Token Prizes:**
-1. **Rust/WASM Core Engine** - 750K VDA
-2. **Verida Integration Layer** - 600K VDA  
-3. **Browser SDK Development** - 500K VDA
-4. **Enterprise Compliance Tools** - 450K VDA
-5. **Mobile Foundation** - 400K VDA
-6. **Environmental Gamification** - 300K VDA
 
 ### 2026-2027: Progressive Deployment
-- **Q2 2026**: 1M+ nodes (Platform Deployment)
-- **Q3 2026**: 10M+ nodes (Market Expansion) 
-- **Q4 2026**: 100M+ nodes (Enterprise & Edge)
+- **Q2 2026**: 1K+ nodes (Platform Deployment)
+- **Q3 2026**: 10K+ nodes (Market Expansion) 
+- **Q4 2026**: 100K+ nodes (Enterprise & Edge)
 - **2027+**: OS-level integration toward 1B+ nodes
 
 ## Community & Governance
