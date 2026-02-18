@@ -19,6 +19,7 @@
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::{debug, warn};
 
 /// Protocol marker bytes
 pub const MARKER_MESSAGE: u8 = 0x00;
@@ -208,6 +209,7 @@ pub fn encode_message<M: Message>(msg: &M) -> Vec<u8> {
     let payload = msg.encode_to_vec();
     let len = payload.len() as u64 + 1; // +1 for marker byte
 
+    debug!("Encoding Hivemind message: {} bytes payload", payload.len());
     let mut result = Vec::with_capacity(8 + 1 + payload.len());
     result.extend_from_slice(&len.to_be_bytes());
     result.push(MARKER_MESSAGE);
@@ -217,6 +219,7 @@ pub fn encode_message<M: Message>(msg: &M) -> Vec<u8> {
 
 /// Encode an error response with Hivemind framing
 pub fn encode_error(error_msg: &str) -> Vec<u8> {
+    warn!("Encoding Hivemind error response: {}", error_msg);
     let payload = error_msg.as_bytes();
     let len = payload.len() as u64 + 1;
 
@@ -230,6 +233,7 @@ pub fn encode_error(error_msg: &str) -> Vec<u8> {
 /// Decode the length prefix from a Hivemind message
 pub fn decode_length(data: &[u8]) -> Option<u64> {
     if data.len() < 8 {
+        warn!("decode_length: buffer too short ({} bytes)", data.len());
         return None;
     }
     Some(u64::from_be_bytes([
@@ -240,18 +244,22 @@ pub fn decode_length(data: &[u8]) -> Option<u64> {
 /// Decode a Hivemind message, returning (is_error, payload)
 pub fn decode_message(data: &[u8]) -> Option<(bool, &[u8])> {
     if data.len() < 9 {
+        warn!("decode_message: buffer too short ({} bytes)", data.len());
         return None;
     }
 
     let len = decode_length(data)? as usize;
     if data.len() < 8 + len {
+        warn!("decode_message: incomplete message (have {}, need {})", data.len(), 8 + len);
         return None;
     }
 
     let marker = data[8];
     let payload = &data[9..8 + len];
 
-    Some((marker == MARKER_ERROR, payload))
+    let is_error = marker == MARKER_ERROR;
+    debug!("Decoded Hivemind message: is_error={}, payload={} bytes", is_error, payload.len());
+    Some((is_error, payload))
 }
 
 // =============================================================================

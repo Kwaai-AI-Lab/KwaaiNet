@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use candle_core::Tensor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::{debug, info, warn};
 
 /// Unique identifier for an expert
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,11 +68,13 @@ impl ExpertRegistry {
     /// Register a local expert
     pub fn register_local(&mut self, expert: Box<dyn Expert>) {
         let id = expert.id();
+        info!("Registering local expert {}", id);
         self.local_experts.insert(id, expert);
     }
 
     /// Register a remote expert location
     pub fn register_remote(&mut self, expert_id: ExpertId, peer_id: String) {
+        info!("Registering remote expert {} at peer {}", expert_id, peer_id);
         self.remote_experts.insert(expert_id, peer_id);
     }
 
@@ -102,6 +105,7 @@ impl ExpertRegistry {
 
     /// Report a failure for health tracking
     pub fn report_failure(&mut self, _expert_id: ExpertId) {
+        warn!("Expert {} reported failure", _expert_id);
         // TODO: Track failures and update health scores
     }
 
@@ -144,6 +148,7 @@ impl Expert for LocalExpert {
     }
 
     async fn forward(&self, input: &Tensor) -> DistributedResult<Tensor> {
+        debug!("LocalExpert {} forward pass, input shape: {:?}", self.id, input.dims());
         // Placeholder: return input as-is
         Ok(input.clone())
     }

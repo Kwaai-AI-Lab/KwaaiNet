@@ -8,6 +8,7 @@ use candle_core::Tensor;
 use kwaai_compression::{BlockwiseQuantizer, Compressor, QuantizedTensor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// Result of an averaging step
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +102,11 @@ pub struct DecentralizedAverager {
 impl DecentralizedAverager {
     /// Create a new averager
     pub fn new(config: AveragingConfig) -> Self {
+        info!(
+            group_size = config.group_size,
+            compression = config.enable_compression,
+            "Creating DecentralizedAverager"
+        );
         let compressor = BlockwiseQuantizer::new(config.quantization_block_size);
         Self {
             config,
@@ -112,6 +118,7 @@ impl DecentralizedAverager {
 
     /// Compress gradients for transmission
     pub fn compress_gradients(&self, gradients: &[Tensor]) -> DistributedResult<Vec<QuantizedTensor>> {
+        debug!("Compressing {} gradient tensors", gradients.len());
         gradients
             .iter()
             .map(|g| self.compressor.compress(g).map_err(DistributedError::from))
@@ -120,6 +127,7 @@ impl DecentralizedAverager {
 
     /// Decompress received gradients
     pub fn decompress_gradients(&self, compressed: &[QuantizedTensor]) -> DistributedResult<Vec<Tensor>> {
+        debug!("Decompressing {} gradient tensors", compressed.len());
         compressed
             .iter()
             .map(|c| self.compressor.decompress(c).map_err(DistributedError::from))
@@ -129,6 +137,7 @@ impl DecentralizedAverager {
     /// Average multiple gradient sets
     pub fn average_gradients(&self, gradient_sets: &[Vec<Tensor>]) -> DistributedResult<Vec<Tensor>> {
         if gradient_sets.is_empty() {
+            warn!("average_gradients called with no gradient sets");
             return Err(DistributedError::AveragingFailed(
                 "No gradients to average".to_string(),
             ));
@@ -173,11 +182,13 @@ impl ParameterAverager for DecentralizedAverager {
             }
         }
         self.accumulation_count += 1;
+        debug!(count = self.accumulation_count, tensors = gradients.len(), "Accumulated gradients");
         Ok(())
     }
 
     async fn step(&mut self) -> DistributedResult<AveragingResult> {
         if self.accumulated.is_empty() {
+            debug!("Averaging step: no accumulated gradients");
             return Ok(AveragingResult::NoPeersAvailable);
         }
 
@@ -196,11 +207,13 @@ impl ParameterAverager for DecentralizedAverager {
             }
             self.accumulation_count = 0;
 
+            info!(peers = 1, "Averaging step completed");
             Ok(AveragingResult::Success {
                 peers_count: 1,
                 compression_ratio: 1.0,
             })
         } else {
+            debug!("Averaging step: no accumulations");
             Ok(AveragingResult::NoPeersAvailable)
         }
     }

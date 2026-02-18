@@ -6,6 +6,7 @@
 use crate::{CompressedData, CompressionError, CompressionResult, Compressor};
 use candle_core::{Device, Tensor};
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Top-K gradient compressor
 ///
@@ -37,6 +38,7 @@ impl Compressor for TopKCompressor {
     type Compressed = SparseGradient;
 
     fn compress(&self, tensor: &Tensor) -> CompressionResult<SparseGradient> {
+        debug!("Sparse compress tensor shape={:?} k_fraction={}", tensor.dims(), self.k_fraction);
         let data = tensor
             .flatten_all()?
             .to_vec1::<f32>()
@@ -50,15 +52,18 @@ impl Compressor for TopKCompressor {
 
         let top_k: Vec<_> = indexed.into_iter().take(k).collect();
 
-        Ok(SparseGradient {
+        let sg = SparseGradient {
             indices: top_k.iter().map(|(i, _)| *i as u32).collect(),
             values: top_k.iter().map(|(_, v)| *v).collect(),
             original_size: data.len(),
             shape: tensor.dims().to_vec(),
-        })
+        };
+        debug!("Sparse gradient: kept {}/{} values, ratio={:.2}x", sg.indices.len(), data.len(), sg.compression_ratio());
+        Ok(sg)
     }
 
     fn decompress(&self, compressed: &SparseGradient) -> CompressionResult<Tensor> {
+        debug!("Sparse decompress: {} non-zero values, shape={:?}", compressed.indices.len(), compressed.shape);
         let mut data = vec![0.0f32; compressed.original_size];
 
         for (&idx, &val) in compressed.indices.iter().zip(compressed.values.iter()) {

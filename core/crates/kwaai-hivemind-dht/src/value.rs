@@ -3,6 +3,7 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 /// DHT expiration time (seconds since UNIX epoch as float)
 pub type DHTExpiration = f64;
@@ -35,6 +36,7 @@ pub struct DHTValue {
 impl DHTValue {
     /// Create a new DHT value with expiration
     pub fn new(value: Vec<u8>, expiration_time: DHTExpiration) -> Self {
+        debug!("Creating DHTValue: {} bytes, expires at {:.0}", value.len(), expiration_time);
         Self {
             value,
             expiration_time,
@@ -91,6 +93,7 @@ impl DHTValue {
     /// Deserialize a Rust type from DHT value
     pub fn deserialize<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
         if self.is_expired() {
+            warn!("Attempt to deserialize expired DHT value (expired {:.1}s ago)", -self.time_until_expiration());
             return Err(Error::Expired(self.expiration_time));
         }
         Ok(rmp_serde::from_slice(&self.value)?)

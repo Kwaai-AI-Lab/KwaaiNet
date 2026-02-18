@@ -1,6 +1,7 @@
 //! Custom KwaaiNet protocol for inference and averaging
 
 use libp2p::swarm::NetworkBehaviour;
+use tracing::debug;
 
 /// Custom protocol for KwaaiNet operations
 ///
@@ -31,6 +32,7 @@ impl NetworkBehaviour for KwaaiProtocol {
         _local_addr: &libp2p::Multiaddr,
         _remote_addr: &libp2p::Multiaddr,
     ) -> Result<libp2p::swarm::THandler<Self>, libp2p::swarm::ConnectionDenied> {
+        debug!("KwaaiProtocol: inbound connection from {}", _peer);
         Ok(libp2p::swarm::dummy::ConnectionHandler)
     }
 
@@ -41,6 +43,7 @@ impl NetworkBehaviour for KwaaiProtocol {
         _addr: &libp2p::Multiaddr,
         _role_override: libp2p::core::Endpoint,
     ) -> Result<libp2p::swarm::THandler<Self>, libp2p::swarm::ConnectionDenied> {
+        debug!("KwaaiProtocol: outbound connection to {}", _peer);
         Ok(libp2p::swarm::dummy::ConnectionHandler)
     }
 

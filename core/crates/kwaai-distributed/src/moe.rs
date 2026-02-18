@@ -8,6 +8,7 @@ use crate::expert::{ExpertId, ExpertRegistry};
 use async_trait::async_trait;
 use candle_core::Tensor;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 /// Routing information for MoE layer
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +159,12 @@ impl Default for MoEConfig {
 impl DistributedMoE {
     /// Create a new distributed MoE layer
     pub fn new(router: Box<dyn ExpertRouter>, config: MoEConfig) -> Self {
+        info!(
+            num_experts = config.num_experts,
+            top_k = config.top_k,
+            hidden_dim = config.hidden_dim,
+            "Creating DistributedMoE layer"
+        );
         Self {
             router,
             registry: ExpertRegistry::new(),
@@ -167,11 +174,13 @@ impl DistributedMoE {
 
     /// Register an expert (local or remote)
     pub fn register_expert(&mut self, expert: Box<dyn crate::expert::Expert>) {
+        debug!("Registering local expert in MoE layer");
         self.registry.register_local(expert);
     }
 
     /// Register remote expert location
     pub fn register_remote_expert(&mut self, expert_id: ExpertId, peer_id: String) {
+        debug!("Registering remote expert {} in MoE layer at peer {}", expert_id, peer_id);
         self.registry.register_remote(expert_id, peer_id);
     }
 }
@@ -179,8 +188,10 @@ impl DistributedMoE {
 #[async_trait]
 impl MixtureOfExperts for DistributedMoE {
     async fn forward(&mut self, input: &Tensor) -> DistributedResult<Tensor> {
+        debug!("MoE forward pass, input shape: {:?}", input.dims());
         // 1. Route tokens to experts
         let routing = self.router.route(input)?;
+        debug!("Routing computed: aux_loss={:.4}", routing.aux_loss);
 
         // 2. For now, just return input (placeholder)
         // Real implementation would:

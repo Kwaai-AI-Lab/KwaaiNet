@@ -1,0 +1,211 @@
+{
+  "folders": [
+    {
+      "name": "KwaaiNet",
+      "path": "."
+    },
+    {
+      "name": "core",
+      "path": "core"
+    },
+    {
+      "name": "kwaai-p2p",
+      "path": "core/crates/kwaai-p2p"
+    },
+    {
+      "name": "kwaai-inference",
+      "path": "core/crates/kwaai-inference"
+    },
+    {
+      "name": "kwaai-distributed",
+      "path": "core/crates/kwaai-distributed"
+    },
+    {
+      "name": "kwaai-compression",
+      "path": "core/crates/kwaai-compression"
+    },
+    {
+      "name": "kwaai-hivemind-dht",
+      "path": "core/crates/kwaai-hivemind-dht"
+    },
+    {
+      "name": "kwaai-p2p-daemon",
+      "path": "core/crates/kwaai-p2p-daemon"
+    },
+    {
+      "name": "kwaai-wasm",
+      "path": "core/crates/kwaai-wasm"
+    }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": [
+      "./core/Cargo.toml"
+    ],
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.checkOnSave.command": "clippy",
+    "rust-analyzer.inlayHints.parameterHints.enable": true,
+    "rust-analyzer.inlayHints.typeHints.enable": true,
+    "editor.formatOnSave": true,
+    "[rust]": {
+      "editor.defaultFormatter": "rust-lang.rust-analyzer"
+    },
+    "[markdown]": {
+      "editor.wordWrap": "on",
+      "editor.rulers": []
+    },
+    "files.exclude": {
+      "**/target": true,
+      "**/.git": false
+    },
+    "search.exclude": {
+      "**/target": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust-analyzer",
+      "vadimcn.vscode-lldb",
+      "tamasfe.even-better-toml",
+      "serayuzgur.crates",
+      "usernamehw.errorlens",
+      "github.vscode-github-actions"
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "cargo build",
+        "type": "shell",
+        "command": "cargo build",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        },
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "cargo build --release",
+        "type": "shell",
+        "command": "cargo build --release",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": "build",
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "cargo test",
+        "type": "shell",
+        "command": "cargo test",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": {
+          "kind": "test",
+          "isDefault": true
+        },
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "cargo clippy",
+        "type": "shell",
+        "command": "cargo clippy --all-targets --all-features",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": "build",
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "cargo check",
+        "type": "shell",
+        "command": "cargo check --all",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": "build",
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "run p2p_node example",
+        "type": "shell",
+        "command": "cargo run --example p2p_node",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": "none",
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "run dht_node example",
+        "type": "shell",
+        "command": "cargo run --example dht_node",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": "none",
+        "problemMatcher": ["$rustc"]
+      },
+      {
+        "label": "run petals_dht example",
+        "type": "shell",
+        "command": "cargo run --example petals_dht",
+        "options": {
+          "cwd": "${workspaceFolder:core}"
+        },
+        "group": "none",
+        "problemMatcher": ["$rustc"]
+      }
+    ]
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "lldb",
+        "request": "launch",
+        "name": "Debug p2p_node",
+        "cargo": {
+          "args": ["build", "--example=p2p_node"],
+          "filter": {
+            "name": "p2p_node",
+            "kind": "example"
+          }
+        },
+        "args": [],
+        "cwd": "${workspaceFolder:core}"
+      },
+      {
+        "type": "lldb",
+        "request": "launch",
+        "name": "Debug dht_node",
+        "cargo": {
+          "args": ["build", "--example=dht_node"],
+          "filter": {
+            "name": "dht_node",
+            "kind": "example"
+          }
+        },
+        "args": [],
+        "cwd": "${workspaceFolder:core}"
+      },
+      {
+        "type": "lldb",
+        "request": "launch",
+        "name": "Debug unit tests",
+        "cargo": {
+          "args": ["test", "--no-run", "--workspace"],
+          "filter": {
+            "kind": "lib"
+          }
+        },
+        "args": [],
+        "cwd": "${workspaceFolder:core}"
+      }
+    ]
+  }
+}

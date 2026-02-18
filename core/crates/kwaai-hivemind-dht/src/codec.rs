@@ -11,6 +11,7 @@ use libp2p::request_response::Codec;
 use libp2p::StreamProtocol;
 use prost::Message;
 use std::io;
+use tracing::{debug, warn};
 
 /// Maximum message size (10 MB)
 const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
@@ -204,6 +205,7 @@ impl Codec for HivemindCodec {
         let len = u64::from_be_bytes(len_buf) as usize;
 
         if len > MAX_MESSAGE_SIZE {
+            warn!("Rejected oversized DHT request: {} bytes", len);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Message too large: {} bytes", len),
@@ -215,7 +217,9 @@ impl Codec for HivemindCodec {
         io.read_exact(&mut msg_buf).await?;
 
         // Decode request
-        DHTRequest::decode(&msg_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let req = DHTRequest::decode(&msg_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        debug!("Read DHT request: {:?}", req.marker());
+        Ok(req)
     }
 
     async fn read_response<T>(
@@ -232,6 +236,7 @@ impl Codec for HivemindCodec {
         let len = u64::from_be_bytes(len_buf) as usize;
 
         if len > MAX_MESSAGE_SIZE {
+            warn!("Rejected oversized DHT response: {} bytes", len);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Message too large: {} bytes", len),
@@ -243,7 +248,9 @@ impl Codec for HivemindCodec {
         io.read_exact(&mut msg_buf).await?;
 
         // Decode response
-        DHTResponse::decode(&msg_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let res = DHTResponse::decode(&msg_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        debug!("Read DHT response: {:?}", res.marker());
+        Ok(res)
     }
 
     async fn write_request<T>(
@@ -255,6 +262,7 @@ impl Codec for HivemindCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
+        debug!("Writing DHT request: {:?}", req.marker());
         let bytes = req
             .encode()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -272,6 +280,7 @@ impl Codec for HivemindCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
+        debug!("Writing DHT response: {:?}", res.marker());
         let bytes = res
             .encode()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

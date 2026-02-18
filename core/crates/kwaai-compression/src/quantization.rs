@@ -7,6 +7,7 @@ use crate::{CompressedData, CompressionError, CompressionResult, Compressor};
 use candle_core::{Device, Tensor};
 use half::f16;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Blockwise 8-bit quantizer
 ///
@@ -33,6 +34,7 @@ impl Compressor for BlockwiseQuantizer {
     type Compressed = QuantizedTensor;
 
     fn compress(&self, tensor: &Tensor) -> CompressionResult<QuantizedTensor> {
+        debug!("Quantizing tensor shape={:?} block_size={}", tensor.dims(), self.block_size);
         let data = tensor
             .flatten_all()?
             .to_vec1::<f32>()
@@ -66,15 +68,18 @@ impl Compressor for BlockwiseQuantizer {
             }
         }
 
-        Ok(QuantizedTensor {
+        let qt = QuantizedTensor {
             data: quantized,
             scales,
             shape: tensor.dims().to_vec(),
             block_size: self.block_size,
-        })
+        };
+        debug!("Quantized tensor: ratio={:.2}x, {} bytes", qt.compression_ratio(), qt.size_bytes());
+        Ok(qt)
     }
 
     fn decompress(&self, compressed: &QuantizedTensor) -> CompressionResult<Tensor> {
+        debug!("Dequantizing tensor shape={:?}", compressed.shape);
         let mut data = Vec::with_capacity(compressed.data.len());
 
         for (block_idx, block) in compressed.data.chunks(compressed.block_size).enumerate() {

@@ -4,6 +4,7 @@ use crate::error::DistributedResult;
 use crate::moe::{DistributedMoE, MoEConfig};
 use crate::averaging::{AveragingConfig, DecentralizedAverager};
 use crate::DistributedConfig;
+use tracing::{debug, info};
 
 /// Coordinator for all distributed ML operations
 pub struct DistributedCoordinator {
@@ -30,18 +31,25 @@ impl DistributedCoordinator {
 
     /// Initialize the coordinator
     pub fn initialize(&mut self) -> DistributedResult<()> {
+        info!(
+            moe = self.config.enable_moe,
+            averaging = self.config.enable_averaging,
+            "Initializing DistributedCoordinator"
+        );
         if self.config.enable_averaging {
             let averaging_config = AveragingConfig {
                 group_size: self.config.averaging_group_size,
                 ..Default::default()
             };
             self.averager = Some(DecentralizedAverager::new(averaging_config));
+            debug!(group_size = self.config.averaging_group_size, "Parameter averager initialized");
         }
 
         // MoE initialization would require router weights
         // Left as None for now, to be initialized when model is loaded
 
         self.is_running = true;
+        info!("DistributedCoordinator initialized");
         Ok(())
     }
 
@@ -77,6 +85,7 @@ impl DistributedCoordinator {
 
     /// Stop the coordinator
     pub fn stop(&mut self) {
+        info!("DistributedCoordinator stopping");
         self.is_running = false;
     }
 }

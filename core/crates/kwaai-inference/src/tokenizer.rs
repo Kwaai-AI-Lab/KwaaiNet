@@ -1,6 +1,7 @@
 //! Tokenizer abstraction
 
 use crate::error::{InferenceError, InferenceResult};
+use tracing::debug;
 
 /// Trait for tokenizers
 pub trait Tokenizer: Send + Sync {
@@ -31,6 +32,7 @@ pub struct SimpleTokenizer {
 impl SimpleTokenizer {
     /// Create a new simple tokenizer
     pub fn new(vocab_size: usize) -> Self {
+        debug!("Creating SimpleTokenizer with vocab_size={}", vocab_size);
         Self { vocab_size }
     }
 }
@@ -38,7 +40,9 @@ impl SimpleTokenizer {
 impl Tokenizer for SimpleTokenizer {
     fn encode(&self, text: &str) -> InferenceResult<Vec<u32>> {
         // Very simple byte-level tokenization for testing
-        Ok(text.bytes().map(|b| b as u32).collect())
+        let tokens: Vec<u32> = text.bytes().map(|b| b as u32).collect();
+        debug!("Encoded {} chars to {} tokens", text.len(), tokens.len());
+        Ok(tokens)
     }
 
     fn decode(&self, tokens: &[u32]) -> InferenceResult<String> {
@@ -46,7 +50,9 @@ impl Tokenizer for SimpleTokenizer {
             .iter()
             .filter_map(|&t| if t < 256 { Some(t as u8) } else { None })
             .collect();
-        String::from_utf8(bytes).map_err(|e| InferenceError::TokenizationError(e.to_string()))
+        let result = String::from_utf8(bytes).map_err(|e| InferenceError::TokenizationError(e.to_string()))?;
+        debug!("Decoded {} tokens to {} chars", tokens.len(), result.len());
+        Ok(result)
     }
 
     fn vocab_size(&self) -> usize {

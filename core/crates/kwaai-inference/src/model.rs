@@ -1,6 +1,7 @@
 //! Model management
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 /// Handle to a loaded model
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,13 +35,17 @@ pub enum ModelFormat {
 impl ModelFormat {
     /// Detect format from file extension
     pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_lowercase().as_str() {
+        let format = match ext.to_lowercase().as_str() {
             "gguf" => Some(Self::Gguf),
             "safetensors" => Some(Self::SafeTensors),
             "ggml" | "bin" => Some(Self::Ggml),
             "pt" | "pth" => Some(Self::PyTorch),
             _ => None,
+        };
+        if format.is_none() {
+            warn!("Unrecognized model file extension: {}", ext);
         }
+        format
     }
 }
 
