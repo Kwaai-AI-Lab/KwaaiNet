@@ -57,9 +57,12 @@ impl CalibrationEngine {
     pub fn new() -> Self {
         let mut sys = System::new_all();
         sys.refresh_all();
+        let total = sys.total_memory();
+        // available_memory() returns 0 on macOS in sysinfo 0.30; derive from used instead
+        let available = sys.available_memory().max(total.saturating_sub(sys.used_memory()));
         let hardware = HardwareInfo {
-            total_memory: sys.total_memory(),
-            available_memory: sys.available_memory(),
+            total_memory: total,
+            available_memory: available,
             cpu_cores: sys.cpus().len(),
         };
         debug!(?hardware, "Hardware detected");

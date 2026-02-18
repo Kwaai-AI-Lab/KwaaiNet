@@ -58,13 +58,14 @@ impl UpdateChecker {
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
 
-        let release: GithubRelease = client
-            .get(RELEASES_URL)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp = client.get(RELEASES_URL).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            // No releases published yet
+            self.save_cache(&None)?;
+            return Ok(None);
+        }
 
+        let release: GithubRelease = resp.json().await?;
         debug!("Latest release tag: {}", release.tag_name);
         let latest = release.tag_name.trim_start_matches('v').to_string();
 
