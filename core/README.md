@@ -46,6 +46,25 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 git clone https://github.com/Kwaai-AI-Lab/KwaaiNet.git
 cd KwaaiNet/core
 cargo build --release
+
+# Build the kwaainet CLI
+cargo build --release -p kwaai-cli
+```
+
+### Running a node with `kwaainet`
+
+```bash
+# One-time setup
+./target/release/kwaainet setup
+
+# Start in foreground
+./target/release/kwaainet start
+
+# Or as a background daemon
+./target/release/kwaainet start --daemon
+./target/release/kwaainet status
+./target/release/kwaainet logs --follow
+./target/release/kwaainet stop
 ```
 
 ## Runnable Examples
@@ -130,16 +149,29 @@ cargo run --release --example petals_visible -- \
 ```
 core/
 ├── crates/
+│   ├── kwaai-cli/           # kwaainet CLI binary (start/stop/status/config/...)
 │   ├── kwaai-p2p/           # P2P networking (libp2p, Kademlia DHT)
+│   ├── kwaai-p2p-daemon/    # go-libp2p-daemon wrapper
+│   ├── kwaai-hivemind-dht/  # Hivemind/Petals DHT protocol
 │   ├── kwaai-inference/     # ML inference engine (Candle)
 │   ├── kwaai-distributed/   # Distributed ML (MoE, averaging)
 │   ├── kwaai-compression/   # Gradient compression (8-bit quantization)
 │   └── kwaai-wasm/          # Browser WASM bindings
-├── examples/                # 10 runnable examples
+├── examples/                # Runnable examples
 └── tests/                   # Integration tests
 ```
 
 ## Crate Overview
+
+### kwaai-cli
+
+The `kwaainet` binary — a native Rust CLI for managing KwaaiNet nodes:
+- Start/stop/restart daemon lifecycle with PID and lock files
+- YAML config management at `~/.kwaainet/config.yaml`
+- Hardware calibration (RAM-based block count estimation)
+- Health monitoring with exponential backoff reconnection
+- Auto-start service management (launchd on macOS, systemd on Linux)
+- GitHub Releases update checker
 
 ### kwaai-p2p
 
@@ -214,7 +246,7 @@ cd core
 cargo test
 ```
 
-## For Hackathon Contributors
+## For Contributors
 
 The codebase provides working interfaces for you to build upon:
 

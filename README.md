@@ -4,23 +4,26 @@
 
 ## ✅ Status: Network Live & Operational
 
-**Latest Achievement (Dec 2025):**
-- ✅ **Full Petals DHT Protocol Compatibility** - KwaaiNet nodes successfully appear on distributed network maps
-- ✅ **Cross-Platform Support** - Tested on macOS ARM64, Linux, and Windows
-- ✅ **Production-Ready Build System** - Automated multi-platform setup and deployment
+**Latest Achievements:**
+- ✅ **Native Rust CLI** — `kwaainet` binary runs nodes directly via `kwaai-p2p` + `kwaai-hivemind-dht` (no Python required)
+- ✅ **Full Petals DHT Protocol Compatibility** — KwaaiNet nodes appear on distributed network maps
+- ✅ **Cross-Platform Support** — Tested on macOS ARM64, Linux, and Windows
+- ✅ **Production-Ready Build System** — Automated multi-platform setup and deployment
 - 🌐 **Live Test Node**: Successfully announced and visible on map.kwaai.ai ([PR #1](https://github.com/Kwaai-AI-Lab/KwaaiNet/pull/1))
 
 **What This Means:** KwaaiNet infrastructure is operational and ready for distributed AI compute. Nodes can join the network, announce their presence, and participate in the Petals/Hivemind distributed inference network.
 
 ## Vision
 
-KwaaiNet is creating a new paradigm for AI infrastructure - one where **users maintain complete sovereignty** over their computational contributions and personal data. Through the integration with Verida Network, we're building the first truly **sovereign AI platform** that combines:
+KwaaiNet is creating a new paradigm for AI infrastructure - one where users maintain complete sovereignty over their computational contributions and personal data. We're building an open-source distributed AI platform that combines:
 
-- **Decentralized AI Compute**: Distributed inference and training across millions of devices
-- **Private Data Storage**: End-to-end encrypted databases with user-controlled keys
-- **Self-Sovereign Identity**: Multi-chain identity verification and data ownership
-- **Environmental Impact**: Carbon-negative computing with renewable energy incentives
-  
+- **Decentralized AI Compute**: Distributed inference across millions of devices
+- **Privacy-First Architecture**: User-controlled data processing
+- **Modular Integration**: Support for various storage/identity systems
+- **Environmental Accountability**: Carbon-negative computing tracking
+
+KwaaiNet is open-source infrastructure built collaboratively and owned by no single entity.
+
 https://youtu.be/ES9iQWkAFeY
 
 ```mermaid
@@ -29,55 +32,55 @@ graph TB
         BigTech[Corporation Controls Everything]
         TheirData[They Own Your Data]
         TheirCompute[They Own Compute]
-        TheirProfit[They Keep Profits]
+        TheirProfit[Closed Source]
     end
 
-    subgraph "👤 KwaaiNet Sovereign AI (You)"
-        You[You Control Everything]
-        YourData[Your Data, Your Keys]
-        YourCompute[Your Device Contributes]
-        YourRewards[You Earn VDA Tokens]
+    subgraph "👤 KwaaiNet Distributed AI"
+        You[Community-Driven Platform]
+        YourData[User Data Sovereignty]
+        YourCompute[Distributed Contribution]
+        YourControl[Open Source Control]
     end
 
-    subgraph "🌍 Triple-Service Platform"
+    subgraph "🌍 Core Services"
         AI[🤖 AI Compute<br/>Distributed Inference]
-        Storage[🔐 Private Storage<br/>E2E Encrypted]
-        Identity[🆔 Self-Sovereign ID<br/>Multi-Chain Verified]
+        Storage[🔐 Optional Storage<br/>Modular Integration]
+        Identity[🆔 Optional Identity<br/>Multiple Providers]
     end
 
-    subgraph "💰 Token Economics"
+    subgraph "🌱 Accountability"
         Contribute[Contribute Resources]
-        Earn[Earn 100+ VDA/hour]
-        Green[+50% Green Energy Bonus]
+        Track[Track Contributions]
+        Green[Carbon Footprint Tracking]
     end
 
     BigTech -.->|❌ Extracted| TheirData
     BigTech -.->|❌ Centralized| TheirCompute
-    BigTech -.->|❌ Captured| TheirProfit
+    BigTech -.->|❌ Proprietary| TheirProfit
 
     You -->|✅ Sovereign| YourData
     You -->|✅ Distributed| YourCompute
-    You -->|✅ Rewarded| YourRewards
+    You -->|✅ Open Source| YourControl
 
     YourData --> Storage
     YourCompute --> AI
-    YourRewards --> Identity
+    YourControl --> Identity
 
     AI --> Contribute
     Storage --> Contribute
     Identity --> Contribute
-    Contribute --> Earn
-    Earn --> Green
+    Contribute --> Track
+    Track --> Green
 
     style You fill:#10B981,color:#fff,stroke:#059669
     style BigTech fill:#EF4444,color:#fff,stroke:#DC2626
     style AI fill:#3B82F6,color:#fff
     style Storage fill:#8B5CF6,color:#fff
     style Identity fill:#F59E0B,color:#fff
-    style Earn fill:#10B981,color:#fff
+    style Track fill:#10B981,color:#fff
 ```
 
-**The shift is simple**: Instead of Big Tech profiting from your data and compute, **you own it, you control it, you earn from it**.
+**The shift is simple**: Instead of Big Tech controlling AI infrastructure, the community builds and maintains it collaboratively.
 
 ---
 
@@ -123,7 +126,7 @@ graph LR
 **Fiduciary Nodes** that sign the pledge receive:
 - 🏅 **Trust Badge**: Visible "GliaNet Fiduciary" status on the network map
 - ⚡ **Priority Routing**: Preferred for sensitive/enterprise workloads
-- 💰 **Enhanced Rewards**: Bonus VDA allocation for maintaining fiduciary standards
+- 🎯 **Enhanced Reputation**: Higher trust score in the network
 - 🤝 **Enterprise Eligibility**: Required for GDPR/HIPAA compliant workloads
 
 > *"By signing the GliaNet Fiduciary Pledge, node operators commit to putting users first—protecting their data, enhancing their experience, and promoting their interests above all else."*
@@ -135,19 +138,19 @@ graph LR
 KwaaiNet represents a fundamental shift from traditional centralized AI to a **triple-service sovereign model**:
 
 ```rust
-pub struct SovereignAINode {
+pub struct DistributedAINode {
     // AI Compute Services
     inference_engine: CandelEngine,          // Rust/WASM inference
     p2p_network: P2PNetwork,                 // WebRTC mesh networking
-    
-    // Verida Integration
-    verida_storage: VeridaDbStore,           // Private database storage
-    identity_manager: SelfSovereignID,        // User-controlled identity
+
+    // Optional Integrations
+    storage: Option<StorageProvider>,        // Pluggable storage (Verida, Solid, IPFS, Filecoin, etc.)
+    identity: Option<IdentityProvider>,      // Pluggable identity systems (DIDs, WebAuthn, etc.)
     encryption_layer: E2EEncryption,         // End-to-end encryption
-    
-    // Environmental & Economic
+
+    // Tracking & Accountability
     carbon_tracker: EnvironmentalMetrics,    // Energy source detection
-    token_economics: VDARewardSystem,        // Unified VDA token rewards
+    contribution_tracker: ResourceMetrics,   // Resource contribution tracking
 }
 ```
 
@@ -175,11 +178,12 @@ iOS/Android apps with privacy-first design:
 - Battery-aware algorithms
 - Progressive authentication (Anonymous → Sovereign)
 
-### 🔗 **Verida Integration** (`/verida-integration`)
-Bridge layer connecting KwaaiNet compute with Verida storage:
-- Protocol bridge development
-- Self-sovereign identity management
-- Multi-chain data verification
+### 🔗 **Optional Integrations** (`/integrations`)
+Modular integration framework for distributed storage and identity systems:
+- Distributed storage networks (Verida, Solid, IPFS, Filecoin)
+- W3C DID-compliant identity providers
+- WebAuthn/PassKeys authentication
+- Custom backend adapters
 
 ### 🏢 **Enterprise Compliance** (`/compliance`)
 Built-in regulatory compliance frameworks:
@@ -187,20 +191,32 @@ Built-in regulatory compliance frameworks:
 - Audit logging and reporting
 - Data residency controls
 
-### 🌱 **Environmental Gamification** (`/environmental`)
-Carbon-negative computing platform:
+### 🌱 **Environmental Tracking** (`/environmental`)
+Carbon accountability for distributed computing:
 - Renewable energy detection
 - Carbon footprint tracking
 - Green energy marketplace integration
+- Energy efficiency monitoring
 
 ## Development Roadmap
 
 ### Q4 2025: Architecture & Community Preparation
 - Technical specification finalization
+- Open-source community engagement
+- Development infrastructure and governance frameworks
+
+### Q1 2026: Foundation Development
+**Core Components:**
+1. **Rust/WASM Core Engine** - Universal inference runtime
+2. **Optional Integration Framework** - Modular storage/identity support
+3. **Browser SDK Development** - One-line website integration
+4. **Enterprise Compliance Tools** - GDPR/HIPAA compliance
+5. **Mobile Foundation** - iOS/Android native apps
+6. **Environmental Tracking** - Carbon accountability
 
 ### 2026-2027: Progressive Deployment
 - **Q2 2026**: 1K+ nodes (Platform Deployment)
-- **Q3 2026**: 10K+ nodes (Market Expansion) 
+- **Q3 2026**: 10K+ nodes (Market Expansion)
 - **Q4 2026**: 100K+ nodes (Enterprise & Edge)
 - **2027+**: OS-level integration toward 1B+ nodes
 
@@ -209,50 +225,82 @@ Carbon-negative computing platform:
 ### Mission-Driven Development
 KwaaiNet is built by and for the community that believes in **democratizing AI**. Our approach:
 
-- **Architecture Centrally, Build Distributed**: Core team controls specifications, community implements
-- **Hackathon-Driven Development**: Structured challenges with meaningful VDA rewards
+- **Open Architecture**: Transparent technical specifications and decision-making
+- **Community-Driven Development**: Collaborative building with merit-based recognition
 - **Quality Gates**: Rigorous review and integration processes
-- **Long-term Alignment**: VDA token holders become stakeholders in sovereign AI future
+- **Long-term Sustainability**: Open-source governance and community ownership
 
 ### Getting Started
 
-#### Running Your Own Node (Live on Network)
+#### `kwaainet` — Native Rust CLI
 
-**Launch a KwaaiNet node and see it appear on map.kwaai.ai:**
+The `kwaainet` binary is a fully native Rust CLI for managing your KwaaiNet node. It requires **no Python** and runs the node directly via the `kwaai-p2p` and `kwaai-hivemind-dht` crates.
 
+**Build:**
 ```bash
-# Quick start (default settings)
-cargo run --release --example petals_visible
-
-# Custom configuration
-cargo run --release --example petals_visible -- \
-  --name "YourNodeName" \
-  --model "Llama-3.3-70B-Instruct" \
-  --start-block 0 \
-  --end-block 8
+cargo build --release -p kwaai-cli
+# Binary at: target/release/kwaainet
 ```
 
-**What happens:**
-1. 🚀 Daemon spawns and connects to Kwaai bootstrap servers
-2. 🔗 Node announces itself to the DHT network
-3. 📡 Blocks are registered (e.g., `Llama-3-3-70B-Instruct-hf.0` through `.7`)
-4. ✅ Node becomes visible on network map within 30-60 seconds
-5. 🔄 Automatic re-announcement every 120 seconds keeps node alive
-
-**Verified Working:**
-- ✅ macOS (ARM64 & Intel)
-- ✅ Linux (Ubuntu 20.04+)
-- ✅ Windows 11 (via setup.ps1)
-
-**Example Output:**
-```
-✅ Announced 8 blocks to bootstrap peer
-✅ Announced model info to _petals.models registry
-📊 DHT Storage: 9 total entries, 9 valid
-[STATUS] Node is running!
+**First-time setup:**
+```bash
+kwaainet setup
 ```
 
-Check your node on the map: **[map.kwaai.ai](http://map.kwaai.ai)**
+**Running a node:**
+```bash
+# Start in the foreground
+kwaainet start
+
+# Start as a background daemon
+kwaainet start --daemon
+
+# Check status
+kwaainet status
+
+# View live logs
+kwaainet logs --follow
+
+# Stop the node
+kwaainet stop
+```
+
+**Configuration:**
+```bash
+# View current config
+kwaainet config --view
+
+# Change a setting
+kwaainet config --set model unsloth/Llama-3.1-8B-Instruct
+kwaainet config --set blocks 8
+
+# Estimate the right number of blocks for your hardware
+kwaainet calibrate
+kwaainet calibrate --apply recommended
+```
+
+**Full command reference:**
+
+| Command | Description |
+|---------|-------------|
+| `kwaainet start [--daemon]` | Start the node (foreground or background) |
+| `kwaainet stop` | Stop the daemon |
+| `kwaainet restart` | Restart the daemon |
+| `kwaainet status` | Show PID, CPU%, memory, uptime |
+| `kwaainet logs [--follow] [--lines N]` | View daemon logs |
+| `kwaainet config --view` | Print current config |
+| `kwaainet config --set KEY VALUE` | Update a config value |
+| `kwaainet calibrate [--apply min\|recommended\|max]` | Estimate optimal block count |
+| `kwaainet service install\|uninstall\|status` | Manage auto-start service (launchd/systemd) |
+| `kwaainet health-status\|health-enable\|health-disable` | Health monitoring |
+| `kwaainet monitor stats\|alert` | P2P connection statistics and alerts |
+| `kwaainet update [--check]` | Check for new releases |
+| `kwaainet setup` | Initialize directories and default config |
+
+**Node appears on the network map within 30–60 seconds of starting.**
+Check it at: **[map.kwaai.ai](http://map.kwaai.ai)**
+
+---
 
 #### Quick Setup (All Platforms)
 
@@ -305,9 +353,9 @@ KwaaiNet uses a **multi-tiered cross-platform build system**:
 **For Developers:**
 1. Review [ARCHITECTURE.md](./ARCHITECTURE.md) for technical specifications
 2. Explore the [detailed architecture diagrams](#-documentation) below
-3. Check [HACKATHONS.md](./HACKATHONS.md) for active challenges
+3. Check [INTEGRATIONS.md](./INTEGRATIONS.md) for modular integration options
 4. Follow [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines
-5. Join community discussions and mentorship programs
+5. Join community discussions and collaboration channels
 
 **For Users:**
 - Browser extension (Coming Q2 2026)
@@ -321,15 +369,15 @@ KwaaiNet uses a **multi-tiered cross-platform build system**:
 ### Architecture Overview
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | High-level system architecture and challenge specifications |
-| [HACKATHONS.md](./HACKATHONS.md) | Community structure and prize distribution |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | High-level system architecture and component specifications |
+| [INTEGRATIONS.md](./INTEGRATIONS.md) | Optional integration framework for storage and identity systems |
 
 ### Detailed Architecture Diagrams
 
 | Document | Diagrams | Coverage |
 |----------|----------|----------|
-| [Challenge Architectures](./docs/CHALLENGE_ARCHITECTURES.md) | 24 | Component diagrams for all 6 hackathon challenges |
-| [Data Flows](./docs/DATA_FLOWS.md) | 16 | Authentication, personal data, token economics, privacy |
+| [Component Architectures](./docs/CHALLENGE_ARCHITECTURES.md) | 24 | Technical diagrams for all core components |
+| [Data Flows](./docs/DATA_FLOWS.md) | 16 | Authentication, personal data, privacy patterns |
 | [Deployment Architecture](./docs/DEPLOYMENT_ARCHITECTURE.md) | 18 | Browser, mobile, desktop, edge, enterprise patterns |
 | [Verida Architecture](./docs/VERIDA_ARCHITECTURE.md) | 14 | Protocol bridge, identity, storage, security |
 
@@ -338,7 +386,7 @@ KwaaiNet uses a **multi-tiered cross-platform build system**:
 |----------|-------------|
 | [Candle Engine](./docs/CANDLE_ENGINE.md) | Rust/WASM inference engine technical details |
 | [Hivemind Rust Architecture](./docs/HIVEMIND_RUST_ARCHITECTURE.md) | Distributed deep learning patterns (MoE, DHT, parameter averaging) |
-| [Verida Integration](./docs/VERIDA_INTEGRATION.md) | Complete Verida Network integration guide |
+| [Verida Integration](./docs/VERIDA_INTEGRATION.md) | Optional Verida Network integration example |
 | [Debugging Map Visibility](./docs/DEBUGGING_MAP_VISIBILITY.md) | Why Rust nodes don't appear on map.kwaai.ai and how to fix it |
 
 ## License
@@ -347,6 +395,6 @@ This project is open source under [MIT License](./LICENSE) - building digital pu
 
 ---
 
-**"The future of AI is sovereign - owned by users, not corporations."**
+**"The future of AI is distributed - built by the community, for the community."**
 
 *Building the BitTorrent of AI, one node at a time.*
