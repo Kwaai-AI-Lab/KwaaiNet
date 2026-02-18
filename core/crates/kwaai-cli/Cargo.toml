@@ -1,0 +1,51 @@
+[package]
+name = "kwaai-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "kwaainet – KwaaiNet node CLI"
+default-run = "kwaainet"
+
+[[bin]]
+name = "kwaainet"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Config
+serde_yaml = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# System monitoring
+sysinfo = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# HTTP (IP detection, health check, update check)
+reqwest = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# KwaaiNet crates
+kwaai-p2p = { path = "../kwaai-p2p" }
+kwaai-hivemind-dht = { path = "../kwaai-hivemind-dht" }
+kwaai-p2p-daemon = { path = "../kwaai-p2p-daemon" }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["signal", "process", "fs"] }
