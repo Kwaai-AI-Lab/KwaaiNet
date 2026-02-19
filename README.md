@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="docs/assets/banner.svg" alt="KwaaiNet — Sovereign AI Infrastructure" width="100%"/>
+</div>
+
 # KwaaiNet: Sovereign AI Infrastructure
 
 > Building the world's first decentralized AI platform where users own their compute, storage, and data
@@ -363,7 +367,8 @@ KwaaiNet uses a **multi-tiered cross-platform build system**:
 2. Explore the [detailed architecture diagrams](#-documentation) below
 3. Check [INTEGRATIONS.md](./INTEGRATIONS.md) for modular integration options
 4. Follow [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines
-5. Join community discussions and collaboration channels
+5. See [CONTRIBUTORS.md](./CONTRIBUTORS.md) for the contributor list and open TODO items
+6. Join community discussions and collaboration channels
 
 **For Users:**
 - Browser extension (Coming Q2 2026)
