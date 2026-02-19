@@ -1,26 +1,25 @@
-# Challenge-Specific Architecture Diagrams
-## Detailed Component Architectures for KwaaiNet Hackathon Challenges
+# Component Architecture Diagrams
+## Detailed Technical Architectures for KwaaiNet Core Components
 
-**Version**: 1.0
-**Date**: November 20, 2025
+**Version**: 2.0
+**Date**: February 4, 2026
 **Status**: Technical Specification
-**Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [HACKATHONS.md](../HACKATHONS.md)
+**Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [INTEGRATIONS.md](../INTEGRATIONS.md)
 
 ---
 
 ## Table of Contents
 
-1. [Challenge 1: Rust/WASM Core Engine](#challenge-1-rustwasm-core-engine)
-2. [Challenge 2: Verida Integration Layer](#challenge-2-verida-integration-layer)
-3. [Challenge 3: Browser SDK Development](#challenge-3-browser-sdk-development)
-4. [Challenge 4: Enterprise Compliance Tools](#challenge-4-enterprise-compliance-tools)
-5. [Challenge 5: Mobile Foundation](#challenge-5-mobile-foundation)
-6. [Challenge 6: Environmental Gamification](#challenge-6-environmental-gamification)
+1. [Component 1: Rust/WASM Core Engine](#component-1-rustwasm-core-engine)
+2. [Component 2: Optional Integration Framework](#component-2-optional-integration-framework)
+3. [Component 3: Browser SDK Development](#component-3-browser-sdk-development)
+4. [Component 4: Enterprise Compliance Tools](#component-4-enterprise-compliance-tools)
+5. [Component 5: Mobile Foundation](#component-5-mobile-foundation)
+6. [Component 6: Environmental Tracking](#component-6-environmental-tracking)
 
 ---
 
-## Challenge 1: Rust/WASM Core Engine
-### Prize Pool: 750,000 VDA Tokens
+## Component 1: Rust/WASM Core Engine
 
 ### 1.1 Core Component Architecture
 
@@ -229,10 +228,9 @@ graph TB
 
 ---
 
-## Challenge 2: Verida Integration Layer
-### Prize Pool: 600,000 VDA Tokens
+## Component 2: Optional Integration Framework
 
-### 2.1 Verida Integration Architecture
+### 2.1 Integration Architecture (Verida Example)
 
 ```mermaid
 graph TB
@@ -245,14 +243,12 @@ graph TB
         Bridge[Protocol Bridge]
         IdentityMgr[Identity Manager<br/>DID & Keys]
         StorageIface[Storage Interface<br/>DbStore]
-        WalletConn[Wallet Connector<br/>VDA Tokens]
     end
 
     subgraph "Verida Network"
         VeridaClient[Verida Client SDK]
         Datastore[Private Datastores<br/>Encrypted]
         DIDRegistry[DID Registry<br/>Multi-Chain]
-        VDAContract[VDA Token Contract<br/>Polygon]
     end
 
     subgraph "User Data Sources"
@@ -271,15 +267,12 @@ graph TB
 
     Bridge --> IdentityMgr
     Bridge --> StorageIface
-    Bridge --> WalletConn
 
     IdentityMgr --> VeridaClient
     StorageIface --> VeridaClient
-    WalletConn --> VeridaClient
 
     VeridaClient --> Datastore
     VeridaClient --> DIDRegistry
-    VeridaClient --> VDAContract
 
     Gmail --> StorageIface
     Calendar --> StorageIface
@@ -322,22 +315,20 @@ stateDiagram-v2
         - Standard rewards
     end note
 
-    FullSovereign --> WalletConnected: Connect VDA Wallet
+    FullSovereign --> OptionalWallet: Optional Wallet Integration
     note right of FullSovereign
         - Self-sovereign identity
         - End-to-end encryption
         - Full data control
-        - Premium rewards
     end note
 
-    note right of WalletConnected
-        - Token management
-        - Staking capabilities
-        - Multi-chain identity
-        - Maximum rewards
+    note right of OptionalWallet
+        - Optional payment integration
+        - Multi-chain identity (optional)
+        - Extended features
     end note
 
-    WalletConnected --> [*]
+    OptionalWallet --> [*]
 ```
 
 ### 2.3 Personal Data Integration Flow
@@ -386,67 +377,10 @@ sequenceDiagram
     end
 ```
 
-### 2.4 VDA Token Economics Integration
-
-```mermaid
-graph TB
-    subgraph "User Actions"
-        Compute[Contribute Compute<br/>100 VDA/hour]
-        Storage[Host Private Storage<br/>50 VDA/GB/month]
-        Identity[Identity Services<br/>25 VDA/verification]
-        MultiChain[Multi-Chain Verification<br/>2 VDA/verification]
-    end
-
-    subgraph "VDA Wallet Integration"
-        WalletConn[Wallet Connector]
-        Balance[Balance Tracker]
-        Staking[Staking Manager]
-        Rewards[Rewards Calculator]
-    end
-
-    subgraph "Polygon Network"
-        VDAContract[VDA Token Contract<br/>0x683565...]
-        StakingContract[Staking Contract]
-    end
-
-    subgraph "Reward Modifiers"
-        GreenBonus[Green Energy Bonus<br/>+30-70%]
-        PrivacyBonus[Privacy Certification<br/>+20%]
-    end
-
-    subgraph "Token Usage"
-        InferencePay[Pay for Inference<br/>10 VDA/minute]
-        StorageAccess[Access Private Storage<br/>5 VDA/GB/month]
-        PremiumFeatures[Premium Features]
-    end
-
-    Compute --> Rewards
-    Storage --> Rewards
-    Identity --> Rewards
-    MultiChain --> Rewards
-
-    Rewards --> GreenBonus
-    Rewards --> PrivacyBonus
-
-    Rewards --> Balance
-    Balance --> WalletConn
-
-    WalletConn --> VDAContract
-    Staking --> StakingContract
-
-    Balance --> InferencePay
-    Balance --> StorageAccess
-    Balance --> PremiumFeatures
-
-    style Rewards fill:#FFD700,color:#000
-    style VDAContract fill:#8B4789,color:#fff
-    style GreenBonus fill:#50C878,color:#fff
-```
 
 ---
 
-## Challenge 3: Browser SDK Development
-### Prize Pool: 500,000 VDA Tokens
+## Component 3: Browser SDK Development
 
 ### 3.1 Browser SDK Architecture
 
@@ -607,8 +541,7 @@ graph TB
 
 ---
 
-## Challenge 4: Enterprise Compliance Tools
-### Prize Pool: 450,000 VDA Tokens
+## Component 4: Enterprise Compliance Tools
 
 ### 4.1 Compliance Framework Architecture
 
@@ -777,8 +710,7 @@ graph TB
 
 ---
 
-## Challenge 5: Mobile Foundation
-### Prize Pool: 400,000 VDA Tokens
+## Component 5: Mobile Foundation
 
 ### 5.1 Cross-Platform Mobile Architecture
 
@@ -1006,8 +938,7 @@ graph TB
 
 ---
 
-## Challenge 6: Environmental Gamification
-### Prize Pool: 300,000 VDA Tokens
+## Component 6: Environmental Tracking
 
 ### 6.1 Environmental Intelligence Architecture
 
@@ -1267,7 +1198,7 @@ graph TB
         Core[Rust/WASM Core]
     end
 
-    subgraph "Challenge 2: Verida Integration"
+    subgraph "Optional: Verida Integration"
         Verida[Verida Layer]
     end
 
@@ -1314,10 +1245,10 @@ graph TB
 ## Related Documentation
 
 - [Main Architecture](../ARCHITECTURE.md) - High-level system architecture
-- [Hackathon Details](../HACKATHONS.md) - Challenge specifications and requirements
+- [Integration Options](../INTEGRATIONS.md) - Optional storage and identity integrations
 - [Data Flows](./DATA_FLOWS.md) - Authentication and data flow diagrams
 - [Deployment Architecture](./DEPLOYMENT_ARCHITECTURE.md) - Platform-specific deployment patterns
-- [Verida Architecture](./VERIDA_ARCHITECTURE.md) - Detailed Verida integration
+- [Verida Architecture](./VERIDA_ARCHITECTURE.md) - Optional Verida integration example
 
 ---
 

@@ -1073,20 +1073,20 @@ The Rust/WASM Core Engine challenge (750K VDA) now incorporates Hivemind pattern
 | WASM compilation | + Full browser inference |
 | Performance benchmarks | + Distributed throughput metrics |
 
-### New Hackathon Sub-Challenges
+### Component Breakdown
 
 ```mermaid
 graph TB
-    subgraph "Challenge 1: Rust/WASM Core (750K VDA)"
-        subgraph "Core (400K)"
-            Engine[Inference Engine<br/>200K VDA]
-            P2P[P2P Networking<br/>200K VDA]
+    subgraph "Core Engine Components"
+        subgraph "Core Infrastructure"
+            Engine[Inference Engine]
+            P2P[P2P Networking]
         end
 
-        subgraph "Hivemind Patterns (350K)"
-            DHT[Kademlia DHT<br/>100K VDA]
-            MoE[Mixture of Experts<br/>150K VDA]
-            Avg[Parameter Averaging<br/>100K VDA]
+        subgraph "Hivemind Patterns"
+            DHT[Kademlia DHT]
+            MoE[Mixture of Experts]
+            Avg[Parameter Averaging]
         end
     end
 

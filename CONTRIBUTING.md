@@ -1,40 +1,32 @@
 # Contributing to KwaaiNet
-## Building Sovereign AI Infrastructure Together
+## Building Distributed AI Infrastructure Together
 
-Welcome to the KwaaiNet community! We're building the world's first sovereign AI infrastructure where users own their compute, storage, and data. This guide will help you contribute effectively to this mission.
+Welcome to the KwaaiNet community! We're building open-source distributed AI infrastructure where users own their compute and data. This guide will help you contribute effectively to this mission.
 
 ## Development Philosophy
 
-### "Architect Centrally, Build Distributed"
-- **Core Team**: Controls technical architecture, specifications, and integration standards
-- **Community**: Implements components through structured hackathon challenges
+### "Open Architecture, Community Built"
+- **Transparent Architecture**: Open technical specifications and decision-making
+- **Community Implementation**: Collaborative development across all components
 - **Quality Gates**: Rigorous review and integration processes ensure production readiness
 
 ### Mission-Driven Development
 We're not just building software - we're democratizing AI infrastructure for humanity:
-- **Long-term Vision**: Belief in sovereign AI's transformative potential
-- **Community Ownership**: VDA token holders become stakeholders in the future
+- **Long-term Vision**: Belief in distributed AI's transformative potential
+- **Community Ownership**: Open-source governance and collective stewardship
 - **Open Source**: MIT license ensures maximum accessibility and adoption
 
 ## How to Contribute
 
-### 🎯 Hackathon Challenges (Primary Path)
-The main contribution path is through our structured hackathon challenges:
+### 🛠 Ways to Contribute
 
-1. **Review Active Challenges**: Check [HACKATHONS.md](./HACKATHONS.md) for current opportunities
-2. **Join Challenge Discord**: Connect with mentors and team members
-3. **Form Teams**: 2-5 developers per challenge (team formation assistance available)
-4. **Submit Proposals**: Technical approach and team composition
-5. **Build & Iterate**: 4-8 week development sprints with weekly showcases
-6. **Submit & Win**: Compete for VDA token prizes and integration opportunities
-
-### 🛠 Direct Contributions
-For smaller contributions outside of hackathons:
-
-1. **Documentation Improvements**: Enhance guides, fix typos, add examples
-2. **Bug Reports**: Submit detailed issue reports with reproduction steps
-3. **Feature Requests**: Propose new features aligned with sovereign AI vision
-4. **Testing**: Help test components across different platforms and scenarios
+1. **Core Development**: Work on major components (see ARCHITECTURE.md)
+2. **Documentation Improvements**: Enhance guides, fix typos, add examples
+3. **Bug Reports**: Submit detailed issue reports with reproduction steps
+4. **Feature Development**: Propose and implement new features aligned with distributed AI vision
+5. **Testing**: Help test components across different platforms and scenarios
+6. **Integration Examples**: Create integration examples for storage/identity systems
+7. **Community Support**: Help other contributors and users
 
 ## Development Setup
 
@@ -181,18 +173,23 @@ We are committed to providing a welcoming and inclusive environment:
 - **Be inclusive**: Welcome people of all backgrounds and skill levels
 - **Be patient**: We're all learning and growing together
 
-### Recognition & Rewards
+### Recognition & Advancement
 
 **Contribution Recognition**:
-- Public attribution in release notes
-- Contributor badge on GitHub profile
-- Speaking opportunities at community events
-- Fast-track hiring consideration for top contributors
+- **Public Attribution**: Your work in release notes and changelogs
+- **Documentation Credit**: Author attribution in docs you create
+- **Contributor Badge**: Recognition on GitHub and project website
+- **Speaking Opportunities**: Present at conferences and events
+- **Technical Blog Posts**: Featured articles on project blog
 
-**VDA Token Rewards**:
-- Hackathon challenge winners receive significant VDA allocations
-- Ongoing contributors earn VDA tokens for valuable contributions
-- Long-term maintainers receive ongoing VDA rewards
+**Advancement Pathways**:
+- **Core Contributor Status**: After consistent high-quality contributions
+- **Module Maintainer**: Own and guide specific components
+- **Technical Steering Committee**: Shape architectural decisions
+- **Release Manager**: Coordinate releases and quality assurance
+- **Community Lead**: Guide new contributors and build ecosystem
+
+All recognition is merit-based and transparent. We value sustained contribution quality over quantity.
 
 ## Security
 
@@ -224,15 +221,16 @@ We'll acknowledge receipt within 48 hours and provide regular updates.
 3. **Ask on Discord**: Real-time help from community
 4. **Create GitHub issue**: For complex questions or bug reports
 
-### Mentorship Program
-For hackathon participants, we provide:
-- **Technical Mentors**: Experienced developers assigned to each team
+### Mentorship & Support
+For contributors, we provide:
+- **Technical Mentors**: Experienced developers available for guidance
 - **Architecture Guidance**: Regular consultation on system design
-- **Career Development**: Opportunities for growth within the KwaaiNet ecosystem
+- **Career Development**: Opportunities for growth within the open-source ecosystem
+- **Pair Programming**: Collaborative development sessions
 
 ### Community Resources
 - **Architecture Documentation**: [ARCHITECTURE.md](./ARCHITECTURE.md)
-- **Hackathon Information**: [HACKATHONS.md](./HACKATHONS.md)
+- **Integration Examples**: [INTEGRATIONS.md](./INTEGRATIONS.md)
 - **API Reference**: Generated from code documentation
 - **Example Projects**: Reference implementations and tutorials
 
@@ -254,6 +252,6 @@ Whether you're interested in:
 
 There's a place for you in the KwaaiNet community!
 
-**Join us in building the future of sovereign AI infrastructure.**
+**Join us in building the future of distributed AI infrastructure.**
 
 *Together, we're democratizing AI for humanity.*

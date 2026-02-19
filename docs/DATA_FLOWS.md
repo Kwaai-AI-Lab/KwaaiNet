@@ -1,8 +1,8 @@
 # Data Flows & Authentication Architecture
-## Progressive Authentication, Personal Data Integration, and Token Economics
+## Progressive Authentication, Personal Data Integration, and Privacy Patterns
 
-**Version**: 1.0
-**Date**: November 20, 2025
+**Version**: 2.0
+**Date**: February 4, 2026
 **Status**: Technical Specification
 **Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [VERIDA_INTEGRATION.md](../VERIDA_INTEGRATION.md), [CHALLENGE_ARCHITECTURES.md](./CHALLENGE_ARCHITECTURES.md)
 
@@ -12,9 +12,8 @@
 
 1. [Progressive Authentication](#progressive-authentication)
 2. [Personal Data Integration](#personal-data-integration)
-3. [VDA Token Economics](#vda-token-economics)
-4. [Privacy-Preserving AI Inference](#privacy-preserving-ai-inference)
-5. [Multi-Chain Identity](#multi-chain-identity)
+3. [Privacy-Preserving AI Inference](#privacy-preserving-ai-inference)
+4. [Multi-Chain Identity (Optional)](#multi-chain-identity)
 
 ---
 
@@ -42,13 +41,13 @@ graph LR
 
 **Access Levels by Authentication State:**
 
-| Level | Data Access | AI Capabilities | Rewards | Identity | Security |
-|-------|-------------|-----------------|---------|----------|----------|
-| **Anonymous** | None | Basic inference | 0% | Session only | None |
-| **PassKey Verified** | Device + cloud sync | Personal AI | **50%** | FIDO2 credential | Phishing-resistant |
-| **Email Verified** *(legacy)* | Basic profile | Enhanced inference | 10% | Email-based | Medium |
-| **Full Sovereign** | Private datastore | Fully personal AI | 100% | Self-sovereign DID | High |
-| **Wallet Connected** | Multi-chain data | Premium AI | 100% + bonuses | Multi-chain verified | Maximum |
+| Level | Data Access | AI Capabilities | Identity | Security |
+|-------|-------------|-----------------|----------|----------|
+| **Anonymous** | None | Basic inference | Session only | None |
+| **PassKey Verified** | Device + cloud sync | Personal AI | FIDO2 credential | Phishing-resistant |
+| **Email Verified** *(legacy)* | Basic profile | Enhanced inference | Email-based | Medium |
+| **Full Identity** | Private datastore | Fully personal AI | Self-sovereign DID | High |
+| **Optional Wallet** | Multi-chain data (optional) | Full features | Multi-chain verified | Maximum |
 
 ### 1.2 PassKey Technology Overview
 
@@ -119,9 +118,9 @@ sequenceDiagram
     Auth->>Auth: store_public_key(credential)
     Auth->>Auth: create_passkey_profile()
     Auth-->>App: passkey_verified_session
-    App-->>User: Personal AI + 50% Rewards
+    App-->>User: Personal AI Enabled
 
-    Note over User,Wallet: Level 2: PassKey → Full Sovereign
+    Note over User,Wallet: Level 2: PassKey → Full Identity
 
     User->>App: Create Sovereign Identity
     App->>Auth: upgrade_to_sovereign()
@@ -140,10 +139,10 @@ sequenceDiagram
     Auth->>Verida: initialize_storage_endpoints()
     Verida-->>Auth: endpoints_configured
 
-    Auth-->>App: sovereign_session(did)
-    App-->>User: Full Sovereign AI + 100% Rewards
+    Auth-->>App: full_identity_session(did)
+    App-->>User: Full Identity AI Enabled
 
-    Note over User,Wallet: Level 3: Sovereign → Wallet Connected
+    Note over User,Wallet: Level 3: Optional Wallet Connection
 
     User->>App: Connect VDA Wallet
     App->>Wallet: request_connection(did)
@@ -185,17 +184,17 @@ sequenceDiagram
     App->>Auth: verify_code(code)
     Auth->>Auth: create_basic_profile()
     Auth-->>App: email_verified_session
-    App-->>User: Enhanced AI + 10% Rewards
+    App-->>User: Enhanced AI Enabled
 
-    Note over User,Verida: Direct to Sovereign (skip biometric)
+    Note over User,Verida: Upgrade to Full Identity (skip biometric)
 
-    User->>App: Create Sovereign Identity
-    App->>Auth: upgrade_to_sovereign()
+    User->>App: Create Full Identity
+    App->>Auth: upgrade_to_full_identity()
     Auth->>Verida: create_did(email_credential)
     Verida->>Verida: generate_did()
     Verida-->>Auth: did_created(did:vda:polpos:0x...)
-    Auth-->>App: sovereign_session(did)
-    App-->>User: Full Sovereign AI + 100% Rewards
+    Auth-->>App: full_identity_session(did)
+    App-->>User: Full Identity AI Enabled
 ```
 
 ### 1.5 Authentication State Machine
@@ -207,79 +206,68 @@ stateDiagram-v2
     Anonymous --> PassKeyVerified: PassKey Registration<br/>(recommended)
     Anonymous --> EmailVerified: Email Verification<br/>(legacy fallback)
 
-    PassKeyVerified --> FullSovereign: Create DID
-    EmailVerified --> FullSovereign: Create DID
+    PassKeyVerified --> FullIdentity: Create DID
+    EmailVerified --> FullIdentity: Create DID
 
-    FullSovereign --> WalletConnected: Connect Wallet
+    FullIdentity --> OptionalWallet: Optional Wallet
 
     state Anonymous {
         [*] --> SessionOnly
         SessionOnly --> BasicAI
-        BasicAI --> NoRewards
     }
 
     state PassKeyVerified {
         [*] --> FIDO2Credential
         FIDO2Credential --> CrossDeviceSync
         CrossDeviceSync --> PersonalAI
-        PersonalAI --> MediumRewards
     }
 
     state EmailVerified {
         [*] --> EmailProfile
         EmailProfile --> BasicStorage
-        BasicStorage --> LimitedRewards
     }
 
-    state FullSovereign {
+    state FullIdentity {
         [*] --> VeridaDID
         VeridaDID --> PrivateDatastore
         PrivateDatastore --> E2EEncryption
-        E2EEncryption --> FullRewards
     }
 
-    state WalletConnected {
-        [*] --> VDAWallet
-        VDAWallet --> Staking
-        Staking --> MultiChain
+    state OptionalWallet {
+        [*] --> WalletIntegration
+        WalletIntegration --> MultiChain
         MultiChain --> PremiumFeatures
-        PremiumFeatures --> MaxRewards
     }
 
-    WalletConnected --> [*]
+    OptionalWallet --> [*]
 
     note right of Anonymous
         AI Access: Basic
         Data: None
-        Rewards: 0%
         Security: None
     end note
 
     note right of PassKeyVerified
         AI Access: Personal
         Data: Device + Cloud Sync
-        Rewards: 50%
         Security: Phishing-resistant
     end note
 
     note right of EmailVerified
         AI Access: Enhanced
         Data: Basic Profile
-        Rewards: 10%
         Security: Medium
     end note
 
-    note right of FullSovereign
+    note right of FullIdentity
         AI Access: Fully Personal
         Data: Private Datastore
-        Rewards: 100%
         Security: High (DID)
     end note
 
-    note right of WalletConnected
-        AI Access: Premium
-        Data: Multi-Chain
-        Rewards: 100% + Bonuses
+    note right of OptionalWallet
+        AI Access: Full Features
+        Data: Multi-Chain (Optional)
         Security: Maximum
     end note
 ```
@@ -314,7 +302,7 @@ sequenceDiagram
     App->>Server: POST /auth/passkey/register/complete
     Server->>Server: Verify attestation & store public key
     Server-->>App: {success: true, credentialId}
-    App-->>User: PassKey created! 50% rewards unlocked
+    App-->>User: PassKey created! Personal AI enabled
 
     Note over User,Server: PassKey Authentication (Subsequent logins)
 
@@ -497,201 +485,6 @@ graph TB
     style Safe fill:#50C878,color:#fff
 ```
 
----
-
-## VDA Token Economics
-
-### 3.1 Triple Service Token Economy
-
-```mermaid
-graph TB
-    subgraph "Earning VDA Tokens"
-        Compute[Contribute Compute<br/>100 VDA/hour]
-        Storage[Host Private Storage<br/>50 VDA/GB/month]
-        Identity[Identity Verification<br/>25 VDA/verification]
-        MultiChain[Multi-Chain Verification<br/>2 VDA/verification]
-    end
-
-    subgraph "Token Modifiers"
-        Base[Base Rewards]
-        Green[Green Energy Bonus<br/>+30-70%]
-        Privacy[Privacy Certification<br/>+20%]
-        Community[Community Challenges<br/>+10-20%]
-        Staking[Staking Multiplier<br/>+5-15%]
-    end
-
-    subgraph "Spending VDA Tokens"
-        InferenceUse[AI Inference<br/>10 VDA/minute]
-        StorageAccess[Storage Access<br/>5 VDA/GB/month]
-        PremiumAI[Premium AI Features<br/>Variable pricing]
-        DataVerify[Data Verification<br/>1-10 VDA/tx]
-    end
-
-    subgraph "VDA Wallet & Staking"
-        Wallet[VDA Wallet<br/>Polygon POS]
-        StakingPool[Staking Pool<br/>Lock for benefits]
-        Governance[Governance<br/>Vote on proposals]
-    end
-
-    subgraph "Network Effects"
-        Liquidity[Increased Liquidity]
-        Utility[Higher Utility Value]
-        Adoption[Mass Adoption]
-    end
-
-    Compute --> Base
-    Storage --> Base
-    Identity --> Base
-    MultiChain --> Base
-
-    Base --> Green
-    Base --> Privacy
-    Base --> Community
-    Base --> Staking
-
-    Green --> Wallet
-    Privacy --> Wallet
-    Community --> Wallet
-    Staking --> Wallet
-
-    Wallet --> InferenceUse
-    Wallet --> StorageAccess
-    Wallet --> PremiumAI
-    Wallet --> DataVerify
-
-    Wallet --> StakingPool
-    StakingPool --> Governance
-    StakingPool -.Multiplier.-> Staking
-
-    InferenceUse --> Liquidity
-    StorageAccess --> Utility
-    PremiumAI --> Adoption
-
-    style Wallet fill:#8B4789,color:#fff
-    style Green fill:#50C878,color:#fff
-    style Utility fill:#FFD700,color:#000
-```
-
-### 3.2 VDA Token Lifecycle Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant User
-    participant Node as KwaaiNet Node
-    participant Rewards as Reward Calculator
-    participant Wallet as VDA Wallet
-    participant Contract as VDA Contract<br/>(Polygon)
-    participant Staking as Staking Pool
-    participant AI as AI Services
-
-    Note over User,AI: Earning Phase
-
-    User->>Node: Contribute Compute (1 hour)
-    Node->>Node: execute_inference_tasks()
-    Node->>Rewards: calculate_rewards(compute_contribution)
-
-    Rewards->>Rewards: base_reward = 100 VDA
-
-    alt Green Energy Detected
-        Rewards->>Rewards: apply_green_bonus(+50%)
-        Rewards->>Rewards: total = 150 VDA
-    end
-
-    alt Privacy Certified
-        Rewards->>Rewards: apply_privacy_bonus(+20%)
-        Rewards->>Rewards: total = 180 VDA
-    end
-
-    Rewards->>Wallet: credit_rewards(180 VDA)
-    Wallet->>Contract: transfer(user_address, 180 VDA)
-    Contract-->>Wallet: transaction_confirmed
-    Wallet-->>User: Balance Updated: +180 VDA
-
-    Note over User,AI: Staking Phase
-
-    User->>Wallet: Stake 500 VDA for 30 days
-    Wallet->>Staking: stake(500 VDA, 30 days)
-    Staking->>Contract: lock_tokens(user, 500, duration)
-    Contract-->>Staking: staked_confirmed
-
-    Staking-->>User: Staking Active<br/>+10% Reward Multiplier<br/>Governance Rights
-
-    Note over User,AI: Spending Phase
-
-    User->>AI: Request Premium AI Inference
-    AI->>Wallet: check_balance()
-    Wallet-->>AI: balance = 180 VDA (available)
-
-    AI->>Wallet: deduct_payment(10 VDA)
-    Wallet->>Contract: transfer(ai_service, 10 VDA)
-    Contract-->>Wallet: payment_confirmed
-
-    AI-->>User: Premium AI Response
-    Wallet-->>User: Balance: 170 VDA available<br/>500 VDA staked
-
-    Note over User,AI: Reward Multiplier from Staking
-
-    Node->>Rewards: calculate_next_reward()
-    Rewards->>Staking: get_multiplier(user)
-    Staking-->>Rewards: multiplier = 1.10 (10%)
-    Rewards->>Rewards: 100 VDA * 1.10 = 110 VDA
-    Rewards->>Wallet: credit_rewards(110 VDA)
-```
-
-### 3.3 Economic Incentive Alignment
-
-```mermaid
-graph TB
-    subgraph "Individual Contributors"
-        Smartphone[Smartphone User<br/>$4-12/month]
-        PC[Gaming PC User<br/>$30-200/month]
-        Server[Server Operator<br/>$500-5K/month]
-    end
-
-    subgraph "Platform Integrators"
-        Website[Website Owner<br/>$200-1.2K/month<br/>per 1M visitors]
-        App[Mobile App<br/>$3K-25K/month]
-        Enterprise[Enterprise<br/>$10K-100K/month]
-    end
-
-    subgraph "Network Economics"
-        Supply[Compute Supply]
-        Demand[Inference Demand]
-        Pricing[Dynamic Pricing]
-    end
-
-    subgraph "Value Drivers"
-        Utility[Token Utility]
-        Scarcity[Token Scarcity<br/>via staking]
-        Growth[Network Growth]
-    end
-
-    Smartphone --> Supply
-    PC --> Supply
-    Server --> Supply
-
-    Website --> Demand
-    App --> Demand
-    Enterprise --> Demand
-
-    Supply --> Pricing
-    Demand --> Pricing
-
-    Pricing --> Utility
-    Utility --> Growth
-
-    Smartphone -.Stakes.-> Scarcity
-    PC -.Stakes.-> Scarcity
-    Server -.Stakes.-> Scarcity
-
-    Scarcity --> Utility
-    Growth --> Utility
-
-    style Pricing fill:#4A90E2,color:#fff
-    style Utility fill:#FFD700,color:#000
-    style Growth fill:#50C878,color:#fff
-```
 
 ---
 
@@ -887,7 +680,7 @@ graph TB
     end
 
     subgraph "Identity Proofs"
-        PolygonProof[Polygon Verification<br/>VDA Token Balance]
+        PolygonProof[Polygon Verification<br/>On-Chain Data]
         EthProof[Ethereum Verification<br/>ENS Domain]
         ArbProof[Arbitrum Verification<br/>Transaction History]
     end
@@ -901,8 +694,7 @@ graph TB
 
     subgraph "KwaaiNet Integration"
         PersonalAI[Personalized AI<br/>with Web3 context]
-        VDARewards[VDA Rewards]
-        Staking[Staking Services]
+        OptionalPayments[Optional Payment Systems]
     end
 
     DID --> DidDoc
@@ -923,8 +715,7 @@ graph TB
     TokenBalances --> Reputation
 
     Reputation --> PersonalAI
-    TokenBalances --> VDARewards
-    PolygonProof --> Staking
+    TokenBalances --> OptionalPayments
 
     style DID fill:#50C878,color:#fff
     style Reputation fill:#FFD700,color:#000

@@ -661,9 +661,9 @@ OpenAI-Petal/
 3. OpenAI API compatibility - App integration
 4. Health monitoring - Network reliability
 
-**Medium-term (Q2-Q3 2026):** Execute **Phase 2** to complete the sovereign AI vision with mobile apps and token economics integration.
+**Medium-term (Q2-Q3 2026):** Execute **Phase 2** to complete the distributed AI vision with mobile apps and contribution tracking.
 
-**Long-term (Q4 2026+):** Build the ecosystem (**Phase 3**) with Verida integration, self-sovereign identity, and environmental tracking to become the complete sovereign AI platform.
+**Long-term (Q4 2026+):** Build the ecosystem (**Phase 3**) with optional integrations, self-sovereign identity, and environmental tracking to become the complete distributed AI platform.
 
 ### Critical Decision Points
 

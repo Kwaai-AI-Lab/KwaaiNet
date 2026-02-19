@@ -1,10 +1,13 @@
-# Verida Integration Architecture
+# Verida Integration Architecture (Optional)
 ## Detailed Architecture for KwaaiNet + Verida Data Sovereignty
 
-**Version**: 1.0
-**Date**: November 20, 2025
-**Status**: Technical Specification
-**Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [VERIDA_INTEGRATION.md](./VERIDA_INTEGRATION.md)
+> **⚠️ OPTIONAL INTEGRATION:** This integration is not required for KwaaiNet operation.
+> You can use any storage/identity system or none at all. Verida is shown as one example.
+
+**Version**: 2.0
+**Date**: February 4, 2026
+**Status**: Optional Integration Example
+**Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [VERIDA_INTEGRATION.md](./VERIDA_INTEGRATION.md), [INTEGRATIONS.md](../INTEGRATIONS.md)
 
 ---
 
@@ -14,8 +17,7 @@
 2. [Protocol Bridge Design](#protocol-bridge-design)
 3. [Identity Management Architecture](#identity-management-architecture)
 4. [Storage Layer Architecture](#storage-layer-architecture)
-5. [Token Economics Integration](#token-economics-integration)
-6. [Security Architecture](#security-architecture)
+5. [Security Architecture](#security-architecture)
 
 ---
 
@@ -29,7 +31,7 @@ graph TB
         Engine[Inference Engine<br/>Candle/Rust]
         P2P[P2P Network<br/>WebRTC/libp2p]
         UserMgr[User Manager]
-        RewardSys[Reward System]
+        MetricsSys[Metrics System]
     end
 
     subgraph "Integration Layer"
@@ -45,22 +47,21 @@ graph TB
         Messaging[Encrypted Messaging]
     end
 
-    subgraph "Blockchain Layer"
+    subgraph "Blockchain Layer (Optional)"
         Polygon[Polygon POS<br/>Primary]
-        VDAToken[VDA Token Contract]
         DIDContract[DID Registry Contract]
     end
 
     subgraph "User Data"
         Personal[Personal Data Sources]
         AIContext[AI Context]
-        Rewards[VDA Rewards]
+        Metadata[User Metadata]
     end
 
     Engine --> Bridge
     P2P --> Bridge
     UserMgr --> Bridge
-    RewardSys --> Bridge
+    MetricsSys --> Bridge
 
     Bridge --> Adapter
     Adapter --> VeridaClient
@@ -72,15 +73,13 @@ graph TB
 
     DID --> DIDContract
     Storage --> Polygon
-    RewardSys --> VDAToken
 
     Personal --> Storage
     Storage --> AIContext
-    VDAToken --> Rewards
+    MetricsSys --> Metadata
 
     style Bridge fill:#50C878,color:#fff
     style VeridaClient fill:#4A90E2,color:#fff
-    style VDAToken fill:#8B4789,color:#fff
 ```
 
 ### 1.2 Integration Components Overview
@@ -591,172 +590,6 @@ sequenceDiagram
     KwaaiNet-->>User: "You have 3 meetings tomorrow..."
 ```
 
----
-
-## Token Economics Integration
-
-### 5.1 VDA Token Integration Architecture
-
-```mermaid
-graph TB
-    subgraph "VDA Token Contract"
-        Contract[VDA ERC-20<br/>Polygon POS]
-        Balance[Balance Tracking]
-        Transfer[Transfer Function]
-        Staking[Staking Contract]
-    end
-
-    subgraph "KwaaiNet Wallet Integration"
-        WalletConnect[Wallet Connect<br/>User's Wallet]
-        WalletAdapter[Wallet Adapter<br/>Multi-Wallet Support]
-        TxBuilder[Transaction Builder]
-    end
-
-    subgraph "Reward Distribution"
-        RewardCalc[Reward Calculator]
-        ComputeRewards[Compute Rewards<br/>100 VDA/hour]
-        StorageRewards[Storage Rewards<br/>50 VDA/GB/month]
-        IdentityRewards[Identity Rewards<br/>25 VDA/verification]
-    end
-
-    subgraph "Bonus Modifiers"
-        GreenBonus[Green Energy<br/>+30-70%]
-        PrivacyBonus[Privacy Cert<br/>+20%]
-        StakingBonus[Staking Multiplier<br/>+5-15%]
-    end
-
-    subgraph "Payment Processing"
-        InferencePay[Inference Payments<br/>10 VDA/minute]
-        StoragePay[Storage Payments<br/>5 VDA/GB/month]
-        PremiumPay[Premium Features]
-    end
-
-    Contract --> Balance
-    Contract --> Transfer
-    Contract --> Staking
-
-    WalletConnect --> WalletAdapter
-    WalletAdapter --> TxBuilder
-    TxBuilder --> Contract
-
-    RewardCalc --> ComputeRewards
-    RewardCalc --> StorageRewards
-    RewardCalc --> IdentityRewards
-
-    ComputeRewards --> GreenBonus
-    StorageRewards --> PrivacyBonus
-    IdentityRewards --> StakingBonus
-
-    GreenBonus --> Transfer
-    PrivacyBonus --> Transfer
-    StakingBonus --> Transfer
-
-    InferencePay --> Transfer
-    StoragePay --> Transfer
-    PremiumPay --> Transfer
-
-    style Contract fill:#8B4789,color:#fff
-    style GreenBonus fill:#50C878,color:#fff
-    style RewardCalc fill:#FFD700,color:#000
-```
-
-### 5.2 Reward Distribution Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Node as KwaaiNet Node
-    participant RewardSvc as Reward Service
-    participant Bridge as Token Bridge
-    participant Verida as Verida Client
-    participant Contract as VDA Contract
-    participant Wallet as User Wallet
-
-    Note over Node,Wallet: Compute Contribution Completed
-
-    Node->>RewardSvc: report_contribution(compute_hours, metrics)
-
-    RewardSvc->>RewardSvc: calculate_base_reward()
-    Note over RewardSvc: 1 hour compute = 100 VDA base
-
-    RewardSvc->>RewardSvc: check_green_energy_status()
-    alt Green Energy Verified
-        RewardSvc->>RewardSvc: apply_green_bonus(+50%)
-        Note over RewardSvc: 100 * 1.5 = 150 VDA
-    end
-
-    RewardSvc->>RewardSvc: check_privacy_certification()
-    alt Privacy Certified
-        RewardSvc->>RewardSvc: apply_privacy_bonus(+20%)
-        Note over RewardSvc: 150 * 1.2 = 180 VDA
-    end
-
-    RewardSvc->>Bridge: check_staking_multiplier(user_did)
-    Bridge->>Verida: get_staking_status(user_did)
-    Verida->>Contract: get_staked_balance(wallet_address)
-    Contract-->>Verida: staked_amount
-
-    Verida-->>Bridge: staking_tier = "gold"
-    Bridge-->>RewardSvc: multiplier = 1.10
-
-    RewardSvc->>RewardSvc: apply_staking_multiplier()
-    Note over RewardSvc: 180 * 1.1 = 198 VDA
-
-    RewardSvc->>Bridge: distribute_reward(user_did, 198 VDA)
-
-    Bridge->>Verida: get_wallet_address(user_did)
-    Verida-->>Bridge: wallet_address
-
-    Bridge->>Contract: transfer(reward_pool, wallet_address, 198)
-    Contract->>Contract: validate_transfer()
-    Contract->>Wallet: credit_balance(198 VDA)
-    Contract-->>Bridge: tx_hash
-
-    Bridge->>Verida: log_reward(user_did, 198, tx_hash)
-
-    Bridge-->>RewardSvc: reward_distributed
-    RewardSvc-->>Node: emit('reward', {amount: 198, tx: tx_hash})
-```
-
-### 5.3 Staking Tiers and Benefits
-
-```mermaid
-graph TB
-    subgraph "Staking Tiers"
-        Bronze[Bronze<br/>100-999 VDA<br/>+5% rewards]
-        Silver[Silver<br/>1,000-9,999 VDA<br/>+8% rewards]
-        Gold[Gold<br/>10,000-99,999 VDA<br/>+12% rewards]
-        Platinum[Platinum<br/>100,000+ VDA<br/>+15% rewards]
-    end
-
-    subgraph "Tier Benefits"
-        BronzeBenefits[Bronze Benefits:<br/>- Basic reward multiplier<br/>- Community badge]
-        SilverBenefits[Silver Benefits:<br/>- Enhanced multiplier<br/>- Priority support<br/>- Early features]
-        GoldBenefits[Gold Benefits:<br/>- High multiplier<br/>- Governance voting<br/>- API access]
-        PlatinumBenefits[Platinum Benefits:<br/>- Maximum multiplier<br/>- Full governance<br/>- Premium features<br/>- Direct support]
-    end
-
-    subgraph "Staking Mechanics"
-        Lock[Lock Period<br/>30/90/180/365 days]
-        Compound[Auto-Compound<br/>Optional]
-        Unstake[Unstaking<br/>7-day cooldown]
-    end
-
-    Bronze --> BronzeBenefits
-    Silver --> SilverBenefits
-    Gold --> GoldBenefits
-    Platinum --> PlatinumBenefits
-
-    Bronze --> Lock
-    Silver --> Lock
-    Gold --> Compound
-    Platinum --> Compound
-
-    Lock --> Unstake
-
-    style Platinum fill:#FFD700,color:#000
-    style Gold fill:#FFD700,color:#000
-```
 
 ---
 
@@ -999,7 +832,7 @@ graph TB
 
 - [Main Architecture](../ARCHITECTURE.md) - High-level system architecture
 - [Verida Integration Guide](./VERIDA_INTEGRATION.md) - Integration implementation details
-- [Challenge Architectures](./CHALLENGE_ARCHITECTURES.md) - Challenge 2 Verida details
+- [Component Architectures](./CHALLENGE_ARCHITECTURES.md) - Verida integration architecture
 - [Data Flows](./DATA_FLOWS.md) - Authentication and data flows
 - [Deployment Architecture](./DEPLOYMENT_ARCHITECTURE.md) - Platform deployment patterns
 

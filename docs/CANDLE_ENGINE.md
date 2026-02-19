@@ -302,9 +302,9 @@ impl KwaaiNetCandelEngine {
 
 ---
 
-## Challenge 1 Implementation Guide
+## Implementation Guide
 
-For hackathon teams implementing Challenge 1, here's the recommended approach:
+For developers implementing the core engine, here's the recommended approach:
 
 ### Phase 1: Core Integration (Weeks 1-2)
 ```rust

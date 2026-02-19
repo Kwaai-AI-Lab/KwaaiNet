@@ -1,35 +1,49 @@
-# Verida Integration Layer: Technical Foundation for Challenge 2
-## Building the Bridge Between AI Compute and Data Sovereignty
+# Optional Integration Example: Verida Network
+## Decentralized Storage and Identity Integration Guide
 
-**Challenge**: Verida Integration Layer  
-**Prize Pool**: 600,000 VDA Tokens  
-**Philosophy**: "Self-sovereign data meets distributed AI"  
-**Repository**: https://developers.verida.network/  
+**Status**: Community Integration Example
+**Type**: Optional Module
+**Repository**: https://developers.verida.network/
 
 ---
 
-## Strategic Vision
+## ⚠️ Important: This Integration is Optional
 
-Challenge 2 creates the **most valuable component** of KwaaiNet - the bridge between distributed AI compute and rich personal data context, all while maintaining complete user sovereignty. This integration transforms KwaaiNet from generic distributed AI into **personalized sovereign AI** that understands users while protecting their privacy.
+This document demonstrates ONE approach to integrating decentralized storage and self-sovereign identity, using Verida Network as a reference implementation.
 
-### Why Verida Integration is Critical
+**KwaaiNet does not require Verida or any specific storage/identity system.**
 
-#### 1. Personal AI Context 🧠
+You can use:
+- **Verida Network** (demonstrated here)
+- **IPFS + OrbitDB** for storage
+- **Custom storage backends**
+- **WebAuthn/PassKeys** for identity
+- **Any W3C DID-compliant system**
+- **Or no external systems at all**
+
+See [INTEGRATIONS.md](../INTEGRATIONS.md) for all available options.
+
+---
+
+## Why Use Verida Network?
+
+Verida Network provides an integrated solution for both storage and identity, which can be valuable if you need:
+
+### 1. Personal AI Context 🧠
 - **Rich Data Sources**: Gmail, Calendar, Drive, Telegram, and more
 - **User-Controlled Access**: Granular permissions for AI data usage
 - **Cross-Platform Identity**: Single identity across all user data sources
 - **Real-time Integration**: Dynamic data loading for live AI responses
 
-#### 2. Complete Data Sovereignty 🔐
+### 2. Complete Data Sovereignty 🔐
 - **User-Controlled Keys**: Private keys never leave user devices
 - **End-to-End Encryption**: All data encrypted before network transmission
 - **Zero-Knowledge Architecture**: KwaaiNet nodes can't decrypt user data
 - **GDPR/HIPAA by Design**: Built-in compliance frameworks
 
-#### 3. Unified Token Economics 💰
-- **VDA Integration**: Single token for AI compute + data storage
-- **Wallet Bridge**: Seamless rewards and payments
-- **Staking Integration**: Node operators stake VDA for network participation
+### 3. Integrated Solution 🔗
+- **Single System**: Both storage and identity in one integration
+- **W3C Standards**: DID-compliant self-sovereign identity
 - **Multi-Chain Support**: Cross-blockchain data verification
 
 ---
@@ -59,7 +73,6 @@ pub struct VeridaIntegrationLayer {
     // Network Integration
     pub p2p_bridge: P2PNetworkBridge,
     pub node_discovery: NodeDiscoveryService,
-    pub token_economics: VDATokenManager,
 }
 ```
 
@@ -324,81 +337,32 @@ impl ProgressiveAuthController {
 }
 ```
 
-### 5. VDA Token Integration
+### 5. Wallet Integration (Optional)
 
-**Wallet Bridge**:
+If you need payment or reward functionality, Verida's wallet system can be integrated. This is **optional** and separate from core KwaaiNet functionality.
+
 ```rust
-use ethers::prelude::*;
-
 pub struct VeridaWalletConnector {
     wallet: LocalWallet,
-    vda_contract: VDATokenContract,
     network: Network,
 }
 
-// VDA Token Contract on Polygon POS: 0x683565196c3eab450003c964d4bad1fd3068d4cc
-abigen!(
-    VDAToken,
-    r#"[
-        function balanceOf(address owner) external view returns (uint256)
-        function transfer(address to, uint256 amount) external returns (bool)
-        function approve(address spender, uint256 amount) external returns (bool)
-        function stakingBalance(address owner) external view returns (uint256)
-        function stakeForNode(uint256 amount) external returns (bool)
-    ]"#,
-);
-
 impl VeridaWalletConnector {
-    pub async fn new(private_key: &str) -> Result<Self> {
+    pub async fn new(private_key: &str, network: Network) -> Result<Self> {
         let wallet = private_key.parse::<LocalWallet>()?;
-        let provider = Provider::<Http>::try_from("https://polygon-rpc.com")?;
-        let client = Arc::new(SignerMiddleware::new(provider, wallet.clone()));
-        
-        let vda_contract = VDAToken::new(
-            "0x683565196c3eab450003c964d4bad1fd3068d4cc".parse()?,
-            client
-        );
-        
+
         Ok(Self {
             wallet,
-            vda_contract,
-            network: Network::PolygonMainnet,
+            network,
         })
     }
-    
-    pub async fn get_vda_balance(&self) -> Result<U256> {
-        self.vda_contract.balance_of(self.wallet.address()).call().await
+
+    pub fn get_address(&self) -> Address {
+        self.wallet.address()
     }
-    
-    pub async fn distribute_ai_rewards(&self, user: Address, amount: U256) -> Result<TransactionReceipt> {
-        let tx = self.vda_contract
-            .transfer(user, amount)
-            .send()
-            .await?
-            .await?;
-            
-        Ok(tx.unwrap())
-    }
-    
-    pub async fn stake_for_node_discovery(&self, amount: U256) -> Result<TransactionReceipt> {
-        // Stake VDA tokens to make node discoverable on network
-        let tx = self.vda_contract
-            .stake_for_node(amount)
-            .send()
-            .await?
-            .await?;
-            
-        Ok(tx.unwrap())
-    }
-    
-    pub async fn pay_for_storage(&self, size_gb: u64) -> Result<TransactionReceipt> {
-        let cost_per_gb = U256::from(50); // 50 VDA per GB per month
-        let total_cost = cost_per_gb * U256::from(size_gb);
-        
-        // Payment handled through smart contract
-        // Implementation depends on Verida's payment protocol
-        todo!("Implement Verida storage payment integration")
-    }
+
+    // Payment functionality is optional and can be implemented
+    // based on your specific requirements
 }
 ```
 
@@ -559,83 +523,44 @@ impl PrivacyController {
 
 ---
 
-## Challenge 2 Implementation Guide
+## Implementation Guide
 
-### Phase 1: Verida SDK Integration (Weeks 1-2)
+### Key Implementation Areas
 
-**Milestone 1: Basic Verida Connection**
-```rust
-// Week 1 Deliverables
+**Verida SDK Integration**:
 1. Set up Verida Client SDK in Rust project
 2. Implement DID creation and management
-3. Create basic authentication flows
-4. Test datastore creation and simple CRUD operations
+3. Create authentication flows
+4. Test datastore creation and CRUD operations
 5. Verify encryption/decryption of user data
 
-// Week 2 Deliverables  
-1. Implement multi-platform data connectors (Gmail, Calendar)
+**Data Integration**:
+1. Implement multi-platform data connectors (optional)
 2. Create schema definitions for AI context data
-3. Build basic personal context gathering
+3. Build personal context gathering (if needed)
 4. Test cross-platform data synchronization
 5. Implement privacy-level filtering
-```
 
-### Phase 2: Wallet Integration (Weeks 3-4)
-
-**Milestone 2: VDA Token Economics**
-```rust
-// Week 3 Deliverables
-1. Integrate with VDA token contract on Polygon
-2. Implement wallet connection flows
-3. Create reward distribution mechanisms
-4. Build staking functionality for node operators
-5. Test token transfers and balance queries
-
-// Week 4 Deliverables
-1. Integrate payment flows for storage and services
-2. Implement multi-chain data verification
-3. Create comprehensive wallet management UI
-4. Test economic incentives and reward calculations
-5. Verify cross-chain identity portability
-```
-
-### Phase 3: AI Integration Bridge (Weeks 5-6)
-
-**Milestone 3: KwaaiNet Protocol Bridge**
-```rust
-// Week 5 Deliverables
+**KwaaiNet Protocol Bridge**:
 1. Build protocol bridge between KwaaiNet and Verida
-2. Implement personal context injection for AI
+2. Implement context injection for AI (optional)
 3. Create privacy-preserving inference patterns
 4. Test AI enhancement with personal data
 5. Verify data sovereignty throughout process
 
-// Week 6 Deliverables
+**Progressive Authentication**:
 1. Implement progressive authentication flow
 2. Create comprehensive privacy controls
 3. Build audit logging and compliance features
 4. Test enterprise-grade privacy features
 5. Optimize performance for real-time inference
-```
 
-### Phase 4: Production & Documentation (Weeks 7-8)
-
-**Milestone 4: Production Readiness**
-```rust
-// Week 7 Deliverables
+**Production Readiness**:
 1. Comprehensive testing across all integration points
 2. Performance optimization and caching strategies
 3. Error handling and resilience improvements
 4. Security audit and vulnerability assessment
-5. Integration testing with Challenge 1 (Candle Engine)
-
-// Week 8 Deliverables
-1. Complete API documentation and examples
-2. Developer integration guides and tutorials
-3. Privacy compliance documentation
-4. Deployment guides for different environments
-5. Demo applications showcasing capabilities
-```
+5. Complete documentation and examples
 
 ---
 
@@ -935,6 +860,4 @@ impl GDPRComplianceController {
 
 ---
 
-**The Verida Integration Layer transforms KwaaiNet from distributed AI into the world's first truly personalized sovereign AI platform. Users get AI that understands them completely while maintaining absolute control over their data and identity.**
-
-*Challenge 2 teams: Build the bridge that makes AI both personal and sovereign. 600,000 VDA awaits! 🔗*
+**This optional integration example demonstrates how storage and identity systems can enhance KwaaiNet's distributed AI. Users can choose Verida or any other storage/identity solution that fits their needs.**

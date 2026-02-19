@@ -1,23 +1,23 @@
 # KwaaiNet Architecture Specification
-## Sovereign AI Infrastructure Technical Design
+## Distributed AI Infrastructure Technical Design
 
-**Version**: 1.0  
-**Date**: September 11, 2025  
-**Status**: Specification Phase - Hackathon Challenges Pending
+**Version**: 2.0
+**Date**: February 4, 2026
+**Status**: Active Development - Open Source Project
 
 ---
 
 ## Executive Architecture Summary
 
-KwaaiNet represents a **paradigm shift** from centralized AI infrastructure to a **sovereign AI platform** where users maintain complete control over their compute contributions, data storage, and identity. Through integration with Verida Network, we deliver the world's first **triple-service AI platform**.
+KwaaiNet represents a **paradigm shift** from centralized AI infrastructure to a **distributed AI platform** where users maintain complete control over their compute contributions and data. Built as open-source infrastructure, KwaaiNet provides the foundation for decentralized AI with modular integration options.
 
 ### Core Design Principles
 
 1. **User Sovereignty**: Users own and control all aspects of their participation
 2. **Universal Runtime**: Single codebase deploys across all platforms via Rust/WASM
 3. **Privacy by Design**: End-to-end encryption and regulatory compliance built-in
-4. **Environmental Sustainability**: Carbon-negative computing with renewable energy incentives
-5. **Economic Alignment**: Unified VDA token economics across all services
+4. **Environmental Accountability**: Carbon footprint tracking and renewable energy monitoring
+5. **Modular Architecture**: Optional integrations for storage, identity, and other services
 
 ---
 
@@ -35,10 +35,10 @@ graph TB
     subgraph "Core Runtime (Rust/WASM)"
         Engine[Inference Engine]
         P2P[P2P Network]
-        Storage[Verida Storage]
-        Identity[Identity Manager]
+        Storage[Optional Storage]
+        Identity[Optional Identity]
         Carbon[Carbon Tracker]
-        Economics[Token Economics]
+        Metrics[Contribution Metrics]
     end
     
     subgraph "Network Layer"
@@ -48,8 +48,8 @@ graph TB
     end
     
     subgraph "Integration Layer"
-        VeridaBridge[Verida Bridge]
-        MultiChain[Multi-Chain Data]
+        StoragePlugins[Storage Plugins]
+        IdentityPlugins[Identity Plugins]
         Compliance[Compliance APIs]
         Environmental[Green Energy APIs]
     end
@@ -63,24 +63,23 @@ graph TB
     Engine --> Storage
     Engine --> Identity
     Engine --> Carbon
-    Engine --> Economics
-    
+    Engine --> Metrics
+
     P2P --> Bootstrap
     P2P --> DHT
     P2P --> WebRTC
-    
-    Storage --> VeridaBridge
-    Identity --> MultiChain
+
+    Storage --> StoragePlugins
+    Identity --> IdentityPlugins
     Engine --> Compliance
     Carbon --> Environmental
 ```
 
 ---
 
-## Challenge 1: Rust/WASM Core Engine
-### Prize Pool: 750,000 VDA Tokens
+## Component 1: Rust/WASM Core Engine
 
-#### Technical Requirements
+### Technical Requirements
 
 **Primary Objective**: Universal AI inference engine with distributed deep learning capabilities, inspired by [Hivemind](https://github.com/learning-at-home/hivemind) patterns, that runs everywhere
 
@@ -169,21 +168,21 @@ graph TB
 - **Edge**: ARM/MIPS support with < 1GB RAM requirements
 - **Distributed**: < 200ms P2P latency, support for 10,000+ concurrent nodes
 
-**Deliverables**:
+**Key Deliverables**:
 
-*Core Infrastructure (400K VDA)*:
+*Core Infrastructure*:
 1. Core Rust library with comprehensive test suite
 2. WASM build pipeline and browser integration example
 3. Model loading and sharding system
 4. Performance benchmarks vs existing Python implementation
 5. Documentation and API specification
 
-*P2P Networking (200K VDA)*:
+*P2P Networking*:
 6. libp2p networking with WebRTC transport (browser-native)
 7. Kademlia DHT for peer discovery and model registry
 8. NAT traversal (hole punching, relay circuits)
 
-*Distributed ML - Hivemind Patterns (150K VDA)*:
+*Distributed ML - Hivemind Patterns*:
 9. Mixture of Experts (MoE) distributed layer implementation
 10. Expert router with load balancing
 11. Decentralized parameter averaging
@@ -192,71 +191,69 @@ graph TB
 
 ---
 
-## Challenge 2: Verida Integration Layer
-### Prize Pool: 600,000 VDA Tokens
+## Component 2: Optional Integration Framework
 
-#### Technical Requirements
+### Technical Requirements
 
-**Primary Objective**: Seamless integration between KwaaiNet compute and Verida storage/identity
+**Primary Objective**: Modular framework for integrating storage and identity systems (Verida Network as reference implementation)
 
 **Core Components**:
 ```rust
-pub struct VeridaIntegration {
-    pub bridge: ProtocolBridge,
-    pub identity: IdentityManager,
-    pub storage: PrivateStorage,
-    pub verification: MultiChainVerifier,
+pub trait StorageProvider {
+    async fn store_data(data: EncryptedData, acl: AccessControl) -> Result<StorageId>;
+    async fn retrieve_data(storage_id: StorageId) -> Result<EncryptedData>;
+    async fn delete_data(storage_id: StorageId) -> Result<()>;
 }
 
-impl VeridaIntegration {
-    pub async fn authenticate_user(credentials: AuthCredentials) -> Result<Identity>;
-    pub async fn store_private_data(data: EncryptedData, acl: AccessControl) -> Result<StorageId>;
-    pub async fn verify_cross_chain(proof: IdentityProof) -> Result<VerificationStatus>;
-    pub async fn sync_permissions(storage_id: StorageId) -> Result<PermissionSet>;
+pub trait IdentityProvider {
+    async fn authenticate_user(credentials: AuthCredentials) -> Result<Identity>;
+    async fn verify_identity(proof: IdentityProof) -> Result<VerificationStatus>;
+    async fn get_permissions(identity: Identity) -> Result<PermissionSet>;
 }
+
+// Example implementations
+pub struct VeridaStorage;     // Verida Network integration
+pub struct IPFSStorage;        // IPFS integration
+pub struct CustomStorage;      // Custom backend
+
+pub struct VeridaIdentity;     // Verida DID system
+pub struct WebAuthnIdentity;   // FIDO2/PassKeys
+pub struct CustomIdentity;     // Custom provider
 ```
 
-**Integration Requirements**:
-- **Verida SDK**: Full integration with Verida Client SDK and protocol
-- **Verida Wallet**: Complete VDA token management and multi-chain support
-- **Identity Management**: Self-sovereign identity with user-controlled keys
-- **Private Storage**: End-to-end encrypted database storage for AI model data
-- **Token Economics**: VDA token staking, rewards, and payment integration
-- **Multi-Chain Support**: Cross-blockchain data verification and portability (Polygon POS: 0x683565196c3eab450003c964d4bad1fd3068d4cc)
-- **Progressive Auth**: Anonymous → Email → Full identity → Wallet connection flow
-
-**Privacy & Security**:
-- **Encryption**: User-controlled private keys, zero-knowledge architecture
+**Integration Framework Features**:
+- **Storage Abstraction**: Pluggable storage backends (Verida, Solid, IPFS, Filecoin, custom)
+- **Identity Abstraction**: Pluggable identity providers (DIDs, WebAuthn, custom)
+- **Encryption Layer**: User-controlled private keys, zero-knowledge architecture
 - **Access Control**: Fine-grained permissions for data sharing
-- **Audit Trail**: Immutable logs of data access and modifications
+- **Progressive Auth**: Anonymous → Email → Full identity flow
 - **GDPR Compliance**: Right to deletion, data portability, consent management
 
-**Deliverables**:
-1. Protocol bridge between KwaaiNet and Verida networks
-2. Verida wallet integration for seamless VDA token management
-3. Self-sovereign identity management system with single sign-on
-4. Private data storage with user-controlled encryption
-5. VDA token economics integration (staking, rewards, payments)
-6. Multi-chain data verification protocols
-7. Progressive authentication: Anonymous → Email → Identity → Wallet connection
-8. Privacy compliance framework and documentation
+**Example Integration: Verida Network**:
+See [docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md) for a complete reference implementation using Verida Network as one optional backend.
+
+**Key Deliverables**:
+1. Storage provider trait and plugin system
+2. Identity provider trait and plugin system
+3. Example implementations (Verida, IPFS, WebAuthn)
+4. Progressive authentication framework
+5. Privacy compliance framework
+6. Integration documentation and examples
 
 ---
 
-## Challenge 3: Browser SDK Development
-### Prize Pool: 500,000 VDA Tokens
+## Component 3: Browser SDK Development
 
-#### Technical Requirements
+### Technical Requirements
 
-**Primary Objective**: One-line website integration for sovereign AI services
+**Primary Objective**: One-line website integration for distributed AI services
 
 **SDK Interface**:
 ```javascript
 // One-line integration
-<script src="https://cdn.kwaai.ai/sovereign-ai.js" 
+<script src="https://cdn.kwaai.ai/distributed-ai.js"
         data-services="compute,storage,identity,carbon"
         data-privacy-compliant="gdpr,ccpa,hipaa"
-        data-reward-split="70/30"
         data-max-resources="cpu:20,memory:1024,storage:5000">
 </script>
 
@@ -264,21 +261,20 @@ impl VeridaIntegration {
 const kwaainet = new KwaaiNet({
     services: ['compute', 'storage', 'identity'],
     privacyCompliance: ['gdpr', 'ccpa'],
-    rewardSplit: { site: 70, platform: 30 },
     maxResources: { cpu: 20, memory: 1024, storage: 5000 }
 });
 
 await kwaainet.initialize();
-kwaainet.on('earnings', (amount) => console.log(`Earned ${amount} VDA`));
+kwaainet.on('contribution', (metrics) => console.log(`Contributed ${metrics.compute_hours} hours`));
 kwaainet.on('environmentalImpact', (metrics) => updateGreenStats(metrics));
 ```
 
 **Core Features**:
-- **Triple Service Integration**: AI compute + private storage + identity services
+- **Distributed Services**: AI compute + optional storage + optional identity
 - **Privacy-First Analytics**: Zero tracking, GDPR compliant by design
 - **Environmental Tracking**: Carbon footprint monitoring and renewable energy detection
-- **Reward Distribution**: Automatic VDA token distribution to website owners
-- **Progressive Disclosure**: Anonymous usage → authenticated rewards
+- **Contribution Tracking**: Monitor and display resource contributions
+- **Progressive Disclosure**: Anonymous usage → authenticated participation
 
 **Technical Implementation**:
 - **WASM Integration**: Seamless loading of Rust/WASM core engine
@@ -287,7 +283,7 @@ kwaainet.on('environmentalImpact', (metrics) => updateGreenStats(metrics));
 - **Consent Management**: Built-in privacy controls without external banners
 - **Performance Monitoring**: Real-time resource usage and optimization
 
-**Deliverables**:
+**Key Deliverables**:
 1. JavaScript SDK with TypeScript definitions
 2. CDN-ready distribution package
 3. Website integration examples and templates
@@ -297,10 +293,9 @@ kwaainet.on('environmentalImpact', (metrics) => updateGreenStats(metrics));
 
 ---
 
-## Challenge 4: Enterprise Compliance Tools
-### Prize Pool: 450,000 VDA Tokens
+## Component 4: Enterprise Compliance Tools
 
-#### Technical Requirements
+### Technical Requirements
 
 **Primary Objective**: Built-in regulatory compliance for enterprise AI deployment
 
@@ -335,7 +330,7 @@ impl ComplianceFramework {
 - **Breach Detection**: Automated anomaly detection and notification
 - **Certification Support**: Automated evidence collection for audits
 
-**Deliverables**:
+**Key Deliverables**:
 1. Multi-framework compliance engine (GDPR, HIPAA, SOC2)
 2. Automated audit logging and reporting system
 3. Data residency controls with geographic enforcement
@@ -345,12 +340,11 @@ impl ComplianceFramework {
 
 ---
 
-## Challenge 5: Mobile Foundation
-### Prize Pool: 400,000 VDA Tokens
+## Component 5: Mobile Foundation
 
-#### Technical Requirements
+### Technical Requirements
 
-**Primary Objective**: Native iOS/Android apps with privacy-first sovereign AI
+**Primary Objective**: Native iOS/Android apps with privacy-first distributed AI
 
 **Mobile Architecture**:
 ```swift
@@ -386,9 +380,9 @@ class SovereignAIForegroundService: Service() {
 
 **Core Features**:
 - **Background Processing**: Contribute during charging + WiFi with battery awareness
-- **Progressive Authentication**: Anonymous → biometric → full sovereign identity
+- **Progressive Authentication**: Anonymous → biometric → full identity
 - **Environmental Detection**: Solar vs grid charging detection
-- **Social Features**: Earnings sharing, leaderboards, referral programs
+- **Community Features**: Contribution tracking, leaderboards, collaboration
 - **Offline Capability**: Local inference when network unavailable
 
 **Platform-Specific Optimization**:
@@ -396,89 +390,84 @@ class SovereignAIForegroundService: Service() {
 - **Android**: Foreground services, aggressive contribution modes, diverse hardware support
 - **Cross-Platform**: Shared Rust core with native UI layers
 
-**Deliverables**:
+**Key Deliverables**:
 1. iOS native application with App Store compliance
-2. Android native application with Play Store compliance  
+2. Android native application with Play Store compliance
 3. Shared Rust core library for mobile platforms
 4. Battery-aware contribution algorithms
 5. Progressive authentication UI/UX implementation
-6. Social features and gamification system
+6. Community features and contribution tracking
 
 ---
 
-## Challenge 6: Environmental Gamification
-### Prize Pool: 300,000 VDA Tokens
+## Component 6: Environmental Tracking
 
-#### Technical Requirements
+### Technical Requirements
 
-**Primary Objective**: Carbon-negative computing platform with renewable energy incentives
+**Primary Objective**: Carbon accountability for distributed computing with renewable energy monitoring
 
 **Environmental Architecture**:
 ```rust
 pub struct EnvironmentalSystem {
     pub carbon_tracker: CarbonFootprintTracker,
     pub energy_detector: RenewableEnergyDetector,
-    pub offset_marketplace: CarbonOffsetMarketplace,
-    pub gamification: GreenGamificationEngine,
+    pub impact_reporter: ImpactReporter,
+    pub community_dashboard: CommunityDashboard,
 }
 
 impl EnvironmentalSystem {
     pub async fn detect_energy_source(device_metrics: DeviceMetrics) -> EnergySource;
     pub async fn calculate_carbon_impact(computation: ComputeJob) -> CarbonMetrics;
-    pub async fn purchase_offsets(carbon_debt: CarbonAmount) -> Result<OffsetCertificate>;
-    pub async fn update_leaderboard(user: UserId, impact: EnvironmentalImpact);
+    pub async fn track_renewable_usage(node_id: NodeId) -> Result<RenewableMetrics>;
+    pub async fn update_community_stats(impact: EnvironmentalImpact);
 }
 ```
 
 **Environmental Features**:
 - **Energy Source Detection**: Solar vs grid power identification
 - **Carbon Footprint Tracking**: Real-time computation impact measurement
-- **Renewable Energy Bonus**: +30-70% VDA rewards for clean energy
-- **Carbon Marketplace**: Automated offset purchasing and trading
-- **Green Certifications**: Verified carbon-negative infrastructure status
+- **Renewable Energy Monitoring**: Track clean energy usage patterns
+- **Impact Reporting**: Transparent environmental accountability
+- **Green Certifications**: Verified carbon-conscious infrastructure status
 
-**Gamification Elements**:
-- **Sustainability Achievements**: Milestones for environmental impact
-- **Green Energy Leaderboards**: Community competition for clean computing
+**Community Elements**:
+- **Sustainability Tracking**: Monitor environmental impact milestones
+- **Green Energy Leaderboards**: Community recognition for clean computing
 - **Impact Visualization**: Personal and collective environmental dashboard
 - **Corporate ESG Integration**: Enterprise sustainability reporting
-- **Social Sharing**: "I offset X tons of CO2 this month" messaging
+- **Transparency**: Open data on network environmental footprint
 
-**Deliverables**:
+**Key Deliverables**:
 1. Carbon footprint tracking and calculation engine
 2. Renewable energy detection algorithms
-3. Green energy marketplace integration
-4. Sustainability achievement and leaderboard systems  
+3. Community impact tracking system
+4. Environmental leaderboard and recognition
 5. Environmental impact visualization dashboard
 6. Corporate ESG reporting and certification tools
 
 ---
 
-## Token Economics Architecture
+## Optional Integration Examples
 
-### VDA Token Integration
+### Storage Systems
+Multiple distributed storage networks can be integrated:
+- **Verida Network**: Decentralized storage with built-in identity (reference implementation - see docs/VERIDA_INTEGRATION.md)
+- **Solid Protocol**: Tim Berners-Lee's personal data pods with linked data standards
+- **IPFS**: Content-addressed storage for models and data
+- **Filecoin**: Persistent storage with cryptographic proofs and economic incentives
+- **OrbitDB**: Distributed database option
+- **Custom**: Implement your own storage backend
 
-**Unified Currency Model**:
-```rust
-pub struct VDAEconomics {
-    pub compute_rewards: ComputeRewardCalculator,
-    pub storage_rewards: StorageRewardCalculator, 
-    pub identity_rewards: IdentityRewardCalculator,
-    pub environmental_bonuses: EnvironmentalBonusCalculator,
-}
+### Identity Systems
+Multiple identity systems can be integrated:
+- **W3C DIDs**: Decentralized Identifiers (Verida, ION, etc.)
+- **Solid WebID**: Identity integrated with Solid data pods
+- **WebAuthn/PassKeys**: FIDO2 authentication with device biometrics
+- **ENS**: Ethereum Name Service integration
+- **Custom**: Standard interface for any identity provider
 
-// Reward Structure
-const COMPUTE_RATE: u64 = 100; // VDA per hour
-const STORAGE_RATE: u64 = 50;  // VDA per GB/month  
-const IDENTITY_RATE: u64 = 25; // VDA per verification
-const GREEN_BONUS: f64 = 0.5;  // 50% bonus for renewable energy
-```
-
-**Economic Flow**:
-1. **Contribution**: Users earn VDA for compute/storage/identity services
-2. **Consumption**: Users spend VDA for AI inference and data access
-3. **Environmental Bonus**: Clean energy usage multiplies rewards
-4. **Network Effects**: More users = more demand = higher VDA utility
+### Payment/Reward Systems (Optional)
+If the community desires payment or reward mechanisms, these can be added as optional modules. Any blockchain or token can be integrated. Not part of core KwaaiNet functionality.
 
 ---
 
@@ -518,11 +507,11 @@ const GREEN_BONUS: f64 = 0.5;  // 50% bonus for renewable energy
 - **Integration**: Seamless integration between challenge components
 - **Documentation**: Comprehensive developer resources
 
-### Economic KPIs
-- **Token Utility**: Increasing VDA demand through usage
-- **Network Growth**: Exponential node growth post-launch
-- **Revenue**: Sustainable economics supporting continued development
-- **Value Creation**: VDA appreciation through infrastructure utility
+### Community KPIs
+- **Network Growth**: Increasing node participation and diversity
+- **Sustainability**: Long-term project viability through open-source governance
+- **Environmental Impact**: Measurable carbon reduction through renewable energy usage
+- **Value Creation**: Community-driven innovation and adoption
 
 ---
 
@@ -530,26 +519,25 @@ const GREEN_BONUS: f64 = 0.5;  // 50% bonus for renewable energy
 
 For comprehensive architectural diagrams and detailed technical specifications, see the following documentation:
 
-### Challenge-Specific Architectures
+### Component Architectures
 **[docs/CHALLENGE_ARCHITECTURES.md](docs/CHALLENGE_ARCHITECTURES.md)**
 
-Detailed Mermaid diagrams for each of the 6 hackathon challenges:
-- Challenge 1: Rust/WASM Core Engine component architecture, model loading flows, platform compilation targets
-- Challenge 2: Verida Integration Layer protocol bridge, progressive authentication, VDA token economics
-- Challenge 3: Browser SDK architecture, one-line integration flow, service worker patterns
-- Challenge 4: Enterprise Compliance framework, GDPR flows, data residency enforcement
-- Challenge 5: Mobile Foundation cross-platform architecture, battery-aware contribution patterns
-- Challenge 6: Environmental Gamification system, renewable energy detection, carbon calculation
+Detailed Mermaid diagrams for all core components:
+- Component 1: Rust/WASM Core Engine architecture, model loading flows, platform compilation targets
+- Component 2: Optional Integration Framework, storage and identity abstraction, progressive authentication
+- Component 3: Browser SDK architecture, one-line integration flow, service worker patterns
+- Component 4: Enterprise Compliance framework, GDPR flows, data residency enforcement
+- Component 5: Mobile Foundation cross-platform architecture, battery-aware contribution patterns
+- Component 6: Environmental Tracking system, renewable energy detection, carbon calculation
 
 ### Data Flows & Authentication
 **[docs/DATA_FLOWS.md](docs/DATA_FLOWS.md)**
 
 Comprehensive data flow and authentication diagrams:
-- Progressive Authentication: Anonymous → Email → Biometric → Sovereign → Wallet flows
+- Progressive Authentication: Anonymous → Email → Biometric → Full Identity flows
 - Personal Data Integration: Multi-source data sync with privacy controls
-- VDA Token Economics: Triple service rewards, staking tiers, payment flows
 - Privacy-Preserving AI Inference: End-to-end encryption and zero-knowledge patterns
-- Multi-Chain Identity: Cross-blockchain verification and data portability
+- Optional Identity Systems: Cross-platform verification and data portability
 
 ### Deployment Architecture
 **[docs/DEPLOYMENT_ARCHITECTURE.md](docs/DEPLOYMENT_ARCHITECTURE.md)**
@@ -561,14 +549,13 @@ Platform-specific deployment patterns:
 - Edge Device Deployment: Router firmware, IoT devices, resource-constrained patterns
 - Enterprise/Server Deployment: Kubernetes, compliance integration, high availability
 
-### Verida Integration Architecture
+### Verida Integration Architecture (Optional Example)
 **[docs/VERIDA_ARCHITECTURE.md](docs/VERIDA_ARCHITECTURE.md)**
 
-Deep dive into Verida Network integration:
+Deep dive into Verida Network integration as one optional backend:
 - Protocol Bridge Design: Message translation, state synchronization
 - Identity Management: DID architecture, key management, multi-context identity
 - Storage Layer: Private datastores, data schemas, sync engine
-- Token Economics Integration: VDA contract interaction, reward distribution, staking
 - Security Architecture: E2E encryption, zero-knowledge auth, threat model
 
 ### Distributed Deep Learning (Hivemind Patterns)
@@ -583,12 +570,12 @@ Comprehensive plan for replicating Hivemind's distributed deep learning in Rust/
 - WASM Compilation: Full browser support via WebAssembly
 
 ### Supporting Documentation
-- **[HACKATHONS.md](HACKATHONS.md)** - Community structure and prize distribution
+- **[INTEGRATIONS.md](INTEGRATIONS.md)** - Optional integration framework and examples
 - **[docs/CANDLE_ENGINE.md](docs/CANDLE_ENGINE.md)** - Candle framework technical details (includes distributed inference patterns)
-- **[docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md)** - Integration implementation guide
+- **[docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md)** - Optional Verida integration example
 
 ---
 
-**This architecture represents the foundation for building the world's first sovereign AI infrastructure. Each challenge contributes to a unified vision of user-owned, privacy-preserving, environmentally sustainable AI platform.**
+**This architecture represents the foundation for building open-source distributed AI infrastructure. Each component contributes to a unified vision of user-owned, privacy-preserving, environmentally accountable AI platform.**
 
-*Ready to build the future of decentralized AI? Let's democratize AI infrastructure together.*
+*Ready to build the future of distributed AI? Let's democratize AI infrastructure together.*
