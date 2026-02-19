@@ -558,6 +558,80 @@ async fn main() -> Result<()> {
         }
 
         // -------------------------------------------------------------------
+        // generate  (tokenizer smoke-test; forward pass not yet implemented)
+        // -------------------------------------------------------------------
+        Command::Generate(args) => {
+            print_box_header("🧠 KwaaiNet Generate");
+            println!("  Model:  {}", args.model);
+            println!("  Prompt: {:?}", args.prompt);
+            println!();
+
+            let is_hf = args.model.contains('/') && !args.model.starts_with("hf.co/");
+
+            // Detect system RAM for engine config (same as load-model).
+            let system_ram = {
+                use sysinfo::System;
+                let mut sys = System::new();
+                sys.refresh_memory();
+                sys.total_memory()
+            };
+            let engine_config = EngineConfig {
+                max_memory: ((system_ram as f64 * 0.85) as usize)
+                    .max(4 * 1024 * 1024 * 1024),
+                ..EngineConfig::default()
+            };
+
+            let mut engine = match InferenceEngine::new(engine_config) {
+                Ok(e) => e,
+                Err(e) => {
+                    print_error(&format!("Engine init failed: {e}"));
+                    return Ok(());
+                }
+            };
+
+            // Load model (reuse same logic as load-model).
+            let handle = if is_hf {
+                let snapshot = match hf::resolve_snapshot(&args.model) {
+                    Ok(p) => p,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                };
+                println!("  Loading SafeTensors shards…");
+                match engine.load_model(&snapshot, ModelFormat::SafeTensors) {
+                    Ok(h) => h,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                }
+            } else {
+                let blob = match ollama::resolve_model_blob(&args.model) {
+                    Ok(p) => p,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                };
+                println!("  Loading GGUF blob…");
+                match engine.load_model(&blob, ModelFormat::Gguf) {
+                    Ok(h) => h,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                }
+            };
+
+            println!("  Model loaded.");
+            println!();
+
+            // Call generate() — the tokenizer is live, forward pass is next.
+            match engine.generate(&handle, &args.prompt) {
+                Ok(text) => {
+                    print_success("Generation complete");
+                    println!("{text}");
+                }
+                Err(e) => {
+                    // Expected: "Forward pass not yet implemented" — but shows
+                    // the real token IDs produced by the BPE tokenizer.
+                    println!("  {e}");
+                }
+            }
+
+            print_separator();
+        }
+
+        // -------------------------------------------------------------------
         // setup
         // -------------------------------------------------------------------
         Command::Setup => {

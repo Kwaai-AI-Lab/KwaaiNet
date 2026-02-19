@@ -61,6 +61,9 @@ pub enum Command {
     /// Load and inspect a model from Ollama's local store
     LoadModel(LoadModelArgs),
 
+    /// Generate text from a prompt (tokenizer smoke-test)
+    Generate(GenerateArgs),
+
     /// Initial setup
     Setup,
 
@@ -232,6 +235,19 @@ pub struct UpdateArgs {
 pub struct LoadModelArgs {
     /// Ollama model reference, e.g. `qwen3:0.6b` or `hf.co/org/model:tag`
     pub model: String,
+}
+
+// ---------------------------------------------------------------------------
+// generate
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct GenerateArgs {
+    /// Model reference (Ollama: `qwen:latest`, HuggingFace: `owner/model`)
+    pub model: String,
+
+    /// Prompt to tokenize (and eventually generate from)
+    pub prompt: String,
 }
 
 // ---------------------------------------------------------------------------

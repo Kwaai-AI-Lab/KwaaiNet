@@ -5,6 +5,7 @@ use crate::{
     error::{InferenceError, InferenceResult},
     loader::{self, GgufModel, SafeTensorsModel},
     model::{ModelFormat, ModelHandle, ModelInfo},
+    tokenizer::Tokenizer,
     InferenceProvider, ModelConfig,
 };
 use async_trait::async_trait;
@@ -31,12 +32,11 @@ enum LoadedWeights {
     SafeTensors(Mutex<SafeTensorsModel>),
 }
 
-/// Fields `weights` and `config` are used in the upcoming forward-pass step.
-#[allow(dead_code)]
 struct LoadedModelEntry {
     info: ModelInfo,
     weights: LoadedWeights,
     /// Architecture config kept for callers that need it without locking weights.
+    #[allow(dead_code)]
     config: ModelConfig,
 }
 
@@ -249,24 +249,39 @@ impl InferenceProvider for InferenceEngine {
         ))
     }
 
-    fn generate(&self, handle: &ModelHandle, _prompt: &str) -> InferenceResult<String> {
-        let _entry = self
+    fn generate(&self, handle: &ModelHandle, prompt: &str) -> InferenceResult<String> {
+        let entry = self
             .models
             .get(&handle.id())
             .ok_or(InferenceError::InvalidHandle(handle.id()))?;
 
-        // TODO (next step): implement text generation.
+        // Encode the prompt with the real BPE tokenizer.
+        let token_ids: Vec<u32> = match &entry.weights {
+            LoadedWeights::Gguf(m) => m.lock().unwrap().tokenizer.encode(prompt)?,
+            LoadedWeights::SafeTensors(m) => m.lock().unwrap().tokenizer.encode(prompt)?,
+        };
+
+        debug!(
+            "generate() handle {}: encoded {} tokens for {:?}",
+            handle.id(),
+            token_ids.len(),
+            &prompt[..prompt.len().min(40)],
+        );
+
+        // TODO (next step): autoregressive forward pass + sampling.
         // Requires:
-        //   • real BPE tokenizer (encode prompt → token IDs, decode IDs → text)
-        //   • autoregressive loop calling forward() with KV-cache
-        //   • sampling (temperature / top-p / top-k)
+        //   • per-session KV cache
+        //   • forward() routing based on LoadedWeights variant
+        //   • temperature / top-p / top-k sampling
         // See CONTRIBUTORS.md — "Forward pass & generation".
-        debug!("generate() called on handle {} — tokenizer not yet wired", handle.id());
-        Err(InferenceError::InferenceFailed(
-            "generate() requires a tokenizer. \
-             See CONTRIBUTORS.md: 'Replace byte-level placeholder tokenizer'."
-                .to_string(),
-        ))
+        Err(InferenceError::InferenceFailed(format!(
+            "Tokenized '{}' → {} tokens {:?}{}. \
+             Forward pass not yet implemented (next step).",
+            &prompt[..prompt.len().min(40)],
+            token_ids.len(),
+            &token_ids[..token_ids.len().min(8)],
+            if token_ids.len() > 8 { "…" } else { "" },
+        )))
     }
 
     fn unload(&mut self, handle: ModelHandle) -> InferenceResult<()> {

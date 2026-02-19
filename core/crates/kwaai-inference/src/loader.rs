@@ -6,6 +6,7 @@
 
 use crate::{
     error::{InferenceError, InferenceResult},
+    tokenizer::BpeTokenizer,
     ModelConfig,
 };
 use candle_core::{quantized::gguf_file, Device};
@@ -31,6 +32,8 @@ pub struct GgufModel {
     pub vocab_size: usize,
     /// Number of transformer layers.
     pub num_layers: usize,
+    /// BPE tokenizer built from the GGUF vocabulary and merge rules.
+    pub tokenizer: BpeTokenizer,
 }
 
 /// Load a GGUF model file into memory.
@@ -71,6 +74,10 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
          hidden={hidden_dim}, vocab={vocab_size}"
     );
 
+    // Build the BPE tokenizer from GGUF metadata BEFORE consuming `gguf`
+    // in the weight loader below (which moves it by value).
+    let tokenizer = BpeTokenizer::from_gguf(&gguf)?;
+
     let config = ModelConfig {
         architecture: arch.clone(),
         max_seq_len,
@@ -107,7 +114,7 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
         }
     };
 
-    Ok(GgufModel { weights, config, vocab_size, num_layers })
+    Ok(GgufModel { weights, config, vocab_size, num_layers, tokenizer })
 }
 
 // ── SafeTensors ───────────────────────────────────────────────────────────────
@@ -124,6 +131,8 @@ pub struct SafeTensorsModel {
     pub vocab_size: usize,
     /// Number of transformer layers.
     pub num_layers: usize,
+    /// BPE tokenizer loaded from `tokenizer.json` in the snapshot directory.
+    pub tokenizer: BpeTokenizer,
 }
 
 /// Load a SafeTensors model from one or more shard files.
@@ -199,7 +208,14 @@ pub fn load_safetensors(
         layer_norm_eps: rms_eps as f32,
     };
 
-    Ok(SafeTensorsModel { model, config, llama_config, vocab_size, num_layers })
+    // Load the BPE tokenizer from tokenizer.json in the snapshot directory.
+    let tokenizer_path = config_json_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("tokenizer.json");
+    let tokenizer = BpeTokenizer::from_file(&tokenizer_path)?;
+
+    Ok(SafeTensorsModel { model, config, llama_config, vocab_size, num_layers, tokenizer })
 }
 
 // ── GGUF metadata helpers ─────────────────────────────────────────────────────
