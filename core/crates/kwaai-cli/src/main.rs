@@ -8,6 +8,7 @@ mod display;
 mod health;
 mod monitor;
 mod node;
+mod ollama;
 mod service;
 mod updater;
 
@@ -17,6 +18,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Command, MonitorAction, ServiceAction};
+use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
 use config::KwaaiNetConfig;
 use daemon::DaemonManager;
 use display::*;
@@ -429,6 +431,63 @@ async fn main() -> Result<()> {
             } else {
                 print_info(&format!("Apply recommended: kwaainet calibrate --apply recommended"));
             }
+        }
+
+        // -------------------------------------------------------------------
+        // load-model
+        // -------------------------------------------------------------------
+        Command::LoadModel(args) => {
+            print_box_header("📦 KwaaiNet Model Loader");
+            println!("  Model ref: {}", args.model);
+            println!();
+
+            // Resolve Ollama model reference → GGUF blob path
+            let blob_path = match ollama::resolve_model_blob(&args.model) {
+                Ok(p) => p,
+                Err(e) => {
+                    print_error(&format!("{e}"));
+                    return Ok(());
+                }
+            };
+
+            let file_size = std::fs::metadata(&blob_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            println!("  Blob:   {}", blob_path.display());
+            println!("  Size:   {}", format_bytes(file_size));
+            println!();
+            println!("  Loading weights into memory…");
+
+            let start = std::time::Instant::now();
+
+            let mut engine = match InferenceEngine::new(EngineConfig::default()) {
+                Ok(e) => e,
+                Err(e) => {
+                    print_error(&format!("Failed to create inference engine: {e}"));
+                    return Ok(());
+                }
+            };
+
+            match engine.load_model(&blob_path, ModelFormat::Gguf) {
+                Ok(handle) => {
+                    let elapsed = start.elapsed();
+                    let info = engine.model_info(&handle)
+                        .expect("handle was just created");
+
+                    print_success(&format!("Loaded in {:.1}s", elapsed.as_secs_f32()));
+                    println!();
+                    println!("  Architecture:  {}", info.architecture);
+                    println!("  Vocab size:    {}", info.vocab_size);
+                    println!("  Context:       {} tokens", info.context_length);
+                    println!("  Memory usage:  {}", format_bytes(info.memory_bytes as u64));
+                    println!("  Quantized:     {}", info.is_quantized);
+                }
+                Err(e) => {
+                    print_error(&format!("Failed to load model: {e}"));
+                }
+            }
+            print_separator();
         }
 
         // -------------------------------------------------------------------

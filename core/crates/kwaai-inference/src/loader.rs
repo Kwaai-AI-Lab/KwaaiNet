@@ -9,16 +9,22 @@ use crate::{
     ModelConfig,
 };
 use candle_core::{quantized::gguf_file, Device};
-use candle_transformers::models::quantized_llama::ModelWeights as QuantizedLlamaWeights;
 use std::path::Path;
 use tracing::info;
 
 // ── GGUF ─────────────────────────────────────────────────────────────────────
 
+/// Quantized weights — one variant per supported GGUF architecture.
+#[allow(dead_code)] // variants read in the forward-pass step
+pub enum GgufWeights {
+    Llama(candle_transformers::models::quantized_llama::ModelWeights),
+    Qwen2(candle_transformers::models::quantized_qwen2::ModelWeights),
+}
+
 /// Quantized model loaded from a GGUF file.
 pub struct GgufModel {
-    /// Quantized Llama weights (Q4_K_M, Q5_K_M, etc.)
-    pub weights: QuantizedLlamaWeights,
+    /// Quantized weights for the detected architecture.
+    pub weights: GgufWeights,
     /// Architecture config extracted from GGUF metadata.
     pub config: ModelConfig,
     /// Vocabulary size.
@@ -29,10 +35,11 @@ pub struct GgufModel {
 
 /// Load a GGUF model file into memory.
 ///
-/// Reads the GGUF metadata header to populate [`ModelConfig`] and
-/// [`GgufModel::vocab_size`], then hands the rest of the file to
-/// `candle_transformers` for weight loading.
+/// Reads `general.architecture` from the GGUF metadata to pick the right
+/// weight loader, then extracts architecture config and loads real weights.
 pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
+    use candle_transformers::models::{quantized_llama, quantized_qwen2};
+
     let mut file = std::fs::File::open(path).map_err(|e| {
         InferenceError::ModelLoadError(format!("Cannot open {}: {e}", path.display()))
     })?;
@@ -41,23 +48,31 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
         InferenceError::ModelLoadError(format!("Cannot parse GGUF header in {}: {e}", path.display()))
     })?;
 
-    // Extract metadata before `gguf` is consumed by `from_gguf()` below.
-    let vocab_size   = meta_usize(&gguf, "llama.vocab_size").unwrap_or(32_000);
-    let num_layers   = meta_usize(&gguf, "llama.block_count").unwrap_or(32);
-    let num_heads    = meta_usize(&gguf, "llama.attention.head_count").unwrap_or(32);
-    let num_kv_heads = meta_usize(&gguf, "llama.attention.head_count_kv").unwrap_or(num_heads);
-    let hidden_dim   = meta_usize(&gguf, "llama.embedding_length").unwrap_or(4_096);
-    let inter_dim    = meta_usize(&gguf, "llama.feed_forward_length").unwrap_or(11_008);
-    let rope_theta   = meta_f32(&gguf, "llama.rope.freq_base").unwrap_or(10_000.0);
-    let max_seq_len  = meta_usize(&gguf, "llama.context_length").unwrap_or(4_096);
+    // Detect architecture from the GGUF general metadata.
+    let arch = meta_str(&gguf, "general.architecture")
+        .unwrap_or_else(|| "llama".to_string());
+
+    // Architecture-specific metadata key prefix.
+    let pfx = arch.as_str();
+
+    let vocab_size   = meta_usize(&gguf, "llama.vocab_size")
+        .or_else(|| meta_usize(&gguf, &format!("{pfx}.vocab_size")))
+        .unwrap_or(32_000);
+    let num_layers   = meta_usize(&gguf, &format!("{pfx}.block_count")).unwrap_or(32);
+    let num_heads    = meta_usize(&gguf, &format!("{pfx}.attention.head_count")).unwrap_or(32);
+    let num_kv_heads = meta_usize(&gguf, &format!("{pfx}.attention.head_count_kv")).unwrap_or(num_heads);
+    let hidden_dim   = meta_usize(&gguf, &format!("{pfx}.embedding_length")).unwrap_or(4_096);
+    let inter_dim    = meta_usize(&gguf, &format!("{pfx}.feed_forward_length")).unwrap_or(11_008);
+    let rope_theta   = meta_f32(&gguf, &format!("{pfx}.rope.freq_base")).unwrap_or(10_000.0);
+    let max_seq_len  = meta_usize(&gguf, &format!("{pfx}.context_length")).unwrap_or(4_096);
 
     info!(
-        "GGUF: {} layers, {} heads ({} kv), hidden={}, vocab={}",
-        num_layers, num_heads, num_kv_heads, hidden_dim, vocab_size
+        "GGUF arch={arch}: {num_layers} layers, {num_heads} heads ({num_kv_heads} kv), \
+         hidden={hidden_dim}, vocab={vocab_size}"
     );
 
     let config = ModelConfig {
-        architecture: "llama".to_string(),
+        architecture: arch.clone(),
         max_seq_len,
         num_heads,
         num_kv_heads,
@@ -67,11 +82,30 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
         layer_norm_eps: 1e-5,
     };
 
-    // Hands ownership of `gguf` to candle_transformers; reads weight tensors
-    // from the file using the tensor offset table baked into the GGUF header.
-    let weights = QuantizedLlamaWeights::from_gguf(gguf, &mut file, device).map_err(|e| {
-        InferenceError::ModelLoadError(format!("Cannot build quantized weights: {e}"))
-    })?;
+    // Dispatch to the architecture-specific quantized weight loader.
+    let weights = match arch.as_str() {
+        "llama" | "mistral" | "llama3" => {
+            let w = quantized_llama::ModelWeights::from_gguf(gguf, &mut file, device)
+                .map_err(|e| InferenceError::ModelLoadError(
+                    format!("Cannot build {arch} weights: {e}")
+                ))?;
+            GgufWeights::Llama(w)
+        }
+        "qwen2" => {
+            let w = quantized_qwen2::ModelWeights::from_gguf(gguf, &mut file, device)
+                .map_err(|e| InferenceError::ModelLoadError(
+                    format!("Cannot build qwen2 weights: {e}")
+                ))?;
+            GgufWeights::Qwen2(w)
+        }
+        other => {
+            return Err(InferenceError::InvalidFormat(format!(
+                "GGUF architecture '{other}' is not yet supported. \
+                 Supported: llama, mistral, qwen2. \
+                 See CONTRIBUTORS.md to add support."
+            )));
+        }
+    };
 
     Ok(GgufModel { weights, config, vocab_size, num_layers })
 }
@@ -169,6 +203,14 @@ pub fn load_safetensors(
 }
 
 // ── GGUF metadata helpers ─────────────────────────────────────────────────────
+
+fn meta_str(ct: &gguf_file::Content, key: &str) -> Option<String> {
+    use gguf_file::Value;
+    match ct.metadata.get(key)? {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
 
 fn meta_usize(ct: &gguf_file::Content, key: &str) -> Option<usize> {
     use gguf_file::Value;

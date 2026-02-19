@@ -58,6 +58,9 @@ pub enum Command {
     /// Calibrate optimal block count for this hardware
     Calibrate(CalibrateArgs),
 
+    /// Load and inspect a model from Ollama's local store
+    LoadModel(LoadModelArgs),
+
     /// Initial setup
     Setup,
 
@@ -219,6 +222,16 @@ pub struct UpdateArgs {
     /// Force update check (bypass cache)
     #[arg(long)]
     pub force: bool,
+}
+
+// ---------------------------------------------------------------------------
+// load-model
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct LoadModelArgs {
+    /// Ollama model reference, e.g. `qwen3:0.6b` or `hf.co/org/model:tag`
+    pub model: String,
 }
 
 // ---------------------------------------------------------------------------

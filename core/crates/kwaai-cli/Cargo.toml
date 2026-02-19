@@ -56,6 +56,7 @@ rmpv = "1.0"
 kwaai-p2p = { path = "../kwaai-p2p" }
 kwaai-hivemind-dht = { path = "../kwaai-hivemind-dht" }
 kwaai-p2p-daemon = { path = "../kwaai-p2p-daemon" }
+kwaai-inference = { path = "../kwaai-inference" }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["signal", "process", "fs"] }
