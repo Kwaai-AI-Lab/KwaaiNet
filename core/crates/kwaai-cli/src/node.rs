@@ -45,10 +45,10 @@ struct DHTServerInfo {
 }
 
 impl DHTServerInfo {
-    fn new(start: i32, end: i32, name: &str, relay: bool) -> Self {
+    fn new(start: i32, end: i32, name: &str, relay: bool, throughput: f64) -> Self {
         Self {
             state: 2, // ONLINE
-            throughput: 100.0,
+            throughput,
             start_block: start,
             end_block: end,
             public_name: name.to_string(),
@@ -250,11 +250,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Step 5: Initial DHT announcement
     // -----------------------------------------------------------------------
     info!("[5/5] Announcing to DHT...");
+    // Use throughput measured by `kwaainet generate` (cached per-model),
+    // or fall back to a conservative default so the map shows *something*.
+    let (throughput, tps_source) = crate::throughput::load(&config.model)
+        .map(|v| (v, "measured"))
+        .unwrap_or((10.0, "default"));
+    info!("  Throughput: {:.1} tok/s ({})", throughput, tps_source);
     let server_info = DHTServerInfo::new(
         0,
         config.blocks as i32,
         &public_name,
         !config.no_relay,
+        throughput,
     );
     announce(
         &mut client,

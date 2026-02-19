@@ -50,6 +50,9 @@ pub struct InferenceEngine {
     models: HashMap<u64, LoadedModelEntry>,
     next_model_id: AtomicU64,
     current_memory: usize,
+    /// Decode throughput in tok/s from the most recent `generate()` call.
+    /// Stored as the raw bits of an `f64` so it can live in an `AtomicU64`.
+    last_decode_tps: AtomicU64,
 }
 
 impl InferenceEngine {
@@ -62,7 +65,15 @@ impl InferenceEngine {
             models: HashMap::new(),
             next_model_id: AtomicU64::new(1),
             current_memory: 0,
+            last_decode_tps: AtomicU64::new(0),
         })
+    }
+
+    /// Tokens/second measured during the decode phase of the last `generate()` call.
+    /// Returns `0.0` if no generation has been run yet.
+    pub fn last_throughput_tps(&self) -> f64 {
+        let bits = self.last_decode_tps.load(Ordering::Relaxed);
+        if bits == 0 { 0.0 } else { f64::from_bits(bits) }
     }
 
     pub fn device(&self) -> &Device {
@@ -323,6 +334,7 @@ impl InferenceProvider for InferenceEngine {
                 let mut pos = prompt_len;
 
                 // Decode loop: feed one token at a time, sample the next.
+                let decode_start = std::time::Instant::now();
                 loop {
                     if stop_ids.contains(&next_token) || generated.len() >= MAX_NEW_TOKENS {
                         break;
@@ -344,11 +356,19 @@ impl InferenceProvider for InferenceEngine {
                         logits_processor.sample(&logits).map_err(InferenceError::from)?;
                     pos += 1;
                 }
+                let decode_secs = decode_start.elapsed().as_secs_f64();
+
+                if !generated.is_empty() && decode_secs > 0.0 {
+                    let tps = generated.len() as f64 / decode_secs;
+                    self.last_decode_tps.store(tps.to_bits(), Ordering::Relaxed);
+                }
 
                 debug!(
-                    "generate() GGUF handle {}: {} tokens generated",
+                    "generate() GGUF handle {}: {} tokens in {:.2}s ({:.1} tok/s)",
                     handle.id(),
                     generated.len(),
+                    decode_secs,
+                    if decode_secs > 0.0 { generated.len() as f64 / decode_secs } else { 0.0 },
                 );
 
                 guard.tokenizer.decode(&generated)?
@@ -412,6 +432,7 @@ impl InferenceProvider for InferenceEngine {
                 let mut pos = prompt_len;
 
                 // Decode loop.
+                let decode_start = std::time::Instant::now();
                 loop {
                     if stop_ids.contains(&next_token) || generated.len() >= MAX_NEW_TOKENS {
                         break;
@@ -433,11 +454,19 @@ impl InferenceProvider for InferenceEngine {
                         logits_processor.sample(&logits).map_err(InferenceError::from)?;
                     pos += 1;
                 }
+                let decode_secs = decode_start.elapsed().as_secs_f64();
+
+                if !generated.is_empty() && decode_secs > 0.0 {
+                    let tps = generated.len() as f64 / decode_secs;
+                    self.last_decode_tps.store(tps.to_bits(), Ordering::Relaxed);
+                }
 
                 debug!(
-                    "generate() SafeTensors handle {}: {} tokens generated",
+                    "generate() SafeTensors handle {}: {} tokens in {:.2}s ({:.1} tok/s)",
                     handle.id(),
                     generated.len(),
+                    decode_secs,
+                    if decode_secs > 0.0 { generated.len() as f64 / decode_secs } else { 0.0 },
                 );
 
                 guard.tokenizer.decode(&generated)?

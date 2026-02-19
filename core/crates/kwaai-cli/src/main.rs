@@ -11,6 +11,7 @@ mod node;
 mod hf;
 mod ollama;
 mod service;
+mod throughput;
 mod updater;
 
 use anyhow::Result;
@@ -615,15 +616,23 @@ async fn main() -> Result<()> {
             println!("  Model loaded.");
             println!();
 
-            // Call generate() — the tokenizer is live, forward pass is next.
             match engine.generate(&handle, &args.prompt) {
                 Ok(text) => {
                     print_success("Generation complete");
                     println!("{text}");
+
+                    // Report and persist throughput so `kwaainet start` can
+                    // announce a real value to the network map.
+                    let tps = engine.last_throughput_tps();
+                    if tps > 0.0 {
+                        println!();
+                        println!("  Throughput: {:.1} tok/s", tps);
+                        if let Err(e) = throughput::save(&args.model, tps) {
+                            eprintln!("  Warning: could not save throughput cache: {e}");
+                        }
+                    }
                 }
                 Err(e) => {
-                    // Expected: "Forward pass not yet implemented" — but shows
-                    // the real token IDs produced by the BPE tokenizer.
                     println!("  {e}");
                 }
             }
