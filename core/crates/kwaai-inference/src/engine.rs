@@ -118,16 +118,31 @@ impl InferenceProvider for InferenceEngine {
             return Err(InferenceError::ModelNotFound(path.display().to_string()));
         }
 
-        let file_size = std::fs::metadata(path)
-            .map_err(InferenceError::from)?
-            .len() as usize;
-
-        // Memory estimate: GGUF is nearly the file size; F16 SafeTensors needs
-        // ~2× the file size when converted to runtime tensors plus overhead.
-        let estimated_memory = match format {
-            ModelFormat::Gguf | ModelFormat::Ggml => (file_size as f64 * 1.1) as usize,
-            _ => file_size * 2,
+        // For directories (sharded SafeTensors), sum all shard sizes.
+        // For single files, just use the file size.
+        // Use std::fs::metadata (not DirEntry::metadata) to follow symlinks.
+        let file_size: usize = if path.is_dir() {
+            std::fs::read_dir(path)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.extension().and_then(|x| x.to_str()) == Some("safetensors")
+                        })
+                        .filter_map(|p| std::fs::metadata(&p).ok())
+                        .map(|m| m.len())
+                        .sum::<u64>() as usize
+                })
+                .unwrap_or(0)
+        } else {
+            std::fs::metadata(path)
+                .map_err(InferenceError::from)?
+                .len() as usize
         };
+
+        // Memory estimate: both GGUF and SafeTensors are memory-mapped, so the
+        // working-set size is approximately the file size plus a small overhead.
+        let estimated_memory = (file_size as f64 * 1.1) as usize;
 
         self.check_memory(estimated_memory)?;
 
@@ -142,17 +157,49 @@ impl InferenceProvider for InferenceEngine {
             }
 
             ModelFormat::SafeTensors => {
-                // config.json must sit alongside the .safetensors file.
-                let config_path = path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join("config.json");
-                let path_slice = [path];
-                let m = loader::load_safetensors(&path_slice, &config_path, &self.device)?;
-                let c = m.config.clone();
-                let v = m.vocab_size;
-                let l = m.num_layers;
-                (LoadedWeights::SafeTensors(Mutex::new(m)), c, v, l, false)
+                if path.is_dir() {
+                    // Sharded model directory (e.g. a HuggingFace snapshot).
+                    // Collect all .safetensors shard files, sorted by name.
+                    let mut shard_paths: Vec<std::path::PathBuf> =
+                        std::fs::read_dir(path)
+                            .map_err(InferenceError::from)?
+                            .filter_map(|e| e.ok())
+                            .map(|e| e.path())
+                            .filter(|p| {
+                                p.extension().and_then(|x| x.to_str())
+                                    == Some("safetensors")
+                            })
+                            .collect();
+                    shard_paths.sort();
+
+                    if shard_paths.is_empty() {
+                        return Err(InferenceError::ModelNotFound(format!(
+                            "No .safetensors shards found in {}",
+                            path.display()
+                        )));
+                    }
+
+                    let config_path = path.join("config.json");
+                    let path_refs: Vec<&Path> =
+                        shard_paths.iter().map(|p| p.as_path()).collect();
+                    let m = loader::load_safetensors(&path_refs, &config_path, &self.device)?;
+                    let c = m.config.clone();
+                    let v = m.vocab_size;
+                    let l = m.num_layers;
+                    (LoadedWeights::SafeTensors(Mutex::new(m)), c, v, l, false)
+                } else {
+                    // Single-shard: config.json must sit alongside the .safetensors file.
+                    let config_path = path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join("config.json");
+                    let path_slice = [path];
+                    let m = loader::load_safetensors(&path_slice, &config_path, &self.device)?;
+                    let c = m.config.clone();
+                    let v = m.vocab_size;
+                    let l = m.num_layers;
+                    (LoadedWeights::SafeTensors(Mutex::new(m)), c, v, l, false)
+                }
             }
 
             ModelFormat::PyTorch => {

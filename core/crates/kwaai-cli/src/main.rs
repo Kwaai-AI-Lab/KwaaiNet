@@ -8,6 +8,7 @@ mod display;
 mod health;
 mod monitor;
 mod node;
+mod hf;
 mod ollama;
 mod service;
 mod updater;
@@ -441,27 +442,26 @@ async fn main() -> Result<()> {
             println!("  Model ref: {}", args.model);
             println!();
 
-            // Resolve Ollama model reference → GGUF blob path
-            let blob_path = match ollama::resolve_model_blob(&args.model) {
-                Ok(p) => p,
-                Err(e) => {
-                    print_error(&format!("{e}"));
-                    return Ok(());
-                }
+            // Detect source: `owner/model` without `hf.co/` prefix → HF cache.
+            // Everything else (e.g. `qwen3:0.6b`, `hf.co/org/model:tag`) → Ollama.
+            let is_hf = args.model.contains('/') && !args.model.starts_with("hf.co/");
+
+            // Use available system RAM (85%) as the memory budget.
+            let system_ram = {
+                use sysinfo::System;
+                let mut sys = System::new();
+                sys.refresh_memory();
+                sys.total_memory() // bytes
+            };
+            let max_memory = ((system_ram as f64 * 0.85) as usize)
+                .max(4 * 1024 * 1024 * 1024); // at least 4 GB
+
+            let engine_config = EngineConfig {
+                max_memory,
+                ..EngineConfig::default()
             };
 
-            let file_size = std::fs::metadata(&blob_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
-
-            println!("  Blob:   {}", blob_path.display());
-            println!("  Size:   {}", format_bytes(file_size));
-            println!();
-            println!("  Loading weights into memory…");
-
-            let start = std::time::Instant::now();
-
-            let mut engine = match InferenceEngine::new(EngineConfig::default()) {
+            let mut engine = match InferenceEngine::new(engine_config) {
                 Ok(e) => e,
                 Err(e) => {
                     print_error(&format!("Failed to create inference engine: {e}"));
@@ -469,24 +469,91 @@ async fn main() -> Result<()> {
                 }
             };
 
-            match engine.load_model(&blob_path, ModelFormat::Gguf) {
-                Ok(handle) => {
-                    let elapsed = start.elapsed();
-                    let info = engine.model_info(&handle)
-                        .expect("handle was just created");
+            if is_hf {
+                // ── HuggingFace SafeTensors ──────────────────────────────────
+                let snapshot_dir = match hf::resolve_snapshot(&args.model) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
+                };
 
-                    print_success(&format!("Loaded in {:.1}s", elapsed.as_secs_f32()));
-                    println!();
-                    println!("  Architecture:  {}", info.architecture);
-                    println!("  Vocab size:    {}", info.vocab_size);
-                    println!("  Context:       {} tokens", info.context_length);
-                    println!("  Memory usage:  {}", format_bytes(info.memory_bytes as u64));
-                    println!("  Quantized:     {}", info.is_quantized);
+                // Sum shard sizes for display (follow symlinks via std::fs::metadata).
+                let total_size: u64 = std::fs::read_dir(&snapshot_dir)
+                    .ok()
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .map(|e| e.path())
+                            .filter(|p| {
+                                p.extension().and_then(|x| x.to_str()) == Some("safetensors")
+                            })
+                            .filter_map(|p| std::fs::metadata(&p).ok())
+                            .map(|m| m.len())
+                            .sum()
+                    })
+                    .unwrap_or(0);
+
+                println!("  Source:   HuggingFace cache");
+                println!("  Path:     {}", snapshot_dir.display());
+                println!("  Size:     {}", format_bytes(total_size));
+                println!();
+                println!("  Loading SafeTensors shards into memory…");
+
+                let start = std::time::Instant::now();
+                match engine.load_model(&snapshot_dir, ModelFormat::SafeTensors) {
+                    Ok(handle) => {
+                        let elapsed = start.elapsed();
+                        let info = engine.model_info(&handle).expect("handle was just created");
+                        print_success(&format!("Loaded in {:.1}s", elapsed.as_secs_f32()));
+                        println!();
+                        println!("  Architecture:  {}", info.architecture);
+                        println!("  Vocab size:    {}", info.vocab_size);
+                        println!("  Context:       {} tokens", info.context_length);
+                        println!("  Memory usage:  {}", format_bytes(info.memory_bytes as u64));
+                        println!("  Quantized:     {}", info.is_quantized);
+                    }
+                    Err(e) => {
+                        print_error(&format!("Failed to load model: {e}"));
+                    }
                 }
-                Err(e) => {
-                    print_error(&format!("Failed to load model: {e}"));
+            } else {
+                // ── Ollama GGUF ──────────────────────────────────────────────
+                let blob_path = match ollama::resolve_model_blob(&args.model) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
+                };
+
+                let file_size = std::fs::metadata(&blob_path).map(|m| m.len()).unwrap_or(0);
+
+                println!("  Source:   Ollama");
+                println!("  Blob:     {}", blob_path.display());
+                println!("  Size:     {}", format_bytes(file_size));
+                println!();
+                println!("  Loading GGUF weights into memory…");
+
+                let start = std::time::Instant::now();
+                match engine.load_model(&blob_path, ModelFormat::Gguf) {
+                    Ok(handle) => {
+                        let elapsed = start.elapsed();
+                        let info = engine.model_info(&handle).expect("handle was just created");
+                        print_success(&format!("Loaded in {:.1}s", elapsed.as_secs_f32()));
+                        println!();
+                        println!("  Architecture:  {}", info.architecture);
+                        println!("  Vocab size:    {}", info.vocab_size);
+                        println!("  Context:       {} tokens", info.context_length);
+                        println!("  Memory usage:  {}", format_bytes(info.memory_bytes as u64));
+                        println!("  Quantized:     {}", info.is_quantized);
+                    }
+                    Err(e) => {
+                        print_error(&format!("Failed to load model: {e}"));
+                    }
                 }
             }
+
             print_separator();
         }
 
