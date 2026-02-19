@@ -5,13 +5,14 @@
 ## ✅ Status: Network Live & Operational
 
 **Latest Achievements:**
+- ✅ **`kwaainet start --daemon`** — one command starts a fully managed background node, confirmed **online** on [map.kwaai.ai](https://map.kwaai.ai)
 - ✅ **Native Rust CLI** — `kwaainet` binary runs nodes directly via `kwaai-p2p` + `kwaai-hivemind-dht` (no Python required)
-- ✅ **Full Petals DHT Protocol Compatibility** — KwaaiNet nodes appear on distributed network maps
+- ✅ **Full Map Visibility** — nodes show as **State: online** with correct public IP, geolocation, and multiaddr
+- ✅ **Full Petals/Hivemind DHT Compatibility** — DHT announcements, RPC health checks, 120-second re-announcement
 - ✅ **Cross-Platform Support** — Tested on macOS ARM64, Linux, and Windows
-- ✅ **Production-Ready Build System** — Automated multi-platform setup and deployment
-- 🌐 **Live Test Node**: Successfully announced and visible on map.kwaai.ai ([PR #1](https://github.com/Kwaai-AI-Lab/KwaaiNet/pull/1))
+- 🌐 **Live Node**: `KwaaiNet-RUST-Node` running on `unsloth/Llama-3.1-8B-Instruct` blocks 0–8
 
-**What This Means:** KwaaiNet infrastructure is operational and ready for distributed AI compute. Nodes can join the network, announce their presence, and participate in the Petals/Hivemind distributed inference network.
+**What This Means:** A single `kwaainet start --daemon` command launches a production-ready distributed AI node in the background. The node announces itself to the DHT, responds to health monitor RPC queries, and remains visible on the network map — all in native Rust, no Python required.
 
 ## Vision
 
@@ -244,39 +245,46 @@ cargo build --release -p kwaai-cli
 
 **First-time setup:**
 ```bash
-kwaainet setup
+kwaainet setup                         # create dirs, write default config
+kwaainet config --set public_ip <YOUR_PUBLIC_IP>   # required for map visibility
+kwaainet config --set public_name "YourName@kwaai" # shown on the map
+kwaainet calibrate --apply recommended # auto-set block count for your RAM
 ```
 
 **Running a node:**
 ```bash
-# Start in the foreground
-kwaainet start
-
-# Start as a background daemon
+# Start as a background daemon (recommended)
 kwaainet start --daemon
 
 # Check status
 kwaainet status
 
-# View live logs
+# View logs
 kwaainet logs --follow
 
 # Stop the node
 kwaainet stop
+
+# Or run in the foreground (useful for debugging)
+kwaainet start
 ```
+
+**What happens when you start:**
+1. 🚀 go-libp2p-daemon spawns, listening on your configured port
+2. 🔗 Registers Hivemind RPC handlers (`rpc_ping`, `rpc_store`, `rpc_find`)
+3. ⏳ Waits 30 s for DHT bootstrap connections to stabilise
+4. 📡 Announces blocks and model info to the DHT network
+5. ✅ Node appears as **online** on [map.kwaai.ai](https://map.kwaai.ai)
+6. 🔄 Re-announces every 120 s to stay visible
 
 **Configuration:**
 ```bash
-# View current config
-kwaainet config --view
-
-# Change a setting
+kwaainet config --view                              # print current config
 kwaainet config --set model unsloth/Llama-3.1-8B-Instruct
 kwaainet config --set blocks 8
-
-# Estimate the right number of blocks for your hardware
-kwaainet calibrate
-kwaainet calibrate --apply recommended
+kwaainet config --set port 8080
+kwaainet config --set public_ip 203.0.113.1        # your external IP
+kwaainet config --set public_name "MyNode@kwaai"
 ```
 
 **Full command reference:**
