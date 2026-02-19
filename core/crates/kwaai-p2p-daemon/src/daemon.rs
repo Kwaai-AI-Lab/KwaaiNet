@@ -17,7 +17,11 @@ pub struct DaemonBuilder {
     bootstrap_peers: Vec<String>,
     dht: bool,
     relay: bool,
+    auto_relay: bool,
+    auto_nat: bool,
     nat_portmap: bool,
+    host_addrs: Vec<String>,
+    announce_addrs: Vec<String>,
     metrics: bool,
     metrics_addr: Option<String>,
 }
@@ -30,7 +34,11 @@ impl Default for DaemonBuilder {
             bootstrap_peers: Vec::new(),
             dht: false,
             relay: false,
+            auto_relay: false,
+            auto_nat: false,
             nat_portmap: false,
+            host_addrs: Vec::new(),
+            announce_addrs: Vec::new(),
             metrics: false,
             metrics_addr: None,
         }
@@ -66,9 +74,43 @@ impl DaemonBuilder {
         self
     }
 
-    /// Enable relay support
+    /// Enable relay support (this node acts as a relay server)
     pub fn relay(mut self, enable: bool) -> Self {
         self.relay = enable;
+        self
+    }
+
+    /// Enable auto-relay (this node uses relay servers when behind NAT)
+    pub fn auto_relay(mut self, enable: bool) -> Self {
+        self.auto_relay = enable;
+        self
+    }
+
+    /// Enable AutoNAT (detect whether this node is reachable from the internet)
+    pub fn auto_nat(mut self, enable: bool) -> Self {
+        self.auto_nat = enable;
+        self
+    }
+
+    /// Set the host multiaddrs p2pd listens on for P2P traffic
+    /// e.g. ["/ip4/0.0.0.0/tcp/8080"]
+    pub fn host_addrs<I, S>(mut self, addrs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.host_addrs.extend(addrs.into_iter().map(|s| s.into()));
+        self
+    }
+
+    /// Set the multiaddrs this node announces to the DHT network
+    /// e.g. ["/ip4/203.0.113.1/tcp/8080"] — the public/reachable address
+    pub fn announce_addrs<I, S>(mut self, addrs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.announce_addrs.extend(addrs.into_iter().map(|s| s.into()));
         self
     }
 
@@ -150,14 +192,34 @@ impl DaemonBuilder {
             cmd.arg("-dht");
         }
 
-        // Relay
+        // Relay (this node serves as a relay)
         if self.relay {
             cmd.arg("-relay");
+        }
+
+        // AutoRelay (this node uses relay servers when behind NAT)
+        if self.auto_relay {
+            cmd.arg("-autoRelay");
+        }
+
+        // AutoNAT
+        if self.auto_nat {
+            cmd.arg("-autonat");
         }
 
         // NAT port mapping
         if self.nat_portmap {
             cmd.arg("-natPortMap");
+        }
+
+        // Host addrs (P2P listen addresses)
+        if !self.host_addrs.is_empty() {
+            cmd.arg("-hostAddrs").arg(self.host_addrs.join(","));
+        }
+
+        // Announce addrs (public addresses to advertise in the DHT)
+        if !self.announce_addrs.is_empty() {
+            cmd.arg("-announceAddrs").arg(self.announce_addrs.join(","));
         }
 
         // Metrics

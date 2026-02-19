@@ -175,11 +175,29 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("[1/5] Starting p2p daemon...");
     let p2pd_path = find_p2pd_binary();
 
+    // p2pd listens for P2P traffic on the configured port
+    let host_addr = format!("/ip4/0.0.0.0/tcp/{}", config.port);
+
+    // Announce the public IP so the health monitor can reach us
+    let announce_addr = config.public_ip.as_deref().map(|ip| {
+        format!("/ip4/{}/tcp/{}", ip, config.port)
+    });
+
     let builder = P2PDaemon::builder()
         .dht(true)
         .relay(!config.no_relay)
+        .auto_relay(true)
+        .auto_nat(true)
         .nat_portmap(true)
+        .host_addrs([host_addr])
         .bootstrap_peers(bootstrap_peers.clone());
+
+    let builder = if let Some(ref addr) = announce_addr {
+        builder.announce_addrs([addr.as_str()])
+    } else {
+        builder
+    };
+
     let builder = if let Some(ref path) = p2pd_path {
         builder.with_binary_path(path)
     } else {
