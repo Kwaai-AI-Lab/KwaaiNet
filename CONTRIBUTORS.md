@@ -21,9 +21,43 @@ The following areas need contributors. Pick what interests you and open a PR or 
 - [ ] Implement graceful shutdown / node lifecycle management
 - [ ] Write fuzz tests for p2p message parsing
 
-### Inference Engine (Candle)
-- [ ] Benchmark Candle vs. other backends (llama.cpp, ONNX) and document results
-- [ ] Add quantized model (GGUF / GGML) loading support
+### Inference Engine (Candle) — **critical path**
+
+> **Context**: The current `kwaai-inference` crate is a stub. `engine.rs` returns
+> hardcoded strings; model loading stores empty weight vectors; the tokenizer is
+> byte-level only. The node never calls the inference crate at all — it is purely
+> a DHT announcer. The Python/Petals equivalent achieves ~1500 tokens/s on a Mac
+> mini; the Rust node produces ~100 tokens/s of fake output. All items below are
+> needed to close that gap.
+
+**Model loading**
+- [ ] Implement real weight loading from SafeTensors (`candle-core`) in `engine.rs`
+- [ ] Implement GGUF model loading for quantized models (`candle-transformers`)
+- [ ] Replace `_weights: Vec::new()` with an actual loaded model struct
+
+**Tokenizer**
+- [ ] Replace the byte-level placeholder tokenizer with a real BPE tokenizer
+      (e.g. `tokenizers` crate, or load vocab from HuggingFace model repo)
+
+**Forward pass & generation**
+- [ ] Implement a real autoregressive token generation loop in `engine.rs`
+- [ ] Add KV-cache support for efficient multi-turn generation
+- [ ] Implement temperature / top-p / top-k sampling
+- [ ] Wire `kwaai-inference` into the node's RPC handlers so inference requests
+      actually reach the engine (currently the RPC path never calls the crate)
+
+**Apple Silicon / Metal acceleration**
+- [ ] Enable the existing `metal` feature flag (`candle-core/metal`) by default on macOS
+- [ ] Verify `candle_core::Device::Metal` is selected at runtime on Apple Silicon
+- [ ] Benchmark Metal vs CPU on Mac mini and document results
+
+**Benchmarking**
+- [ ] Implement real tokens/s benchmark in `kwaai-inference/benches/inference_bench.rs`
+      (currently a TODO stub)
+- [ ] Add performance regression gate to CI
+
+**Longer-term**
+- [ ] Benchmark Candle vs. llama.cpp bindings vs. ONNX Runtime and document results
 - [ ] Streaming token output over the RPC interface
 - [ ] Multi-model routing (select model by capability or load)
 
