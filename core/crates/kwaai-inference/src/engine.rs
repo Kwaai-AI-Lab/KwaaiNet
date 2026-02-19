@@ -1,52 +1,59 @@
-//! Main inference engine implementation
+//! Inference engine — real model loading via `candle_transformers`.
 
 use crate::{
     config::EngineConfig,
     error::{InferenceError, InferenceResult},
+    loader::{self, GgufModel, SafeTensorsModel},
     model::{ModelFormat, ModelHandle, ModelInfo},
-    DeviceType, InferenceProvider, LoadedModel, ModelConfig,
+    InferenceProvider, ModelConfig,
 };
 use async_trait::async_trait;
 use candle_core::{Device, Tensor};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::{debug, info, warn};
+use std::sync::Mutex;
+use tracing::{debug, info};
 
-/// Main inference engine
+// ── Loaded weights ────────────────────────────────────────────────────────────
+
+/// Real model weights stored in a loaded entry.
+///
+/// `Mutex` gives us interior mutability so `InferenceEngine` can remain `Sync`
+/// even though the forward-pass methods require `&mut` access to KV-cache state.
+///
+/// Fields are read in the upcoming forward-pass / generation step.
+#[allow(dead_code)]
+enum LoadedWeights {
+    /// Quantized model from a GGUF file (Q4_K_M, Q5_K_M, …)
+    Gguf(Mutex<GgufModel>),
+    /// Full-precision model from SafeTensors shards (F16 / F32)
+    SafeTensors(Mutex<SafeTensorsModel>),
+}
+
+/// Fields `weights` and `config` are used in the upcoming forward-pass step.
+#[allow(dead_code)]
+struct LoadedModelEntry {
+    info: ModelInfo,
+    weights: LoadedWeights,
+    /// Architecture config kept for callers that need it without locking weights.
+    config: ModelConfig,
+}
+
+// ── Engine ────────────────────────────────────────────────────────────────────
+
 pub struct InferenceEngine {
-    /// Engine configuration
     config: EngineConfig,
-
-    /// Candle device
     device: Device,
-
-    /// Loaded models
     models: HashMap<u64, LoadedModelEntry>,
-
-    /// Next model ID
     next_model_id: AtomicU64,
-
-    /// Current memory usage
     current_memory: usize,
 }
 
-/// Entry for a loaded model
-struct LoadedModelEntry {
-    /// Model info
-    info: ModelInfo,
-    /// Model weights (placeholder - would be actual model struct)
-    _weights: Vec<Tensor>,
-    /// Model config
-    _config: ModelConfig,
-}
-
 impl InferenceEngine {
-    /// Create a new inference engine
     pub fn new(config: EngineConfig) -> InferenceResult<Self> {
         let device = config.device.to_candle_device()?;
-        info!("Initialized inference engine on {:?}", config.device);
-
+        info!("Inference engine initialised on {:?}", config.device);
         Ok(Self {
             config,
             device,
@@ -56,42 +63,36 @@ impl InferenceEngine {
         })
     }
 
-    /// Get the device being used
     pub fn device(&self) -> &Device {
         &self.device
     }
 
-    /// Get current memory usage
     pub fn memory_usage(&self) -> usize {
         self.current_memory
     }
 
-    /// Get number of loaded models
     pub fn loaded_model_count(&self) -> usize {
         self.models.len()
     }
 
-    /// List loaded models
     pub fn list_models(&self) -> Vec<ModelInfo> {
         self.models.values().map(|e| e.info.clone()).collect()
     }
 
-    /// Check if we have enough memory for a model
     fn check_memory(&self, required: usize) -> InferenceResult<()> {
         let available = self.config.max_memory.saturating_sub(self.current_memory);
         if required > available {
-            // Try to evict old models
-            // For now, just return error
             return Err(InferenceError::OutOfMemory { required, available });
         }
         Ok(())
     }
 
-    /// Generate next model ID
     fn next_id(&self) -> u64 {
         self.next_model_id.fetch_add(1, Ordering::Relaxed)
     }
 }
+
+// ── InferenceProvider impl ────────────────────────────────────────────────────
 
 #[async_trait]
 impl InferenceProvider for InferenceEngine {
@@ -99,72 +100,126 @@ impl InferenceProvider for InferenceEngine {
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
+            .unwrap_or("unknown")
+            .to_string();
 
-        info!("Loading model: {} (format: {:?})", file_name, format);
+        info!("Loading model: {} ({:?})", file_name, format);
 
-        // Check file exists
+        // Reject unsupported formats before touching the filesystem.
+        if format == ModelFormat::PyTorch {
+            return Err(InferenceError::InvalidFormat(
+                "PyTorch .bin/.pt format is not supported. \
+                 Convert the model to SafeTensors or GGUF first."
+                    .to_string(),
+            ));
+        }
+
         if !path.exists() {
             return Err(InferenceError::ModelNotFound(path.display().to_string()));
         }
 
-        // Get file size for memory estimation
-        let metadata = std::fs::metadata(path)?;
-        let file_size = metadata.len() as usize;
+        let file_size = std::fs::metadata(path)
+            .map_err(InferenceError::from)?
+            .len() as usize;
 
-        // Estimate memory (rough: file size * 1.5 for quantized, * 4 for full)
-        let estimated_memory = if self.config.prefer_quantized {
-            (file_size as f64 * 1.5) as usize
-        } else {
-            file_size * 4
+        // Memory estimate: GGUF is nearly the file size; F16 SafeTensors needs
+        // ~2× the file size when converted to runtime tensors plus overhead.
+        let estimated_memory = match format {
+            ModelFormat::Gguf | ModelFormat::Ggml => (file_size as f64 * 1.1) as usize,
+            _ => file_size * 2,
         };
 
         self.check_memory(estimated_memory)?;
 
-        // Create model entry (placeholder - actual loading would happen here)
+        // ── Dispatch to the real loader ──────────────────────────────────────
+        let (weights, config, vocab_size, _num_layers, is_quantized) = match format {
+            ModelFormat::Gguf | ModelFormat::Ggml => {
+                let m = loader::load_gguf(path, &self.device)?;
+                let c = m.config.clone();
+                let v = m.vocab_size;
+                let l = m.num_layers;
+                (LoadedWeights::Gguf(Mutex::new(m)), c, v, l, true)
+            }
+
+            ModelFormat::SafeTensors => {
+                // config.json must sit alongside the .safetensors file.
+                let config_path = path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join("config.json");
+                let path_slice = [path];
+                let m = loader::load_safetensors(&path_slice, &config_path, &self.device)?;
+                let c = m.config.clone();
+                let v = m.vocab_size;
+                let l = m.num_layers;
+                (LoadedWeights::SafeTensors(Mutex::new(m)), c, v, l, false)
+            }
+
+            ModelFormat::PyTorch => {
+                // Already rejected above; unreachable but keeps the match exhaustive.
+                unreachable!("PyTorch format rejected before this point")
+            }
+        };
+
         let id = self.next_id();
         let info = ModelInfo {
             id: id.to_string(),
-            name: file_name.to_string(),
+            name: file_name,
+            architecture: config.architecture.clone(),
             format,
             memory_bytes: estimated_memory,
+            vocab_size,
+            context_length: config.max_seq_len,
+            is_quantized,
             ..Default::default()
         };
 
-        let entry = LoadedModelEntry {
-            info,
-            _weights: Vec::new(),
-            _config: ModelConfig::default(),
-        };
-
-        self.models.insert(id, entry);
+        self.models.insert(id, LoadedModelEntry { info, weights, config });
         self.current_memory += estimated_memory;
 
-        debug!("Model loaded with handle {}", id);
+        info!("Model loaded — handle {id}, ~{:.1} GB", estimated_memory as f64 / 1e9);
         Ok(ModelHandle::new(id))
     }
 
-    fn forward(&self, handle: &ModelHandle, input: &Tensor) -> InferenceResult<Tensor> {
+    fn forward(&self, handle: &ModelHandle, _input: &Tensor) -> InferenceResult<Tensor> {
         let _entry = self
             .models
             .get(&handle.id())
             .ok_or(InferenceError::InvalidHandle(handle.id()))?;
 
-        // Placeholder - actual forward pass would happen here
-        // For now, just return input as-is
-        debug!("Forward pass for model {}", handle.id());
-        Ok(input.clone())
+        // TODO (next step): implement the autoregressive forward pass.
+        // Requires:
+        //   • a real tokenizer so callers can pass token-ID tensors
+        //   • a per-session KV cache (Mutex<Vec<(Tensor, Tensor)>> for GGUF,
+        //     candle_transformers::models::llama::Cache for full-precision)
+        //   • routing based on LoadedWeights variant
+        // See CONTRIBUTORS.md — "Forward pass & generation".
+        debug!("forward() called on handle {} — wiring pending", handle.id());
+        Err(InferenceError::InferenceFailed(
+            "forward() is not yet wired. \
+             Implement in next step together with tokenizer and KV-cache."
+                .to_string(),
+        ))
     }
 
-    fn generate(&self, handle: &ModelHandle, prompt: &str) -> InferenceResult<String> {
+    fn generate(&self, handle: &ModelHandle, _prompt: &str) -> InferenceResult<String> {
         let _entry = self
             .models
             .get(&handle.id())
             .ok_or(InferenceError::InvalidHandle(handle.id()))?;
 
-        // Placeholder - actual generation would happen here
-        debug!("Generate for model {} with prompt: {}", handle.id(), prompt);
-        Ok(format!("[Generated response for: {}]", prompt))
+        // TODO (next step): implement text generation.
+        // Requires:
+        //   • real BPE tokenizer (encode prompt → token IDs, decode IDs → text)
+        //   • autoregressive loop calling forward() with KV-cache
+        //   • sampling (temperature / top-p / top-k)
+        // See CONTRIBUTORS.md — "Forward pass & generation".
+        debug!("generate() called on handle {} — tokenizer not yet wired", handle.id());
+        Err(InferenceError::InferenceFailed(
+            "generate() requires a tokenizer. \
+             See CONTRIBUTORS.md: 'Replace byte-level placeholder tokenizer'."
+                .to_string(),
+        ))
     }
 
     fn unload(&mut self, handle: ModelHandle) -> InferenceResult<()> {
@@ -172,7 +227,6 @@ impl InferenceProvider for InferenceEngine {
             .models
             .remove(&handle.id())
             .ok_or(InferenceError::InvalidHandle(handle.id()))?;
-
         self.current_memory = self.current_memory.saturating_sub(entry.info.memory_bytes);
         info!("Unloaded model {}", handle.id());
         Ok(())
@@ -183,10 +237,11 @@ impl InferenceProvider for InferenceEngine {
             .models
             .get(&handle.id())
             .ok_or(InferenceError::InvalidHandle(handle.id()))?;
-
         Ok(entry.info.clone())
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -197,5 +252,26 @@ mod tests {
         let config = EngineConfig::default();
         let engine = InferenceEngine::new(config).unwrap();
         assert_eq!(engine.loaded_model_count(), 0);
+        assert_eq!(engine.memory_usage(), 0);
+    }
+
+    #[test]
+    fn test_missing_model_returns_not_found() {
+        let config = EngineConfig::default();
+        let mut engine = InferenceEngine::new(config).unwrap();
+        let result = engine.load_model(Path::new("/nonexistent/model.gguf"), ModelFormat::Gguf);
+        assert!(matches!(result, Err(InferenceError::ModelNotFound(_))));
+    }
+
+    #[test]
+    fn test_pytorch_format_rejected() {
+        let config = EngineConfig::default();
+        let mut engine = InferenceEngine::new(config).unwrap();
+        // PyTorch format should be rejected without even checking if the file exists.
+        // We create a temp file just to get past the existence check path, but
+        // the format check fires first.
+        let result =
+            engine.load_model(Path::new("/tmp/model.pt"), ModelFormat::PyTorch);
+        assert!(matches!(result, Err(InferenceError::InvalidFormat(_))));
     }
 }

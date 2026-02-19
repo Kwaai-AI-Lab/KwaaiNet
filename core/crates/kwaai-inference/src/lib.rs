@@ -11,19 +11,19 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use kwaai_inference::{InferenceEngine, EngineConfig, ModelFormat};
+//! use std::path::Path;
+//! use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
 //!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
+//! fn main() -> anyhow::Result<()> {
 //!     let config = EngineConfig::default();
 //!     let mut engine = InferenceEngine::new(config)?;
 //!
-//!     // Load a model
-//!     let handle = engine.load_model("model.gguf", ModelFormat::Gguf)?;
+//!     // Load a GGUF model (real weights, no stub)
+//!     let handle = engine.load_model(Path::new("model.gguf"), ModelFormat::Gguf)?;
 //!
-//!     // Run inference
-//!     let output = engine.generate(&handle, "Hello, world!")?;
-//!     println!("{}", output);
+//!     // generate() returns Err until the tokenizer is wired up (next step)
+//!     let info = engine.model_info(&handle)?;
+//!     println!("Loaded: {} ({} vocab, {} ctx)", info.name, info.vocab_size, info.context_length);
 //!
 //!     Ok(())
 //! }
@@ -32,6 +32,7 @@
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod loader;
 pub mod model;
 pub mod tokenizer;
 
