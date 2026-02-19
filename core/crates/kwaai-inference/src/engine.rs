@@ -230,6 +230,7 @@ impl InferenceProvider for InferenceEngine {
             memory_bytes: estimated_memory,
             vocab_size,
             context_length: config.max_seq_len,
+            hidden_dim: config.hidden_dim,
             is_quantized,
             ..Default::default()
         };

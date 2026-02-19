@@ -250,12 +250,36 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Step 5: Initial DHT announcement
     // -----------------------------------------------------------------------
     info!("[5/5] Announcing to DHT...");
-    // Use throughput measured by `kwaainet generate` (cached per-model),
-    // or fall back to a conservative default so the map shows *something*.
-    let (throughput, tps_source) = crate::throughput::load(&config.model)
-        .map(|v| (v, "measured"))
-        .unwrap_or((10.0, "default"));
-    info!("  Throughput: {:.1} tok/s ({})", throughput, tps_source);
+
+    // Determine effective throughput using the Petals formula:
+    //   effective_tps = min(compute_tps, network_rps × relay_penalty)
+    //   network_rps   = download_bps / (hidden_size × 16)
+    let (effective, compute_tps) = if let Some(entry) = crate::throughput::load(&config.model) {
+        info!("  Compute:  {:.1} tok/s (measured, hidden_dim={})", entry.compute_tps, entry.hidden_size);
+        info!("  Measuring network bandwidth (1 MiB probe)...");
+        let dl_bps = crate::throughput::measure_download_bps().await;
+        if dl_bps > 0.0 {
+            info!("  Network:  {:.1} Mbps download", dl_bps / 1_000_000.0);
+        } else {
+            info!("  Network:  measurement failed — using compute limit only");
+        }
+        let using_relay = !config.no_relay;
+        let eff = crate::throughput::effective_tps(&entry, dl_bps, using_relay);
+        info!(
+            "  Effective: {:.1} tok/s (formula: min({:.1}, {:.1}×{}))",
+            eff,
+            entry.compute_tps,
+            if dl_bps > 0.0 { dl_bps / (entry.hidden_size as f64 * 16.0) } else { f64::INFINITY },
+            if using_relay { "0.2" } else { "1.0" },
+        );
+        (eff, entry.compute_tps)
+    } else {
+        let fallback = 10.0_f64;
+        info!("  Throughput: {:.1} tok/s (default — run `kwaainet generate` to measure)", fallback);
+        (fallback, fallback)
+    };
+    let _ = compute_tps; // retained for future re-announce logic
+    let throughput = effective;
     let server_info = DHTServerInfo::new(
         0,
         config.blocks as i32,

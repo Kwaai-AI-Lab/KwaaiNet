@@ -81,6 +81,10 @@ pub struct ModelInfo {
 
     /// Context length
     pub context_length: usize,
+
+    /// Hidden dimension (embedding size per token).
+    /// Used by the Petals throughput formula: network_rps = bandwidth / (hidden_dim × 16 bits).
+    pub hidden_dim: usize,
 }
 
 impl Default for ModelInfo {
@@ -96,6 +100,7 @@ impl Default for ModelInfo {
             quantization: None,
             vocab_size: 0,
             context_length: 0,
+            hidden_dim: 0,
         }
     }
 }

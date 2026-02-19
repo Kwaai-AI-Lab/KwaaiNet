@@ -625,9 +625,13 @@ async fn main() -> Result<()> {
                     // announce a real value to the network map.
                     let tps = engine.last_throughput_tps();
                     if tps > 0.0 {
+                        let hidden_size = engine
+                            .model_info(&handle)
+                            .map(|i| i.hidden_dim)
+                            .unwrap_or(4096);
                         println!();
-                        println!("  Throughput: {:.1} tok/s", tps);
-                        if let Err(e) = throughput::save(&args.model, tps) {
+                        println!("  Throughput: {:.1} tok/s  (hidden_dim={})", tps, hidden_size);
+                        if let Err(e) = throughput::save(&args.model, tps, hidden_size) {
                             eprintln!("  Warning: could not save throughput cache: {e}");
                         }
                     }

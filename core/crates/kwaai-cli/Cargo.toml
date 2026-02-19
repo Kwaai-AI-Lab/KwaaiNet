@@ -60,3 +60,8 @@ kwaai-inference = { path = "../kwaai-inference" }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["signal", "process", "fs"] }
+
+# Enable Metal GPU acceleration on macOS (Apple Silicon / M-series).
+# Cargo merges features from target-specific sections with the base [dependencies] entry.
+[target.'cfg(target_os = "macos")'.dependencies]
+kwaai-inference = { path = "../kwaai-inference", features = ["metal"] }
