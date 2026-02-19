@@ -42,6 +42,16 @@ anyhow = { workspace = true }
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# P2P / DHT protocol
+libp2p = { workspace = true }
+prost = { workspace = true }
+rmp-serde = { workspace = true }
+
+# Not yet in workspace.dependencies
+sha1 = "0.10"
+hex = "0.4"
+rmpv = "1.0"
+
 # KwaaiNet crates
 kwaai-p2p = { path = "../kwaai-p2p" }
 kwaai-hivemind-dht = { path = "../kwaai-hivemind-dht" }
