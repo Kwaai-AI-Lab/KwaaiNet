@@ -9,17 +9,30 @@ use crate::{
     tokenizer::BpeTokenizer,
     ModelConfig,
 };
-use candle_core::{quantized::gguf_file, Device};
+use candle_core::{quantized::gguf_file, Device, Tensor};
 use std::path::Path;
 use tracing::info;
 
 // ── GGUF ─────────────────────────────────────────────────────────────────────
 
 /// Quantized weights — one variant per supported GGUF architecture.
-#[allow(dead_code)] // variants read in the forward-pass step
 pub enum GgufWeights {
     Llama(candle_transformers::models::quantized_llama::ModelWeights),
     Qwen2(candle_transformers::models::quantized_qwen2::ModelWeights),
+}
+
+impl GgufWeights {
+    /// Dispatch the forward pass to the underlying architecture.
+    ///
+    /// `x`         — token-ID tensor of shape `[1, seq_len]`
+    /// `index_pos` — position of the first token in `x` within the full sequence;
+    ///               pass `0` to reset (or cold-start) the internal KV-cache.
+    pub fn forward(&mut self, x: &Tensor, index_pos: usize) -> candle_core::Result<Tensor> {
+        match self {
+            GgufWeights::Llama(w) => w.forward(x, index_pos),
+            GgufWeights::Qwen2(w) => w.forward(x, index_pos),
+        }
+    }
 }
 
 /// Quantized model loaded from a GGUF file.

@@ -34,6 +34,10 @@ pub trait Tokenizer: Send + Sync {
 
     /// Padding token ID, if the model has one.
     fn pad_token_id(&self) -> Option<u32>;
+
+    /// Look up the numeric ID for a token string (e.g. `"<|im_end|>"`).
+    /// Returns `None` if the token is not in the vocabulary.
+    fn token_to_id(&self, token: &str) -> Option<u32>;
 }
 
 // ── BpeTokenizer ──────────────────────────────────────────────────────────────
@@ -221,6 +225,10 @@ impl Tokenizer for BpeTokenizer {
 
     fn pad_token_id(&self) -> Option<u32> {
         self.pad_id
+    }
+
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
     }
 }
 
