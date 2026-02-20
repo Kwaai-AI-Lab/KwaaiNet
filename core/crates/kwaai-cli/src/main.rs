@@ -6,6 +6,7 @@ mod config;
 mod daemon;
 mod display;
 mod health;
+mod map;
 mod monitor;
 mod node;
 mod hf;
@@ -51,6 +52,9 @@ async fn main() -> Result<()> {
         Command::Start(args) => {
             let mut cfg = KwaaiNetConfig::load_or_create()?;
 
+            // Track whether the user explicitly chose a model on the CLI.
+            let explicit_model = args.model.is_some();
+
             // Apply CLI overrides to config
             if let Some(m) = args.model { cfg.model = m; }
             if let Some(b) = args.blocks { cfg.blocks = b; }
@@ -60,6 +64,77 @@ async fn main() -> Result<()> {
             if let Some(ip) = args.public_ip { cfg.public_ip = Some(ip); }
             if let Some(a) = args.announce_addr { cfg.announce_addr = Some(a); }
             if args.no_relay { cfg.no_relay = true; }
+
+            // ── Read the network map and select the best locally-available model ──
+            if !explicit_model {
+                print_box_header("🗺  Reading Network Map");
+                let local_models = ollama::list_local_models();
+                if local_models.is_empty() {
+                    print_warning("No local Ollama models found — using configured model");
+                } else {
+                    println!("  Local models ({}):", local_models.len());
+                    for m in &local_models {
+                        println!("    • {}", m);
+                    }
+                    println!();
+
+                    match map::fetch_map(&cfg.health_monitoring.api_endpoint).await {
+                        Ok(map_state) => {
+                            println!("  Network map ({} model(s)):", map_state.model_reports.len());
+                            for r in &map_state.model_reports {
+                                let avail = local_models
+                                    .iter()
+                                    .any(|l| map::match_score(l, r) > 0);
+                                println!(
+                                    "    {:42}  {:2} server(s)  {}",
+                                    r.short_name,
+                                    r.server_count(),
+                                    if avail { "✓ have locally" } else { "✗ not installed" },
+                                );
+                            }
+                            println!();
+
+                            match map::pick_best_model(&local_models, &map_state, &cfg.model) {
+                                Some(choice) => {
+                                    if choice.ollama_ref != cfg.model {
+                                        print_info(&format!(
+                                            "Switching model  {}  →  {}",
+                                            cfg.model, choice.ollama_ref
+                                        ));
+                                        if let Some(ref mn) = choice.map_name {
+                                            println!("    Map entry: {}  ({} server(s))", mn, choice.server_count);
+                                        }
+                                        cfg.model = choice.ollama_ref;
+                                        // Persist so the daemon child picks it up.
+                                        let _ = cfg.save();
+                                    } else {
+                                        print_success(&format!(
+                                            "Confirmed model: {}",
+                                            cfg.model
+                                        ));
+                                        if let Some(ref mn) = choice.map_name {
+                                            println!("    Map entry: {}  ({} server(s))", mn, choice.server_count);
+                                        }
+                                    }
+                                }
+                                None => {
+                                    print_info(&format!(
+                                        "No local model matched the map — using: {}",
+                                        cfg.model
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            print_warning(&format!(
+                                "Could not reach network map ({e}) — using: {}",
+                                cfg.model
+                            ));
+                        }
+                    }
+                }
+                print_separator();
+            }
 
             // Auto-detect public IP if not set
             if cfg.public_ip.is_none() {

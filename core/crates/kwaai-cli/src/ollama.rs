@@ -15,7 +15,7 @@
 //! exists directly (custom) or only under `<dir>/models/blobs/` (default).
 
 use anyhow::{anyhow, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolve an Ollama model reference to the GGUF blob path on disk.
 ///
@@ -93,6 +93,96 @@ fn find_manifest(model_ref: &str, manifests_root: &PathBuf) -> Result<PathBuf> {
         "Model '{}' is not pulled locally.\nRun: ollama pull {}",
         model_ref, model_ref
     ))
+}
+
+/// List all locally installed Ollama model references (e.g. `"llama3.1:8b"`).
+///
+/// Scans every known Ollama manifests directory in priority order and returns
+/// deduplicated model refs suitable for passing to [`resolve_model_blob`].
+pub fn list_local_models() -> Vec<String> {
+    let home = match std::env::var("HOME") {
+        Ok(h) => PathBuf::from(h),
+        Err(_) => return Vec::new(),
+    };
+
+    // Probe roots in the same priority order as find_ollama_roots().
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(custom) = std::env::var("OLLAMA_MODELS") {
+        roots.push(PathBuf::from(custom).join("manifests"));
+    }
+    for sub in &["Documents/Kwaai/ollama", "Documents/ollama"] {
+        roots.push(home.join(sub).join("manifests"));
+    }
+    roots.push(home.join(".ollama").join("models").join("manifests"));
+
+    let mut models: Vec<String> = Vec::new();
+    for root in &roots {
+        if root.is_dir() {
+            collect_manifest_models(root, root, &mut models);
+        }
+    }
+
+    models.sort();
+    models.dedup();
+    models
+}
+
+/// Recursively walk `dir` under `root` and collect model refs.
+fn collect_manifest_models(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue; // skip .DS_Store, hidden files
+        }
+        if path.is_dir() {
+            collect_manifest_models(root, &path, out);
+        } else if path.is_file() {
+            if let Some(model_ref) = manifest_path_to_ref(&path, root) {
+                out.push(model_ref);
+            }
+        }
+    }
+}
+
+/// Convert a manifest file path to an Ollama model reference.
+///
+/// Expected path structures relative to manifests root:
+/// - `registry.ollama.ai/library/<name>/<tag>` → `"<name>:<tag>"` (or just `"<name>"` for latest)
+/// - `hf.co/<org>/<model>/<tag>`               → `"hf.co/<org>/<model>:<tag>"`
+/// - `<name>/<tag>`                             → `"<name>:<tag>"`
+fn manifest_path_to_ref(manifest: &Path, root: &Path) -> Option<String> {
+    let rel = manifest.strip_prefix(root).ok()?;
+    let parts: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+
+    match parts.as_slice() {
+        // registry.ollama.ai/library/<name>/<tag>
+        [registry, "library", name, tag] if registry.contains('.') => {
+            Some(if *tag == "latest" {
+                name.to_string()
+            } else {
+                format!("{}:{}", name, tag)
+            })
+        }
+        // hf.co/<org>/<model>/<tag>
+        ["hf.co", org, model, tag] => Some(if *tag == "latest" {
+            format!("hf.co/{}/{}", org, model)
+        } else {
+            format!("hf.co/{}/{}:{}", org, model, tag)
+        }),
+        // <name>/<tag>  (flat custom layout)
+        [name, tag] => Some(if *tag == "latest" {
+            name.to_string()
+        } else {
+            format!("{}:{}", name, tag)
+        }),
+        _ => None,
+    }
 }
 
 /// Return `(manifests_root, blobs_root)` by probing the possible Ollama
