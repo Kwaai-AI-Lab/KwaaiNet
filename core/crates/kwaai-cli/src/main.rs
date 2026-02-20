@@ -645,6 +645,82 @@ async fn main() -> Result<()> {
         }
 
         // -------------------------------------------------------------------
+        // benchmark
+        // -------------------------------------------------------------------
+        Command::Benchmark(args) => {
+            let cfg = KwaaiNetConfig::load_or_create()?;
+            let model = args.model.as_deref().unwrap_or(&cfg.model).to_string();
+
+            print_box_header("⚡ KwaaiNet Benchmark");
+            println!("  Model:  {}", model);
+            println!("  Steps:  {} (+ 5 warm-up)", args.steps);
+            println!();
+
+            let system_ram = {
+                use sysinfo::System;
+                let mut sys = System::new();
+                sys.refresh_memory();
+                sys.total_memory()
+            };
+            let engine_config = EngineConfig {
+                max_memory: ((system_ram as f64 * 0.85) as usize)
+                    .max(4 * 1024 * 1024 * 1024),
+                ..EngineConfig::default()
+            };
+
+            let mut engine = match InferenceEngine::new(engine_config) {
+                Ok(e) => e,
+                Err(e) => { print_error(&format!("Engine init failed: {e}")); return Ok(()); }
+            };
+
+            let is_hf = model.contains('/') && !model.starts_with("hf.co/");
+            let handle = if is_hf {
+                let snapshot = match hf::resolve_snapshot(&model) {
+                    Ok(p) => p,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                };
+                println!("  Loading SafeTensors shards…");
+                match engine.load_model(&snapshot, ModelFormat::SafeTensors) {
+                    Ok(h) => h,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                }
+            } else {
+                let blob = match ollama::resolve_model_blob(&model) {
+                    Ok(p) => p,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                };
+                println!("  Loading GGUF blob…");
+                match engine.load_model(&blob, ModelFormat::Gguf) {
+                    Ok(h) => h,
+                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                }
+            };
+
+            let info = engine.model_info(&handle).ok();
+            let hidden_size = info.as_ref().map(|i| i.hidden_dim).unwrap_or(4096);
+            println!("  Model loaded.  (hidden_dim={})", hidden_size);
+            println!();
+            println!("  Warming up…");
+
+            match engine.benchmark(&handle, args.steps) {
+                Ok(tps) => {
+                    println!();
+                    print_success(&format!("Throughput: {:.1} tok/s", tps));
+                    println!("  Steps:    {}", args.steps);
+                    println!("  Device:   {:?}", engine.device());
+                    if let Err(e) = throughput::save(&model, tps, hidden_size) {
+                        eprintln!("  Warning: could not save throughput cache: {e}");
+                    } else {
+                        println!("  Cached ✓  (~/.kwaainet/throughput_cache.json)");
+                    }
+                }
+                Err(e) => print_error(&format!("Benchmark failed: {e}")),
+            }
+
+            print_separator();
+        }
+
+        // -------------------------------------------------------------------
         // setup
         // -------------------------------------------------------------------
         Command::Setup => {

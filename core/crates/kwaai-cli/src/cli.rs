@@ -64,6 +64,9 @@ pub enum Command {
     /// Generate text from a prompt (tokenizer smoke-test)
     Generate(GenerateArgs),
 
+    /// Benchmark inference throughput and save to cache
+    Benchmark(BenchmarkArgs),
+
     /// Initial setup
     Setup,
 
@@ -248,6 +251,21 @@ pub struct GenerateArgs {
 
     /// Prompt to tokenize (and eventually generate from)
     pub prompt: String,
+}
+
+// ---------------------------------------------------------------------------
+// benchmark
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct BenchmarkArgs {
+    /// Model to benchmark (Ollama: `llama3.1:8b`, HF: `owner/model`).
+    /// Defaults to the model in ~/.kwaainet/config.yaml.
+    pub model: Option<String>,
+
+    /// Number of decode steps to time (after a warm-up pass).
+    #[arg(long, default_value = "20")]
+    pub steps: usize,
 }
 
 // ---------------------------------------------------------------------------

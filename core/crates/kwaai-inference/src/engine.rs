@@ -105,6 +105,136 @@ impl InferenceEngine {
     }
 }
 
+// ── Benchmark (not part of the trait, called directly by the CLI) ─────────────
+
+impl InferenceEngine {
+    /// Measure decode throughput (tok/s) without producing output text.
+    ///
+    /// Mirrors the Petals approach: run a fixed number of synthetic decode
+    /// steps rather than a full generation so the measurement completes in
+    /// under a second regardless of model size.
+    ///
+    /// Pass 1 (warm-up, `WARMUP_STEPS` steps): primes Metal shader caches and
+    /// the KV-cache data structures so the measurement pass sees steady-state
+    /// performance.
+    /// Pass 2 (measurement, `n_steps` steps): timed; result stored in
+    /// `last_decode_tps` and returned.
+    pub fn benchmark(&self, handle: &ModelHandle, n_steps: usize) -> InferenceResult<f64> {
+        const WARMUP_STEPS: usize = 5;
+        const BENCH_PROMPT: &str = "The sky is";
+
+        let entry = self
+            .models
+            .get(&handle.id())
+            .ok_or(InferenceError::InvalidHandle(handle.id()))?;
+
+        let mut logits_processor = LogitsProcessor::new(42, Some(0.0), None);
+
+        let tps = match &entry.weights {
+            LoadedWeights::Gguf(m) => {
+                let mut guard = m.lock().unwrap();
+
+                let mut prompt_tokens = guard.tokenizer.encode(BENCH_PROMPT)?;
+                if let Some(bos) = guard.tokenizer.bos_token_id() {
+                    if Some(bos) != guard.tokenizer.eos_token_id() {
+                        prompt_tokens.insert(0, bos);
+                    }
+                }
+
+                // Run one prefill + n decode steps.
+                let run_steps = |guard: &mut GgufModel,
+                                 lp: &mut LogitsProcessor,
+                                 tokens: &[u32],
+                                 steps: usize|
+                 -> InferenceResult<u32> {
+                    let t = Tensor::new(tokens, &self.device)
+                        .map_err(InferenceError::from)?
+                        .unsqueeze(0)
+                        .map_err(InferenceError::from)?;
+                    let logits = guard.weights.forward(&t, 0).map_err(InferenceError::from)?;
+                    let logits = logits.squeeze(0).map_err(InferenceError::from)?;
+                    let mut next = lp.sample(&logits).map_err(InferenceError::from)?;
+                    for pos in tokens.len()..tokens.len() + steps {
+                        let tt = Tensor::new(&[next], &self.device)
+                            .map_err(InferenceError::from)?
+                            .unsqueeze(0)
+                            .map_err(InferenceError::from)?;
+                        let logits = guard.weights.forward(&tt, pos).map_err(InferenceError::from)?;
+                        let logits = logits.squeeze(0).map_err(InferenceError::from)?;
+                        next = lp.sample(&logits).map_err(InferenceError::from)?;
+                    }
+                    Ok(next)
+                };
+
+                info!("benchmark() GGUF: warm-up ({} steps)…", WARMUP_STEPS);
+                run_steps(&mut guard, &mut logits_processor, &prompt_tokens, WARMUP_STEPS)?;
+
+                info!("benchmark() GGUF: measuring ({} steps)…", n_steps);
+                let start = std::time::Instant::now();
+                run_steps(&mut guard, &mut logits_processor, &prompt_tokens, n_steps)?;
+                let secs = start.elapsed().as_secs_f64();
+
+                let tps = n_steps as f64 / secs;
+                self.last_decode_tps.store(tps.to_bits(), Ordering::Relaxed);
+                info!("benchmark() GGUF: {:.1} tok/s ({} steps in {:.3}s)", tps, n_steps, secs);
+                tps
+            }
+
+            LoadedWeights::SafeTensors(m) => {
+                let guard = m.lock().unwrap();
+
+                let mut prompt_tokens = guard.tokenizer.encode(BENCH_PROMPT)?;
+                if let Some(bos) = guard.tokenizer.bos_token_id() {
+                    if Some(bos) != guard.tokenizer.eos_token_id() {
+                        prompt_tokens.insert(0, bos);
+                    }
+                }
+
+                let run_steps = |lp: &mut LogitsProcessor,
+                                 tokens: &[u32],
+                                 steps: usize|
+                 -> InferenceResult<u32> {
+                    let mut cache =
+                        Cache::new(true, DType::F16, &guard.llama_config, &self.device)
+                            .map_err(InferenceError::from)?;
+                    let t = Tensor::new(tokens, &self.device)
+                        .map_err(InferenceError::from)?
+                        .unsqueeze(0)
+                        .map_err(InferenceError::from)?;
+                    let logits = guard.model.forward(&t, 0, &mut cache).map_err(InferenceError::from)?;
+                    let logits = logits.squeeze(0).map_err(InferenceError::from)?;
+                    let mut next = lp.sample(&logits).map_err(InferenceError::from)?;
+                    for pos in tokens.len()..tokens.len() + steps {
+                        let tt = Tensor::new(&[next], &self.device)
+                            .map_err(InferenceError::from)?
+                            .unsqueeze(0)
+                            .map_err(InferenceError::from)?;
+                        let logits = guard.model.forward(&tt, pos, &mut cache).map_err(InferenceError::from)?;
+                        let logits = logits.squeeze(0).map_err(InferenceError::from)?;
+                        next = lp.sample(&logits).map_err(InferenceError::from)?;
+                    }
+                    Ok(next)
+                };
+
+                info!("benchmark() SafeTensors: warm-up ({} steps)…", WARMUP_STEPS);
+                run_steps(&mut logits_processor, &prompt_tokens, WARMUP_STEPS)?;
+
+                info!("benchmark() SafeTensors: measuring ({} steps)…", n_steps);
+                let start = std::time::Instant::now();
+                run_steps(&mut logits_processor, &prompt_tokens, n_steps)?;
+                let secs = start.elapsed().as_secs_f64();
+
+                let tps = n_steps as f64 / secs;
+                self.last_decode_tps.store(tps.to_bits(), Ordering::Relaxed);
+                info!("benchmark() SafeTensors: {:.1} tok/s ({} steps in {:.3}s)", tps, n_steps, secs);
+                tps
+            }
+        };
+
+        Ok(tps)
+    }
+}
+
 // ── InferenceProvider impl ────────────────────────────────────────────────────
 
 #[async_trait]
