@@ -11,12 +11,16 @@
 **Latest Achievements:**
 - ✅ **`kwaainet start --daemon`** — one command starts a fully managed background node, confirmed **online** on [map.kwaai.ai](https://map.kwaai.ai)
 - ✅ **Native Rust CLI** — `kwaainet` binary runs nodes directly via `kwaai-p2p` + `kwaai-hivemind-dht` (no Python required)
-- ✅ **Full Map Visibility** — nodes show as **State: online** with correct public IP, geolocation, and multiaddr
+- ✅ **Smart Model Selection** — reads the live network map at startup, cross-references locally installed Ollama models, and auto-selects the best model to serve (most popular on the network that you have locally)
+- ✅ **Canonical DHT Prefix** — uses the map's official `dht_prefix` (e.g. `Llama-3-1-8B-Instruct-hf`) so your node joins the correct swarm instead of creating a broken separate entry
+- ✅ **Metal GPU Inference** — native Apple Silicon GPU acceleration via candle + Metal; **33+ tok/s** on M4 Pro with GGUF Q4_K_M
+- ✅ **`kwaainet benchmark`** — fast throughput measurement (warm-up + 20 timed decode steps, completes in <1 s) saved to cache for accurate DHT announcements
+- ✅ **Direct Connection Detection** — announces `using_relay: false` when a public IP is configured, giving full throughput credit on the map
 - ✅ **Full Petals/Hivemind DHT Compatibility** — DHT announcements, RPC health checks, 120-second re-announcement
 - ✅ **Cross-Platform Support** — Tested on macOS ARM64, Linux, and Windows
-- 🌐 **Live Node**: `KwaaiNet-RUST-Node` running on `unsloth/Llama-3.1-8B-Instruct` blocks 0–8
+- 🌐 **Live Node**: `KwaaiNet-RUST-Node` serving `Llama-3.1-8B-Instruct` blocks 0–7 at **33.2 tok/s**
 
-**What This Means:** A single `kwaainet start --daemon` command launches a production-ready distributed AI node in the background. The node announces itself to the DHT, responds to health monitor RPC queries, and remains visible on the network map — all in native Rust, no Python required.
+**What This Means:** A single `kwaainet start --daemon` command reads the network map, picks the best locally-available model, and launches a production-ready distributed AI node in the background. The node joins the correct DHT swarm, responds to health monitor RPC queries, and stays visible on the network map — all in native Rust, no Python required.
 
 ## Vision
 
@@ -249,10 +253,19 @@ cargo build --release -p kwaai-cli
 
 **First-time setup:**
 ```bash
-kwaainet setup                         # create dirs, write default config
-kwaainet config --set public_ip <YOUR_PUBLIC_IP>   # required for map visibility
+kwaainet setup                                     # create dirs, write default config
+kwaainet config --set public_ip <YOUR_PUBLIC_IP>   # required for map visibility + direct connection
 kwaainet config --set public_name "YourName@kwaai" # shown on the map
-kwaainet calibrate --apply recommended # auto-set block count for your RAM
+kwaainet calibrate --apply recommended             # auto-set block count for your RAM
+```
+
+> **Model selection is automatic.** On startup, `kwaainet` reads the live network map, lists your locally installed Ollama models, and picks the best match. No need to set a model manually unless you want a specific one.
+
+**Measure throughput (run once before starting):**
+```bash
+# Fast benchmark — primes GPU caches, measures 20 decode steps, saves to cache
+kwaainet benchmark
+# → Throughput: 33.2 tok/s  (saved to ~/.kwaainet/throughput_cache.json)
 ```
 
 **Running a node:**
@@ -269,25 +282,29 @@ kwaainet logs --follow
 # Stop the node
 kwaainet stop
 
-# Or run in the foreground (useful for debugging)
-kwaainet start
+# Force a specific model (skip map auto-selection)
+kwaainet start --model llama3.1:8b --daemon
 ```
 
-**What happens when you start:**
-1. 🚀 go-libp2p-daemon spawns, listening on your configured port
-2. 🔗 Registers Hivemind RPC handlers (`rpc_ping`, `rpc_store`, `rpc_find`)
-3. ⏳ Waits 30 s for DHT bootstrap connections to stabilise
-4. 📡 Announces blocks and model info to the DHT network
-5. ✅ Node appears as **online** on [map.kwaai.ai](https://map.kwaai.ai)
-6. 🔄 Re-announces every 120 s to stay visible
+**What happens when you `kwaainet start`:**
+1. 🗺  Fetches the live network map from [map.kwaai.ai](https://map.kwaai.ai)
+2. 🔍 Lists locally installed Ollama models
+3. 🤖 Selects the locally-available model with the most active network servers
+4. 💾 Saves the canonical DHT prefix (e.g. `Llama-3-1-8B-Instruct-hf`) to config
+5. 🚀 go-libp2p-daemon spawns, listening on your configured port
+6. 🔗 Registers Hivemind RPC handlers (`rpc_ping`, `rpc_store`, `rpc_find`)
+7. ⏳ Waits 30 s for DHT bootstrap connections to stabilise
+8. ⚡ Measures network bandwidth; computes `effective_tps = min(compute, network)`
+9. 📡 Announces blocks + model info to the DHT with the correct swarm prefix
+10. ✅ Node appears on [map.kwaai.ai](https://map.kwaai.ai) under the right model
+11. 🔄 Re-announces every 120 s to stay visible
 
 **Configuration:**
 ```bash
 kwaainet config --view                              # print current config
-kwaainet config --set model unsloth/Llama-3.1-8B-Instruct
 kwaainet config --set blocks 8
 kwaainet config --set port 8080
-kwaainet config --set public_ip 203.0.113.1        # your external IP
+kwaainet config --set public_ip 203.0.113.1        # your external IP (enables direct connection)
 kwaainet config --set public_name "MyNode@kwaai"
 ```
 
@@ -295,14 +312,17 @@ kwaainet config --set public_name "MyNode@kwaai"
 
 | Command | Description |
 |---------|-------------|
-| `kwaainet start [--daemon]` | Start the node (foreground or background) |
+| `kwaainet start [--daemon]` | Start the node (reads map, auto-selects model, foreground or background) |
+| `kwaainet start --model <m>` | Start with a specific model (skips map auto-selection) |
 | `kwaainet stop` | Stop the daemon |
 | `kwaainet restart` | Restart the daemon |
 | `kwaainet status` | Show PID, CPU%, memory, uptime |
 | `kwaainet logs [--follow] [--lines N]` | View daemon logs |
 | `kwaainet config --view` | Print current config |
 | `kwaainet config --set KEY VALUE` | Update a config value |
-| `kwaainet calibrate [--apply min\|recommended\|max]` | Estimate optimal block count |
+| `kwaainet benchmark [--steps N]` | Measure decode throughput and save to cache |
+| `kwaainet generate <model> <prompt>` | Run a full generation (also saves throughput) |
+| `kwaainet calibrate [--apply min\|recommended\|max]` | Estimate optimal block count for your RAM |
 | `kwaainet service install\|uninstall\|status` | Manage auto-start service (launchd/systemd) |
 | `kwaainet health-status\|health-enable\|health-disable` | Health monitoring |
 | `kwaainet monitor stats\|alert` | P2P connection statistics and alerts |
