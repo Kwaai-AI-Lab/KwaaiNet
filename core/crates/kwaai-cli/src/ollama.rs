@@ -1,12 +1,18 @@
 //! Resolve an Ollama model reference to the local GGUF blob path.
 //!
-//! Ollama stores models in two places under `~/.ollama/models/`:
-//!   manifests/<registry>/<namespace>/<model>/<tag>  — JSON manifest
-//!   blobs/sha256-<hex>                               — raw content blobs
+//! Ollama can store models in two different directory layouts depending on
+//! how it was configured:
 //!
-//! The manifest's `layers` array contains one entry with
-//! `mediaType = "application/vnd.ollama.image.model"` whose `digest`
-//! (`sha256:<hex>`) maps to the GGUF blob file.
+//! **Default layout** (`~/.ollama`):
+//!   `~/.ollama/models/manifests/<registry>/<namespace>/<model>/<tag>`
+//!   `~/.ollama/models/blobs/sha256-<hex>`
+//!
+//! **Custom layout** (`OLLAMA_MODELS=<path>` or a detected custom dir):
+//!   `<path>/manifests/<registry>/<namespace>/<model>/<tag>`
+//!   `<path>/blobs/sha256-<hex>`
+//!
+//! We detect which layout is in use by checking whether `<dir>/blobs/`
+//! exists directly (custom) or only under `<dir>/models/blobs/` (default).
 
 use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
@@ -18,7 +24,9 @@ use std::path::PathBuf;
 /// - `qwen3:0.6b`                         → library/qwen3:0.6b
 /// - `hf.co/microsoft/bitnet-b1.58-2B-4T-gguf:latest`  → hf.co path
 pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
-    let manifest_path = find_manifest(model_ref)
+    let (models_root, blobs_root) = find_ollama_roots()?;
+
+    let manifest_path = find_manifest(model_ref, &models_root)
         .with_context(|| format!("Cannot locate Ollama manifest for '{model_ref}'"))?;
 
     let content = std::fs::read_to_string(&manifest_path)
@@ -46,8 +54,7 @@ pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
 
     // "sha256:abc123…" → "sha256-abc123…"
     let blob_name = digest.replace(':', "-");
-
-    let blob_path = ollama_home()?.join("models/blobs").join(&blob_name);
+    let blob_path = blobs_root.join(&blob_name);
 
     if !blob_path.exists() {
         return Err(anyhow!(
@@ -62,9 +69,7 @@ pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
 }
 
 /// Find the manifest file for a model reference.
-fn find_manifest(model_ref: &str) -> Result<PathBuf> {
-    let base = ollama_home()?.join("models/manifests");
-
+fn find_manifest(model_ref: &str, manifests_root: &PathBuf) -> Result<PathBuf> {
     // Split off the tag, defaulting to "latest".
     let (name, tag) = model_ref
         .rsplit_once(':')
@@ -74,8 +79,8 @@ fn find_manifest(model_ref: &str) -> Result<PathBuf> {
     //   1. registry.ollama.ai/library/<name>/<tag>  — standard Ollama library
     //   2. <name>/<tag>                              — fully-qualified (hf.co/…)
     let candidates = [
-        base.join("registry.ollama.ai/library").join(name).join(tag),
-        base.join(name).join(tag),
+        manifests_root.join("registry.ollama.ai/library").join(name).join(tag),
+        manifests_root.join(name).join(tag),
     ];
 
     for path in &candidates {
@@ -90,11 +95,40 @@ fn find_manifest(model_ref: &str) -> Result<PathBuf> {
     ))
 }
 
-fn ollama_home() -> Result<PathBuf> {
-    // Respect OLLAMA_MODELS env var if set, otherwise use ~/.ollama
-    if let Ok(custom) = std::env::var("OLLAMA_MODELS") {
-        return Ok(PathBuf::from(custom));
-    }
+/// Return `(manifests_root, blobs_root)` by probing the possible Ollama
+/// storage layouts in priority order:
+///
+/// 1. `OLLAMA_MODELS` env var (custom layout: `$dir/manifests/`, `$dir/blobs/`)
+/// 2. Common macOS custom paths under `~/Documents` (same layout)
+/// 3. Default `~/.ollama/models/` (default layout)
+fn find_ollama_roots() -> Result<(PathBuf, PathBuf)> {
     let home = std::env::var("HOME").map_err(|_| anyhow!("$HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".ollama"))
+    let home = PathBuf::from(home);
+
+    // Candidate roots to probe, in priority order.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 1. Explicit OLLAMA_MODELS override.
+    if let Ok(custom) = std::env::var("OLLAMA_MODELS") {
+        candidates.push(PathBuf::from(custom));
+    }
+
+    // 2. Well-known custom locations (used by the Kwaai desktop app).
+    for sub in &["Documents/Kwaai/ollama", "Documents/ollama"] {
+        candidates.push(home.join(sub));
+    }
+
+    // For each candidate check whether it uses the "custom" layout
+    // (blobs/ directly under the root) and return if found.
+    for dir in &candidates {
+        let blobs = dir.join("blobs");
+        let manifests = dir.join("manifests");
+        if blobs.is_dir() && manifests.is_dir() {
+            return Ok((manifests, blobs));
+        }
+    }
+
+    // 3. Default ~/.ollama with the `models/` subdirectory.
+    let default = home.join(".ollama").join("models");
+    Ok((default.join("manifests"), default.join("blobs")))
 }
