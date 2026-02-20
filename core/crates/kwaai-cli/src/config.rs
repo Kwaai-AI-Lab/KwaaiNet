@@ -74,6 +74,17 @@ pub struct KwaaiNetConfig {
 
     #[serde(default)]
     pub health_monitoring: HealthConfig,
+
+    /// Canonical Hivemind DHT prefix for the selected model
+    /// (e.g. "Llama-3-1-8B-Instruct-hf"), set from the network map.
+    /// Used as the DHT key prefix when announcing blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dht_prefix: Option<String>,
+
+    /// HuggingFace repository URL for the selected model, set from the network map.
+    /// Used in the _petals.models DHT registry entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_repository: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +219,8 @@ impl Default for KwaaiNetConfig {
             no_relay: false,
             initial_peers: default_peers(),
             health_monitoring: HealthConfig::default(),
+            model_dht_prefix: None,
+            model_repository: None,
         }
     }
 }
@@ -275,6 +288,12 @@ impl KwaaiNetConfig {
             .with_context(|| format!("writing {}", cfg_file.display()))?;
         debug!("Saved config to {}", cfg_file.display());
         Ok(())
+    }
+
+    /// Total transformer blocks in the full model (for the _petals.models registry).
+    pub fn model_total_blocks(&self) -> i32 {
+        let m = self.model.to_lowercase();
+        if m.contains("70b") { 80 } else if m.contains("13b") { 40 } else { 32 }
     }
 
     /// Set a top-level key by name (string value coerced to the right type).

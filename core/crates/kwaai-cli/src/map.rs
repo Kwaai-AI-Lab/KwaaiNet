@@ -19,11 +19,14 @@ pub struct MapState {
 
 #[derive(Debug, Deserialize)]
 pub struct MapModelReport {
-    /// HuggingFace-style identifier, e.g. `"unsloth/Llama-3.1-8B-Instruct"`.
+    /// Display name, e.g. `"Llama-3.1-8B-Instruct"`.
     pub short_name: String,
     /// DHT key prefix, e.g. `"Llama-3-1-8B-Instruct-hf"`.
     #[serde(default)]
     pub dht_prefix: String,
+    /// HuggingFace repository URL.
+    #[serde(default)]
+    pub repository: String,
     /// Total transformer blocks in the full model.
     #[serde(default)]
     pub num_blocks: u32,
@@ -116,13 +119,18 @@ pub fn match_score(ollama_ref: &str, map_model: &MapModelReport) -> u32 {
 // Model selection
 // ---------------------------------------------------------------------------
 
-/// Result of picking a model: the Ollama reference to use plus the matching
-/// map model name (for display purposes).
+/// Result of picking a model: the Ollama reference to use plus the canonical
+/// network metadata for DHT announcements.
 pub struct ModelChoice {
     /// Local Ollama model reference, e.g. `"llama3.1:8b"`.
     pub ollama_ref: String,
-    /// Matched map model name, e.g. `"unsloth/Llama-3.1-8B-Instruct"`.
+    /// Matched map display name, e.g. `"Llama-3.1-8B-Instruct"`.
     pub map_name: Option<String>,
+    /// Canonical Hivemind DHT prefix, e.g. `"Llama-3-1-8B-Instruct-hf"`.
+    /// Use this for DHT `rpc_store` keys instead of deriving from the Ollama name.
+    pub dht_prefix: Option<String>,
+    /// HuggingFace repository URL for the `_petals.models` registry.
+    pub repository: Option<String>,
     /// Number of servers currently serving the matched map model.
     pub server_count: usize,
 }
@@ -147,22 +155,18 @@ pub fn pick_best_model(
     }
 
     // Score every local model against the map.
-    let mut scored: Vec<(String, u32, usize, String)> = local_models
+    // Tuple: (ollama_ref, score, server_count, map_report)
+    let mut scored: Vec<(String, u32, usize, &MapModelReport)> = local_models
         .iter()
         .filter_map(|local| {
-            // Find the best-matching map entry for this local model.
             map.model_reports
                 .iter()
                 .filter_map(|r| {
                     let s = match_score(local, r);
-                    if s > 0 {
-                        Some((s, r.server_count(), r.short_name.clone()))
-                    } else {
-                        None
-                    }
+                    if s > 0 { Some((s, r.server_count(), r)) } else { None }
                 })
                 .max_by_key(|&(score, count, _)| score as usize * 100_000 + count)
-                .map(|(score, count, map_name)| (local.clone(), score, count, map_name))
+                .map(|(score, count, report)| (local.clone(), score, count, report))
         })
         .collect();
 
@@ -175,21 +179,30 @@ pub fn pick_best_model(
 
     // If the current model is in the list with a competitive score, keep it.
     if let Some(pos) = scored.iter().position(|(m, _, _, _)| m == current_model) {
-        let (_, cur_score, cur_count, ref cur_map) = scored[pos];
-        let (_, best_score, best_count, _) = scored[0];
-        if cur_score == best_score && best_count <= cur_count + 2 {
+        let (_, cur_score, cur_count, cur_report) = &scored[pos];
+        let (_, best_score, best_count, _) = &scored[0];
+        if cur_score == best_score && best_count <= &(cur_count + 2) {
             return Some(ModelChoice {
                 ollama_ref: current_model.to_string(),
-                map_name: Some(cur_map.clone()),
-                server_count: cur_count,
+                map_name: Some(cur_report.short_name.clone()),
+                dht_prefix: non_empty(&cur_report.dht_prefix),
+                repository: non_empty(&cur_report.repository),
+                server_count: *cur_count,
             });
         }
     }
 
-    let (ref best_local, _, best_count, ref best_map) = scored[0];
+    let (ref best_local, _, best_count, best_report) = scored[0];
     Some(ModelChoice {
         ollama_ref: best_local.clone(),
-        map_name: Some(best_map.clone()),
+        map_name: Some(best_report.short_name.clone()),
+        dht_prefix: non_empty(&best_report.dht_prefix),
+        repository: non_empty(&best_report.repository),
         server_count: best_count,
     })
+}
+
+/// Return `Some(s.clone())` if `s` is non-empty, otherwise `None`.
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() { None } else { Some(s.to_string()) }
 }

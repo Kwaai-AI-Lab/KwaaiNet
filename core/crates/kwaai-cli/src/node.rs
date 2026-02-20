@@ -119,24 +119,13 @@ fn dht_id(raw_key: &str) -> Vec<u8> {
     Sha1::new().chain_update(&packed).finalize().to_vec()
 }
 
-/// Convert a HuggingFace model name to the Hivemind DHT prefix.
+/// Convert a model name to a Hivemind DHT prefix as a fallback.
+/// Prefer using the canonical prefix from the map API (config.model_dht_prefix).
 /// "unsloth/Llama-3.1-8B-Instruct" → "unsloth-Llama-3-1-8B-Instruct"
-fn dht_prefix(model: &str) -> String {
+fn dht_prefix_fallback(model: &str) -> String {
     model.replace('.', "-").replace('/', "-")
 }
 
-fn model_total_blocks(model: &str) -> i32 {
-    let m = model.to_lowercase();
-    if m.contains("70b") { 80 } else if m.contains("13b") { 40 } else { 32 }
-}
-
-fn hf_url(model: &str) -> String {
-    if model.contains('/') {
-        format!("https://huggingface.co/{}", model)
-    } else {
-        format!("https://huggingface.co/meta-llama/{}", model)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -254,6 +243,10 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Determine effective throughput using the Petals formula:
     //   effective_tps = min(compute_tps, network_rps × relay_penalty)
     //   network_rps   = download_bps / (hidden_size × 16)
+    // using_relay: true only if we have no public IP (behind NAT) and relay is allowed.
+    // If a public IP is configured, we're directly reachable — no relay needed.
+    let using_relay = config.public_ip.is_none() && !config.no_relay;
+
     let (effective, compute_tps) = if let Some(entry) = crate::throughput::load(&config.model) {
         info!("  Compute:  {:.1} tok/s (measured, hidden_dim={})", entry.compute_tps, entry.hidden_size);
         info!("  Measuring network bandwidth (1 MiB probe)...");
@@ -263,11 +256,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         } else {
             info!("  Network:  measurement failed — using compute limit only");
         }
-        let using_relay = !config.no_relay;
         let eff = crate::throughput::effective_tps(&entry, dl_bps, using_relay);
         info!(
-            "  Effective: {:.1} tok/s (formula: min({:.1}, {:.1}×{}))",
+            "  Effective: {:.1} tok/s  connection={} (min({:.1}, {:.1}×{}))",
             eff,
+            if using_relay { "relay" } else { "direct" },
             entry.compute_tps,
             if dl_bps > 0.0 { dl_bps / (entry.hidden_size as f64 * 16.0) } else { f64::INFINITY },
             if using_relay { "0.2" } else { "1.0" },
@@ -275,16 +268,38 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         (eff, entry.compute_tps)
     } else {
         let fallback = 10.0_f64;
-        info!("  Throughput: {:.1} tok/s (default — run `kwaainet generate` to measure)", fallback);
+        info!("  Throughput: {:.1} tok/s (default — run `kwaainet benchmark` to measure)", fallback);
         (fallback, fallback)
     };
     let _ = compute_tps; // retained for future re-announce logic
     let throughput = effective;
+
+    // Use the canonical DHT prefix from the map (set during startup model selection).
+    // Falls back to a computed prefix if the map wasn't consulted (e.g. --model override).
+    let prefix = config
+        .model_dht_prefix
+        .clone()
+        .unwrap_or_else(|| dht_prefix_fallback(&config.model));
+    let repository = config
+        .model_repository
+        .clone()
+        .unwrap_or_else(|| {
+            if config.model.contains('/') {
+                format!("https://huggingface.co/{}", config.model)
+            } else {
+                format!("https://huggingface.co/meta-llama/{}", config.model)
+            }
+        });
+
+    info!("  DHT prefix:  {}", prefix);
+    info!("  Repository:  {}", repository);
+    info!("  Using relay: {}", using_relay);
+
     let server_info = DHTServerInfo::new(
         0,
         config.blocks as i32,
         &public_name,
-        !config.no_relay,
+        using_relay,
         throughput,
     );
     announce(
@@ -292,7 +307,9 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         peer_id,
         &storage,
         &bootstrap_peers,
-        &config.model,
+        &prefix,
+        &repository,
+        config.model_total_blocks(),
         0,
         config.blocks as i32,
         &server_info,
@@ -337,7 +354,8 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 info!("Re-announcing to DHT...");
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
-                    &config.model, 0, config.blocks as i32, &server_info,
+                    &prefix, &repository, config.model_total_blocks(),
+                    0, config.blocks as i32, &server_info,
                 ).await {
                     warn!("Re-announce failed: {}", e);
                 }
@@ -366,12 +384,13 @@ async fn announce(
     peer_id: PeerId,
     storage: &SharedStorage,
     bootstrap_peers: &[String],
-    model: &str,
+    prefix: &str,
+    repository: &str,
+    total_blocks: i32,
     start_block: i32,
     end_block: i32,
     server_info: &DHTServerInfo,
 ) -> Result<()> {
-    let prefix = dht_prefix(model);
     info!("DHT prefix: {} (blocks .{} – .{})", prefix, start_block, end_block - 1);
 
     let info_bytes = server_info.to_msgpack()?;
@@ -412,8 +431,8 @@ async fn announce(
 
     // Model registry entry
     let model_info = ModelInfo {
-        num_blocks: model_total_blocks(model),
-        repository: hf_url(model),
+        num_blocks: total_blocks,
+        repository: repository.to_string(),
     };
     let registry_req = StoreRequest {
         auth: Some(RequestAuthInfo::new()),

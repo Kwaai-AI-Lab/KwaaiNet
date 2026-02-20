@@ -101,21 +101,25 @@ async fn main() -> Result<()> {
                                             "Switching model  {}  →  {}",
                                             cfg.model, choice.ollama_ref
                                         ));
-                                        if let Some(ref mn) = choice.map_name {
-                                            println!("    Map entry: {}  ({} server(s))", mn, choice.server_count);
-                                        }
                                         cfg.model = choice.ollama_ref;
-                                        // Persist so the daemon child picks it up.
-                                        let _ = cfg.save();
                                     } else {
                                         print_success(&format!(
                                             "Confirmed model: {}",
                                             cfg.model
                                         ));
-                                        if let Some(ref mn) = choice.map_name {
-                                            println!("    Map entry: {}  ({} server(s))", mn, choice.server_count);
-                                        }
                                     }
+                                    if let Some(ref mn) = choice.map_name {
+                                        println!("    Map entry:  {}  ({} server(s))", mn, choice.server_count);
+                                    }
+                                    if let Some(ref dp) = choice.dht_prefix {
+                                        println!("    DHT prefix: {}", dp);
+                                        cfg.model_dht_prefix = Some(dp.clone());
+                                    }
+                                    if let Some(ref repo) = choice.repository {
+                                        cfg.model_repository = Some(repo.clone());
+                                    }
+                                    // Persist so the daemon child picks it up.
+                                    let _ = cfg.save();
                                 }
                                 None => {
                                     print_info(&format!(
