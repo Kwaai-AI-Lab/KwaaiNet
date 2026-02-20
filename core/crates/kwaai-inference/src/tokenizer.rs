@@ -135,6 +135,42 @@ impl BpeTokenizer {
         let pad_id = gguf_u32(gguf, "tokenizer.ggml.padding_token_id")
             .or_else(|| find_token_id(&token_strs, &["<pad>", "[PAD]"]));
 
+        // ── Added (special) tokens ───────────────────────────────────────────
+        // GGUF stores per-token types: 0=NORMAL, 1=UNKNOWN, 2=CONTROL,
+        // 3=USER_DEFINED, 4=UNUSED, 5=BYTE.  Control tokens (type 2) MUST be
+        // registered as `added_tokens` with `special: true` in the HuggingFace
+        // tokenizer JSON.  Without this the BPE pre-tokenizer splits strings
+        // like `<|eot_id|>` into subword pieces instead of treating them as a
+        // single atomic token, so the stop-token ID never appears in the
+        // generated sequence and generation never terminates at EOS.
+        let token_types = gguf_u32_array(gguf, "tokenizer.ggml.token_type")
+            .unwrap_or_default();
+
+        let added_tokens: Vec<Value> = token_strs
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| {
+                let is_control = token_types.get(*i).copied().unwrap_or(0) == 2;
+                // Heuristic fallback when token_type metadata is absent: treat
+                // any token wrapped in `<| |>` as special (covers Llama 3,
+                // Qwen, Phi-3, etc.).
+                let looks_special = s.starts_with("<|") && s.ends_with("|>");
+                is_control || looks_special
+            })
+            .map(|(i, s)| {
+                json!({
+                    "id": i,
+                    "content": s,
+                    "single_word": false,
+                    "lstrip": false,
+                    "rstrip": false,
+                    "normalized": false,
+                    "special": true
+                })
+            })
+            .collect();
+        let n_special = added_tokens.len();
+
         // ── Construct tokenizer JSON ─────────────────────────────────────────
         // Serialise vocab and merges into the HuggingFace tokenizer JSON schema
         // and load via `HfTokenizer::from_str`.  This sidesteps internal hasher
@@ -149,7 +185,7 @@ impl BpeTokenizer {
             "version": "1.0",
             "truncation": null,
             "padding": null,
-            "added_tokens": [],
+            "added_tokens": added_tokens,
             "normalizer": null,
             "pre_tokenizer": {
                 "type": "ByteLevel",
@@ -185,7 +221,7 @@ impl BpeTokenizer {
         })?;
 
         info!(
-            "Built GGUF tokenizer: vocab={n}, merges={}, bos={:?}, eos={:?}",
+            "Built GGUF tokenizer: vocab={n}, merges={}, bos={:?}, eos={:?}, special_tokens={n_special}",
             merges_raw.len(),
             bos_id,
             eos_id,
@@ -246,6 +282,23 @@ fn gguf_string_array(ct: &gguf_file::Content, key: &str) -> Result<Vec<String>, 
             .collect(),
         None => Err(format!("key '{key}' not found")),
         _ => Err(format!("key '{key}' is not an array")),
+    }
+}
+
+fn gguf_u32_array(ct: &gguf_file::Content, key: &str) -> Option<Vec<u32>> {
+    use gguf_file::Value;
+    match ct.metadata.get(key)? {
+        Value::Array(arr) => arr
+            .iter()
+            .map(|v| match v {
+                Value::U32(n) => Some(*n),
+                Value::I32(n) if *n >= 0 => Some(*n as u32),
+                Value::U64(n) => Some(*n as u32),
+                Value::I64(n) if *n >= 0 => Some(*n as u32),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
     }
 }
 
