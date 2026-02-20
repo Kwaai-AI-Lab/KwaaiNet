@@ -67,6 +67,9 @@ pub enum Command {
     /// Benchmark inference throughput and save to cache
     Benchmark(BenchmarkArgs),
 
+    /// Serve an OpenAI-compatible API backed by the local model
+    Serve(ServeArgs),
+
     /// Initial setup
     Setup,
 
@@ -266,6 +269,21 @@ pub struct BenchmarkArgs {
     /// Number of decode steps to time (after a warm-up pass).
     #[arg(long, default_value = "20")]
     pub steps: usize,
+}
+
+// ---------------------------------------------------------------------------
+// serve
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct ServeArgs {
+    /// Model to load (Ollama: `llama3.1:8b`, HF: `owner/model`).
+    /// Defaults to the model in ~/.kwaainet/config.yaml.
+    pub model: Option<String>,
+
+    /// HTTP port for the OpenAI-compatible API
+    #[arg(long, default_value = "11435")]
+    pub port: u16,
 }
 
 // ---------------------------------------------------------------------------

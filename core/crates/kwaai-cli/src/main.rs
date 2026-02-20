@@ -1,5 +1,6 @@
 //! kwaainet – KwaaiNet node CLI
 
+mod api;
 mod calibration;
 mod cli;
 mod config;
@@ -20,7 +21,7 @@ use clap::Parser;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use cli::{Cli, Command, MonitorAction, ServiceAction};
+use cli::{Cli, Command, MonitorAction, ServiceAction, ServeArgs};
 use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
 use config::KwaaiNetConfig;
 use daemon::DaemonManager;
@@ -800,6 +801,13 @@ async fn main() -> Result<()> {
         }
 
         // -------------------------------------------------------------------
+        // serve  — OpenAI-compatible API server
+        // -------------------------------------------------------------------
+        Command::Serve(args) => {
+            serve_command(args).await?;
+        }
+
+        // -------------------------------------------------------------------
         // setup
         // -------------------------------------------------------------------
         Command::Setup => {
@@ -822,6 +830,68 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Serve helper
+// ---------------------------------------------------------------------------
+
+async fn serve_command(args: ServeArgs) -> Result<()> {
+    let cfg = KwaaiNetConfig::load_or_create()?;
+    let model = args.model.unwrap_or_else(|| cfg.model.clone());
+
+    print_box_header("🌐 KwaaiNet OpenAI API Server");
+    println!("  Model:  {}", model);
+    println!("  Port:   {}", args.port);
+    println!();
+
+    let system_ram = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        sys.total_memory()
+    };
+    let engine_config = EngineConfig {
+        max_memory: ((system_ram as f64 * 0.85) as usize).max(4 * 1024 * 1024 * 1024),
+        ..EngineConfig::default()
+    };
+
+    let mut engine = match InferenceEngine::new(engine_config) {
+        Ok(e) => e,
+        Err(e) => {
+            print_error(&format!("Engine init failed: {e}"));
+            return Ok(());
+        }
+    };
+
+    let is_hf = model.contains('/') && !model.starts_with("hf.co/");
+    let handle = if is_hf {
+        let snapshot = match hf::resolve_snapshot(&model) {
+            Ok(p) => p,
+            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+        };
+        println!("  Loading SafeTensors shards…");
+        match engine.load_model(&snapshot, ModelFormat::SafeTensors) {
+            Ok(h) => h,
+            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+        }
+    } else {
+        let blob = match ollama::resolve_model_blob(&model) {
+            Ok(p) => p,
+            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+        };
+        println!("  Loading GGUF blob…");
+        match engine.load_model(&blob, ModelFormat::Gguf) {
+            Ok(h) => h,
+            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+        }
+    };
+
+    print_success("Model loaded — starting API server");
+    print_separator();
+
+    api::run_api_server(args.port, engine, handle, model).await?;
     Ok(())
 }
 
