@@ -10,6 +10,7 @@
 
 **Latest Achievements:**
 - ✅ **`kwaainet start --daemon`** — one command starts a fully managed background node, confirmed **online** on [map.kwaai.ai](https://map.kwaai.ai)
+- ✅ **`kwaainet serve`** — OpenAI-compatible API server (`/v1/models`, `/v1/chat/completions`, `/v1/completions` with SSE streaming); any OpenAI client library works out of the box
 - ✅ **Native Rust CLI** — `kwaainet` binary runs nodes directly via `kwaai-p2p` + `kwaai-hivemind-dht` (no Python required)
 - ✅ **Smart Model Selection** — reads the live network map at startup, cross-references locally installed Ollama models, and auto-selects the best model to serve (most popular on the network that you have locally)
 - ✅ **Canonical DHT Prefix** — uses the map's official `dht_prefix` (e.g. `Llama-3-1-8B-Instruct-hf`) so your node joins the correct swarm instead of creating a broken separate entry
@@ -268,6 +269,24 @@ kwaainet benchmark
 # → Throughput: 33.2 tok/s  (saved to ~/.kwaainet/throughput_cache.json)
 ```
 
+**Serve the OpenAI-compatible API:**
+```bash
+# Load your Ollama model and start the API server (default port 11435)
+kwaainet serve
+
+# Use a specific model or port
+kwaainet serve llama3.1:8b --port 11434
+
+# Test with curl
+curl http://localhost:11435/v1/models
+curl http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"Hello!"}]}'
+
+# Works with any OpenAI client library — just set base_url:
+# openai.base_url = "http://localhost:11435/v1"
+```
+
 **Running a node:**
 ```bash
 # Start as a background daemon (recommended)
@@ -320,6 +339,7 @@ kwaainet config --set public_name "MyNode@kwaai"
 | `kwaainet logs [--follow] [--lines N]` | View daemon logs |
 | `kwaainet config --view` | Print current config |
 | `kwaainet config --set KEY VALUE` | Update a config value |
+| `kwaainet serve [model] [--port N]` | OpenAI-compatible API server (`/v1/chat/completions`, SSE streaming) |
 | `kwaainet benchmark [--steps N]` | Measure decode throughput and save to cache |
 | `kwaainet generate <model> <prompt>` | Run a full generation (also saves throughput) |
 | `kwaainet calibrate [--apply min\|recommended\|max]` | Estimate optimal block count for your RAM |
