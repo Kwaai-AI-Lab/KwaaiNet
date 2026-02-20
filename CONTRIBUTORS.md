@@ -61,6 +61,36 @@ The following areas need contributors. Pick what interests you and open a PR or 
 - [ ] Streaming token output over the RPC interface
 - [ ] Multi-model routing (select model by capability or load)
 
+### Windows Support — **needs a Windows dev machine**
+
+> **Context**: The codebase builds and runs on Windows for dev/testing, but several
+> production-critical features are Unix-only stubs. All items below require testing
+> and iteration on a real Windows machine (not WSL).
+
+**Graceful shutdown (Priority 1)**
+- [ ] Replace `taskkill /F` in `daemon.rs` with a named-event or named-pipe signal
+      so the node can flush DHT announcements and close peer connections cleanly
+- [ ] Wire the Windows shutdown signal into the `shutdown_signal()` future in `node.rs`
+      (currently only `Ctrl+C` is caught; SIGTERM equivalent is missing)
+
+**Daemon instance locking (Priority 1)**
+- [ ] Replace the `flock` no-op in `daemon.rs::try_acquire_lock` with a Windows
+      named mutex (`CreateMutexW`) so a second `kwaainet start` fails fast instead
+      of colliding on the same port
+
+**Auto-start service integration (Priority 2)**
+- [ ] Implement `WindowsServiceManager` in `service.rs` (currently returns
+      `Err("not supported")`) — install/uninstall/status via the Windows Service
+      Control Manager API or a bundled NSSM/winsw wrapper
+
+**Home directory (Priority 2)**
+- [ ] Fix `dirs_sys::home_dir()` in `config.rs` to fall back to `USERPROFILE` on
+      Windows so config paths resolve correctly on systems where `HOME` is not set
+
+**Validation**
+- [ ] Smoke-test `kwaainet start`, `status`, `stop`, `serve` end-to-end on Windows 10/11
+- [ ] Add Windows to the CI platform matrix (see Testing section below)
+
 ### P2P Networking (Hivemind / libp2p)
 - [ ] Implement NAT traversal improvements (relay fallback, hole-punching)
 - [ ] Add peer reputation / scoring system
