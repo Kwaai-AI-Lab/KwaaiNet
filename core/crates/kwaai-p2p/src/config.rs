@@ -14,12 +14,12 @@ pub const KWAAI_BOOTSTRAP_SERVERS: &[&str] = &[
 
 /// Legacy Petals/Hivemind bootstrap servers (kept for reference).
 pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
-    // bootstrap-1.kwaai.ai - Primary Kwaai bootstrap
-    "/ip4/18.219.43.67/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-    
-    // uncomment for local developemnt bootstrap server
+    // bootstrap-1.kwaai.ai (18.219.43.67) - Primary Kwaai bootstrap
+    "/ip4/18.219.43.67/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+    // bootstrap-2.kwaai.ai (52.23.252.2) - Secondary Kwaai bootstrap
+    "/ip4/52.23.252.2/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+    // uncomment for local development bootstrap server
     //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
-    
 ];
 
 /// Configuration for the P2P network

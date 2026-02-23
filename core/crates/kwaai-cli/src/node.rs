@@ -425,9 +425,12 @@ async fn announce(
     // Store locally
     { let g = storage.read().await; let _ = g.handle_store(block_req.clone()); }
 
-    // Push to bootstrap peer
-    send_to_bootstrap(client, bootstrap_peers, block_req).await;
-    info!("✅ Announced {} blocks", end_block - start_block);
+    // Push to bootstrap peers
+    if send_to_bootstrap(client, bootstrap_peers, block_req).await {
+        info!("✅ Announced {} blocks", end_block - start_block);
+    } else {
+        warn!("❌ Block announcement failed — node will not appear on map");
+    }
 
     // Model registry entry
     let model_info = ModelInfo {
@@ -445,25 +448,29 @@ async fn announce(
     };
 
     { let g = storage.read().await; let _ = g.handle_store(registry_req.clone()); }
-    send_to_bootstrap(client, bootstrap_peers, registry_req).await;
-    info!("✅ Announced model to _petals.models registry");
+    if send_to_bootstrap(client, bootstrap_peers, registry_req).await {
+        info!("✅ Announced model to _petals.models registry");
+    } else {
+        warn!("❌ Model registry announcement failed");
+    }
 
     Ok(())
 }
 
 /// Connect to all bootstrap peers and send a STORE request to each.
+/// Returns true if at least one peer accepted the store.
 async fn send_to_bootstrap(
     client: &mut kwaai_p2p_daemon::P2PClient,
     bootstrap_peers: &[String],
     req: StoreRequest,
-) {
-    if bootstrap_peers.is_empty() { return; }
+) -> bool {
+    if bootstrap_peers.is_empty() { return false; }
 
     use prost::Message;
     let mut bytes = Vec::new();
     if let Err(e) = req.encode(&mut bytes) {
         warn!("Encode STORE request failed: {}", e);
-        return;
+        return false;
     }
 
     let mut succeeded = 0usize;
@@ -499,6 +506,7 @@ async fn send_to_bootstrap(
     if succeeded == 0 {
         warn!("DHT STORE failed on all {} bootstrap peers", bootstrap_peers.len());
     }
+    succeeded > 0
 }
 
 // ---------------------------------------------------------------------------
