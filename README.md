@@ -9,6 +9,8 @@
 ## ✅ Status: Network Live & Operational
 
 **Latest Achievements:**
+- ✅ **Decentralized Trust Graph** — `kwaai-trust` crate implements the ToIP/DIF DTG framework: W3C Verifiable Credentials, `did:peer:` DIDs derived from libp2p PeerIds, Ed25519 signature verification, credential storage at `~/.kwaainet/credentials/`, weighted trust scoring with time-decay, and `kwaainet identity` CLI commands. Trust attestations are included in DHT announcements; map.kwaai.ai can now display trust badges alongside nodes
+- ✅ **Persistent Node Identity** — each node generates and stores a permanent Ed25519 keypair at `~/.kwaainet/identity.key`; the same `PeerId` (and `did:peer:`) is used across restarts, making Verifiable Credentials meaningful
 - ✅ **Bootstrap Resilience** — node announces to all configured bootstrap peers in parallel; if the primary is down the secondary takes over automatically, so `kwaainet start` succeeds even when `bootstrap-1` is unreachable
 - ✅ **`kwaainet start --daemon`** — one command starts a fully managed background node, confirmed **online** on [map.kwaai.ai](https://map.kwaai.ai)
 - ✅ **`kwaainet serve`** — OpenAI-compatible API server (`/v1/models`, `/v1/chat/completions`, `/v1/completions` with SSE streaming); any OpenAI client library works out of the box
@@ -138,10 +140,92 @@ graph LR
 **Fiduciary Nodes** that sign the pledge receive:
 - 🏅 **Trust Badge**: Visible "GliaNet Fiduciary" status on the network map
 - ⚡ **Priority Routing**: Preferred for sensitive/enterprise workloads
-- 🎯 **Enhanced Reputation**: Higher trust score in the network
+- 🎯 **Enhanced Reputation**: `FiduciaryPledgeVC` adds 0.30 to the node's trust score (the single highest-weight credential)
 - 🤝 **Enterprise Eligibility**: Required for GDPR/HIPAA compliant workloads
 
+The pledge is enforced via the trust graph: signing generates a `FiduciaryPledgeVC` issued by the GliaNet Foundation and stored in the node's credential wallet. The credential travels with the node in every DHT announcement. Violation triggers VC revocation, immediately dropping the node's trust score.
+
 > *"By signing the GliaNet Fiduciary Pledge, node operators commit to putting users first—protecting their data, enhancing their experience, and promoting their interests above all else."*
+
+---
+
+## Decentralized Trust Graph (DTG)
+
+KwaaiNet implements the [ToIP/DIF Decentralized Trust Graph](https://trustoverip.org) framework — a four-layer model that gives every node a portable, verifiable reputation without any central authority.
+
+### Layer 1 — Identity (already live)
+
+Every node's libp2p `PeerId` (Ed25519 keypair) is a self-certifying identity anchor, functionally equivalent to a `did:key`. KwaaiNet exposes it as a `did:peer:` DID:
+
+```
+did:peer:QmYyQSo1c1Ym7orWxLYvCuxRjeczyuq4GNGbMaFfkMhp4
+```
+
+The keypair is persisted at `~/.kwaainet/identity.key` so the DID is stable across restarts.
+
+### Layer 2 — Verifiable Credentials
+
+Credentials are cryptographically signed W3C VCs, stored at `~/.kwaainet/credentials/` and included in DHT announcements.
+
+| Credential | Issuer | What it proves | Phase |
+|------------|--------|----------------|-------|
+| `SummitAttendeeVC` | Kwaai summit server | Attended a Kwaai Personal AI Summit | **1 — live** |
+| `FiduciaryPledgeVC` | GliaNet Foundation | Signed the GliaNet Fiduciary Pledge | 2 — Q2 2026 |
+| `VerifiedNodeVC` | Kwaai Foundation | Passed node onboarding checks | 2 — Q2 2026 |
+| `UptimeVC` | Bootstrap servers | Observed uptime ≥ threshold over N days | 3 — Q3 2026 |
+| `ThroughputVC` | Peer nodes | Peer-witnessed throughput within X% of announced | 3 — Q3 2026 |
+| `PeerEndorsementVC` | Any node | "I have transacted with this node reliably" | 4 — Q3 2026 |
+
+### Layer 3 — Trust Scoring
+
+```
+NodeTrustScore = Σ weight(VC_type) × 0.5^(age_days/365)
+```
+
+| Score | Tier | Typical credentials |
+|-------|------|---------------------|
+| ≥ 0.70 | **Trusted** | FiduciaryPledge + VerifiedNode + Uptime |
+| ≥ 0.40 | **Verified** | VerifiedNode present |
+| ≥ 0.10 | **Known** | SummitAttendee or similar |
+| < 0.10 | **Unknown** | No recognised credentials |
+
+Scores are **local to the querier** — your trust graph may differ from mine. A node's earned VCs travel with it if it changes infrastructure. Phase 4 adds full EigenTrust propagation (Sybil-resistant through endorsement-weight decay).
+
+### Layer 4 — Governance
+
+- **Trusted issuers**: GliaNet Foundation (FiduciaryPledge), Kwaai Foundation (VerifiedNode), bootstrap servers (Uptime/Throughput)
+- **Revocation**: `FiduciaryPledgeVC` can be revoked if the pledge is violated
+- **Enterprise routing**: minimum trust score thresholds for HIPAA/GDPR workloads (Q2 2026)
+
+### `kwaainet identity` commands
+
+```bash
+# Show this node's DID, Peer ID, trust tier, and credentials
+kwaainet identity show
+
+# Import a Verifiable Credential (e.g., from a Kwaai summit)
+kwaainet identity import-vc summit-attendee-vc.json
+
+# List all stored credentials
+kwaainet identity list-vcs
+
+# Verify a credential's structure and Ed25519 signature
+kwaainet identity verify-vc some-credential.json
+```
+
+### Summit on-ramp (Phase 1 demo path)
+
+```
+1. Scan QR at Kwaai Personal AI Summit
+         ↓
+2. Register → receive SummitAttendeeVC (signed by summit server)
+         ↓
+3. kwaainet identity import-vc summit-attendee-vc.json
+         ↓
+4. kwaainet start  →  node announces with trust_attestations in DHT
+         ↓
+5. map.kwaai.ai shows trust badge next to your node
+```
 
 ---
 
@@ -312,13 +396,15 @@ kwaainet start --model llama3.1:8b --daemon
 2. 🔍 Lists locally installed Ollama models
 3. 🤖 Selects the locally-available model with the most active network servers
 4. 💾 Saves the canonical DHT prefix (e.g. `Llama-3-1-8B-Instruct-hf`) to config
-5. 🚀 go-libp2p-daemon spawns, listening on your configured port
-6. 🔗 Registers Hivemind RPC handlers (`rpc_ping`, `rpc_store`, `rpc_find`)
-7. ⏳ Waits 30 s for DHT bootstrap connections to stabilise
-8. ⚡ Measures network bandwidth; computes `effective_tps = min(compute, network)`
-9. 📡 Announces blocks + model info to all bootstrap peers (falls back to secondary if primary is down)
-10. ✅ Node appears on [map.kwaai.ai](https://map.kwaai.ai) under the right model
-11. 🔄 Re-announces every 120 s to stay visible
+5. 🔑 Loads (or generates) the persistent identity keypair from `~/.kwaainet/identity.key`
+6. 📜 Loads valid Verifiable Credentials from `~/.kwaainet/credentials/` for this node's DID
+7. 🚀 go-libp2p-daemon spawns with the persistent keypair (`-id`), same PeerId every run
+8. 🔗 Registers Hivemind RPC handlers (`rpc_ping`, `rpc_store`, `rpc_find`)
+9. ⏳ Waits 30 s for DHT bootstrap connections to stabilise
+10. ⚡ Measures network bandwidth; computes `effective_tps = min(compute, network)`
+11. 📡 Announces blocks + model info + trust attestations to all bootstrap peers (falls back to secondary if primary is down)
+12. ✅ Node appears on [map.kwaai.ai](https://map.kwaai.ai) under the right model (with trust badge if credentials present)
+13. 🔄 Re-announces every 120 s to stay visible
 
 **Configuration:**
 ```bash
@@ -350,6 +436,10 @@ kwaainet config --set public_name "MyNode@kwaai"
 | `kwaainet monitor stats\|alert` | P2P connection statistics and alerts |
 | `kwaainet update [--check]` | Check for new releases |
 | `kwaainet setup` | Initialize directories and default config |
+| `kwaainet identity show` | Show node DID, Peer ID, trust tier, and credential summary |
+| `kwaainet identity import-vc <file>` | Import a Verifiable Credential from a JSON file |
+| `kwaainet identity list-vcs` | List all stored Verifiable Credentials |
+| `kwaainet identity verify-vc <file>` | Verify a credential's structure and Ed25519 signature |
 
 **Node appears on the network map within 30–60 seconds of starting.**
 Check it at: **[map.kwaai.ai](http://map.kwaai.ai)**
