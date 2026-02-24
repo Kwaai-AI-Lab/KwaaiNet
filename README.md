@@ -216,11 +216,11 @@ Credentials are cryptographically signed W3C VCs, stored at `~/.kwaainet/credent
 | Credential | Issuer | What it proves | Phase |
 |------------|--------|----------------|-------|
 | `SummitAttendeeVC` | Kwaai summit server | Attended a Kwaai Personal AI Summit | **1 — live** |
-| `FiduciaryPledgeVC` | GliaNet Foundation | Signed the GliaNet Fiduciary Pledge | 2 — Q2 2026 |
-| `VerifiedNodeVC` | Kwaai Foundation | Passed node onboarding checks | 2 — Q2 2026 |
-| `UptimeVC` | Bootstrap servers | Observed uptime ≥ threshold over N days | 3 — Q3 2026 |
-| `ThroughputVC` | Peer nodes | Peer-witnessed throughput within X% of announced | 3 — Q3 2026 |
-| `PeerEndorsementVC` | Any node | "I have transacted with this node reliably" | 4 — Q3 2026 |
+| `FiduciaryPledgeVC` | GliaNet Foundation | Signed the GliaNet Fiduciary Pledge | 2 |
+| `VerifiedNodeVC` | Kwaai Foundation | Passed node onboarding checks | 2 |
+| `UptimeVC` | Bootstrap servers | Observed uptime ≥ threshold over N days | 3 |
+| `ThroughputVC` | Peer nodes | Peer-witnessed throughput within X% of announced | 3 |
+| `PeerEndorsementVC` | Any node | "I have transacted with this node reliably" | 4 |
 
 ### Layer 3 — Trust Scoring
 
@@ -241,7 +241,7 @@ Scores are **local to the querier** — your trust graph may differ from mine. A
 
 - **Trusted issuers**: GliaNet Foundation (FiduciaryPledge), Kwaai Foundation (VerifiedNode), bootstrap servers (Uptime/Throughput)
 - **Revocation**: `FiduciaryPledgeVC` can be revoked if the pledge is violated
-- **Enterprise routing**: minimum trust score thresholds for HIPAA/GDPR workloads (Q2 2026)
+- **Enterprise routing**: minimum trust score thresholds for HIPAA/GDPR workloads (Phase 2)
 
 ### `kwaainet identity` commands
 
@@ -342,25 +342,36 @@ Carbon accountability for distributed computing:
 
 ## Development Roadmap
 
-### Q4 2025: Architecture & Community Preparation
+### ✅ Phase 1: Architecture & Foundation
 - Technical specification finalization
 - Open-source community engagement
 - Development infrastructure and governance frameworks
+- Native Rust CLI (`kwaainet`) with full node lifecycle management
+- Persistent node identity (Ed25519 keypair, `did:peer:` DIDs)
+- Decentralized Trust Graph (W3C Verifiable Credentials, trust scoring)
+- Full Petals/Hivemind DHT compatibility
+- OpenAI-compatible API server (`kwaainet serve`)
+- Metal GPU inference (Apple Silicon, 33+ tok/s)
+- Cross-platform binaries (macOS, Linux, Windows)
 
-### Q1 2026: Foundation Development
-**Core Components:**
-1. **Rust/WASM Core Engine** - Universal inference runtime
-2. **Optional Integration Framework** - Modular storage/identity support
-3. **Browser SDK Development** - One-line website integration
-4. **Enterprise Compliance Tools** - GDPR/HIPAA compliance
-5. **Mobile Foundation** - iOS/Android native apps
-6. **Environmental Tracking** - Carbon accountability
+### Phase 2: Platform Deployment
+- 1K+ nodes
+- Browser SDK — one-line website integration
+- Mobile foundation — iOS/Android native apps
+- Enterprise compliance tools (GDPR/HIPAA)
+- Optional integration framework (modular storage/identity)
+- FiduciaryPledgeVC + VerifiedNodeVC credential issuance
 
-### 2026-2027: Progressive Deployment
-- **Q2 2026**: 1K+ nodes (Platform Deployment)
-- **Q3 2026**: 10K+ nodes (Market Expansion)
-- **Q4 2026**: 100K+ nodes (Enterprise & Edge)
-- **2027+**: OS-level integration toward 1B+ nodes
+### Phase 3: Market Expansion
+- 10K+ nodes
+- UptimeVC + ThroughputVC peer-witnessed credentials
+- Environmental tracking — carbon accountability
+- Enterprise routing (minimum trust score thresholds)
+
+### Phase 4: Scale
+- 100K+ nodes
+- EigenTrust propagation (Sybil-resistant endorsement-weight decay)
+- OS-level integration
 
 ## Community & Governance
 
@@ -549,9 +560,9 @@ KwaaiNet uses a **multi-tiered cross-platform build system**:
 6. Join community discussions and collaboration channels
 
 **For Users:**
-- Browser extension (Coming Q2 2026)
-- Mobile apps (Coming Q2 2026)
-- Website integration SDK (Coming Q2 2026)
+- Browser extension (Phase 2)
+- Mobile apps (Phase 2)
+- Website integration SDK (Phase 2)
 
 ---
 
