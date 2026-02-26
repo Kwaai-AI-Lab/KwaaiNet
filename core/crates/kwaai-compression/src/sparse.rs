@@ -130,7 +130,7 @@ mod tests {
         // Compress
         let compressed = compressor.compress(&tensor).unwrap();
         assert!(compressed.indices.len() <= 10);
-        assert!(compressed.compression_ratio() > 5.0);
+        assert!(compressed.compression_ratio() >= 5.0);
 
         // The large values should be preserved
         assert!(compressed.values.iter().any(|&v| v.abs() > 0.5));

@@ -301,7 +301,7 @@ impl P2PDaemon {
     /// Create a client connected to this daemon
     pub async fn client(&self) -> Result<P2PClient> {
         // Give daemon a moment to start listening
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
         P2PClient::connect(&self.listen_addr).await
     }

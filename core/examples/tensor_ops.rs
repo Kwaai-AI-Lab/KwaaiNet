@@ -164,7 +164,7 @@ fn detect_device() -> Device {
 /// Compute softmax
 fn softmax(x: &Tensor) -> candle_core::Result<Tensor> {
     let max = x.max_keepdim(0)?;
-    let exp = (x.broadcast_sub(&max)?)?.exp()?;
+    let exp = x.broadcast_sub(&max)?.exp()?;
     let sum = exp.sum_keepdim(0)?;
     exp.broadcast_div(&sum)
 }

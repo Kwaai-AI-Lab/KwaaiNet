@@ -154,13 +154,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     swarm.listen_on(listen_addr)?;
 
     // Bootstrap if address provided
-    if let Some(addr) = bootstrap_addr {
+    if let Some(ref addr) = bootstrap_addr {
         info!("Bootstrapping to: {}", addr);
 
         // Extract peer ID from multiaddr
         if let Some(peer_id) = extract_peer_id(&addr) {
             swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
-            swarm.dial(addr)?;
+            swarm.dial(addr.clone())?;
         } else {
             error!("Bootstrap address must include peer ID (/p2p/<peer_id>)");
         }
@@ -220,14 +220,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!("\n  SUCCESS: Stored value in DHT\n");
             }
             SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                result: QueryResult::GetRecord(Ok(get_ok)),
+                result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))),
                 ..
             })) => {
-                for peer_record in get_ok.records {
-                    let value = String::from_utf8_lossy(&peer_record.record.value);
-                    info!("Retrieved record: {:?} = {}", peer_record.record.key, value);
-                    println!("\n  SUCCESS: Retrieved '{}'\n", value);
-                }
+                let value = String::from_utf8_lossy(&peer_record.record.value);
+                info!("Retrieved record: {:?} = {}", peer_record.record.key, value);
+                println!("\n  SUCCESS: Retrieved '{}'\n", value);
+            }
+            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. })),
+                ..
+            })) => {
+                info!("Get record query finished");
             }
             SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
                 result: QueryResult::GetRecord(Err(e)),

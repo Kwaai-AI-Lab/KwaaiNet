@@ -10,7 +10,7 @@
 use candle_core::{Device, DType, Tensor};
 use kwaai_distributed::{
     expert::{Expert, ExpertId, ExpertRegistry, LocalExpert},
-    moe::{DistributedMoE, ExpertRouter, MoEConfig, Routing, TopKRouter},
+    moe::{DistributedMoE, ExpertRouter, MixtureOfExperts, MoEConfig, Routing, TopKRouter},
     DistributedConfig,
 };
 use std::error::Error;

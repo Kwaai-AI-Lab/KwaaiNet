@@ -199,22 +199,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed {
-                    result: QueryResult::GetProviders(Ok(providers)),
+                    result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
                     ..
                 },
             )) => {
-                let provider_count = providers.providers.len();
+                let provider_count = providers.len();
                 info!("Found {} provider(s)", provider_count);
 
                 if provider_count > 0 {
                     println!("\n  SUCCESS: Found {} provider(s) for capability:\n", provider_count);
-                    for provider in &providers.providers {
+                    for provider in &providers {
                         println!("    - {}", provider);
                     }
                     println!();
                 } else {
                     println!("\n  No providers found yet (DHT may still be propagating)\n");
                 }
+            }
+            SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. })),
+                    ..
+                },
+            )) => {
+                info!("Get providers query finished");
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed {
