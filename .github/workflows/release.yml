@@ -22,17 +22,6 @@ jobs:
           - os: macos-latest   # Apple Silicon (M-series)
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-13        # Intel Mac
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            experimental: true  # macos-13 runner availability varies by org
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            experimental: true  # not yet smoke-tested end-to-end
 
     steps:
       - uses: actions/checkout@v4
