@@ -66,14 +66,14 @@ jobs:
         run: cargo build --release -p kwaai-cli --target ${{ matrix.target }}
 
       - name: Build p2pd (Unix)
-        # Explicit build AFTER cargo so this overwrites whatever build.rs
-        # produced, guaranteeing p2pd is present and is the correct arch.
+        # Build to /tmp/p2pd — avoids any ambiguity over core/target/release/
+        # visibility between steps. Staged into /tmp/release-staging/ for packaging.
         if: matrix.archive == 'tar.gz'
         run: |
           git clone --depth 1 --branch v0.5.0.hivemind1 \
             https://github.com/learning-at-home/go-libp2p-daemon.git /tmp/go-libp2p-daemon
           cd /tmp/go-libp2p-daemon
-          go build -o "$GITHUB_WORKSPACE/core/target/release/p2pd" ./p2pd
+          go build -o /tmp/p2pd ./p2pd
 
       - name: Build p2pd (Windows)
         if: matrix.archive == 'zip'
@@ -82,16 +82,18 @@ jobs:
           git clone --depth 1 --branch v0.5.0.hivemind1 `
             https://github.com/learning-at-home/go-libp2p-daemon.git $env:TEMP\go-libp2p-daemon
           cd $env:TEMP\go-libp2p-daemon
-          go build -o "${{ github.workspace }}\core\target\release\p2pd.exe" ./p2pd
+          go build -o $env:TEMP\p2pd.exe ./p2pd
 
       - name: Package (tar.gz — macOS / Linux)
         if: matrix.archive == 'tar.gz'
         run: |
           BIN=core/target/${{ matrix.target }}/release/kwaainet
-          P2PD=core/target/release/p2pd
           ARCHIVE=kwaainet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
           ALIAS=kwaainet-${{ matrix.target }}.tar.gz
-          tar -czf "$ARCHIVE" -C "$(dirname $BIN)" "$(basename $BIN)" -C "$(dirname $P2PD)" "$(basename $P2PD)"
+          mkdir -p /tmp/release-staging
+          cp "$BIN" /tmp/release-staging/kwaainet
+          cp /tmp/p2pd /tmp/release-staging/p2pd
+          tar -czf "$ARCHIVE" -C /tmp/release-staging kwaainet p2pd
           cp "$ARCHIVE" "$ALIAS"
           echo "ASSET_VERSIONED=$ARCHIVE" >> "$GITHUB_ENV"
           echo "ASSET_ALIAS=$ALIAS" >> "$GITHUB_ENV"
@@ -101,7 +103,7 @@ jobs:
         shell: pwsh
         run: |
           $bin   = "core/target/${{ matrix.target }}/release/kwaainet.exe"
-          $p2pd  = "core/target/release/p2pd.exe"
+          $p2pd  = "$env:TEMP\p2pd.exe"
           $out   = "kwaainet-${{ github.ref_name }}-${{ matrix.target }}.zip"
           $alias = "kwaainet-${{ matrix.target }}.zip"
           Compress-Archive -Path $bin,$p2pd -DestinationPath $out
