@@ -76,6 +76,9 @@ pub enum Command {
     /// Manage node identity and verifiable credentials
     Identity(IdentityArgs),
 
+    /// Manage VPK (Virtual Private Knowledge) vector database integration
+    Vpk(VpkArgs),
+
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
     RunNode,
@@ -316,6 +319,61 @@ pub enum IdentityAction {
         /// Path to the VC JSON file to verify
         #[arg(value_name = "FILE")]
         path: std::path::PathBuf,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// vpk
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct VpkArgs {
+    #[command(subcommand)]
+    pub action: VpkAction,
+}
+
+#[derive(Subcommand)]
+pub enum VpkAction {
+    /// Enable VPK integration and start advertising on DHT
+    Enable {
+        /// Operating mode: bob (query-only), eve (storage), or both
+        #[arg(long, value_name = "MODE")]
+        mode: String,
+
+        /// Public HTTP endpoint to advertise to peers (omit for local-only)
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+
+        /// Local VPK REST API port for health checks
+        #[arg(long, default_value = "7432")]
+        port: u16,
+    },
+
+    /// Disable VPK integration and stop DHT advertisement
+    Disable,
+
+    /// Show local VPK health and DHT advertisement status
+    Status,
+
+    /// Discover VPK-capable nodes via DHT
+    Discover,
+
+    /// Shard a knowledge base across Eve nodes discovered via DHT
+    Shard {
+        /// Knowledge base identifier
+        #[arg(long, value_name = "NAME")]
+        kb_id: String,
+
+        /// Number of Eve nodes to distribute shards across
+        #[arg(long, value_name = "N", default_value = "1")]
+        eve_count: usize,
+    },
+
+    /// Resolve shard endpoints for a knowledge base from DHT
+    Resolve {
+        /// Knowledge base identifier
+        #[arg(long, value_name = "NAME")]
+        kb_id: String,
     },
 }
 

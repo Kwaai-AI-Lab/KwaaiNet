@@ -16,6 +16,7 @@ mod ollama;
 mod service;
 mod throughput;
 mod updater;
+mod vpk;
 
 use anyhow::Result;
 use clap::Parser;
@@ -813,6 +814,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Identity(args) => {
             identity::run_identity_command(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // vpk
+        // -------------------------------------------------------------------
+        Command::Vpk(args) => {
+            vpk::run(args).await?;
         }
 
         // -------------------------------------------------------------------

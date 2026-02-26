@@ -69,23 +69,33 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           BIN=core/target/${{ matrix.target }}/release/kwaainet
+          P2PD=core/target/release/p2pd
           ARCHIVE=kwaainet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-          tar -czf "$ARCHIVE" -C "$(dirname $BIN)" "$(basename $BIN)"
-          echo "ASSET=$ARCHIVE" >> "$GITHUB_ENV"
+          ALIAS=kwaainet-${{ matrix.target }}.tar.gz
+          tar -czf "$ARCHIVE" -C "$(dirname $BIN)" "$(basename $BIN)" -C "$(dirname $P2PD)" "$(basename $P2PD)"
+          cp "$ARCHIVE" "$ALIAS"
+          echo "ASSET_VERSIONED=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "ASSET_ALIAS=$ALIAS" >> "$GITHUB_ENV"
 
       - name: Package (zip — Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $bin  = "core/target/${{ matrix.target }}/release/kwaainet.exe"
-          $out  = "kwaainet-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          Compress-Archive -Path $bin -DestinationPath $out
-          echo "ASSET=$out" >> $env:GITHUB_ENV
+          $bin   = "core/target/${{ matrix.target }}/release/kwaainet.exe"
+          $p2pd  = "core/target/release/p2pd.exe"
+          $out   = "kwaainet-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          $alias = "kwaainet-${{ matrix.target }}.zip"
+          Compress-Archive -Path $bin,$p2pd -DestinationPath $out
+          Copy-Item $out $alias
+          echo "ASSET_VERSIONED=$out" >> $env:GITHUB_ENV
+          echo "ASSET_ALIAS=$alias" >> $env:GITHUB_ENV
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
+          files: |
+            ${{ env.ASSET_VERSIONED }}
+            ${{ env.ASSET_ALIAS }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
 

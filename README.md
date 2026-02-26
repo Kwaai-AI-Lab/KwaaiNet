@@ -35,7 +35,7 @@ Pre-built binaries are attached to every [GitHub Release](https://github.com/Kwa
 ```bash
 # Apple Silicon example — replace the filename for your platform
 curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz \
-  | tar -xz && sudo mv kwaainet /usr/local/bin/
+  | tar -xz && sudo mv kwaainet p2pd /usr/local/bin/
 kwaainet setup
 ```
 
@@ -43,7 +43,7 @@ kwaainet setup
 ```powershell
 Invoke-WebRequest -Uri https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-pc-windows-msvc.zip -OutFile kwaainet.zip
 Expand-Archive kwaainet.zip -DestinationPath .
-# Move kwaainet.exe to a directory on your PATH
+# Move kwaainet.exe and p2pd.exe to a directory on your PATH
 ```
 
 After installing, jump to [Quick Start](#kwaainet--native-rust-cli).

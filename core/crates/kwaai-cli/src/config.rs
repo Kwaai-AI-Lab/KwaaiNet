@@ -85,6 +85,26 @@ pub struct KwaaiNetConfig {
     /// Used in the _petals.models DHT registry entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_repository: Option<String>,
+
+    // ── VPK (Virtual Private Knowledge) integration ──────────────────────────
+    /// Whether this node hosts a local VPK service.
+    /// When true, KwaaiNet polls the VPK health endpoint and advertises
+    /// capability on the DHT. Defaults to false (opt-in).
+    #[serde(default)]
+    pub vpk_enabled: bool,
+
+    /// VPK operating mode: "bob" (query-only), "eve" (storage), or "both".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpk_mode: Option<String>,
+
+    /// HTTP endpoint to advertise to peers in the DHT record.
+    /// When None the field is omitted from the DHT advertisement (local-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpk_endpoint: Option<String>,
+
+    /// Local port for the VPK health-check and REST API (default: 7432).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpk_local_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +241,10 @@ impl Default for KwaaiNetConfig {
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
+            vpk_enabled: false,
+            vpk_mode: None,
+            vpk_endpoint: None,
+            vpk_local_port: None,
         }
     }
 }

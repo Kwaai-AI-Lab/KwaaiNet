@@ -234,6 +234,64 @@ For contributors, we provide:
 - **API Reference**: Generated from code documentation
 - **Example Projects**: Reference implementations and tutorials
 
+## Release Process
+
+Only maintainers cut releases. Follow these steps for every release:
+
+### 1. Bump the version number
+
+The canonical version lives in two places in `core/Cargo.toml`:
+
+```toml
+[package]
+version = "X.Y.Z"          # ← bump here
+
+[workspace.package]
+version = "X.Y.Z"          # ← and here
+```
+
+`kwaai-p2p-daemon` does **not** inherit from the workspace, so bump it too:
+
+```toml
+# core/crates/kwaai-p2p-daemon/Cargo.toml
+version = "X.Y.Z"          # ← bump here
+```
+
+All other crates use `version.workspace = true` and are updated automatically.
+
+```bash
+# Quick one-liner to confirm every version is in sync after editing:
+grep -r '^version' core/Cargo.toml core/crates/*/Cargo.toml
+```
+
+### 2. Commit the version bump
+
+```bash
+git add core/Cargo.toml core/crates/kwaai-p2p-daemon/Cargo.toml
+git commit -m "chore: bump version to vX.Y.Z"
+```
+
+### 3. Merge to main and tag
+
+```bash
+git checkout main
+git merge <feature-branch>
+git push origin main
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The tag push triggers `release.yml` which builds all 4 platforms and publishes the release.
+
+### 4. Verify the release
+
+- Actions tab: all 4 build jobs (+ Docker) green
+- Release page: 8 binary assets (4 versioned + 4 version-less aliases)
+- `releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz` resolves (HTTP 302)
+- Archive extracts to both `kwaainet` and `p2pd`
+
+---
+
 ## License
 
 By contributing to KwaaiNet, you agree that your contributions will be licensed under the MIT License, ensuring maximum accessibility for digital public infrastructure.

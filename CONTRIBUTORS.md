@@ -177,6 +177,20 @@ The following areas need contributors. Pick what interests you and open a PR or 
 - [ ] Smoke-test `summit-server` Docker image end-to-end (passkey registration → VC issuance → node bind)
 - [ ] Add Docker build to CI so image is validated on every PR, not only on release tags
 
+### Release & Distribution
+- [ ] Smoke-test Windows binary end-to-end (currently marked `experimental` in release.yml)
+- [ ] Write `install.sh` auto-detect script (detects platform, downloads correct binary, installs both kwaainet + p2pd)
+- [ ] Test install on fresh Ubuntu VM / Docker container
+- [ ] Test install on macOS Intel from binary download
+- [ ] Verify `kwaainet setup` wizard works after fresh binary install
+
+### VPK — Phase 2 & 3
+- [ ] Phase 2: Cross-node Eve sharding (`kwaainet vpk shard --kb-id <id> --eve-count N`)
+- [ ] Phase 3: DHT FIND on `_kwaai.vpk.kb.{kb_id}` for shard topology recovery (`kwaainet vpk resolve`)
+- [ ] PHE/VPK repo: add `peer_id`, `mode` fields to config.rs
+- [ ] PHE/VPK repo: multi-tenant DB schema (tenant_id column on documents, index_mapping, audit_log)
+- [ ] PHE/VPK repo: `GET /api/health` returning peer_id, tenant_count, capacity_gb_available
+
 ### Documentation
 - [ ] API reference (auto-generated via `cargo doc`, published to docs.rs)
 - [ ] Quickstart tutorial (zero to first inference in 5 minutes)

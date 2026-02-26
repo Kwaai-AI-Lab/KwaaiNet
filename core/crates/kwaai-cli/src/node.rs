@@ -26,6 +26,43 @@ use crate::identity::NodeIdentity;
 type SharedStorage = Arc<RwLock<DHTStorage>>;
 
 // ---------------------------------------------------------------------------
+// VPK capability info
+// ---------------------------------------------------------------------------
+
+/// VPK (Virtual Private Knowledge) capability snapshot used in DHT records.
+///
+/// Populated by polling `GET http://localhost:{vpk_local_port}/api/health`
+/// immediately before each DHT announcement. When VPK is unreachable the
+/// field is absent from both the per-block record and the nodes registry.
+struct VpkInfo {
+    mode: String,
+    endpoint: String,
+    capacity_gb: f64,
+    tenant_count: u32,
+    vpk_version: String,
+}
+
+impl VpkInfo {
+    /// Build the rmpv Map that appears as the `"vpk"` value in DHT field maps.
+    fn to_msgpack_value(&self) -> rmpv::Value {
+        rmpv::Value::Map(vec![
+            (rmpv::Value::from("mode"),         rmpv::Value::from(self.mode.as_str())),
+            (rmpv::Value::from("endpoint"),     rmpv::Value::from(self.endpoint.as_str())),
+            (rmpv::Value::from("capacity_gb"),  rmpv::Value::from(self.capacity_gb)),
+            (rmpv::Value::from("tenant_count"), rmpv::Value::from(i64::from(self.tenant_count))),
+            (rmpv::Value::from("vpk_version"),  rmpv::Value::from(self.vpk_version.as_str())),
+        ])
+    }
+
+    /// Standalone msgpack bytes for the `_kwaai.vpk.nodes` DHT record value.
+    fn to_msgpack_bytes(&self) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        rmpv::encode::write_value(&mut buf, &self.to_msgpack_value())?;
+        Ok(buf)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DHT value types (Hivemind wire format)
 // ---------------------------------------------------------------------------
 
@@ -52,6 +89,10 @@ struct DHTServerInfo {
     /// Empty when no credentials are stored; included in the DHT fields map
     /// only when non-empty to keep announcement payloads minimal.
     trust_attestations: Vec<String>,
+
+    /// VPK capability snapshot. None when VPK is disabled or unreachable.
+    /// Included in the DHT fields map only when Some.
+    vpk_info: Option<VpkInfo>,
 }
 
 impl DHTServerInfo {
@@ -62,6 +103,7 @@ impl DHTServerInfo {
         relay: bool,
         throughput: f64,
         trust_attestations: Vec<String>,
+        vpk_info: Option<VpkInfo>,
     ) -> Self {
         Self {
             state: 2, // ONLINE
@@ -76,6 +118,7 @@ impl DHTServerInfo {
             next_pings: HashMap::new(),
             adapters: vec![],
             trust_attestations,
+            vpk_info,
         }
     }
 
@@ -103,6 +146,16 @@ impl DHTServerInfo {
             fields.push((
                 rmpv::Value::from("trust_attestations"),
                 rmpv::Value::Array(ta_values),
+            ));
+        }
+
+        // Include VPK capability when enabled and reachable.
+        // Unknown map keys are silently ignored by legacy Hivemind clients
+        // and old map viewers — no backward-compatibility risk.
+        if let Some(ref vpk) = self.vpk_info {
+            fields.push((
+                rmpv::Value::from("vpk"),
+                vpk.to_msgpack_value(),
             ));
         }
 
@@ -364,6 +417,38 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("  Repository:  {}", repository);
     info!("  Using relay: {}", using_relay);
 
+    // Check local VPK health when integration is enabled.
+    // VPK is a separate binary — KwaaiNet never spawns it, only discovers it.
+    let vpk_info = if config.vpk_enabled {
+        let port = config.vpk_local_port.unwrap_or(7432);
+        info!("VPK enabled — checking local service on port {}", port);
+        match check_vpk_health(port).await {
+            Some(health) => {
+                let mode     = config.vpk_mode.clone().unwrap_or_else(|| "both".to_string());
+                let endpoint = config.vpk_endpoint.clone().unwrap_or_else(|| {
+                    format!("http://localhost:{}", port)
+                });
+                let capacity_gb   = health["capacity_gb_available"].as_f64().unwrap_or(0.0);
+                let tenant_count  = health["tenant_count"].as_u64().unwrap_or(0) as u32;
+                let vpk_version   = health["version"].as_str().unwrap_or("unknown").to_string();
+                info!(
+                    "VPK healthy: mode={} tenants={} capacity={:.1}GB v={}",
+                    mode, tenant_count, capacity_gb, vpk_version
+                );
+                Some(VpkInfo { mode, endpoint, capacity_gb, tenant_count, vpk_version })
+            }
+            None => {
+                warn!(
+                    "VPK health check failed on port {} — skipping DHT advertisement",
+                    port
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let server_info = DHTServerInfo::new(
         0,
         config.blocks as i32,
@@ -371,6 +456,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         using_relay,
         throughput,
         trust_attestations,
+        vpk_info,
     );
     announce(
         &mut client,
@@ -514,7 +600,7 @@ async fn announce(
         values: vec![model_info.to_msgpack()?],
         expiration_time: vec![get_dht_time() + 360.0],
         in_cache: vec![false],
-        peer: Some(node_info),
+        peer: Some(node_info.clone()),
     };
 
     { let g = storage.read().await; let _ = g.handle_store(registry_req.clone()); }
@@ -522,6 +608,29 @@ async fn announce(
         info!("✅ Announced model to _petals.models registry");
     } else {
         warn!("❌ Model registry announcement failed");
+    }
+
+    // VPK nodes registry — advertise this node's VPK capability when enabled.
+    // Key: _kwaai.vpk.nodes  subkey: msgpack(peer_id_base58)
+    // Value: msgpack({ mode, endpoint, capacity_gb, tenant_count, vpk_version })
+    // TTL: 360 s (refreshed every 120 s together with block records)
+    if let Some(ref vpk) = server_info.vpk_info {
+        let vpk_req = StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys: vec![dht_id("_kwaai.vpk.nodes")],
+            subkeys: vec![subkey.clone()],
+            values: vec![vpk.to_msgpack_bytes()?],
+            expiration_time: vec![get_dht_time() + 360.0],
+            in_cache: vec![false],
+            peer: Some(node_info),
+        };
+
+        { let g = storage.read().await; let _ = g.handle_store(vpk_req.clone()); }
+        if send_to_bootstrap(client, bootstrap_peers, vpk_req).await {
+            info!("✅ Announced VPK capability to _kwaai.vpk.nodes");
+        } else {
+            warn!("❌ VPK nodes announcement failed");
+        }
     }
 
     Ok(())
@@ -639,6 +748,21 @@ async fn shutdown_signal() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Poll the local VPK health endpoint (non-blocking, 3 s timeout).
+/// Returns the parsed JSON body on a 2xx response, None otherwise.
+async fn check_vpk_health(port: u16) -> Option<serde_json::Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let url = format!("http://localhost:{}/api/health", port);
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<serde_json::Value>().await.ok()
+}
 
 fn find_free_port(preferred: u16) -> Option<u16> {
     if port_is_free(preferred) { return Some(preferred); }
