@@ -22,13 +22,13 @@
 
 ## Download
 
-Pre-built binaries for **v0.1.0** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required. Each archive contains both `kwaainet` and `p2pd`.
+Pre-built binaries for **v0.1.1** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required. Each archive contains both `kwaainet` and `p2pd`.
 
 | Platform | Download |
 |----------|----------|
 | macOS — Apple Silicon (M1/M2/M3/M4) | [kwaainet-v0.1.0-aarch64-apple-darwin.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz) |
 | macOS — Intel | [kwaainet-v0.1.0-x86_64-apple-darwin.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-apple-darwin.tar.gz) |
-| Linux — x86_64 | [kwaainet-v0.1.0-linux-x86_64.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.1.0/kwaainet-v0.1.0-linux-x86_64.tar.gz) |
+| Linux — x86_64 | [kwaainet-v0.1.1-x86_64-unknown-linux-gnu.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz) |
 | Windows — x86_64 | [kwaainet-v0.1.0-x86_64-pc-windows-msvc.zip](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-pc-windows-msvc.zip) |
 
 **macOS / Linux — one-liner install:**
@@ -42,7 +42,7 @@ curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaain
   | tar -xz && sudo mv kwaainet p2pd /usr/local/bin/
 
 # Linux x86_64
-curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.1.0/kwaainet-v0.1.0-linux-x86_64.tar.gz \
+curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz \
   | tar -xz && sudo mv kwaainet p2pd /usr/local/bin/
 
 kwaainet setup

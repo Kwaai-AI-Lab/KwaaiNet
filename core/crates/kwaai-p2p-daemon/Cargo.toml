@@ -1,6 +1,6 @@
 [package]
 name = "kwaai-p2p-daemon"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["KwaaiNet Contributors"]
 description = "Rust wrapper for go-libp2p-daemon providing Hivemind DHT compatibility"
