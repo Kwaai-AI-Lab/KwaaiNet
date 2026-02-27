@@ -31,28 +31,31 @@ Pre-built binaries for **v0.1.1** are attached to the [latest GitHub Release](ht
 | Linux — x86_64 | [kwaainet-x86_64-unknown-linux-gnu.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz) |
 | Windows — x86_64 | [kwaainet-x86_64-pc-windows-msvc.zip](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-pc-windows-msvc.zip) |
 
-**macOS / Linux — one-liner install:**
+**macOS / Linux — one command does everything** (auto-detects platform, installs, sets up identity, calibrates, starts node):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/main/install.sh | bash
+```
+
+Or install the binary only and run each step manually:
 ```bash
 # Apple Silicon
-curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz \
-  | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
 
 # Intel Mac
-curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-apple-darwin.tar.gz \
-  | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-apple-darwin.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
 
 # Linux x86_64
-curl -L https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz \
-  | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
 
-kwaainet setup
+kwaainet setup && kwaainet benchmark && kwaainet start --daemon
 ```
 
 **Windows (PowerShell):**
 ```powershell
 Invoke-WebRequest -Uri https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-pc-windows-msvc.zip -OutFile kwaainet.zip
 Expand-Archive kwaainet.zip -DestinationPath .
-# Move kwaainet.exe and p2pd.exe to a directory on your PATH
+# Move kwaainet.exe and p2pd.exe to a directory on your PATH, then:
+# kwaainet setup; kwaainet benchmark; kwaainet start --daemon
 ```
 
 After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
