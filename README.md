@@ -64,6 +64,9 @@ After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
 ## ✅ Status: Network Live & Operational
 
 **Latest Achievements:**
+- ✅ **v0.1.1 Released** — first public release with native pre-built binaries for all four platforms; install cycle validated stop → download → install → node on map in ~46 s (no build tools required)
+- ✅ **All Four Platform Binaries Tested** — macOS Apple Silicon (M4) and macOS Intel built and tested natively; Linux x86_64 built and tested by Metro on a remote machine; Windows x86_64 (Intel NUC) built and uploaded — all nodes confirmed live on [map.kwaai.ai](https://map.kwaai.ai)
+- ✅ **VPK P2P Vector Database Integration (Phase 1)** — `kwaainet vpk enable/disable/status/discover` commands; nodes advertise VPK capability via `_kwaai.vpk.nodes` DHT key; per-block `vpk` field added to DHT announcements; bridges KwaaiNet nodes to the PHE/VPK encrypted vector database
 - ✅ **Decentralized Trust Graph** — `kwaai-trust` crate implements the ToIP/DIF DTG framework: W3C Verifiable Credentials, `did:peer:` DIDs derived from libp2p PeerIds, Ed25519 signature verification, credential storage at `~/.kwaainet/credentials/`, weighted trust scoring with time-decay, and `kwaainet identity` CLI commands. Trust attestations are included in DHT announcements; map.kwaai.ai can now display trust badges alongside nodes
 - ✅ **Persistent Node Identity** — each node generates and stores a permanent Ed25519 keypair at `~/.kwaainet/identity.key`; the same `PeerId` (and `did:peer:`) is used across restarts, making Verifiable Credentials meaningful
 - ✅ **Bootstrap Resilience** — node announces to all configured bootstrap peers in parallel; if the primary is down the secondary takes over automatically, so `kwaainet start` succeeds even when `bootstrap-1` is unreachable
@@ -77,10 +80,9 @@ After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
 - ✅ **`kwaainet benchmark`** — fast throughput measurement (warm-up + 20 timed decode steps, completes in <1 s) saved to cache for accurate DHT announcements
 - ✅ **Direct Connection Detection** — announces `using_relay: false` when a public IP is configured, giving full throughput credit on the map
 - ✅ **Full Petals/Hivemind DHT Compatibility** — DHT announcements, RPC health checks, 120-second re-announcement
-- ✅ **Cross-Platform Support** — Tested on macOS ARM64, Linux, and Windows
 - 🌐 **Live Node**: `KwaaiNet-RUST-Node` serving `Llama-3.1-8B-Instruct` blocks 0–7 at **33.2 tok/s**
 
-**What This Means:** A single `kwaainet start --daemon` command reads the network map, picks the best locally-available model, and launches a production-ready distributed AI node in the background. The node joins the correct DHT swarm, responds to health monitor RPC queries, and stays visible on the network map — all in native Rust, no Python required.
+**What This Means:** Download a single archive for your platform, run `kwaainet setup` once, and `kwaainet start --daemon` launches a production-ready distributed AI node in the background. No Python, no build tools, no configuration required. The node reads the network map, picks the best locally-available model, joins the correct DHT swarm, and appears on [map.kwaai.ai](https://map.kwaai.ai) — all in native Rust.
 
 ## Vision
 
