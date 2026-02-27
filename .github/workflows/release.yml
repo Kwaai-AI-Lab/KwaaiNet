@@ -20,7 +20,7 @@ jobs:
           - os: macos-latest   # Apple Silicon (M-series)
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-13        # Intel Mac
+          - os: macos-12        # Intel Mac (macos-13 deprecated)
             target: x86_64-apple-darwin
             archive: tar.gz
           - os: ubuntu-latest
@@ -65,27 +65,62 @@ jobs:
         working-directory: core
         run: cargo build --release -p kwaai-cli --target ${{ matrix.target }}
 
+      - name: Build p2pd (Unix)
+        # Build to /tmp/p2pd — avoids any ambiguity over core/target/release/
+        # visibility between steps. Staged into /tmp/release-staging/ for packaging.
+        if: matrix.archive == 'tar.gz'
+        run: |
+          git clone --depth 1 --branch v0.5.0.hivemind1 \
+            https://github.com/learning-at-home/go-libp2p-daemon.git /tmp/go-libp2p-daemon
+          cd /tmp/go-libp2p-daemon
+          go build -o /tmp/p2pd ./p2pd
+
+      - name: Build p2pd (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v0.5.0.hivemind1 `
+            https://github.com/learning-at-home/go-libp2p-daemon.git $env:TEMP\go-libp2p-daemon
+          cd $env:TEMP\go-libp2p-daemon
+          go build -o $env:TEMP\p2pd.exe ./p2pd
+
       - name: Package (tar.gz — macOS / Linux)
         if: matrix.archive == 'tar.gz'
         run: |
           BIN=core/target/${{ matrix.target }}/release/kwaainet
           ARCHIVE=kwaainet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-          tar -czf "$ARCHIVE" -C "$(dirname $BIN)" "$(basename $BIN)"
-          echo "ASSET=$ARCHIVE" >> "$GITHUB_ENV"
+          ALIAS=kwaainet-${{ matrix.target }}.tar.gz
+          mkdir -p /tmp/release-staging
+          cp "$BIN" /tmp/release-staging/kwaainet
+          cp /tmp/p2pd /tmp/release-staging/p2pd
+          tar -czf "$ARCHIVE" -C /tmp/release-staging kwaainet p2pd
+          cp "$ARCHIVE" "$ALIAS"
+          echo "ASSET_VERSIONED=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "ASSET_ALIAS=$ALIAS" >> "$GITHUB_ENV"
 
       - name: Package (zip — Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $bin  = "core/target/${{ matrix.target }}/release/kwaainet.exe"
-          $out  = "kwaainet-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          Compress-Archive -Path $bin -DestinationPath $out
-          echo "ASSET=$out" >> $env:GITHUB_ENV
+          $bin   = "core/target/${{ matrix.target }}/release/kwaainet.exe"
+          $p2pd  = "$env:TEMP\p2pd.exe"
+          $out   = "kwaainet-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          $alias = "kwaainet-${{ matrix.target }}.zip"
+          $stage = "$env:TEMP\release-staging"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $bin   "$stage\kwaainet.exe"
+          Copy-Item $p2pd  "$stage\p2pd.exe"
+          Compress-Archive -Path "$stage\*" -DestinationPath $out
+          Copy-Item $out $alias
+          echo "ASSET_VERSIONED=$out" >> $env:GITHUB_ENV
+          echo "ASSET_ALIAS=$alias" >> $env:GITHUB_ENV
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
+          files: |
+            ${{ env.ASSET_VERSIONED }}
+            ${{ env.ASSET_ALIAS }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
 
