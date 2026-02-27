@@ -231,8 +231,10 @@ impl Default for KwaaiNetConfig {
             use_gpu: true,
             log_level: default_log_level(),
             public_name: Some(format!(
-                "{}@kwaai",
-                std::env::var("USER").unwrap_or_else(|_| "anonymous".to_string())
+                "{}-{}-{}",
+                std::env::var("USER").unwrap_or_else(|_| "anonymous".to_string()),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
             )),
             public_ip: None,
             announce_addr: None,

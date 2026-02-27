@@ -29,6 +29,7 @@ Pre-built binaries for **v0.1.1** are attached to the [latest GitHub Release](ht
 | macOS — Apple Silicon (M1/M2/M3/M4) | [kwaainet-aarch64-apple-darwin.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz) |
 | macOS — Intel | [kwaainet-x86_64-apple-darwin.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-apple-darwin.tar.gz) |
 | Linux — x86_64 | [kwaainet-x86_64-unknown-linux-gnu.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz) |
+| Linux — aarch64 (ARM64) | [kwaainet-aarch64-unknown-linux-gnu.tar.gz](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-unknown-linux-gnu.tar.gz) |
 | Windows — x86_64 | [kwaainet-x86_64-pc-windows-msvc.zip](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-pc-windows-msvc.zip) |
 
 **macOS / Linux — one command does everything** (auto-detects platform, installs, sets up identity, calibrates, starts node):
@@ -46,6 +47,9 @@ curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwa
 
 # Linux x86_64
 curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+
+# Linux aarch64 (ARM64 — e.g. Oracle Ampere, AWS Graviton, Raspberry Pi 5)
+curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
 
 kwaainet setup && kwaainet benchmark && kwaainet start --daemon
 ```
