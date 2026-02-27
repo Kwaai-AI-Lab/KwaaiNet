@@ -188,7 +188,7 @@ The following areas need contributors. Pick what interests you and open a PR or 
 
 ### Release & Distribution
 - [ ] Smoke-test Windows binary end-to-end (currently marked `experimental` in release.yml)
-- [ ] Write `install.sh` auto-detect script (detects platform, downloads correct binary, installs both kwaainet + p2pd)
+- [x] Write `install.sh` auto-detect script (detects platform, downloads correct binary, installs both kwaainet + p2pd)
 - [ ] Test install on fresh Ubuntu VM / Docker container
 - [ ] Test install on macOS Intel from binary download
 - [ ] Verify `kwaainet setup` wizard works after fresh binary install
