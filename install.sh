@@ -53,6 +53,31 @@ sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
 sudo chmod +x /usr/local/bin/kwaainet /usr/local/bin/p2pd
 
 echo ""
+
+# ── PATH check ────────────────────────────────────────────────────────────────
+
+INSTALL_DIR="/usr/local/bin"
+
+if ! echo ":${PATH}:" | grep -q ":${INSTALL_DIR}:"; then
+  echo "WARNING: ${INSTALL_DIR} is not in your PATH."
+  echo "Adding it now for this session..."
+  export PATH="${INSTALL_DIR}:${PATH}"
+
+  # Persist to shell rc file
+  SHELL_RC=""
+  if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
+    SHELL_RC="${HOME}/.zshrc"
+  else
+    SHELL_RC="${HOME}/.bashrc"
+  fi
+
+  if [ -n "${SHELL_RC}" ] && ! grep -qF "${INSTALL_DIR}" "${SHELL_RC}" 2>/dev/null; then
+    echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "${SHELL_RC}"
+    echo "Added to ${SHELL_RC} — open a new terminal or run: source ${SHELL_RC}"
+  fi
+  echo ""
+fi
+
 echo "kwaainet $(kwaainet --version 2>/dev/null || echo '(installed)')"
 echo ""
 
