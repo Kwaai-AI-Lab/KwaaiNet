@@ -64,12 +64,9 @@ After installing, run:
 kwaainet setup && kwaainet benchmark && kwaainet start --daemon
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell — no admin required):**
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-pc-windows-msvc.zip -OutFile kwaainet.zip
-Expand-Archive kwaainet.zip -DestinationPath .
-# Move kwaainet.exe and p2pd.exe to a directory on your PATH, then:
-# kwaainet setup; kwaainet benchmark; kwaainet start --daemon
+irm https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/main/install.ps1 | iex
 ```
 
 After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
@@ -525,6 +522,7 @@ kwaainet config --set public_name "MyNode@kwaai"
 | `kwaainet monitor stats\|alert` | P2P connection statistics and alerts |
 | `kwaainet update [--check]` | Check for new releases |
 | `kwaainet setup` | Initialize directories and default config |
+| `kwaainet uninstall [--yes] [--keep-data]` | Remove all KwaaiNet data, service, and binaries |
 | `kwaainet identity show` | Show node DID, Peer ID, trust tier, and credential summary |
 | `kwaainet identity import-vc <file>` | Import a Verifiable Credential from a JSON file |
 | `kwaainet identity list-vcs` | List all stored Verifiable Credentials |
