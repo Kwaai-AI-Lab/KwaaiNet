@@ -22,7 +22,7 @@
 
 ## Download
 
-Pre-built binaries for **v0.1.3** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required. Each archive contains both `kwaainet` and `p2pd`.
+Pre-built binaries for **v0.1.4** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required. Each archive contains both `kwaainet` and `p2pd`.
 
 | Platform | Download |
 |----------|----------|
@@ -78,6 +78,7 @@ After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
 ## ✅ Status: Network Live & Operational
 
 **Latest Achievements:**
+- ✅ **v0.1.4 Released** — `kwaainet uninstall` command; verified Windows one-line install (`irm | iex`); clean removal of daemon, service, data, and binaries on all platforms
 - ✅ **Windows One-Line Install Verified** — `irm https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/main/install.ps1 | iex` downloads, installs, adds to PATH, and runs `kwaainet setup` — no admin rights required, tested end-to-end
 - ✅ **`kwaainet uninstall`** — new command cleanly removes all KwaaiNet artefacts: stops the daemon, uninstalls the auto-start service, removes `~/.kwaainet/`, and deletes the `kwaainet` and `p2pd` binaries; `--keep-data` flag preserves config/identity; works on macOS, Linux, and Windows (rename-first strategy handles running-binary constraint)
 - ✅ **v0.1.3 Released** — Linux aarch64 (ARM64) added as a first-class release target; smart default node name (`{user}-{os}-{arch}`); release workflow race condition fixed so all platform binaries upload reliably in parallel
