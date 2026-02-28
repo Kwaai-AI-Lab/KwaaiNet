@@ -1,6 +1,7 @@
 //! kwaainet – KwaaiNet node CLI
 
 mod api;
+mod block_rpc;
 mod calibration;
 mod cli;
 mod config;
@@ -14,6 +15,7 @@ mod node;
 mod hf;
 mod ollama;
 mod service;
+mod shard_cmd;
 mod throughput;
 mod uninstall;
 mod updater;
@@ -829,6 +831,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Uninstall(args) => {
             uninstall::run_uninstall(&args)?;
+        }
+
+        // -------------------------------------------------------------------
+        // shard
+        // -------------------------------------------------------------------
+        Command::Shard(args) => {
+            shard_cmd::run(args).await?;
         }
 
         // -------------------------------------------------------------------

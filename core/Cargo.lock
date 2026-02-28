@@ -2521,10 +2521,12 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "axum",
+ "candle-core",
  "chrono",
  "clap",
  "dirs",
  "futures",
+ "half",
  "hex",
  "kwaai-hivemind-dht",
  "kwaai-inference",

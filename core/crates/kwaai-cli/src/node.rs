@@ -93,6 +93,12 @@ struct DHTServerInfo {
     /// VPK capability snapshot. None when VPK is disabled or unreachable.
     /// Included in the DHT fields map only when Some.
     vpk_info: Option<VpkInfo>,
+
+    /// Peer ID in base58 encoding. Included in the value map so that chain
+    /// discovery can identify the serving peer even from FoundRegular responses
+    /// (which do not carry the DHT subkey). Unknown fields are silently ignored
+    /// by legacy Python Hivemind clients.
+    peer_id_b58: String,
 }
 
 impl DHTServerInfo {
@@ -104,6 +110,7 @@ impl DHTServerInfo {
         throughput: f64,
         trust_attestations: Vec<String>,
         vpk_info: Option<VpkInfo>,
+        peer_id_b58: String,
     ) -> Self {
         Self {
             state: 2, // ONLINE
@@ -119,6 +126,7 @@ impl DHTServerInfo {
             adapters: vec![],
             trust_attestations,
             vpk_info,
+            peer_id_b58,
         }
     }
 
@@ -133,6 +141,7 @@ impl DHTServerInfo {
             (rmpv::Value::from("cache_tokens_left"), rmpv::Value::from(self.cache_tokens_left)),
             (rmpv::Value::from("adapters"),          rmpv::Value::Array(vec![])),
             (rmpv::Value::from("next_pings"),        rmpv::Value::Map(vec![])),
+            (rmpv::Value::from("peer_id"),           rmpv::Value::from(self.peer_id_b58.as_str())),
         ];
 
         // Include trust attestations when present — zero-cost for nodes without VCs.
@@ -450,13 +459,14 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     };
 
     let server_info = DHTServerInfo::new(
-        0,
-        config.blocks as i32,
+        config.start_block as i32,
+        (config.start_block + config.blocks) as i32,
         &public_name,
         using_relay,
         throughput,
         trust_attestations,
         vpk_info,
+        peer_id.to_base58(),
     );
     announce(
         &mut client,

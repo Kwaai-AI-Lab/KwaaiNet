@@ -82,6 +82,9 @@ pub enum Command {
     /// Uninstall KwaaiNet — stop the node, remove all data, and delete binaries
     Uninstall(UninstallArgs),
 
+    /// Distributed transformer block sharding
+    Shard(ShardArgs),
+
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
     RunNode,
@@ -393,6 +396,82 @@ pub struct UninstallArgs {
     /// Keep ~/.kwaainet/ data (config, logs, identity) — only remove binaries and service
     #[arg(long)]
     pub keep_data: bool,
+}
+
+// ---------------------------------------------------------------------------
+// shard
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct ShardArgs {
+    #[command(subcommand)]
+    pub action: ShardAction,
+}
+
+#[derive(Subcommand)]
+pub enum ShardAction {
+    /// Load a model shard and register it as an inference RPC handler
+    Serve(ShardServeArgs),
+    /// Run distributed inference across discovered block servers
+    Run(ShardRunArgs),
+    /// Show local shard configuration
+    Status,
+    /// Query DHT and display block-chain coverage
+    Chain(ShardChainArgs),
+}
+
+#[derive(Args)]
+pub struct ShardServeArgs {
+    /// Path to the model directory (config.json + *.safetensors + tokenizer.json).
+    /// Defaults to the HuggingFace cache for the model in config.yaml.
+    #[arg(long, value_name = "PATH")]
+    pub model_path: Option<std::path::PathBuf>,
+
+    /// Override start_block from config.yaml
+    #[arg(long)]
+    pub start_block: Option<u32>,
+
+    /// Override number of blocks from config.yaml
+    #[arg(long)]
+    pub blocks: Option<u32>,
+
+    /// Disable GPU acceleration and use CPU only
+    #[arg(long)]
+    pub no_gpu: bool,
+}
+
+#[derive(Args)]
+pub struct ShardRunArgs {
+    /// Prompt to run distributed inference on
+    pub prompt: String,
+
+    /// HuggingFace model ID (defaults to config.model)
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Total transformer blocks in the full model (default: inferred from model name)
+    #[arg(long)]
+    pub total_blocks: Option<usize>,
+
+    /// Maximum tokens to generate
+    #[arg(long, default_value = "200")]
+    pub max_tokens: usize,
+
+    /// Explicit session ID (randomly generated if not set)
+    #[arg(long)]
+    pub session_id: Option<u64>,
+}
+
+#[derive(Args)]
+pub struct ShardChainArgs {
+    /// DHT prefix to query (e.g. "Llama-3-1-8B-Instruct-hf").
+    /// Defaults to config.model_dht_prefix or derived from config.model.
+    #[arg(long)]
+    pub dht_prefix: Option<String>,
+
+    /// Number of blocks to scan (default: 32)
+    #[arg(long, default_value = "32")]
+    pub total_blocks: usize,
 }
 
 // ---------------------------------------------------------------------------

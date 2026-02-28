@@ -51,9 +51,13 @@ rmp-serde = { workspace = true }
 sha1 = "0.10"
 hex = "0.4"
 rmpv = "1.0"
+half = { workspace = true }
 
 # HTTP server (OpenAI API)
 axum = { version = "0.7", features = ["json"] }
+
+# ML (needed for tensor ops in block_rpc and shard_cmd)
+candle-core = { workspace = true }
 
 # KwaaiNet crates
 kwaai-p2p = { path = "../kwaai-p2p" }

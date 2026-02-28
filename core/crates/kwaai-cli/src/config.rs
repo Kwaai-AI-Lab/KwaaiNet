@@ -48,6 +48,12 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_blocks")]
     pub blocks: u32,
 
+    /// First transformer block this node serves (0-indexed).
+    /// The node serves blocks [start_block .. start_block + blocks).
+    /// Defaults to 0 (start of model); set this on non-first nodes.
+    #[serde(default)]
+    pub start_block: u32,
+
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -227,6 +233,7 @@ impl Default for KwaaiNetConfig {
         Self {
             model: default_model(),
             blocks: default_blocks(),
+            start_block: 0,
             port: default_port(),
             use_gpu: true,
             log_level: default_log_level(),

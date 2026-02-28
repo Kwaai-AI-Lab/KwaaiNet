@@ -34,12 +34,14 @@ pub mod engine;
 pub mod error;
 pub mod loader;
 pub mod model;
+pub mod shard;
 pub mod tokenizer;
 
 pub use config::EngineConfig;
 pub use engine::InferenceEngine;
 pub use error::{InferenceError, InferenceResult};
 pub use model::{ModelFormat, ModelHandle, ModelInfo};
+pub use shard::{ShardConfig, TransformerShard};
 
 use async_trait::async_trait;
 use candle_core::Tensor;
