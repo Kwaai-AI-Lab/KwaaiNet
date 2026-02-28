@@ -36,9 +36,10 @@ jobs:
           - os: macos-latest   # Apple Silicon (M-series)
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-13        # Intel Mac
+          - os: macos-latest   # Intel Mac — cross-compiled from Apple Silicon
             target: x86_64-apple-darwin
             archive: tar.gz
+            cross: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
@@ -94,6 +95,8 @@ jobs:
 
       - name: Build p2pd (Unix)
         if: matrix.archive == 'tar.gz'
+        env:
+          GOARCH: ${{ matrix.cross == true && 'amd64' || '' }}
         run: |
           git clone --depth 1 --branch v0.5.0.hivemind1 \
             https://github.com/learning-at-home/go-libp2p-daemon.git /tmp/go-libp2p-daemon
