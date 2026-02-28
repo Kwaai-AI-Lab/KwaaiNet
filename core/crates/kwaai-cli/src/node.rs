@@ -265,10 +265,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         }
     };
 
-    let public_name = config
-        .public_name
-        .clone()
-        .unwrap_or_else(|| "kwaainet-node".to_string());
+    let public_name = format!(
+        "{}/v{}",
+        config.public_name.clone().unwrap_or_else(|| "kwaainet-node".to_string()),
+        env!("CARGO_PKG_VERSION"),
+    );
 
     info!(
         model = %config.model,
