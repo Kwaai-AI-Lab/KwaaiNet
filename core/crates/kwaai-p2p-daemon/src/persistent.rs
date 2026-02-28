@@ -206,7 +206,15 @@ impl PersistentConnection {
                     }
 
                     None => {
-                        warn!("Received persistent response with no message");
+                        // p2pd sends an empty response (message=None) as an ACK for
+                        // AddUnaryHandler / RemoveUnaryHandler — route it to the pending
+                        // call so the awaiter can unblock.
+                        let mut calls = pending_calls.lock().await;
+                        if let Some(tx) = calls.remove(&call_id) {
+                            let _ = tx.send(Ok(response));
+                        } else {
+                            warn!("Received persistent response with no message for unknown call ID: {}", call_id);
+                        }
                     }
                 }
             }
