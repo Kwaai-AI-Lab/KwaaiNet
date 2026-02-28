@@ -38,19 +38,29 @@ curl -fsSL https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/main/install.
 ```
 
 Or install the binary only and run each step manually:
+
+**Apple Silicon:**
 ```bash
-# Apple Silicon
-curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+curl -L --progress-bar https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+```
 
-# Intel Mac
-curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-apple-darwin.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+**Intel Mac:**
+```bash
+curl -L --progress-bar https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-apple-darwin.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+```
 
-# Linux x86_64
-curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+**Linux x86_64:**
+```bash
+curl -L --progress-bar https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+```
 
-# Linux aarch64 (ARM64 — e.g. Oracle Ampere, AWS Graviton, Raspberry Pi 5)
-curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+**Linux aarch64** (ARM64 — e.g. Oracle Ampere, AWS Graviton, Raspberry Pi 5):
+```bash
+curl -L --progress-bar https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-aarch64-unknown-linux-gnu.tar.gz | tar -xz -C /tmp && sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
+```
 
+After installing, run:
+```bash
 kwaainet setup && kwaainet benchmark && kwaainet start --daemon
 ```
 
