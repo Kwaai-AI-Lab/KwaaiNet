@@ -38,7 +38,7 @@ if ($userPath -notlike "*$dst*") {
 # Prepend for this session too
 $env:Path = "$dst;$env:Path"
 
-# Try to remove stale copies — best-effort, non-fatal
+# Remove stale copies — rename-first so locked executables can be freed
 $stalePaths = @(
     "$env:USERPROFILE\.cargo\bin\kwaainet.exe",
     "$env:USERPROFILE\.cargo\bin\p2pd.exe"
@@ -49,7 +49,15 @@ foreach ($stale in $stalePaths) {
             Remove-Item $stale -Force -ErrorAction Stop
             Write-Host "Removed stale binary: $stale" -ForegroundColor Yellow
         } catch {
-            Write-Host "Note: could not remove $stale (will be shadowed by PATH order)" -ForegroundColor Yellow
+            # File may be locked — rename it to free the original path, then delete
+            try {
+                $staleDel = "$stale.del"
+                Rename-Item $stale $staleDel -Force -ErrorAction Stop
+                Remove-Item $staleDel -Force -ErrorAction SilentlyContinue
+                Write-Host "Removed stale binary: $stale" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Warning: could not remove $stale" -ForegroundColor Yellow
+            }
         }
     }
 }
