@@ -35,8 +35,23 @@ if ($userPath -notlike "*$dst*") {
     Write-Host "Added $dst to your PATH (restart terminal to take effect in new windows)" -ForegroundColor Yellow
 }
 
+# Remove stale copies from other locations (e.g. cargo install) that would shadow the new binary
+$stalePaths = @(
+    "$env:USERPROFILE\.cargo\bin\kwaainet.exe",
+    "$env:USERPROFILE\.cargo\bin\p2pd.exe"
+)
+foreach ($stale in $stalePaths) {
+    if (Test-Path $stale) {
+        Remove-Item $stale -Force
+        Write-Host "Removed stale binary: $stale" -ForegroundColor Yellow
+    }
+}
+
+# Prepend install dir so it wins over any remaining PATH entries
+$env:Path = "$dst;$env:Path"
+
 Write-Host "Running kwaainet setup..." -ForegroundColor Cyan
-kwaainet setup
+& "$dst\kwaainet.exe" setup
 
 Write-Host ""
 Write-Host "KwaaiNet installed successfully." -ForegroundColor Green
