@@ -1,11 +1,19 @@
 [package]
-name = "kwaai-cli"
+name = "kwaainet"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository = "https://github.com/Kwaai-AI-Lab/KwaaiNet"
+homepage = "https://kwaai.ai"
 description = "kwaainet – KwaaiNet node CLI"
 default-run = "kwaainet"
+keywords = ["ai", "p2p", "decentralized", "inference", "kwaainet"]
+categories = ["command-line-utilities", "network-programming"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ version }/kwaainet-{ version }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
 
 [[bin]]
 name = "kwaainet"

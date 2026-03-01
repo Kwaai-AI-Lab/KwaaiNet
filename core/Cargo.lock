@@ -2516,40 +2516,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kwaai-cli"
-version = "0.1.4"
-dependencies = [
- "anyhow",
- "axum",
- "candle-core",
- "chrono",
- "clap",
- "dirs",
- "futures",
- "half",
- "hex",
- "kwaai-hivemind-dht",
- "kwaai-inference",
- "kwaai-p2p",
- "kwaai-p2p-daemon",
- "kwaai-trust",
- "libp2p",
- "nix 0.27.1",
- "prost 0.12.6",
- "reqwest",
- "rmp-serde",
- "rmpv",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha1",
- "sysinfo",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "kwaai-compression"
 version = "0.1.4"
 dependencies = [
@@ -2675,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-p2p-daemon"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2732,6 +2698,40 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "kwaainet"
+version = "0.1.4"
+dependencies = [
+ "anyhow",
+ "axum",
+ "candle-core",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures",
+ "half",
+ "hex",
+ "kwaai-hivemind-dht",
+ "kwaai-inference",
+ "kwaai-p2p",
+ "kwaai-p2p-daemon",
+ "kwaai-trust",
+ "libp2p",
+ "nix 0.27.1",
+ "prost 0.12.6",
+ "reqwest",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha1",
+ "sysinfo",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

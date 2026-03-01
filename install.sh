@@ -1,118 +1,28 @@
 #!/usr/bin/env bash
-# KwaaiNet one-command installer
-# Downloads the pre-built binary for your platform, installs it, and starts a node.
+# KwaaiNet one-command installer (cargo-dist generated, shell variant)
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/main/install.sh | bash
+#   curl --proto '=https' --tlsv1.2 -LsSf \
+#     https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh
 #
-# What it does:
-#   1. Detect platform (OS + arch)
-#   2. Download kwaainet + p2pd from the latest GitHub release
-#   3. Install both to /usr/local/bin
-#   4. kwaainet setup   — generate identity + write config
-#   5. kwaainet benchmark — calibrate tok/s for DHT announcement
-#   6. kwaainet start --daemon — join the network
+# This script is a convenience wrapper.  The canonical installer is the
+# cargo-dist-generated kwaainet-installer.sh that is uploaded as a release
+# asset on every release.  It handles all platform detection, checksum
+# verification, and PATH setup automatically.
 
 set -euo pipefail
 
 REPO="Kwaai-AI-Lab/KwaaiNet"
 
-# Resolve the latest release version tag via the GitHub API so we use a
-# versioned URL (e.g. /releases/download/v0.1.4/kwaainet-v0.1.4-…) instead
-# of the /releases/latest/download alias, which can serve stale CDN-cached
-# assets for several minutes after a new release is published.
+# Resolve the latest release tag so we fetch the versioned installer URL
+# (avoids stale CDN caches on /releases/latest).
 VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
   | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 if [ -z "${VERSION}" ]; then
-  echo "Error: could not determine latest release version from GitHub API."
+  echo "Error: could not determine latest release version from GitHub API." >&2
   exit 1
 fi
-echo "Version  : ${VERSION}"
-BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 
-# ── platform detection ────────────────────────────────────────────────────────
-
-OS="$(uname -s)"
-ARCH="$(uname -m)"
-
-case "${OS}-${ARCH}" in
-  Darwin-arm64)   TARGET="aarch64-apple-darwin" ;;
-  Darwin-x86_64)  TARGET="x86_64-apple-darwin" ;;
-  Linux-x86_64)   TARGET="x86_64-unknown-linux-gnu" ;;
-  Linux-amd64)    TARGET="x86_64-unknown-linux-gnu" ;;
-  *)
-    echo "Unsupported platform: ${OS}-${ARCH}"
-    echo "Windows users: see the README for PowerShell install instructions."
-    exit 1
-    ;;
-esac
-
-ARCHIVE="kwaainet-${VERSION}-${TARGET}.tar.gz"
-URL="${BASE_URL}/${ARCHIVE}"
-
-echo "=== KwaaiNet Installer ==="
-echo "Platform : ${OS} / ${ARCH}"
-echo "Target   : ${TARGET}"
-echo ""
-
-# ── download & install ────────────────────────────────────────────────────────
-
-echo "Downloading ${ARCHIVE} ..."
-curl -fsSL --fail-with-body "${URL}" | tar -xz -C /tmp
-
-echo "Installing kwaainet and p2pd to /usr/local/bin ..."
-sudo mv /tmp/kwaainet /tmp/p2pd /usr/local/bin/
-sudo chmod +x /usr/local/bin/kwaainet /usr/local/bin/p2pd
-
-echo ""
-
-# ── PATH check ────────────────────────────────────────────────────────────────
-
-INSTALL_DIR="/usr/local/bin"
-
-if ! echo ":${PATH}:" | grep -q ":${INSTALL_DIR}:"; then
-  echo "WARNING: ${INSTALL_DIR} is not in your PATH."
-  echo "Adding it now for this session..."
-  export PATH="${INSTALL_DIR}:${PATH}"
-
-  # Persist to shell rc file
-  SHELL_RC=""
-  if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ]; then
-    SHELL_RC="${HOME}/.zshrc"
-  else
-    SHELL_RC="${HOME}/.bashrc"
-  fi
-
-  if [ -n "${SHELL_RC}" ] && ! grep -qF "${INSTALL_DIR}" "${SHELL_RC}" 2>/dev/null; then
-    echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "${SHELL_RC}"
-    echo "Added to ${SHELL_RC} — open a new terminal or run: source ${SHELL_RC}"
-  fi
-  echo ""
-fi
-
-echo "kwaainet $(kwaainet --version 2>/dev/null || echo '(installed)')"
-echo ""
-
-# ── setup ─────────────────────────────────────────────────────────────────────
-
-echo "=== Step 1/3: Setup ==="
-kwaainet setup
-
-echo ""
-
-# ── benchmark ─────────────────────────────────────────────────────────────────
-
-echo "=== Step 2/3: Benchmark (calibrate tok/s) ==="
-kwaainet benchmark
-
-echo ""
-
-# ── start node ────────────────────────────────────────────────────────────────
-
-echo "=== Step 3/3: Starting node ==="
-kwaainet start --daemon
-
-echo ""
-echo "=== Done ==="
-echo "Your node is joining the network. Run 'kwaainet status' to check."
-echo "It will appear on https://map.kwaai.ai within ~60 seconds."
+INSTALLER_URL="https://github.com/${REPO}/releases/download/${VERSION}/kwaainet-installer.sh"
+echo "Installing KwaaiNet ${VERSION} ..."
+curl --proto '=https' --tlsv1.2 -LsSf "${INSTALLER_URL}" | sh
