@@ -84,3 +84,9 @@ nix = { version = "0.27", features = ["signal", "process", "fs"] }
 # Cargo merges features from target-specific sections with the base [dependencies] entry.
 [target.'cfg(target_os = "macos")'.dependencies]
 kwaai-inference = { path = "../kwaai-inference", features = ["metal"] }
+
+# cargo-dist builds Windows MSVC with -Ctarget-feature=+crt-static (fully static binary).
+# System OpenSSL on GitHub runners is compiled with /MD (dynamic CRT), which the static
+# linker rejects.  Build OpenSSL from source with the correct /MT flags instead.
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
