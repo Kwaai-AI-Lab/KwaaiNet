@@ -190,20 +190,18 @@ jobs:
         shell: bash
         working-directory: core
         run: |
-          # p2pd is built by build.rs into target/release/ and by build-p2pd.sh
-          # into wherever cargo-dist stages extra-artifacts.  Find whichever exists.
           P2PD=$(find . -name "p2pd" -type f 2>/dev/null \
             | grep -v "\.dSYM" | grep -v "/go-libp2p-daemon/" | head -1)
           if [ -z "${P2PD}" ]; then
-            echo "p2pd binary not found anywhere — skipping injection"
-            find . -maxdepth 4 -name "p2pd*" 2>/dev/null || true
+            echo "p2pd not found — skipping injection"
             exit 0
           fi
           echo "Found p2pd at: ${P2PD}"
           for TARGET in ${{ join(matrix.targets, ' ') }}; do
             ARCHIVE=$(find . -name "kwaainet-${TARGET}.tar.xz" 2>/dev/null | head -1)
-            [ -n "${ARCHIVE}" ] || { echo "Archive for ${TARGET} not found — skipping"; continue; }
-            echo "Injecting p2pd into ${ARCHIVE}..."
+            [ -n "${ARCHIVE}" ] || { echo "Archive for ${TARGET} not found"; continue; }
+            OLD_HASH=$(openssl dgst -sha256 -hex "${ARCHIVE}" | awk '{print $NF}')
+            echo "Injecting p2pd into ${ARCHIVE} (old hash: ${OLD_HASH})..."
             LABEL="kwaainet-${TARGET}"
             TMP=$(mktemp -d)
             tar -xJf "${ARCHIVE}" -C "${TMP}"
@@ -211,8 +209,18 @@ jobs:
             chmod +x "${TMP}/${LABEL}/p2pd"
             tar -cJf "${ARCHIVE}" -C "${TMP}" "${LABEL}"
             rm -rf "${TMP}"
-            HASH=$(openssl dgst -sha256 -hex "${ARCHIVE}" | awk '{print $NF}')
-            echo "${HASH} *$(basename ${ARCHIVE})" > "${ARCHIVE}.sha256"
+            NEW_HASH=$(openssl dgst -sha256 -hex "${ARCHIVE}" | awk '{print $NF}')
+            echo "${NEW_HASH} *$(basename ${ARCHIVE})" > "${ARCHIVE}.sha256"
+            # Patch dist-manifest.json so the global step embeds the correct
+            # post-injection checksum in the generated installer script.
+            if [ -f "dist-manifest.json" ]; then
+              python3 -c "
+with open('dist-manifest.json') as f: c = f.read()
+c = c.replace('${OLD_HASH}', '${NEW_HASH}')
+with open('dist-manifest.json', 'w') as f: f.write(c)
+"
+              echo "Patched manifest: ${OLD_HASH} -> ${NEW_HASH}"
+            fi
             echo "Done: $(ls -lh ${ARCHIVE})"
           done
 
@@ -225,23 +233,29 @@ jobs:
             | Where-Object { $_.FullName -notmatch "go-libp2p-daemon" } `
             | Select-Object -First 1
           if (-not $p2pd) {
-            Write-Host "p2pd.exe not found anywhere — skipping injection"
-            Get-ChildItem -Recurse -Filter "p2pd*" -Depth 4 | Select-Object FullName
-            exit 0
+            Write-Host "p2pd.exe not found — skipping injection"; exit 0
           }
           Write-Host "Found p2pd.exe at: $($p2pd.FullName)"
           foreach ($TARGET in "${{ join(matrix.targets, ' ') }}".Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)) {
             $archive = Get-ChildItem -Recurse -Filter "kwaainet-${TARGET}.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $archive) { Write-Host "Archive for ${TARGET} not found — skipping"; continue }
-            Write-Host "Injecting p2pd.exe into $($archive.FullName)..."
+            if (-not $archive) { Write-Host "Archive for ${TARGET} not found"; continue }
+            $oldHash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLower()
+            Write-Host "Injecting p2pd.exe into $($archive.FullName) (old hash: $oldHash)..."
             $tmp = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName()))
             Expand-Archive -Path $archive.FullName -DestinationPath $tmp.FullName -Force
             Copy-Item $p2pd.FullName (Join-Path $tmp.FullName "p2pd.exe")
             Remove-Item $archive.FullName -Force
             Compress-Archive -Path (Join-Path $tmp.FullName "*") -DestinationPath $archive.FullName
-            $hash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLower()
-            Set-Content "$($archive.FullName).sha256" "$hash *kwaainet-${TARGET}.zip"
+            $newHash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLower()
+            Set-Content "$($archive.FullName).sha256" "$newHash *kwaainet-${TARGET}.zip"
             Remove-Item $tmp.FullName -Recurse -Force
+            # Patch dist-manifest.json with the post-injection checksum
+            if (Test-Path "dist-manifest.json") {
+              $c = Get-Content "dist-manifest.json" -Raw
+              $c = $c -replace $oldHash, $newHash
+              Set-Content "dist-manifest.json" $c
+              Write-Host "Patched manifest: $oldHash -> $newHash"
+            }
             Write-Host "Done."
           }
 

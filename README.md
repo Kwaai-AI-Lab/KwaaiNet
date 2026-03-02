@@ -22,7 +22,7 @@
 
 ## Download
 
-Pre-built binaries for **v0.1.9** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required.
+Pre-built binaries for **v0.1.10** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required.
 
 ### Shell installer (macOS / Linux)
 
@@ -76,6 +76,7 @@ After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
 ## ✅ Status: Network Live & Operational
 
 **Latest Achievements:**
+- ✅ **v0.1.10 Released** — fixed installer checksum mismatch (dist-manifest.json now patched with post-injection hash); all 5 platforms bundle `p2pd` correctly
 - ✅ **v0.1.9 Released** — fixed Windows zip injection (flat structure, no subdirectory); all 5 platforms now bundle `p2pd` alongside `kwaainet` so `kwaainet start` works out of the box
 - ✅ **v0.1.6 Released** — removed wrapper `install.sh`/`install.ps1` in favour of direct cargo-dist release assets; `kwaainet uninstall` now removes from all known install locations (`~/.cargo/bin/`, `~/.local/bin/`); launchd unload noise suppressed when service was never started
 - ✅ **v0.1.5 Released** — cargo-dist release automation; Homebrew tap (`brew install kwaai-ai-lab/tap/kwaainet`); SHA256-verified installers for all 5 platforms; `kwaainet update` self-update support
