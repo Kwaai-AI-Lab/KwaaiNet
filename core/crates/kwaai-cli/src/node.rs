@@ -292,6 +292,9 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // -----------------------------------------------------------------------
     info!("[1/5] Starting p2p daemon...");
     let p2pd_path = find_p2pd_binary();
+    if p2pd_path.is_none() {
+        eprintln!("  ⚠️  p2pd not found — run `kwaainet setup --get-deps` to install it");
+    }
 
     // p2pd listens for P2P traffic on the configured port
     let host_addr = format!("/ip4/0.0.0.0/tcp/{}", config.port);
@@ -870,20 +873,28 @@ fn port_is_free(port: u16) -> bool {
 }
 
 fn find_p2pd_binary() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    let name = "p2pd.exe";
+    #[cfg(not(windows))]
+    let name = "p2pd";
+
     // Next to our own binary
     if let Ok(exe) = std::env::current_exe() {
-        let c = exe.parent()?.join("p2pd");
+        let c = exe.parent()?.join(name);
         if c.exists() { return Some(c); }
     }
     // Cargo target dir (dev builds)
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        #[cfg(windows)]
+        let c = std::path::PathBuf::from(manifest).join("../../../target/debug/p2pd.exe");
+        #[cfg(not(windows))]
         let c = std::path::PathBuf::from(manifest).join("../../../target/debug/p2pd");
         if c.exists() { return Some(c); }
     }
     // PATH
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
-        let c = dir.join("p2pd");
+        let c = dir.join(name);
         if c.exists() { return Some(c); }
     }
     None

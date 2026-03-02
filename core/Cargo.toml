@@ -16,7 +16,7 @@ members = [
 # Root package for examples
 [package]
 name = "kwaai-core"
-version = "0.1.4"
+version = "0.2.3"
 edition = "2021"
 publish = false
 
@@ -118,7 +118,7 @@ name = "query_dht_state"
 path = "examples/query_dht_state.rs"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.2.3"
 edition = "2021"
 authors = ["Kwaai AI Lab <dev@kwaai.ai>"]
 license = "MIT"
@@ -181,6 +181,30 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Testing
 criterion = "0.5"
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.31.0"
+ci = ["github"]
+installers = ["shell", "powershell", "homebrew"]
+tap = "Kwaai-AI-Lab/homebrew-tap"
+publish-jobs = ["homebrew"]
+# The release.yml has been manually patched (working-directory: core) for our
+# nested workspace layout.  Suppress cargo-dist's "file is out of date" check.
+allow-dirty = ["ci"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+# Build p2pd (Go binary) alongside kwaainet and bundle it in the same archive
+extra-artifacts = [
+    { build = ["../scripts/build-p2pd.sh"], artifacts = ["p2pd"] },
+]
+
+[profile.dist]
+inherits = "release"
 
 [profile.release]
 lto = true

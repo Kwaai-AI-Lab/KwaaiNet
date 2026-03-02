@@ -38,24 +38,37 @@ We're not just building software - we're democratizing AI infrastructure for hum
 ### Local Development Environment
 ```bash
 # Clone the repository
-git clone https://github.com/Kwaai-AI-Lab/kwaainet.git
-cd kwaainet
+git clone https://github.com/Kwaai-AI-Lab/KwaaiNet.git
+cd KwaaiNet
 
 # Set up Rust toolchain
 rustup update stable
-rustup target add wasm32-unknown-unknown
 
-# Install development dependencies
-cargo install wasm-pack
-npm install -g @wasm-tool/wasm-pack
+# Build the CLI
+cd core && cargo build --release -p kwaainet
 
 # Run tests
 cargo test
-cargo test --target wasm32-unknown-unknown
 
 # Build documentation
 cargo doc --open
 ```
+
+### Cleaning up
+
+Build artifacts accumulate quickly (`core/target/` can reach 20 GB+). Use the cleanup script to reset to a clean state:
+
+```bash
+./scripts/clean.sh              # interactive — confirm each step
+./scripts/clean.sh --all        # remove everything without prompting
+./scripts/clean.sh --dry-run    # preview what would be removed
+```
+
+The script removes:
+- `core/target/` — Rust build artifacts
+- `/tmp/go-libp2p-daemon-*` — stale Go clone dirs from the p2pd build hook
+- `/usr/local/bin/kwaainet` + `p2pd` — manually copied binaries
+- `~/.cargo/bin/kwaainet` — cargo-installed binary
 
 ### Development Workflow
 1. **Fork** the repository to your GitHub account
@@ -236,7 +249,7 @@ For contributors, we provide:
 
 ## Release Process
 
-Only maintainers cut releases. Follow these steps for every release:
+Only maintainers cut releases. Releases are fully automated via [cargo-dist](https://opensource.axodotdev.com/cargo-dist/) — pushing a version tag triggers the CI workflow which builds all platforms, generates installers, verifies checksums, and publishes the Homebrew formula.
 
 ### 1. Bump the version number
 
@@ -250,45 +263,34 @@ version = "X.Y.Z"          # ← bump here
 version = "X.Y.Z"          # ← and here
 ```
 
-`kwaai-p2p-daemon` does **not** inherit from the workspace, so bump it too:
-
-```toml
-# core/crates/kwaai-p2p-daemon/Cargo.toml
-version = "X.Y.Z"          # ← bump here
-```
-
-All other crates use `version.workspace = true` and are updated automatically.
+All crates use `version.workspace = true` and are updated automatically. Refresh the lockfile:
 
 ```bash
-# Quick one-liner to confirm every version is in sync after editing:
-grep -r '^version' core/Cargo.toml core/crates/*/Cargo.toml
+cd core && cargo update -p kwaainet
 ```
 
-### 2. Commit the version bump
+### 2. Commit, tag, and push
 
 ```bash
-git add core/Cargo.toml core/crates/kwaai-p2p-daemon/Cargo.toml
+git add core/Cargo.toml core/Cargo.lock
 git commit -m "chore: bump version to vX.Y.Z"
-```
-
-### 3. Merge to main and tag
-
-```bash
-git checkout main
-git merge <feature-branch>
-git push origin main
 git tag vX.Y.Z
-git push origin vX.Y.Z
+git push origin main && git push origin vX.Y.Z
 ```
 
-The tag push triggers `release.yml` which builds all 4 platforms and publishes the release.
+The tag push triggers `.github/workflows/release.yml`, which:
+- Builds `kwaainet` for all 5 targets (macOS ARM/Intel, Linux x86_64/ARM64, Windows x86_64)
+- Builds `p2pd` (Go) for each platform via `scripts/build-p2pd.sh`
+- Generates SHA256-verified `.tar.xz` / `.zip` archives
+- Publishes `kwaainet-installer.sh` and `kwaainet-installer.ps1`
+- Pushes the Homebrew formula to `Kwaai-AI-Lab/homebrew-tap`
 
-### 4. Verify the release
+### 3. Verify the release
 
-- Actions tab: all 4 build jobs (+ Docker) green
-- Release page: 8 binary assets (4 versioned + 4 version-less aliases)
-- `releases/latest/download/kwaainet-aarch64-apple-darwin.tar.gz` resolves (HTTP 302)
-- Archive extracts to both `kwaainet` and `p2pd`
+- **Actions tab**: all 5 `build-local-artifacts` jobs + `build-global-artifacts` + `publish-homebrew-formula` green
+- **Release page**: `.tar.xz` for each platform, `.zip` for Windows, `kwaainet-installer.sh/ps1`, `sha256.sum`
+- **Installer test**: `curl --proto '=https' --tlsv1.2 -LsSf .../kwaainet-installer.sh | sh` → correct version
+- **Homebrew test**: `brew upgrade kwaainet && kwaainet --version`
 
 ---
 

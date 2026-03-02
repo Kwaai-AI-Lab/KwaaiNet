@@ -70,8 +70,8 @@ pub enum Command {
     /// Serve an OpenAI-compatible API backed by the local model
     Serve(ServeArgs),
 
-    /// Initial setup
-    Setup,
+    /// Initial setup and dependency installation
+    Setup(SetupArgs),
 
     /// Manage node identity and verifiable credentials
     Identity(IdentityArgs),
@@ -500,4 +500,15 @@ pub struct CalibrateArgs {
     /// Apply a calibration profile: min, recommended, or max
     #[arg(long, value_name = "PROFILE")]
     pub apply: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// setup
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct SetupArgs {
+    /// Download and install missing dependencies (e.g. p2pd)
+    #[arg(long)]
+    pub get_deps: bool,
 }

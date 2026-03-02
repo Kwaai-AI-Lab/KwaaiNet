@@ -19,6 +19,7 @@ mod shard_cmd;
 mod throughput;
 mod uninstall;
 mod updater;
+mod setup;
 mod vpk;
 
 use anyhow::Result;
@@ -843,23 +844,28 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         // setup
         // -------------------------------------------------------------------
-        Command::Setup => {
-            print_box_header("🔧 KwaaiNet Setup");
-            let cfg = KwaaiNetConfig::load_or_create()?;
+        Command::Setup(args) => {
+            if args.get_deps {
+                setup::get_dependencies().await?;
+            } else {
+                print_box_header("🔧 KwaaiNet Setup");
+                let cfg = KwaaiNetConfig::load_or_create()?;
 
-            // Create all required directories
-            std::fs::create_dir_all(config::run_dir())?;
-            std::fs::create_dir_all(config::log_dir())?;
+                // Create all required directories
+                std::fs::create_dir_all(config::run_dir())?;
+                std::fs::create_dir_all(config::log_dir())?;
 
-            print_success("Directories created");
-            print_success(&format!("Config written to {}", config::config_file().display()));
-            println!();
-            println!("  Model:  {}", cfg.model);
-            println!("  Blocks: {}", cfg.blocks);
-            println!("  Port:   {}", cfg.port);
-            println!();
-            print_info("Start the node with: kwaainet start --daemon");
-            print_separator();
+                print_success("Directories created");
+                print_success(&format!("Config written to {}", config::config_file().display()));
+                println!();
+                println!("  Model:  {}", cfg.model);
+                println!("  Blocks: {}", cfg.blocks);
+                println!("  Port:   {}", cfg.port);
+                println!();
+                print_info("Run `kwaainet setup --get-deps` to download p2pd if missing");
+                print_info("Start the node with: kwaainet start --daemon");
+                print_separator();
+            }
         }
     }
 

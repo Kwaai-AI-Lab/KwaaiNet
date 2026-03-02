@@ -110,21 +110,14 @@ fn remove_binaries() {
     };
 
     #[cfg(windows)]
-    let p2pd_name = "p2pd.exe";
+    let (kwaainet_name, p2pd_name) = ("kwaainet.exe", "p2pd.exe");
     #[cfg(not(windows))]
-    let p2pd_name = "p2pd";
+    let (kwaainet_name, p2pd_name) = ("kwaainet", "p2pd");
 
     let p2pd = bin_dir.join(p2pd_name);
 
     #[cfg(windows)]
     {
-        // On Windows a running .exe cannot be deleted in-place, but it CAN be
-        // renamed (the OS tracks open executables by file ID, not name).
-        // Strategy:
-        //   1. Rename <binary> → <binary>.del  (frees the original name immediately)
-        //   2. Schedule async deletion of the .del file via a batch script
-        // The original path disappears synchronously; the .del file is a transient
-        // leftover cleaned up once the process exits.
         remove_binary_windows(&exe);
         if p2pd.exists() {
             remove_binary_windows(&p2pd);
@@ -136,6 +129,26 @@ fn remove_binaries() {
         remove_binary_file(&exe);
         if p2pd.exists() {
             remove_binary_file(&p2pd);
+        }
+    }
+
+    // Also remove from other known install locations that differ from the
+    // currently-running binary:
+    //   ~/.cargo/bin/  — cargo-dist installer default
+    //   ~/.local/bin/  — original pre-v0.1.5 install.sh
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        let extra_locations = [
+            home.join(".cargo").join("bin").join(kwaainet_name),
+            home.join(".local").join("bin").join(kwaainet_name),
+        ];
+        for alt_bin in &extra_locations {
+            if alt_bin.exists() && alt_bin != &exe {
+                #[cfg(not(windows))]
+                remove_binary_file(alt_bin);
+                #[cfg(windows)]
+                remove_binary_windows(alt_bin);
+            }
         }
     }
 }

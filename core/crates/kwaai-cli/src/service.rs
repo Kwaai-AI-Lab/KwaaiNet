@@ -97,10 +97,20 @@ impl ServiceManager for LaunchdManager {
     fn uninstall(&self) -> Result<()> {
         let path = Self::plist_path();
         if path.exists() {
-            std::process::Command::new("launchctl")
-                .args(["unload", &path.to_string_lossy()])
-                .status()
-                .context("launchctl unload")?;
+            // Only call `launchctl unload` when the service is actually loaded.
+            // Calling unload on a plist that was never loaded prints "Unload
+            // failed: 5: Input/output error" to stdout — noise with no effect.
+            let loaded = std::process::Command::new("launchctl")
+                .args(["list", "ai.kwaai.kwaainet"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if loaded {
+                // Capture output so launchctl noise doesn't leak to the terminal.
+                let _ = std::process::Command::new("launchctl")
+                    .args(["unload", &path.to_string_lossy()])
+                    .output();
+            }
             std::fs::remove_file(&path)?;
         }
         Ok(())
