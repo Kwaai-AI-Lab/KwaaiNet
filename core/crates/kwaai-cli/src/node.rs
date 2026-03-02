@@ -362,10 +362,10 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("RPC handlers ready on {}", handler_addr);
 
     // -----------------------------------------------------------------------
-    // Step 4: Wait for DHT bootstrap
+    // Step 4: Wait for DHT bootstrap (intelligent polling)
     // -----------------------------------------------------------------------
-    info!("[4/5] Bootstrapping (30 seconds)...");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    info!("[4/5] Bootstrapping...");
+    wait_for_bootstrap_peers(&mut client, &bootstrap_peers).await?;
 
     // -----------------------------------------------------------------------
     // Step 5: Initial DHT announcement
@@ -674,14 +674,27 @@ async fn send_to_bootstrap(
             Err(e) => { warn!("Invalid peer ID in {}: {}", addr, e); continue; }
         };
 
-        if let Err(e) = client.connect_peer(addr).await {
-            warn!("Bootstrap connect failed ({}): {}", addr, e);
-            continue;
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            client.connect_peer(addr)
+        ).await {
+            Ok(Ok(_)) => { /* success, continue */ }
+            Ok(Err(e)) => {
+                warn!("Bootstrap connect failed ({}): {}", addr, e);
+                continue;
+            }
+            Err(_) => {
+                warn!("Bootstrap connect timeout ({}): exceeded 10s", addr);
+                continue;
+            }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        match client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_store", &bytes).await {
-            Ok(resp_bytes) => {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_store", &bytes)
+        ).await {
+            Ok(Ok(resp_bytes)) => {
                 use kwaai_hivemind_dht::protocol::StoreResponse;
                 if let Ok(resp) = StoreResponse::decode(&resp_bytes[..]) {
                     let ok = resp.store_ok.iter().filter(|&&s| s).count();
@@ -689,14 +702,83 @@ async fn send_to_bootstrap(
                     if ok > 0 { succeeded += 1; }
                 }
             }
-            Err(e) => warn!("STORE RPC failed ({}): {}", addr, e),
+            Ok(Err(e)) => warn!("STORE RPC failed ({}): {}", addr, e),
+            Err(_) => {
+                warn!("STORE RPC timeout ({}): exceeded 10s", addr);
+            }
         }
     }
 
-    if succeeded == 0 {
-        warn!("DHT STORE failed on all {} bootstrap peers", bootstrap_peers.len());
+    if succeeded > 0 {
+        info!("✅ Announced to {} of {} bootstrap peers", succeeded, bootstrap_peers.len());
+    } else {
+        warn!("❌ Announcement failed on all {} bootstrap peers — see warnings above", bootstrap_peers.len());
     }
     succeeded > 0
+}
+
+/// Wait for bootstrap peers to connect using intelligent polling
+///
+/// Polls p2pd every 500ms to check if any bootstrap peers are connected.
+/// Returns as soon as ≥1 bootstrap peer connects, or after 30s timeout.
+async fn wait_for_bootstrap_peers(
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    bootstrap_peers: &[String],
+) -> Result<()> {
+    const MAX_WAIT_SECS: u64 = 30;
+    const POLL_INTERVAL_MS: u64 = 500;
+
+    let start = tokio::time::Instant::now();
+    let max_wait = Duration::from_secs(MAX_WAIT_SECS);
+
+    // Extract bootstrap peer IDs for matching
+    let bootstrap_peer_ids: Vec<Vec<u8>> = bootstrap_peers
+        .iter()
+        .filter_map(|addr| addr.split("/p2p/").nth(1))
+        .filter_map(|id_str| id_str.parse::<PeerId>().ok())
+        .map(|peer_id| peer_id.to_bytes())
+        .collect();
+
+    loop {
+        // Query connected peers from p2pd
+        match client.list_peers().await {
+            Ok(peers) => {
+                // Check if any connected peer matches bootstrap peers
+                let connected_bootstrap_count = peers.iter()
+                    .filter(|peer_info| {
+                        bootstrap_peer_ids.iter().any(|bp_id| bp_id == &peer_info.id)
+                    })
+                    .count();
+
+                if connected_bootstrap_count > 0 {
+                    let elapsed = start.elapsed();
+                    info!("✅ Connected to {} bootstrap peer(s) in {:.1}s",
+                          connected_bootstrap_count, elapsed.as_secs_f64());
+                    return Ok(());
+                }
+
+                // Log progress every 5 seconds
+                let elapsed = start.elapsed();
+                if elapsed.as_secs() % 5 == 0 && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2 {
+                    info!("   Waiting for bootstrap peers... ({:.0}s elapsed, {} total peers connected)",
+                          elapsed.as_secs_f64(), peers.len());
+                }
+            }
+            Err(e) => {
+                warn!("Peer list query failed: {} — continuing to wait", e);
+            }
+        }
+
+        // Check timeout
+        if start.elapsed() >= max_wait {
+            warn!("⚠️  Bootstrap timeout after {}s — no bootstrap peers connected", MAX_WAIT_SECS);
+            warn!("   Node will still announce, but may not be visible on map initially");
+            return Ok(()); // Don't fail, just continue
+        }
+
+        // Wait before next poll
+        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
 }
 
 // ---------------------------------------------------------------------------

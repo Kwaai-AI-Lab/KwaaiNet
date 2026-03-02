@@ -181,7 +181,7 @@ The following areas need contributors. Pick what interests you and open a PR or 
 - [ ] DHT optimisations for large peer sets (>1 000 nodes)
 - [ ] Write integration tests for multi-node scenarios
 - [ ] Port conflict resolution for multiple nodes behind the same WAN IP — detect when `public_ip` matches another already-announced node on the same port, warn the user, and suggest an alternate port (`kwaainet config --set port <N>`)
-- [ ] Replace hardcoded 30s bootstrap wait with peer-count polling — announce as soon as ≥1 bootstrap peer is connected (typically 2–5s); reduces `kwaainet start --daemon` → node-on-map time from ~46s to ~15s
+- [x] Replace hardcoded 30s bootstrap wait with peer-count polling — announce as soon as ≥1 bootstrap peer is connected (typically 2–5s); reduces `kwaainet start --daemon` → node-on-map time from ~46s to ~15s
 - [ ] Fix `kwaainet stop` hang — daemon does not exit cleanly when stop command is issued; currently requires `kill -9`; investigate whether the shutdown signal is not being delivered or the run-node loop is blocking on a future that doesn't respect cancellation
 
 ### Storage Integrations

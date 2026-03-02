@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::persistent::PersistentConnection;
-use crate::protocol::p2pd::{Request, Response, ConnectRequest, DisconnectRequest, StreamOpenRequest, request};
+use crate::protocol::p2pd::{Request, Response, ConnectRequest, DisconnectRequest, StreamOpenRequest, PeerInfo, request};
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 use std::sync::Arc;
@@ -344,6 +344,27 @@ impl P2PClient {
 
         let _response = self.send_request(request).await?;
         Ok(())
+    }
+
+    /// List all currently connected peers
+    ///
+    /// Returns a list of PeerInfo containing peer IDs and their addresses.
+    /// This is a fast local query to the daemon's connection table.
+    pub async fn list_peers(&mut self) -> Result<Vec<PeerInfo>> {
+        let request = Request {
+            r#type: request::Type::ListPeers as i32,
+            connect: None,
+            stream_open: None,
+            stream_handler: None,
+            remove_stream_handler: None,
+            dht: None,
+            conn_manager: None,
+            disconnect: None,
+            pubsub: None,
+        };
+
+        let response = self.send_request(request).await?;
+        Ok(response.peers)
     }
 
     /// Register a stream handler for the given protocols
