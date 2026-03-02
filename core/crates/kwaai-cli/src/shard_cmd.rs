@@ -46,6 +46,7 @@ pub async fn run(args: ShardArgs) -> Result<()> {
         ShardAction::Run(a)   => cmd_shard_run(a).await,
         ShardAction::Status   => cmd_shard_status().await,
         ShardAction::Chain(a) => cmd_shard_chain(a).await,
+        ShardAction::Api(a)   => crate::shard_api::run(a).await,
     }
 }
 
@@ -241,6 +242,20 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     )
     .await;
 
+    // Apply optional name filter (e.g. --name-filter v0.2.3)
+    let chain = if let Some(ref f) = args.name_filter {
+        let filtered: Vec<_> = chain.into_iter().filter(|e| e.public_name.contains(f.as_str())).collect();
+        if filtered.is_empty() {
+            println!("no nodes matched filter {:?}", f);
+            print_warning(&format!("No block servers with name containing {:?} found.", f));
+            print_separator();
+            return Ok(());
+        }
+        filtered
+    } else {
+        chain
+    };
+
     if chain.is_empty() {
         println!("no nodes found");
         println!();
@@ -273,7 +288,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     println!();
 
     // Load tokenizer from the model directory for prompt encoding
-    let model_dir = hf::resolve_snapshot(model_ref)?;
+    let model_dir = if let Some(p) = &args.model_path {
+        p.clone()
+    } else {
+        hf::resolve_snapshot(model_ref)?
+    };
     let tokenizer_path = model_dir.join("tokenizer.json");
     let tokenizer = kwaai_inference::tokenizer::BpeTokenizer::from_file(&tokenizer_path)
         .context("Failed to load tokenizer")?;
@@ -293,6 +312,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
     let max_tokens = args.max_tokens;
+    let temperature = args.temperature;
+    let top_k = args.top_k;
+    let top_p = args.top_p;
 
     println!("  Input tokens: {}", token_ids.len());
     println!("  Session ID:   {}", session_id);
@@ -357,8 +379,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             logits_tensor.flatten_all()?
         };
 
-        // Greedy sampling: argmax
-        let next_id = argmax_f16(&last_logits)? as u32;
+        let next_id = sample_token(&last_logits, temperature, top_k, top_p)? as u32;
 
         // Decode and print incrementally
         if let Ok(piece) = tokenizer.decode(&[next_id]) {
@@ -517,7 +538,7 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
 // ── Chain discovery ───────────────────────────────────────────────────────────
 
 /// Metadata for one block-server node discovered from DHT.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockServerEntry {
     pub peer_id: PeerId,
     pub start_block: usize,
@@ -765,7 +786,7 @@ fn decode_server_info_ext(bytes: &[u8]) -> Option<(usize, usize, String, String)
 /// widest coverage (largest end_block first). This allows nodes running older code
 /// without an inference handler to be transparently skipped in favour of the next
 /// available peer that covers the same range.
-async fn forward_through_chain(
+pub async fn forward_through_chain(
     client: &mut P2PClient,
     chain: &[BlockServerEntry],
     total_blocks: usize,
@@ -809,9 +830,9 @@ async fn forward_through_chain(
                     succeeded = true;
                     break;
                 }
-                Err(_) => {
+                Err(e) => {
                     print_warning(&format!(
-                        "Peer {} ({}) unreachable, trying next candidate…",
+                        "Peer {} ({}) failed: {e:#}",
                         candidate.peer_id.to_base58().chars().take(12).collect::<String>(),
                         candidate.public_name,
                     ));
@@ -836,10 +857,16 @@ fn block_dht_id(prefix: &str, block: usize) -> Vec<u8> {
     Sha1::new().chain_update(&packed).finalize().to_vec()
 }
 
-/// UDS socket path for p2pd, matching the daemon's DEFAULT_SOCKET_NAME.
-fn daemon_socket() -> String {
+/// UDS socket path for p2pd.
+/// Override with `KWAAINET_SOCKET=/tmp/my.sock` to point at a different p2pd instance
+/// (e.g. when running multiple nodes on the same machine).
+pub fn daemon_socket() -> String {
     #[cfg(unix)]
-    return format!("/unix/{}", DEFAULT_SOCKET_NAME);
+    {
+        let sock = std::env::var("KWAAINET_SOCKET")
+            .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+        return format!("/unix/{}", sock);
+    }
     #[cfg(not(unix))]
     return "/ip4/127.0.0.1/tcp/5005".to_string();
 }
@@ -867,26 +894,92 @@ fn collect_safetensors(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Greedy sampler: return the argmax over the last (vocab) dimension.
-/// Input tensor must be a flat f16 vector (already on CPU).
-fn argmax_f16(logits: &candle_core::Tensor) -> Result<usize> {
+/// Sample the next token id from logits using temperature + top-k + top-p (nucleus) filtering.
+/// Falls back to greedy argmax when temperature == 1.0, top_k == 0, top_p >= 1.0.
+pub fn sample_token(
+    logits: &candle_core::Tensor,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+) -> Result<usize> {
     use candle_core::DType;
-    let logits_f32 = logits
-        .to_dtype(DType::F32)
-        .context("convert logits to f32")?;
-    let flat: Vec<f32> = logits_f32
-        .flatten_all()
-        .context("flatten logits")?
-        .to_vec1()
-        .context("logits to_vec1")?;
-    let best = flat
-        .iter()
+    let logits_f32 = logits.to_dtype(DType::F32)?.flatten_all()?;
+    let mut vals: Vec<f32> = logits_f32.to_vec1()?;
+    let n = vals.len();
+
+    // Temperature scaling
+    if temperature != 1.0 && temperature > 0.0 {
+        vals.iter_mut().for_each(|v| *v /= temperature);
+    }
+
+    // Pure greedy when no sampling is requested
+    if (temperature <= 0.0 || temperature == 1.0) && top_k == 0 && top_p >= 1.0 {
+        return Ok(vals
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0));
+    }
+
+    // Softmax
+    let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    vals.iter_mut().for_each(|v| *v = (*v - max).exp());
+    let sum: f32 = vals.iter().sum();
+    vals.iter_mut().for_each(|v| *v /= sum);
+
+    // Build (prob, index) sorted descending by prob
+    let mut indexed: Vec<(f32, usize)> = vals
+        .into_iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    Ok(best)
+        .map(|(i, p)| (p, i))
+        .collect();
+    indexed.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Top-k filter
+    if top_k > 0 && top_k < n {
+        indexed.truncate(top_k);
+    }
+
+    // Top-p nucleus filter
+    if top_p < 1.0 {
+        let mut cumsum = 0.0f32;
+        let cutoff = indexed
+            .iter()
+            .position(|(p, _)| {
+                cumsum += p;
+                cumsum >= top_p
+            })
+            .map(|i| i + 1)
+            .unwrap_or(indexed.len());
+        indexed.truncate(cutoff.max(1));
+    }
+
+    // Renormalize and sample
+    let total: f32 = indexed.iter().map(|(p, _)| p).sum();
+    let mut rng = rand_f32() * total;
+    for (p, i) in &indexed {
+        rng -= p;
+        if rng <= 0.0 {
+            return Ok(*i);
+        }
+    }
+    Ok(indexed[0].1)
 }
+
+/// Simple time-seeded float in [0, 1) — good enough for sampling.
+fn rand_f32() -> f32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(42) as u64;
+    let shuffled = ns
+        .wrapping_mul(6_364_136_223_846_793_005_u64)
+        .wrapping_add(1_442_695_040_888_963_407_u64);
+    ((shuffled >> 33) as u32 as f32) / (u32::MAX as f32)
+}
+
 
 /// Generate a random u64 session ID.
 fn rand_session_id() -> u64 {

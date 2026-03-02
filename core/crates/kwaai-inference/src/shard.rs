@@ -99,13 +99,14 @@ impl RopeCache {
             let x1 = t.narrow(3, 0, half).map_err(InferenceError::from)?;
             let x2 = t.narrow(3, half, half).map_err(InferenceError::from)?;
             // cos/sin: [s, half] → broadcast [1, 1, s, half]
+            // Use broadcast_mul so query (n_heads) and key (n_kv_heads) both work.
             let cos4 = cos.unsqueeze(0).and_then(|t| t.unsqueeze(0)).map_err(InferenceError::from)?;
             let sin4 = sin.unsqueeze(0).and_then(|t| t.unsqueeze(0)).map_err(InferenceError::from)?;
-            let out1 = ((&x1 * &cos4).map_err(InferenceError::from)?
-                - (&x2 * &sin4).map_err(InferenceError::from)?)
+            let out1 = (x1.broadcast_mul(&cos4).map_err(InferenceError::from)?
+                .sub(&x2.broadcast_mul(&sin4).map_err(InferenceError::from)?))
                 .map_err(InferenceError::from)?;
-            let out2 = ((&x1 * &sin4).map_err(InferenceError::from)?
-                + (&x2 * &cos4).map_err(InferenceError::from)?)
+            let out2 = (x1.broadcast_mul(&sin4).map_err(InferenceError::from)?
+                .add(&x2.broadcast_mul(&cos4).map_err(InferenceError::from)?))
                 .map_err(InferenceError::from)?;
             Tensor::cat(&[&out1, &out2], 3).map_err(InferenceError::from)
         }
@@ -279,7 +280,7 @@ impl ShardBlock {
             // Broadcast mask from [s, kv_seq] to [1, 1, s, kv_seq]
             let mask = mask.unsqueeze(0).and_then(|t| t.unsqueeze(0))
                 .map_err(InferenceError::from)?;
-            (scores + mask).map_err(InferenceError::from)?
+            scores.broadcast_add(&mask).map_err(InferenceError::from)?
         } else {
             scores
         };

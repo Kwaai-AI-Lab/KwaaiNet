@@ -418,6 +418,8 @@ pub enum ShardAction {
     Status,
     /// Query DHT and display block-chain coverage
     Chain(ShardChainArgs),
+    /// Serve an OpenAI-compatible HTTP API backed by distributed shard inference
+    Api(ShardApiArgs),
 }
 
 #[derive(Args)]
@@ -465,6 +467,27 @@ pub struct ShardRunArgs {
     /// Explicit session ID (randomly generated if not set)
     #[arg(long)]
     pub session_id: Option<u64>,
+
+    /// Only use block servers whose public_name contains this string.
+    /// Useful for restricting to known-good nodes: --name-filter v0.2.3
+    #[arg(long, value_name = "SUBSTR")]
+    pub name_filter: Option<String>,
+
+    /// Sampling temperature (1.0 = greedy, lower = more focused)
+    #[arg(long, default_value = "1.0")]
+    pub temperature: f32,
+
+    /// Top-p nucleus sampling cutoff (1.0 = disabled)
+    #[arg(long, default_value = "1.0")]
+    pub top_p: f32,
+
+    /// Top-k sampling cutoff (0 = disabled)
+    #[arg(long, default_value = "0")]
+    pub top_k: usize,
+
+    /// Path to model dir for tokenizer (overrides HF cache lookup)
+    #[arg(long, value_name = "PATH")]
+    pub model_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]
@@ -477,6 +500,29 @@ pub struct ShardChainArgs {
     /// Number of blocks to scan (default: 32)
     #[arg(long, default_value = "32")]
     pub total_blocks: usize,
+}
+
+#[derive(Args)]
+pub struct ShardApiArgs {
+    /// HTTP port to listen on
+    #[arg(long, default_value = "8080")]
+    pub port: u16,
+
+    /// Total transformer blocks in the full model (default: inferred)
+    #[arg(long)]
+    pub total_blocks: Option<usize>,
+
+    /// HuggingFace model ID (defaults to config.model)
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Path to model dir for tokenizer
+    #[arg(long, value_name = "PATH")]
+    pub model_path: Option<std::path::PathBuf>,
+
+    /// Default sampling temperature
+    #[arg(long, default_value = "0.7")]
+    pub temperature: f32,
 }
 
 // ---------------------------------------------------------------------------

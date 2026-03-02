@@ -328,6 +328,19 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         builder
     };
 
+    // Allow a custom socket path so multiple nodes can run on the same machine.
+    // Usage: KWAAINET_SOCKET=/tmp/kwaai-p2pd-b.sock kwaainet run-node
+    let builder = if let Ok(sock) = std::env::var("KWAAINET_SOCKET") {
+        // with_listen_addr expects full multiaddr format, e.g. /unix//tmp/kwaai-p2pd-b.sock
+        #[cfg(unix)]
+        let addr = format!("/unix/{}", sock);
+        #[cfg(not(unix))]
+        let addr = sock;
+        builder.with_listen_addr(addr)
+    } else {
+        builder
+    };
+
     let mut daemon = builder.spawn().await.context("starting p2pd")?;
     let mut client = daemon.client().await.context("p2pd client")?;
 

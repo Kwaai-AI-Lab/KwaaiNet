@@ -15,6 +15,7 @@ mod node;
 mod hf;
 mod ollama;
 mod service;
+mod shard_api;
 mod shard_cmd;
 mod throughput;
 mod uninstall;
