@@ -316,6 +316,18 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
 
+          # Patch installers to also install p2pd alongside kwaainet.
+          # The shell installer iterates space-separated $_bins; add p2pd for all Unix targets.
+          # The PS1 installer uses a PowerShell array; add p2pd.exe for Windows.
+          if [ -f "kwaainet-installer.sh" ]; then
+            sed -i 's/_bins="kwaainet"/_bins="kwaainet p2pd"/g' kwaainet-installer.sh
+            echo "Patched kwaainet-installer.sh: p2pd added to _bins"
+          fi
+          if [ -f "kwaainet-installer.ps1" ]; then
+            sed -i 's/"bins" = @("kwaainet.exe")/"bins" = @("kwaainet.exe", "p2pd.exe")/g' kwaainet-installer.ps1
+            echo "Patched kwaainet-installer.ps1: p2pd.exe added to bins array"
+          fi
+
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
