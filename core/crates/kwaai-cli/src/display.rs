@@ -1,15 +1,21 @@
 //! Console formatting helpers
 
-use std::fmt::Write as FmtWrite;
 
 const WIDTH: usize = 69;
+
+/// Returns the display width of a string, counting ASCII chars as 1 column
+/// and non-ASCII (emoji, CJK, etc.) as 2 columns.
+fn display_width(s: &str) -> usize {
+    s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+}
 
 pub fn print_box_header(title: &str) {
     println!();
     println!("╭{}╮", "─".repeat(WIDTH));
-    let pad = (WIDTH.saturating_sub(title.len())) / 2;
-    let right_pad = WIDTH.saturating_sub(pad + title.len());
-    println!("│{}{}{} │", " ".repeat(pad), title, " ".repeat(right_pad.saturating_sub(1)));
+    let title_w = display_width(title);
+    let pad = (WIDTH.saturating_sub(title_w)) / 2;
+    let right_pad = WIDTH.saturating_sub(pad + title_w);
+    println!("│{}{}{}│", " ".repeat(pad), title, " ".repeat(right_pad));
     println!("╰{}╯", "─".repeat(WIDTH));
     println!();
 }
