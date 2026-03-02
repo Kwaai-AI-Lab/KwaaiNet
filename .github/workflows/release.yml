@@ -236,7 +236,7 @@ jobs:
             Write-Host "Injecting p2pd.exe into $($archive.FullName)..."
             $tmp = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName()))
             Expand-Archive -Path $archive.FullName -DestinationPath $tmp.FullName -Force
-            Copy-Item $p2pd.FullName (Join-Path $tmp.FullName "kwaainet-${TARGET}\p2pd.exe")
+            Copy-Item $p2pd.FullName (Join-Path $tmp.FullName "p2pd.exe")
             Remove-Item $archive.FullName -Force
             Compress-Archive -Path (Join-Path $tmp.FullName "*") -DestinationPath $archive.FullName
             $hash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLower()
