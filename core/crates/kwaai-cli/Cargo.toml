@@ -65,11 +65,11 @@ axum = { version = "0.7", features = ["json"] }
 candle-core = { workspace = true }
 
 # KwaaiNet crates
-kwaai-p2p = { path = "../kwaai-p2p" }
-kwaai-hivemind-dht = { path = "../kwaai-hivemind-dht" }
-kwaai-p2p-daemon = { path = "../kwaai-p2p-daemon" }
-kwaai-inference = { path = "../kwaai-inference" }
-kwaai-trust = { path = "../kwaai-trust" }
+kwaai-p2p = { workspace = true }
+kwaai-hivemind-dht = { workspace = true }
+kwaai-p2p-daemon = { workspace = true }
+kwaai-inference = { workspace = true }
+kwaai-trust = { workspace = true }
 
 # Trust graph dependencies
 dirs = { workspace = true }
@@ -80,7 +80,7 @@ nix = { version = "0.27", features = ["signal", "process", "fs"] }
 # Enable Metal GPU acceleration on macOS (Apple Silicon / M-series).
 # Cargo merges features from target-specific sections with the base [dependencies] entry.
 [target.'cfg(target_os = "macos")'.dependencies]
-kwaai-inference = { path = "../kwaai-inference", features = ["metal"] }
+kwaai-inference = { workspace = true, features = ["metal"] }
 
 # cargo-dist builds Windows MSVC with -Ctarget-feature=+crt-static (fully static binary).
 # System OpenSSL on GitHub runners is compiled with /MD (dynamic CRT), which the static

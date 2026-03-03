@@ -48,9 +48,7 @@ brew install kwaai-ai-lab/tap/kwaainet
 cargo install --git https://github.com/Kwaai-AI-Lab/KwaaiNet kwaainet
 ```
 
-> **Note:** `kwaainet` is not yet published to crates.io — workspace dependencies need to be
-> published first. Until then, `cargo binstall kwaainet` will not work. Use the shell/PowerShell
-> installer above for a pre-built binary, or `cargo install --git ...` to build from source.
+> **Note:** `kwaainet` is published to crates.io as part of each release. `cargo binstall kwaainet` will work once the release is live. Use the shell/PowerShell installer above for the fastest install, or `cargo install --git ...` to build from source.
 
 ### Direct download
 

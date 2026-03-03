@@ -132,6 +132,16 @@ keywords = ["ai", "decentralized", "p2p", "wasm", "inference"]
 categories = ["network-programming", "wasm", "science"]
 
 [workspace.dependencies]
+kwaai-compression  = { path = "crates/kwaai-compression"  }
+kwaai-trust        = { path = "crates/kwaai-trust"        }
+kwaai-p2p          = { path = "crates/kwaai-p2p"          }
+kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht" }
+kwaai-distributed  = { path = "crates/kwaai-distributed"  }
+kwaai-inference    = { path = "crates/kwaai-inference"    }
+kwaai-cli          = { path = "crates/kwaai-cli"          }
+kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon"   }
+kwaai-wasm         = { path = "crates/kwaai-wasm"         }
+
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
 futures = "0.3"

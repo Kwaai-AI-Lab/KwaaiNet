@@ -12,6 +12,12 @@ keywords = ["wasm", "webassembly", "browser", "javascript", "bindings"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Internal crates
+kwaai-p2p = { workspace = true, default-features = false }
+kwaai-inference = { workspace = true, default-features = false }
+kwaai-distributed = { workspace = true }
+kwaai-compression = { workspace = true }
+
 # WASM bindings
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

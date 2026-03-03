@@ -1,0 +1,27 @@
+# cargo-release configuration
+# Usage: cargo release <version>  (e.g. cargo release 0.2.5)
+#
+# This bumps [workspace.package].version and all [workspace.dependencies]
+# version fields for internal crates, commits, and pushes a git tag.
+# The tag triggers release.yml which handles binary distribution and
+# crates.io publishing.
+
+# Do not publish here — the release.yml CI job handles that.
+publish = false
+
+# All workspace crates are versioned together (monorepo lockstep).
+# Required for {{version}} to be populated in the consolidated workspace commit.
+shared-version = true
+
+# Create and push the git tag that triggers release.yml.
+tag = true
+push = true
+
+# Commit the version bump with a standard message.
+pre-release-commit-message = "chore: bump to v{{version}}"
+
+# Tag format must match the release.yml trigger pattern: v[0-9]*.[0-9]*.[0-9]*
+tag-name = "v{{version}}"
+
+# Run cargo test before releasing.
+verify = true

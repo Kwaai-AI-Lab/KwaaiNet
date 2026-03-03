@@ -249,34 +249,33 @@ For contributors, we provide:
 
 ## Release Process
 
-Only maintainers cut releases. Releases are fully automated via [cargo-dist](https://opensource.axodotdev.com/cargo-dist/) — pushing a version tag triggers the CI workflow which builds all platforms, generates installers, verifies checksums, and publishes the Homebrew formula.
+Only maintainers cut releases. Releases are fully automated via [cargo-dist](https://opensource.axodotdev.com/cargo-dist/) and [cargo-release](https://github.com/crate-ci/cargo-release) — a single command bumps all versions, commits, tags, and pushes. The tag triggers CI which builds all platforms, publishes binaries, updates the Homebrew formula, and publishes crates to crates.io.
 
-### 1. Bump the version number
+All workspace crates are versioned in lockstep. Versions are centralised in `[workspace.package]` and `[workspace.dependencies]` inside `core/Cargo.toml`.
 
-The canonical version lives in two places in `core/Cargo.toml`:
+### Release tooling
 
-```toml
-[package]
-version = "X.Y.Z"          # ← bump here
-
-[workspace.package]
-version = "X.Y.Z"          # ← and here
-```
-
-All crates use `version.workspace = true` and are updated automatically. Refresh the lockfile:
+Install `cargo-release` once:
 
 ```bash
-cd core && cargo update -p kwaainet
+cargo install cargo-release
 ```
 
-### 2. Commit, tag, and push
+### Bump the version and tag
+
+From the `core/` directory:
 
 ```bash
-git add core/Cargo.toml core/Cargo.lock
-git commit -m "chore: bump version to vX.Y.Z"
-git tag vX.Y.Z
-git push origin main && git push origin vX.Y.Z
+cd core
+cargo release X.Y.Z
 ```
+
+This single command:
+
+- Bumps `[workspace.package].version` and all internal crate version references in `[workspace.dependencies]`
+- Runs `cargo test` to verify nothing is broken
+- Commits with `chore: bump to vX.Y.Z`
+- Creates and pushes the git tag `vX.Y.Z`
 
 The tag push triggers `.github/workflows/release.yml`, which:
 - Builds `kwaainet` for all 5 targets (macOS ARM/Intel, Linux x86_64/ARM64, Windows x86_64)
@@ -284,13 +283,15 @@ The tag push triggers `.github/workflows/release.yml`, which:
 - Generates SHA256-verified `.tar.xz` / `.zip` archives
 - Publishes `kwaainet-installer.sh` and `kwaainet-installer.ps1`
 - Pushes the Homebrew formula to `Kwaai-AI-Lab/homebrew-tap`
+- Publishes all crates to crates.io in dependency order
 
 ### 3. Verify the release
 
-- **Actions tab**: all 5 `build-local-artifacts` jobs + `build-global-artifacts` + `publish-homebrew-formula` green
+- **Actions tab**: all 5 `build-local-artifacts` jobs + `build-global-artifacts` + `publish-homebrew-formula` + `publish-crates` green
 - **Release page**: `.tar.xz` for each platform, `.zip` for Windows, `kwaainet-installer.sh/ps1`, `sha256.sum`
 - **Installer test**: `curl --proto '=https' --tlsv1.2 -LsSf .../kwaainet-installer.sh | sh` → correct version
 - **Homebrew test**: `brew upgrade kwaainet && kwaainet --version`
+- **crates.io**: each crate appears at the new version under [crates.io/crates/kwaai-cli](https://crates.io/crates/kwaai-cli)
 
 ---
 
