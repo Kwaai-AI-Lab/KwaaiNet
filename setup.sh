@@ -137,9 +137,9 @@ if [ -n "$GO_ACTION" ]; then
     export PATH=$PATH:/usr/local/go/bin
     RC_UPDATED=false
     if [[ "$SHELL" == */zsh ]]; then
-        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.zshrc  || { echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc;  RC_UPDATED=true; }
+        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.zshrc  || { echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.zshrc;  RC_UPDATED=true; }
     else
-        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.bashrc || { echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc; RC_UPDATED=true; }
+        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.bashrc || { echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc; RC_UPDATED=true; }
     fi
 
     if [ "$GO_ACTION" = "install" ]; then
