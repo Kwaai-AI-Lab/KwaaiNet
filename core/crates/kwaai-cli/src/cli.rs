@@ -126,6 +126,16 @@ pub enum Command {
     Uninstall(UninstallArgs),
 
     /// Distributed transformer block sharding
+    #[command(long_about = "Distributed transformer block sharding (Petals-style)
+
+Each machine loads a slice of the model and registers an RPC handler.
+A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
+
+  shard serve     Load and serve a range of transformer blocks (run on each node)
+  shard run       Coordinate inference across all serving nodes
+  shard chain     Show block coverage across all online peers
+  shard api       OpenAI-compatible HTTP server for distributed inference
+  shard download  Download a HuggingFace SafeTensors model (no huggingface-cli needed)")]
     Shard(ShardArgs),
 
     /// Internal: run the node in the foreground (used by daemon mode)
@@ -461,16 +471,6 @@ pub struct UninstallArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Args)]
-#[command(long_about = "Distributed transformer block sharding (Petals-style)
-
-Each machine loads a slice of the model and registers an RPC handler.
-A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
-
-  shard serve     Load and serve a range of transformer blocks (run on each node)
-  shard run       Coordinate inference across all serving nodes
-  shard chain     Show block coverage across all online peers
-  shard api       OpenAI-compatible HTTP server for distributed inference
-  shard download  Download a HuggingFace SafeTensors model (no huggingface-cli needed)")]
 pub struct ShardArgs {
     #[command(subcommand)]
     pub action: ShardAction,
