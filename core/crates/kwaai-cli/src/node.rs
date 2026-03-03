@@ -315,13 +315,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     };
 
     let public_name = format!(
-        "{} [{}:{}]/v{}",
+        "{}/v{}",
         config
             .public_name
             .clone()
             .unwrap_or_else(|| "kwaainet-node".to_string()),
-        config.start_block,
-        config.start_block + config.blocks,
         env!("CARGO_PKG_VERSION"),
     );
 
