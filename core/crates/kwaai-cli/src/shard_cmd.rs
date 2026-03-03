@@ -1076,10 +1076,7 @@ async fn local_inference_call(
         .context("read response length")?;
     let len = u32::from_le_bytes(len_buf) as usize;
     let mut buf = vec![0u8; len];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read response")?;
+    stream.read_exact(&mut buf).await.context("read response")?;
 
     let response: crate::block_rpc::InferenceResponse =
         rmp_serde::from_slice(&buf).context("deserialise InferenceResponse")?;
