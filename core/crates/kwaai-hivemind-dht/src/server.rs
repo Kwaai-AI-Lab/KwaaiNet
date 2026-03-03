@@ -2,7 +2,7 @@
 
 use crate::codec::{DHTRequest, DHTResponse};
 use crate::protocol::*;
-use crate::value::{DHTValue, get_dht_time};
+use crate::value::{get_dht_time, DHTValue};
 use crate::{Error, Result};
 use libp2p::PeerId;
 use std::collections::HashMap;
@@ -63,7 +63,11 @@ impl DHTStorage {
         if let Ok(mut storage) = self.storage.write() {
             for (i, key) in request.keys.iter().enumerate() {
                 let value = request.values.get(i).cloned().unwrap_or_default();
-                let expiration_time = request.expiration_time.get(i).copied().unwrap_or(get_dht_time() + 3600.0);
+                let expiration_time = request
+                    .expiration_time
+                    .get(i)
+                    .copied()
+                    .unwrap_or(get_dht_time() + 3600.0);
                 let in_cache = request.in_cache.get(i).copied().unwrap_or(false);
 
                 // Only store if not expired
@@ -105,8 +109,9 @@ impl DHTStorage {
         // Get nearest peers once (for all results)
         let (nearest_node_ids, nearest_peer_ids): (Vec<Vec<u8>>, Vec<Vec<u8>>) =
             if let Ok(peers) = self.peers.read() {
-                let node_peer_pairs: Vec<_> = peers.iter()
-                    .take(20)  // Return up to 20 nearest peers
+                let node_peer_pairs: Vec<_> = peers
+                    .iter()
+                    .take(20) // Return up to 20 nearest peers
                     .map(|p| {
                         let node_info = NodeInfo::from_peer_id(*p);
                         let peer_bytes = p.to_bytes();
@@ -171,12 +176,8 @@ impl DHTStorage {
     /// Handle any DHT request
     pub fn handle_request(&self, request: DHTRequest) -> Result<DHTResponse> {
         match request {
-            DHTRequest::Store(store_req) => {
-                Ok(DHTResponse::Store(self.handle_store(store_req)))
-            }
-            DHTRequest::Find(find_req) => {
-                Ok(DHTResponse::Find(self.handle_find(find_req)))
-            }
+            DHTRequest::Store(store_req) => Ok(DHTResponse::Store(self.handle_store(store_req))),
+            DHTRequest::Find(find_req) => Ok(DHTResponse::Find(self.handle_find(find_req))),
             DHTRequest::Ping(_ping_req) => {
                 // Simple ping response
                 Ok(DHTResponse::Ping(PingResponse {
@@ -236,7 +237,10 @@ mod tests {
 
         let find_res = storage.handle_find(find_req);
         assert_eq!(find_res.results.len(), 1);
-        assert_eq!(find_res.results[0].result_type, ResultType::FoundRegular as i32);
+        assert_eq!(
+            find_res.results[0].result_type,
+            ResultType::FoundRegular as i32
+        );
         assert_eq!(find_res.results[0].value, b"test_value");
     }
 
@@ -252,12 +256,12 @@ mod tests {
             keys: vec![b"expired_key".to_vec()],
             subkeys: vec![vec![]],
             values: vec![b"test".to_vec()],
-            expiration_time: vec![0.0],  // Already expired
+            expiration_time: vec![0.0], // Already expired
             in_cache: vec![false],
             peer: Some(node_info),
         };
 
         let store_res = storage.handle_store(store_req);
-        assert!(!store_res.store_ok[0]);  // Should not be stored
+        assert!(!store_res.store_ok[0]); // Should not be stored
     }
 }

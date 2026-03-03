@@ -1,9 +1,9 @@
 //! Shared application state
 
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use deadpool_postgres::Pool;
 use ed25519_dalek::SigningKey;
+use std::sync::Arc;
 use webauthn_rs::prelude::*;
 
 use crate::config::Config;
@@ -28,15 +28,19 @@ impl AppState {
         multikey.extend_from_slice(&pubkey_bytes);
         let issuer_did = format!("did:key:z{}", bs58::encode(&multikey).into_string());
 
-        Self { webauthn, db, signing_key, issuer_did }
+        Self {
+            webauthn,
+            db,
+            signing_key,
+            issuer_did,
+        }
     }
 }
 
 pub type SharedState = Arc<AppState>;
 
 pub fn build_webauthn(config: &Config) -> Result<Webauthn> {
-    let origin = url::Url::parse(&config.rp_origin)
-        .context("Invalid RP_ORIGIN URL")?;
+    let origin = url::Url::parse(&config.rp_origin).context("Invalid RP_ORIGIN URL")?;
     WebauthnBuilder::new(&config.rp_id, &origin)
         .context("Failed to create WebauthnBuilder")?
         .rp_name("Kwaai Summit 2026")

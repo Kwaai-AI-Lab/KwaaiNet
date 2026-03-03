@@ -32,9 +32,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn daemon with DHT and bootstrap peers
     info!("\n[1/5] Spawning daemon with Petals bootstrap nodes...");
     let mut daemon = P2PDaemon::builder()
-        .dht(true)  // Enable full DHT mode
-        .relay(true)  // Enable relay for NAT traversal
-        .nat_portmap(true)  // Try NAT port mapping
+        .dht(true) // Enable full DHT mode
+        .relay(true) // Enable relay for NAT traversal
+        .nat_portmap(true) // Try NAT port mapping
         .bootstrap_peers(bootstrap_peers)
         .spawn()
         .await?;
@@ -76,7 +76,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Try to put a test value
     info!("\nAttempting to store test value in DHT...");
     let test_value = format!("KwaaiNet node - {}", chrono::Utc::now()).into_bytes();
-    match client.dht_put_value(test_key.clone(), test_value, Some(60)).await {
+    match client
+        .dht_put_value(test_key.clone(), test_value, Some(60))
+        .await
+    {
         Ok(_) => {
             info!("✓ Successfully stored value in DHT!");
 

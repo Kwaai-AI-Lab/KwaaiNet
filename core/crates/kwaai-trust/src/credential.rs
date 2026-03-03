@@ -166,10 +166,7 @@ impl VerifiableCredential {
         credential_types: Vec<String>,
     ) -> Self {
         Self {
-            context: vec![
-                VC_CONTEXT_V1.to_string(),
-                KWAAI_CONTEXT_V1.to_string(),
-            ],
+            context: vec![VC_CONTEXT_V1.to_string(), KWAAI_CONTEXT_V1.to_string()],
             id: None,
             credential_type: credential_types,
             issuer: issuer.into(),
@@ -306,10 +303,7 @@ pub fn binding_vc(
 ) -> VerifiableCredential {
     let passkey_did_str = passkey_did.into();
     let subject = CredentialSubject::new(node_did)
-        .with_claim(
-            "linkedIdentity",
-            serde_json::Value::String(passkey_did_str),
-        )
+        .with_claim("linkedIdentity", serde_json::Value::String(passkey_did_str))
         .with_claim(
             "linkType",
             serde_json::Value::String("PasskeyBinding".to_string()),
@@ -318,9 +312,6 @@ pub fn binding_vc(
     VerifiableCredential::new(
         issuer_did,
         subject,
-        vec![
-            "VerifiableCredential".to_string(),
-            "BindingVC".to_string(),
-        ],
+        vec!["VerifiableCredential".to_string(), "BindingVC".to_string()],
     )
 }

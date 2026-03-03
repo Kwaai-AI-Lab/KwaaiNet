@@ -3,21 +3,17 @@
 use std::sync::Arc;
 
 use axum::{
-    Json,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
+    Json,
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
-use crate::{
-    db,
-    state::SharedState,
-    vc_issuer,
-};
+use crate::{db, state::SharedState, vc_issuer};
 use kwaai_trust::p256_spki_to_did;
 
 // ---------------------------------------------------------------------------
@@ -76,16 +72,13 @@ pub async fn register_begin(
     let challenge_id = Uuid::new_v4();
     let state_json = serde_json::to_string(&reg_state)?;
 
-    db::insert_pending_registration(
-        &state.db,
-        challenge_id,
-        user_id,
-        &display_name,
-        &state_json,
-    )
-    .await?;
+    db::insert_pending_registration(&state.db, challenge_id, user_id, &display_name, &state_json)
+        .await?;
 
-    Ok(Json(RegisterBeginResponse { challenge_id, options: ccr }))
+    Ok(Json(RegisterBeginResponse {
+        challenge_id,
+        options: ccr,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +177,9 @@ pub async fn auth_begin(
 ) -> ApiResult<AuthBeginResponse> {
     let rows = db::get_passkeys_for_did(&state.db, &req.did).await?;
     if rows.is_empty() {
-        return Err(AppError(anyhow::anyhow!("No passkeys found for this identity")));
+        return Err(AppError(anyhow::anyhow!(
+            "No passkeys found for this identity"
+        )));
     }
 
     let passkeys: Vec<Passkey> = rows
@@ -201,7 +196,10 @@ pub async fn auth_begin(
     let state_json = serde_json::to_string(&auth_state)?;
     db::insert_pending_authentication(&state.db, challenge_id, &state_json).await?;
 
-    Ok(Json(AuthBeginResponse { challenge_id, options: rcr }))
+    Ok(Json(AuthBeginResponse {
+        challenge_id,
+        options: rcr,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +233,9 @@ pub async fn auth_complete(
 
     let rows = db::get_passkeys_for_did(&state.db, &req.did).await?;
     if rows.is_empty() {
-        return Err(AppError(anyhow::anyhow!("No passkeys found for this identity")));
+        return Err(AppError(anyhow::anyhow!(
+            "No passkeys found for this identity"
+        )));
     }
 
     let (user_id, _) = rows[0];

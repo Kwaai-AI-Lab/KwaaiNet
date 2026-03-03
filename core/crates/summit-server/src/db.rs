@@ -17,7 +17,10 @@ pub async fn build_pool(database_url: &str) -> Result<Pool> {
 
 pub async fn migrate(pool: &Pool) -> Result<()> {
     let sql = include_str!("../migrations/001_initial.sql");
-    let client = pool.get().await.context("DB pool exhausted during migration")?;
+    let client = pool
+        .get()
+        .await
+        .context("DB pool exhausted during migration")?;
     client
         .batch_execute(sql)
         .await
@@ -44,7 +47,13 @@ pub async fn insert_passkey_credential(
              (user_id, credential_id, did_key, display_name, passkey_json) \
              VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT (credential_id) DO NOTHING",
-            &[&user_id, &credential_id, &did_key, &display_name, &passkey_json],
+            &[
+                &user_id,
+                &credential_id,
+                &did_key,
+                &display_name,
+                &passkey_json,
+            ],
         )
         .await
         .context("insert_passkey_credential")?;
@@ -75,10 +84,7 @@ pub async fn get_passkeys_by_credential_ids(
         .collect())
 }
 
-pub async fn get_passkeys_for_did(
-    pool: &Pool,
-    did_key: &str,
-) -> Result<Vec<(Uuid, String)>> {
+pub async fn get_passkeys_for_did(pool: &Pool, did_key: &str) -> Result<Vec<(Uuid, String)>> {
     let client = pool.get().await?;
     let rows = client
         .query(
@@ -162,12 +168,7 @@ pub async fn take_pending_authentication(
 // Issued VCs
 // ---------------------------------------------------------------------------
 
-pub async fn insert_vc(
-    pool: &Pool,
-    subject_did: &str,
-    vc_type: &str,
-    vc_json: &str,
-) -> Result<()> {
+pub async fn insert_vc(pool: &Pool, subject_did: &str, vc_type: &str, vc_json: &str) -> Result<()> {
     let client = pool.get().await?;
     client
         .execute(

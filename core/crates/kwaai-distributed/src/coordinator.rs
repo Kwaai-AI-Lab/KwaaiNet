@@ -1,8 +1,8 @@
 //! Distributed operations coordinator
 
+use crate::averaging::{AveragingConfig, DecentralizedAverager};
 use crate::error::DistributedResult;
 use crate::moe::{DistributedMoE, MoEConfig};
-use crate::averaging::{AveragingConfig, DecentralizedAverager};
 use crate::DistributedConfig;
 use tracing::{debug, info};
 
@@ -42,7 +42,10 @@ impl DistributedCoordinator {
                 ..Default::default()
             };
             self.averager = Some(DecentralizedAverager::new(averaging_config));
-            debug!(group_size = self.config.averaging_group_size, "Parameter averager initialized");
+            debug!(
+                group_size = self.config.averaging_group_size,
+                "Parameter averager initialized"
+            );
         }
 
         // MoE initialization would require router weights

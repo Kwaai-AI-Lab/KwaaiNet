@@ -130,9 +130,8 @@ fn verify_ed25519_proof(vc: &VerifiableCredential) -> Result<bool> {
     let peer_id =
         did_to_peer_id(did).with_context(|| format!("could not parse DID as PeerId: {did}"))?;
 
-    let key_bytes = extract_ed25519_bytes(&peer_id).with_context(|| {
-        format!("could not extract Ed25519 key from PeerId: {peer_id}")
-    })?;
+    let key_bytes = extract_ed25519_bytes(&peer_id)
+        .with_context(|| format!("could not extract Ed25519 key from PeerId: {peer_id}"))?;
 
     let verifying_key =
         VerifyingKey::from_bytes(&key_bytes).context("invalid Ed25519 public key")?;

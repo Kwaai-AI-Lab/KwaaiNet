@@ -250,7 +250,11 @@ pub fn decode_message(data: &[u8]) -> Option<(bool, &[u8])> {
 
     let len = decode_length(data)? as usize;
     if data.len() < 8 + len {
-        warn!("decode_message: incomplete message (have {}, need {})", data.len(), 8 + len);
+        warn!(
+            "decode_message: incomplete message (have {}, need {})",
+            data.len(),
+            8 + len
+        );
         return None;
     }
 
@@ -258,7 +262,11 @@ pub fn decode_message(data: &[u8]) -> Option<(bool, &[u8])> {
     let payload = &data[9..8 + len];
 
     let is_error = marker == MARKER_ERROR;
-    debug!("Decoded Hivemind message: is_error={}, payload={} bytes", is_error, payload.len());
+    debug!(
+        "Decoded Hivemind message: is_error={}, payload={} bytes",
+        is_error,
+        payload.len()
+    );
     Some((is_error, payload))
 }
 
@@ -308,6 +316,9 @@ mod tests {
         let (is_error, payload) = decode_message(&error).unwrap();
 
         assert!(is_error);
-        assert_eq!(std::str::from_utf8(payload).unwrap(), "Something went wrong");
+        assert_eq!(
+            std::str::from_utf8(payload).unwrap(),
+            "Something went wrong"
+        );
     }
 }

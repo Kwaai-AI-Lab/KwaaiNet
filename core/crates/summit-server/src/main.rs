@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    Router,
     http::{header, StatusCode},
     response::IntoResponse,
     routing::{get, post},
+    Router,
 };
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -33,9 +33,10 @@ mod vc_issuer;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            "summit_server=debug,tower_http=info".into()
-        }))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "summit_server=debug,tower_http=info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 

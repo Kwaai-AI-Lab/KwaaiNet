@@ -43,7 +43,10 @@ pub async fn parse_stream_info(stream: &mut TcpStream) -> Result<StreamInfo> {
     // Sanity check
     if len > 10 * 1024 * 1024 {
         // 10MB max
-        return Err(Error::Protocol(format!("StreamInfo too large: {} bytes", len)));
+        return Err(Error::Protocol(format!(
+            "StreamInfo too large: {} bytes",
+            len
+        )));
     }
 
     trace!("Reading StreamInfo ({} bytes)", len);

@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo run --example forward_pass
 
-use candle_core::{Device, Tensor, DType};
+use candle_core::{DType, Device, Tensor};
 use std::error::Error;
 use std::time::Instant;
 
@@ -21,7 +21,12 @@ struct SimpleMLP {
 
 impl SimpleMLP {
     /// Create a new MLP with random weights
-    fn new(input_dim: usize, hidden_dim: usize, output_dim: usize, device: &Device) -> candle_core::Result<Self> {
+    fn new(
+        input_dim: usize,
+        hidden_dim: usize,
+        output_dim: usize,
+        device: &Device,
+    ) -> candle_core::Result<Self> {
         // Xavier initialization scale
         let scale1 = (2.0 / (input_dim + hidden_dim) as f64).sqrt() as f32;
         let scale2 = (2.0 / (hidden_dim + output_dim) as f64).sqrt() as f32;
@@ -86,7 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Device: {:?}\n", device);
 
     // Network configuration
-    let input_dim = 768;   // e.g., BERT hidden size
+    let input_dim = 768; // e.g., BERT hidden size
     let hidden_dim = 3072; // 4x expansion
     let output_dim = 768;
     let batch_size = 8;
@@ -142,7 +147,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             // Apply softmax to get probabilities (last dim)
             let probs = softmax(&output)?;
             let sample_probs: Vec<f32> = probs.get(0)?.to_vec1()?;
-            println!("  Sample output (first 5 values): {:?}", &sample_probs[..5.min(sample_probs.len())]);
+            println!(
+                "  Sample output (first 5 values): {:?}",
+                &sample_probs[..5.min(sample_probs.len())]
+            );
         }
     }
 

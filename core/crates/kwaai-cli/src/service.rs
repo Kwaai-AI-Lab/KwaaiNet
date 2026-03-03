@@ -44,8 +44,7 @@ struct LaunchdManager;
 impl LaunchdManager {
     fn plist_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home)
-            .join("Library/LaunchAgents/ai.kwaai.kwaainet.plist")
+        PathBuf::from(home).join("Library/LaunchAgents/ai.kwaai.kwaainet.plist")
     }
 
     fn plist_content() -> Result<String> {
@@ -120,14 +119,24 @@ impl ServiceManager for LaunchdManager {
         let path = Self::plist_path();
         let installed = path.exists();
         if !installed {
-            return ServiceStatus { installed: false, loaded: false, running: false, pid: None };
+            return ServiceStatus {
+                installed: false,
+                loaded: false,
+                running: false,
+                pid: None,
+            };
         }
         let out = std::process::Command::new("launchctl")
             .args(["list", "ai.kwaai.kwaainet"])
             .output()
             .ok();
         let running = out.as_ref().map(|o| o.status.success()).unwrap_or(false);
-        ServiceStatus { installed, loaded: running, running, pid: None }
+        ServiceStatus {
+            installed,
+            loaded: running,
+            running,
+            pid: None,
+        }
     }
 
     fn restart(&self) -> Result<()> {
@@ -191,7 +200,9 @@ impl ServiceManager for SystemdManager {
             .args(["--user", "disable", "--now", "kwaainet"])
             .status()?;
         let path = Self::unit_path();
-        if path.exists() { std::fs::remove_file(&path)?; }
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
         std::process::Command::new("systemctl")
             .args(["--user", "daemon-reload"])
             .status()?;
@@ -205,7 +216,12 @@ impl ServiceManager for SystemdManager {
             .output()
             .ok();
         let running = out.map(|o| o.status.success()).unwrap_or(false);
-        ServiceStatus { installed, loaded: installed, running, pid: None }
+        ServiceStatus {
+            installed,
+            loaded: installed,
+            running,
+            pid: None,
+        }
     }
 
     fn restart(&self) -> Result<()> {
@@ -222,8 +238,21 @@ impl ServiceManager for SystemdManager {
 
 struct NoopManager;
 impl ServiceManager for NoopManager {
-    fn install(&self) -> Result<()> { anyhow::bail!("Service management not supported on this platform") }
-    fn uninstall(&self) -> Result<()> { anyhow::bail!("Service management not supported on this platform") }
-    fn status(&self) -> ServiceStatus { ServiceStatus { installed: false, loaded: false, running: false, pid: None } }
-    fn restart(&self) -> Result<()> { anyhow::bail!("Service management not supported on this platform") }
+    fn install(&self) -> Result<()> {
+        anyhow::bail!("Service management not supported on this platform")
+    }
+    fn uninstall(&self) -> Result<()> {
+        anyhow::bail!("Service management not supported on this platform")
+    }
+    fn status(&self) -> ServiceStatus {
+        ServiceStatus {
+            installed: false,
+            loaded: false,
+            running: false,
+            pid: None,
+        }
+    }
+    fn restart(&self) -> Result<()> {
+        anyhow::bail!("Service management not supported on this platform")
+    }
 }

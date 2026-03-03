@@ -111,7 +111,7 @@ fn ensure_protoc(out_dir: &PathBuf) {
         } else {
             // Linux/macOS: Use unzip
             Command::new("unzip")
-                .args(&["-o", "-q"])  // -o: overwrite, -q: quiet
+                .args(&["-o", "-q"]) // -o: overwrite, -q: quiet
                 .arg(&archive_path)
                 .arg("-d")
                 .arg(&protoc_dir)
@@ -139,7 +139,7 @@ fn ensure_protoc(out_dir: &PathBuf) {
             use std::os::unix::fs::PermissionsExt;
             if let Ok(metadata) = std::fs::metadata(&protoc_bin) {
                 let mut permissions = metadata.permissions();
-                permissions.set_mode(0o755);  // rwxr-xr-x
+                permissions.set_mode(0o755); // rwxr-xr-x
                 let _ = std::fs::set_permissions(&protoc_bin, permissions);
             }
         }
@@ -157,9 +157,7 @@ fn main() {
     println!("cargo:rerun-if-changed=proto/p2pd.proto");
 
     // 1. Check if Go is installed
-    let go_version = Command::new("go")
-        .arg("version")
-        .output();
+    let go_version = Command::new("go").arg("version").output();
 
     match go_version {
         Ok(output) => {
@@ -208,8 +206,10 @@ fn main() {
         let clone_status = Command::new("git")
             .args(&[
                 "clone",
-                "--depth", "1",
-                "--branch", "v0.5.0.hivemind1",
+                "--depth",
+                "1",
+                "--branch",
+                "v0.5.0.hivemind1",
                 "https://github.com/learning-at-home/go-libp2p-daemon.git",
             ])
             .arg(&repo_dir)
@@ -220,7 +220,10 @@ fn main() {
                 println!("cargo:warning=Successfully cloned go-libp2p-daemon");
             }
             Ok(status) => {
-                eprintln!("Failed to clone go-libp2p-daemon: exit code {:?}", status.code());
+                eprintln!(
+                    "Failed to clone go-libp2p-daemon: exit code {:?}",
+                    status.code()
+                );
                 panic!("Git clone failed");
             }
             Err(e) => {
@@ -245,7 +248,10 @@ fn main() {
 
     match build_status {
         Ok(status) if status.success() => {
-            println!("cargo:warning=Successfully built p2pd daemon at: {}", daemon_binary.display());
+            println!(
+                "cargo:warning=Successfully built p2pd daemon at: {}",
+                daemon_binary.display()
+            );
         }
         Ok(status) => {
             eprintln!("Failed to build p2pd: exit code {:?}", status.code());
@@ -264,8 +270,7 @@ fn main() {
         .join("p2pd.proto");
 
     if proto_src.exists() && !proto_dst.exists() {
-        std::fs::copy(&proto_src, &proto_dst)
-            .expect("Failed to copy p2pd.proto");
+        std::fs::copy(&proto_src, &proto_dst).expect("Failed to copy p2pd.proto");
         println!("cargo:warning=Copied p2pd.proto to proto/");
     }
 
@@ -278,7 +283,10 @@ fn main() {
 
         prost_build::Config::new()
             .out_dir(&out_dir)
-            .compile_protos(&[proto_dst], &[PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("proto")])
+            .compile_protos(
+                &[proto_dst],
+                &[PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("proto")],
+            )
             .expect("Failed to compile protobuf");
 
         println!("cargo:warning=Successfully generated protobuf Rust code");

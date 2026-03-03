@@ -74,7 +74,10 @@ impl ExpertRegistry {
 
     /// Register a remote expert location
     pub fn register_remote(&mut self, expert_id: ExpertId, peer_id: String) {
-        info!("Registering remote expert {} at peer {}", expert_id, peer_id);
+        info!(
+            "Registering remote expert {} at peer {}",
+            expert_id, peer_id
+        );
         self.remote_experts.insert(expert_id, peer_id);
     }
 
@@ -148,7 +151,11 @@ impl Expert for LocalExpert {
     }
 
     async fn forward(&self, input: &Tensor) -> DistributedResult<Tensor> {
-        debug!("LocalExpert {} forward pass, input shape: {:?}", self.id, input.dims());
+        debug!(
+            "LocalExpert {} forward pass, input shape: {:?}",
+            self.id,
+            input.dims()
+        );
         // Placeholder: return input as-is
         Ok(input.clone())
     }

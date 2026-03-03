@@ -61,26 +61,29 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
     })?;
 
     let gguf = gguf_file::Content::read(&mut file).map_err(|e| {
-        InferenceError::ModelLoadError(format!("Cannot parse GGUF header in {}: {e}", path.display()))
+        InferenceError::ModelLoadError(format!(
+            "Cannot parse GGUF header in {}: {e}",
+            path.display()
+        ))
     })?;
 
     // Detect architecture from the GGUF general metadata.
-    let arch = meta_str(&gguf, "general.architecture")
-        .unwrap_or_else(|| "llama".to_string());
+    let arch = meta_str(&gguf, "general.architecture").unwrap_or_else(|| "llama".to_string());
 
     // Architecture-specific metadata key prefix.
     let pfx = arch.as_str();
 
-    let vocab_size   = meta_usize(&gguf, "llama.vocab_size")
+    let vocab_size = meta_usize(&gguf, "llama.vocab_size")
         .or_else(|| meta_usize(&gguf, &format!("{pfx}.vocab_size")))
         .unwrap_or(32_000);
-    let num_layers   = meta_usize(&gguf, &format!("{pfx}.block_count")).unwrap_or(32);
-    let num_heads    = meta_usize(&gguf, &format!("{pfx}.attention.head_count")).unwrap_or(32);
-    let num_kv_heads = meta_usize(&gguf, &format!("{pfx}.attention.head_count_kv")).unwrap_or(num_heads);
-    let hidden_dim   = meta_usize(&gguf, &format!("{pfx}.embedding_length")).unwrap_or(4_096);
-    let inter_dim    = meta_usize(&gguf, &format!("{pfx}.feed_forward_length")).unwrap_or(11_008);
-    let rope_theta   = meta_f32(&gguf, &format!("{pfx}.rope.freq_base")).unwrap_or(10_000.0);
-    let max_seq_len  = meta_usize(&gguf, &format!("{pfx}.context_length")).unwrap_or(4_096);
+    let num_layers = meta_usize(&gguf, &format!("{pfx}.block_count")).unwrap_or(32);
+    let num_heads = meta_usize(&gguf, &format!("{pfx}.attention.head_count")).unwrap_or(32);
+    let num_kv_heads =
+        meta_usize(&gguf, &format!("{pfx}.attention.head_count_kv")).unwrap_or(num_heads);
+    let hidden_dim = meta_usize(&gguf, &format!("{pfx}.embedding_length")).unwrap_or(4_096);
+    let inter_dim = meta_usize(&gguf, &format!("{pfx}.feed_forward_length")).unwrap_or(11_008);
+    let rope_theta = meta_f32(&gguf, &format!("{pfx}.rope.freq_base")).unwrap_or(10_000.0);
+    let max_seq_len = meta_usize(&gguf, &format!("{pfx}.context_length")).unwrap_or(4_096);
 
     info!(
         "GGUF arch={arch}: {num_layers} layers, {num_heads} heads ({num_kv_heads} kv), \
@@ -103,31 +106,36 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
     };
 
     // Dispatch to the architecture-specific quantized weight loader.
-    let weights = match arch.as_str() {
-        "llama" | "mistral" | "llama3" => {
-            let w = quantized_llama::ModelWeights::from_gguf(gguf, &mut file, device)
-                .map_err(|e| InferenceError::ModelLoadError(
-                    format!("Cannot build {arch} weights: {e}")
-                ))?;
-            GgufWeights::Llama(w)
-        }
-        "qwen2" => {
-            let w = quantized_qwen2::ModelWeights::from_gguf(gguf, &mut file, device)
-                .map_err(|e| InferenceError::ModelLoadError(
-                    format!("Cannot build qwen2 weights: {e}")
-                ))?;
-            GgufWeights::Qwen2(w)
-        }
-        other => {
-            return Err(InferenceError::InvalidFormat(format!(
-                "GGUF architecture '{other}' is not yet supported. \
+    let weights =
+        match arch.as_str() {
+            "llama" | "mistral" | "llama3" => {
+                let w = quantized_llama::ModelWeights::from_gguf(gguf, &mut file, device).map_err(
+                    |e| InferenceError::ModelLoadError(format!("Cannot build {arch} weights: {e}")),
+                )?;
+                GgufWeights::Llama(w)
+            }
+            "qwen2" => {
+                let w = quantized_qwen2::ModelWeights::from_gguf(gguf, &mut file, device).map_err(
+                    |e| InferenceError::ModelLoadError(format!("Cannot build qwen2 weights: {e}")),
+                )?;
+                GgufWeights::Qwen2(w)
+            }
+            other => {
+                return Err(InferenceError::InvalidFormat(format!(
+                    "GGUF architecture '{other}' is not yet supported. \
                  Supported: llama, mistral, qwen2. \
                  See CONTRIBUTORS.md to add support."
-            )));
-        }
-    };
+                )));
+            }
+        };
 
-    Ok(GgufModel { weights, config, vocab_size, num_layers, tokenizer })
+    Ok(GgufModel {
+        weights,
+        config,
+        vocab_size,
+        num_layers,
+        tokenizer,
+    })
 }
 
 // ── SafeTensors ───────────────────────────────────────────────────────────────
@@ -165,14 +173,10 @@ pub fn load_safetensors(
 
     // Parse HuggingFace config.json using the Deserialize impl on LlamaConfig.
     let config_str = std::fs::read_to_string(config_json_path).map_err(|e| {
-        InferenceError::ModelLoadError(format!(
-            "Cannot read {}: {e}",
-            config_json_path.display()
-        ))
+        InferenceError::ModelLoadError(format!("Cannot read {}: {e}", config_json_path.display()))
     })?;
-    let hf_config: LlamaConfig = serde_json::from_str(&config_str).map_err(|e| {
-        InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}"))
-    })?;
+    let hf_config: LlamaConfig = serde_json::from_str(&config_str)
+        .map_err(|e| InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}")))?;
 
     info!(
         "SafeTensors: {} layers, {} heads ({} kv), hidden={}, vocab={}",
@@ -201,14 +205,13 @@ pub fn load_safetensors(
     // SAFETY: callers must ensure no other process writes to these files
     // while the model is loaded.
     let vb = unsafe {
-        VarBuilder::from_mmaped_safetensors(safetensors_paths, DType::F16, device).map_err(
-            |e| InferenceError::ModelLoadError(format!("Cannot mmap SafeTensors shards: {e}")),
-        )?
+        VarBuilder::from_mmaped_safetensors(safetensors_paths, DType::F16, device).map_err(|e| {
+            InferenceError::ModelLoadError(format!("Cannot mmap SafeTensors shards: {e}"))
+        })?
     };
 
-    let model = Llama::load(vb, &llama_config).map_err(|e| {
-        InferenceError::ModelLoadError(format!("Cannot build Llama model: {e}"))
-    })?;
+    let model = Llama::load(vb, &llama_config)
+        .map_err(|e| InferenceError::ModelLoadError(format!("Cannot build Llama model: {e}")))?;
 
     let config = ModelConfig {
         architecture: "llama".to_string(),
@@ -228,7 +231,14 @@ pub fn load_safetensors(
         .join("tokenizer.json");
     let tokenizer = BpeTokenizer::from_file(&tokenizer_path)?;
 
-    Ok(SafeTensorsModel { model, config, llama_config, vocab_size, num_layers, tokenizer })
+    Ok(SafeTensorsModel {
+        model,
+        config,
+        llama_config,
+        vocab_size,
+        num_layers,
+        tokenizer,
+    })
 }
 
 // ── GGUF metadata helpers ─────────────────────────────────────────────────────
@@ -244,11 +254,11 @@ fn meta_str(ct: &gguf_file::Content, key: &str) -> Option<String> {
 fn meta_usize(ct: &gguf_file::Content, key: &str) -> Option<usize> {
     use gguf_file::Value;
     match ct.metadata.get(key)? {
-        Value::U8(v)             => Some(*v as usize),
-        Value::U16(v)            => Some(*v as usize),
-        Value::U32(v)            => Some(*v as usize),
-        Value::U64(v)            => Some(*v as usize),
-        Value::I8(v) if *v > 0  => Some(*v as usize),
+        Value::U8(v) => Some(*v as usize),
+        Value::U16(v) => Some(*v as usize),
+        Value::U32(v) => Some(*v as usize),
+        Value::U64(v) => Some(*v as usize),
+        Value::I8(v) if *v > 0 => Some(*v as usize),
         Value::I16(v) if *v > 0 => Some(*v as usize),
         Value::I32(v) if *v > 0 => Some(*v as usize),
         Value::I64(v) if *v > 0 => Some(*v as usize),

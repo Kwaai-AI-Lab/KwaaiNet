@@ -20,7 +20,7 @@ use tracing::info;
 
 use crate::cli::{IdentityAction, IdentityArgs};
 use crate::display::*;
-use kwaai_trust::{CredentialStore, TrustScore, VerifiableCredential, verify};
+use kwaai_trust::{verify, CredentialStore, TrustScore, VerifiableCredential};
 
 // ---------------------------------------------------------------------------
 // NodeIdentity — the persistent cryptographic identity
@@ -123,10 +123,7 @@ async fn show_identity() -> Result<()> {
     if !vcs.is_empty() {
         println!();
         for vc in &vcs {
-            let vc_type = vc
-                .kwaai_type()
-                .map(|t| t.as_str())
-                .unwrap_or("Unknown");
+            let vc_type = vc.kwaai_type().map(|t| t.as_str()).unwrap_or("Unknown");
             let expiry = vc
                 .expiration_date
                 .map(|e| e.format("%Y-%m-%d").to_string())
@@ -153,16 +150,16 @@ async fn import_vc(path: &Path) -> Result<()> {
     let vc = store.import_file(path)?;
 
     let result = verify(&vc);
-    let vc_type = vc
-        .kwaai_type()
-        .map(|t| t.as_str())
-        .unwrap_or("Unknown");
+    let vc_type = vc.kwaai_type().map(|t| t.as_str()).unwrap_or("Unknown");
 
     print_box_header("Import Verifiable Credential");
     println!("  Type:    {}", vc_type);
     println!("  Subject: {}", vc.subject_did());
     println!("  Issuer:  {}", vc.issuer_did());
-    println!("  Issued:  {}", vc.issuance_date.format("%Y-%m-%d %H:%M UTC"));
+    println!(
+        "  Issued:  {}",
+        vc.issuance_date.format("%Y-%m-%d %H:%M UTC")
+    );
     if let Some(exp) = vc.expiration_date {
         println!("  Expires: {}", exp.format("%Y-%m-%d"));
     }
@@ -175,7 +172,10 @@ async fn import_vc(path: &Path) -> Result<()> {
         (false, _) => print_error(&format!("Invalid credential: {}", result.message)),
     }
 
-    print_success(&format!("Saved to: {}", CredentialStore::default_dir().display()));
+    print_success(&format!(
+        "Saved to: {}",
+        CredentialStore::default_dir().display()
+    ));
     print_separator();
     Ok(())
 }
@@ -255,7 +255,11 @@ async fn verify_vc_cmd(path: &Path) -> Result<()> {
     println!();
     println!(
         "  Structure: {}",
-        if result.structure_valid { "valid" } else { "INVALID" }
+        if result.structure_valid {
+            "valid"
+        } else {
+            "INVALID"
+        }
     );
     match result.signature_valid {
         Some(true) => println!("  Signature: verified"),

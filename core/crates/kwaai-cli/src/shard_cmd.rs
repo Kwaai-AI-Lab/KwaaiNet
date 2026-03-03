@@ -15,10 +15,10 @@
 //! ```
 
 use anyhow::{bail, Context, Result};
+use kwaai_hivemind_dht::protocol::{FindRequest, FindResponse, NodeInfo, RequestAuthInfo};
 use kwaai_inference::{DeviceType, TransformerShard};
 use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
-use kwaai_hivemind_dht::protocol::{FindRequest, FindResponse, NodeInfo, RequestAuthInfo};
 use libp2p::PeerId;
 use prost::Message as _;
 use sha1::{Digest, Sha1};
@@ -33,7 +33,9 @@ use crate::block_rpc::{
     call_block_forward, f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes,
     InferenceRequest, PayloadType,
 };
-use crate::cli::{ShardAction, ShardArgs, ShardChainArgs, ShardDownloadArgs, ShardRunArgs, ShardServeArgs};
+use crate::cli::{
+    ShardAction, ShardArgs, ShardChainArgs, ShardDownloadArgs, ShardRunArgs, ShardServeArgs,
+};
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
@@ -42,11 +44,11 @@ use crate::hf;
 
 pub async fn run(args: ShardArgs) -> Result<()> {
     match args.action {
-        ShardAction::Serve(a)    => cmd_shard_serve(a).await,
-        ShardAction::Run(a)      => cmd_shard_run(a).await,
-        ShardAction::Status      => cmd_shard_status().await,
-        ShardAction::Chain(a)    => cmd_shard_chain(a).await,
-        ShardAction::Api(a)      => crate::shard_api::run(a).await,
+        ShardAction::Serve(a) => cmd_shard_serve(a).await,
+        ShardAction::Run(a) => cmd_shard_run(a).await,
+        ShardAction::Status => cmd_shard_status().await,
+        ShardAction::Chain(a) => cmd_shard_chain(a).await,
+        ShardAction::Api(a) => crate::shard_api::run(a).await,
         ShardAction::Download(a) => cmd_shard_download(a).await,
     }
 }
@@ -82,11 +84,12 @@ pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
 
     let (start_block, end_block) = if args.auto || args.start_block.is_none() {
         let daemon_addr = daemon_socket();
-        let mut qc = P2PClient::connect(&daemon_addr).await
+        let mut qc = P2PClient::connect(&daemon_addr)
+            .await
             .context("Cannot connect to node — start it first with `kwaainet start --daemon`")?;
         let peer_id_hex = qc.identify().await.context("Failed to get local peer ID")?;
-        let our_peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?)
-            .context("parse our peer ID")?;
+        let our_peer_id =
+            PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
         let total = cfg.model_total_blocks() as usize;
         let prefix = cfg.model_dht_prefix.as_deref().unwrap_or("unknown");
         let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
@@ -95,8 +98,19 @@ pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
             cfg.initial_peers.clone()
         };
 
-        print_info(&format!("Querying DHT for gap in {} ({} blocks)…", prefix, total));
-        let (s, e) = pick_gap_blocks(&mut qc, &our_peer_id, prefix, total, target_blocks, &bootstrap_peers).await?;
+        print_info(&format!(
+            "Querying DHT for gap in {} ({} blocks)…",
+            prefix, total
+        ));
+        let (s, e) = pick_gap_blocks(
+            &mut qc,
+            &our_peer_id,
+            prefix,
+            total,
+            target_blocks,
+            &bootstrap_peers,
+        )
+        .await?;
         print_success(&format!("Auto-assigned blocks [{}, {})", s, e));
 
         // Persist so the DHT announcer picks up the new range on restart
@@ -107,7 +121,9 @@ pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
 
         // Restart daemon so it announces the new start_block (same pattern as Command::Restart)
         let mgr = crate::daemon::DaemonManager::new();
-        if mgr.is_running() { mgr.stop_process()?; }
+        if mgr.is_running() {
+            mgr.stop_process()?;
+        }
         crate::daemon::DaemonManager::spawn_daemon_child(&[])?;
 
         (s, e)
@@ -143,7 +159,8 @@ pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
     } else {
         DeviceType::Cpu
     };
-    let device = device_type.to_candle_device()
+    let device = device_type
+        .to_candle_device()
         .context("Failed to create compute device")?;
 
     print_box_header("🧩 KwaaiNet Shard Server");
@@ -221,9 +238,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let model_ref = args.model.as_deref().unwrap_or(&cfg.model);
     let dht_prefix = match &cfg.model_dht_prefix {
         Some(p) => p.clone(),
-        None    => derive_dht_prefix(model_ref),
+        None => derive_dht_prefix(model_ref),
     };
-    let total_blocks = args.total_blocks.unwrap_or_else(|| cfg.model_total_blocks() as usize);
+    let total_blocks = args
+        .total_blocks
+        .unwrap_or_else(|| cfg.model_total_blocks() as usize);
 
     print_box_header("🔗 KwaaiNet Distributed Inference");
     println!("  Model:        {}", model_ref);
@@ -245,8 +264,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     };
 
     let peer_id_hex = client.identify().await.context("identify peer")?;
-    let our_peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?)
-        .context("parse our peer ID")?;
+    let our_peer_id =
+        PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
 
     // Discover the block chain from DHT
     print!("  Discovering block chain from DHT… ");
@@ -267,10 +286,16 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     // Apply optional name filter (e.g. --name-filter v0.2.3)
     let chain = if let Some(ref f) = args.name_filter {
-        let filtered: Vec<_> = chain.into_iter().filter(|e| e.public_name.contains(f.as_str())).collect();
+        let filtered: Vec<_> = chain
+            .into_iter()
+            .filter(|e| e.public_name.contains(f.as_str()))
+            .collect();
         if filtered.is_empty() {
             println!("no nodes matched filter {:?}", f);
-            print_warning(&format!("No block servers with name containing {:?} found.", f));
+            print_warning(&format!(
+                "No block servers with name containing {:?} found.",
+                f
+            ));
             print_separator();
             return Ok(());
         }
@@ -304,7 +329,13 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             i + 1,
             entry.start_block,
             entry.end_block - 1,
-            entry.peer_id.to_base58().chars().take(16).collect::<String>() + "…",
+            entry
+                .peer_id
+                .to_base58()
+                .chars()
+                .take(16)
+                .collect::<String>()
+                + "…",
             entry.public_name,
         );
     }
@@ -395,8 +426,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         let last_logits = if logits_shape.len() == 3 && logits_shape[1] > 1 {
             use candle_core::IndexOp as _;
             let seq_len = logits_shape[1] as usize;
-            logits_tensor
-                .i((0, seq_len - 1, ..))?
+            logits_tensor.i((0, seq_len - 1, ..))?
         } else {
             // Shape [1, 1, vocab_size] or [vocab_size]
             logits_tensor.flatten_all()?
@@ -461,7 +491,9 @@ pub async fn cmd_shard_status() -> Result<()> {
 pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
     let cfg = KwaaiNetConfig::load_or_create()?;
 
-    let dht_prefix = args.dht_prefix.as_deref()
+    let dht_prefix = args
+        .dht_prefix
+        .as_deref()
         .or(cfg.model_dht_prefix.as_deref())
         .map(str::to_string)
         .unwrap_or_else(|| derive_dht_prefix(&cfg.model));
@@ -485,8 +517,8 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
     };
 
     let peer_id_hex = client.identify().await.context("identify peer")?;
-    let our_peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?)
-        .context("parse our peer ID")?;
+    let our_peer_id =
+        PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
 
     let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
         NetworkConfig::with_petals_bootstrap().bootstrap_peers
@@ -519,20 +551,29 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
     }
     let n_covered = covered.iter().filter(|&&c| c).count();
 
-    println!("  {:>3} server(s) — {}/{} blocks covered\n", chain.len(), n_covered, total_blocks);
-    println!("  {:<6} {:<6} {:<18} {}", "START", "END", "PEER ID (prefix)", "NAME");
+    println!(
+        "  {:>3} server(s) — {}/{} blocks covered\n",
+        chain.len(),
+        n_covered,
+        total_blocks
+    );
+    println!(
+        "  {:<6} {:<6} {:<18} {}",
+        "START", "END", "PEER ID (prefix)", "NAME"
+    );
     println!("  {}", "─".repeat(60));
     for entry in &chain {
         let peer_short = {
             let b58 = entry.peer_id.to_base58();
-            if b58.len() > 16 { format!("{}…", &b58[..16]) } else { b58 }
+            if b58.len() > 16 {
+                format!("{}…", &b58[..16])
+            } else {
+                b58
+            }
         };
         println!(
             "  {:>5}  {:>5}  {:<18} {}",
-            entry.start_block,
-            entry.end_block,
-            peer_short,
-            entry.public_name,
+            entry.start_block, entry.end_block, peer_short, entry.public_name,
         );
     }
     println!();
@@ -601,7 +642,9 @@ pub async fn discover_chain(
     let mut servers: HashMap<String, BlockServerEntry> = HashMap::new();
 
     for addr in bootstrap_peers {
-        let Some(peer_str) = addr.split("/p2p/").nth(1) else { continue };
+        let Some(peer_str) = addr.split("/p2p/").nth(1) else {
+            continue;
+        };
         let bp = match peer_str.parse::<PeerId>() {
             Ok(p) => p,
             Err(_) => continue,
@@ -619,7 +662,9 @@ pub async fn discover_chain(
             Err(_) => continue,
         };
 
-        let Ok(resp) = FindResponse::decode(&resp_bytes[..]) else { continue };
+        let Ok(resp) = FindResponse::decode(&resp_bytes[..]) else {
+            continue;
+        };
 
         for result in resp.results {
             if result.value.is_empty() {
@@ -657,7 +702,14 @@ async fn pick_gap_blocks(
     target_blocks: usize,
     bootstrap_peers: &[String],
 ) -> Result<(usize, usize)> {
-    let chain = discover_chain(client, our_peer_id, dht_prefix, total_blocks, bootstrap_peers).await;
+    let chain = discover_chain(
+        client,
+        our_peer_id,
+        dht_prefix,
+        total_blocks,
+        bootstrap_peers,
+    )
+    .await;
 
     let mut covered = vec![false; total_blocks];
     for e in &chain {
@@ -666,15 +718,14 @@ async fn pick_gap_blocks(
         }
     }
 
-    let start = covered
-        .iter()
-        .position(|&c| !c)
-        .ok_or_else(|| anyhow::anyhow!(
+    let start = covered.iter().position(|&c| !c).ok_or_else(|| {
+        anyhow::anyhow!(
             "All {} blocks already served by {} node(s). \
              Remove --auto or add more nodes.",
             total_blocks,
             chain.len()
-        ))?;
+        )
+    })?;
 
     let end = (start + target_blocks).min(total_blocks);
     Ok((start, end))
@@ -685,18 +736,19 @@ async fn pick_gap_blocks(
 /// Parse `Ext(64, [state, throughput, {start_block, end_block, peer_id, …}])`
 /// from a FoundRegular value.
 fn decode_server_info_regular(bytes: &[u8]) -> Option<BlockServerEntry> {
-    let (start_block, end_block, public_name, peer_id_b58) =
-        decode_server_info_ext(bytes)?;
+    let (start_block, end_block, public_name, peer_id_b58) = decode_server_info_ext(bytes)?;
     let peer_id = peer_id_b58.parse::<PeerId>().ok()?;
-    Some(BlockServerEntry { peer_id, start_block, end_block, public_name })
+    Some(BlockServerEntry {
+        peer_id,
+        start_block,
+        end_block,
+        public_name,
+    })
 }
 
 /// Parse `Ext(80, [expiry, created, [[subkey_bytes, value_bytes, expiry], …]])`
 /// from a FoundDictionary value. Appends into `out` (deduplicates by peer_id).
-fn decode_server_info_dictionary(
-    bytes: &[u8],
-    out: &mut HashMap<String, BlockServerEntry>,
-) {
+fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockServerEntry>) {
     let outer = match rmpv::decode::read_value(&mut &bytes[..]) {
         Ok(v) => v,
         Err(_) => return,
@@ -751,7 +803,8 @@ fn decode_server_info_dictionary(
             Err(_) => continue,
         };
 
-        if let Some((start_block, end_block, public_name, _)) = decode_server_info_ext(value_bytes) {
+        if let Some((start_block, end_block, public_name, _)) = decode_server_info_ext(value_bytes)
+        {
             let key = peer_id_b58.clone();
             out.entry(key).or_insert(BlockServerEntry {
                 peer_id,
@@ -792,7 +845,7 @@ fn decode_server_info_ext(bytes: &[u8]) -> Option<(usize, usize, String, String)
     };
 
     let start_block = get_i("start_block")? as usize;
-    let end_block   = get_i("end_block")? as usize;
+    let end_block = get_i("end_block")? as usize;
     let public_name = get_s("public_name");
     let peer_id_b58 = get_s("peer_id");
 
@@ -856,7 +909,12 @@ pub async fn forward_through_chain(
                 Err(e) => {
                     print_warning(&format!(
                         "Peer {} ({}) failed: {e:#}",
-                        candidate.peer_id.to_base58().chars().take(12).collect::<String>(),
+                        candidate
+                            .peer_id
+                            .to_base58()
+                            .chars()
+                            .take(12)
+                            .collect::<String>(),
                         candidate.public_name,
                     ));
                 }
@@ -864,7 +922,11 @@ pub async fn forward_through_chain(
         }
 
         if !succeeded {
-            anyhow::bail!("All {} candidate(s) for block {} failed", candidates.len(), pos);
+            anyhow::bail!(
+                "All {} candidate(s) for block {} failed",
+                candidates.len(),
+                pos
+            );
         }
     }
 
@@ -886,8 +948,8 @@ fn block_dht_id(prefix: &str, block: usize) -> Vec<u8> {
 pub fn daemon_socket() -> String {
     #[cfg(unix)]
     {
-        let sock = std::env::var("KWAAINET_SOCKET")
-            .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+        let sock =
+            std::env::var("KWAAINET_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
         return format!("/unix/{}", sock);
     }
     #[cfg(not(unix))]
@@ -952,11 +1014,8 @@ pub fn sample_token(
     vals.iter_mut().for_each(|v| *v /= sum);
 
     // Build (prob, index) sorted descending by prob
-    let mut indexed: Vec<(f32, usize)> = vals
-        .into_iter()
-        .enumerate()
-        .map(|(i, p)| (p, i))
-        .collect();
+    let mut indexed: Vec<(f32, usize)> =
+        vals.into_iter().enumerate().map(|(i, p)| (p, i)).collect();
     indexed.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Top-k filter
@@ -1003,7 +1062,6 @@ fn rand_f32() -> f32 {
     ((shuffled >> 33) as u32 as f32) / (u32::MAX as f32)
 }
 
-
 /// Generate a random u64 session ID.
 fn rand_session_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1019,4 +1077,3 @@ fn derive_dht_prefix(model: &str) -> String {
     let base = model.split('/').last().unwrap_or(model);
     base.replace('.', "-")
 }
-

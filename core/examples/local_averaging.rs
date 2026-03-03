@@ -10,8 +10,8 @@
 
 use candle_core::{Device, Tensor};
 use kwaai_compression::{BlockwiseQuantizer, CompressedData, Compressor};
-use kwaai_distributed::{
-    averaging::{AveragingConfig, AveragingResult, DecentralizedAverager, ParameterAverager},
+use kwaai_distributed::averaging::{
+    AveragingConfig, AveragingResult, DecentralizedAverager, ParameterAverager,
 };
 use std::error::Error;
 use std::time::Duration;
@@ -35,21 +35,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Simulate model with 3 parameter tensors
     for step in 0..4 {
         // Generate "gradients" for this step (in reality, from backprop)
-        let g1 = Tensor::from_vec(
-            vec![(step + 1) as f32; 8],
-            &[2, 4],
-            &device,
-        )?;
-        let g2 = Tensor::from_vec(
-            vec![(step + 1) as f32 * 0.5; 16],
-            &[4, 4],
-            &device,
-        )?;
-        let g3 = Tensor::from_vec(
-            vec![(step + 1) as f32 * 0.1; 4],
-            &[4],
-            &device,
-        )?;
+        let g1 = Tensor::from_vec(vec![(step + 1) as f32; 8], &[2, 4], &device)?;
+        let g2 = Tensor::from_vec(vec![(step + 1) as f32 * 0.5; 16], &[4, 4], &device)?;
+        let g3 = Tensor::from_vec(vec![(step + 1) as f32 * 0.1; 4], &[4], &device)?;
 
         averager.accumulate(&[g1, g2, g3])?;
         println!("  Step {}: accumulated gradients", step + 1);
@@ -58,7 +46,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Perform averaging step
     let result = averager.step().await?;
     match &result {
-        AveragingResult::Success { peers_count, compression_ratio } => {
+        AveragingResult::Success {
+            peers_count,
+            compression_ratio,
+        } => {
             println!("\nAveraging complete:");
             println!("  Peers participated: {}", peers_count);
             println!("  Compression ratio:  {:.2}x", compression_ratio);
@@ -95,12 +86,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Create larger gradients to compress
     let gradients = vec![
-        Tensor::randn(0f32, 1.0, &[1024, 256], &device)?,  // 256K params
-        Tensor::randn(0f32, 1.0, &[256, 256], &device)?,   // 64K params
-        Tensor::randn(0f32, 1.0, &[256], &device)?,        // 256 params
+        Tensor::randn(0f32, 1.0, &[1024, 256], &device)?, // 256K params
+        Tensor::randn(0f32, 1.0, &[256, 256], &device)?,  // 64K params
+        Tensor::randn(0f32, 1.0, &[256], &device)?,       // 256 params
     ];
 
-    let total_params: usize = gradients.iter()
+    let total_params: usize = gradients
+        .iter()
         .map(|t| t.dims().iter().product::<usize>())
         .sum();
     println!("Total parameters: {}", total_params);
@@ -144,8 +136,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let num_peers = 4;
     let param_shape = [256, 128];
 
-    println!("Simulating {} peers, each with gradients for {} parameters",
-             num_peers, param_shape[0] * param_shape[1]);
+    println!(
+        "Simulating {} peers, each with gradients for {} parameters",
+        num_peers,
+        param_shape[0] * param_shape[1]
+    );
 
     // Generate gradients from each peer (different random values)
     let mut peer_gradients = Vec::new();
@@ -164,8 +159,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let avg_mean: f32 = averaged[0].mean_all()?.to_scalar()?;
     println!("\nAveraged gradient mean: {:.4}", avg_mean);
-    println!("Expected mean (sum of peer ids / num_peers): {:.4}",
-             (0..num_peers).sum::<i32>() as f32 / num_peers as f32);
+    println!(
+        "Expected mean (sum of peer ids / num_peers): {:.4}",
+        (0..num_peers).sum::<i32>() as f32 / num_peers as f32
+    );
 
     println!();
 
@@ -175,20 +172,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let configs = [
         ("Default", AveragingConfig::default()),
-        ("Fast", AveragingConfig {
-            group_size: 2,
-            match_timeout: Duration::from_secs(10),
-            exchange_timeout: Duration::from_secs(30),
-            quantization_block_size: 32,
-            enable_compression: true,
-        }),
-        ("High Quality", AveragingConfig {
-            group_size: 8,
-            match_timeout: Duration::from_secs(60),
-            exchange_timeout: Duration::from_secs(120),
-            quantization_block_size: 128,
-            enable_compression: true,
-        }),
+        (
+            "Fast",
+            AveragingConfig {
+                group_size: 2,
+                match_timeout: Duration::from_secs(10),
+                exchange_timeout: Duration::from_secs(30),
+                quantization_block_size: 32,
+                enable_compression: true,
+            },
+        ),
+        (
+            "High Quality",
+            AveragingConfig {
+                group_size: 8,
+                match_timeout: Duration::from_secs(60),
+                exchange_timeout: Duration::from_secs(120),
+                quantization_block_size: 128,
+                enable_compression: true,
+            },
+        ),
     ];
 
     for (name, config) in configs {
@@ -196,7 +199,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("  Group size:       {}", config.group_size);
         println!("  Match timeout:    {:?}", config.match_timeout);
         println!("  Exchange timeout: {:?}", config.exchange_timeout);
-        println!("  Quantization:     {} block size", config.quantization_block_size);
+        println!(
+            "  Quantization:     {} block size",
+            config.quantization_block_size
+        );
         println!("  Compression:      {}", config.enable_compression);
         println!();
     }
@@ -210,8 +216,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let accumulation_steps = 4;
     let num_epochs = 3;
 
-    println!("Simulating {} epochs with {} accumulation steps each\n",
-             num_epochs, accumulation_steps);
+    println!(
+        "Simulating {} epochs with {} accumulation steps each\n",
+        num_epochs, accumulation_steps
+    );
 
     for epoch in 0..num_epochs {
         println!("Epoch {}:", epoch + 1);
@@ -228,11 +236,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Every accumulation_steps, attempt averaging
             if (step + 1) % accumulation_steps == 0 {
                 match averager.step().await? {
-                    AveragingResult::Success { peers_count, compression_ratio } => {
-                        println!(" -> averaged ({} peers, {:.1}x compression)",
-                                 peers_count, compression_ratio);
+                    AveragingResult::Success {
+                        peers_count,
+                        compression_ratio,
+                    } => {
+                        println!(
+                            " -> averaged ({} peers, {:.1}x compression)",
+                            peers_count, compression_ratio
+                        );
                     }
-                    AveragingResult::InProgress { ready_peers, target_size } => {
+                    AveragingResult::InProgress {
+                        ready_peers,
+                        target_size,
+                    } => {
                         println!(" -> waiting ({}/{} peers ready)", ready_peers, target_size);
                     }
                     AveragingResult::NoPeersAvailable => {
@@ -277,9 +293,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let total_per_step_mb = compressed_mb * (peers - 1) as f64 * 2.0; // send + receive
 
         println!("{} params:", name);
-        println!("  Per-peer gradient: {:.1} MB -> {:.1} MB compressed",
-                 original_mb, compressed_mb);
-        println!("  Total network per step ({} peers): {:.1} MB", peers, total_per_step_mb);
+        println!(
+            "  Per-peer gradient: {:.1} MB -> {:.1} MB compressed",
+            original_mb, compressed_mb
+        );
+        println!(
+            "  Total network per step ({} peers): {:.1} MB",
+            peers, total_per_step_mb
+        );
         println!();
     }
 

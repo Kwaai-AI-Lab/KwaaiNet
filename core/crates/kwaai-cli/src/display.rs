@@ -1,6 +1,5 @@
 //! Console formatting helpers
 
-
 const WIDTH: usize = 69;
 
 /// Returns the display width of a string, counting ASCII chars as 1 column
@@ -32,9 +31,15 @@ pub fn format_uptime(secs: u64) -> String {
     let s = secs % 60;
 
     let mut parts = Vec::new();
-    if days > 0 { parts.push(format!("{}d", days)); }
-    if hours > 0 { parts.push(format!("{}h", hours)); }
-    if mins > 0 { parts.push(format!("{}m", mins)); }
+    if days > 0 {
+        parts.push(format!("{}d", days));
+    }
+    if hours > 0 {
+        parts.push(format!("{}h", hours));
+    }
+    if mins > 0 {
+        parts.push(format!("{}m", mins));
+    }
     parts.push(format!("{}s", s));
     parts.join(" ")
 }

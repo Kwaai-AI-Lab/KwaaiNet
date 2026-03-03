@@ -51,9 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let kademlia = {
         let store = MemoryStore::new(local_peer_id);
         let mut kad_config = kad::Config::default();
-        kad_config.set_protocol_names(vec![
-            libp2p::StreamProtocol::new("/ipfs/kad/1.0.0"),
-        ]);
+        kad_config.set_protocol_names(vec![libp2p::StreamProtocol::new("/ipfs/kad/1.0.0")]);
         let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, kad_config);
         behaviour.set_mode(Some(Mode::Client));
         behaviour
@@ -85,7 +83,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for addr_str in &config.bootstrap_peers {
         let addr: Multiaddr = addr_str.parse()?;
         if let Some(peer_id) = extract_peer_id(&addr) {
-            swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, addr.clone());
             swarm.dial(addr)?;
         }
     }
@@ -173,8 +174,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("==========================");
     println!("Results:");
-    println!("  Connected to Petals: {}", if connected { "YES" } else { "NO" });
-    println!("  DHT bootstrap: {}", if bootstrap_done { "COMPLETE" } else { "INCOMPLETE" });
+    println!(
+        "  Connected to Petals: {}",
+        if connected { "YES" } else { "NO" }
+    );
+    println!(
+        "  DHT bootstrap: {}",
+        if bootstrap_done {
+            "COMPLETE"
+        } else {
+            "INCOMPLETE"
+        }
+    );
     println!("  Peers discovered: {}", peers_found);
 
     if connected && bootstrap_done {

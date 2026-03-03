@@ -6,7 +6,7 @@ use kwaai_p2p_daemon::P2PDaemon;
 use libp2p::PeerId;
 use prost::Message;
 use rmpv::Value;
-use sha1::{Sha1, Digest};
+use sha1::{Digest, Sha1};
 use std::error::Error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -26,7 +26,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
-    let query_key = args.get(1).map(|s| s.to_string()).unwrap_or_else(|| "_petals.models".to_string());
+    let query_key = args
+        .get(1)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "_petals.models".to_string());
 
     println!("Querying DHT key: {}\n", query_key);
 
@@ -66,7 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let find_request = FindRequest {
                     auth: Some(RequestAuthInfo::new()),
                     keys: vec![hashed_key.clone()],
-                    peer: None,  // Don't send peer info in FIND request
+                    peer: None, // Don't send peer info in FIND request
                 };
 
                 let mut request_bytes = Vec::new();
@@ -74,11 +77,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 info!("Sending FIND request ({} bytes)", request_bytes.len());
 
-                let response_bytes = client.call_unary_handler(
-                    &bootstrap_peer_id_bytes,
-                    "DHTProtocol.rpc_find",
-                    &request_bytes,
-                ).await?;
+                let response_bytes = client
+                    .call_unary_handler(
+                        &bootstrap_peer_id_bytes,
+                        "DHTProtocol.rpc_find",
+                        &request_bytes,
+                    )
+                    .await?;
 
                 info!("Received response ({} bytes)", response_bytes.len());
 
@@ -110,22 +115,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         // Decode the inner data
                                         match rmpv::decode::read_value(&mut &data[..]) {
                                             Ok(Value::Array(inner)) if inner.len() >= 3 => {
-                                                if let Some(Value::Array(entries_arr)) = inner.get(2) {
-                                                    println!("\n  Dictionary entries found: {}", entries_arr.len());
+                                                if let Some(Value::Array(entries_arr)) =
+                                                    inner.get(2)
+                                                {
+                                                    println!(
+                                                        "\n  Dictionary entries found: {}",
+                                                        entries_arr.len()
+                                                    );
 
                                                     for entry in entries_arr {
                                                         if let Value::Array(entry_data) = entry {
                                                             if entry_data.len() >= 2 {
                                                                 // Subkey
-                                                                if let Some(Value::String(ref subkey)) = entry_data.get(0) {
-                                                                    println!("\n  📦 Subkey: {}", subkey.as_str().unwrap_or("(invalid)"));
+                                                                if let Some(Value::String(
+                                                                    ref subkey,
+                                                                )) = entry_data.get(0)
+                                                                {
+                                                                    println!(
+                                                                        "\n  📦 Subkey: {}",
+                                                                        subkey
+                                                                            .as_str()
+                                                                            .unwrap_or("(invalid)")
+                                                                    );
                                                                 }
 
                                                                 // Value (msgpack-encoded)
-                                                                if let Some(Value::Binary(ref value_bytes)) = entry_data.get(1) {
+                                                                if let Some(Value::Binary(
+                                                                    ref value_bytes,
+                                                                )) = entry_data.get(1)
+                                                                {
                                                                     // Try to decode the value
-                                                                    match rmpv::decode::read_value(&mut &value_bytes[..]) {
-                                                                        Ok(Value::Ext(_, ref ext_data)) => {
+                                                                    match rmpv::decode::read_value(
+                                                                        &mut &value_bytes[..],
+                                                                    ) {
+                                                                        Ok(Value::Ext(
+                                                                            _,
+                                                                            ref ext_data,
+                                                                        )) => {
                                                                             // ExtType-wrapped value (Petals format)
                                                                             match rmpv::decode::read_value(&mut &ext_data[..]) {
                                                                                 Ok(Value::Array(ref arr)) if arr.len() >= 3 => {
@@ -227,23 +253,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                                                 }
                                                                             }
                                                                         }
-                                                                        Ok(Value::Array(ref arr)) if arr.len() == 2 => {
+                                                                        Ok(Value::Array(
+                                                                            ref arr,
+                                                                        )) if arr.len() == 2 => {
                                                                             // This is model registry info: [num_blocks, repository]
-                                                                            if let Some(Value::Integer(num_blocks)) = arr.get(0) {
+                                                                            if let Some(
+                                                                                Value::Integer(
+                                                                                    num_blocks,
+                                                                                ),
+                                                                            ) = arr.get(0)
+                                                                            {
                                                                                 println!("     Blocks: {}", num_blocks.as_i64().unwrap_or(0));
                                                                             }
-                                                                            if let Some(Value::String(repo)) = arr.get(1) {
+                                                                            if let Some(
+                                                                                Value::String(repo),
+                                                                            ) = arr.get(1)
+                                                                            {
                                                                                 println!("     Repository: {}", repo.as_str().unwrap_or("(invalid)"));
                                                                             }
                                                                         }
-                                                                        Ok(Value::Array(ref arr)) if arr.len() >= 10 => {
+                                                                        Ok(Value::Array(
+                                                                            ref arr,
+                                                                        )) if arr.len() >= 10 => {
                                                                             // This is ServerInfo (array format)
                                                                             // [state, throughput, start_block, end_block, public_name, version,
                                                                             //  network_rps, forward_rps, inference_rps, torch_dtype, adapters,
                                                                             //  using_relay, cache_tokens_left, next_pings]
-                                                                            println!("     Server Info:");
+                                                                            println!(
+                                                                                "     Server Info:"
+                                                                            );
 
-                                                                            if let Some(Value::Integer(state)) = arr.get(0) {
+                                                                            if let Some(
+                                                                                Value::Integer(
+                                                                                    state,
+                                                                                ),
+                                                                            ) = arr.get(0)
+                                                                            {
                                                                                 let state_name = match state.as_i64().unwrap_or(0) {
                                                                                     0 => "OFFLINE",
                                                                                     1 => "JOINING",
@@ -252,49 +297,114 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                                                 };
                                                                                 println!("       state: {} ({})", state.as_i64().unwrap_or(0), state_name);
                                                                             }
-                                                                            if let Some(Value::F64(throughput)) = arr.get(1) {
+                                                                            if let Some(
+                                                                                Value::F64(
+                                                                                    throughput,
+                                                                                ),
+                                                                            ) = arr.get(1)
+                                                                            {
                                                                                 println!("       throughput: {}", throughput);
                                                                             }
-                                                                            if let Some(Value::Integer(start_block)) = arr.get(2) {
+                                                                            if let Some(
+                                                                                Value::Integer(
+                                                                                    start_block,
+                                                                                ),
+                                                                            ) = arr.get(2)
+                                                                            {
                                                                                 println!("       start_block: {}", start_block.as_i64().unwrap_or(0));
                                                                             }
-                                                                            if let Some(Value::Integer(end_block)) = arr.get(3) {
+                                                                            if let Some(
+                                                                                Value::Integer(
+                                                                                    end_block,
+                                                                                ),
+                                                                            ) = arr.get(3)
+                                                                            {
                                                                                 println!("       end_block: {}", end_block.as_i64().unwrap_or(0));
                                                                             }
-                                                                            if let Some(Value::String(public_name)) = arr.get(4) {
+                                                                            if let Some(
+                                                                                Value::String(
+                                                                                    public_name,
+                                                                                ),
+                                                                            ) = arr.get(4)
+                                                                            {
                                                                                 println!("       public_name: {}", public_name.as_str().unwrap_or("(invalid)"));
                                                                             }
-                                                                            if let Some(Value::String(version)) = arr.get(5) {
+                                                                            if let Some(
+                                                                                Value::String(
+                                                                                    version,
+                                                                                ),
+                                                                            ) = arr.get(5)
+                                                                            {
                                                                                 println!("       version: {}", version.as_str().unwrap_or("(invalid)"));
                                                                             }
-                                                                            if let Some(Value::F64(network_rps)) = arr.get(6) {
+                                                                            if let Some(
+                                                                                Value::F64(
+                                                                                    network_rps,
+                                                                                ),
+                                                                            ) = arr.get(6)
+                                                                            {
                                                                                 println!("       network_rps: {}", network_rps);
                                                                             }
-                                                                            if let Some(Value::F64(forward_rps)) = arr.get(7) {
+                                                                            if let Some(
+                                                                                Value::F64(
+                                                                                    forward_rps,
+                                                                                ),
+                                                                            ) = arr.get(7)
+                                                                            {
                                                                                 println!("       forward_rps: {}", forward_rps);
                                                                             }
-                                                                            if let Some(Value::F64(inference_rps)) = arr.get(8) {
+                                                                            if let Some(
+                                                                                Value::F64(
+                                                                                    inference_rps,
+                                                                                ),
+                                                                            ) = arr.get(8)
+                                                                            {
                                                                                 println!("       inference_rps: {}", inference_rps);
                                                                             }
-                                                                            if let Some(Value::String(dtype)) = arr.get(9) {
+                                                                            if let Some(
+                                                                                Value::String(
+                                                                                    dtype,
+                                                                                ),
+                                                                            ) = arr.get(9)
+                                                                            {
                                                                                 println!("       torch_dtype: {}", dtype.as_str().unwrap_or("(invalid)"));
                                                                             }
-                                                                            if let Some(Value::Array(adapters)) = arr.get(10) {
+                                                                            if let Some(
+                                                                                Value::Array(
+                                                                                    adapters,
+                                                                                ),
+                                                                            ) = arr.get(10)
+                                                                            {
                                                                                 println!("       adapters: [{}]", adapters.len());
                                                                             }
-                                                                            if let Some(Value::Boolean(using_relay)) = arr.get(11) {
+                                                                            if let Some(
+                                                                                Value::Boolean(
+                                                                                    using_relay,
+                                                                                ),
+                                                                            ) = arr.get(11)
+                                                                            {
                                                                                 println!("       using_relay: {}", using_relay);
                                                                             }
-                                                                            if let Some(Value::Integer(cache_tokens)) = arr.get(12) {
+                                                                            if let Some(
+                                                                                Value::Integer(
+                                                                                    cache_tokens,
+                                                                                ),
+                                                                            ) = arr.get(12)
+                                                                            {
                                                                                 println!("       cache_tokens_left: {}", cache_tokens.as_i64().unwrap_or(0));
                                                                             }
-                                                                            if let Some(Value::Map(pings)) = arr.get(13) {
+                                                                            if let Some(
+                                                                                Value::Map(pings),
+                                                                            ) = arr.get(13)
+                                                                            {
                                                                                 println!("       next_pings: {{{}}} entries", pings.len());
                                                                             }
                                                                         }
                                                                         Ok(Value::Map(ref map)) => {
                                                                             // ServerInfo in map format (alternative encoding)
-                                                                            println!("     Server Info:");
+                                                                            println!(
+                                                                                "     Server Info:"
+                                                                            );
                                                                             for (k, v) in map {
                                                                                 if let Value::String(ref key) = k {
                                                                                     let key_str = key.as_str().unwrap_or("(invalid)");
@@ -318,8 +428,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                                 }
 
                                                                 // Timestamp
-                                                                if let Some(Value::F64(timestamp)) = entry_data.get(2) {
-                                                                    println!("     Updated: {}", timestamp);
+                                                                if let Some(Value::F64(timestamp)) =
+                                                                    entry_data.get(2)
+                                                                {
+                                                                    println!(
+                                                                        "     Updated: {}",
+                                                                        timestamp
+                                                                    );
                                                                 }
                                                             }
                                                         }
@@ -345,14 +460,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                             if let Value::String(ref key) = k {
                                                 let key_str = key.as_str().unwrap_or("(invalid)");
                                                 match v {
-                                                    Value::Integer(i) => println!("    {}: {}", key_str, i.as_i64().unwrap_or(0)),
-                                                    Value::F64(f) => println!("    {}: {}", key_str, f),
-                                                    Value::String(s) => println!("    {}: {}", key_str, s.as_str().unwrap_or("(invalid)")),
-                                                    Value::Boolean(b) => println!("    {}: {}", key_str, b),
+                                                    Value::Integer(i) => println!(
+                                                        "    {}: {}",
+                                                        key_str,
+                                                        i.as_i64().unwrap_or(0)
+                                                    ),
+                                                    Value::F64(f) => {
+                                                        println!("    {}: {}", key_str, f)
+                                                    }
+                                                    Value::String(s) => println!(
+                                                        "    {}: {}",
+                                                        key_str,
+                                                        s.as_str().unwrap_or("(invalid)")
+                                                    ),
+                                                    Value::Boolean(b) => {
+                                                        println!("    {}: {}", key_str, b)
+                                                    }
                                                     Value::Nil => println!("    {}: null", key_str),
-                                                    Value::Array(arr) => println!("    {}: [array with {} items]", key_str, arr.len()),
-                                                    Value::Map(m) => println!("    {}: {{map with {} items}}", key_str, m.len()),
-                                                    _ => println!("    {}: (complex value)", key_str),
+                                                    Value::Array(arr) => println!(
+                                                        "    {}: [array with {} items]",
+                                                        key_str,
+                                                        arr.len()
+                                                    ),
+                                                    Value::Map(m) => println!(
+                                                        "    {}: {{map with {} items}}",
+                                                        key_str,
+                                                        m.len()
+                                                    ),
+                                                    _ => {
+                                                        println!("    {}: (complex value)", key_str)
+                                                    }
                                                 }
                                             }
                                         }

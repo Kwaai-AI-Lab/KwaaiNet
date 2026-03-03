@@ -54,9 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let store = MemoryStore::new(local_peer_id);
         let mut config = kad::Config::default();
         // Try to use a protocol that might be compatible
-        config.set_protocol_names(vec![
-            libp2p::StreamProtocol::new("/ipfs/kad/1.0.0"),
-        ]);
+        config.set_protocol_names(vec![libp2p::StreamProtocol::new("/ipfs/kad/1.0.0")]);
         let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, config);
         behaviour.set_mode(Some(Mode::Client));
         behaviour
@@ -100,7 +98,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         if let Some(peer_id) = peer_id {
             info!("Dialing: {} (peer: {})", addr, peer_id);
-            swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, addr.clone());
 
             match swarm.dial(addr.clone()) {
                 Ok(_) => println!("  Dial initiated: {}", addr),

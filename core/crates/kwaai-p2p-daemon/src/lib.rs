@@ -37,18 +37,18 @@
 //! }
 //! ```
 
-pub mod error;
-pub mod daemon;
 pub mod client;
-pub mod protocol;
+pub mod daemon;
 pub mod dht;
-pub mod stream;
+pub mod error;
 pub mod persistent;
+pub mod protocol;
+pub mod stream;
 
-pub use error::{Error, Result};
-pub use daemon::{P2PDaemon, DaemonBuilder};
 pub use client::P2PClient;
+pub use daemon::{DaemonBuilder, P2PDaemon};
 pub use dht::{DhtPeerInfo, DhtValue};
+pub use error::{Error, Result};
 
 // Re-export commonly used types
 pub use protocol::p2pd;

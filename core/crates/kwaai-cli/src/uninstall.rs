@@ -192,7 +192,8 @@ fn remove_binary_windows(path: &Path) {
     // Step 2: rename to <path>.del — frees the original name synchronously
     let del_path = {
         let mut p = path.to_path_buf();
-        let mut ext = p.extension()
+        let mut ext = p
+            .extension()
             .map(|e| e.to_string_lossy().into_owned())
             .unwrap_or_default();
         ext.push_str(".del");

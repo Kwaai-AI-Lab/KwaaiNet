@@ -42,9 +42,7 @@ pub fn did_to_peer_id(did: &str) -> Option<PeerId> {
 
 /// Returns `true` if the given DID string corresponds to the given `PeerId`
 pub fn did_matches_peer(did: &str, peer_id: &PeerId) -> bool {
-    did_to_peer_id(did)
-        .map(|p| p == *peer_id)
-        .unwrap_or(false)
+    did_to_peer_id(did).map(|p| p == *peer_id).unwrap_or(false)
 }
 
 /// Construct the W3C verification method URI for a node's primary key
@@ -75,10 +73,7 @@ pub fn extract_ed25519_bytes(peer_id: &PeerId) -> Option<[u8; 32]> {
     //   field 1 (key_type), wire type 0, value 1 (Ed25519) → 0x08 0x01
     //   field 2 (data),     wire type 2, length 32         → 0x12 0x20
     for i in 0..bytes.len().saturating_sub(35) {
-        if bytes[i] == 0x08
-            && bytes[i + 1] == 0x01
-            && bytes[i + 2] == 0x12
-            && bytes[i + 3] == 0x20
+        if bytes[i] == 0x08 && bytes[i + 1] == 0x01 && bytes[i + 2] == 0x12 && bytes[i + 3] == 0x20
         {
             return bytes[i + 4..i + 36].try_into().ok();
         }
@@ -131,7 +126,10 @@ pub fn p256_spki_to_did(spki_bytes: &[u8]) -> Result<String, anyhow::Error> {
     multikey.extend_from_slice(&compressed);
 
     // Base58btc encode and prepend multibase 'z' prefix
-    Ok(format!("did:key:z{}", bs58::encode(&multikey).into_string()))
+    Ok(format!(
+        "did:key:z{}",
+        bs58::encode(&multikey).into_string()
+    ))
 }
 
 #[cfg(test)]

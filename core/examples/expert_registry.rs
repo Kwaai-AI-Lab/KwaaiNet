@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo run --example expert_registry
 
-use candle_core::{Device, DType, Tensor};
+use candle_core::{DType, Device, Tensor};
 use kwaai_distributed::{
     expert::{Expert, ExpertId, ExpertRegistry, LocalExpert},
     moe::{DistributedMoE, ExpertRouter, MixtureOfExperts, MoEConfig, Routing, TopKRouter},
@@ -86,19 +86,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..3 {
         registry.register_local(Box::new(LocalExpert::new(i, 4096)));
         // Each expert in group A can fall back to others in the group
-        let fallbacks: Vec<ExpertId> = (0..3)
-            .filter(|&j| j != i)
-            .map(ExpertId::new)
-            .collect();
+        let fallbacks: Vec<ExpertId> = (0..3).filter(|&j| j != i).map(ExpertId::new).collect();
         registry.register_fallback(ExpertId::new(i), fallbacks);
     }
 
     for i in 3..6 {
         registry.register_remote(ExpertId::new(i), format!("peer-{}", i));
-        let fallbacks: Vec<ExpertId> = (3..6)
-            .filter(|&j| j != i)
-            .map(ExpertId::new)
-            .collect();
+        let fallbacks: Vec<ExpertId> = (3..6).filter(|&j| j != i).map(ExpertId::new).collect();
         registry.register_fallback(ExpertId::new(i), fallbacks);
     }
 
@@ -136,9 +130,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let distributed_config = DistributedConfig::default();
     println!("\nDistributed Config:");
     println!("  MoE enabled:         {}", distributed_config.enable_moe);
-    println!("  Averaging enabled:   {}", distributed_config.enable_averaging);
+    println!(
+        "  Averaging enabled:   {}",
+        distributed_config.enable_averaging
+    );
     println!("  MoE top-k:           {}", distributed_config.moe_top_k);
-    println!("  Averaging group:     {}", distributed_config.averaging_group_size);
+    println!(
+        "  Averaging group:     {}",
+        distributed_config.averaging_group_size
+    );
     println!("  Max retries:         {}", distributed_config.max_retries);
 
     println!();
@@ -214,10 +214,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let pct = *count as f32 / total_assignments as f32 * 100.0;
         let bar_len = (pct / 2.0) as usize;
         let bar: String = "=".repeat(bar_len);
-        println!(
-            "  Expert {}: {:4} tokens ({:5.1}%) |{}",
-            i, count, pct, bar
-        );
+        println!("  Expert {}: {:4} tokens ({:5.1}%) |{}", i, count, pct, bar);
     }
 
     // Check load balance
@@ -233,7 +230,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("  Total assignments: {}", total_assignments);
     println!("  Average per expert: {:.1}", avg);
     println!("  Std deviation: {:.2}", std_dev);
-    println!("  Balance score: {:.1}% (lower is more balanced)", std_dev / avg * 100.0);
+    println!(
+        "  Balance score: {:.1}% (lower is more balanced)",
+        std_dev / avg * 100.0
+    );
 
     println!();
 

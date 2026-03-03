@@ -2,9 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 
-use crate::display::{
-    print_box_header, print_info, print_separator, print_success, print_warning,
-};
+use crate::display::{print_box_header, print_info, print_separator, print_success, print_warning};
 
 /// Download and install `p2pd` next to the `kwaainet` binary if it is missing.
 pub async fn get_dependencies() -> Result<()> {
@@ -173,7 +171,10 @@ fn extract_from_zip(
         }
         let out = out_dir.join(binary_name);
         if !out.exists() {
-            bail!("Expand-Archive ran but {} was not found in output", binary_name);
+            bail!(
+                "Expand-Archive ran but {} was not found in output",
+                binary_name
+            );
         }
         return Ok(out);
     }

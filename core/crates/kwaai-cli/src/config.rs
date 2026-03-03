@@ -190,8 +190,7 @@ pub struct AlertingConfig {
 // ---------------------------------------------------------------------------
 
 fn default_model() -> String {
-    std::env::var("KWAAINET_MODEL")
-        .unwrap_or_else(|_| "unsloth/Llama-3.1-8B-Instruct".to_string())
+    std::env::var("KWAAINET_MODEL").unwrap_or_else(|_| "unsloth/Llama-3.1-8B-Instruct".to_string())
 }
 fn default_blocks() -> u32 {
     std::env::var("KWAAINET_BLOCKS")
@@ -205,28 +204,50 @@ fn default_port() -> u16 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(8080)
 }
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 fn default_log_level() -> String {
     std::env::var("KWAAINET_LOG_LEVEL").unwrap_or_else(|_| "info".to_string())
 }
 fn default_peers() -> Vec<String> {
     vec![
-        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc".to_string(),
-        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY".to_string(),
+        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
+            .to_string(),
+        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
+            .to_string(),
     ]
 }
 fn default_api_endpoint() -> String {
     "https://map.kwaai.ai/api/v1/state".to_string()
 }
-fn default_check_interval() -> u64 { 60 }
-fn default_request_timeout() -> u64 { 10 }
-fn default_failure_threshold() -> u32 { 3 }
-fn default_max_attempts() -> u32 { 10 }
-fn default_backoff_strategy() -> String { "exponential".to_string() }
-fn default_initial_delay() -> u64 { 30 }
-fn default_max_delay() -> u64 { 1800 }
-fn default_backoff_multiplier() -> f64 { 2.0 }
-fn default_jitter_factor() -> f64 { 0.5 }
+fn default_check_interval() -> u64 {
+    60
+}
+fn default_request_timeout() -> u64 {
+    10
+}
+fn default_failure_threshold() -> u32 {
+    3
+}
+fn default_max_attempts() -> u32 {
+    10
+}
+fn default_backoff_strategy() -> String {
+    "exponential".to_string()
+}
+fn default_initial_delay() -> u64 {
+    30
+}
+fn default_max_delay() -> u64 {
+    1800
+}
+fn default_backoff_multiplier() -> f64 {
+    2.0
+}
+fn default_jitter_factor() -> f64 {
+    0.5
+}
 
 impl Default for KwaaiNetConfig {
     fn default() -> Self {
@@ -326,7 +347,13 @@ impl KwaaiNetConfig {
     /// Total transformer blocks in the full model (for the _petals.models registry).
     pub fn model_total_blocks(&self) -> i32 {
         let m = self.model.to_lowercase();
-        if m.contains("70b") { 80 } else if m.contains("13b") { 40 } else { 32 }
+        if m.contains("70b") {
+            80
+        } else if m.contains("13b") {
+            40
+        } else {
+            32
+        }
     }
 
     /// Set a top-level key by name (string value coerced to the right type).
@@ -341,8 +368,11 @@ impl KwaaiNetConfig {
             "public_ip" => self.public_ip = Some(value.to_string()),
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
-            "start_block" => self.start_block = value.parse()
-                .map_err(|_| anyhow::anyhow!("start_block must be a non-negative integer"))?,
+            "start_block" => {
+                self.start_block = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("start_block must be a non-negative integer"))?
+            }
             _ => anyhow::bail!("Unknown config key: {}", key),
         }
         self.save()
@@ -373,7 +403,11 @@ pub async fn detect_public_ip() -> Option<String> {
         .ok()?
         .trim()
         .to_string();
-    if ip.is_empty() { None } else { Some(ip) }
+    if ip.is_empty() {
+        None
+    } else {
+        Some(ip)
+    }
 }
 
 mod dirs_sys {

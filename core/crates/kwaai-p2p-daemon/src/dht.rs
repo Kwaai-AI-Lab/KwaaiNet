@@ -9,7 +9,7 @@
 
 use crate::client::P2PClient;
 use crate::error::{Error, Result};
-use crate::protocol::p2pd::{DhtRequest, Request, dht_request, request};
+use crate::protocol::p2pd::{dht_request, request, DhtRequest, Request};
 use tracing::{debug, trace};
 
 /// DHT peer information
@@ -43,7 +43,11 @@ impl P2PClient {
         value: Vec<u8>,
         timeout_secs: Option<i64>,
     ) -> Result<()> {
-        debug!("DHT PUT_VALUE: key len={}, value len={}", key.len(), value.len());
+        debug!(
+            "DHT PUT_VALUE: key len={}, value len={}",
+            key.len(),
+            value.len()
+        );
 
         let dht_request = DhtRequest {
             r#type: dht_request::Type::PutValue as i32,
@@ -70,9 +74,7 @@ impl P2PClient {
         let response = self.send_request(request).await?;
 
         if response.dht.is_none() {
-            return Err(Error::InvalidResponse(
-                "Expected DHT response".to_string(),
-            ));
+            return Err(Error::InvalidResponse("Expected DHT response".to_string()));
         }
 
         trace!("DHT PUT_VALUE successful");
@@ -242,11 +244,7 @@ impl P2PClient {
     /// # Arguments
     /// * `cid` - Content identifier (binary)
     /// * `timeout_secs` - Optional timeout in seconds
-    pub async fn dht_provide(
-        &mut self,
-        cid: Vec<u8>,
-        timeout_secs: Option<i64>,
-    ) -> Result<()> {
+    pub async fn dht_provide(&mut self, cid: Vec<u8>, timeout_secs: Option<i64>) -> Result<()> {
         debug!("DHT PROVIDE: cid len={}", cid.len());
 
         let dht_request = DhtRequest {

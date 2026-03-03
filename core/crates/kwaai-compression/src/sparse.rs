@@ -38,7 +38,11 @@ impl Compressor for TopKCompressor {
     type Compressed = SparseGradient;
 
     fn compress(&self, tensor: &Tensor) -> CompressionResult<SparseGradient> {
-        debug!("Sparse compress tensor shape={:?} k_fraction={}", tensor.dims(), self.k_fraction);
+        debug!(
+            "Sparse compress tensor shape={:?} k_fraction={}",
+            tensor.dims(),
+            self.k_fraction
+        );
         let data = tensor
             .flatten_all()?
             .to_vec1::<f32>()
@@ -47,7 +51,8 @@ impl Compressor for TopKCompressor {
         let k = ((data.len() as f32 * self.k_fraction) as usize).max(1);
 
         // Find indices of top-k by magnitude
-        let mut indexed: Vec<(usize, f32)> = data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        let mut indexed: Vec<(usize, f32)> =
+            data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
         indexed.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
 
         let top_k: Vec<_> = indexed.into_iter().take(k).collect();
@@ -58,12 +63,21 @@ impl Compressor for TopKCompressor {
             original_size: data.len(),
             shape: tensor.dims().to_vec(),
         };
-        debug!("Sparse gradient: kept {}/{} values, ratio={:.2}x", sg.indices.len(), data.len(), sg.compression_ratio());
+        debug!(
+            "Sparse gradient: kept {}/{} values, ratio={:.2}x",
+            sg.indices.len(),
+            data.len(),
+            sg.compression_ratio()
+        );
         Ok(sg)
     }
 
     fn decompress(&self, compressed: &SparseGradient) -> CompressionResult<Tensor> {
-        debug!("Sparse decompress: {} non-zero values, shape={:?}", compressed.indices.len(), compressed.shape);
+        debug!(
+            "Sparse decompress: {} non-zero values, shape={:?}",
+            compressed.indices.len(),
+            compressed.shape
+        );
         let mut data = vec![0.0f32; compressed.original_size];
 
         for (&idx, &val) in compressed.indices.iter().zip(compressed.values.iter()) {

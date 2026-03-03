@@ -8,7 +8,7 @@
 //!
 //! Run with: cargo run --example tensor_ops
 
-use candle_core::{Device, Tensor, DType};
+use candle_core::{DType, Device, Tensor};
 use std::error::Error;
 use std::time::Instant;
 
@@ -44,16 +44,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("------------------------");
 
     // [2, 3] x [3, 2] = [2, 2]
-    let a = Tensor::from_vec(
-        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0],
-        &[2, 3],
-        &device,
-    )?;
-    let b = Tensor::from_vec(
-        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0],
-        &[3, 2],
-        &device,
-    )?;
+    let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3], &device)?;
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2], &device)?;
 
     println!("A [2,3]: {:?}", a.to_vec2::<f32>()?);
     println!("B [3,2]: {:?}", b.to_vec2::<f32>()?);

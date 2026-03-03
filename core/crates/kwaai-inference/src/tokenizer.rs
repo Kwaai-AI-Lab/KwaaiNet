@@ -88,7 +88,12 @@ impl BpeTokenizer {
             eos_id,
         );
 
-        Ok(Self { inner, bos_id, eos_id, pad_id })
+        Ok(Self {
+            inner,
+            bos_id,
+            eos_id,
+            pad_id,
+        })
     }
 
     /// Build a BPE tokenizer from the vocabulary and merge rules embedded
@@ -111,8 +116,7 @@ impl BpeTokenizer {
 
         // ── Merge rules ──────────────────────────────────────────────────────
         // Each GGUF merge entry is the string "token_a token_b".
-        let merges_raw = gguf_string_array(gguf, "tokenizer.ggml.merges")
-            .unwrap_or_default();
+        let merges_raw = gguf_string_array(gguf, "tokenizer.ggml.merges").unwrap_or_default();
 
         if merges_raw.is_empty() {
             return Err(InferenceError::ModelLoadError(
@@ -125,13 +129,12 @@ impl BpeTokenizer {
         // ── Special token IDs ────────────────────────────────────────────────
         let bos_id = gguf_u32(gguf, "tokenizer.ggml.bos_token_id")
             .or_else(|| find_token_id(&token_strs, &["<|begin_of_text|>", "<s>"]));
-        let eos_id = gguf_u32(gguf, "tokenizer.ggml.eos_token_id")
-            .or_else(|| {
-                find_token_id(
-                    &token_strs,
-                    &["<|eot_id|>", "<|endoftext|>", "</s>", "<|im_end|>"],
-                )
-            });
+        let eos_id = gguf_u32(gguf, "tokenizer.ggml.eos_token_id").or_else(|| {
+            find_token_id(
+                &token_strs,
+                &["<|eot_id|>", "<|endoftext|>", "</s>", "<|im_end|>"],
+            )
+        });
         let pad_id = gguf_u32(gguf, "tokenizer.ggml.padding_token_id")
             .or_else(|| find_token_id(&token_strs, &["<pad>", "[PAD]"]));
 
@@ -143,8 +146,7 @@ impl BpeTokenizer {
         // like `<|eot_id|>` into subword pieces instead of treating them as a
         // single atomic token, so the stop-token ID never appears in the
         // generated sequence and generation never terminates at EOS.
-        let token_types = gguf_u32_array(gguf, "tokenizer.ggml.token_type")
-            .unwrap_or_default();
+        let token_types = gguf_u32_array(gguf, "tokenizer.ggml.token_type").unwrap_or_default();
 
         let added_tokens: Vec<Value> = token_strs
             .iter()
@@ -227,7 +229,12 @@ impl BpeTokenizer {
             eos_id,
         );
 
-        Ok(Self { inner, bos_id, eos_id, pad_id })
+        Ok(Self {
+            inner,
+            bos_id,
+            eos_id,
+            pad_id,
+        })
     }
 }
 

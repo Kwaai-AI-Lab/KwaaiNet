@@ -46,11 +46,26 @@ impl VpkInfo {
     /// Build the rmpv Map that appears as the `"vpk"` value in DHT field maps.
     fn to_msgpack_value(&self) -> rmpv::Value {
         rmpv::Value::Map(vec![
-            (rmpv::Value::from("mode"),         rmpv::Value::from(self.mode.as_str())),
-            (rmpv::Value::from("endpoint"),     rmpv::Value::from(self.endpoint.as_str())),
-            (rmpv::Value::from("capacity_gb"),  rmpv::Value::from(self.capacity_gb)),
-            (rmpv::Value::from("tenant_count"), rmpv::Value::from(i64::from(self.tenant_count))),
-            (rmpv::Value::from("vpk_version"),  rmpv::Value::from(self.vpk_version.as_str())),
+            (
+                rmpv::Value::from("mode"),
+                rmpv::Value::from(self.mode.as_str()),
+            ),
+            (
+                rmpv::Value::from("endpoint"),
+                rmpv::Value::from(self.endpoint.as_str()),
+            ),
+            (
+                rmpv::Value::from("capacity_gb"),
+                rmpv::Value::from(self.capacity_gb),
+            ),
+            (
+                rmpv::Value::from("tenant_count"),
+                rmpv::Value::from(i64::from(self.tenant_count)),
+            ),
+            (
+                rmpv::Value::from("vpk_version"),
+                rmpv::Value::from(self.vpk_version.as_str()),
+            ),
         ])
     }
 
@@ -132,16 +147,40 @@ impl DHTServerInfo {
 
     fn to_msgpack(&self) -> Result<Vec<u8>> {
         let mut fields: Vec<(rmpv::Value, rmpv::Value)> = vec![
-            (rmpv::Value::from("start_block"),       rmpv::Value::from(self.start_block)),
-            (rmpv::Value::from("end_block"),         rmpv::Value::from(self.end_block)),
-            (rmpv::Value::from("public_name"),       rmpv::Value::from(self.public_name.as_str())),
-            (rmpv::Value::from("version"),           rmpv::Value::from(self.version.as_str())),
-            (rmpv::Value::from("torch_dtype"),       rmpv::Value::from(self.torch_dtype.as_str())),
-            (rmpv::Value::from("using_relay"),       rmpv::Value::from(self.using_relay)),
-            (rmpv::Value::from("cache_tokens_left"), rmpv::Value::from(self.cache_tokens_left)),
-            (rmpv::Value::from("adapters"),          rmpv::Value::Array(vec![])),
-            (rmpv::Value::from("next_pings"),        rmpv::Value::Map(vec![])),
-            (rmpv::Value::from("peer_id"),           rmpv::Value::from(self.peer_id_b58.as_str())),
+            (
+                rmpv::Value::from("start_block"),
+                rmpv::Value::from(self.start_block),
+            ),
+            (
+                rmpv::Value::from("end_block"),
+                rmpv::Value::from(self.end_block),
+            ),
+            (
+                rmpv::Value::from("public_name"),
+                rmpv::Value::from(self.public_name.as_str()),
+            ),
+            (
+                rmpv::Value::from("version"),
+                rmpv::Value::from(self.version.as_str()),
+            ),
+            (
+                rmpv::Value::from("torch_dtype"),
+                rmpv::Value::from(self.torch_dtype.as_str()),
+            ),
+            (
+                rmpv::Value::from("using_relay"),
+                rmpv::Value::from(self.using_relay),
+            ),
+            (
+                rmpv::Value::from("cache_tokens_left"),
+                rmpv::Value::from(self.cache_tokens_left),
+            ),
+            (rmpv::Value::from("adapters"), rmpv::Value::Array(vec![])),
+            (rmpv::Value::from("next_pings"), rmpv::Value::Map(vec![])),
+            (
+                rmpv::Value::from("peer_id"),
+                rmpv::Value::from(self.peer_id_b58.as_str()),
+            ),
         ];
 
         // Include trust attestations when present — zero-cost for nodes without VCs.
@@ -162,10 +201,7 @@ impl DHTServerInfo {
         // Unknown map keys are silently ignored by legacy Hivemind clients
         // and old map viewers — no backward-compatibility risk.
         if let Some(ref vpk) = self.vpk_info {
-            fields.push((
-                rmpv::Value::from("vpk"),
-                vpk.to_msgpack_value(),
-            ));
+            fields.push((rmpv::Value::from("vpk"), vpk.to_msgpack_value()));
         }
 
         let inner = rmpv::Value::Array(vec![
@@ -194,8 +230,14 @@ struct ModelInfo {
 impl ModelInfo {
     fn to_msgpack(&self) -> Result<Vec<u8>> {
         let map = vec![
-            (rmpv::Value::from("repository"), rmpv::Value::from(self.repository.as_str())),
-            (rmpv::Value::from("num_blocks"),  rmpv::Value::from(self.num_blocks)),
+            (
+                rmpv::Value::from("repository"),
+                rmpv::Value::from(self.repository.as_str()),
+            ),
+            (
+                rmpv::Value::from("num_blocks"),
+                rmpv::Value::from(self.num_blocks),
+            ),
         ];
         let mut buf = Vec::new();
         rmpv::encode::write_value(&mut buf, &rmpv::Value::Map(map))?;
@@ -220,7 +262,6 @@ fn dht_prefix_fallback(model: &str) -> String {
     model.replace('.', "-").replace('/', "-")
 }
 
-
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -228,7 +269,9 @@ fn dht_prefix_fallback(model: &str) -> String {
 pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // PID tracking
     let daemon_mgr = DaemonManager::new();
-    daemon_mgr.write_pid(std::process::id()).context("writing PID")?;
+    daemon_mgr
+        .write_pid(std::process::id())
+        .context("writing PID")?;
     info!("KwaaiNet node starting (PID {})", std::process::id());
 
     // -----------------------------------------------------------------------
@@ -260,14 +303,20 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 .collect::<Vec<_>>()
         }
         Err(e) => {
-            warn!("Could not open credential store: {} — proceeding without VCs", e);
+            warn!(
+                "Could not open credential store: {} — proceeding without VCs",
+                e
+            );
             vec![]
         }
     };
 
     let public_name = format!(
         "{}/v{}",
-        config.public_name.clone().unwrap_or_else(|| "kwaainet-node".to_string()),
+        config
+            .public_name
+            .clone()
+            .unwrap_or_else(|| "kwaainet-node".to_string()),
         env!("CARGO_PKG_VERSION"),
     );
 
@@ -300,9 +349,10 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     let host_addr = format!("/ip4/0.0.0.0/tcp/{}", config.port);
 
     // Announce the public IP so the health monitor can reach us
-    let announce_addr = config.public_ip.as_deref().map(|ip| {
-        format!("/ip4/{}/tcp/{}", ip, config.port)
-    });
+    let announce_addr = config
+        .public_ip
+        .as_deref()
+        .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port));
 
     let identity_key_path = NodeIdentity::key_file_path();
 
@@ -345,8 +395,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     let mut client = daemon.client().await.context("p2pd client")?;
 
     let peer_id_hex = client.identify().await.context("identify peer")?;
-    let peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?)
-        .context("parse peer ID")?;
+    let peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse peer ID")?;
     info!("Peer ID: {}", peer_id.to_base58());
 
     // -----------------------------------------------------------------------
@@ -396,7 +445,10 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     let using_relay = config.public_ip.is_none() && !config.no_relay;
 
     let (effective, compute_tps) = if let Some(entry) = crate::throughput::load(&config.model) {
-        info!("  Compute:  {:.1} tok/s (measured, hidden_dim={})", entry.compute_tps, entry.hidden_size);
+        info!(
+            "  Compute:  {:.1} tok/s (measured, hidden_dim={})",
+            entry.compute_tps, entry.hidden_size
+        );
         info!("  Measuring network bandwidth (1 MiB probe)...");
         let dl_bps = crate::throughput::measure_download_bps().await;
         if dl_bps > 0.0 {
@@ -410,13 +462,20 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             eff,
             if using_relay { "relay" } else { "direct" },
             entry.compute_tps,
-            if dl_bps > 0.0 { dl_bps / (entry.hidden_size as f64 * 16.0) } else { f64::INFINITY },
+            if dl_bps > 0.0 {
+                dl_bps / (entry.hidden_size as f64 * 16.0)
+            } else {
+                f64::INFINITY
+            },
             if using_relay { "0.2" } else { "1.0" },
         );
         (eff, entry.compute_tps)
     } else {
         let fallback = 10.0_f64;
-        info!("  Throughput: {:.1} tok/s (default — run `kwaainet benchmark` to measure)", fallback);
+        info!(
+            "  Throughput: {:.1} tok/s (default — run `kwaainet benchmark` to measure)",
+            fallback
+        );
         (fallback, fallback)
     };
     let _ = compute_tps; // retained for future re-announce logic
@@ -428,16 +487,13 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         .model_dht_prefix
         .clone()
         .unwrap_or_else(|| dht_prefix_fallback(&config.model));
-    let repository = config
-        .model_repository
-        .clone()
-        .unwrap_or_else(|| {
-            if config.model.contains('/') {
-                format!("https://huggingface.co/{}", config.model)
-            } else {
-                format!("https://huggingface.co/meta-llama/{}", config.model)
-            }
-        });
+    let repository = config.model_repository.clone().unwrap_or_else(|| {
+        if config.model.contains('/') {
+            format!("https://huggingface.co/{}", config.model)
+        } else {
+            format!("https://huggingface.co/meta-llama/{}", config.model)
+        }
+    });
 
     info!("  DHT prefix:  {}", prefix);
     info!("  Repository:  {}", repository);
@@ -450,18 +506,28 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         info!("VPK enabled — checking local service on port {}", port);
         match check_vpk_health(port).await {
             Some(health) => {
-                let mode     = config.vpk_mode.clone().unwrap_or_else(|| "both".to_string());
-                let endpoint = config.vpk_endpoint.clone().unwrap_or_else(|| {
-                    format!("http://localhost:{}", port)
-                });
-                let capacity_gb   = health["capacity_gb_available"].as_f64().unwrap_or(0.0);
-                let tenant_count  = health["tenant_count"].as_u64().unwrap_or(0) as u32;
-                let vpk_version   = health["version"].as_str().unwrap_or("unknown").to_string();
+                let mode = config
+                    .vpk_mode
+                    .clone()
+                    .unwrap_or_else(|| "both".to_string());
+                let endpoint = config
+                    .vpk_endpoint
+                    .clone()
+                    .unwrap_or_else(|| format!("http://localhost:{}", port));
+                let capacity_gb = health["capacity_gb_available"].as_f64().unwrap_or(0.0);
+                let tenant_count = health["tenant_count"].as_u64().unwrap_or(0) as u32;
+                let vpk_version = health["version"].as_str().unwrap_or("unknown").to_string();
                 info!(
                     "VPK healthy: mode={} tenants={} capacity={:.1}GB v={}",
                     mode, tenant_count, capacity_gb, vpk_version
                 );
-                Some(VpkInfo { mode, endpoint, capacity_gb, tenant_count, vpk_version })
+                Some(VpkInfo {
+                    mode,
+                    endpoint,
+                    capacity_gb,
+                    tenant_count,
+                    vpk_version,
+                })
             }
             None => {
                 warn!(
@@ -504,7 +570,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("   Peer ID : {}", peer_id.to_base58());
     info!("   Name    : {}", public_name);
     info!("   Model   : {}", config.model);
-    info!("   Blocks  : {}–{}", config.start_block, config.start_block + config.blocks);
+    info!(
+        "   Blocks  : {}–{}",
+        config.start_block,
+        config.start_block + config.blocks
+    );
     info!("   Map     : https://map.kwaai.ai");
 
     // -----------------------------------------------------------------------
@@ -574,7 +644,12 @@ async fn announce(
     end_block: i32,
     server_info: &DHTServerInfo,
 ) -> Result<()> {
-    info!("DHT prefix: {} (blocks .{} – .{})", prefix, start_block, end_block - 1);
+    info!(
+        "DHT prefix: {} (blocks .{} – .{})",
+        prefix,
+        start_block,
+        end_block - 1
+    );
 
     let info_bytes = server_info.to_msgpack()?;
     let subkey = rmp_serde::to_vec(&peer_id.to_base58())?;
@@ -606,7 +681,10 @@ async fn announce(
     };
 
     // Store locally
-    { let g = storage.read().await; let _ = g.handle_store(block_req.clone()); }
+    {
+        let g = storage.read().await;
+        let _ = g.handle_store(block_req.clone());
+    }
 
     // Push to bootstrap peers
     if send_to_bootstrap(client, bootstrap_peers, block_req).await {
@@ -630,7 +708,10 @@ async fn announce(
         peer: Some(node_info.clone()),
     };
 
-    { let g = storage.read().await; let _ = g.handle_store(registry_req.clone()); }
+    {
+        let g = storage.read().await;
+        let _ = g.handle_store(registry_req.clone());
+    }
     if send_to_bootstrap(client, bootstrap_peers, registry_req).await {
         info!("✅ Announced model to _petals.models registry");
     } else {
@@ -652,7 +733,10 @@ async fn announce(
             peer: Some(node_info),
         };
 
-        { let g = storage.read().await; let _ = g.handle_store(vpk_req.clone()); }
+        {
+            let g = storage.read().await;
+            let _ = g.handle_store(vpk_req.clone());
+        }
         if send_to_bootstrap(client, bootstrap_peers, vpk_req).await {
             info!("✅ Announced VPK capability to _kwaai.vpk.nodes");
         } else {
@@ -670,7 +754,9 @@ async fn send_to_bootstrap(
     bootstrap_peers: &[String],
     req: StoreRequest,
 ) -> bool {
-    if bootstrap_peers.is_empty() { return false; }
+    if bootstrap_peers.is_empty() {
+        return false;
+    }
 
     use prost::Message;
     let mut bytes = Vec::new();
@@ -687,13 +773,13 @@ async fn send_to_bootstrap(
         };
         let bp = match peer_id_str.parse::<PeerId>() {
             Ok(p) => p,
-            Err(e) => { warn!("Invalid peer ID in {}: {}", addr, e); continue; }
+            Err(e) => {
+                warn!("Invalid peer ID in {}: {}", addr, e);
+                continue;
+            }
         };
 
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            client.connect_peer(addr)
-        ).await {
+        match tokio::time::timeout(Duration::from_secs(10), client.connect_peer(addr)).await {
             Ok(Ok(_)) => { /* success, continue */ }
             Ok(Err(e)) => {
                 warn!("Bootstrap connect failed ({}): {}", addr, e);
@@ -708,14 +794,23 @@ async fn send_to_bootstrap(
 
         match tokio::time::timeout(
             Duration::from_secs(10),
-            client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_store", &bytes)
-        ).await {
+            client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_store", &bytes),
+        )
+        .await
+        {
             Ok(Ok(resp_bytes)) => {
                 use kwaai_hivemind_dht::protocol::StoreResponse;
                 if let Ok(resp) = StoreResponse::decode(&resp_bytes[..]) {
                     let ok = resp.store_ok.iter().filter(|&&s| s).count();
-                    info!("STORE response from {}: {}/{} stored", peer_id_str, ok, resp.store_ok.len());
-                    if ok > 0 { succeeded += 1; }
+                    info!(
+                        "STORE response from {}: {}/{} stored",
+                        peer_id_str,
+                        ok,
+                        resp.store_ok.len()
+                    );
+                    if ok > 0 {
+                        succeeded += 1;
+                    }
                 }
             }
             Ok(Err(e)) => warn!("STORE RPC failed ({}): {}", addr, e),
@@ -726,9 +821,16 @@ async fn send_to_bootstrap(
     }
 
     if succeeded > 0 {
-        info!("✅ Announced to {} of {} bootstrap peers", succeeded, bootstrap_peers.len());
+        info!(
+            "✅ Announced to {} of {} bootstrap peers",
+            succeeded,
+            bootstrap_peers.len()
+        );
     } else {
-        warn!("❌ Announcement failed on all {} bootstrap peers — see warnings above", bootstrap_peers.len());
+        warn!(
+            "❌ Announcement failed on all {} bootstrap peers — see warnings above",
+            bootstrap_peers.len()
+        );
     }
     succeeded > 0
 }
@@ -760,22 +862,29 @@ async fn wait_for_bootstrap_peers(
         match client.list_peers().await {
             Ok(peers) => {
                 // Check if any connected peer matches bootstrap peers
-                let connected_bootstrap_count = peers.iter()
+                let connected_bootstrap_count = peers
+                    .iter()
                     .filter(|peer_info| {
-                        bootstrap_peer_ids.iter().any(|bp_id| bp_id == &peer_info.id)
+                        bootstrap_peer_ids
+                            .iter()
+                            .any(|bp_id| bp_id == &peer_info.id)
                     })
                     .count();
 
                 if connected_bootstrap_count > 0 {
                     let elapsed = start.elapsed();
-                    info!("✅ Connected to {} bootstrap peer(s) in {:.1}s",
-                          connected_bootstrap_count, elapsed.as_secs_f64());
+                    info!(
+                        "✅ Connected to {} bootstrap peer(s) in {:.1}s",
+                        connected_bootstrap_count,
+                        elapsed.as_secs_f64()
+                    );
                     return Ok(());
                 }
 
                 // Log progress every 5 seconds
                 let elapsed = start.elapsed();
-                if elapsed.as_secs() % 5 == 0 && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2 {
+                if elapsed.as_secs() % 5 == 0 && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2
+                {
                     info!("   Waiting for bootstrap peers... ({:.0}s elapsed, {} total peers connected)",
                           elapsed.as_secs_f64(), peers.len());
                 }
@@ -787,7 +896,10 @@ async fn wait_for_bootstrap_peers(
 
         // Check timeout
         if start.elapsed() >= max_wait {
-            warn!("⚠️  Bootstrap timeout after {}s — no bootstrap peers connected", MAX_WAIT_SECS);
+            warn!(
+                "⚠️  Bootstrap timeout after {}s — no bootstrap peers connected",
+                MAX_WAIT_SECS
+            );
             warn!("   Node will still announce, but may not be visible on map initially");
             return Ok(()); // Don't fail, just continue
         }
@@ -801,10 +913,7 @@ async fn wait_for_bootstrap_peers(
 // Incoming RPC stream handler
 // ---------------------------------------------------------------------------
 
-async fn handle_rpc_stream(
-    tcp: &mut tokio::net::TcpStream,
-    storage: SharedStorage,
-) -> Result<()> {
+async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStorage) -> Result<()> {
     let info = stream::parse_stream_info(tcp)
         .await
         .map_err(|e| anyhow::anyhow!("parse stream info: {}", e))?;
@@ -814,8 +923,8 @@ async fn handle_rpc_stream(
         .await
         .map_err(|e| anyhow::anyhow!("read frame: {}", e))?;
 
-    let req = DHTRequest::decode(&bytes)
-        .map_err(|e| anyhow::anyhow!("decode DHTRequest: {}", e))?;
+    let req =
+        DHTRequest::decode(&bytes).map_err(|e| anyhow::anyhow!("decode DHTRequest: {}", e))?;
 
     let response_bytes = {
         let g = storage.read().await;
@@ -840,8 +949,8 @@ async fn handle_rpc_stream(
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
+        let mut sigterm =
+            signal::unix::signal(signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
         tokio::select! {
             _ = signal::ctrl_c() => { info!("Received Ctrl-C"); }
             _ = sigterm.recv()   => { info!("Received SIGTERM"); }
@@ -874,9 +983,13 @@ async fn check_vpk_health(port: u16) -> Option<serde_json::Value> {
 }
 
 fn find_free_port(preferred: u16) -> Option<u16> {
-    if port_is_free(preferred) { return Some(preferred); }
+    if port_is_free(preferred) {
+        return Some(preferred);
+    }
     for p in (preferred + 1)..=(preferred + 100) {
-        if port_is_free(p) { return Some(p); }
+        if port_is_free(p) {
+            return Some(p);
+        }
     }
     None
 }
@@ -894,7 +1007,9 @@ fn find_p2pd_binary() -> Option<std::path::PathBuf> {
     // Next to our own binary
     if let Ok(exe) = std::env::current_exe() {
         let c = exe.parent()?.join(name);
-        if c.exists() { return Some(c); }
+        if c.exists() {
+            return Some(c);
+        }
     }
     // Cargo target dir (dev builds)
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
@@ -902,13 +1017,17 @@ fn find_p2pd_binary() -> Option<std::path::PathBuf> {
         let c = std::path::PathBuf::from(manifest).join("../../../target/debug/p2pd.exe");
         #[cfg(not(windows))]
         let c = std::path::PathBuf::from(manifest).join("../../../target/debug/p2pd");
-        if c.exists() { return Some(c); }
+        if c.exists() {
+            return Some(c);
+        }
     }
     // PATH
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
         let c = dir.join(name);
-        if c.exists() { return Some(c); }
+        if c.exists() {
+            return Some(c);
+        }
     }
     None
 }

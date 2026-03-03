@@ -217,7 +217,8 @@ impl Codec for HivemindCodec {
         io.read_exact(&mut msg_buf).await?;
 
         // Decode request
-        let req = DHTRequest::decode(&msg_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let req = DHTRequest::decode(&msg_buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         debug!("Read DHT request: {:?}", req.marker());
         Ok(req)
     }
@@ -248,7 +249,8 @@ impl Codec for HivemindCodec {
         io.read_exact(&mut msg_buf).await?;
 
         // Decode response
-        let res = DHTResponse::decode(&msg_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let res = DHTResponse::decode(&msg_buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         debug!("Read DHT response: {:?}", res.marker());
         Ok(res)
     }

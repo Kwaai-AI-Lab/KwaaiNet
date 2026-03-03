@@ -51,7 +51,13 @@ pub fn save(model: &str, compute_tps: f64, hidden_size: usize) -> Result<()> {
     std::fs::create_dir_all(path.parent().expect("cache_file has a parent"))?;
 
     let mut cache: HashMap<String, ThroughputEntry> = load_cache();
-    cache.insert(model.to_string(), ThroughputEntry { compute_tps, hidden_size });
+    cache.insert(
+        model.to_string(),
+        ThroughputEntry {
+            compute_tps,
+            hidden_size,
+        },
+    );
     std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
     Ok(())
 }
@@ -151,7 +157,10 @@ mod tests {
     fn test_effective_tps_compute_bound() {
         // 100 Mbps network, 4096 hidden: network_rps = 1526, ×0.2 = 305
         // compute_tps = 20  → bottleneck is compute
-        let entry = ThroughputEntry { compute_tps: 20.0, hidden_size: 4096 };
+        let entry = ThroughputEntry {
+            compute_tps: 20.0,
+            hidden_size: 4096,
+        };
         let tps = effective_tps(&entry, 100_000_000.0, true);
         assert!((tps - 20.0).abs() < 0.01, "expected 20.0, got {tps}");
     }
@@ -160,7 +169,10 @@ mod tests {
     fn test_effective_tps_network_bound() {
         // Very slow network: 1 Mbps, 4096 hidden: network_rps ≈ 15.3, ×0.2 ≈ 3.1
         // compute_tps = 100 → bottleneck is network
-        let entry = ThroughputEntry { compute_tps: 100.0, hidden_size: 4096 };
+        let entry = ThroughputEntry {
+            compute_tps: 100.0,
+            hidden_size: 4096,
+        };
         let tps = effective_tps(&entry, 1_000_000.0, true);
         // network_rps = 1_000_000 / (4096 * 16) = 15.26, × 0.2 = 3.05
         assert!(tps < 5.0, "expected network-bound (<5), got {tps}");
@@ -170,7 +182,10 @@ mod tests {
     #[test]
     fn test_effective_tps_no_relay() {
         // Same as above but no relay → penalty = 1.0 → network_rps ≈ 15.3
-        let entry = ThroughputEntry { compute_tps: 100.0, hidden_size: 4096 };
+        let entry = ThroughputEntry {
+            compute_tps: 100.0,
+            hidden_size: 4096,
+        };
         let tps = effective_tps(&entry, 1_000_000.0, false);
         assert!(tps > 14.0 && tps < 16.0, "expected ~15.3, got {tps}");
     }
@@ -178,7 +193,10 @@ mod tests {
     #[test]
     fn test_effective_tps_no_network_data() {
         // download_bps == 0 → fall back to compute_tps
-        let entry = ThroughputEntry { compute_tps: 7.5, hidden_size: 4096 };
+        let entry = ThroughputEntry {
+            compute_tps: 7.5,
+            hidden_size: 4096,
+        };
         assert_eq!(effective_tps(&entry, 0.0, true), 7.5);
     }
 }

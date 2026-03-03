@@ -32,8 +32,8 @@ pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
     let content = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("Cannot read {}", manifest_path.display()))?;
 
-    let manifest: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| "Manifest is not valid JSON")?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&content).with_context(|| "Manifest is not valid JSON")?;
 
     // Find the layer that carries the model weights.
     let layers = manifest["layers"]
@@ -42,10 +42,7 @@ pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
 
     let model_layer = layers
         .iter()
-        .find(|l| {
-            l["mediaType"].as_str()
-                == Some("application/vnd.ollama.image.model")
-        })
+        .find(|l| l["mediaType"].as_str() == Some("application/vnd.ollama.image.model"))
         .ok_or_else(|| anyhow!("No model layer found in manifest"))?;
 
     let digest = model_layer["digest"]
@@ -71,15 +68,16 @@ pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
 /// Find the manifest file for a model reference.
 fn find_manifest(model_ref: &str, manifests_root: &PathBuf) -> Result<PathBuf> {
     // Split off the tag, defaulting to "latest".
-    let (name, tag) = model_ref
-        .rsplit_once(':')
-        .unwrap_or((model_ref, "latest"));
+    let (name, tag) = model_ref.rsplit_once(':').unwrap_or((model_ref, "latest"));
 
     // Candidates tried in order:
     //   1. registry.ollama.ai/library/<name>/<tag>  — standard Ollama library
     //   2. <name>/<tag>                              — fully-qualified (hf.co/…)
     let candidates = [
-        manifests_root.join("registry.ollama.ai/library").join(name).join(tag),
+        manifests_root
+            .join("registry.ollama.ai/library")
+            .join(name)
+            .join(tag),
         manifests_root.join(name).join(tag),
     ];
 
@@ -91,7 +89,8 @@ fn find_manifest(model_ref: &str, manifests_root: &PathBuf) -> Result<PathBuf> {
 
     Err(anyhow!(
         "Model '{}' is not pulled locally.\nRun: ollama pull {}",
-        model_ref, model_ref
+        model_ref,
+        model_ref
     ))
 }
 
@@ -129,7 +128,9 @@ pub fn list_local_models() -> Vec<String> {
 
 /// Recursively walk `dir` under `root` and collect model refs.
 fn collect_manifest_models(root: &Path, dir: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name();
@@ -162,13 +163,11 @@ fn manifest_path_to_ref(manifest: &Path, root: &Path) -> Option<String> {
 
     match parts.as_slice() {
         // registry.ollama.ai/library/<name>/<tag>
-        [registry, "library", name, tag] if registry.contains('.') => {
-            Some(if *tag == "latest" {
-                name.to_string()
-            } else {
-                format!("{}:{}", name, tag)
-            })
-        }
+        [registry, "library", name, tag] if registry.contains('.') => Some(if *tag == "latest" {
+            name.to_string()
+        } else {
+            format!("{}:{}", name, tag)
+        }),
         // hf.co/<org>/<model>/<tag>
         ["hf.co", org, model, tag] => Some(if *tag == "latest" {
             format!("hf.co/{}/{}", org, model)

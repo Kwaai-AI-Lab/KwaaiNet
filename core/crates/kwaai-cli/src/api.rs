@@ -68,7 +68,10 @@ impl InferenceWorker {
     async fn generate(&self, prompt: String) -> Result<String> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
-            .send(WorkerMsg::Generate { prompt, reply: reply_tx })
+            .send(WorkerMsg::Generate {
+                prompt,
+                reply: reply_tx,
+            })
             .map_err(|_| anyhow::anyhow!("inference worker disconnected"))?;
         // recv() blocks — offload to the blocking thread pool.
         tokio::task::spawn_blocking(move || {
@@ -269,7 +272,10 @@ async fn chat_completions(
             model: model_id,
             choices: vec![ChunkChoice {
                 index: 0,
-                delta: Delta { role: None, content: Some(text) },
+                delta: Delta {
+                    role: None,
+                    content: Some(text),
+                },
                 finish_reason: Some("stop"),
             }],
         };
@@ -290,7 +296,10 @@ async fn chat_completions(
             model: model_id,
             choices: vec![ChatChoice {
                 index: 0,
-                message: ChatMsg { role: "assistant".into(), content: text },
+                message: ChatMsg {
+                    role: "assistant".into(),
+                    content: text,
+                },
                 finish_reason: "stop",
             }],
             usage: Usage {
@@ -339,7 +348,11 @@ async fn completions(
             object: "text_completion",
             created,
             model: model_id,
-            choices: vec![CompletionChoice { text, index: 0, finish_reason: "stop" }],
+            choices: vec![CompletionChoice {
+                text,
+                index: 0,
+                finish_reason: "stop",
+            }],
             usage: Usage {
                 prompt_tokens: 0,
                 completion_tokens: n_tokens,
@@ -388,7 +401,10 @@ fn api_error(status: StatusCode, msg: &str) -> Response {
     (
         status,
         Json(ApiErr {
-            error: ErrDetail { message: msg.to_string(), kind: "server_error" },
+            error: ErrDetail {
+                message: msg.to_string(),
+                kind: "server_error",
+            },
         }),
     )
         .into_response()

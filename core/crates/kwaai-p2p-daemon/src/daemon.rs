@@ -114,7 +114,8 @@ impl DaemonBuilder {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.announce_addrs.extend(addrs.into_iter().map(|s| s.into()));
+        self.announce_addrs
+            .extend(addrs.into_iter().map(|s| s.into()));
         self
     }
 
@@ -148,7 +149,8 @@ impl DaemonBuilder {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.bootstrap_peers.extend(peers.into_iter().map(|s| s.into()));
+        self.bootstrap_peers
+            .extend(peers.into_iter().map(|s| s.into()));
         self
     }
 
@@ -178,11 +180,11 @@ impl DaemonBuilder {
         let listen_addr = self.listen_addr.unwrap_or_else(|| {
             #[cfg(windows)]
             {
-                "/ip4/127.0.0.1/tcp/5005".to_string()  // Use TCP on Windows
+                "/ip4/127.0.0.1/tcp/5005".to_string() // Use TCP on Windows
             }
             #[cfg(unix)]
             {
-                "/unix//tmp/kwaai-p2pd.sock".to_string()  // Use Unix socket on Linux/macOS
+                "/unix//tmp/kwaai-p2pd.sock".to_string() // Use Unix socket on Linux/macOS
             }
         });
 
@@ -352,13 +354,10 @@ impl P2PDaemon {
             }
 
             // Wait for exit
-            tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                child.wait()
-            )
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(|e| Error::Process(format!("Failed to wait for daemon exit: {}", e)))?;
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), child.wait())
+                .await
+                .map_err(|_| Error::Timeout)?
+                .map_err(|e| Error::Process(format!("Failed to wait for daemon exit: {}", e)))?;
 
             info!("Daemon shutdown complete");
         }

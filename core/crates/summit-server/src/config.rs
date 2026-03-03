@@ -19,15 +19,13 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            database_url: std::env::var("DATABASE_URL")
-                .context("DATABASE_URL must be set")?,
+            database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             rp_id: std::env::var("RP_ID").unwrap_or_else(|_| "localhost".to_string()),
             rp_origin: std::env::var("RP_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             signing_key_hex: std::env::var("SUMMIT_SIGNING_KEY_HEX")
                 .context("SUMMIT_SIGNING_KEY_HEX must be set (32 hex-encoded bytes)")?,
-            bind_addr: std::env::var("BIND_ADDR")
-                .unwrap_or_else(|_| "0.0.0.0:3000".to_string()),
+            bind_addr: std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string()),
         })
     }
 }

@@ -17,8 +17,8 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
@@ -198,9 +198,9 @@ impl KwaaiNetwork {
         let swarm = swarm_guard.as_mut().ok_or(P2PError::NotInitialized)?;
 
         for addr_str in &self.config.listen_addrs {
-            let addr: Multiaddr = addr_str.parse().map_err(|e: libp2p::multiaddr::Error| {
-                P2PError::InvalidAddress(e.to_string())
-            })?;
+            let addr: Multiaddr = addr_str
+                .parse()
+                .map_err(|e: libp2p::multiaddr::Error| P2PError::InvalidAddress(e.to_string()))?;
             swarm
                 .listen_on(addr.clone())
                 .map_err(|e| P2PError::Transport(e.to_string()))?;
@@ -282,7 +282,11 @@ impl KwaaiNetwork {
                 let swarm = swarm_guard.as_mut().ok_or(P2PError::NotInitialized)?;
 
                 match command {
-                    DhtCommand::PutRecord { key, value, publisher } => {
+                    DhtCommand::PutRecord {
+                        key,
+                        value,
+                        publisher,
+                    } => {
                         info!("Processing DHT PutRecord: {}", key);
 
                         let record = Record {
@@ -318,10 +322,7 @@ impl KwaaiNetwork {
                         info!("Processing DHT GetRecord: {}", key);
 
                         let record_key = RecordKey::new(&key);
-                        swarm
-                            .behaviour_mut()
-                            .kademlia
-                            .get_record(record_key);
+                        swarm.behaviour_mut().kademlia.get_record(record_key);
 
                         debug!("DHT get record query sent: {}", key);
                     }
@@ -330,10 +331,7 @@ impl KwaaiNetwork {
                         info!("Processing DHT GetProviders: {}", key);
 
                         let record_key = RecordKey::new(&key);
-                        swarm
-                            .behaviour_mut()
-                            .kademlia
-                            .get_providers(record_key);
+                        swarm.behaviour_mut().kademlia.get_providers(record_key);
 
                         debug!("DHT get providers query sent: {}", key);
                     }
@@ -344,9 +342,9 @@ impl KwaaiNetwork {
             Err(mpsc::error::TryRecvError::Empty) => {
                 Ok(false) // No commands available
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                Err(P2PError::Internal("DHT command channel disconnected".to_string()))
-            }
+            Err(mpsc::error::TryRecvError::Disconnected) => Err(P2PError::Internal(
+                "DHT command channel disconnected".to_string(),
+            )),
         }
     }
 }

@@ -58,7 +58,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ];
 
     info!("Registering stream handlers...");
-    client.register_stream_handler(&handler_multiaddr, protocols.clone()).await?;
+    client
+        .register_stream_handler(&handler_multiaddr, protocols.clone())
+        .await?;
     println!("[HANDLER] Registered protocols: {:?}", protocols);
 
     println!("\n[STATUS] Daemon is running with registered handlers!");

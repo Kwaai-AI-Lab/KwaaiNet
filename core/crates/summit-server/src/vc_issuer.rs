@@ -1,7 +1,7 @@
 //! VC issuance helpers — signs VCs with the summit server's Ed25519 key
 
 use anyhow::Result;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signer, SigningKey};
 use kwaai_trust::{binding_vc, summit_attendee_vc, VerifiableCredential};
 

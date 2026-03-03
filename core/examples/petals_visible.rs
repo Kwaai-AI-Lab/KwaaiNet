@@ -15,15 +15,20 @@
 
 use kwaai_hivemind_dht::{
     codec::{DHTRequest, DHTResponse},
-    protocol::{FindResponse, FindResult, NodeInfo, PingRequest, PingResponse, RequestAuthInfo, ResponseAuthInfo, ResultType, StoreRequest, StoreResponse},
+    protocol::{
+        FindResponse, FindResult, NodeInfo, PingRequest, PingResponse, RequestAuthInfo,
+        ResponseAuthInfo, ResultType, StoreRequest, StoreResponse,
+    },
     value::get_dht_time,
     DHTStorage,
 };
-use prost::Message;
 use kwaai_p2p::{hivemind::ServerInfo, NetworkConfig};
 use kwaai_p2p_daemon::{stream, P2PDaemon};
 use libp2p::PeerId;
-use sha1::{Sha1, Digest};
+use prost::Message;
+use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use std::{error::Error, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -32,8 +37,6 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
 
 // Shared DHT storage for this node
 type SharedStorage = Arc<RwLock<DHTStorage>>;
@@ -122,13 +125,13 @@ impl DHTServerInfo {
             end_block: Some(end_block),
             public_name: Some(public_name),
             version: Some(version),
-            network_rps: Some(10.0),      // Placeholder
-            forward_rps: Some(5.0),       // Placeholder
-            inference_rps: Some(5.0),     // Placeholder
+            network_rps: Some(10.0),  // Placeholder
+            forward_rps: Some(5.0),   // Placeholder
+            inference_rps: Some(5.0), // Placeholder
             torch_dtype: Some("float16".to_string()),
             quant_type: None,
-            adapters: Some(vec![]),       // Empty list for no adapters
-            using_relay: Some(false),     // Will be set based on NAT config
+            adapters: Some(vec![]),   // Empty list for no adapters
+            using_relay: Some(false), // Will be set based on NAT config
             cache_tokens_left: Some(100000),
             next_pings: Some(HashMap::new()),
         }
@@ -147,7 +150,10 @@ impl DHTServerInfo {
             field_map.insert("end_block".to_string(), rmpv::Value::from(end_block));
         }
         if let Some(ref public_name) = self.public_name {
-            field_map.insert("public_name".to_string(), rmpv::Value::from(public_name.as_str()));
+            field_map.insert(
+                "public_name".to_string(),
+                rmpv::Value::from(public_name.as_str()),
+            );
         }
         if let Some(ref version) = self.version {
             field_map.insert("version".to_string(), rmpv::Value::from(version.as_str()));
@@ -159,16 +165,26 @@ impl DHTServerInfo {
             field_map.insert("forward_rps".to_string(), rmpv::Value::from(forward_rps));
         }
         if let Some(inference_rps) = self.inference_rps {
-            field_map.insert("inference_rps".to_string(), rmpv::Value::from(inference_rps));
+            field_map.insert(
+                "inference_rps".to_string(),
+                rmpv::Value::from(inference_rps),
+            );
         }
         if let Some(ref torch_dtype) = self.torch_dtype {
-            field_map.insert("torch_dtype".to_string(), rmpv::Value::from(torch_dtype.as_str()));
+            field_map.insert(
+                "torch_dtype".to_string(),
+                rmpv::Value::from(torch_dtype.as_str()),
+            );
         }
         if let Some(ref quant_type) = self.quant_type {
-            field_map.insert("quant_type".to_string(), rmpv::Value::from(quant_type.as_str()));
+            field_map.insert(
+                "quant_type".to_string(),
+                rmpv::Value::from(quant_type.as_str()),
+            );
         }
         if let Some(ref adapters) = self.adapters {
-            let adapter_values: Vec<rmpv::Value> = adapters.iter()
+            let adapter_values: Vec<rmpv::Value> = adapters
+                .iter()
                 .map(|s| rmpv::Value::from(s.as_str()))
                 .collect();
             field_map.insert("adapters".to_string(), rmpv::Value::Array(adapter_values));
@@ -177,17 +193,22 @@ impl DHTServerInfo {
             field_map.insert("using_relay".to_string(), rmpv::Value::from(using_relay));
         }
         if let Some(cache_tokens) = self.cache_tokens_left {
-            field_map.insert("cache_tokens_left".to_string(), rmpv::Value::from(cache_tokens));
+            field_map.insert(
+                "cache_tokens_left".to_string(),
+                rmpv::Value::from(cache_tokens),
+            );
         }
         if let Some(ref next_pings) = self.next_pings {
-            let ping_map: Vec<(rmpv::Value, rmpv::Value)> = next_pings.iter()
+            let ping_map: Vec<(rmpv::Value, rmpv::Value)> = next_pings
+                .iter()
                 .map(|(k, v)| (rmpv::Value::from(k.as_str()), rmpv::Value::from(*v)))
                 .collect();
             field_map.insert("next_pings".to_string(), rmpv::Value::Map(ping_map));
         }
 
         // Build the 3-element array: [state, throughput, {field_map}]
-        let map_pairs: Vec<(rmpv::Value, rmpv::Value)> = field_map.into_iter()
+        let map_pairs: Vec<(rmpv::Value, rmpv::Value)> = field_map
+            .into_iter()
             .map(|(k, v)| (rmpv::Value::from(k), v))
             .collect();
 
@@ -199,14 +220,16 @@ impl DHTServerInfo {
 
         // Serialize the inner array
         let mut inner_bytes = Vec::new();
-        rmpv::encode::write_value(&mut inner_bytes, &rmpv::Value::Array(inner_array))
-            .map_err(|_| rmp_serde::encode::Error::Syntax("Failed to encode inner array".to_string()))?;
+        rmpv::encode::write_value(&mut inner_bytes, &rmpv::Value::Array(inner_array)).map_err(
+            |_| rmp_serde::encode::Error::Syntax("Failed to encode inner array".to_string()),
+        )?;
 
         // Wrap in ExtType(64, ...) - Python Hivemind uses 0x40 (64) for tuples
         let ext_value = rmpv::Value::Ext(64, inner_bytes);
         let mut result = Vec::new();
-        rmpv::encode::write_value(&mut result, &ext_value)
-            .map_err(|_| rmp_serde::encode::Error::Syntax("Failed to encode ExtType".to_string()))?;
+        rmpv::encode::write_value(&mut result, &ext_value).map_err(|_| {
+            rmp_serde::encode::Error::Syntax("Failed to encode ExtType".to_string())
+        })?;
 
         Ok(result)
     }
@@ -318,7 +341,10 @@ async fn fetch_most_popular_model() -> Result<String, Box<dyn Error>> {
         return Err("No models available".into());
     }
 
-    info!("✅ Most popular model: {} ({} servers)", best_model, max_servers);
+    info!(
+        "✅ Most popular model: {} ({} servers)",
+        best_model, max_servers
+    );
     Ok(best_model)
 }
 
@@ -361,7 +387,12 @@ async fn announce_to_dht(
     };
 
     info!("📋 DHT Prefix: {}", dht_prefix);
-    info!("📋 Will announce blocks: {}.0 through {}.{}", dht_prefix, dht_prefix, end_block - 1);
+    info!(
+        "📋 Will announce blocks: {}.0 through {}.{}",
+        dht_prefix,
+        dht_prefix,
+        end_block - 1
+    );
 
     // Serialize DHT server info
     let info_bytes = dht_server_info.to_msgpack()?;
@@ -419,7 +450,13 @@ async fn announce_to_dht(
                 if let Some(peer_id_str) = bootstrap_addr.split("/p2p/").nth(1) {
                     if let Ok(bootstrap_peer_id) = peer_id_str.parse::<PeerId>() {
                         let bootstrap_peer_id_bytes = bootstrap_peer_id.to_bytes();
-                        match send_store_to_peer(client, &bootstrap_peer_id_bytes, store_request.clone()).await {
+                        match send_store_to_peer(
+                            client,
+                            &bootstrap_peer_id_bytes,
+                            store_request.clone(),
+                        )
+                        .await
+                        {
                             Ok(_) => {
                                 info!("✅ Announced {} blocks to bootstrap peer", num_blocks);
                             }
@@ -477,7 +514,9 @@ async fn announce_to_dht(
         if let Some(peer_id_str) = bootstrap_addr.split("/p2p/").nth(1) {
             if let Ok(bootstrap_peer_id) = peer_id_str.parse::<PeerId>() {
                 let bootstrap_peer_id_bytes = bootstrap_peer_id.to_bytes();
-                match send_store_to_peer(client, &bootstrap_peer_id_bytes, model_store_request).await {
+                match send_store_to_peer(client, &bootstrap_peer_id_bytes, model_store_request)
+                    .await
+                {
                     Ok(_) => {
                         info!("✅ Announced model info to _petals.models registry");
                     }
@@ -566,8 +605,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create DHT server info with all Petals-compatible fields
     // For custom bootstrap peers (not public Petals swarm), start directly in ONLINE state
     let dht_server_info = DHTServerInfo::new(
-        2,  // state: ONLINE (for private swarms, skip JOINING state)
-        100.0,  // throughput
+        2,     // state: ONLINE (for private swarms, skip JOINING state)
+        100.0, // throughput
         start_block,
         end_block,
         public_name.clone(),
@@ -674,7 +713,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &model_name,
         start_block,
         end_block,
-    ).await?;
+    )
+    .await?;
 
     // =========================================================================
     // Keep running and monitor incoming requests
@@ -764,31 +804,33 @@ async fn handle_hivemind_stream(
     // Parse StreamInfo to get peer_id and protocol
     let stream_info = stream::parse_stream_info(stream).await?;
 
-    info!("Handling {} from peer (len={})",
-        stream_info.proto, stream_info.peer.len());
+    info!(
+        "Handling {} from peer (len={})",
+        stream_info.proto,
+        stream_info.peer.len()
+    );
 
     // Read the Hivemind request
     let request_bytes = stream::read_varint_framed(stream).await?;
 
     // Log first 64 bytes of received data
-    let hex_preview: String = request_bytes.iter()
+    let hex_preview: String = request_bytes
+        .iter()
         .take(64)
         .map(|b| format!("{:02x}", b))
         .collect::<Vec<_>>()
         .join(" ");
-    info!("Received {} bytes (first 64 bytes): {}", request_bytes.len(), hex_preview);
+    info!(
+        "Received {} bytes (first 64 bytes): {}",
+        request_bytes.len(),
+        hex_preview
+    );
 
     // Decode based on protocol
     let response_bytes = match stream_info.proto.as_str() {
-        "DHTProtocol.rpc_ping" => {
-            handle_ping(&request_bytes, storage).await?
-        }
-        "DHTProtocol.rpc_store" => {
-            handle_store(&request_bytes, storage).await?
-        }
-        "DHTProtocol.rpc_find" => {
-            handle_find(&request_bytes, storage).await?
-        }
+        "DHTProtocol.rpc_ping" => handle_ping(&request_bytes, storage).await?,
+        "DHTProtocol.rpc_store" => handle_store(&request_bytes, storage).await?,
+        "DHTProtocol.rpc_find" => handle_find(&request_bytes, storage).await?,
         proto => {
             warn!("Unknown protocol: {}", proto);
             return Ok(());
@@ -803,7 +845,10 @@ async fn handle_hivemind_stream(
 }
 
 /// Handle PING request
-async fn handle_ping(_request_bytes: &[u8], storage: SharedStorage) -> Result<Vec<u8>, Box<dyn Error>> {
+async fn handle_ping(
+    _request_bytes: &[u8],
+    storage: SharedStorage,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     debug!("Processing PING request ({} bytes)", _request_bytes.len());
 
     // Decode and use DHTStorage to handle it
@@ -867,7 +912,10 @@ async fn send_store_to_peer(
     let mut request_bytes = Vec::new();
     store_request.encode(&mut request_bytes)?;
 
-    info!("Sending STORE request ({} bytes raw protobuf)", request_bytes.len());
+    info!(
+        "Sending STORE request ({} bytes raw protobuf)",
+        request_bytes.len()
+    );
 
     // // Log the FULL message for debugging (commented - too verbose)
     // let hex_full: String = request_bytes.iter()
@@ -894,16 +942,19 @@ async fn send_store_to_peer(
 
     // Call unary handler - the daemon handles ALL protocol negotiation!
     // No multistream negotiation needed in our code - that's the beauty of unary handlers!
-    let response_bytes = client.call_unary_handler(
-        peer_id_bytes,
-        "DHTProtocol.rpc_store",  // Protocol name (no leading slash needed - daemon adds it)
-        &request_bytes,
-    ).await?;
+    let response_bytes = client
+        .call_unary_handler(
+            peer_id_bytes,
+            "DHTProtocol.rpc_store", // Protocol name (no leading slash needed - daemon adds it)
+            &request_bytes,
+        )
+        .await?;
 
     info!("Received response ({} bytes)", response_bytes.len());
 
     // Debug: log response bytes
-    let hex_preview: String = response_bytes.iter()
+    let hex_preview: String = response_bytes
+        .iter()
         .take(64)
         .map(|b| format!("{:02x}", b))
         .collect::<Vec<_>>()
@@ -915,7 +966,11 @@ async fn send_store_to_peer(
     let store_response = StoreResponse::decode(&response_bytes[..])?;
 
     let stored_count = store_response.store_ok.iter().filter(|&&s| s).count();
-    info!("STORE response: {}/{} blocks stored", stored_count, store_response.store_ok.len());
+    info!(
+        "STORE response: {}/{} blocks stored",
+        stored_count,
+        store_response.store_ok.len()
+    );
 
     if stored_count == 0 {
         warn!("Bootstrap peer did not store any blocks!");
@@ -927,14 +982,19 @@ async fn send_store_to_peer(
 }
 
 /// Read a multistream-select message (varint-length-prefixed string)
-async fn read_multistream_msg(stream: &mut tokio::net::TcpStream) -> Result<String, Box<dyn Error>> {
+async fn read_multistream_msg(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<String, Box<dyn Error>> {
     // Use the existing varint framing from kwaai_p2p_daemon::stream
     let msg_bytes = stream::read_varint_framed(stream).await?;
     Ok(String::from_utf8_lossy(&msg_bytes).to_string())
 }
 
 /// Write a multistream-select message (varint-length-prefixed string)
-async fn write_multistream_msg(stream: &mut tokio::net::TcpStream, msg: &str) -> Result<(), Box<dyn Error>> {
+async fn write_multistream_msg(
+    stream: &mut tokio::net::TcpStream,
+    msg: &str,
+) -> Result<(), Box<dyn Error>> {
     // Use the existing varint framing from kwaai_p2p_daemon::stream
     stream::write_varint_framed(stream, msg.as_bytes()).await?;
     Ok(())

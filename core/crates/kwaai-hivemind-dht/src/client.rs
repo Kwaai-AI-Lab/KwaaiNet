@@ -65,12 +65,7 @@ impl HivemindDHT {
     /// * `peer` - Target peer to store on
     /// * `key` - DHT key
     /// * `value` - DHT value with expiration
-    pub fn store(
-        &mut self,
-        peer: PeerId,
-        key: Vec<u8>,
-        value: DHTValue,
-    ) -> OutboundRequestId {
+    pub fn store(&mut self, peer: PeerId, key: Vec<u8>, value: DHTValue) -> OutboundRequestId {
         self.store_many(peer, vec![(key, value)])
     }
 
@@ -90,13 +85,16 @@ impl HivemindDHT {
 
         let sender = NodeInfo::from_peer_id(self.local_peer_id);
         let subkeys = vec![vec![]; keys.len()]; // Empty subkeys for regular values
-        let request = StoreRequest::new(sender, keys.clone(), subkeys, values, expiration_times, in_cache);
-
-        debug!(
-            "Storing {} keys to peer {}",
-            keys.len(),
-            peer.to_base58()
+        let request = StoreRequest::new(
+            sender,
+            keys.clone(),
+            subkeys,
+            values,
+            expiration_times,
+            in_cache,
         );
+
+        debug!("Storing {} keys to peer {}", keys.len(), peer.to_base58());
 
         let req_id = self
             .behaviour
@@ -125,11 +123,7 @@ impl HivemindDHT {
         let sender = NodeInfo::from_peer_id(self.local_peer_id);
         let request = FindRequest::new(sender, keys.clone());
 
-        debug!(
-            "Finding {} keys from peer {}",
-            keys.len(),
-            peer.to_base58()
-        );
+        debug!("Finding {} keys from peer {}", keys.len(), peer.to_base58());
 
         let req_id = self
             .behaviour
@@ -166,10 +160,7 @@ impl HivemindDHT {
             }
 
             (PendingRequest::Get { keys }, DHTResponse::Find(find_res)) => {
-                debug!(
-                    "Find response: {} results",
-                    find_res.results.len()
-                );
+                debug!("Find response: {} results", find_res.results.len());
 
                 // Collect all nearest peers from all FindResult messages
                 let mut all_nearest_peers = Vec::new();
@@ -189,10 +180,7 @@ impl HivemindDHT {
                         }
 
                         match result_type {
-                            ResultType::NotFound => GetResult {
-                                key,
-                                value: None,
-                            },
+                            ResultType::NotFound => GetResult { key, value: None },
                             ResultType::FoundRegular | ResultType::FoundDictionary => {
                                 let dht_value = DHTValue {
                                     value: find_result.value,
@@ -202,10 +190,7 @@ impl HivemindDHT {
 
                                 if dht_value.is_expired() {
                                     warn!("Received expired value");
-                                    GetResult {
-                                        key,
-                                        value: None,
-                                    }
+                                    GetResult { key, value: None }
                                 } else {
                                     GetResult {
                                         key,

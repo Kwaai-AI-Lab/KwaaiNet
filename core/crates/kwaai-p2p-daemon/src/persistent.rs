@@ -10,8 +10,8 @@
 use crate::error::{Error, Result};
 use crate::protocol::p2pd::{
     persistent_connection_request, persistent_connection_response, AddUnaryHandlerRequest,
-    CallUnaryRequest, CallUnaryResponse, PersistentConnectionRequest,
-    PersistentConnectionResponse, RemoveUnaryHandlerRequest,
+    CallUnaryRequest, CallUnaryResponse, PersistentConnectionRequest, PersistentConnectionResponse,
+    RemoveUnaryHandlerRequest,
 };
 // use bytes for potential future needs
 use prost::Message as ProstMessage;
@@ -25,8 +25,11 @@ use unsigned_varint::encode as varint_encode;
 use uuid::Uuid;
 
 /// Type alias for unary handler functions (use Arc for cloning)
-pub type UnaryHandlerFn =
-    Arc<dyn Fn(Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>> + Send + Sync>;
+pub type UnaryHandlerFn = Arc<
+    dyn Fn(Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Response future for pending RPC calls
 type ResponseFuture = oneshot::Sender<Result<PersistentConnectionResponse>>;
@@ -50,7 +53,9 @@ impl PersistentConnection {
         R: AsyncReadExt + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let writer = Arc::new(Mutex::new(Box::new(writer) as Box<dyn AsyncWrite + Unpin + Send>));
+        let writer = Arc::new(Mutex::new(
+            Box::new(writer) as Box<dyn AsyncWrite + Unpin + Send>
+        ));
         let pending_calls = Arc::new(Mutex::new(HashMap::new()));
         let unary_handlers = Arc::new(Mutex::new(HashMap::new()));
 
@@ -169,7 +174,9 @@ impl PersistentConnection {
                                 let msg = PersistentConnectionRequest {
                                     call_id: call_id_bytes,
                                     message: Some(
-                                        persistent_connection_request::Message::UnaryResponse(response),
+                                        persistent_connection_request::Message::UnaryResponse(
+                                            response,
+                                        ),
                                     ),
                                 };
 
@@ -194,7 +201,9 @@ impl PersistentConnection {
                             let msg = PersistentConnectionRequest {
                                 call_id: call_id_bytes,
                                 message: Some(
-                                    persistent_connection_request::Message::UnaryResponse(error_response),
+                                    persistent_connection_request::Message::UnaryResponse(
+                                        error_response,
+                                    ),
                                 ),
                             };
 
@@ -224,14 +233,12 @@ impl PersistentConnection {
     }
 
     /// Call a unary handler on a remote peer
-    pub async fn call_unary(
-        &self,
-        peer_id: &[u8],
-        proto: &str,
-        data: &[u8],
-    ) -> Result<Vec<u8>> {
+    pub async fn call_unary(&self, peer_id: &[u8], proto: &str, data: &[u8]) -> Result<Vec<u8>> {
         let call_id = Uuid::new_v4();
-        debug!("Calling unary handler {} on peer (call_id: {})", proto, call_id);
+        debug!(
+            "Calling unary handler {} on peer (call_id: {})",
+            proto, call_id
+        );
 
         // Create response channel
         let (tx, rx) = oneshot::channel();
@@ -261,7 +268,9 @@ impl PersistentConnection {
         }
 
         // Wait for response
-        let response = rx.await.map_err(|_| Error::Protocol("Response channel closed".to_string()))??;
+        let response = rx
+            .await
+            .map_err(|_| Error::Protocol("Response channel closed".to_string()))??;
 
         // Extract result
         match response.message {
@@ -274,7 +283,10 @@ impl PersistentConnection {
                     Some(crate::protocol::p2pd::call_unary_response::Result::Error(err)) => {
                         let err_msg = String::from_utf8_lossy(&err);
                         error!("Unary call {} failed: {}", call_id, err_msg);
-                        Err(Error::Protocol(format!("Remote handler error: {}", err_msg)))
+                        Err(Error::Protocol(format!(
+                            "Remote handler error: {}",
+                            err_msg
+                        )))
                     }
                     None => Err(Error::Protocol("Empty unary response".to_string())),
                 }
@@ -329,12 +341,17 @@ impl PersistentConnection {
         }
 
         // Wait for response
-        let response = rx.await.map_err(|_| Error::Protocol("Response channel closed".to_string()))??;
+        let response = rx
+            .await
+            .map_err(|_| Error::Protocol("Response channel closed".to_string()))??;
 
         // Check for errors
         if let Some(persistent_connection_response::Message::DaemonError(err)) = response.message {
             let err_msg = err.message.unwrap_or_else(|| "Unknown error".to_string());
-            return Err(Error::Protocol(format!("Failed to add handler: {}", err_msg)));
+            return Err(Error::Protocol(format!(
+                "Failed to add handler: {}",
+                err_msg
+            )));
         }
 
         // Store handler
@@ -381,12 +398,17 @@ impl PersistentConnection {
         }
 
         // Wait for response
-        let response = rx.await.map_err(|_| Error::Protocol("Response channel closed".to_string()))??;
+        let response = rx
+            .await
+            .map_err(|_| Error::Protocol("Response channel closed".to_string()))??;
 
         // Check for errors
         if let Some(persistent_connection_response::Message::DaemonError(err)) = response.message {
             let err_msg = err.message.unwrap_or_else(|| "Unknown error".to_string());
-            return Err(Error::Protocol(format!("Failed to remove handler: {}", err_msg)));
+            return Err(Error::Protocol(format!(
+                "Failed to remove handler: {}",
+                err_msg
+            )));
         }
 
         // Remove handler from map

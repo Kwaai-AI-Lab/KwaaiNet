@@ -6,7 +6,9 @@
 
 use crate::error::{Error, Result};
 use crate::persistent::PersistentConnection;
-use crate::protocol::p2pd::{Request, Response, ConnectRequest, DisconnectRequest, StreamOpenRequest, PeerInfo, request};
+use crate::protocol::p2pd::{
+    request, ConnectRequest, DisconnectRequest, PeerInfo, Request, Response, StreamOpenRequest,
+};
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message;
 use std::sync::Arc;
@@ -141,13 +143,19 @@ impl P2PClient {
 
         // Serialize request
         let mut buf = BytesMut::new();
-        request.encode(&mut buf).map_err(|e| {
-            Error::Protocol(format!("Failed to encode request: {}", e))
-        })?;
+        request
+            .encode(&mut buf)
+            .map_err(|e| Error::Protocol(format!("Failed to encode request: {}", e)))?;
 
-        debug!("Encoded {} bytes - hex: {}",
-               buf.len(),
-               buf.iter().take(20).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "));
+        debug!(
+            "Encoded {} bytes - hex: {}",
+            buf.len(),
+            buf.iter()
+                .take(20)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
 
         // Write framed message: [8-byte length][protobuf]
         self.write_framed(&buf).await?;
@@ -158,9 +166,8 @@ impl P2PClient {
         trace!("Received response ({} bytes)", response_bytes.len());
 
         // Decode response
-        let response = Response::decode(&response_bytes[..]).map_err(|e| {
-            Error::Protocol(format!("Failed to decode response: {}", e))
-        })?;
+        let response = Response::decode(&response_bytes[..])
+            .map_err(|e| Error::Protocol(format!("Failed to decode response: {}", e)))?;
 
         // Check for error response
         if let Some(err) = &response.error {
@@ -286,7 +293,8 @@ impl P2PClient {
     /// The multiaddr should be in the format: /ip4/1.2.3.4/tcp/1234/p2p/QmPeerID
     pub async fn connect_peer(&mut self, peer_multiaddr: &str) -> Result<()> {
         // Parse the multiaddr to extract peer ID and address
-        let maddr: libp2p::Multiaddr = peer_multiaddr.parse()
+        let maddr: libp2p::Multiaddr = peer_multiaddr
+            .parse()
             .map_err(|e| Error::Connection(format!("Invalid multiaddr: {}", e)))?;
 
         // Extract the peer ID from the multiaddr
@@ -383,7 +391,8 @@ impl P2PClient {
         use crate::protocol::p2pd::StreamHandlerRequest;
 
         // Parse multiaddr string and convert to binary format
-        let maddr: libp2p::Multiaddr = listen_addr.parse()
+        let maddr: libp2p::Multiaddr = listen_addr
+            .parse()
             .map_err(|e| Error::Connection(format!("Invalid multiaddr: {}", e)))?;
         let addr_bytes = maddr.to_vec();
 
@@ -403,7 +412,10 @@ impl P2PClient {
             remove_stream_handler: None,
         };
 
-        debug!("STREAM_HANDLER request: type={}, protocols={:?}", request.r#type, protocols);
+        debug!(
+            "STREAM_HANDLER request: type={}, protocols={:?}",
+            request.r#type, protocols
+        );
 
         let response = self.send_request(request).await?;
 
@@ -425,7 +437,8 @@ impl P2PClient {
         use crate::protocol::p2pd::{request, RemoveStreamHandlerRequest};
 
         // Parse multiaddr string and convert to binary format
-        let maddr: libp2p::Multiaddr = listen_addr.parse()
+        let maddr: libp2p::Multiaddr = listen_addr
+            .parse()
             .map_err(|e| Error::Connection(format!("Invalid multiaddr: {}", e)))?;
         let addr_bytes = maddr.to_vec();
 
@@ -460,7 +473,11 @@ impl P2PClient {
     ///
     /// Returns a TcpStream connected to the daemon-managed protocol stream
     /// that can be used to send requests and receive responses.
-    pub async fn stream_open(&mut self, peer_id: &[u8], protocols: Vec<String>) -> Result<tokio::net::TcpStream> {
+    pub async fn stream_open(
+        &mut self,
+        peer_id: &[u8],
+        protocols: Vec<String>,
+    ) -> Result<tokio::net::TcpStream> {
         use crate::protocol::p2pd::StreamInfo;
         use prost::Message as _;
 
@@ -484,12 +501,15 @@ impl P2PClient {
         let response = self.send_request(request).await?;
 
         // Extract StreamInfo from response
-        let stream_info = response.stream_info
+        let stream_info = response
+            .stream_info
             .ok_or_else(|| Error::Protocol("No StreamInfo in response".to_string()))?;
 
         debug!(
             "StreamInfo received: proto={}, peer_len={}, addr_len={}",
-            stream_info.proto, stream_info.peer.len(), stream_info.addr.len()
+            stream_info.proto,
+            stream_info.peer.len(),
+            stream_info.addr.len()
         );
 
         // Parse the multiaddr to extract TCP address
@@ -517,14 +537,16 @@ impl P2PClient {
             }
         }
 
-        let ip = ip_addr.ok_or_else(|| Error::Protocol("No IP address in multiaddr".to_string()))?;
+        let ip =
+            ip_addr.ok_or_else(|| Error::Protocol("No IP address in multiaddr".to_string()))?;
         let port = port.ok_or_else(|| Error::Protocol("No TCP port in multiaddr".to_string()))?;
 
         let socket_addr = std::net::SocketAddr::new(ip, port);
         debug!("Connecting to daemon stream at: {}", socket_addr);
 
         // Connect to the daemon's forwarded stream
-        let stream = tokio::net::TcpStream::connect(socket_addr).await
+        let stream = tokio::net::TcpStream::connect(socket_addr)
+            .await
             .map_err(|e| Error::Io(e))?;
 
         debug!("Connected to daemon stream");
@@ -548,7 +570,10 @@ impl P2PClient {
         let stream = Self::connect_stream(&self.daemon_addr).await?;
 
         // Send PERSISTENT_CONN_UPGRADE request
-        let (mut reader, mut writer): (Box<dyn tokio::io::AsyncRead + Unpin + Send>, Box<dyn tokio::io::AsyncWrite + Unpin + Send>) = match stream {
+        let (mut reader, mut writer): (
+            Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        ) = match stream {
             DaemonStream::Tcp(tcp) => {
                 let (r, w) = tcp.into_split();
                 (
@@ -574,9 +599,9 @@ impl P2PClient {
 
         // Encode request
         let mut buf = BytesMut::new();
-        upgrade_request.encode(&mut buf).map_err(|e| {
-            Error::Protocol(format!("Failed to encode upgrade request: {}", e))
-        })?;
+        upgrade_request
+            .encode(&mut buf)
+            .map_err(|e| Error::Protocol(format!("Failed to encode upgrade request: {}", e)))?;
 
         // Write varint-framed message
         let len = buf.len();
@@ -592,9 +617,8 @@ impl P2PClient {
 
         // Read OK response
         let response_bytes = Self::read_varint_framed_static(&mut reader).await?;
-        let response = Response::decode(&response_bytes[..]).map_err(|e| {
-            Error::Protocol(format!("Failed to decode upgrade response: {}", e))
-        })?;
+        let response = Response::decode(&response_bytes[..])
+            .map_err(|e| Error::Protocol(format!("Failed to decode upgrade response: {}", e)))?;
 
         if let Some(err) = &response.error {
             return Err(Error::Protocol(format!(
@@ -613,24 +637,24 @@ impl P2PClient {
     }
 
     /// Helper to read varint-framed messages (static version for upgrading)
-    async fn read_varint_framed_static<R: AsyncReadExt + Unpin>(
-        reader: &mut R,
-    ) -> Result<Vec<u8>> {
+    async fn read_varint_framed_static<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
         // Read varint length prefix
         let mut len_bytes = Vec::new();
         let mut byte = [0u8; 1];
 
         for _ in 0..10 {
-            reader.read_exact(&mut byte).await.map_err(|e| Error::Io(e))?;
+            reader
+                .read_exact(&mut byte)
+                .await
+                .map_err(|e| Error::Io(e))?;
             len_bytes.push(byte[0]);
             if byte[0] & 0x80 == 0 {
                 break;
             }
         }
 
-        let (len, _) = unsigned_varint::decode::u64(&len_bytes).map_err(|e| {
-            Error::Protocol(format!("Failed to decode varint length: {:?}", e))
-        })?;
+        let (len, _) = unsigned_varint::decode::u64(&len_bytes)
+            .map_err(|e| Error::Protocol(format!("Failed to decode varint length: {:?}", e)))?;
 
         // Read message payload
         let mut payload = vec![0u8; len as usize];

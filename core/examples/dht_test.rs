@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn daemon with DHT enabled
     info!("\n[1/4] Spawning daemon with DHT...");
     let mut daemon = P2PDaemon::builder()
-        .dht(true)  // Enable DHT
+        .dht(true) // Enable DHT
         .spawn()
         .await?;
 
@@ -42,9 +42,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let key = b"test-key-123".to_vec();
     let value = b"Hello from KwaaiNet DHT!".to_vec();
 
-    match client.dht_put_value(key.clone(), value.clone(), Some(30)).await {
+    match client
+        .dht_put_value(key.clone(), value.clone(), Some(30))
+        .await
+    {
         Ok(_) => info!("✓ Successfully stored value in DHT"),
-        Err(e) => info!("⚠ PUT_VALUE failed (expected if not connected to network): {}", e),
+        Err(e) => info!(
+            "⚠ PUT_VALUE failed (expected if not connected to network): {}",
+            e
+        ),
     }
 
     // Try to get the value back
@@ -56,7 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("  Value type: {:?}", dht_value.value_type);
         }
         Err(e) => {
-            info!("⚠ GET_VALUE failed (expected if not connected to network): {}", e);
+            info!(
+                "⚠ GET_VALUE failed (expected if not connected to network): {}",
+                e
+            );
         }
     }
 

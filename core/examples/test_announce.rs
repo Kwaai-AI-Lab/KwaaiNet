@@ -44,7 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_dtype("float16");
 
     println!("\nAnnouncing blocks to DHT...");
-    network.announce_blocks("Llama-3.1-8B-Instruct", &server_info).await?;
+    network
+        .announce_blocks("Llama-3.1-8B-Instruct", &server_info)
+        .await?;
 
     println!("Processing DHT commands...");
     // Process DHT commands for 30 seconds

@@ -73,7 +73,11 @@ impl InferenceEngine {
     /// Returns `0.0` if no generation has been run yet.
     pub fn last_throughput_tps(&self) -> f64 {
         let bits = self.last_decode_tps.load(Ordering::Relaxed);
-        if bits == 0 { 0.0 } else { f64::from_bits(bits) }
+        if bits == 0 {
+            0.0
+        } else {
+            f64::from_bits(bits)
+        }
     }
 
     pub fn device(&self) -> &Device {
@@ -95,7 +99,10 @@ impl InferenceEngine {
     fn check_memory(&self, required: usize) -> InferenceResult<()> {
         let available = self.config.max_memory.saturating_sub(self.current_memory);
         if required > available {
-            return Err(InferenceError::OutOfMemory { required, available });
+            return Err(InferenceError::OutOfMemory {
+                required,
+                available,
+            });
         }
         Ok(())
     }
@@ -159,7 +166,10 @@ impl InferenceEngine {
                             .map_err(InferenceError::from)?
                             .unsqueeze(0)
                             .map_err(InferenceError::from)?;
-                        let logits = guard.weights.forward(&tt, pos).map_err(InferenceError::from)?;
+                        let logits = guard
+                            .weights
+                            .forward(&tt, pos)
+                            .map_err(InferenceError::from)?;
                         let logits = logits.squeeze(0).map_err(InferenceError::from)?;
                         next = lp.sample(&logits).map_err(InferenceError::from)?;
                     }
@@ -167,7 +177,12 @@ impl InferenceEngine {
                 };
 
                 info!("benchmark() GGUF: warm-up ({} steps)…", WARMUP_STEPS);
-                run_steps(&mut guard, &mut logits_processor, &prompt_tokens, WARMUP_STEPS)?;
+                run_steps(
+                    &mut guard,
+                    &mut logits_processor,
+                    &prompt_tokens,
+                    WARMUP_STEPS,
+                )?;
 
                 info!("benchmark() GGUF: measuring ({} steps)…", n_steps);
                 let start = std::time::Instant::now();
@@ -176,7 +191,10 @@ impl InferenceEngine {
 
                 let tps = n_steps as f64 / secs;
                 self.last_decode_tps.store(tps.to_bits(), Ordering::Relaxed);
-                info!("benchmark() GGUF: {:.1} tok/s ({} steps in {:.3}s)", tps, n_steps, secs);
+                info!(
+                    "benchmark() GGUF: {:.1} tok/s ({} steps in {:.3}s)",
+                    tps, n_steps, secs
+                );
                 tps
             }
 
@@ -194,14 +212,16 @@ impl InferenceEngine {
                                  tokens: &[u32],
                                  steps: usize|
                  -> InferenceResult<u32> {
-                    let mut cache =
-                        Cache::new(true, DType::F16, &guard.llama_config, &self.device)
-                            .map_err(InferenceError::from)?;
+                    let mut cache = Cache::new(true, DType::F16, &guard.llama_config, &self.device)
+                        .map_err(InferenceError::from)?;
                     let t = Tensor::new(tokens, &self.device)
                         .map_err(InferenceError::from)?
                         .unsqueeze(0)
                         .map_err(InferenceError::from)?;
-                    let logits = guard.model.forward(&t, 0, &mut cache).map_err(InferenceError::from)?;
+                    let logits = guard
+                        .model
+                        .forward(&t, 0, &mut cache)
+                        .map_err(InferenceError::from)?;
                     let logits = logits.squeeze(0).map_err(InferenceError::from)?;
                     let mut next = lp.sample(&logits).map_err(InferenceError::from)?;
                     for pos in tokens.len()..tokens.len() + steps {
@@ -209,7 +229,10 @@ impl InferenceEngine {
                             .map_err(InferenceError::from)?
                             .unsqueeze(0)
                             .map_err(InferenceError::from)?;
-                        let logits = guard.model.forward(&tt, pos, &mut cache).map_err(InferenceError::from)?;
+                        let logits = guard
+                            .model
+                            .forward(&tt, pos, &mut cache)
+                            .map_err(InferenceError::from)?;
                         let logits = logits.squeeze(0).map_err(InferenceError::from)?;
                         next = lp.sample(&logits).map_err(InferenceError::from)?;
                     }
@@ -226,7 +249,10 @@ impl InferenceEngine {
 
                 let tps = n_steps as f64 / secs;
                 self.last_decode_tps.store(tps.to_bits(), Ordering::Relaxed);
-                info!("benchmark() SafeTensors: {:.1} tok/s ({} steps in {:.3}s)", tps, n_steps, secs);
+                info!(
+                    "benchmark() SafeTensors: {:.1} tok/s ({} steps in {:.3}s)",
+                    tps, n_steps, secs
+                );
                 tps
             }
         };
@@ -269,18 +295,14 @@ impl InferenceProvider for InferenceEngine {
                 .map(|rd| {
                     rd.filter_map(|e| e.ok())
                         .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension().and_then(|x| x.to_str()) == Some("safetensors")
-                        })
+                        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("safetensors"))
                         .filter_map(|p| std::fs::metadata(&p).ok())
                         .map(|m| m.len())
                         .sum::<u64>() as usize
                 })
                 .unwrap_or(0)
         } else {
-            std::fs::metadata(path)
-                .map_err(InferenceError::from)?
-                .len() as usize
+            std::fs::metadata(path).map_err(InferenceError::from)?.len() as usize
         };
 
         // Memory estimate: both GGUF and SafeTensors are memory-mapped, so the
@@ -303,16 +325,12 @@ impl InferenceProvider for InferenceEngine {
                 if path.is_dir() {
                     // Sharded model directory (e.g. a HuggingFace snapshot).
                     // Collect all .safetensors shard files, sorted by name.
-                    let mut shard_paths: Vec<std::path::PathBuf> =
-                        std::fs::read_dir(path)
-                            .map_err(InferenceError::from)?
-                            .filter_map(|e| e.ok())
-                            .map(|e| e.path())
-                            .filter(|p| {
-                                p.extension().and_then(|x| x.to_str())
-                                    == Some("safetensors")
-                            })
-                            .collect();
+                    let mut shard_paths: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+                        .map_err(InferenceError::from)?
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("safetensors"))
+                        .collect();
                     shard_paths.sort();
 
                     if shard_paths.is_empty() {
@@ -323,8 +341,7 @@ impl InferenceProvider for InferenceEngine {
                     }
 
                     let config_path = path.join("config.json");
-                    let path_refs: Vec<&Path> =
-                        shard_paths.iter().map(|p| p.as_path()).collect();
+                    let path_refs: Vec<&Path> = shard_paths.iter().map(|p| p.as_path()).collect();
                     let m = loader::load_safetensors(&path_refs, &config_path, &self.device)?;
                     let c = m.config.clone();
                     let v = m.vocab_size;
@@ -332,10 +349,7 @@ impl InferenceProvider for InferenceEngine {
                     (LoadedWeights::SafeTensors(Mutex::new(m)), c, v, l, false)
                 } else {
                     // Single-shard: config.json must sit alongside the .safetensors file.
-                    let config_path = path
-                        .parent()
-                        .unwrap_or(Path::new("."))
-                        .join("config.json");
+                    let config_path = path.parent().unwrap_or(Path::new(".")).join("config.json");
                     let path_slice = [path];
                     let m = loader::load_safetensors(&path_slice, &config_path, &self.device)?;
                     let c = m.config.clone();
@@ -365,10 +379,20 @@ impl InferenceProvider for InferenceEngine {
             ..Default::default()
         };
 
-        self.models.insert(id, LoadedModelEntry { info, weights, config });
+        self.models.insert(
+            id,
+            LoadedModelEntry {
+                info,
+                weights,
+                config,
+            },
+        );
         self.current_memory += estimated_memory;
 
-        info!("Model loaded — handle {id}, ~{:.1} GB", estimated_memory as f64 / 1e9);
+        info!(
+            "Model loaded — handle {id}, ~{:.1} GB",
+            estimated_memory as f64 / 1e9
+        );
         Ok(ModelHandle::new(id))
     }
 
@@ -385,7 +409,10 @@ impl InferenceProvider for InferenceEngine {
         //     candle_transformers::models::llama::Cache for full-precision)
         //   • routing based on LoadedWeights variant
         // See CONTRIBUTORS.md — "Forward pass & generation".
-        debug!("forward() called on handle {} — wiring pending", handle.id());
+        debug!(
+            "forward() called on handle {} — wiring pending",
+            handle.id()
+        );
         Err(InferenceError::InferenceFailed(
             "forward() is not yet wired. \
              Implement in next step together with tokenizer and KV-cache."
@@ -446,11 +473,10 @@ impl InferenceProvider for InferenceEngine {
 
                 // Prefill: process the entire prompt in one forward pass.
                 // index_pos=0 resets the model's internal KV-cache.
-                let prompt_tensor =
-                    Tensor::new(prompt_tokens.as_slice(), &self.device)
-                        .map_err(InferenceError::from)?
-                        .unsqueeze(0)
-                        .map_err(InferenceError::from)?; // [1, prompt_len]
+                let prompt_tensor = Tensor::new(prompt_tokens.as_slice(), &self.device)
+                    .map_err(InferenceError::from)?
+                    .unsqueeze(0)
+                    .map_err(InferenceError::from)?; // [1, prompt_len]
 
                 let logits = guard
                     .weights
@@ -458,8 +484,9 @@ impl InferenceProvider for InferenceEngine {
                     .map_err(InferenceError::from)?; // [1, vocab_size]
                 let logits = logits.squeeze(0).map_err(InferenceError::from)?; // [vocab_size]
 
-                let mut next_token =
-                    logits_processor.sample(&logits).map_err(InferenceError::from)?;
+                let mut next_token = logits_processor
+                    .sample(&logits)
+                    .map_err(InferenceError::from)?;
 
                 let mut generated: Vec<u32> = Vec::new();
                 let mut pos = prompt_len;
@@ -483,8 +510,9 @@ impl InferenceProvider for InferenceEngine {
                         .map_err(InferenceError::from)?;
                     let logits = logits.squeeze(0).map_err(InferenceError::from)?;
 
-                    next_token =
-                        logits_processor.sample(&logits).map_err(InferenceError::from)?;
+                    next_token = logits_processor
+                        .sample(&logits)
+                        .map_err(InferenceError::from)?;
                     pos += 1;
                 }
                 let decode_secs = decode_start.elapsed().as_secs_f64();
@@ -499,7 +527,11 @@ impl InferenceProvider for InferenceEngine {
                     handle.id(),
                     generated.len(),
                     decode_secs,
-                    if decode_secs > 0.0 { generated.len() as f64 / decode_secs } else { 0.0 },
+                    if decode_secs > 0.0 {
+                        generated.len() as f64 / decode_secs
+                    } else {
+                        0.0
+                    },
                 );
 
                 guard.tokenizer.decode(&generated)?
@@ -544,11 +576,10 @@ impl InferenceProvider for InferenceEngine {
                     .map_err(InferenceError::from)?;
 
                 // Prefill.
-                let prompt_tensor =
-                    Tensor::new(prompt_tokens.as_slice(), &self.device)
-                        .map_err(InferenceError::from)?
-                        .unsqueeze(0)
-                        .map_err(InferenceError::from)?; // [1, prompt_len]
+                let prompt_tensor = Tensor::new(prompt_tokens.as_slice(), &self.device)
+                    .map_err(InferenceError::from)?
+                    .unsqueeze(0)
+                    .map_err(InferenceError::from)?; // [1, prompt_len]
 
                 let logits = guard
                     .model
@@ -556,8 +587,9 @@ impl InferenceProvider for InferenceEngine {
                     .map_err(InferenceError::from)?; // [1, vocab_size]
                 let logits = logits.squeeze(0).map_err(InferenceError::from)?; // [vocab_size]
 
-                let mut next_token =
-                    logits_processor.sample(&logits).map_err(InferenceError::from)?;
+                let mut next_token = logits_processor
+                    .sample(&logits)
+                    .map_err(InferenceError::from)?;
 
                 let mut generated: Vec<u32> = Vec::new();
                 let mut pos = prompt_len;
@@ -581,8 +613,9 @@ impl InferenceProvider for InferenceEngine {
                         .map_err(InferenceError::from)?;
                     let logits = logits.squeeze(0).map_err(InferenceError::from)?;
 
-                    next_token =
-                        logits_processor.sample(&logits).map_err(InferenceError::from)?;
+                    next_token = logits_processor
+                        .sample(&logits)
+                        .map_err(InferenceError::from)?;
                     pos += 1;
                 }
                 let decode_secs = decode_start.elapsed().as_secs_f64();
@@ -597,7 +630,11 @@ impl InferenceProvider for InferenceEngine {
                     handle.id(),
                     generated.len(),
                     decode_secs,
-                    if decode_secs > 0.0 { generated.len() as f64 / decode_secs } else { 0.0 },
+                    if decode_secs > 0.0 {
+                        generated.len() as f64 / decode_secs
+                    } else {
+                        0.0
+                    },
                 );
 
                 guard.tokenizer.decode(&generated)?
@@ -655,8 +692,7 @@ mod tests {
         // PyTorch format should be rejected without even checking if the file exists.
         // We create a temp file just to get past the existence check path, but
         // the format check fires first.
-        let result =
-            engine.load_model(Path::new("/tmp/model.pt"), ModelFormat::PyTorch);
+        let result = engine.load_model(Path::new("/tmp/model.pt"), ModelFormat::PyTorch);
         assert!(matches!(result, Err(InferenceError::InvalidFormat(_))));
     }
 }

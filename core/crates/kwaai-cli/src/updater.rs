@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::debug;
 
-const RELEASES_URL: &str =
-    "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/releases/latest";
+const RELEASES_URL: &str = "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/releases/latest";
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -42,7 +41,9 @@ pub struct UpdateChecker {
 
 impl UpdateChecker {
     pub fn new() -> Self {
-        Self { current_version: CURRENT_VERSION.to_string() }
+        Self {
+            current_version: CURRENT_VERSION.to_string(),
+        }
     }
 
     /// Check for a newer release. Returns `Some(UpdateInfo)` if one exists.
@@ -106,7 +107,10 @@ impl UpdateChecker {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        let entry = CacheEntry { checked_at: now, update_info: info.clone() };
+        let entry = CacheEntry {
+            checked_at: now,
+            update_info: info.clone(),
+        };
         std::fs::write(&path, serde_json::to_string(&entry)?)?;
         Ok(())
     }
@@ -116,9 +120,11 @@ impl UpdateChecker {
 fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
         let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
-        (parts.get(0).copied().unwrap_or(0),
-         parts.get(1).copied().unwrap_or(0),
-         parts.get(2).copied().unwrap_or(0))
+        (
+            parts.get(0).copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+            parts.get(2).copied().unwrap_or(0),
+        )
     };
     parse(latest) > parse(current)
 }

@@ -97,10 +97,7 @@ pub fn tensor_to_f16_bytes(tensor: &Tensor) -> Result<(Vec<u32>, Vec<u8>)> {
     let shape: Vec<u32> = tensor.dims().iter().map(|&d| d as u32).collect();
 
     // SAFETY: f16 is repr(transparent) over u16; we transmute to raw bytes
-    let bytes: Vec<u8> = f16_vec
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect();
+    let bytes: Vec<u8> = f16_vec.iter().flat_map(|v| v.to_le_bytes()).collect();
 
     Ok((shape, bytes))
 }
@@ -108,15 +105,17 @@ pub fn tensor_to_f16_bytes(tensor: &Tensor) -> Result<(Vec<u32>, Vec<u8>)> {
 /// Deserialise `f16-LE` bytes back to a `Tensor` on the given device.
 pub fn f16_bytes_to_tensor(bytes: &[u8], shape: &[u32], device: &Device) -> Result<Tensor> {
     if bytes.len() % 2 != 0 {
-        bail!("f16 byte buffer length {} is not a multiple of 2", bytes.len());
+        bail!(
+            "f16 byte buffer length {} is not a multiple of 2",
+            bytes.len()
+        );
     }
     let f16_vec: Vec<half::f16> = bytes
         .chunks_exact(2)
         .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
         .collect();
     let shape_usize: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-    Tensor::from_vec(f16_vec, shape_usize.as_slice(), device)
-        .context("Tensor::from_vec f16")
+    Tensor::from_vec(f16_vec, shape_usize.as_slice(), device).context("Tensor::from_vec f16")
 }
 
 /// Serialise token IDs to raw `u32-LE` bytes.
@@ -129,7 +128,10 @@ pub fn token_ids_to_bytes(ids: &[u32]) -> (Vec<u32>, Vec<u8>) {
 /// Deserialise `u32-LE` bytes to a token ID slice.
 pub fn bytes_to_token_ids(bytes: &[u8]) -> Result<Vec<u32>> {
     if bytes.len() % 4 != 0 {
-        bail!("token_id byte buffer length {} is not a multiple of 4", bytes.len());
+        bail!(
+            "token_id byte buffer length {} is not a multiple of 4",
+            bytes.len()
+        );
     }
     Ok(bytes
         .chunks_exact(4)
@@ -183,23 +185,23 @@ pub async fn call_block_forward(
 pub fn make_block_rpc_handler(
     shard: Arc<TransformerShard>,
     device: Device,
-) -> impl Fn(Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>>
-       + Send
+) -> impl Fn(
+    Vec<u8>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
+> + Send
        + Sync
-       + 'static
-{
+       + 'static {
     move |data: Vec<u8>| {
         let shard = shard.clone();
         let device = device.clone();
         Box::pin(async move {
             match handle_inference_request(&shard, &device, &data).await {
-                Ok(resp) => {
-                    rmp_serde::to_vec_named(&resp).map_err(|e| {
-                        kwaai_p2p_daemon::error::Error::Protocol(format!(
-                            "Failed to serialise response: {e}"
-                        ))
-                    })
-                }
+                Ok(resp) => rmp_serde::to_vec_named(&resp).map_err(|e| {
+                    kwaai_p2p_daemon::error::Error::Protocol(format!(
+                        "Failed to serialise response: {e}"
+                    ))
+                }),
                 Err(e) => {
                     error!("Inference request failed: {e:#}");
                     // Return an error response rather than dropping the connection
@@ -280,7 +282,11 @@ async fn handle_inference_request(
 
     Ok(InferenceResponse {
         session_id,
-        response_type: if is_logits { ResponseType::Logits } else { ResponseType::HiddenStates },
+        response_type: if is_logits {
+            ResponseType::Logits
+        } else {
+            ResponseType::HiddenStates
+        },
         shape,
         data,
         error: None,

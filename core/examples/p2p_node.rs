@@ -91,7 +91,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             SwarmEvent::NewListenAddr { address, .. } => {
                 let full_addr = format!("{}/p2p/{}", address, local_peer_id);
                 info!("Listening on: {}", full_addr);
-                println!("\n  Connect with: cargo run --example p2p_node -- {}\n", full_addr);
+                println!(
+                    "\n  Connect with: cargo run --example p2p_node -- {}\n",
+                    full_addr
+                );
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 info!("Connected to peer: {}", peer_id);
@@ -99,8 +102,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 info!("Disconnected from peer: {}", peer_id);
             }
-            SwarmEvent::IncomingConnection { local_addr, send_back_addr, .. } => {
-                info!("Incoming connection from {} to {}", send_back_addr, local_addr);
+            SwarmEvent::IncomingConnection {
+                local_addr,
+                send_back_addr,
+                ..
+            } => {
+                info!(
+                    "Incoming connection from {} to {}",
+                    send_back_addr, local_addr
+                );
             }
             SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received {
                 peer_id,
@@ -108,9 +118,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             })) => {
                 info!(
                     "Identified peer {}: {} ({})",
-                    peer_id,
-                    info.protocol_version,
-                    info.agent_version
+                    peer_id, info.protocol_version, info.agent_version
                 );
                 // Add peer addresses to Kademlia
                 for addr in info.listen_addrs {

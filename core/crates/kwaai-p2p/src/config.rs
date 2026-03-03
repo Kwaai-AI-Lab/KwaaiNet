@@ -145,11 +145,9 @@ impl NetworkConfigBuilder {
 
     /// Include Petals bootstrap servers for DHT discovery
     pub fn with_petals_bootstrap(mut self) -> Self {
-        self.config.bootstrap_peers.extend(
-            PETALS_BOOTSTRAP_SERVERS
-                .iter()
-                .map(|s| s.to_string())
-        );
+        self.config
+            .bootstrap_peers
+            .extend(PETALS_BOOTSTRAP_SERVERS.iter().map(|s| s.to_string()));
         self
     }
 

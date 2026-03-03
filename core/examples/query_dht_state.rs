@@ -9,7 +9,7 @@ use libp2p::PeerId;
 use prost::Message;
 use rmpv::Value;
 use serde::{Deserialize, Serialize};
-use sha1::{Sha1, Digest};
+use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::error::Error;
 use tracing::info;
@@ -96,20 +96,17 @@ fn parse_server_info(value_bytes: &[u8]) -> Option<ServerInfo> {
             // Petals format: ExtType wrapping [state, throughput, {field_map}]
             match rmpv::decode::read_value(&mut &ext_data[..]) {
                 Ok(Value::Array(ref arr)) if arr.len() >= 3 => {
-                    let state_val = arr.get(0)
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
+                    let state_val = arr.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
 
                     let state = match state_val {
                         0 => "offline",
                         1 => "joining",
                         2 => "online",
                         _ => "unknown",
-                    }.to_string();
+                    }
+                    .to_string();
 
-                    let throughput = arr.get(1)
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
+                    let throughput = arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
 
                     // Extract fields from the map at index 2
                     if let Some(Value::Map(ref field_map)) = arr.get(2) {
@@ -137,12 +134,14 @@ fn parse_server_info(value_bytes: &[u8]) -> Option<ServerInfo> {
                                     "end_block" => info.end_block = v.as_i64().unwrap_or(0),
                                     "public_name" => {
                                         if let Value::String(ref s) = v {
-                                            info.public_name = Some(s.as_str().unwrap_or("").to_string());
+                                            info.public_name =
+                                                Some(s.as_str().unwrap_or("").to_string());
                                         }
                                     }
                                     "version" => {
                                         if let Value::String(ref s) = v {
-                                            info.version = Some(s.as_str().unwrap_or("").to_string());
+                                            info.version =
+                                                Some(s.as_str().unwrap_or("").to_string());
                                         }
                                     }
                                     "network_rps" => info.network_rps = v.as_f64(),
@@ -150,12 +149,14 @@ fn parse_server_info(value_bytes: &[u8]) -> Option<ServerInfo> {
                                     "inference_rps" => info.inference_rps = v.as_f64(),
                                     "torch_dtype" => {
                                         if let Value::String(ref s) = v {
-                                            info.torch_dtype = Some(s.as_str().unwrap_or("").to_string());
+                                            info.torch_dtype =
+                                                Some(s.as_str().unwrap_or("").to_string());
                                         }
                                     }
                                     "quant_type" => {
                                         if let Value::String(ref s) = v {
-                                            info.quant_type = Some(s.as_str().unwrap_or("").to_string());
+                                            info.quant_type =
+                                                Some(s.as_str().unwrap_or("").to_string());
                                         }
                                     }
                                     "using_relay" => info.using_relay = v.as_bool(),
@@ -179,7 +180,8 @@ fn parse_server_info(value_bytes: &[u8]) -> Option<ServerInfo> {
                 1 => "joining",
                 2 => "online",
                 _ => "unknown",
-            }.to_string();
+            }
+            .to_string();
 
             return Some(ServerInfo {
                 state,
@@ -239,11 +241,13 @@ async fn query_block(
     let mut request_bytes = Vec::new();
     find_request.encode(&mut request_bytes)?;
 
-    let response_bytes = client.call_unary_handler(
-        bootstrap_peer_id_bytes,
-        "DHTProtocol.rpc_find",
-        &request_bytes,
-    ).await?;
+    let response_bytes = client
+        .call_unary_handler(
+            bootstrap_peer_id_bytes,
+            "DHTProtocol.rpc_find",
+            &request_bytes,
+        )
+        .await?;
 
     let mut peers = Vec::new();
 
@@ -258,24 +262,22 @@ async fn query_block(
                                 if let Value::Array(entry_data) = entry {
                                     if entry_data.len() >= 2 {
                                         // Get peer ID (subkey)
-                                        let peer_id = entry_data.get(0)
-                                            .and_then(|v| {
-                                                if let Value::String(ref s) = v {
-                                                    s.as_str().map(|s| s.to_string())
-                                                } else {
-                                                    None
-                                                }
-                                            });
+                                        let peer_id = entry_data.get(0).and_then(|v| {
+                                            if let Value::String(ref s) = v {
+                                                s.as_str().map(|s| s.to_string())
+                                            } else {
+                                                None
+                                            }
+                                        });
 
                                         // Get server info (value)
-                                        let server_info = entry_data.get(1)
-                                            .and_then(|v| {
-                                                if let Value::Binary(ref bytes) = v {
-                                                    parse_server_info(bytes)
-                                                } else {
-                                                    None
-                                                }
-                                            });
+                                        let server_info = entry_data.get(1).and_then(|v| {
+                                            if let Value::Binary(ref bytes) = v {
+                                                parse_server_info(bytes)
+                                            } else {
+                                                None
+                                            }
+                                        });
 
                                         if let (Some(pid), Some(info)) = (peer_id, server_info) {
                                             peers.push((pid, info));
@@ -300,7 +302,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
-    let model_name = args.get(1)
+    let model_name = args
+        .get(1)
         .map(|s| s.to_string())
         .unwrap_or_else(|| "Llama-3.1-8B-Instruct".to_string());
 
@@ -357,13 +360,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 for block_num in 0..num_blocks {
                     info!("Querying block {}...", block_num);
 
-                    match query_block(&mut client, &bootstrap_peer_id_bytes, dht_prefix, block_num).await {
+                    match query_block(&mut client, &bootstrap_peer_id_bytes, dht_prefix, block_num)
+                        .await
+                    {
                         Ok(peers) => {
                             if !peers.is_empty() {
                                 blocks_with_peers += 1;
                                 for (peer_id, server_info) in peers {
                                     // Keep the widest span for each peer
-                                    all_peers.entry(peer_id.clone())
+                                    all_peers
+                                        .entry(peer_id.clone())
                                         .and_modify(|existing| {
                                             if server_info.start_block < existing.start_block {
                                                 existing.start_block = server_info.start_block;
@@ -388,7 +394,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let mut server_rows = Vec::new();
                 for (peer_id, server_info) in &all_peers {
                     let short_peer_id = if peer_id.len() > 10 {
-                        format!("...{}", &peer_id[peer_id.len()-6..])
+                        format!("...{}", &peer_id[peer_id.len() - 6..])
                     } else {
                         peer_id.clone()
                     };

@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo run --example quantization
 
-use candle_core::{Device, DType, Tensor};
+use candle_core::{DType, Device, Tensor};
 use kwaai_compression::{BlockwiseQuantizer, CompressedData, Compressor};
 use std::error::Error;
 use std::time::Instant;
@@ -30,7 +30,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let quantizer = BlockwiseQuantizer::new(8);
     let compressed = quantizer.compress(&tensor)?;
     println!("Compressed size: {} bytes", compressed.size_bytes());
-    println!("Original size:   {} bytes", compressed.original_size_bytes());
+    println!(
+        "Original size:   {} bytes",
+        compressed.original_size_bytes()
+    );
     println!("Compression ratio: {:.2}x", compressed.compression_ratio());
 
     let decompressed = quantizer.decompress(&compressed)?;
@@ -105,7 +108,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Gradient tensor stats:");
     println!("  Elements: {}", gradient_data.len());
-    println!("  Mean: {:.6}", gradient_data.iter().sum::<f32>() / gradient_data.len() as f32);
+    println!(
+        "  Mean: {:.6}",
+        gradient_data.iter().sum::<f32>() / gradient_data.len() as f32
+    );
     println!(
         "  Max abs: {:.6}",
         gradient_data.iter().map(|x| x.abs()).fold(0.0f32, f32::max)
@@ -196,9 +202,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         let savings = original_bytes - compressed_bytes;
 
         println!("{}:", name);
-        println!("  Original:    {:>10.2} MB", original_bytes as f64 / 1024.0 / 1024.0);
-        println!("  Compressed:  {:>10.2} MB", compressed_bytes as f64 / 1024.0 / 1024.0);
-        println!("  Savings:     {:>10.2} MB ({:.1}%)",
+        println!(
+            "  Original:    {:>10.2} MB",
+            original_bytes as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  Compressed:  {:>10.2} MB",
+            compressed_bytes as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  Savings:     {:>10.2} MB ({:.1}%)",
             savings as f64 / 1024.0 / 1024.0,
             (savings as f64 / original_bytes as f64) * 100.0
         );

@@ -18,12 +18,7 @@ use crate::{
 };
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{Module, VarBuilder};
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::Mutex,
-    time::Instant,
-};
+use std::{collections::HashMap, path::Path, sync::Mutex, time::Instant};
 use tracing::{debug, info};
 
 // ── Model hyperparameters ─────────────────────────────────────────────────────
@@ -100,22 +95,41 @@ impl RopeCache {
             let x2 = t.narrow(3, half, half).map_err(InferenceError::from)?;
             // cos/sin: [s, half] → broadcast [1, 1, s, half]
             // Use broadcast_mul so query (n_heads) and key (n_kv_heads) both work.
-            let cos4 = cos.unsqueeze(0).and_then(|t| t.unsqueeze(0)).map_err(InferenceError::from)?;
-            let sin4 = sin.unsqueeze(0).and_then(|t| t.unsqueeze(0)).map_err(InferenceError::from)?;
-            let out1 = (x1.broadcast_mul(&cos4).map_err(InferenceError::from)?
+            let cos4 = cos
+                .unsqueeze(0)
+                .and_then(|t| t.unsqueeze(0))
+                .map_err(InferenceError::from)?;
+            let sin4 = sin
+                .unsqueeze(0)
+                .and_then(|t| t.unsqueeze(0))
+                .map_err(InferenceError::from)?;
+            let out1 = (x1
+                .broadcast_mul(&cos4)
+                .map_err(InferenceError::from)?
                 .sub(&x2.broadcast_mul(&sin4).map_err(InferenceError::from)?))
-                .map_err(InferenceError::from)?;
-            let out2 = (x1.broadcast_mul(&sin4).map_err(InferenceError::from)?
+            .map_err(InferenceError::from)?;
+            let out2 = (x1
+                .broadcast_mul(&sin4)
+                .map_err(InferenceError::from)?
                 .add(&x2.broadcast_mul(&cos4).map_err(InferenceError::from)?))
-                .map_err(InferenceError::from)?;
+            .map_err(InferenceError::from)?;
             Tensor::cat(&[&out1, &out2], 3).map_err(InferenceError::from)
         }
 
         let s = q.dim(2).map_err(InferenceError::from)?;
-        let cos_slice = self.cos.narrow(0, seq_pos, s).map_err(InferenceError::from)?;
-        let sin_slice = self.sin.narrow(0, seq_pos, s).map_err(InferenceError::from)?;
+        let cos_slice = self
+            .cos
+            .narrow(0, seq_pos, s)
+            .map_err(InferenceError::from)?;
+        let sin_slice = self
+            .sin
+            .narrow(0, seq_pos, s)
+            .map_err(InferenceError::from)?;
 
-        Ok((rotate(q, &cos_slice, &sin_slice)?, rotate(k, &cos_slice, &sin_slice)?))
+        Ok((
+            rotate(q, &cos_slice, &sin_slice)?,
+            rotate(k, &cos_slice, &sin_slice)?,
+        ))
     }
 }
 
@@ -181,12 +195,10 @@ impl ShardBlock {
         let inter = cfg.intermediate_dim;
         let eps = cfg.rms_norm_eps;
 
-        let input_layernorm =
-            candle_nn::rms_norm(h, eps, vb.pp("input_layernorm"))
-                .map_err(|e| InferenceError::ModelLoadError(format!("input_layernorm: {e}")))?;
-        let post_attn_layernorm =
-            candle_nn::rms_norm(h, eps, vb.pp("post_attention_layernorm"))
-                .map_err(|e| InferenceError::ModelLoadError(format!("post_attn_layernorm: {e}")))?;
+        let input_layernorm = candle_nn::rms_norm(h, eps, vb.pp("input_layernorm"))
+            .map_err(|e| InferenceError::ModelLoadError(format!("input_layernorm: {e}")))?;
+        let post_attn_layernorm = candle_nn::rms_norm(h, eps, vb.pp("post_attention_layernorm"))
+            .map_err(|e| InferenceError::ModelLoadError(format!("post_attn_layernorm: {e}")))?;
 
         let q_proj = candle_nn::linear_no_bias(h, h, vb.pp("self_attn.q_proj"))
             .map_err(|e| InferenceError::ModelLoadError(format!("q_proj: {e}")))?;
@@ -206,9 +218,14 @@ impl ShardBlock {
 
         Ok(Self {
             input_layernorm,
-            q_proj, k_proj, v_proj, o_proj,
+            q_proj,
+            k_proj,
+            v_proj,
+            o_proj,
             post_attn_layernorm,
-            gate_proj, up_proj, down_proj,
+            gate_proj,
+            up_proj,
+            down_proj,
             cfg: cfg.clone(),
         })
     }
@@ -234,7 +251,10 @@ impl ShardBlock {
 
         // ── Self-attention ─────────────────────────────────────────────────────
         let residual = x.clone();
-        let normed = self.input_layernorm.forward(x).map_err(InferenceError::from)?;
+        let normed = self
+            .input_layernorm
+            .forward(x)
+            .map_err(InferenceError::from)?;
 
         // Project to Q, K, V
         let q = self.q_proj.forward(&normed).map_err(InferenceError::from)?; // [b, s, h]
@@ -242,12 +262,21 @@ impl ShardBlock {
         let v = self.v_proj.forward(&normed).map_err(InferenceError::from)?;
 
         // Reshape to multi-head: [b, n_heads, s, head_dim]
-        let q = q.reshape((b, s, n_h, hd)).map_err(InferenceError::from)?
-            .transpose(1, 2).map_err(InferenceError::from)?;
-        let k = k.reshape((b, s, n_kv, hd)).map_err(InferenceError::from)?
-            .transpose(1, 2).map_err(InferenceError::from)?;
-        let v = v.reshape((b, s, n_kv, hd)).map_err(InferenceError::from)?
-            .transpose(1, 2).map_err(InferenceError::from)?;
+        let q = q
+            .reshape((b, s, n_h, hd))
+            .map_err(InferenceError::from)?
+            .transpose(1, 2)
+            .map_err(InferenceError::from)?;
+        let k = k
+            .reshape((b, s, n_kv, hd))
+            .map_err(InferenceError::from)?
+            .transpose(1, 2)
+            .map_err(InferenceError::from)?;
+        let v = v
+            .reshape((b, s, n_kv, hd))
+            .map_err(InferenceError::from)?
+            .transpose(1, 2)
+            .map_err(InferenceError::from)?;
 
         // Apply rotary position embeddings
         let (q, k) = rope.apply(&q, &k, seq_pos)?;
@@ -270,7 +299,8 @@ impl ShardBlock {
 
         // Scaled dot-product attention
         let scale = (hd as f64).sqrt().recip();
-        let scores = q.matmul(&k_full.transpose(2, 3).map_err(InferenceError::from)?)
+        let scores = q
+            .matmul(&k_full.transpose(2, 3).map_err(InferenceError::from)?)
             .map_err(InferenceError::from)?; // [b, n_h, s, kv_seq]
         let scores = (scores * scale).map_err(InferenceError::from)?;
 
@@ -278,7 +308,9 @@ impl ShardBlock {
         let scores = if s > 1 {
             let mask = causal_mask(s, kv_seq, seq_pos, device, self.cfg.dtype)?;
             // Broadcast mask from [s, kv_seq] to [1, 1, s, kv_seq]
-            let mask = mask.unsqueeze(0).and_then(|t| t.unsqueeze(0))
+            let mask = mask
+                .unsqueeze(0)
+                .and_then(|t| t.unsqueeze(0))
                 .map_err(InferenceError::from)?;
             scores.broadcast_add(&mask).map_err(InferenceError::from)?
         } else {
@@ -291,17 +323,32 @@ impl ShardBlock {
 
         // Merge heads: [b, s, h]
         let h = self.cfg.hidden_dim;
-        let attn_out = attn_out.transpose(1, 2).map_err(InferenceError::from)?
-            .reshape((b, s, h)).map_err(InferenceError::from)?;
-        let attn_out = self.o_proj.forward(&attn_out).map_err(InferenceError::from)?;
+        let attn_out = attn_out
+            .transpose(1, 2)
+            .map_err(InferenceError::from)?
+            .reshape((b, s, h))
+            .map_err(InferenceError::from)?;
+        let attn_out = self
+            .o_proj
+            .forward(&attn_out)
+            .map_err(InferenceError::from)?;
         let x = (&residual + &attn_out).map_err(InferenceError::from)?;
 
         // ── SwiGLU MLP ────────────────────────────────────────────────────────
         let residual = x.clone();
-        let normed = self.post_attn_layernorm.forward(&x).map_err(InferenceError::from)?;
+        let normed = self
+            .post_attn_layernorm
+            .forward(&x)
+            .map_err(InferenceError::from)?;
 
-        let gate = self.gate_proj.forward(&normed).map_err(InferenceError::from)?;
-        let up   = self.up_proj.forward(&normed).map_err(InferenceError::from)?;
+        let gate = self
+            .gate_proj
+            .forward(&normed)
+            .map_err(InferenceError::from)?;
+        let up = self
+            .up_proj
+            .forward(&normed)
+            .map_err(InferenceError::from)?;
         // SwiGLU: silu(gate) * up
         let gate = candle_nn::ops::silu(&gate).map_err(InferenceError::from)?;
         let ff = (gate * up).map_err(InferenceError::from)?;
@@ -322,7 +369,10 @@ struct Session {
 
 impl Session {
     fn new(num_blocks: usize) -> Self {
-        Self { kv: vec![None; num_blocks], last_access: Instant::now() }
+        Self {
+            kv: vec![None; num_blocks],
+            last_access: Instant::now(),
+        }
     }
 }
 
@@ -333,10 +383,10 @@ impl Session {
 /// Load with [`TransformerShard::load`] then call the appropriate forward method
 /// based on this node's position in the inference chain.
 pub struct TransformerShard {
-    embedding: Option<candle_nn::Embedding>,   // first node only (start_block == 0)
-    blocks: Vec<ShardBlock>,                   // blocks [start_block..end_block)
-    norm: Option<candle_nn::RmsNorm>,          // last node only
-    lm_head: Option<candle_nn::Linear>,        // last node only
+    embedding: Option<candle_nn::Embedding>, // first node only (start_block == 0)
+    blocks: Vec<ShardBlock>,                 // blocks [start_block..end_block)
+    norm: Option<candle_nn::RmsNorm>,        // last node only
+    lm_head: Option<candle_nn::Linear>,      // last node only
     rope: RopeCache,
     /// Tokenizer — all nodes load it; only the coordinator uses it actively.
     pub tokenizer: BpeTokenizer,
@@ -378,15 +428,15 @@ impl TransformerShard {
             )));
         }
 
-        let hidden_dim       = hf_config.hidden_size;
-        let num_heads        = hf_config.num_attention_heads;
-        let num_kv_heads     = hf_config.num_key_value_heads();
-        let head_dim         = hidden_dim / num_heads;
+        let hidden_dim = hf_config.hidden_size;
+        let num_heads = hf_config.num_attention_heads;
+        let num_kv_heads = hf_config.num_key_value_heads();
+        let head_dim = hidden_dim / num_heads;
         let intermediate_dim = hf_config.intermediate_size;
-        let vocab_size       = hf_config.vocab_size;
-        let rope_theta       = hf_config.rope_theta as f64;
-        let max_seq_len      = hf_config.max_position_embeddings;
-        let rms_norm_eps     = hf_config.rms_norm_eps;
+        let vocab_size = hf_config.vocab_size;
+        let rope_theta = hf_config.rope_theta as f64;
+        let max_seq_len = hf_config.max_position_embeddings;
+        let rms_norm_eps = hf_config.rms_norm_eps;
 
         let cfg = ShardConfig {
             num_total_blocks,
@@ -511,7 +561,10 @@ impl TransformerShard {
         sessions.retain(|_, s| s.last_access.elapsed().as_secs() < 60);
         let evicted = before - sessions.len();
         if evicted > 0 {
-            info!("GC evicted {evicted} stale sessions ({} remaining)", sessions.len());
+            info!(
+                "GC evicted {evicted} stale sessions ({} remaining)",
+                sessions.len()
+            );
         }
     }
 

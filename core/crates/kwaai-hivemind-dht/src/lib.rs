@@ -10,18 +10,20 @@
 //! - MessagePack serialization for values
 //! - Protobuf wire format for RPC messages
 
-pub mod error;
-pub mod protocol;
-pub mod value;
 pub mod client;
 pub mod codec;
+pub mod error;
+pub mod protocol;
 pub mod server;
+pub mod value;
 
-pub use error::{Error, Result};
-pub use value::{DHTValue, DHTExpiration};
 pub use client::HivemindDHT;
+pub use error::{Error, Result};
+pub use protocol::{
+    AccessToken, FindResult, NodeInfo, RequestAuthInfo, ResponseAuthInfo, ResultType,
+};
 pub use server::DHTStorage;
-pub use protocol::{ResultType, FindResult, NodeInfo, AccessToken, RequestAuthInfo, ResponseAuthInfo};
+pub use value::{DHTExpiration, DHTValue};
 
 /// Hivemind DHT protocol handlers
 /// These match the Python implementation's handler names: /{ClassName}.rpc_{method}

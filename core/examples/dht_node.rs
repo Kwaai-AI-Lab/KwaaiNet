@@ -27,7 +27,7 @@ use libp2p::{
 };
 use std::error::Error;
 use std::time::Duration;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// Combined network behaviour
@@ -147,10 +147,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build();
 
     // Listen
-    let listen_addr: Multiaddr = format!(
-        "/ip4/0.0.0.0/tcp/{}",
-        listen_port.unwrap_or(0)
-    ).parse()?;
+    let listen_addr: Multiaddr =
+        format!("/ip4/0.0.0.0/tcp/{}", listen_port.unwrap_or(0)).parse()?;
     swarm.listen_on(listen_addr)?;
 
     // Bootstrap if address provided
@@ -159,7 +157,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // Extract peer ID from multiaddr
         if let Some(peer_id) = extract_peer_id(&addr) {
-            swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, addr.clone());
             swarm.dial(addr.clone())?;
         } else {
             error!("Bootstrap address must include peer ID (/p2p/<peer_id>)");
@@ -183,12 +184,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         publisher: Some(local_peer_id),
                         expires: None,
                     };
-                    swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One)?;
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .put_record(record, kad::Quorum::One)?;
                     command_executed = true;
                 }
                 Command::Get { key } => {
                     info!("Requesting: {}", key);
-                    swarm.behaviour_mut().kademlia.get_record(RecordKey::new(&key));
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .get_record(RecordKey::new(&key));
                     command_executed = true;
                 }
                 Command::None => {
@@ -212,31 +219,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     warn!("Bootstrap error: {}", e);
                 }
             }
-            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                result: QueryResult::PutRecord(Ok(put_ok)),
-                ..
-            })) => {
+            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result: QueryResult::PutRecord(Ok(put_ok)),
+                    ..
+                },
+            )) => {
                 info!("Successfully stored record: {:?}", put_ok.key);
                 println!("\n  SUCCESS: Stored value in DHT\n");
             }
-            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))),
-                ..
-            })) => {
+            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))),
+                    ..
+                },
+            )) => {
                 let value = String::from_utf8_lossy(&peer_record.record.value);
                 info!("Retrieved record: {:?} = {}", peer_record.record.key, value);
                 println!("\n  SUCCESS: Retrieved '{}'\n", value);
             }
-            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. })),
-                ..
-            })) => {
+            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result:
+                        QueryResult::GetRecord(Ok(kad::GetRecordOk::FinishedWithNoAdditionalRecord {
+                            ..
+                        })),
+                    ..
+                },
+            )) => {
                 info!("Get record query finished");
             }
-            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-                result: QueryResult::GetRecord(Err(e)),
-                ..
-            })) => {
+            SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result: QueryResult::GetRecord(Err(e)),
+                    ..
+                },
+            )) => {
                 warn!("Get record failed: {:?}", e);
                 println!("\n  FAILED: Could not retrieve value\n");
             }
@@ -250,7 +268,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(kad::Event::RoutingUpdated {
-                peer, ..
+                peer,
+                ..
             })) => {
                 info!("Routing updated: {}", peer);
             }

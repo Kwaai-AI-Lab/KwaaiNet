@@ -163,7 +163,11 @@ pub fn pick_best_model(
                 .iter()
                 .filter_map(|r| {
                     let s = match_score(local, r);
-                    if s > 0 { Some((s, r.server_count(), r)) } else { None }
+                    if s > 0 {
+                        Some((s, r.server_count(), r))
+                    } else {
+                        None
+                    }
                 })
                 .max_by_key(|&(score, count, _)| score as usize * 100_000 + count)
                 .map(|(score, count, report)| (local.clone(), score, count, report))
@@ -204,5 +208,9 @@ pub fn pick_best_model(
 
 /// Return `Some(s.clone())` if `s` is non-empty, otherwise `None`.
 fn non_empty(s: &str) -> Option<String> {
-    if s.is_empty() { None } else { Some(s.to_string()) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }

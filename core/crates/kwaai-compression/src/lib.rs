@@ -12,7 +12,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use kwaai_compression::{BlockwiseQuantizer, Compressor};
+//! use kwaai_compression::{BlockwiseQuantizer, CompressedData, Compressor};
 //! use candle_core::Tensor;
 //!
 //! let quantizer = BlockwiseQuantizer::new(64);
@@ -22,6 +22,8 @@
 //! println!("Compression ratio: {:.2}x", compressed.compression_ratio());
 //!
 //! let decompressed = quantizer.decompress(&compressed)?;
+//! # let _ = decompressed;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 pub mod error;

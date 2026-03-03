@@ -6,21 +6,37 @@ use tracing::debug;
 /// Known model block counts (total blocks in the full model)
 fn model_total_blocks(model: &str) -> u32 {
     let model = model.to_lowercase();
-    if model.contains("llama-3") && model.contains("8b") { 32 }
-    else if model.contains("llama-3") && model.contains("70b") { 80 }
-    else if model.contains("llama-2") && model.contains("7b") { 32 }
-    else if model.contains("llama-2") && model.contains("13b") { 40 }
-    else if model.contains("llama-2") && model.contains("70b") { 80 }
-    else if model.contains("mistral") && model.contains("7b") { 32 }
-    else { 32 } // safe default
+    if model.contains("llama-3") && model.contains("8b") {
+        32
+    } else if model.contains("llama-3") && model.contains("70b") {
+        80
+    } else if model.contains("llama-2") && model.contains("7b") {
+        32
+    } else if model.contains("llama-2") && model.contains("13b") {
+        40
+    } else if model.contains("llama-2") && model.contains("70b") {
+        80
+    } else if model.contains("mistral") && model.contains("7b") {
+        32
+    } else {
+        32
+    } // safe default
 }
 
 /// Memory per block in bytes (float16)
 fn bytes_per_block_f16(model: &str) -> u64 {
     let model = model.to_lowercase();
-    if model.contains("70b") { 500 * 1024 * 1024 }        // ~500 MB
-    else if model.contains("13b") { 312 * 1024 * 1024 }   // ~312 MB
-    else { 250 * 1024 * 1024 }                             // ~250 MB (7-8B)
+    if model.contains("70b") {
+        500 * 1024 * 1024
+    }
+    // ~500 MB
+    else if model.contains("13b") {
+        312 * 1024 * 1024
+    }
+    // ~312 MB
+    else {
+        250 * 1024 * 1024
+    } // ~250 MB (7-8B)
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +75,9 @@ impl CalibrationEngine {
         sys.refresh_all();
         let total = sys.total_memory();
         // available_memory() returns 0 on macOS in sysinfo 0.30; derive from used instead
-        let available = sys.available_memory().max(total.saturating_sub(sys.used_memory()));
+        let available = sys
+            .available_memory()
+            .max(total.saturating_sub(sys.used_memory()));
         let hardware = HardwareInfo {
             total_memory: total,
             available_memory: available,
@@ -74,8 +92,13 @@ impl CalibrationEngine {
         let bytes_per_block = bytes_per_block_f16(model);
 
         // Reserve 2 GB for OS + other processes
-        let usable = self.hardware.available_memory.saturating_sub(2 * 1024 * 1024 * 1024);
-        let max_blocks = ((usable as f64 / bytes_per_block as f64) as u32).min(total_blocks).max(1);
+        let usable = self
+            .hardware
+            .available_memory
+            .saturating_sub(2 * 1024 * 1024 * 1024);
+        let max_blocks = ((usable as f64 / bytes_per_block as f64) as u32)
+            .min(total_blocks)
+            .max(1);
 
         // Recommended = 75% of max; min = 1 block or 25% of max
         let recommended_blocks = ((max_blocks as f64 * 0.75) as u32).max(1);

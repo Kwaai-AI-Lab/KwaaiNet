@@ -35,8 +35,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Original gradient:");
     println!("  Size: {} elements", data.len());
-    println!("  Top 5 values: {:.3}, {:.3}, {:.3}, {:.3}, {:.3}",
-        data[10], data[50], data[25], data[75], data[90]);
+    println!(
+        "  Top 5 values: {:.3}, {:.3}, {:.3}, {:.3}, {:.3}",
+        data[10], data[50], data[25], data[75], data[90]
+    );
 
     // Compress with Top-10%
     let compressor = TopKCompressor::new(0.1);
@@ -44,12 +46,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\nTop-10% compression:");
     println!("  Kept elements: {}", compressed.indices.len());
-    println!("  Compression ratio: {:.1}x", compressed.compression_ratio());
-    println!("  Original size: {} bytes", compressed.original_size_bytes());
+    println!(
+        "  Compression ratio: {:.1}x",
+        compressed.compression_ratio()
+    );
+    println!(
+        "  Original size: {} bytes",
+        compressed.original_size_bytes()
+    );
     println!("  Compressed size: {} bytes", compressed.size_bytes());
 
     // Show which indices were kept
-    let mut sorted_indices: Vec<_> = compressed.indices.iter().zip(compressed.values.iter()).collect();
+    let mut sorted_indices: Vec<_> = compressed
+        .indices
+        .iter()
+        .zip(compressed.values.iter())
+        .collect();
     sorted_indices.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
     println!("  Preserved (idx, value):");
     for (idx, val) in sorted_indices.iter().take(5) {
@@ -62,8 +74,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Verify large values preserved
     println!("\nVerification (large values preserved):");
-    println!("  data[10]: orig {:.4}, decomp {:.4}", data[10], decomp_data[10]);
-    println!("  data[50]: orig {:.4}, decomp {:.4}", data[50], decomp_data[50]);
+    println!(
+        "  data[10]: orig {:.4}, decomp {:.4}",
+        data[10], decomp_data[10]
+    );
+    println!(
+        "  data[50]: orig {:.4}, decomp {:.4}",
+        data[50], decomp_data[50]
+    );
 
     println!();
 
@@ -211,19 +229,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     let original_bytes = params_per_worker * 4; // f32
     let compressed_bytes = (original_bytes as f32 / ratio) as usize;
 
-    println!("Scenario: {} workers, each with {} parameters", workers, params_per_worker);
+    println!(
+        "Scenario: {} workers, each with {} parameters",
+        workers, params_per_worker
+    );
     println!("\nAll-reduce communication per step:");
-    println!("  Without compression: {} MB per worker", original_bytes / 1024 / 1024);
-    println!("  With Top-1%:         {} MB per worker", compressed_bytes / 1024 / 1024);
+    println!(
+        "  Without compression: {} MB per worker",
+        original_bytes / 1024 / 1024
+    );
+    println!(
+        "  With Top-1%:         {} MB per worker",
+        compressed_bytes / 1024 / 1024
+    );
     println!("  Compression ratio:   {:.1}x", ratio);
 
     let total_without = original_bytes * workers * (workers - 1);
     let total_with = compressed_bytes * workers * (workers - 1);
 
     println!("\nTotal network traffic (ring all-reduce):");
-    println!("  Without compression: {:.2} GB", total_without as f64 / 1024.0 / 1024.0 / 1024.0);
-    println!("  With compression:    {:.2} GB", total_with as f64 / 1024.0 / 1024.0 / 1024.0);
-    println!("  Bandwidth saved:     {:.2} GB per step", (total_without - total_with) as f64 / 1024.0 / 1024.0 / 1024.0);
+    println!(
+        "  Without compression: {:.2} GB",
+        total_without as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    println!(
+        "  With compression:    {:.2} GB",
+        total_with as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    println!(
+        "  Bandwidth saved:     {:.2} GB per step",
+        (total_without - total_with) as f64 / 1024.0 / 1024.0 / 1024.0
+    );
 
     println!("\n===============================");
     println!("Sparse gradients demo complete!");

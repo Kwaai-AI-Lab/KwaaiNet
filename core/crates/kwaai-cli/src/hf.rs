@@ -133,9 +133,7 @@ fn has_safetensors_shards(dir: &std::path::Path) -> bool {
     }
 
     // Every shard must be readable — follows symlinks via std::fs::metadata.
-    shards
-        .iter()
-        .all(|p| std::fs::metadata(p).is_ok())
+    shards.iter().all(|p| std::fs::metadata(p).is_ok())
 }
 
 /// Return the list of directories to search for HuggingFace model caches.
@@ -268,7 +266,11 @@ pub async fn download(model_id: &str, hf_token: Option<&str>) -> Result<PathBuf>
 
         if dest.exists() {
             let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-            println!("  [{:2}/{n}] {fname}  — already cached ({})", i + 1, fmt_bytes(size));
+            println!(
+                "  [{:2}/{n}] {fname}  — already cached ({})",
+                i + 1,
+                fmt_bytes(size)
+            );
             continue;
         }
 
@@ -276,7 +278,10 @@ pub async fn download(model_id: &str, hf_token: Option<&str>) -> Result<PathBuf>
             std::fs::create_dir_all(parent)?;
         }
 
-        let url = format!("https://huggingface.co/{}/resolve/{}/{}", model_id, sha, fname);
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            model_id, sha, fname
+        );
         download_file(&client, &url, &dest, i + 1, n, fname)
             .await
             .with_context(|| format!("Failed to download '{}'", fname))?;
@@ -304,8 +309,8 @@ fn build_hf_client(token: Option<&str>) -> Result<reqwest::Client> {
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     let mut headers = HeaderMap::new();
     if let Some(t) = token {
-        let val = HeaderValue::from_str(&format!("Bearer {}", t))
-            .context("Invalid HF token value")?;
+        let val =
+            HeaderValue::from_str(&format!("Bearer {}", t)).context("Invalid HF token value")?;
         headers.insert(AUTHORIZATION, val);
     }
     Ok(reqwest::Client::builder()
@@ -362,10 +367,15 @@ async fn download_file(
     file.flush().await?;
     drop(file);
 
-    let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(downloaded);
+    let size = std::fs::metadata(&tmp)
+        .map(|m| m.len())
+        .unwrap_or(downloaded);
     // \r moves to column 0; \x1b[K clears to end-of-line (works on all modern
     // terminals incl. Windows Terminal / PowerShell; harmless on others).
-    print!("\r\x1b[K  [{idx:2}/{total}] {fname}  ✓  {}\n", fmt_bytes(size));
+    print!(
+        "\r\x1b[K  [{idx:2}/{total}] {fname}  ✓  {}\n",
+        fmt_bytes(size)
+    );
     let _ = std::io::stdout().flush();
 
     std::fs::rename(&tmp, dest)

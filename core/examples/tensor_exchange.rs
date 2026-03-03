@@ -113,7 +113,9 @@ impl Codec for TensorCodec {
         protocol: &'life1 Self::Protocol,
         io: &'life2 mut T,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<Self::Response>> + Send + 'async_trait>,
+        Box<
+            dyn std::future::Future<Output = std::io::Result<Self::Response>> + Send + 'async_trait,
+        >,
     >
     where
         T: futures::AsyncRead + Unpin + Send + 'async_trait,
@@ -339,23 +341,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     // Decompress
                                     match compressor.decompress(compressed) {
                                         Ok(tensor) => {
-                                            let data: Vec<f32> =
-                                                tensor.flatten_all()?.to_vec1()?;
-                                            let mean =
-                                                data.iter().sum::<f32>() / data.len() as f32;
-                                            let min = data
+                                            let data: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
+                                            let mean = data.iter().sum::<f32>() / data.len() as f32;
+                                            let min =
+                                                data.iter().cloned().fold(f32::INFINITY, f32::min);
+                                            let max = data
                                                 .iter()
                                                 .cloned()
-                                                .fold(f32::INFINITY, f32::min);
-                                            let max =
-                                                data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                                                .fold(f32::NEG_INFINITY, f32::max);
 
                                             println!("\n  DECOMPRESSED:");
                                             println!("  Elements: {}", data.len());
                                             println!("  Mean: {:.4}", mean);
                                             println!("  Min:  {:.4}", min);
                                             println!("  Max:  {:.4}", max);
-                                            println!("  Sample values: {:?}", &data[..5.min(data.len())]);
+                                            println!(
+                                                "  Sample values: {:?}",
+                                                &data[..5.min(data.len())]
+                                            );
                                         }
                                         Err(e) => {
                                             warn!("Decompression error: {}", e);
@@ -392,10 +395,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     )) => {
                         info!("Identified: {} ({})", peer_id, info.protocol_version);
                         for addr in info.listen_addrs {
-                            swarm
-                                .behaviour_mut()
-                                .kademlia
-                                .add_address(&peer_id, addr);
+                            swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                         }
                     }
                     _ => {}
@@ -428,10 +428,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // Compress
                             println!("Compressing tensor...");
                             let compressed = compressor.compress(&tensor)?;
-                            println!(
-                                "  Original: {} bytes",
-                                shape.iter().product::<usize>() * 4
-                            );
+                            println!("  Original: {} bytes", shape.iter().product::<usize>() * 4);
                             println!("  Compressed: {} bytes", compressed.size_bytes());
                             println!("  Ratio: {:.2}x", compressed.compression_ratio());
 
@@ -455,25 +452,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     SwarmEvent::Behaviour(TensorExchangeBehaviourEvent::TensorExchange(
                         request_response::Event::Message {
-                            message:
-                                request_response::Message::Response { response, .. },
+                            message: request_response::Message::Response { response, .. },
                             ..
                         },
-                    )) => {
-                        match response.msg_type {
-                            TensorMessageType::Ack => {
-                                println!("\n  RECEIVED ACK:");
-                                println!("  For tensor: {}", response.name);
-                                println!("  Status: {}", response.metadata);
-                                println!("\n==============================");
-                                println!("Tensor exchange successful!");
-                                return Ok(());
-                            }
-                            _ => {
-                                info!("Received response: {:?}", response.msg_type);
-                            }
+                    )) => match response.msg_type {
+                        TensorMessageType::Ack => {
+                            println!("\n  RECEIVED ACK:");
+                            println!("  For tensor: {}", response.name);
+                            println!("  Status: {}", response.metadata);
+                            println!("\n==============================");
+                            println!("Tensor exchange successful!");
+                            return Ok(());
                         }
-                    }
+                        _ => {
+                            info!("Received response: {:?}", response.msg_type);
+                        }
+                    },
                     SwarmEvent::Behaviour(TensorExchangeBehaviourEvent::TensorExchange(
                         request_response::Event::OutboundFailure { error, .. },
                     )) => {

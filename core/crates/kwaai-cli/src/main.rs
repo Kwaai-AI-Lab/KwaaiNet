@@ -8,19 +8,19 @@ mod config;
 mod daemon;
 mod display;
 mod health;
+mod hf;
 mod identity;
 mod map;
 mod monitor;
 mod node;
-mod hf;
 mod ollama;
 mod service;
+mod setup;
 mod shard_api;
 mod shard_cmd;
 mod throughput;
 mod uninstall;
 mod updater;
-mod setup;
 mod vpk;
 
 use anyhow::Result;
@@ -28,11 +28,11 @@ use clap::Parser;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use cli::{Cli, Command, MonitorAction, ServiceAction, ServeArgs};
-use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
+use cli::{Cli, Command, MonitorAction, ServeArgs, ServiceAction};
 use config::KwaaiNetConfig;
 use daemon::DaemonManager;
 use display::*;
+use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -64,14 +64,30 @@ async fn main() -> Result<()> {
             let explicit_model = args.model.is_some();
 
             // Apply CLI overrides to config
-            if let Some(m) = args.model { cfg.model = m; }
-            if let Some(b) = args.blocks { cfg.blocks = b; }
-            if let Some(p) = args.port { cfg.port = p; }
-            if args.no_gpu { cfg.use_gpu = false; }
-            if let Some(n) = args.public_name { cfg.public_name = Some(n); }
-            if let Some(ip) = args.public_ip { cfg.public_ip = Some(ip); }
-            if let Some(a) = args.announce_addr { cfg.announce_addr = Some(a); }
-            if args.no_relay { cfg.no_relay = true; }
+            if let Some(m) = args.model {
+                cfg.model = m;
+            }
+            if let Some(b) = args.blocks {
+                cfg.blocks = b;
+            }
+            if let Some(p) = args.port {
+                cfg.port = p;
+            }
+            if args.no_gpu {
+                cfg.use_gpu = false;
+            }
+            if let Some(n) = args.public_name {
+                cfg.public_name = Some(n);
+            }
+            if let Some(ip) = args.public_ip {
+                cfg.public_ip = Some(ip);
+            }
+            if let Some(a) = args.announce_addr {
+                cfg.announce_addr = Some(a);
+            }
+            if args.no_relay {
+                cfg.no_relay = true;
+            }
 
             // ── Read the network map and select the best locally-available model ──
             if !explicit_model {
@@ -88,16 +104,21 @@ async fn main() -> Result<()> {
 
                     match map::fetch_map(&cfg.health_monitoring.api_endpoint).await {
                         Ok(map_state) => {
-                            println!("  Network map ({} model(s)):", map_state.model_reports.len());
+                            println!(
+                                "  Network map ({} model(s)):",
+                                map_state.model_reports.len()
+                            );
                             for r in &map_state.model_reports {
-                                let avail = local_models
-                                    .iter()
-                                    .any(|l| map::match_score(l, r) > 0);
+                                let avail = local_models.iter().any(|l| map::match_score(l, r) > 0);
                                 println!(
                                     "    {:42}  {:2} server(s)  {}",
                                     r.short_name,
                                     r.server_count(),
-                                    if avail { "✓ have locally" } else { "✗ not installed" },
+                                    if avail {
+                                        "✓ have locally"
+                                    } else {
+                                        "✗ not installed"
+                                    },
                                 );
                             }
                             println!();
@@ -111,13 +132,13 @@ async fn main() -> Result<()> {
                                         ));
                                         cfg.model = choice.ollama_ref;
                                     } else {
-                                        print_success(&format!(
-                                            "Confirmed model: {}",
-                                            cfg.model
-                                        ));
+                                        print_success(&format!("Confirmed model: {}", cfg.model));
                                     }
                                     if let Some(ref mn) = choice.map_name {
-                                        println!("    Map entry:  {}  ({} server(s))", mn, choice.server_count);
+                                        println!(
+                                            "    Map entry:  {}  ({} server(s))",
+                                            mn, choice.server_count
+                                        );
                                     }
                                     if let Some(ref dp) = choice.dht_prefix {
                                         println!("    DHT prefix: {}", dp);
@@ -232,9 +253,18 @@ async fn main() -> Result<()> {
 
             if status.running {
                 let pid = status.pid.unwrap_or(0);
-                let uptime = status.uptime_secs.map(format_uptime).unwrap_or_else(|| "unknown".to_string());
-                let cpu = status.cpu_percent.map(|c| format!("{:.1}%", c)).unwrap_or_else(|| "n/a".to_string());
-                let mem = status.memory_mb.map(|m| format!("{:.0} MB", m)).unwrap_or_else(|| "n/a".to_string());
+                let uptime = status
+                    .uptime_secs
+                    .map(format_uptime)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let cpu = status
+                    .cpu_percent
+                    .map(|c| format!("{:.1}%", c))
+                    .unwrap_or_else(|| "n/a".to_string());
+                let mem = status
+                    .memory_mb
+                    .map(|m| format!("{:.0} MB", m))
+                    .unwrap_or_else(|| "n/a".to_string());
 
                 println!("  🟢 Status:  Running");
                 println!("  🔢 PID:     {}", pid);
@@ -299,8 +329,12 @@ async fn main() -> Result<()> {
                 println!("  🔌 port:         {}", cfg.port);
                 println!("  🖥️  use_gpu:      {}", cfg.use_gpu);
                 println!("  📋 log_level:    {}", cfg.log_level);
-                if let Some(ref n) = cfg.public_name { println!("  📋 public_name:  {}", n); }
-                if let Some(ref ip) = cfg.public_ip { println!("  📋 public_ip:    {}", ip); }
+                if let Some(ref n) = cfg.public_name {
+                    println!("  📋 public_name:  {}", n);
+                }
+                if let Some(ref ip) = cfg.public_ip {
+                    println!("  📋 public_ip:    {}", ip);
+                }
                 print_separator();
             } else if let Some(kv) = args.set {
                 let key = &kv[0];
@@ -339,7 +373,9 @@ async fn main() -> Result<()> {
             let mut cfg = KwaaiNetConfig::load_or_create()?;
             cfg.health_monitoring.enabled = false;
             cfg.save()?;
-            print_success("Health monitoring disabled. Restart the node to apply: kwaainet restart");
+            print_success(
+                "Health monitoring disabled. Restart the node to apply: kwaainet restart",
+            );
         }
 
         // -------------------------------------------------------------------
@@ -363,9 +399,17 @@ async fn main() -> Result<()> {
                 ServiceAction::Status => {
                     let st = svc.status();
                     print_box_header("🔧 Auto-Start Service Status");
-                    println!("  Installed: {}", if st.installed { "✅ Yes" } else { "❌ No" });
-                    println!("  Running:   {}", if st.running { "🟢 Yes" } else { "🔴 No" });
-                    if let Some(pid) = st.pid { println!("  PID:       {}", pid); }
+                    println!(
+                        "  Installed: {}",
+                        if st.installed { "✅ Yes" } else { "❌ No" }
+                    );
+                    println!(
+                        "  Running:   {}",
+                        if st.running { "🟢 Yes" } else { "🔴 No" }
+                    );
+                    if let Some(pid) = st.pid {
+                        println!("  PID:       {}", pid);
+                    }
                     print_separator();
                 }
                 ServiceAction::Restart => {
@@ -386,7 +430,10 @@ async fn main() -> Result<()> {
             if mgr.is_running() {
                 mgr.stop_process()?;
                 let pid = DaemonManager::spawn_daemon_child(&[])?;
-                print_success(&format!("Node restarted (PID {}). Reconnecting to P2P network.", pid));
+                print_success(&format!(
+                    "Node restarted (PID {}). Reconnecting to P2P network.",
+                    pid
+                ));
             } else {
                 let svc = service::get_service_manager();
                 if svc.status().running {
@@ -403,46 +450,69 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         // monitor
         // -------------------------------------------------------------------
-        Command::Monitor(args) => {
-            match args.action {
-                MonitorAction::Stats => {
-                    print_box_header("📈 P2P Connection Statistics");
-                    match monitor::load_stats() {
-                        Some(stats) => {
-                            println!("  Samples:     {}", stats.samples);
-                            println!("  Connections: {} current / {:.1} avg", stats.current_connections, stats.avg_connections);
-                            println!("  Min/Max:     {} / {}", stats.min_connections, stats.max_connections);
-                            println!("  Uptime:      {:.1}%", stats.uptime_percent);
-                        }
-                        None => {
-                            println!("  No monitoring data yet.");
-                            print_info("Start the node and wait for data collection.");
-                        }
+        Command::Monitor(args) => match args.action {
+            MonitorAction::Stats => {
+                print_box_header("📈 P2P Connection Statistics");
+                match monitor::load_stats() {
+                    Some(stats) => {
+                        println!("  Samples:     {}", stats.samples);
+                        println!(
+                            "  Connections: {} current / {:.1} avg",
+                            stats.current_connections, stats.avg_connections
+                        );
+                        println!(
+                            "  Min/Max:     {} / {}",
+                            stats.min_connections, stats.max_connections
+                        );
+                        println!("  Uptime:      {:.1}%", stats.uptime_percent);
                     }
-                    print_separator();
-                }
-                MonitorAction::Alert(a) => {
-                    let mut cfg = monitor::load_alert_config();
-                    print_box_header("🚨 Alert Configuration");
-
-                    if a.enable { cfg.enabled = true; }
-                    if a.disable { cfg.enabled = false; }
-                    if let Some(t) = a.threshold { cfg.disconnection_threshold_minutes = t; }
-                    if let Some(url) = a.webhook { cfg.webhook_url = Some(url); }
-                    if let Some(m) = a.min_connections { cfg.min_connections = m; }
-
-                    if a.enable || a.disable || a.threshold.is_some() || a.min_connections.is_some() {
-                        monitor::save_alert_config(&cfg)?;
+                    None => {
+                        println!("  No monitoring data yet.");
+                        print_info("Start the node and wait for data collection.");
                     }
-
-                    println!("  Enabled:    {}", if cfg.enabled { "✅ Yes" } else { "❌ No" });
-                    println!("  Threshold:  {} minutes", cfg.disconnection_threshold_minutes);
-                    println!("  Min conns:  {}", cfg.min_connections);
-                    println!("  Webhook:    {}", cfg.webhook_url.as_deref().unwrap_or("Not configured"));
-                    print_separator();
                 }
+                print_separator();
             }
-        }
+            MonitorAction::Alert(a) => {
+                let mut cfg = monitor::load_alert_config();
+                print_box_header("🚨 Alert Configuration");
+
+                if a.enable {
+                    cfg.enabled = true;
+                }
+                if a.disable {
+                    cfg.enabled = false;
+                }
+                if let Some(t) = a.threshold {
+                    cfg.disconnection_threshold_minutes = t;
+                }
+                if let Some(url) = a.webhook {
+                    cfg.webhook_url = Some(url);
+                }
+                if let Some(m) = a.min_connections {
+                    cfg.min_connections = m;
+                }
+
+                if a.enable || a.disable || a.threshold.is_some() || a.min_connections.is_some() {
+                    monitor::save_alert_config(&cfg)?;
+                }
+
+                println!(
+                    "  Enabled:    {}",
+                    if cfg.enabled { "✅ Yes" } else { "❌ No" }
+                );
+                println!(
+                    "  Threshold:  {} minutes",
+                    cfg.disconnection_threshold_minutes
+                );
+                println!("  Min conns:  {}", cfg.min_connections);
+                println!(
+                    "  Webhook:    {}",
+                    cfg.webhook_url.as_deref().unwrap_or("Not configured")
+                );
+                print_separator();
+            }
+        },
 
         // -------------------------------------------------------------------
         // update
@@ -460,12 +530,18 @@ async fn main() -> Result<()> {
                 }
                 Some(info) => {
                     println!("  🎉 New version available: v{}", info.version);
-                    if let Some(ref name) = info.name { println!("  Release: {}", name); }
-                    if let Some(ref url) = info.url { println!("  Details: {}", url); }
+                    if let Some(ref name) = info.name {
+                        println!("  Release: {}", name);
+                    }
+                    if let Some(ref url) = info.url {
+                        println!("  Details: {}", url);
+                    }
                     if let Some(ref body) = info.body {
                         println!("\n  Release notes:");
                         for line in body.lines().take(5) {
-                            if !line.trim().is_empty() { println!("     {}", line); }
+                            if !line.trim().is_empty() {
+                                println!("     {}", line);
+                            }
                         }
                     }
                     println!();
@@ -493,8 +569,11 @@ async fn main() -> Result<()> {
             let engine = calibration::CalibrationEngine::new();
             let hw = &engine.hardware;
             println!("  Hardware:");
-            println!("    Memory: {} total / {} available",
-                format_bytes(hw.total_memory), format_bytes(hw.available_memory));
+            println!(
+                "    Memory: {} total / {} available",
+                format_bytes(hw.total_memory),
+                format_bytes(hw.available_memory)
+            );
             println!("    CPU cores: {}", hw.cpu_cores);
             println!();
 
@@ -512,13 +591,21 @@ async fn main() -> Result<()> {
                     let mut cfg = KwaaiNetConfig::load_or_create()?;
                     cfg.blocks = new_blocks;
                     cfg.save()?;
-                    print_success(&format!("Applied {} profile: blocks = {}", apply, new_blocks));
+                    print_success(&format!(
+                        "Applied {} profile: blocks = {}",
+                        apply, new_blocks
+                    ));
                     print_info("Restart the node to use the new setting: kwaainet restart");
                 } else {
-                    print_error(&format!("Unknown profile '{}'. Use: min, recommended, or max", apply));
+                    print_error(&format!(
+                        "Unknown profile '{}'. Use: min, recommended, or max",
+                        apply
+                    ));
                 }
             } else {
-                print_info(&format!("Apply recommended: kwaainet calibrate --apply recommended"));
+                print_info(&format!(
+                    "Apply recommended: kwaainet calibrate --apply recommended"
+                ));
             }
         }
 
@@ -541,8 +628,7 @@ async fn main() -> Result<()> {
                 sys.refresh_memory();
                 sys.total_memory() // bytes
             };
-            let max_memory = ((system_ram as f64 * 0.85) as usize)
-                .max(4 * 1024 * 1024 * 1024); // at least 4 GB
+            let max_memory = ((system_ram as f64 * 0.85) as usize).max(4 * 1024 * 1024 * 1024); // at least 4 GB
 
             let engine_config = EngineConfig {
                 max_memory,
@@ -598,7 +684,10 @@ async fn main() -> Result<()> {
                         println!("  Architecture:  {}", info.architecture);
                         println!("  Vocab size:    {}", info.vocab_size);
                         println!("  Context:       {} tokens", info.context_length);
-                        println!("  Memory usage:  {}", format_bytes(info.memory_bytes as u64));
+                        println!(
+                            "  Memory usage:  {}",
+                            format_bytes(info.memory_bytes as u64)
+                        );
                         println!("  Quantized:     {}", info.is_quantized);
                     }
                     Err(e) => {
@@ -633,7 +722,10 @@ async fn main() -> Result<()> {
                         println!("  Architecture:  {}", info.architecture);
                         println!("  Vocab size:    {}", info.vocab_size);
                         println!("  Context:       {} tokens", info.context_length);
-                        println!("  Memory usage:  {}", format_bytes(info.memory_bytes as u64));
+                        println!(
+                            "  Memory usage:  {}",
+                            format_bytes(info.memory_bytes as u64)
+                        );
                         println!("  Quantized:     {}", info.is_quantized);
                     }
                     Err(e) => {
@@ -664,8 +756,7 @@ async fn main() -> Result<()> {
                 sys.total_memory()
             };
             let engine_config = EngineConfig {
-                max_memory: ((system_ram as f64 * 0.85) as usize)
-                    .max(4 * 1024 * 1024 * 1024),
+                max_memory: ((system_ram as f64 * 0.85) as usize).max(4 * 1024 * 1024 * 1024),
                 ..EngineConfig::default()
             };
 
@@ -681,22 +772,34 @@ async fn main() -> Result<()> {
             let handle = if is_hf {
                 let snapshot = match hf::resolve_snapshot(&args.model) {
                     Ok(p) => p,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 };
                 println!("  Loading SafeTensors shards…");
                 match engine.load_model(&snapshot, ModelFormat::SafeTensors) {
                     Ok(h) => h,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 }
             } else {
                 let blob = match ollama::resolve_model_blob(&args.model) {
                     Ok(p) => p,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 };
                 println!("  Loading GGUF blob…");
                 match engine.load_model(&blob, ModelFormat::Gguf) {
                     Ok(h) => h,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 }
             };
 
@@ -717,7 +820,10 @@ async fn main() -> Result<()> {
                             .map(|i| i.hidden_dim)
                             .unwrap_or(4096);
                         println!();
-                        println!("  Throughput: {:.1} tok/s  (hidden_dim={})", tps, hidden_size);
+                        println!(
+                            "  Throughput: {:.1} tok/s  (hidden_dim={})",
+                            tps, hidden_size
+                        );
                         if let Err(e) = throughput::save(&args.model, tps, hidden_size) {
                             eprintln!("  Warning: could not save throughput cache: {e}");
                         }
@@ -750,36 +856,50 @@ async fn main() -> Result<()> {
                 sys.total_memory()
             };
             let engine_config = EngineConfig {
-                max_memory: ((system_ram as f64 * 0.85) as usize)
-                    .max(4 * 1024 * 1024 * 1024),
+                max_memory: ((system_ram as f64 * 0.85) as usize).max(4 * 1024 * 1024 * 1024),
                 ..EngineConfig::default()
             };
 
             let mut engine = match InferenceEngine::new(engine_config) {
                 Ok(e) => e,
-                Err(e) => { print_error(&format!("Engine init failed: {e}")); return Ok(()); }
+                Err(e) => {
+                    print_error(&format!("Engine init failed: {e}"));
+                    return Ok(());
+                }
             };
 
             let is_hf = model.contains('/') && !model.starts_with("hf.co/");
             let handle = if is_hf {
                 let snapshot = match hf::resolve_snapshot(&model) {
                     Ok(p) => p,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 };
                 println!("  Loading SafeTensors shards…");
                 match engine.load_model(&snapshot, ModelFormat::SafeTensors) {
                     Ok(h) => h,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 }
             } else {
                 let blob = match ollama::resolve_model_blob(&model) {
                     Ok(p) => p,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 };
                 println!("  Loading GGUF blob…");
                 match engine.load_model(&blob, ModelFormat::Gguf) {
                     Ok(h) => h,
-                    Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+                    Err(e) => {
+                        print_error(&format!("{e}"));
+                        return Ok(());
+                    }
                 }
             };
 
@@ -857,7 +977,10 @@ async fn main() -> Result<()> {
                 std::fs::create_dir_all(config::log_dir())?;
 
                 print_success("Directories created");
-                print_success(&format!("Config written to {}", config::config_file().display()));
+                print_success(&format!(
+                    "Config written to {}",
+                    config::config_file().display()
+                ));
                 println!();
                 println!("  Model:  {}", cfg.model);
                 println!("  Blocks: {}", cfg.blocks);
@@ -909,22 +1032,34 @@ async fn serve_command(args: ServeArgs) -> Result<()> {
     let handle = if is_hf {
         let snapshot = match hf::resolve_snapshot(&model) {
             Ok(p) => p,
-            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+            Err(e) => {
+                print_error(&format!("{e}"));
+                return Ok(());
+            }
         };
         println!("  Loading SafeTensors shards…");
         match engine.load_model(&snapshot, ModelFormat::SafeTensors) {
             Ok(h) => h,
-            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+            Err(e) => {
+                print_error(&format!("{e}"));
+                return Ok(());
+            }
         }
     } else {
         let blob = match ollama::resolve_model_blob(&model) {
             Ok(p) => p,
-            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+            Err(e) => {
+                print_error(&format!("{e}"));
+                return Ok(());
+            }
         };
         println!("  Loading GGUF blob…");
         match engine.load_model(&blob, ModelFormat::Gguf) {
             Ok(h) => h,
-            Err(e) => { print_error(&format!("{e}")); return Ok(()); }
+            Err(e) => {
+                print_error(&format!("{e}"));
+                return Ok(());
+            }
         }
     };
 

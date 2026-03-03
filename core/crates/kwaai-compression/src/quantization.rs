@@ -34,7 +34,11 @@ impl Compressor for BlockwiseQuantizer {
     type Compressed = QuantizedTensor;
 
     fn compress(&self, tensor: &Tensor) -> CompressionResult<QuantizedTensor> {
-        debug!("Quantizing tensor shape={:?} block_size={}", tensor.dims(), self.block_size);
+        debug!(
+            "Quantizing tensor shape={:?} block_size={}",
+            tensor.dims(),
+            self.block_size
+        );
         let data = tensor
             .flatten_all()?
             .to_vec1::<f32>()
@@ -45,16 +49,9 @@ impl Compressor for BlockwiseQuantizer {
 
         for block in data.chunks(self.block_size) {
             // Find max absolute value in block
-            let max_abs = block
-                .iter()
-                .map(|x| x.abs())
-                .fold(0.0f32, f32::max);
+            let max_abs = block.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
 
-            let scale = if max_abs > 0.0 {
-                max_abs / 127.0
-            } else {
-                1.0
-            };
+            let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
             scales.push(f16::from_f32(scale));
 
             // Quantize block
@@ -74,7 +71,11 @@ impl Compressor for BlockwiseQuantizer {
             shape: tensor.dims().to_vec(),
             block_size: self.block_size,
         };
-        debug!("Quantized tensor: ratio={:.2}x, {} bytes", qt.compression_ratio(), qt.size_bytes());
+        debug!(
+            "Quantized tensor: ratio={:.2}x, {} bytes",
+            qt.compression_ratio(),
+            qt.size_bytes()
+        );
         Ok(qt)
     }
 
@@ -83,7 +84,11 @@ impl Compressor for BlockwiseQuantizer {
         let mut data = Vec::with_capacity(compressed.data.len());
 
         for (block_idx, block) in compressed.data.chunks(compressed.block_size).enumerate() {
-            let scale = compressed.scales.get(block_idx).map(|s| s.to_f32()).unwrap_or(1.0);
+            let scale = compressed
+                .scales
+                .get(block_idx)
+                .map(|s| s.to_f32())
+                .unwrap_or(1.0);
             for &q in block {
                 data.push(q as f32 * scale);
             }

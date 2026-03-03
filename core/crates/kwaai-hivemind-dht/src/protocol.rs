@@ -126,9 +126,9 @@ pub struct PingResponse {
     pub auth: Option<ResponseAuthInfo>,
     #[prost(message, optional, tag = "2")]
     pub peer: Option<NodeInfo>,
-    #[prost(double, tag = "4")]  // NOTE: Field 4, not 3!
+    #[prost(double, tag = "4")] // NOTE: Field 4, not 3!
     pub dht_time: f64,
-    #[prost(bool, tag = "5")]    // NOTE: Field 5, not 4!
+    #[prost(bool, tag = "5")] // NOTE: Field 5, not 4!
     pub available: bool,
 }
 
@@ -333,7 +333,12 @@ impl FindResult {
     }
 
     /// Create a "found regular" result
-    pub fn found_regular(value: Vec<u8>, expiration_time: f64, nearest_node_ids: Vec<Vec<u8>>, nearest_peer_ids: Vec<Vec<u8>>) -> Self {
+    pub fn found_regular(
+        value: Vec<u8>,
+        expiration_time: f64,
+        nearest_node_ids: Vec<Vec<u8>>,
+        nearest_peer_ids: Vec<Vec<u8>>,
+    ) -> Self {
         Self {
             result_type: ResultType::FoundRegular as i32,
             value,
@@ -344,7 +349,12 @@ impl FindResult {
     }
 
     /// Create a "found dictionary" result
-    pub fn found_dictionary(value: Vec<u8>, expiration_time: f64, nearest_node_ids: Vec<Vec<u8>>, nearest_peer_ids: Vec<Vec<u8>>) -> Self {
+    pub fn found_dictionary(
+        value: Vec<u8>,
+        expiration_time: f64,
+        nearest_node_ids: Vec<Vec<u8>>,
+        nearest_peer_ids: Vec<Vec<u8>>,
+    ) -> Self {
         Self {
             result_type: ResultType::FoundDictionary as i32,
             value,
@@ -366,8 +376,14 @@ impl FindResponse {
     }
 
     /// Create a "not found" response for all keys with nearest peers
-    pub fn not_found(peer: NodeInfo, count: usize, nearest_node_ids: Vec<Vec<u8>>, nearest_peer_ids: Vec<Vec<u8>>) -> Self {
-        let results = vec![FindResult::not_found(nearest_node_ids.clone(), nearest_peer_ids.clone()); count];
+    pub fn not_found(
+        peer: NodeInfo,
+        count: usize,
+        nearest_node_ids: Vec<Vec<u8>>,
+        nearest_peer_ids: Vec<Vec<u8>>,
+    ) -> Self {
+        let results =
+            vec![FindResult::not_found(nearest_node_ids.clone(), nearest_peer_ids.clone()); count];
         Self {
             auth: Some(ResponseAuthInfo::new()),
             results,

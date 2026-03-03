@@ -140,17 +140,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build();
 
     // Listen
-    let listen_addr: Multiaddr = format!(
-        "/ip4/0.0.0.0/tcp/{}",
-        listen_port.unwrap_or(0)
-    ).parse()?;
+    let listen_addr: Multiaddr =
+        format!("/ip4/0.0.0.0/tcp/{}", listen_port.unwrap_or(0)).parse()?;
     swarm.listen_on(listen_addr)?;
 
     // Bootstrap if address provided
     if let Some(addr) = bootstrap_addr.clone() {
         info!("Bootstrapping to: {}", addr);
         if let Some(peer_id) = extract_peer_id(&addr) {
-            swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, addr.clone());
             swarm.dial(addr)?;
         }
     }
@@ -199,7 +200,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed {
-                    result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
+                    result:
+                        QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                            providers,
+                            ..
+                        })),
                     ..
                 },
             )) => {
@@ -207,7 +212,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 info!("Found {} provider(s)", provider_count);
 
                 if provider_count > 0 {
-                    println!("\n  SUCCESS: Found {} provider(s) for capability:\n", provider_count);
+                    println!(
+                        "\n  SUCCESS: Found {} provider(s) for capability:\n",
+                        provider_count
+                    );
                     for provider in &providers {
                         println!("    - {}", provider);
                     }
@@ -218,7 +226,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed {
-                    result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. })),
+                    result:
+                        QueryResult::GetProviders(Ok(
+                            kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
+                        )),
                     ..
                 },
             )) => {
@@ -230,7 +241,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     ..
                 },
             )) => {
-                info!("Successfully registered as provider: {:?}", add_provider.key);
+                info!(
+                    "Successfully registered as provider: {:?}",
+                    add_provider.key
+                );
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Identify(
                 identify::Event::Received { peer_id, info },

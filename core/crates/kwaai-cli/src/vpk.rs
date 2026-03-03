@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use std::time::Duration;
 
 use kwaai_hivemind_dht::protocol::{FindRequest, FindResponse, NodeInfo, RequestAuthInfo};
-use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
 use kwaai_p2p::NetworkConfig;
+use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
 use libp2p::PeerId;
 use prost::Message as _;
 use sha1::{Digest, Sha1};
@@ -24,7 +24,11 @@ use crate::display::*;
 
 pub async fn run(args: VpkArgs) -> Result<()> {
     match args.action {
-        VpkAction::Enable { mode, endpoint, port } => enable(mode, endpoint, port),
+        VpkAction::Enable {
+            mode,
+            endpoint,
+            port,
+        } => enable(mode, endpoint, port),
         VpkAction::Disable => disable(),
         VpkAction::Status => status().await,
         VpkAction::Discover => discover().await,
@@ -110,7 +114,7 @@ async fn status() -> Result<()> {
     println!("  Port:     {}", port);
     match &cfg.vpk_endpoint {
         Some(ep) => println!("  Endpoint: {}", ep),
-        None     => println!("  Endpoint: (local-only, not advertised)"),
+        None => println!("  Endpoint: (local-only, not advertised)"),
     }
     println!();
 
@@ -122,31 +126,32 @@ async fn status() -> Result<()> {
 
     print!("  Local VPK: ");
     match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<serde_json::Value>().await {
-                Ok(json) => {
-                    let health_status = json["status"].as_str().unwrap_or("ok");
-                    let tenant_count  = json["tenant_count"].as_u64().unwrap_or(0);
-                    let capacity_gb   = json["capacity_gb_available"].as_f64().unwrap_or(0.0);
-                    let version       = json["version"].as_str().unwrap_or("unknown");
-                    let peer_id_cfg   = json["peer_id"].as_str().unwrap_or("(not set)");
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(json) => {
+                let health_status = json["status"].as_str().unwrap_or("ok");
+                let tenant_count = json["tenant_count"].as_u64().unwrap_or(0);
+                let capacity_gb = json["capacity_gb_available"].as_f64().unwrap_or(0.0);
+                let version = json["version"].as_str().unwrap_or("unknown");
+                let peer_id_cfg = json["peer_id"].as_str().unwrap_or("(not set)");
 
-                    println!("🟢 {}", health_status);
-                    println!("  Version:   {}", version);
-                    println!("  Tenants:   {}", tenant_count);
-                    println!("  Capacity:  {:.1} GB available", capacity_gb);
-                    println!("  Peer ID:   {}", peer_id_cfg);
-                }
-                Err(_) => println!("🟢 reachable (non-JSON response)"),
+                println!("🟢 {}", health_status);
+                println!("  Version:   {}", version);
+                println!("  Tenants:   {}", tenant_count);
+                println!("  Capacity:  {:.1} GB available", capacity_gb);
+                println!("  Peer ID:   {}", peer_id_cfg);
             }
-        }
+            Err(_) => println!("🟢 reachable (non-JSON response)"),
+        },
         Ok(resp) => {
             println!("🟡 HTTP {}", resp.status());
         }
         Err(e) => {
             println!("🔴 unreachable");
             println!();
-            print_warning(&format!("VPK not responding on port {} — is it running?", port));
+            print_warning(&format!(
+                "VPK not responding on port {} — is it running?",
+                port
+            ));
             print_info(&format!("Error: {}", e));
         }
     }
@@ -191,8 +196,7 @@ async fn discover() -> Result<()> {
 
     // Identify ourselves so we can populate the FindRequest's peer field.
     let peer_id_hex = client.identify().await.context("identify peer")?;
-    let peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?)
-        .context("parse peer ID")?;
+    let peer_id = PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse peer ID")?;
 
     let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
         NetworkConfig::with_petals_bootstrap().bootstrap_peers
@@ -205,7 +209,10 @@ async fn discover() -> Result<()> {
     // Raw PeerId bytes are 38+ bytes and fail that check, so we SHA1 them first —
     // same as DHTID.generate(peer_id.to_bytes()) in Python.
     let key = vpk_dht_id("_kwaai.vpk.nodes");
-    let our_dhtid = Sha1::new().chain_update(peer_id.to_bytes()).finalize().to_vec();
+    let our_dhtid = Sha1::new()
+        .chain_update(peer_id.to_bytes())
+        .finalize()
+        .to_vec();
     let find_req = FindRequest {
         auth: Some(RequestAuthInfo::new()),
         keys: vec![key],
@@ -218,7 +225,9 @@ async fn discover() -> Result<()> {
     let mut found: Vec<VpkNodeEntry> = Vec::new();
 
     for addr in &bootstrap_peers {
-        let Some(peer_id_str) = addr.split("/p2p/").nth(1) else { continue };
+        let Some(peer_id_str) = addr.split("/p2p/").nth(1) else {
+            continue;
+        };
         let bp = match peer_id_str.parse::<PeerId>() {
             Ok(p) => p,
             Err(_) => continue,
@@ -237,7 +246,9 @@ async fn discover() -> Result<()> {
             Err(_) => continue,
         };
 
-        let Ok(resp) = FindResponse::decode(&resp_bytes[..]) else { continue };
+        let Ok(resp) = FindResponse::decode(&resp_bytes[..]) else {
+            continue;
+        };
 
         for result in resp.results {
             let rt = result.result_type;

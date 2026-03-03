@@ -117,7 +117,10 @@ impl DecentralizedAverager {
     }
 
     /// Compress gradients for transmission
-    pub fn compress_gradients(&self, gradients: &[Tensor]) -> DistributedResult<Vec<QuantizedTensor>> {
+    pub fn compress_gradients(
+        &self,
+        gradients: &[Tensor],
+    ) -> DistributedResult<Vec<QuantizedTensor>> {
         debug!("Compressing {} gradient tensors", gradients.len());
         gradients
             .iter()
@@ -126,16 +129,26 @@ impl DecentralizedAverager {
     }
 
     /// Decompress received gradients
-    pub fn decompress_gradients(&self, compressed: &[QuantizedTensor]) -> DistributedResult<Vec<Tensor>> {
+    pub fn decompress_gradients(
+        &self,
+        compressed: &[QuantizedTensor],
+    ) -> DistributedResult<Vec<Tensor>> {
         debug!("Decompressing {} gradient tensors", compressed.len());
         compressed
             .iter()
-            .map(|c| self.compressor.decompress(c).map_err(DistributedError::from))
+            .map(|c| {
+                self.compressor
+                    .decompress(c)
+                    .map_err(DistributedError::from)
+            })
             .collect()
     }
 
     /// Average multiple gradient sets
-    pub fn average_gradients(&self, gradient_sets: &[Vec<Tensor>]) -> DistributedResult<Vec<Tensor>> {
+    pub fn average_gradients(
+        &self,
+        gradient_sets: &[Vec<Tensor>],
+    ) -> DistributedResult<Vec<Tensor>> {
         if gradient_sets.is_empty() {
             warn!("average_gradients called with no gradient sets");
             return Err(DistributedError::AveragingFailed(
@@ -182,7 +195,11 @@ impl ParameterAverager for DecentralizedAverager {
             }
         }
         self.accumulation_count += 1;
-        debug!(count = self.accumulation_count, tensors = gradients.len(), "Accumulated gradients");
+        debug!(
+            count = self.accumulation_count,
+            tensors = gradients.len(),
+            "Accumulated gradients"
+        );
         Ok(())
     }
 

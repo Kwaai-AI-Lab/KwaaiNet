@@ -62,10 +62,7 @@ impl Codec for HivemindCodec {
         io.read_exact(&mut buf).await?;
 
         if buf.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Empty message",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty message"));
         }
 
         let marker = buf[0];
@@ -118,10 +115,7 @@ impl Codec for HivemindCodec {
         io.read_exact(&mut buf).await?;
 
         if buf.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Empty response",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty response"));
         }
 
         let marker = buf[0];
@@ -259,10 +253,7 @@ impl RpcHandler {
 // =============================================================================
 
 /// Create a Hivemind RPC protocol configuration
-pub fn create_hivemind_protocol() -> (
-    request_response::Behaviour<HivemindCodec>,
-    StreamProtocol,
-) {
+pub fn create_hivemind_protocol() -> (request_response::Behaviour<HivemindCodec>, StreamProtocol) {
     let protocol = StreamProtocol::new(HIVEMIND_PROTOCOL);
     let codec = HivemindCodec;
 
@@ -287,9 +278,7 @@ mod tests {
 
         let handler = RpcHandler::new(info);
 
-        let request = RpcRequest::Info(ExpertUID {
-            uid: String::new(),
-        });
+        let request = RpcRequest::Info(ExpertUID { uid: String::new() });
 
         match handler.handle_request(request) {
             RpcResponse::Info(expert_info) => {

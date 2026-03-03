@@ -68,12 +68,7 @@ pub struct TopKRouter {
 
 impl TopKRouter {
     /// Create a new top-k router
-    pub fn new(
-        gate_weights: Tensor,
-        top_k: usize,
-        num_experts: usize,
-        aux_loss_coef: f32,
-    ) -> Self {
+    pub fn new(gate_weights: Tensor, top_k: usize, num_experts: usize, aux_loss_coef: f32) -> Self {
         Self {
             gate_weights,
             top_k,
@@ -180,7 +175,10 @@ impl DistributedMoE {
 
     /// Register remote expert location
     pub fn register_remote_expert(&mut self, expert_id: ExpertId, peer_id: String) {
-        debug!("Registering remote expert {} in MoE layer at peer {}", expert_id, peer_id);
+        debug!(
+            "Registering remote expert {} in MoE layer at peer {}",
+            expert_id, peer_id
+        );
         self.registry.register_remote(expert_id, peer_id);
     }
 }

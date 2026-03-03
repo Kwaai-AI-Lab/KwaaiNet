@@ -52,7 +52,11 @@ impl HealthMonitor {
             ..Default::default()
         };
 
-        Self { config, metrics, client }
+        Self {
+            config,
+            metrics,
+            client,
+        }
     }
 
     /// Run the health monitoring loop indefinitely.
@@ -61,7 +65,10 @@ impl HealthMonitor {
             info!("Health monitoring disabled");
             return;
         }
-        info!("Health monitor starting (interval={}s)", self.config.check_interval);
+        info!(
+            "Health monitor starting (interval={}s)",
+            self.config.check_interval
+        );
 
         loop {
             let status = self.check_once().await;
@@ -142,7 +149,14 @@ impl HealthMonitor {
 }
 
 /// Compute backoff delay for attempt N (1-based).
-pub fn backoff_delay(attempt: u32, initial_delay: u64, max_delay: u64, multiplier: f64, jitter: bool, jitter_factor: f64) -> Duration {
+pub fn backoff_delay(
+    attempt: u32,
+    initial_delay: u64,
+    max_delay: u64,
+    multiplier: f64,
+    jitter: bool,
+    jitter_factor: f64,
+) -> Duration {
     let delay = (initial_delay as f64 * multiplier.powi(attempt as i32 - 1)) as u64;
     let delay = delay.min(max_delay);
     let delay = if jitter {
