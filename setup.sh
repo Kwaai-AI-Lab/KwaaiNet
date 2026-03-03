@@ -135,16 +135,25 @@ if [ -n "$GO_ACTION" ]; then
     rm "go${GO_VERSION}.${GO_OS}-${GO_ARCH}.tar.gz"
 
     export PATH=$PATH:/usr/local/go/bin
+    RC_UPDATED=false
     if [[ "$SHELL" == */zsh ]]; then
-        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.zshrc  || echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc
+        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.zshrc  || { echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc;  RC_UPDATED=true; }
     else
-        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.bashrc || echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.bashrc || { echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc; RC_UPDATED=true; }
     fi
 
     if [ "$GO_ACTION" = "install" ]; then
         echo "✅ Go installed: $(go version)"
     else
         echo "✅ Go upgraded to: $(go version)"
+    fi
+
+    if [ "$RC_UPDATED" = true ]; then
+        if [[ "$SHELL" == */zsh ]]; then
+            echo "⚠️  Run 'source ~/.zshrc' to update your PATH for Go."
+        else
+            echo "⚠️  Run 'source ~/.bashrc' to update your PATH for Go."
+        fi
     fi
 fi
 
