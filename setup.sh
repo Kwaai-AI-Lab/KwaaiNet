@@ -102,14 +102,14 @@ else
     GO_MAJOR=$(echo $GO_VERSION | cut -d. -f1)
     GO_MINOR=$(echo $GO_VERSION | cut -d. -f2)
 
-    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 20 ]); then
-        echo "⚠️  Go version $GO_VERSION is too old (need 1.20+)"
+    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 22 ]); then
+        echo "⚠️  Go version $GO_VERSION is too old (need 1.22+)"
         GO_ACTION="upgrade"
     fi
 fi
 
 if [ -n "$GO_ACTION" ]; then
-    GO_VERSION="1.21.13"
+    GO_VERSION="1.22.12"
     echo "📦 Installing Go ${GO_VERSION}..."
 
     case "$OSTYPE" in
