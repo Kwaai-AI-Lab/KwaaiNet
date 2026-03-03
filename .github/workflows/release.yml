@@ -463,15 +463,52 @@ jobs:
           done
           git push
 
+  publish-crates:
+    needs:
+      - plan
+      - host
+    runs-on: "ubuntu-22.04"
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install OpenSSL
+        run: sudo apt-get update -q && sudo apt-get install -y -q libssl-dev pkg-config
+      - name: Publish crates to crates.io
+        working-directory: core
+        run: |
+          for crate in \
+            kwaai-compression \
+            kwaai-trust \
+            kwaai-p2p \
+            kwaai-hivemind-dht \
+            kwaai-distributed \
+            kwaai-inference \
+            kwaai-p2p-daemon \
+            kwaai-wasm \
+            kwaai-cli; do
+            echo "=== publishing ${crate} ==="
+            cargo publish --dry-run  -p "${crate}"
+            echo "waiting for crates.io index..."
+            sleep 30
+          done
+
   announce:
     needs:
       - plan
       - host
       - publish-homebrew-formula
+      - publish-crates
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') && (needs.publish-crates.result == 'skipped' || needs.publish-crates.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
