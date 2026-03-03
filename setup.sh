@@ -95,10 +95,17 @@ if ! command -v go &> /dev/null; then
     echo "📦 Installing Go 1.21..."
 
     if [ "$OS" = "linux" ]; then
-        wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
-        sudo rm -rf /usr/local/go
-        sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
-        rm go1.21.13.linux-amd64.tar.gz
+        if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+            wget https://go.dev/dl/go1.21.13.linux-arm64.tar.gz
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf go1.21.13.linux-arm64.tar.gz
+            rm go1.21.13.linux-arm64.tar.gz
+        else
+            wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
+            rm go1.21.13.linux-amd64.tar.gz
+        fi
 
         export PATH=$PATH:/usr/local/go/bin
         echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
@@ -133,10 +140,17 @@ else
         echo "📦 Installing Go 1.21..."
 
         if [ "$OS" = "linux" ]; then
-            wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
-            sudo rm -rf /usr/local/go
-            sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
-            rm go1.21.13.linux-amd64.tar.gz
+            if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+                wget https://go.dev/dl/go1.21.13.linux-arm64.tar.gz
+                sudo rm -rf /usr/local/go
+                sudo tar -C /usr/local -xzf go1.21.13.linux-arm64.tar.gz
+                rm go1.21.13.linux-arm64.tar.gz
+            else
+                wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
+                sudo rm -rf /usr/local/go
+                sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
+                rm go1.21.13.linux-amd64.tar.gz
+            fi
         else
             if [ "$(uname -m)" = "arm64" ]; then
                 wget https://go.dev/dl/go1.21.13.darwin-arm64.tar.gz
