@@ -16,11 +16,9 @@ fn model_total_blocks(model: &str) -> u32 {
         40
     } else if model.contains("llama-2") && model.contains("70b") {
         80
-    } else if model.contains("mistral") && model.contains("7b") {
-        32
     } else {
-        32
-    } // safe default
+        32 // safe default (includes mistral-7b and unknown models)
+    }
 }
 
 /// Memory per block in bytes (float16)

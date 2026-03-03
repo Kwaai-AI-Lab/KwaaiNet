@@ -47,7 +47,7 @@ impl UpdateChecker {
     }
 
     /// Check for a newer release. Returns `Some(UpdateInfo)` if one exists.
-    pub async fn check(self: &Self, force: bool) -> Result<Option<UpdateInfo>> {
+    pub async fn check(&self, force: bool) -> Result<Option<UpdateInfo>> {
         if !force {
             if let Some(cached) = self.load_cache() {
                 return Ok(cached);
@@ -121,7 +121,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
         let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
         (
-            parts.get(0).copied().unwrap_or(0),
+            parts.first().copied().unwrap_or(0),
             parts.get(1).copied().unwrap_or(0),
             parts.get(2).copied().unwrap_or(0),
         )

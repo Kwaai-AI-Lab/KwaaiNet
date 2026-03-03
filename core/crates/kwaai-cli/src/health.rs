@@ -1,4 +1,5 @@
 //! Health monitoring with exponential backoff reconnection
+#![allow(dead_code)]
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

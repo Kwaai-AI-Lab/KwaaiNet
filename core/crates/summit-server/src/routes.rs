@@ -1,7 +1,5 @@
 //! Axum route handlers for WebAuthn registration, authentication, and VC operations.
 
-use std::sync::Arc;
-
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -239,7 +237,7 @@ pub async fn auth_complete(
     }
 
     let (user_id, _) = rows[0];
-    let mut passkeys: Vec<Passkey> = rows
+    let _passkeys: Vec<Passkey> = rows
         .iter()
         .filter_map(|(_, json)| serde_json::from_str(json).ok())
         .collect();

@@ -29,6 +29,7 @@ pub struct MapModelReport {
     pub repository: String,
     /// Total transformer blocks in the full model.
     #[serde(default)]
+    #[allow(dead_code)]
     pub num_blocks: u32,
     /// Each entry is one server row — we only need the count.
     #[serde(default)]
@@ -91,7 +92,7 @@ pub fn match_score(ollama_ref: &str, map_model: &MapModelReport) -> u32 {
     let model_part = map_model
         .short_name
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or(&map_model.short_name);
     let candidates = [
         normalize(&map_model.short_name),

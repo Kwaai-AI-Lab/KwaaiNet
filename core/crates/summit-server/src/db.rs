@@ -61,6 +61,7 @@ pub async fn insert_passkey_credential(
 }
 
 /// Returns `(user_id, did_key, passkey_json)` for all credentials matching the given ids.
+#[allow(dead_code)]
 pub async fn get_passkeys_by_credential_ids(
     pool: &Pool,
     cred_ids: &[Vec<u8>],

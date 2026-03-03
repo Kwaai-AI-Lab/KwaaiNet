@@ -611,9 +611,7 @@ async fn main() -> Result<()> {
                     ));
                 }
             } else {
-                print_info(&format!(
-                    "Apply recommended: kwaainet calibrate --apply recommended"
-                ));
+                print_info("Apply recommended: kwaainet calibrate --apply recommended");
             }
         }
 

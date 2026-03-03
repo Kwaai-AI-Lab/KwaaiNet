@@ -231,7 +231,7 @@ async fn run_inference(
         };
 
         let logits_bytes = match forward_through_chain(
-            &mut *client_guard,
+            &mut client_guard,
             &state.chain,
             state.total_blocks,
             session_id,
@@ -523,7 +523,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     let dht_prefix = match &cfg.model_dht_prefix {
         Some(p) => p.clone(),
         None => {
-            let base = model_ref.split('/').last().unwrap_or(&model_ref);
+            let base = model_ref.split('/').next_back().unwrap_or(&model_ref);
             base.replace('.', "-")
         }
     };

@@ -29,6 +29,7 @@ use kwaai_trust::{verify, CredentialStore, TrustScore, VerifiableCredential};
 /// The node's persistent Ed25519 identity
 pub struct NodeIdentity {
     /// The full keypair — retained for Phase 4 peer endorsement signing
+    #[allow(dead_code)]
     pub keypair: Keypair,
     pub peer_id: PeerId,
 }
@@ -219,8 +220,8 @@ async fn list_vcs() -> Result<()> {
 
 fn print_vc_table(vcs: &[VerifiableCredential]) {
     println!(
-        "    {:<24} {:<12} {:<10}  {}",
-        "Type", "Issued", "Status", "Issuer"
+        "    {:<24} {:<12} {:<10}  Issuer",
+        "Type", "Issued", "Status"
     );
     println!("    {}", "-".repeat(72));
     for vc in vcs {

@@ -66,7 +66,7 @@ pub fn resolve_model_blob(model_ref: &str) -> Result<PathBuf> {
 }
 
 /// Find the manifest file for a model reference.
-fn find_manifest(model_ref: &str, manifests_root: &PathBuf) -> Result<PathBuf> {
+fn find_manifest(model_ref: &str, manifests_root: &Path) -> Result<PathBuf> {
     // Split off the tag, defaulting to "latest".
     let (name, tag) = model_ref.rsplit_once(':').unwrap_or((model_ref, "latest"));
 

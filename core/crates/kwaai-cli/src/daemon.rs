@@ -81,6 +81,7 @@ impl DaemonManager {
 
         let file = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false) // lock file; content irrelevant, we only use flock
             .write(true)
             .open(&self.lock_file)
             .with_context(|| format!("opening lock file {}", self.lock_file.display()))?;
@@ -160,6 +161,7 @@ impl DaemonManager {
     // Status file (JSON)
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     pub fn write_status(&self, status: &NodeStatus) -> Result<()> {
         let text = serde_json::to_string_pretty(status).context("serializing status")?;
         std::fs::write(&self.status_file, text)
@@ -270,6 +272,7 @@ impl DaemonManager {
 
 #[cfg(unix)]
 extern "C" {
+    #[allow(dead_code)]
     fn libc_setsid() -> i32;
 }
 

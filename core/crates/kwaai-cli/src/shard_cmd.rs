@@ -129,6 +129,9 @@ pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
         (s, e)
     } else {
         // --start-block was explicitly provided; sync config so the DHT announcer matches.
+        // Safety: the outer condition is `args.auto || args.start_block.is_none()`, so this
+        // else branch is only reached when start_block is Some.
+        #[allow(clippy::unnecessary_unwrap)]
         let s = args.start_block.unwrap() as usize;
         let e = s + target_blocks;
         let mut updated = cfg.clone();
@@ -338,9 +341,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         println!("no nodes found");
         println!();
         print_warning("No block servers found in DHT for this model.");
-        print_info(&format!(
-            "Start serving with: kwaainet shard serve --model <path>"
-        ));
+        print_info("Start serving with: kwaainet shard serve --model <path>");
         print_separator();
         return Ok(());
     }
@@ -576,9 +577,7 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
     // Build coverage bitmap
     let mut covered = vec![false; total_blocks];
     for entry in &chain {
-        for b in entry.start_block..entry.end_block.min(total_blocks) {
-            covered[b] = true;
-        }
+        covered[entry.start_block..entry.end_block.min(total_blocks)].fill(true);
     }
     let n_covered = covered.iter().filter(|&&c| c).count();
 
@@ -589,8 +588,8 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
         total_blocks
     );
     println!(
-        "  {:<6} {:<6} {:<18} {}",
-        "START", "END", "PEER ID (prefix)", "NAME"
+        "  {:<6} {:<6} {:<18} NAME",
+        "START", "END", "PEER ID (prefix)"
     );
     println!("  {}", "─".repeat(60));
     for entry in &chain {
@@ -611,8 +610,8 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
 
     // Coverage bar
     print!("  Blocks: [");
-    for b in 0..total_blocks {
-        print!("{}", if covered[b] { "█" } else { "░" });
+    for &c in &covered {
+        print!("{}", if c { "█" } else { "░" });
     }
     println!("]");
     println!();
@@ -744,9 +743,7 @@ async fn pick_gap_blocks(
 
     let mut covered = vec![false; total_blocks];
     for e in &chain {
-        for b in e.start_block..e.end_block.min(total_blocks) {
-            covered[b] = true;
-        }
+        covered[e.start_block..e.end_block.min(total_blocks)].fill(true);
     }
 
     let start = covered.iter().position(|&c| !c).ok_or_else(|| {
@@ -928,7 +925,7 @@ pub async fn forward_through_chain(
         let mut succeeded = false;
         for candidate in &candidates {
             // Self-bypass: avoid libp2p "dial to self" by using the local TCP server.
-            let is_self = our_peer_id.map_or(false, |id| id == &candidate.peer_id);
+            let is_self = our_peer_id == Some(&candidate.peer_id);
             let result = if is_self {
                 match local_port {
                     Some(port) => local_inference_call(port, &request).await,
@@ -1100,22 +1097,21 @@ fn block_dht_id(prefix: &str, block: usize) -> Vec<u8> {
 /// (e.g. when running multiple nodes on the same machine).
 pub fn daemon_socket() -> String {
     #[cfg(unix)]
-    {
+    let addr = {
         let sock =
             std::env::var("KWAAINET_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
-        return format!("/unix/{}", sock);
-    }
+        format!("/unix/{}", sock)
+    };
     #[cfg(not(unix))]
-    return "/ip4/127.0.0.1/tcp/5005".to_string();
+    let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+    addr
 }
 
 /// Check whether chain entries cover every block in `0..total_blocks`.
 fn coverage_check(chain: &[BlockServerEntry], total_blocks: usize) -> bool {
     let mut covered = vec![false; total_blocks];
     for entry in chain {
-        for b in entry.start_block..entry.end_block.min(total_blocks) {
-            covered[b] = true;
-        }
+        covered[entry.start_block..entry.end_block.min(total_blocks)].fill(true);
     }
     covered.iter().all(|&c| c)
 }
@@ -1237,6 +1233,6 @@ fn rand_session_id() -> u64 {
 /// Derive a DHT prefix from a model name/path using Petals conventions.
 /// e.g. `"meta-llama/Llama-3.1-8B-Instruct"` → `"Llama-3-1-8B-Instruct"`.
 fn derive_dht_prefix(model: &str) -> String {
-    let base = model.split('/').last().unwrap_or(model);
+    let base = model.split('/').next_back().unwrap_or(model);
     base.replace('.', "-")
 }

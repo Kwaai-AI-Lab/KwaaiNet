@@ -104,7 +104,7 @@ pub fn tensor_to_f16_bytes(tensor: &Tensor) -> Result<(Vec<u32>, Vec<u8>)> {
 
 /// Deserialise `f16-LE` bytes back to a `Tensor` on the given device.
 pub fn f16_bytes_to_tensor(bytes: &[u8], shape: &[u32], device: &Device) -> Result<Tensor> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         bail!(
             "f16 byte buffer length {} is not a multiple of 2",
             bytes.len()
@@ -127,7 +127,7 @@ pub fn token_ids_to_bytes(ids: &[u32]) -> (Vec<u32>, Vec<u8>) {
 
 /// Deserialise `u32-LE` bytes to a token ID slice.
 pub fn bytes_to_token_ids(bytes: &[u8]) -> Result<Vec<u32>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         bail!(
             "token_id byte buffer length {} is not a multiple of 4",
             bytes.len()
@@ -182,6 +182,7 @@ pub async fn call_block_forward(
 ///
 /// The returned closure is `'static + Send + Sync` so it can be registered
 /// with the p2p daemon.
+#[allow(clippy::type_complexity)]
 pub fn make_block_rpc_handler(
     shard: Arc<TransformerShard>,
     device: Device,

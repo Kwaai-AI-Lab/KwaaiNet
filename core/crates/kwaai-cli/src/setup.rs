@@ -91,7 +91,7 @@ pub async fn get_dependencies() -> Result<()> {
     let p2pd_src = if is_zip {
         extract_from_zip(&archive_path, &tmp_dir, p2pd_name)?
     } else {
-        extract_from_tarxz(&archive_path, &tmp_dir, &target, p2pd_name)?
+        extract_from_tarxz(&archive_path, &tmp_dir, target, p2pd_name)?
     };
 
     // Copy to install dir

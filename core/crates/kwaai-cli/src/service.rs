@@ -17,6 +17,7 @@ pub trait ServiceManager {
 #[derive(Debug)]
 pub struct ServiceStatus {
     pub installed: bool,
+    #[allow(dead_code)]
     pub loaded: bool,
     pub running: bool,
     pub pid: Option<u32>,
@@ -236,6 +237,7 @@ impl ServiceManager for SystemdManager {
 // Fallback no-op
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 struct NoopManager;
 impl ServiceManager for NoopManager {
     fn install(&self) -> Result<()> {

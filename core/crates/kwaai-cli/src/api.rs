@@ -105,6 +105,7 @@ struct ChatRequest {
     messages: Vec<ChatMsg>,
     #[serde(default)]
     stream: bool,
+    #[allow(dead_code)]
     max_tokens: Option<u32>,
     #[allow(dead_code)]
     temperature: Option<f64>,
