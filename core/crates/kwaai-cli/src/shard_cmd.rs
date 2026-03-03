@@ -33,7 +33,7 @@ use crate::block_rpc::{
     call_block_forward, f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes,
     InferenceRequest, PayloadType,
 };
-use crate::cli::{ShardAction, ShardArgs, ShardChainArgs, ShardRunArgs, ShardServeArgs};
+use crate::cli::{ShardAction, ShardArgs, ShardChainArgs, ShardDownloadArgs, ShardRunArgs, ShardServeArgs};
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
@@ -42,12 +42,35 @@ use crate::hf;
 
 pub async fn run(args: ShardArgs) -> Result<()> {
     match args.action {
-        ShardAction::Serve(a) => cmd_shard_serve(a).await,
-        ShardAction::Run(a)   => cmd_shard_run(a).await,
-        ShardAction::Status   => cmd_shard_status().await,
-        ShardAction::Chain(a) => cmd_shard_chain(a).await,
-        ShardAction::Api(a)   => crate::shard_api::run(a).await,
+        ShardAction::Serve(a)    => cmd_shard_serve(a).await,
+        ShardAction::Run(a)      => cmd_shard_run(a).await,
+        ShardAction::Status      => cmd_shard_status().await,
+        ShardAction::Chain(a)    => cmd_shard_chain(a).await,
+        ShardAction::Api(a)      => crate::shard_api::run(a).await,
+        ShardAction::Download(a) => cmd_shard_download(a).await,
     }
+}
+
+// ── download ──────────────────────────────────────────────────────────────────
+
+pub async fn cmd_shard_download(args: ShardDownloadArgs) -> Result<()> {
+    let cfg = KwaaiNetConfig::load_or_create()?;
+    let model_id = args.model.as_deref().unwrap_or(&cfg.model).to_string();
+
+    print_box_header("Downloading HuggingFace Model");
+    println!("  Model: {}", model_id);
+    println!();
+
+    let snapshot_dir = hf::download(&model_id, args.hf_token.as_deref()).await?;
+
+    println!();
+    print_success(&format!("Saved to: {}", snapshot_dir.display()));
+    print_info(&format!(
+        "Start serving: kwaainet shard serve --model-path \"{}\"",
+        snapshot_dir.display()
+    ));
+    print_separator();
+    Ok(())
 }
 
 // ── serve ─────────────────────────────────────────────────────────────────────

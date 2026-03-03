@@ -420,6 +420,8 @@ pub enum ShardAction {
     Chain(ShardChainArgs),
     /// Serve an OpenAI-compatible HTTP API backed by distributed shard inference
     Api(ShardApiArgs),
+    /// Download a HuggingFace model SafeTensors snapshot (no huggingface-cli required)
+    Download(ShardDownloadArgs),
 }
 
 #[derive(Args)]
@@ -523,6 +525,18 @@ pub struct ShardApiArgs {
     /// Default sampling temperature
     #[arg(long, default_value = "0.7")]
     pub temperature: f32,
+}
+
+#[derive(Args)]
+pub struct ShardDownloadArgs {
+    /// HuggingFace model ID (e.g. unsloth/Llama-3.1-8B-Instruct).
+    /// Defaults to the model in ~/.kwaainet/config.yaml.
+    pub model: Option<String>,
+
+    /// HuggingFace access token for private or gated models.
+    /// Can also be set via the HF_TOKEN environment variable.
+    #[arg(long, value_name = "TOKEN")]
+    pub hf_token: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
