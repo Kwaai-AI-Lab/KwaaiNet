@@ -22,7 +22,7 @@
 
 ## Download
 
-Pre-built binaries for **v0.2.3** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required.
+Pre-built binaries for **v0.3.0** are attached to the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) — no Rust or Go toolchain required.
 
 ### Shell installer (macOS / Linux)
 
@@ -78,6 +78,11 @@ After installing, jump to [Quick Start](#kwaainet--native-rust-cli).
 ## ✅ Status: Network Live & Operational
 
 **Latest Achievements:**
+- ✅ **v0.3.0 Released** — `kwaainet start` no longer overwrites a HuggingFace model path (e.g. `unsloth/Llama-3.1-8B-Instruct`) with an Ollama short name when the network map selects a model; HF model refs are now protected across restarts
+- ✅ **`kwaainet config` subcommand syntax** — `kwaainet config` / `kwaainet config show` prints config; `kwaainet config set KEY VALUE` updates a value (replaces the old `--view` / `--set` flags)
+- ✅ **v0.2.9 Released** — `shard serve --start-block N --blocks M` now syncs `config.yaml` and restarts the node daemon so DHT announces the correct block range; self-dial local TCP bypass prevents `"dial to self"` errors when the coordinator and shard server share a machine
+- ✅ **v0.2.8 Released** — `rand_session_id()` uses splitmix64 to prevent session-ID collisions under concurrent load; `model_total_blocks()` reads `num_hidden_layers` from `config.json` (was incorrectly returning 32 for all models)
+- ✅ **Distributed Shard Inference (Petals-style)** — `kwaainet shard serve/run/chain/status/api/download` implement multi-machine transformer block sharding: SafeTensors model loading, per-session KV-cache with 60 s TTL, custom RoPE + GQA attention + SwiGLU MLP, argmax / temperature / top-p / top-k sampling, auto gap detection (`--auto`), and an OpenAI-compatible HTTP API for distributed inference
 - ✅ **v0.2.3 Released** — Windows fix: `kwaainet start` now correctly finds `p2pd.exe` next to the binary; verified on macOS Apple Silicon, macOS Intel, and Windows — all 3 platforms get nodes on the map
 - ✅ **v0.2.2 Released** — installer now auto-extracts `p2pd` alongside `kwaainet` into `~/.cargo/bin/`; fresh `curl … | sh` install is fully self-contained with no manual steps
 - ✅ **`kwaainet setup --get-deps`** — backup command downloads and installs `p2pd` from the latest release if it is missing (detects platform at runtime, no extra dependencies)
@@ -433,10 +438,10 @@ cargo build --release -p kwaainet
 
 **First-time setup:**
 ```bash
-kwaainet setup                                     # create dirs, write default config
-kwaainet config --set public_ip <YOUR_PUBLIC_IP>   # required for map visibility + direct connection
-kwaainet config --set public_name "YourName@kwaai" # shown on the map
-kwaainet calibrate --apply recommended             # auto-set block count for your RAM
+kwaainet setup                                          # create dirs, write default config
+kwaainet config set public_ip <YOUR_PUBLIC_IP>          # required for map visibility + direct connection
+kwaainet config set public_name "YourName@kwaai"        # shown on the map
+kwaainet calibrate --apply recommended                  # auto-set block count for your RAM
 ```
 
 > **Model selection is automatic.** On startup, `kwaainet` reads the live network map, lists your locally installed Ollama models, and picks the best match. No need to set a model manually unless you want a specific one.
@@ -501,11 +506,11 @@ kwaainet start --model llama3.1:8b --daemon
 
 **Configuration:**
 ```bash
-kwaainet config --view                              # print current config
-kwaainet config --set blocks 8
-kwaainet config --set port 8080
-kwaainet config --set public_ip 203.0.113.1        # your external IP (enables direct connection)
-kwaainet config --set public_name "MyNode@kwaai"
+kwaainet config                                     # print current config (alias: kwaainet config show)
+kwaainet config set blocks 8
+kwaainet config set port 8080
+kwaainet config set public_ip 203.0.113.1          # your external IP (enables direct connection)
+kwaainet config set public_name "MyNode@kwaai"
 ```
 
 **Full command reference:**
@@ -518,9 +523,15 @@ kwaainet config --set public_name "MyNode@kwaai"
 | `kwaainet restart` | Restart the daemon |
 | `kwaainet status` | Show PID, CPU%, memory, uptime |
 | `kwaainet logs [--follow] [--lines N]` | View daemon logs |
-| `kwaainet config --view` | Print current config |
-| `kwaainet config --set KEY VALUE` | Update a config value |
+| `kwaainet config` / `kwaainet config show` | Print current config |
+| `kwaainet config set KEY VALUE` | Update a config value |
 | `kwaainet serve [model] [--port N]` | OpenAI-compatible API server (`/v1/chat/completions`, SSE streaming) |
+| `kwaainet shard serve --start-block N --blocks M` | Load and serve M transformer blocks starting at N; syncs config + restarts daemon to announce correct range |
+| `kwaainet shard serve --auto [--blocks M]` | Auto-detect which blocks are missing from the network and serve them |
+| `kwaainet shard run "<prompt>" [--total-blocks N]` | Run distributed inference across the shard chain |
+| `kwaainet shard chain [--total-blocks N]` | Show block coverage across all online peers |
+| `kwaainet shard api [--port N]` | OpenAI-compatible API for distributed shard inference |
+| `kwaainet shard download [--model <id>]` | Download a HuggingFace SafeTensors model (no Python required) |
 | `kwaainet benchmark [--steps N]` | Measure decode throughput and save to cache |
 | `kwaainet generate <model> <prompt>` | Run a full generation (also saves throughput) |
 | `kwaainet calibrate [--apply min\|recommended\|max]` | Estimate optimal block count for your RAM |

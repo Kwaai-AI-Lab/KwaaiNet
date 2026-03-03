@@ -125,7 +125,13 @@ async fn main() -> Result<()> {
 
                             match map::pick_best_model(&local_models, &map_state, &cfg.model) {
                                 Some(choice) => {
-                                    if choice.ollama_ref != cfg.model {
+                                    // Only switch the model name when the current one is an
+                                    // Ollama short ref (no '/').  If the user has a HuggingFace
+                                    // repo path (contains '/') such as
+                                    // `unsloth/Llama-3.1-8B-Instruct`, keep it — the Ollama map
+                                    // selection must not clobber an explicit HF model.
+                                    let is_hf_model = cfg.model.contains('/');
+                                    if !is_hf_model && choice.ollama_ref != cfg.model {
                                         print_info(&format!(
                                             "Switching model  {}  →  {}",
                                             cfg.model, choice.ollama_ref
