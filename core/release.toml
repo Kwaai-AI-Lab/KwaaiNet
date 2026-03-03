@@ -9,6 +9,10 @@
 # Do not publish here — the release.yml CI job handles that.
 publish = false
 
+# All workspace crates are versioned together (monorepo lockstep).
+# Required for {{version}} to be populated in the consolidated workspace commit.
+shared-version = true
+
 # Create and push the git tag that triggers release.yml.
 tag = true
 push = true
