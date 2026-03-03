@@ -13,10 +13,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Internal crates
-kwaai-p2p = { path = "../kwaai-p2p", default-features = false }
-kwaai-inference = { path = "../kwaai-inference", default-features = false }
-kwaai-distributed = { path = "../kwaai-distributed" }
-kwaai-compression = { path = "../kwaai-compression" }
+kwaai-p2p = { workspace = true, default-features = false }
+kwaai-inference = { workspace = true, default-features = false }
+kwaai-distributed = { workspace = true }
+kwaai-compression = { workspace = true }
 
 # WASM bindings
 wasm-bindgen = { workspace = true }

@@ -10,9 +10,9 @@ keywords = ["distributed", "moe", "mixture-of-experts", "federated", "averaging"
 
 [dependencies]
 # Internal crates
-kwaai-p2p = { path = "../kwaai-p2p" }
-kwaai-inference = { path = "../kwaai-inference" }
-kwaai-compression = { path = "../kwaai-compression" }
+kwaai-p2p = { workspace = true }
+kwaai-inference = { workspace = true }
+kwaai-compression = { workspace = true }
 
 # Async
 tokio = { workspace = true }
