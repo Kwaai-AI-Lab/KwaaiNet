@@ -468,6 +468,10 @@ jobs:
       - plan
       - host
     runs-on: "ubuntu-22.04"
+    # Non-blocking: missing CARGO_REGISTRY_TOKEN or transient failures won't
+    # block the announce job.  Set the CARGO_REGISTRY_TOKEN repo secret to
+    # enable actual publishing to crates.io.
+    continue-on-error: true
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
