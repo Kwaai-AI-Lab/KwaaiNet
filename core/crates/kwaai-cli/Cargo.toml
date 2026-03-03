@@ -87,3 +87,10 @@ kwaai-inference = { path = "../kwaai-inference", features = ["metal"] }
 # linker rejects.  Build OpenSSL from source with the correct /MT flags instead.
 [target.'cfg(windows)'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
+
+# musl cross-compilation has no system OpenSSL headers — build from source.
+# libp2p's RSA feature pulls in openssl-sys transiently even when reqwest uses rustls.
+# With vendored, openssl-sys compiles OpenSSL for the musl target and links it statically,
+# so the resulting binary has no runtime libssl dependency.
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
