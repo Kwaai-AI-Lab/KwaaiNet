@@ -376,10 +376,9 @@ pub async fn detect_public_ip() -> Option<String> {
     if ip.is_empty() { None } else { Some(ip) }
 }
 
-// Shim: dirs crate isn't in workspace, use std
 mod dirs_sys {
     use std::path::PathBuf;
     pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
+        dirs::home_dir()
     }
 }

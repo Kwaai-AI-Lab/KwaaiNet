@@ -100,9 +100,9 @@ fn find_manifest(model_ref: &str, manifests_root: &PathBuf) -> Result<PathBuf> {
 /// Scans every known Ollama manifests directory in priority order and returns
 /// deduplicated model refs suitable for passing to [`resolve_model_blob`].
 pub fn list_local_models() -> Vec<String> {
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => return Vec::new(),
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
     };
 
     // Probe roots in the same priority order as find_ollama_roots().
@@ -192,8 +192,7 @@ fn manifest_path_to_ref(manifest: &Path, root: &Path) -> Option<String> {
 /// 2. Common macOS custom paths under `~/Documents` (same layout)
 /// 3. Default `~/.ollama/models/` (default layout)
 fn find_ollama_roots() -> Result<(PathBuf, PathBuf)> {
-    let home = std::env::var("HOME").map_err(|_| anyhow!("$HOME is not set"))?;
-    let home = PathBuf::from(home);
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
 
     // Candidate roots to probe, in priority order.
     let mut candidates: Vec<PathBuf> = Vec::new();

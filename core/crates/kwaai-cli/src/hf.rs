@@ -137,7 +137,7 @@ fn has_safetensors_shards(dir: &std::path::Path) -> bool {
 
 /// Return the list of directories to search for HuggingFace model caches.
 fn cache_roots() -> Result<Vec<PathBuf>> {
-    let home = std::env::var("HOME").map_err(|_| anyhow!("$HOME is not set"))?;
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
     let mut roots: Vec<PathBuf> = Vec::new();
 
     // Explicit HF_HOME override (highest priority).
