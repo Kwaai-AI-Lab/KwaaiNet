@@ -46,6 +46,17 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Spawn a background update check that runs concurrently with the command.
+    // Uses a 24-hour on-disk cache so it only hits the network once per day.
+    // Skipped for `update` (redundant) and `run-node` (internal daemon process).
+    let skip_update_hint = matches!(
+        cli.command,
+        Command::Update(_) | Command::RunNode
+    );
+    let update_task = (!skip_update_hint).then(|| {
+        tokio::spawn(async { updater::UpdateChecker::new().check(false).await })
+    });
+
     match cli.command {
         // -------------------------------------------------------------------
         // Internal: run the native node (used in daemon mode)
@@ -1004,6 +1015,24 @@ async fn main() -> Result<()> {
                 print_info("Start the node with: kwaainet start --daemon");
                 print_separator();
             }
+        }
+    }
+
+    // Print a one-line update hint if a newer version was found.
+    // Wait up to 2 s — for long-running commands the task finished long ago
+    // (instant cache hit); for fast commands 2 s is a graceful upper bound.
+    if let Some(task) = update_task {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            task,
+        )
+        .await;
+        if let Ok(Ok(Ok(Some(info)))) = result {
+            println!();
+            print_info(&format!(
+                "kwaainet v{} is available — run 'kwaainet update' to upgrade",
+                info.version
+            ));
         }
     }
 
