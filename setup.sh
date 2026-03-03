@@ -134,12 +134,12 @@ if [ -n "$GO_ACTION" ]; then
     sudo tar -C /usr/local -xzf "go${GO_VERSION}.${GO_OS}-${GO_ARCH}.tar.gz"
     rm "go${GO_VERSION}.${GO_OS}-${GO_ARCH}.tar.gz"
 
-    export PATH=$PATH:/usr/local/go/bin
+    export PATH=/usr/local/go/bin:$PATH
     RC_UPDATED=false
     if [[ "$SHELL" == */zsh ]]; then
-        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.zshrc  || { echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.zshrc;  RC_UPDATED=true; }
+        grep -qxF 'export PATH=/usr/local/go/bin:$PATH' ~/.zshrc  || { echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.zshrc;  RC_UPDATED=true; }
     else
-        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.bashrc || { echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc; RC_UPDATED=true; }
+        grep -qxF 'export PATH=/usr/local/go/bin:$PATH' ~/.bashrc || { echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc; RC_UPDATED=true; }
     fi
 
     if [ "$GO_ACTION" = "install" ]; then
