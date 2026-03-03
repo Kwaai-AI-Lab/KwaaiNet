@@ -109,44 +109,36 @@ else
 fi
 
 if [ -n "$GO_ACTION" ]; then
-    echo "📦 Installing Go 1.21..."
+    GO_VERSION="1.21.13"
+    echo "📦 Installing Go ${GO_VERSION}..."
 
-    if [ "$OS" = "linux" ]; then
-        if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
-            wget https://go.dev/dl/go1.21.13.linux-arm64.tar.gz
-            sudo rm -rf /usr/local/go
-            sudo tar -C /usr/local -xzf go1.21.13.linux-arm64.tar.gz
-            rm go1.21.13.linux-arm64.tar.gz
-        else
-            wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
-            sudo rm -rf /usr/local/go
-            sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
-            rm go1.21.13.linux-amd64.tar.gz
-        fi
+    case "$OSTYPE" in
+        linux-gnu*)
+            GO_OS="linux"
+            GO_ARCH="amd64"
+            [ "$(uname -m)" = "aarch64" ] && GO_ARCH="arm64"
+            ;;
+        darwin*)
+            GO_OS="darwin"
+            GO_ARCH="amd64"
+            [ "$(uname -m)" = "arm64" ] && GO_ARCH="arm64"
+            ;;
+        *)
+            echo "❌ Unsupported platform for Go installation: $OSTYPE"
+            exit 1
+            ;;
+    esac
 
-        if [ "$GO_ACTION" = "install" ]; then
-            export PATH=$PATH:/usr/local/go/bin
-            echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-        fi
-    elif [ "$OS" = "macos" ]; then
-        if [ "$(uname -m)" = "arm64" ]; then
-            wget https://go.dev/dl/go1.21.13.darwin-arm64.tar.gz
-            sudo tar -C /usr/local -xzf go1.21.13.darwin-arm64.tar.gz
-            rm go1.21.13.darwin-arm64.tar.gz
-        else
-            wget https://go.dev/dl/go1.21.13.darwin-amd64.tar.gz
-            sudo tar -C /usr/local -xzf go1.21.13.darwin-amd64.tar.gz
-            rm go1.21.13.darwin-amd64.tar.gz
-        fi
+    wget "https://go.dev/dl/go${GO_VERSION}.${GO_OS}-${GO_ARCH}.tar.gz"
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf "go${GO_VERSION}.${GO_OS}-${GO_ARCH}.tar.gz"
+    rm "go${GO_VERSION}.${GO_OS}-${GO_ARCH}.tar.gz"
 
-        if [ "$GO_ACTION" = "install" ]; then
-            export PATH=$PATH:/usr/local/go/bin
-            echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc
-            echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-        fi
+    export PATH=$PATH:/usr/local/go/bin
+    if [[ "$SHELL" == */zsh ]]; then
+        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.zshrc  || echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc
     else
-        echo "❌ Unsupported platform for Go installation: $OS"
-        exit 1
+        grep -qxF 'export PATH=$PATH:/usr/local/go/bin' ~/.bashrc || echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
     fi
 
     if [ "$GO_ACTION" = "install" ]; then
