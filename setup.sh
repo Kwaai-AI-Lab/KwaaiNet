@@ -4,9 +4,7 @@
 
 set -e
 
-echo "=========================================="
 echo "KwaaiNet Development Environment Setup"
-echo "=========================================="
 echo ""
 
 # Detect OS
@@ -158,9 +156,7 @@ if [ -n "$GO_ACTION" ]; then
 fi
 
 echo ""
-echo "=========================================="
 echo "✅ Setup complete!"
-echo "=========================================="
 echo ""
 echo "Next steps:"
 echo "  1. Navigate to the core directory: cd core"
