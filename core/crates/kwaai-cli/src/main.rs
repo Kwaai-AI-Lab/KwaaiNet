@@ -14,6 +14,7 @@ mod map;
 mod monitor;
 mod node;
 mod ollama;
+mod rebalancer;
 mod service;
 mod setup;
 mod shard_api;

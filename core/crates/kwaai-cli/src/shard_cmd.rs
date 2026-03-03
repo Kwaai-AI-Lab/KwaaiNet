@@ -42,9 +42,32 @@ use crate::hf;
 
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
+/// Outcome of a `cmd_shard_serve` invocation.
+enum ShardServeExit {
+    /// User pressed Ctrl-C — stop serving entirely.
+    UserStop,
+    /// Rebalancer signalled that blocks should move — re-run serve with `--auto`.
+    Rebalance,
+}
+
 pub async fn run(args: ShardArgs) -> Result<()> {
     match args.action {
-        ShardAction::Serve(a) => cmd_shard_serve(a).await,
+        ShardAction::Serve(a) => {
+            // When --auto-rebalance is active we loop: after each rebalance
+            // signal we re-run cmd_shard_serve so pick_gap_blocks() re-queries
+            // the DHT and loads a fresh shard at the new block range.
+            loop {
+                match cmd_shard_serve(a.clone()).await? {
+                    ShardServeExit::UserStop => break,
+                    ShardServeExit::Rebalance => {
+                        print_info("Rebalancing — re-discovering gap and reloading shard…");
+                        // Next iteration will call pick_gap_blocks() fresh because
+                        // a.auto is true (--auto-rebalance implies --auto).
+                    }
+                }
+            }
+            Ok(())
+        }
         ShardAction::Run(a) => cmd_shard_run(a).await,
         ShardAction::Status => cmd_shard_status().await,
         ShardAction::Chain(a) => cmd_shard_chain(a).await,
@@ -77,7 +100,7 @@ pub async fn cmd_shard_download(args: ShardDownloadArgs) -> Result<()> {
 
 // ── serve ─────────────────────────────────────────────────────────────────────
 
-pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
+async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     let cfg = KwaaiNetConfig::load_or_create()?;
 
     let target_blocks = args.blocks.unwrap_or(cfg.blocks) as usize;
@@ -257,12 +280,123 @@ pub async fn cmd_shard_serve(args: ShardServeArgs) -> Result<()> {
         }
     });
 
-    // Wait for Ctrl-C
-    tokio::signal::ctrl_c().await.context("ctrl-c handler")?;
+    // ── Rebalancer task ───────────────────────────────────────────────────────
+    // Spawn a background task that periodically checks DHT coverage and signals
+    // the main wait loop to exit with Rebalance when a block move is warranted.
+    // When --auto-rebalance is not requested we use a never-resolving future so
+    // tokio::select! compiles with the same shape in both branches.
+
+    let cfg_rb = KwaaiNetConfig::load_or_create()?;
+    let do_rebalance = args.auto_rebalance && args.auto;
+    let interval_secs = cfg_rb.rebalance_interval_secs;
+    let min_redundancy = cfg_rb.rebalance_min_redundancy;
+    let total_blocks_rb = cfg_rb.model_total_blocks() as usize;
+    let target_blocks_rb = args.blocks.unwrap_or(cfg_rb.blocks) as usize;
+    let dht_prefix_rb = cfg_rb
+        .model_dht_prefix
+        .clone()
+        .unwrap_or_else(|| derive_dht_prefix(&cfg_rb.model));
+    let bootstrap_peers_rb: Vec<String> = if cfg_rb.initial_peers.is_empty() {
+        NetworkConfig::with_petals_bootstrap().bootstrap_peers
+    } else {
+        cfg_rb.initial_peers.clone()
+    };
+    let daemon_addr_rb = daemon_socket();
+
+    // oneshot used by the rebalancer to signal the main loop.
+    let rebalance_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        if do_rebalance {
+            let (rebalance_tx, rebalance_rx) = tokio::sync::oneshot::channel::<()>();
+
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(10)));
+                // Skip the first (immediate) tick — we just loaded the shard.
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+
+                    // Connect to p2pd to identify ourselves and query DHT.
+                    let mut c = match P2PClient::connect(&daemon_addr_rb).await {
+                        Ok(c) => c,
+                        Err(_) => {
+                            tracing::warn!("Rebalancer: cannot connect to p2pd, skipping check");
+                            continue;
+                        }
+                    };
+                    let hex = match c.identify().await {
+                        Ok(h) => h,
+                        Err(_) => {
+                            tracing::warn!("Rebalancer: identify failed, skipping check");
+                            continue;
+                        }
+                    };
+                    let pid = match hex::decode(&hex)
+                        .ok()
+                        .and_then(|b| PeerId::from_bytes(&b).ok())
+                    {
+                        Some(p) => p,
+                        None => {
+                            tracing::warn!("Rebalancer: could not parse peer ID, skipping");
+                            continue;
+                        }
+                    };
+
+                    let chain = discover_chain(
+                        &mut c,
+                        &pid,
+                        &dht_prefix_rb,
+                        total_blocks_rb,
+                        &bootstrap_peers_rb,
+                    )
+                    .await;
+
+                    if crate::rebalancer::check_rebalance(
+                        &chain,
+                        &pid,
+                        start_block,
+                        end_block,
+                        total_blocks_rb,
+                        target_blocks_rb,
+                        min_redundancy,
+                    )
+                    .is_some()
+                    {
+                        print_info(&format!(
+                            "Rebalance: blocks [{start_block},{end_block}) have \
+                             ≥{min_redundancy} other node(s); gap detected — moving."
+                        ));
+                        let _ = rebalance_tx.send(());
+                        break;
+                    }
+                    print_info("Rebalance check: coverage OK, no move needed.");
+                }
+            });
+
+            Box::pin(async move {
+                let _ = rebalance_rx.await;
+            })
+        } else {
+            Box::pin(futures::future::pending::<()>())
+        };
+
+    // ── Wait: Ctrl-C or rebalance signal ─────────────────────────────────────
+    let exit = tokio::select! {
+        res = tokio::signal::ctrl_c() => {
+            res.context("ctrl-c handler")?;
+            ShardServeExit::UserStop
+        }
+        _ = rebalance_fut => {
+            ShardServeExit::Rebalance
+        }
+    };
+
     let _ = std::fs::remove_file(local_server_port_file());
     println!();
-    print_info("Shard server stopped.");
-    Ok(())
+    match exit {
+        ShardServeExit::UserStop => print_info("Shard server stopped."),
+        ShardServeExit::Rebalance => print_info("Shard server stopping for rebalance."),
+    }
+    Ok(exit)
 }
 
 // ── run ───────────────────────────────────────────────────────────────────────

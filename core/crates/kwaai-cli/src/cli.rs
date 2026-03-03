@@ -224,7 +224,8 @@ pub enum ConfigAction {
     /// Valid keys:
     ///   model, blocks, start_block, port, use_gpu, log_level,
     ///   public_name, public_ip, announce_addr, no_relay,
-    ///   vpk_enabled, vpk_mode, vpk_endpoint, vpk_local_port
+    ///   vpk_enabled, vpk_mode, vpk_endpoint, vpk_local_port,
+    ///   auto_rebalance, rebalance_interval_secs, rebalance_min_redundancy
     ///
     /// Example: kwaainet config set public_name "alice-m4"
     Set {
@@ -492,7 +493,7 @@ pub enum ShardAction {
     Download(ShardDownloadArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ShardServeArgs {
     /// Path to the model directory (config.json + *.safetensors + tokenizer.json).
     /// Defaults to the HuggingFace cache for the model in config.yaml.
@@ -515,6 +516,12 @@ pub struct ShardServeArgs {
     /// Uses --blocks (or config.blocks) as the target count.
     #[arg(long)]
     pub auto: bool,
+
+    /// Periodically check DHT coverage and move blocks to fill gaps when our current
+    /// range is already well-covered by other nodes. Requires --auto.
+    /// Interval and redundancy threshold are set via `kwaainet config set`.
+    #[arg(long)]
+    pub auto_rebalance: bool,
 }
 
 #[derive(Args)]
