@@ -494,7 +494,7 @@ jobs:
             kwaai-wasm \
             kwaai-cli; do
             echo "=== publishing ${crate} ==="
-            cargo publish --dry-run  -p "${crate}"
+            cargo publish -p "${crate}"
             echo "waiting for crates.io index..."
             sleep 30
           done
