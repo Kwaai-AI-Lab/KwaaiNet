@@ -441,22 +441,30 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // If a public IP is configured, we're directly reachable — no relay needed.
     let using_relay = config.public_ip.is_none() && !config.no_relay;
 
-    let (effective, compute_tps) = if let Some(entry) = crate::throughput::load(&config.model) {
+    // Measure network bandwidth once at startup (1 MiB Cloudflare probe).
+    // Stored so re-announcements can recompute effective_tps without re-probing.
+    let dl_bps: f64 = if crate::throughput::load(&config.model).is_some() {
+        info!("  Measuring network bandwidth (1 MiB probe)...");
+        let bps = crate::throughput::measure_download_bps().await;
+        if bps > 0.0 {
+            info!("  Network:  {:.1} Mbps download", bps / 1_000_000.0);
+        } else {
+            info!("  Network:  measurement failed — using compute limit only");
+        }
+        bps
+    } else {
+        0.0
+    };
+
+    let throughput = compute_effective_tps(&config.model, dl_bps, using_relay);
+    if let Some(ref entry) = crate::throughput::load(&config.model) {
         info!(
             "  Compute:  {:.1} tok/s (measured, hidden_dim={})",
             entry.compute_tps, entry.hidden_size
         );
-        info!("  Measuring network bandwidth (1 MiB probe)...");
-        let dl_bps = crate::throughput::measure_download_bps().await;
-        if dl_bps > 0.0 {
-            info!("  Network:  {:.1} Mbps download", dl_bps / 1_000_000.0);
-        } else {
-            info!("  Network:  measurement failed — using compute limit only");
-        }
-        let eff = crate::throughput::effective_tps(&entry, dl_bps, using_relay);
         info!(
             "  Effective: {:.1} tok/s  connection={} (min({:.1}, {:.1}×{}))",
-            eff,
+            throughput,
             if using_relay { "relay" } else { "direct" },
             entry.compute_tps,
             if dl_bps > 0.0 {
@@ -466,17 +474,12 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             },
             if using_relay { "0.2" } else { "1.0" },
         );
-        (eff, entry.compute_tps)
     } else {
-        let fallback = 10.0_f64;
         info!(
             "  Throughput: {:.1} tok/s (default — run `kwaainet benchmark` to measure)",
-            fallback
+            throughput
         );
-        (fallback, fallback)
-    };
-    let _ = compute_tps; // retained for future re-announce logic
-    let throughput = effective;
+    }
 
     // Use the canonical DHT prefix from the map (set during startup model selection).
     // Falls back to a computed prefix if the map wasn't consulted (e.g. --model override).
@@ -535,7 +538,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         None
     };
 
-    let server_info = DHTServerInfo::new(
+    let mut server_info = DHTServerInfo::new(
         config.start_block as i32,
         config.effective_end_block() as i32,
         &public_name,
@@ -598,6 +601,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
             // Periodic re-announcement
             _ = reannounce.tick() => {
+                // Refresh throughput from cache — picks up any `kwaainet benchmark`
+                // result that was saved since the node started, without re-probing
+                // the network (dl_bps is reused from the startup measurement).
+                let fresh_tps = compute_effective_tps(&config.model, dl_bps, using_relay);
+                if (fresh_tps - server_info.throughput).abs() > 0.05 {
+                    info!(
+                        "Throughput updated: {:.1} → {:.1} tok/s",
+                        server_info.throughput, fresh_tps
+                    );
+                    server_info.throughput = fresh_tps;
+                }
+
                 info!("Re-announcing to DHT...");
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
@@ -989,6 +1004,21 @@ fn find_free_port(preferred: u16) -> Option<u16> {
 #[allow(dead_code)]
 fn port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
+}
+
+/// Compute effective throughput from the cached benchmark result.
+///
+/// Re-reads `~/.kwaainet/throughput_cache.json` on every call so that a
+/// `kwaainet benchmark` run after the daemon started is reflected within
+/// the next re-announcement cycle (120 s).
+///
+/// `dl_bps` is the download bandwidth measured at startup and reused here
+/// to avoid a slow network probe on every re-announce.
+fn compute_effective_tps(model: &str, dl_bps: f64, using_relay: bool) -> f64 {
+    match crate::throughput::load(model) {
+        Some(entry) => crate::throughput::effective_tps(&entry, dl_bps, using_relay),
+        None => 10.0, // fallback until benchmark is run
+    }
 }
 
 fn find_p2pd_binary() -> Option<std::path::PathBuf> {
