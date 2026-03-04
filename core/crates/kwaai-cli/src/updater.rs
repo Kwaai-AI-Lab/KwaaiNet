@@ -160,8 +160,7 @@ impl UpdateChecker {
                  del /f \"{ps_path}\"\r\n\
                  del /f \"%~f0\"\r\n"
             );
-            std::fs::write(&bat, &bat_content)
-                .context("Failed to write updater batch script")?;
+            std::fs::write(&bat, &bat_content).context("Failed to write updater batch script")?;
 
             // Launch the batch detached (no window) and return immediately.
             // kwaainet.exe will exit after this function returns, freeing the lock.
@@ -195,8 +194,7 @@ impl UpdateChecker {
 }
 
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
-pub
-fn is_newer(latest: &str, current: &str) -> bool {
+pub fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
         let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
         (

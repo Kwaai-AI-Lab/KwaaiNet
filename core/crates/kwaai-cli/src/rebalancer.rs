@@ -135,9 +135,7 @@ mod tests {
         seed[0] = n;
         let sk = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut seed)
             .expect("valid 32-byte seed");
-        let kp = libp2p::identity::Keypair::from(
-            libp2p::identity::ed25519::Keypair::from(sk),
-        );
+        let kp = libp2p::identity::Keypair::from(libp2p::identity::ed25519::Keypair::from(sk));
         kp.public().to_peer_id()
     }
 
@@ -275,6 +273,10 @@ mod tests {
         // With self-exclusion coverage is all zeros → picks (0, 8).
         let chain = vec![make_entry(our_peer.clone(), 0, 32)];
         let result = pick_gap_from_chain(&chain, &our_peer, 32, 8);
-        assert_eq!(result, (0, 8), "Stale self entry must not count as coverage");
+        assert_eq!(
+            result,
+            (0, 8),
+            "Stale self entry must not count as coverage"
+        );
     }
 }

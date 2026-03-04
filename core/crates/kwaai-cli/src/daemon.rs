@@ -82,7 +82,10 @@ impl DaemonManager {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid as NixPid;
                 let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGHUP);
-                info!("Sent SIGHUP to daemon PID {} — re-announce will follow", pid);
+                info!(
+                    "Sent SIGHUP to daemon PID {} — re-announce will follow",
+                    pid
+                );
             } else {
                 warn!("signal_reannounce: no daemon PID found");
             }

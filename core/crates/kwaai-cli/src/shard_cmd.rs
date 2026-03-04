@@ -110,7 +110,10 @@ async fn cmd_shard_gap() -> Result<()> {
     let mut client = P2PClient::connect(&daemon_addr)
         .await
         .context("Cannot connect to node — start it first with `kwaainet start --daemon`")?;
-    let peer_id_hex = client.identify().await.context("Failed to get local peer ID")?;
+    let peer_id_hex = client
+        .identify()
+        .await
+        .context("Failed to get local peer ID")?;
     let our_peer_id =
         PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
 
@@ -171,11 +174,17 @@ async fn cmd_shard_gap() -> Result<()> {
         };
 
     if others.is_empty() {
-        print_success(&format!("Would serve [{start}, {end}) — first node on network"));
+        print_success(&format!(
+            "Would serve [{start}, {end}) — first node on network"
+        ));
     } else if is_gap {
-        print_success(&format!("Would serve [{start}, {end}) — fills a genuine gap"));
+        print_success(&format!(
+            "Would serve [{start}, {end}) — fills a genuine gap"
+        ));
     } else {
-        print_success(&format!("Would serve [{start}, {end}) — joins as redundant (network fully covered)"));
+        print_success(&format!(
+            "Would serve [{start}, {end}) — joins as redundant (network fully covered)"
+        ));
     }
     print_separator();
     Ok(())
@@ -190,82 +199,82 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
     // ── Gap detection — also yields a P2PClient we reuse for handler registration
     // to avoid a drop/reconnect race that causes "early eof" from p2pd.
-    let (start_block, end_block, initial_client) =
-        if !args.no_auto && (args.auto || args.start_block.is_none()) {
-            let daemon_addr = daemon_socket();
-            let mut qc = P2PClient::connect(&daemon_addr)
-                .await
-                .context("Cannot connect to node — start it first with `kwaainet start --daemon`")?;
-            let peer_id_hex = qc.identify().await.context("Failed to get local peer ID")?;
-            let our_peer_id =
-                PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
-            let total = cfg.model_total_blocks() as usize;
-            let prefix_owned = cfg.effective_dht_prefix();
-            let prefix = prefix_owned.as_str();
-            let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
-                NetworkConfig::with_petals_bootstrap().bootstrap_peers
-            } else {
-                cfg.initial_peers.clone()
-            };
-
-            // Stagger: spread DHT queries across 0–8 s using the last byte of our
-            // peer ID.  Prevents nodes started simultaneously from all querying
-            // before any announcement has propagated and all landing on block 0.
-            let stagger_ms =
-                (our_peer_id.to_bytes().last().copied().unwrap_or(0) as u64 % 8) * 1000;
-            if stagger_ms > 0 {
-                print_info(&format!(
-                    "Staggering DHT query by {}s (peer-ID jitter)…",
-                    stagger_ms / 1000
-                ));
-                tokio::time::sleep(Duration::from_millis(stagger_ms)).await;
-            }
-
-            print_info(&format!(
-                "Querying DHT for gap in {} ({} blocks)…",
-                prefix, total
-            ));
-            let (s, e) = pick_gap_blocks(
-                &mut qc,
-                &our_peer_id,
-                prefix,
-                total,
-                target_blocks,
-                &bootstrap_peers,
-            )
-            .await?;
-            print_success(&format!("Auto-assigned blocks [{}, {})", s, e));
-
-            // Only update config + signal daemon when the range actually changed.
-            // If pick_gap returns the same range already in config the daemon is
-            // already announcing the correct blocks — nothing to do.
-            if s as u32 != cfg.start_block {
-                let mut updated = cfg.clone();
-                updated.start_block = s as u32;
-                updated.save().context("Failed to save config.yaml")?;
-                print_info("Updated config.yaml — signalling daemon to re-announce…");
-                crate::daemon::DaemonManager::new().signal_reannounce();
-            }
-
-            // Reuse qc for handler registration — avoids a drop/reconnect race
-            // that causes "early eof" from p2pd on rapid reconnect.
-            (s, e, Some(qc))
+    let (start_block, end_block, initial_client) = if !args.no_auto
+        && (args.auto || args.start_block.is_none())
+    {
+        let daemon_addr = daemon_socket();
+        let mut qc = P2PClient::connect(&daemon_addr)
+            .await
+            .context("Cannot connect to node — start it first with `kwaainet start --daemon`")?;
+        let peer_id_hex = qc.identify().await.context("Failed to get local peer ID")?;
+        let our_peer_id =
+            PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
+        let total = cfg.model_total_blocks() as usize;
+        let prefix_owned = cfg.effective_dht_prefix();
+        let prefix = prefix_owned.as_str();
+        let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
+            NetworkConfig::with_petals_bootstrap().bootstrap_peers
         } else {
-            // Explicit range: --start-block N was given, or --no-auto was passed.
-            // Falls back to config.start_block when neither --start-block nor --no-auto gave a value.
-            let s = args.start_block.unwrap_or(cfg.start_block) as usize;
-            let total = cfg.model_total_blocks() as usize;
-            let e = (s + target_blocks).min(total);
+            cfg.initial_peers.clone()
+        };
+
+        // Stagger: spread DHT queries across 0–8 s using the last byte of our
+        // peer ID.  Prevents nodes started simultaneously from all querying
+        // before any announcement has propagated and all landing on block 0.
+        let stagger_ms = (our_peer_id.to_bytes().last().copied().unwrap_or(0) as u64 % 8) * 1000;
+        if stagger_ms > 0 {
+            print_info(&format!(
+                "Staggering DHT query by {}s (peer-ID jitter)…",
+                stagger_ms / 1000
+            ));
+            tokio::time::sleep(Duration::from_millis(stagger_ms)).await;
+        }
+
+        print_info(&format!(
+            "Querying DHT for gap in {} ({} blocks)…",
+            prefix, total
+        ));
+        let (s, e) = pick_gap_blocks(
+            &mut qc,
+            &our_peer_id,
+            prefix,
+            total,
+            target_blocks,
+            &bootstrap_peers,
+        )
+        .await?;
+        print_success(&format!("Auto-assigned blocks [{}, {})", s, e));
+
+        // Only update config + signal daemon when the range actually changed.
+        // If pick_gap returns the same range already in config the daemon is
+        // already announcing the correct blocks — nothing to do.
+        if s as u32 != cfg.start_block {
             let mut updated = cfg.clone();
             updated.start_block = s as u32;
-            updated.blocks = (e - s) as u32;
-            if updated.start_block != cfg.start_block || updated.blocks != cfg.blocks {
-                updated.save().context("Failed to save config.yaml")?;
-                print_info("Updated config.yaml — signalling daemon to re-announce…");
-                crate::daemon::DaemonManager::new().signal_reannounce();
-            }
-            (s, e, None::<P2PClient>)
-        };
+            updated.save().context("Failed to save config.yaml")?;
+            print_info("Updated config.yaml — signalling daemon to re-announce…");
+            crate::daemon::DaemonManager::new().signal_reannounce();
+        }
+
+        // Reuse qc for handler registration — avoids a drop/reconnect race
+        // that causes "early eof" from p2pd on rapid reconnect.
+        (s, e, Some(qc))
+    } else {
+        // Explicit range: --start-block N was given, or --no-auto was passed.
+        // Falls back to config.start_block when neither --start-block nor --no-auto gave a value.
+        let s = args.start_block.unwrap_or(cfg.start_block) as usize;
+        let total = cfg.model_total_blocks() as usize;
+        let e = (s + target_blocks).min(total);
+        let mut updated = cfg.clone();
+        updated.start_block = s as u32;
+        updated.blocks = (e - s) as u32;
+        if updated.start_block != cfg.start_block || updated.blocks != cfg.blocks {
+            updated.save().context("Failed to save config.yaml")?;
+            print_info("Updated config.yaml — signalling daemon to re-announce…");
+            crate::daemon::DaemonManager::new().signal_reannounce();
+        }
+        (s, e, None::<P2PClient>)
+    };
 
     // Detect device early (before any model I/O)
     let device_type = if cfg.use_gpu && !args.no_gpu {
@@ -627,21 +636,20 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
             .context("read model dir")?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension().and_then(|e| e.to_str()) == Some("safetensors")
-            })
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("safetensors"))
             .collect();
         p.sort();
         p
     };
     if paths.is_empty() {
-        bail!(
-            "No .safetensors files found in {}",
-            model_dir.display()
-        );
+        bail!("No .safetensors files found in {}", model_dir.display());
     }
 
-    print_info(&format!("Loading {} shard(s) on {:?}…", paths.len(), device_type));
+    print_info(&format!(
+        "Loading {} shard(s) on {:?}…",
+        paths.len(),
+        device_type
+    ));
 
     let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
     let shard = Arc::new(
@@ -1228,7 +1236,14 @@ async fn pick_gap_blocks(
     let chain = if chain.is_empty() {
         print_info("DHT returned no peers — waiting 5 s and retrying…");
         tokio::time::sleep(Duration::from_secs(5)).await;
-        discover_chain(client, our_peer_id, dht_prefix, total_blocks, bootstrap_peers).await
+        discover_chain(
+            client,
+            our_peer_id,
+            dht_prefix,
+            total_blocks,
+            bootstrap_peers,
+        )
+        .await
     } else {
         chain
     };
@@ -1781,4 +1796,3 @@ fn rand_session_id() -> u64 {
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
 }
-

@@ -384,38 +384,34 @@ pub async fn download_for_blocks(
     }
 
     // Determine which weight files to download.
-    let weight_files: std::collections::HashSet<String> =
-        if let Ok(index_text) = std::fs::read_to_string(&index_dest) {
-            if let Ok(index_json) = serde_json::from_str::<serde_json::Value>(&index_text) {
-                if let Some(weight_map) = index_json["weight_map"].as_object() {
-                    let mut files = std::collections::HashSet::new();
-                    for (tensor_name, file_val) in weight_map {
-                        let Some(fname) = file_val.as_str() else {
-                            continue;
-                        };
-                        let needed = is_tensor_needed(
-                            tensor_name,
-                            start_block,
-                            end_block,
-                            is_first,
-                            is_last,
-                        );
-                        if needed {
-                            files.insert(fname.to_string());
-                        }
+    let weight_files: std::collections::HashSet<String> = if let Ok(index_text) =
+        std::fs::read_to_string(&index_dest)
+    {
+        if let Ok(index_json) = serde_json::from_str::<serde_json::Value>(&index_text) {
+            if let Some(weight_map) = index_json["weight_map"].as_object() {
+                let mut files = std::collections::HashSet::new();
+                for (tensor_name, file_val) in weight_map {
+                    let Some(fname) = file_val.as_str() else {
+                        continue;
+                    };
+                    let needed =
+                        is_tensor_needed(tensor_name, start_block, end_block, is_first, is_last);
+                    if needed {
+                        files.insert(fname.to_string());
                     }
-                    files
-                } else {
-                    // No weight_map — single-file model, download as normal.
-                    std::collections::HashSet::new()
                 }
+                files
             } else {
+                // No weight_map — single-file model, download as normal.
                 std::collections::HashSet::new()
             }
         } else {
-            // No index file — fall back to full download.
             std::collections::HashSet::new()
-        };
+        }
+    } else {
+        // No index file — fall back to full download.
+        std::collections::HashSet::new()
+    };
 
     // Build final file list: metadata + selected weight files.
     let siblings = meta["siblings"]
@@ -647,11 +643,41 @@ mod tests {
     // Serving blocks [8, 16), middle of the model — no embed, no norm/head.
     #[test]
     fn middle_node_selects_only_its_layers() {
-        assert!(is_tensor_needed("model.layers.8.self_attn.q_proj.weight", 8, 16, false, false));
-        assert!(is_tensor_needed("model.layers.15.mlp.gate_proj.weight", 8, 16, false, false));
-        assert!(!is_tensor_needed("model.layers.7.self_attn.q_proj.weight", 8, 16, false, false));
-        assert!(!is_tensor_needed("model.layers.16.self_attn.q_proj.weight", 8, 16, false, false));
-        assert!(!is_tensor_needed("model.embed_tokens.weight", 8, 16, false, false));
+        assert!(is_tensor_needed(
+            "model.layers.8.self_attn.q_proj.weight",
+            8,
+            16,
+            false,
+            false
+        ));
+        assert!(is_tensor_needed(
+            "model.layers.15.mlp.gate_proj.weight",
+            8,
+            16,
+            false,
+            false
+        ));
+        assert!(!is_tensor_needed(
+            "model.layers.7.self_attn.q_proj.weight",
+            8,
+            16,
+            false,
+            false
+        ));
+        assert!(!is_tensor_needed(
+            "model.layers.16.self_attn.q_proj.weight",
+            8,
+            16,
+            false,
+            false
+        ));
+        assert!(!is_tensor_needed(
+            "model.embed_tokens.weight",
+            8,
+            16,
+            false,
+            false
+        ));
         assert!(!is_tensor_needed("model.norm.weight", 8, 16, false, false));
         assert!(!is_tensor_needed("lm_head.weight", 8, 16, false, false));
     }
@@ -659,7 +685,13 @@ mod tests {
     // First node — needs embed_tokens.
     #[test]
     fn first_node_includes_embed_tokens() {
-        assert!(is_tensor_needed("model.embed_tokens.weight", 0, 8, true, false));
+        assert!(is_tensor_needed(
+            "model.embed_tokens.weight",
+            0,
+            8,
+            true,
+            false
+        ));
         assert!(!is_tensor_needed("model.norm.weight", 0, 8, true, false));
         assert!(!is_tensor_needed("lm_head.weight", 0, 8, true, false));
     }
@@ -669,27 +701,69 @@ mod tests {
     fn last_node_includes_norm_and_head() {
         assert!(is_tensor_needed("model.norm.weight", 24, 32, false, true));
         assert!(is_tensor_needed("lm_head.weight", 24, 32, false, true));
-        assert!(!is_tensor_needed("model.embed_tokens.weight", 24, 32, false, true));
+        assert!(!is_tensor_needed(
+            "model.embed_tokens.weight",
+            24,
+            32,
+            false,
+            true
+        ));
     }
 
     // Single-node (first + last) — needs everything.
     #[test]
     fn single_node_includes_all_special_tensors() {
-        assert!(is_tensor_needed("model.embed_tokens.weight", 0, 32, true, true));
+        assert!(is_tensor_needed(
+            "model.embed_tokens.weight",
+            0,
+            32,
+            true,
+            true
+        ));
         assert!(is_tensor_needed("model.norm.weight", 0, 32, true, true));
         assert!(is_tensor_needed("lm_head.weight", 0, 32, true, true));
-        assert!(is_tensor_needed("model.layers.0.self_attn.q_proj.weight", 0, 32, true, true));
-        assert!(is_tensor_needed("model.layers.31.mlp.up_proj.weight", 0, 32, true, true));
+        assert!(is_tensor_needed(
+            "model.layers.0.self_attn.q_proj.weight",
+            0,
+            32,
+            true,
+            true
+        ));
+        assert!(is_tensor_needed(
+            "model.layers.31.mlp.up_proj.weight",
+            0,
+            32,
+            true,
+            true
+        ));
     }
 
     // Layer index parsing edge cases.
     #[test]
     fn layer_index_parsing() {
         // Double-digit layer numbers
-        assert!(is_tensor_needed("model.layers.10.self_attn.k_proj.weight", 10, 20, false, false));
-        assert!(!is_tensor_needed("model.layers.10.self_attn.k_proj.weight", 11, 20, false, false));
+        assert!(is_tensor_needed(
+            "model.layers.10.self_attn.k_proj.weight",
+            10,
+            20,
+            false,
+            false
+        ));
+        assert!(!is_tensor_needed(
+            "model.layers.10.self_attn.k_proj.weight",
+            11,
+            20,
+            false,
+            false
+        ));
         // Malformed — not selected
-        assert!(!is_tensor_needed("model.layers.weight", 0, 32, false, false));
+        assert!(!is_tensor_needed(
+            "model.layers.weight",
+            0,
+            32,
+            false,
+            false
+        ));
         assert!(!is_tensor_needed("model.layers.", 0, 32, false, false));
     }
 }

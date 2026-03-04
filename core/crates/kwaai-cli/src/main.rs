@@ -49,13 +49,9 @@ async fn main() -> Result<()> {
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
     // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    let skip_update_hint = matches!(
-        cli.command,
-        Command::Update(_) | Command::RunNode
-    );
-    let update_task = (!skip_update_hint).then(|| {
-        tokio::spawn(async { updater::UpdateChecker::new().check(false).await })
-    });
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode);
+    let update_task = (!skip_update_hint)
+        .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
     match cli.command {
         // -------------------------------------------------------------------
@@ -1076,11 +1072,7 @@ async fn main() -> Result<()> {
     // Wait up to 2 s — for long-running commands the task finished long ago
     // (instant cache hit); for fast commands 2 s is a graceful upper bound.
     if let Some(task) = update_task {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            task,
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
         if let Ok(Ok(Ok(Some(info)))) = result {
             // Only show the hint when the cached version is actually newer than what's running.
             if updater::is_newer(&info.version, updater::CURRENT_VERSION) {
