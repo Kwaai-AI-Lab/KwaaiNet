@@ -45,7 +45,7 @@ jobs:
             kwaainet; do
             echo "=== publishing ${crate} ==="
             out=$(cargo publish -p "${crate}" ${DRY_RUN_FLAG} 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 30; } || {
-              if echo "$out" | grep -q "already uploaded"; then
+              if echo "$out" | grep -qE "already uploaded|already exists on crates"; then
                 echo "=== ${crate} already uploaded, skipping ==="
               else
                 echo "$out" >&2; exit 1
