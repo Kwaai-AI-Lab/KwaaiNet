@@ -739,53 +739,63 @@ async fn announce(
     end_block: i32,
     server_info: &DHTServerInfo,
 ) -> Result<()> {
-    info!(
-        "DHT prefix: {} (blocks .{} – .{})",
-        prefix,
-        start_block,
-        end_block - 1
-    );
+    if start_block == end_block {
+        info!("DHT prefix: {} (shard loading — blocks not yet ready)", prefix);
+    } else {
+        info!(
+            "DHT prefix: {} (blocks .{} – .{})",
+            prefix,
+            start_block,
+            end_block - 1
+        );
+    }
 
     let info_bytes = server_info.to_msgpack()?;
     let subkey = rmp_serde::to_vec(&peer_id.to_base58())?;
     let node_info = NodeInfo::from_peer_id(peer_id);
 
     // Build block STORE request
-    let mut keys = Vec::new();
-    let mut subkeys = Vec::new();
-    let mut values = Vec::new();
-    let mut expirations = Vec::new();
-    let mut in_cache = Vec::new();
-
-    for block in start_block..end_block {
-        keys.push(dht_id(&format!("{}.{}", prefix, block)));
-        subkeys.push(subkey.clone());
-        values.push(info_bytes.clone());
-        expirations.push(get_dht_time() + 360.0);
-        in_cache.push(false);
-    }
-
-    let block_req = StoreRequest {
-        auth: Some(RequestAuthInfo::new()),
-        keys,
-        subkeys,
-        values,
-        expiration_time: expirations,
-        in_cache,
-        peer: Some(node_info.clone()),
-    };
-
-    // Store locally
-    {
-        let g = storage.read().await;
-        let _ = g.handle_store(block_req.clone());
-    }
-
-    // Push to bootstrap peers
-    if send_to_bootstrap(client, bootstrap_peers, block_req).await {
-        info!("✅ Announced {} blocks", end_block - start_block);
+    // Only announce blocks when the shard is loaded (start != end).
+    // An empty STORE request returns "0/0 stored" which is misleading, so skip it.
+    if start_block == end_block {
+        info!("⏳ Shard loading — block announcement deferred");
     } else {
-        warn!("❌ Block announcement failed — node will not appear on map");
+        let mut keys = Vec::new();
+        let mut subkeys = Vec::new();
+        let mut values = Vec::new();
+        let mut expirations = Vec::new();
+        let mut in_cache = Vec::new();
+
+        for block in start_block..end_block {
+            keys.push(dht_id(&format!("{}.{}", prefix, block)));
+            subkeys.push(subkey.clone());
+            values.push(info_bytes.clone());
+            expirations.push(get_dht_time() + 360.0);
+            in_cache.push(false);
+        }
+
+        let block_req = StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys,
+            subkeys,
+            values,
+            expiration_time: expirations,
+            in_cache,
+            peer: Some(node_info.clone()),
+        };
+
+        // Store locally
+        {
+            let g = storage.read().await;
+            let _ = g.handle_store(block_req.clone());
+        }
+
+        // Push to bootstrap peers
+        if send_to_bootstrap(client, bootstrap_peers, block_req).await {
+            info!("✅ Announced {} blocks", end_block - start_block);
+        } else {
+            warn!("❌ Block announcement failed — node will not appear on map");
+        }
     }
 
     // Model registry entry
@@ -1015,25 +1025,52 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
         .map_err(|e| anyhow::anyhow!("parse stream info: {}", e))?;
     info!("RPC {}", info.proto);
 
-    let bytes = stream::read_varint_framed(tcp)
+    // Read all request bytes — senders write raw prost bytes then close their
+    // write side, so read_to_end terminates naturally when p2pd forwards EOF.
+    use tokio::io::AsyncReadExt as _;
+    use prost::Message as _;
+    let mut bytes = Vec::new();
+    tcp.read_to_end(&mut bytes)
         .await
-        .map_err(|e| anyhow::anyhow!("read frame: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("read request: {}", e))?;
 
-    let req =
-        DHTRequest::decode(&bytes).map_err(|e| anyhow::anyhow!("decode DHTRequest: {}", e))?;
+    // Decode as the specific request type based on the protocol name from StreamInfo.
+    // Incoming callers (Hivemind and our own nodes) send raw prost protobuf — no
+    // custom marker byte — so we dispatch on the protocol string instead.
+    let req = match info.proto.as_str() {
+        "DHTProtocol.rpc_store" => {
+            let r = kwaai_hivemind_dht::protocol::StoreRequest::decode(bytes.as_slice())
+                .map_err(|e| anyhow::anyhow!("decode StoreRequest: {}", e))?;
+            DHTRequest::Store(r)
+        }
+        "DHTProtocol.rpc_find" => {
+            let r = kwaai_hivemind_dht::protocol::FindRequest::decode(bytes.as_slice())
+                .map_err(|e| anyhow::anyhow!("decode FindRequest: {}", e))?;
+            DHTRequest::Find(r)
+        }
+        _ => {
+            let r = kwaai_hivemind_dht::protocol::PingRequest::decode(bytes.as_slice())
+                .map_err(|e| anyhow::anyhow!("decode PingRequest: {}", e))?;
+            DHTRequest::Ping(r)
+        }
+    };
 
     let response_bytes = {
         let g = storage.read().await;
         let resp = g
             .handle_request(req)
             .map_err(|e| anyhow::anyhow!("handle_request: {}", e))?;
-        resp.encode()
-            .map_err(|e| anyhow::anyhow!("encode DHTResponse: {}", e))?
+        // Encode as raw prost bytes — no length prefix or marker — matching
+        // the Hivemind wire format that callers expect on the response stream.
+        use kwaai_hivemind_dht::codec::DHTResponse;
+        match resp {
+            DHTResponse::Store(r) => r.encode_to_vec(),
+            DHTResponse::Find(r) => r.encode_to_vec(),
+            DHTResponse::Ping(r) => r.encode_to_vec(),
+        }
     };
 
-    stream::write_varint_framed(tcp, &response_bytes)
-        .await
-        .map_err(|e| anyhow::anyhow!("write frame: {}", e))?;
+    tcp.write_all(&response_bytes).await?;
     tcp.flush().await?;
     Ok(())
 }

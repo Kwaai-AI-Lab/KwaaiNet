@@ -268,7 +268,7 @@ fn default_rebalance_interval() -> u64 {
     300
 }
 fn default_rebalance_min_redundancy() -> usize {
-    2
+    1
 }
 
 impl Default for KwaaiNetConfig {
