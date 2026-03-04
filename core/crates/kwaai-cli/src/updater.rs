@@ -7,7 +7,7 @@ use tracing::debug;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/releases/latest";
 
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -195,6 +195,7 @@ impl UpdateChecker {
 }
 
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
+pub
 fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
         let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();

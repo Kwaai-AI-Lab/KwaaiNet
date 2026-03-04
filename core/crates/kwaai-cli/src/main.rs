@@ -1082,11 +1082,14 @@ async fn main() -> Result<()> {
         )
         .await;
         if let Ok(Ok(Ok(Some(info)))) = result {
-            println!();
-            print_info(&format!(
-                "kwaainet v{} is available — run 'kwaainet update' to upgrade",
-                info.version
-            ));
+            // Only show the hint when the cached version is actually newer than what's running.
+            if updater::is_newer(&info.version, updater::CURRENT_VERSION) {
+                println!();
+                print_info(&format!(
+                    "kwaainet v{} is available — run 'kwaainet update' to upgrade",
+                    info.version
+                ));
+            }
         }
     }
 
