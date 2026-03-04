@@ -70,6 +70,30 @@ impl DaemonManager {
         let _ = std::fs::remove_file(&self.pid_file);
     }
 
+    /// Signal the running daemon to re-read config and re-announce its block
+    /// range to DHT.  Called by `shard serve` after updating config.yaml.
+    ///
+    /// Unix: sends SIGHUP — the daemon's event loop handles it immediately.
+    /// Windows: writes a flag file that the re-announce tick polls (≤120 s).
+    pub fn signal_reannounce(&self) {
+        #[cfg(unix)]
+        {
+            if let Some(pid) = self.read_pid() {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid as NixPid;
+                let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGHUP);
+                info!("Sent SIGHUP to daemon PID {} — re-announce will follow", pid);
+            } else {
+                warn!("signal_reannounce: no daemon PID found");
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let flag = self.pid_file.with_file_name("reannounce.flag");
+            let _ = std::fs::write(&flag, "1");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Lock helpers (Unix only)
     // -----------------------------------------------------------------------

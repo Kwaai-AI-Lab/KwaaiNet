@@ -577,9 +577,21 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // -----------------------------------------------------------------------
     // Event loop: handle incoming RPC + periodic re-announce
     // -----------------------------------------------------------------------
+    // Shadow config with a local mutable copy so the event loop can update
+    // start_block/blocks when SIGHUP triggers a config re-read.
+    let mut config = config.clone();
     let storage_clone = storage.clone();
     let mut reannounce = tokio::time::interval(Duration::from_secs(120));
     reannounce.tick().await; // skip the immediate first tick
+
+    // SIGHUP handler: shard serve sends SIGHUP after updating config.yaml so
+    // the daemon re-announces the new block range immediately (Unix only).
+    // On non-Unix this future never resolves — the branch is dead code.
+    #[cfg(unix)]
+    let mut sighup = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::hangup()).expect("SIGHUP handler")
+    };
 
     loop {
         tokio::select! {
@@ -599,8 +611,58 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 }
             }
 
+            // SIGHUP (Unix) / never (Windows) — re-read config and re-announce.
+            // Uses #[cfg] inside the arm expression to avoid a conditional arm,
+            // which is unsupported by tokio::select!.
+            _ = async {
+                #[cfg(unix)] { sighup.recv().await; }
+                #[cfg(not(unix))] { std::future::pending::<Option<()>>().await; }
+            } => {
+                info!("SIGHUP received — re-reading config and re-announcing");
+                if let Ok(fresh) = KwaaiNetConfig::load_or_create() {
+                    if fresh.start_block != config.start_block || fresh.blocks != config.blocks {
+                        info!(
+                            "Block range updated: [{}–{}) → [{}–{})",
+                            config.start_block, config.effective_end_block(),
+                            fresh.start_block, fresh.start_block + fresh.blocks,
+                        );
+                        config.start_block = fresh.start_block;
+                        config.blocks = fresh.blocks;
+                    }
+                }
+                if let Err(e) = announce(
+                    &mut client, peer_id, &storage, &bootstrap_peers,
+                    &prefix, &repository, config.model_total_blocks(),
+                    config.start_block as i32, config.effective_end_block() as i32, &server_info,
+                ).await {
+                    warn!("Re-announce after SIGHUP failed: {}", e);
+                }
+            }
+
             // Periodic re-announcement
             _ = reannounce.tick() => {
+                // Re-read config to pick up start_block changes written by
+                // `shard serve` (via signal_reannounce) or `kwaainet config set`.
+                // On Windows this also drains the reannounce.flag file.
+                if let Ok(fresh) = KwaaiNetConfig::load_or_create() {
+                    if fresh.start_block != config.start_block || fresh.blocks != config.blocks {
+                        info!(
+                            "Block range updated: [{}–{}) → [{}–{})",
+                            config.start_block, config.effective_end_block(),
+                            fresh.start_block, fresh.start_block + fresh.blocks,
+                        );
+                        config.start_block = fresh.start_block;
+                        config.blocks = fresh.blocks;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let flag = crate::config::run_dir().join("reannounce.flag");
+                    if flag.exists() {
+                        let _ = std::fs::remove_file(&flag);
+                    }
+                }
+
                 // Refresh throughput from cache — picks up any `kwaainet benchmark`
                 // result that was saved since the node started, without re-probing
                 // the network (dl_bps is reused from the startup measurement).
