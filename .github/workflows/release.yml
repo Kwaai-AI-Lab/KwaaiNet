@@ -487,20 +487,27 @@ jobs:
       - name: Publish crates to crates.io
         working-directory: core
         run: |
+          # Ordered by dependency: leaves first, dependents last.
+          # kwaai-inference and kwaai-p2p-daemon have no internal deps and must
+          # precede kwaai-distributed (which depends on kwaai-inference).
           for crate in \
             kwaai-compression \
             kwaai-trust \
             kwaai-p2p \
             kwaai-hivemind-dht \
-            kwaai-distributed \
             kwaai-inference \
             kwaai-p2p-daemon \
+            kwaai-distributed \
             kwaai-wasm \
             kwaai-cli; do
             echo "=== publishing ${crate} ==="
-            cargo publish -p "${crate}"
-            echo "waiting for crates.io index..."
-            sleep 30
+            out=$(cargo publish -p "${crate}" 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 30; } || {
+              if echo "$out" | grep -q "already uploaded"; then
+                echo "=== ${crate} already uploaded, skipping ==="
+              else
+                echo "$out" >&2; exit 1
+              fi
+            }
           done
 
   announce:

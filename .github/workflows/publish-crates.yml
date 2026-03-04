@@ -1,0 +1,54 @@
+name: Publish crates to crates.io
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip actual upload)"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install OpenSSL
+        run: sudo apt-get update -q && sudo apt-get install -y -q libssl-dev pkg-config
+
+      - name: Publish crates
+        working-directory: core
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+            echo "=== DRY RUN MODE ==="
+          fi
+          for crate in \
+            kwaai-compression \
+            kwaai-trust \
+            kwaai-p2p \
+            kwaai-hivemind-dht \
+            kwaai-inference \
+            kwaai-p2p-daemon \
+            kwaai-distributed \
+            kwaai-wasm \
+            kwaai-cli; do
+            echo "=== publishing ${crate} ==="
+            out=$(cargo publish -p "${crate}" ${DRY_RUN_FLAG} 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 30; } || {
+              if echo "$out" | grep -q "already uploaded"; then
+                echo "=== ${crate} already uploaded, skipping ==="
+              else
+                echo "$out" >&2; exit 1
+              fi
+            }
+          done
