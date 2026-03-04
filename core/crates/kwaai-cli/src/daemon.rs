@@ -214,6 +214,8 @@ impl DaemonManager {
         }
 
         self.remove_pid();
+        // Kill any orphaned p2pd processes so they don't hold the port for the next start.
+        kill_orphaned_p2pd();
         Ok(())
     }
 
@@ -267,6 +269,40 @@ impl DaemonManager {
         // Don't wait – let it run
         std::mem::forget(child);
         Ok(pid)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Orphan cleanup
+// ---------------------------------------------------------------------------
+
+/// Kill any p2pd processes that may have been left behind when the daemon
+/// process was terminated by SIGTERM (which bypasses Rust destructors, so
+/// the kwaai-p2p-daemon Drop impl never fires to clean them up).
+/// Without this, a new daemon start fails because p2pd can't bind the port.
+fn kill_orphaned_p2pd() {
+    use sysinfo::ProcessRefreshKind;
+
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessRefreshKind::new());
+
+    for (pid, process) in sys.processes() {
+        let name = process.name();
+        if name == "p2pd" || name == "p2pd.exe" {
+            info!("Killing orphaned p2pd process (PID {})", pid);
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid as NixPid;
+                let _ = kill(NixPid::from_raw(pid.as_u32() as i32), Signal::SIGTERM);
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.as_u32().to_string(), "/F"])
+                    .output();
+            }
+        }
     }
 }
 
