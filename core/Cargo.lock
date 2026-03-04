@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-compression"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "bincode",
  "candle-core",
@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-core"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "async-trait",
  "bincode",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-distributed"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2605,7 +2605,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-hivemind-dht"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-inference"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-p2p"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-trust"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2703,7 +2703,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-wasm"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "console_error_panic_hook",
  "futures",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "kwaainet"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "axum",
@@ -5149,7 +5149,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "summit-server"
-version = "0.3.9"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "axum",
