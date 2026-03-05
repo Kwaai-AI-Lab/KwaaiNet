@@ -538,10 +538,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     };
 
     // Always announce the configured block range so the node appears on the map.
-    // When the shard is not yet loaded we use state=0 (joining) instead of
-    // state=2 (online) so the map can display the node without counting it as
-    // actively serving inference.
-    let shard_ready = ShardManager::shard_is_ready();
     let announce_start = config.start_block as i32;
     let announce_end = config.effective_end_block() as i32;
 
@@ -555,9 +551,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         vpk_info,
         peer_id.to_base58(),
     );
-    if !shard_ready {
-        server_info.state = 0; // joining — blocks reserved but not yet serving
-    }
     announce(
         &mut client,
         peer_id,
@@ -644,7 +637,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
                 server_info.end_block = eb;
-                server_info.state = if ShardManager::shard_is_ready() { 2 } else { 0 };
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
                     &prefix, &repository, config.model_total_blocks(),
@@ -692,7 +684,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
                 server_info.end_block = eb;
-                server_info.state = if ShardManager::shard_is_ready() { 2 } else { 0 };
                 info!("Re-announcing to DHT (shard_ready={})...", ShardManager::shard_is_ready());
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
@@ -734,13 +725,11 @@ async fn announce(
     end_block: i32,
     server_info: &DHTServerInfo,
 ) -> Result<()> {
-    let joining = server_info.state != 2;
     info!(
-        "DHT prefix: {} (blocks .{} – .{}{})",
+        "DHT prefix: {} (blocks .{} – .{})",
         prefix,
         start_block,
-        end_block - 1,
-        if joining { ", joining" } else { "" }
+        end_block - 1
     );
 
     let info_bytes = server_info.to_msgpack()?;
