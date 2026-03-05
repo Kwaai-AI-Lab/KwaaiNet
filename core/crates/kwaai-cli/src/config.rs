@@ -346,8 +346,15 @@ impl KwaaiNetConfig {
         if cfg_file.exists() {
             let text = std::fs::read_to_string(&cfg_file)
                 .with_context(|| format!("reading {}", cfg_file.display()))?;
-            let cfg: KwaaiNetConfig = serde_yaml::from_str(&text)
+            let mut cfg: KwaaiNetConfig = serde_yaml::from_str(&text)
                 .with_context(|| format!("parsing {}", cfg_file.display()))?;
+            // Map-derived fields are only valid for the model that was active when
+            // the map was consulted. If the configured model is an explicit HF path,
+            // clear them so node.rs derives the correct values from the model name.
+            if cfg.model.contains('/') {
+                cfg.model_dht_prefix = None;
+                cfg.model_repository = None;
+            }
             debug!("Loaded config from {}", cfg_file.display());
             Ok(cfg)
         } else {

@@ -154,12 +154,23 @@ async fn main() -> Result<()> {
                                             mn, choice.server_count
                                         );
                                     }
-                                    if let Some(ref dp) = choice.dht_prefix {
-                                        println!("    DHT prefix: {}", dp);
-                                        cfg.model_dht_prefix = Some(dp.clone());
-                                    }
-                                    if let Some(ref repo) = choice.repository {
-                                        cfg.model_repository = Some(repo.clone());
+                                    // Only adopt the map's DHT prefix and repository when the
+                                    // map selection actually drove the model choice (Ollama ref).
+                                    // For HF models the user configured explicitly, the fallback
+                                    // derivation in node.rs is correct and we must not overwrite
+                                    // it with metadata for a different (Ollama-matched) model.
+                                    if !is_hf_model {
+                                        if let Some(ref dp) = choice.dht_prefix {
+                                            println!("    DHT prefix: {}", dp);
+                                            cfg.model_dht_prefix = Some(dp.clone());
+                                        }
+                                        if let Some(ref repo) = choice.repository {
+                                            cfg.model_repository = Some(repo.clone());
+                                        }
+                                    } else {
+                                        // Clear any stale map-derived values from a previous model.
+                                        cfg.model_dht_prefix = None;
+                                        cfg.model_repository = None;
                                     }
                                     // Persist so the daemon child picks it up.
                                     let _ = cfg.save();
