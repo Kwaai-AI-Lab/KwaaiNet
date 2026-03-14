@@ -588,6 +588,46 @@ RUST_LOG=libp2p_kad=debug,libp2p_swarm=debug cargo run --example petals_visible
 
 ---
 
+## Troubleshooting: "Bootstrap connect failed" and "Broken pipe (os error 32)"
+
+If your logs show:
+
+```
+Bootstrap connect failed (/dns/bootstrap-1.kwaai.ai/tcp/8000/...): IO error: Broken pipe (os error 32)
+❌ Announcement failed on all 2 bootstrap peers
+❌ Block announcement failed — node will not appear on map
+```
+
+**What it means:** The node cannot reach Kwaai’s bootstrap servers (`bootstrap-1.kwaai.ai`, `bootstrap-2.kwaai.ai`) on TCP port 8000. “Broken pipe” usually means the connection was closed by the remote side or the network (e.g. firewall, NAT, or the bootstrap service closing the connection).
+
+**What to check:**
+
+1. **Bootstrap service status**  
+   Check whether the Kwaai bootstrap peers are up and reachable:
+   ```bash
+   curl -s https://map.kwaai.ai/api/v1/state | jq '.bootstrap_states'
+   ```
+   If the map API shows bootstrap as down or unreachable, the issue is on the infrastructure side; try again later.
+
+2. **Outbound connectivity**  
+   From the same machine as the node, test DNS and TCP to the bootstrap hosts:
+   ```bash
+   # DNS
+   getent hosts bootstrap-1.kwaai.ai bootstrap-2.kwaai.ai
+   # TCP to port 8000 (should connect then may close; timeout = no route/firewall)
+   timeout 5 bash -c 'cat < /dev/null > /dev/tcp/bootstrap-1.kwaai.ai/8000' && echo "OK" || echo "Failed"
+   ```
+
+3. **Firewall / NAT**  
+   Ensure outbound TCP port **8000** is allowed. Corporate or ISP firewalls sometimes block non‑HTTP ports.
+
+4. **Retry later**  
+   The node keeps retrying DHT announcement every 2 minutes. If the failure is temporary (bootstrap restart, network blip), the node may succeed on a later attempt without any change on your side.
+
+**Result:** Until at least one bootstrap peer is reachable, the node will not appear on [map.kwaai.ai](https://map.kwaai.ai). The node process itself is fine; this is a network/infrastructure connectivity issue.
+
+---
+
 ## Related Files
 
 ### Working Example

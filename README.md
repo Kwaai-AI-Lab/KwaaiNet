@@ -189,12 +189,7 @@ graph TB
 Kwaai is a proud signatory of the [**GliaNet Fiduciary Pledge**](https://www.glianetalliance.org/pledge), committing KwaaiNet to the highest standards of user protection. This pledge becomes a foundational principle for the entire network.
 
 ### The PEP Model
-
-| Duty | Commitment | How KwaaiNet Honors It |
-|------|------------|----------------------|
-| **🛡️ Protect** (Guardian) | Safeguard user data and well-being | E2E encryption, user-controlled keys, data minimization, no data leaves without consent |
-| **⚖️ Enhance** (Mediator) | Resolve conflicts favoring users | No surveillance, no profiling, no third-party data sharing, privacy-by-design |
-| **📣 Promote** (Advocate) | Advance user interests proactively | Token rewards, transparent governance, open source, user sovereignty first |
+ 
 
 ### Node Operator Trust Hierarchy
 
@@ -584,6 +579,16 @@ The setup scripts automatically install:
 | [Go](https://golang.org/dl/) | 1.20+ | p2p daemon |
 | [Git](https://git-scm.com/) | Any recent | Version control |
 
+#### Node Dashboard (optional)
+
+A local web UI to view status, config, logs, and identity, and to run the first-time setup wizard. From repo root:
+
+**Linux / macOS:** `./start-ui.sh`  
+
+**Windows (PowerShell):** `powershell -ExecutionPolicy Bypass -File start-ui.ps1`
+
+Or manually: `cd systems/node-dashboard && npm install && npm run dev`. Open http://127.0.0.1:5173 (dev) or see [systems/node-dashboard/README.md](systems/node-dashboard/README.md) for production. The dashboard follows [Kwaai's troubleshooting guide](https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/main/docs/DEBUGGING_MAP_VISIBILITY.md#troubleshooting-bootstrap-connect-failed-and-broken-pipe-os-error-32) for bootstrap and map visibility.
+
 #### Build System Architecture
 
 KwaaiNet uses a **multi-tiered cross-platform build system**:
@@ -638,6 +643,7 @@ KwaaiNet uses a **multi-tiered cross-platform build system**:
 | [Hivemind Rust Architecture](./docs/HIVEMIND_RUST_ARCHITECTURE.md) | Distributed deep learning patterns (MoE, DHT, parameter averaging) |
 | [Verida Integration](./docs/VERIDA_INTEGRATION.md) | Optional Verida Network integration example |
 | [Debugging Map Visibility](./docs/DEBUGGING_MAP_VISIBILITY.md) | Why Rust nodes don't appear on map.kwaai.ai and how to fix it |
+| [Node UI Planning](./docs/NODE_UI_PLANNING.md) | Plan for a local dashboard UI to view node status, config, logs, and identity |
 
 ## License
 
