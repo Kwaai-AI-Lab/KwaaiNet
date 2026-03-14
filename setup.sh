@@ -162,8 +162,43 @@ echo "=========================================="
 echo "✅ Setup complete!"
 echo "=========================================="
 echo ""
-echo "Next steps:"
-echo "  1. Build the project: cargo build"
-echo "  2. Run tests: cargo test"
-echo "  3. Run example: cargo run --example petals_visible"
+
+# Optional: build and install kwaainet CLI
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_BIN="${HOME}/.cargo/bin"
+INSTALL_CLI="n"
+if [[ -t 0 ]]; then
+    echo "Build and install the kwaainet CLI to ${INSTALL_BIN}? (y/n)"
+    read -r INSTALL_CLI
+fi
+INSTALL_CLI="$(echo "${INSTALL_CLI}" | tr '[:upper:]' '[:lower:]')"
+
+if [[ "${INSTALL_CLI}" == "y" || "${INSTALL_CLI}" == "yes" ]]; then
+    echo ""
+    echo "Building kwaainet (this may take a few minutes)..."
+    if (cd "${SCRIPT_DIR}/core" && cargo build --release -p kwaainet); then
+        mkdir -p "${INSTALL_BIN}"
+        if cp "${SCRIPT_DIR}/core/target/release/kwaainet" "${INSTALL_BIN}/kwaainet"; then
+            chmod +x "${INSTALL_BIN}/kwaainet"
+            echo "✅ kwaainet installed to ${INSTALL_BIN}/kwaainet"
+            if ! echo ":${PATH}:" | grep -q ":${INSTALL_BIN}:"; then
+                echo "⚠️  Add ${INSTALL_BIN} to your PATH if needed (e.g. in .bashrc: export PATH=\"\${HOME}/.cargo/bin:\${PATH}\")"
+            fi
+            echo "   Run: kwaainet --help"
+        else
+            echo "❌ Failed to copy binary to ${INSTALL_BIN}"
+        fi
+    else
+        echo "❌ Build failed. You can try later with: cd core && cargo build --release -p kwaainet"
+    fi
+    echo ""
+else
+    echo "Skipping CLI install. You can build and run from the repo:"
+    echo "  cd core && cargo build --release -p kwaainet && ./target/release/kwaainet --help"
+    echo ""
+fi
+
+echo "Other next steps:"
+echo "  • Run tests: cd core && cargo test"
+echo "  • Run example: cd core && cargo run --example petals_visible"
 echo ""
