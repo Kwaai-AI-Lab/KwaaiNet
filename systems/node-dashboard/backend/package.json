@@ -1,0 +1,11 @@
+{
+  "name": "kwaainet-node-dashboard-backend",
+  "version": "0.1.0",
+  "description": "Local API server for KwaaiNet Node Dashboard",
+  "type": "module",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.21.0",
+    "yaml": "^2.3.4"
+  }
+}

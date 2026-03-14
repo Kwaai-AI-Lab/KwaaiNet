@@ -69,7 +69,7 @@ pub enum Command {
     Restart,
 
     /// Show daemon status
-    Status,
+    Status(StatusArgs),
 
     /// Show daemon logs
     Logs(LogsArgs),
@@ -124,6 +124,9 @@ pub enum Command {
 
     /// Uninstall KwaaiNet — stop the node, remove all data, and delete binaries
     Uninstall(UninstallArgs),
+
+    /// Open the Node Dashboard (web UI). Run from repo root; requires Node.js.
+    Ui,
 
     /// Distributed transformer block sharding
     #[command(long_about = "Distributed transformer block sharding (Petals-style)
@@ -214,11 +217,25 @@ pub struct LogsArgs {
 }
 
 // ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct StatusArgs {
+    /// Output machine-readable JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
 // config
 // ---------------------------------------------------------------------------
 
 #[derive(Args)]
 pub struct ConfigArgs {
+    /// Output machine-readable JSON (with config show)
+    #[arg(long)]
+    pub json: bool,
     #[command(subcommand)]
     pub action: Option<ConfigAction>,
 }
@@ -381,6 +398,9 @@ pub struct ServeArgs {
 
 #[derive(Args)]
 pub struct IdentityArgs {
+    /// Output machine-readable JSON (with identity show)
+    #[arg(long)]
+    pub json: bool,
     #[command(subcommand)]
     pub action: IdentityAction,
 }

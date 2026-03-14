@@ -91,7 +91,7 @@ impl NodeIdentity {
 
 pub async fn run_identity_command(args: IdentityArgs) -> Result<()> {
     match args.action {
-        IdentityAction::Show => show_identity().await,
+        IdentityAction::Show => show_identity(args.json).await,
         IdentityAction::ImportVc { path } => import_vc(&path).await,
         IdentityAction::ListVcs => list_vcs().await,
         IdentityAction::VerifyVc { path } => verify_vc_cmd(&path).await,
@@ -102,11 +102,32 @@ pub async fn run_identity_command(args: IdentityArgs) -> Result<()> {
 // show
 // ---------------------------------------------------------------------------
 
-async fn show_identity() -> Result<()> {
+async fn show_identity(json: bool) -> Result<()> {
     let identity = NodeIdentity::load_or_create()?;
     let store = CredentialStore::open_default()?;
     let vcs = store.load_valid_for_subject(&identity.did());
     let score = TrustScore::from_credentials(&vcs);
+
+    if json {
+        #[derive(serde::Serialize)]
+        struct IdentityJson<'a> {
+            did: &'a str,
+            peer_id: String,
+            trust_tier: String,
+            score: f64,
+            credential_count: usize,
+        }
+        let did = identity.did();
+        let out = IdentityJson {
+            did: did.as_str(),
+            peer_id: identity.peer_id.to_base58(),
+            trust_tier: score.tier_label().to_string(),
+            score: score.score,
+            credential_count: vcs.len(),
+        };
+        println!("{}", serde_json::to_string(&out).unwrap_or_default());
+        return Ok(());
+    }
 
     print_box_header("KwaaiNet Node Identity");
     println!("  DID:        {}", identity.did());

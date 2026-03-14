@@ -281,49 +281,72 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         // status
         // -------------------------------------------------------------------
-        Command::Status => {
+        Command::Status(args) => {
             let mgr = DaemonManager::new();
             let status = mgr.get_status();
-
-            print_box_header("📊 KwaaiNet Node Status");
-
-            if status.running {
-                let pid = status.pid.unwrap_or(0);
-                let uptime = status
-                    .uptime_secs
-                    .map(format_uptime)
-                    .unwrap_or_else(|| "unknown".to_string());
-                let cpu = status
-                    .cpu_percent
-                    .map(|c| format!("{:.1}%", c))
-                    .unwrap_or_else(|| "n/a".to_string());
-                let mem = status
-                    .memory_mb
-                    .map(|m| format!("{:.0} MB", m))
-                    .unwrap_or_else(|| "n/a".to_string());
-
-                println!("  🟢 Status:  Running");
-                println!("  🔢 PID:     {}", pid);
-                println!("  ⏱️  Uptime:  {}", uptime);
-                println!("  💻 CPU:     {}", cpu);
-                println!("  🧠 Memory:  {}", mem);
-            } else {
-                println!("  🔴 Status:  Not running");
-                print_info("Start with: kwaainet start --daemon");
-            }
-
-            // Show shard server status
             let shard_mgr = ShardManager::new();
-            println!();
-            if shard_mgr.is_running() {
-                let shard_pid = shard_mgr.read_pid().unwrap_or(0);
-                println!("  🟢 Shard:   Running (PID {})", shard_pid);
-            } else {
-                println!("  ⚫ Shard:   Not running");
-                print_info("Start shard: kwaainet start --daemon --shard");
-            }
+            let shard_running = shard_mgr.is_running();
+            let shard_pid = shard_mgr.read_pid();
 
-            print_separator();
+            if args.json {
+                #[derive(serde::Serialize)]
+                struct StatusJson {
+                    running: bool,
+                    pid: Option<u32>,
+                    uptime_secs: Option<u64>,
+                    cpu_percent: Option<f32>,
+                    memory_mb: Option<f64>,
+                    shard_running: bool,
+                    shard_pid: Option<u32>,
+                }
+                let out = StatusJson {
+                    running: status.running,
+                    pid: status.pid,
+                    uptime_secs: status.uptime_secs,
+                    cpu_percent: status.cpu_percent,
+                    memory_mb: status.memory_mb,
+                    shard_running,
+                    shard_pid,
+                };
+                println!("{}", serde_json::to_string(&out).unwrap_or_default());
+            } else {
+                print_box_header("📊 KwaaiNet Node Status");
+
+                if status.running {
+                    let pid = status.pid.unwrap_or(0);
+                    let uptime = status
+                        .uptime_secs
+                        .map(format_uptime)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let cpu = status
+                        .cpu_percent
+                        .map(|c| format!("{:.1}%", c))
+                        .unwrap_or_else(|| "n/a".to_string());
+                    let mem = status
+                        .memory_mb
+                        .map(|m| format!("{:.0} MB", m))
+                        .unwrap_or_else(|| "n/a".to_string());
+
+                    println!("  🟢 Status:  Running");
+                    println!("  🔢 PID:     {}", pid);
+                    println!("  ⏱️  Uptime:  {}", uptime);
+                    println!("  💻 CPU:     {}", cpu);
+                    println!("  🧠 Memory:  {}", mem);
+                } else {
+                    println!("  🔴 Status:  Not running");
+                    print_info("Start with: kwaainet start --daemon");
+                }
+
+                println!();
+                if shard_running {
+                    println!("  🟢 Shard:   Running (PID {})", shard_pid.unwrap_or(0));
+                } else {
+                    println!("  ⚫ Shard:   Not running");
+                    print_info("Start shard: kwaainet start --daemon --shard");
+                }
+
+                print_separator();
+            }
         }
 
         // -------------------------------------------------------------------
@@ -376,19 +399,26 @@ async fn main() -> Result<()> {
 
             match args.action {
                 None | Some(ConfigAction::Show) => {
-                    print_box_header("⚙️  KwaaiNet Configuration");
-                    println!("  🤖 model:        {}", cfg.model);
-                    println!("  🧱 blocks:       {}", cfg.blocks);
-                    println!("  🔌 port:         {}", cfg.port);
-                    println!("  🖥️  use_gpu:      {}", cfg.use_gpu);
-                    println!("  📋 log_level:    {}", cfg.log_level);
-                    if let Some(ref n) = cfg.public_name {
-                        println!("  📋 public_name:  {}", n);
+                    if args.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&cfg).unwrap_or_else(|_| "{}".to_string())
+                        );
+                    } else {
+                        print_box_header("⚙️  KwaaiNet Configuration");
+                        println!("  🤖 model:        {}", cfg.model);
+                        println!("  🧱 blocks:       {}", cfg.blocks);
+                        println!("  🔌 port:         {}", cfg.port);
+                        println!("  🖥️  use_gpu:      {}", cfg.use_gpu);
+                        println!("  📋 log_level:    {}", cfg.log_level);
+                        if let Some(ref n) = cfg.public_name {
+                            println!("  📋 public_name:  {}", n);
+                        }
+                        if let Some(ref ip) = cfg.public_ip {
+                            println!("  📋 public_ip:    {}", ip);
+                        }
+                        print_separator();
                     }
-                    if let Some(ref ip) = cfg.public_ip {
-                        println!("  📋 public_ip:    {}", ip);
-                    }
-                    print_separator();
                 }
                 Some(ConfigAction::Set { key, value }) => {
                     cfg.set_key(&key, &value)?;
@@ -1028,6 +1058,76 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Uninstall(args) => {
             uninstall::run_uninstall(&args)?;
+        }
+
+        // -------------------------------------------------------------------
+        // ui — launch Node Dashboard (web UI)
+        // -------------------------------------------------------------------
+        Command::Ui => {
+            use std::env;
+            use std::process::Command;
+            use std::thread;
+            use std::time::Duration;
+
+            print_box_header("KwaaiNet Node Dashboard");
+
+            let mut dir = env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mut backend_dir = None;
+            for _ in 0..20 {
+                let dashboard = dir.join("systems").join("node-dashboard");
+                let backend = dashboard.join("backend");
+                let server_js = backend.join("server.js");
+                if server_js.exists() {
+                    backend_dir = Some(backend);
+                    break;
+                }
+                if !dir.pop() {
+                    break;
+                }
+            }
+
+            let backend_dir = match backend_dir {
+                Some(d) => d,
+                None => {
+                    print_error("Node Dashboard not found. Run from KwaaiNet repo root:");
+                    println!("  ./start-ui.sh");
+                    println!("  Or: cd systems/node-dashboard && npm run dev");
+                    print_separator();
+                    return Ok(());
+                }
+            };
+
+            // Check for Node.js
+            if Command::new("node").arg("--version").output().is_err() {
+                print_error("Node.js not found. Install Node.js 18+ and ensure it is on your PATH.");
+                print_separator();
+                return Ok(());
+            }
+
+            println!("  Starting dashboard backend at http://127.0.0.1:3456 ...");
+            let child = Command::new("node")
+                .arg("server.js")
+                .current_dir(&backend_dir)
+                .spawn();
+
+            match child {
+                Ok(_) => {
+                    thread::sleep(Duration::from_secs(2));
+                    let url = "http://127.0.0.1:3456";
+                    #[cfg(target_os = "macos")]
+                    let _ = Command::new("open").arg(url).spawn();
+                    #[cfg(target_os = "windows")]
+                    let _ = Command::new("cmd").args(["/C", "start", url]).spawn();
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                    let _ = Command::new("xdg-open").arg(url).spawn();
+                    print_success("Dashboard started. Open in browser if it did not open automatically.");
+                    println!("  {}", url);
+                }
+                Err(e) => {
+                    print_error(&format!("Failed to start dashboard: {}", e));
+                }
+            }
+            print_separator();
         }
 
         // -------------------------------------------------------------------

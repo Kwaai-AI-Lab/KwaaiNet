@@ -1,0 +1,18 @@
+{
+  "name": "kwaainet-node-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local web UI for KwaaiNet node",
+  "scripts": {
+    "postinstall": "npm run install:all",
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev": "concurrently -n backend,frontend -c blue,magenta \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "node backend/server.js",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend",
+    "start": "node backend/server.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
