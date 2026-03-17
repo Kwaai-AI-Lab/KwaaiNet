@@ -194,8 +194,8 @@ async fn main() -> Result<()> {
                 print_separator();
             }
 
-            // Auto-detect public IP if not set
-            if cfg.public_ip.is_none() {
+            // Auto-detect public IP if neither announce_addr nor public_ip is set
+            if cfg.announce_addr.is_none() && cfg.public_ip.is_none() {
                 if let Some(ip) = config::detect_public_ip().await {
                     cfg.public_ip = Some(ip);
                 }
