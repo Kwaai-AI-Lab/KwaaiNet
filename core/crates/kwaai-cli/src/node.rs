@@ -443,9 +443,10 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Determine effective throughput using the Petals formula:
     //   effective_tps = min(compute_tps, network_rps × relay_penalty)
     //   network_rps   = download_bps / (hidden_size × 16)
-    // using_relay: true only if we have no public IP (behind NAT) and relay is allowed.
-    // If a public IP is configured, we're directly reachable — no relay needed.
-    let using_relay = config.public_ip.is_none() && !config.no_relay;
+    // using_relay: true only if we have no reachable address (behind NAT) and relay is allowed.
+    // If a public IP or announce_addr is configured, we're directly reachable — no relay needed.
+    let using_relay =
+        config.public_ip.is_none() && config.announce_addr.is_none() && !config.no_relay;
 
     // Measure network bandwidth once at startup (1 MiB Cloudflare probe).
     // Stored so re-announcements can recompute effective_tps without re-probing.
