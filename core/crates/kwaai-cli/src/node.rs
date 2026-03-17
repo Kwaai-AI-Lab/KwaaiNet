@@ -344,11 +344,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // p2pd listens for P2P traffic on the configured port
     let host_addr = format!("/ip4/0.0.0.0/tcp/{}", config.port);
 
-    // Announce the public IP so the health monitor can reach us
+    // Announce address: prefer explicit announce_addr, fall back to public_ip.
+    // announce_addr is a raw multiaddr (e.g. /dns/kwaainet/tcp/8080).
+    // public_ip is an IP address formatted as /ip4/<ip>/tcp/<port>.
     let announce_addr = config
-        .public_ip
-        .as_deref()
-        .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port));
+        .announce_addr
+        .clone()
+        .or_else(|| {
+            config
+                .public_ip
+                .as_deref()
+                .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port))
+        });
 
     let identity_key_path = NodeIdentity::key_file_path();
 
