@@ -474,29 +474,6 @@ fn parse_bool(s: &str) -> Result<bool> {
     }
 }
 
-/// Detect public IP via ipify.org (async).
-pub async fn detect_public_ip() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-    let ip = client
-        .get("https://api.ipify.org")
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?
-        .trim()
-        .to_string();
-    if ip.is_empty() {
-        None
-    } else {
-        Some(ip)
-    }
-}
-
 mod dirs_sys {
     use std::path::PathBuf;
     pub fn home_dir() -> Option<PathBuf> {
