@@ -440,11 +440,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     dial_and_wait_for_bootstrap(&mut client, &bootstrap_peers).await?;
 
     // -----------------------------------------------------------------------
-    // Step 5: Self-discover external address via IDENTIFY (when not manually
+    // Step 5: Self-discover announce addresses via IDENTIFY (when not manually
     // configured). After at least one bootstrap peer connects, the libp2p
-    // IDENTIFY protocol lets peers report our observed external address. We
-    // poll until 2 separate responses agree on the same address, then restart
-    // p2pd with that address as its announce addr so map.kwaai.ai can reach us.
+    // IDENTIFY protocol lets peers report our observed addresses. We poll until
+    // min_confirmations separate responses agree on the same address, then
+    // restart p2pd with those addresses as its announce addrs.
     // -----------------------------------------------------------------------
     let mut discovered_addrs: Vec<String>;
     if announce_addr.is_none() {
@@ -457,6 +457,9 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             &p2pd_path,
             &handler_addr,
             config.no_relay,
+            config.port,
+            config.identify_min_confirmations,
+            config.identify_timeout_secs,
         )
         .await?;
     } else {
@@ -472,7 +475,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     //   effective_tps = min(compute_tps, network_rps × relay_penalty)
     //   network_rps   = download_bps / (hidden_size × 16)
     // using_relay: true only if we have no explicit address and IDENTIFY
-    // discovery also came up empty. If we confirmed an external address
+    // discovery also came up empty. If we have confirmed announce addresses
     // (directly or via IDENTIFY) we are directly reachable — no relay needed.
     let using_relay = announce_addr.is_none() && discovered_addrs.is_empty() && !config.no_relay;
 
@@ -783,9 +786,15 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             // Periodic IDENTIFY address check (every 5 minutes).
             // Skipped when announce_addr/public_ip was explicitly configured.
             _ = identify_check.tick(), if !explicit_announce => {
-                let fresh = collect_observed_addresses(&mut client, 2, Duration::from_secs(8)).await;
-                if !fresh.is_empty() && fresh != discovered_addrs {
-                    info!("External address changed:");
+                info!("Checking announce addresses via IDENTIFY...");
+                let fresh = collect_observed_addresses(&mut client, config.identify_min_confirmations, Duration::from_secs(config.identify_timeout_secs), config.port).await;
+                info!("  IDENTIFY result: {} addr(s) confirmed", fresh.len());
+                let mut fresh_sorted = fresh.clone();
+                let mut current_sorted = discovered_addrs.clone();
+                fresh_sorted.sort();
+                current_sorted.sort();
+                if !fresh_sorted.is_empty() && fresh_sorted != current_sorted {
+                    info!("Announce addresses changed:");
                     for addr in &discovered_addrs {
                         info!("  old: {}", addr);
                     }
@@ -1094,13 +1103,16 @@ async fn restart_p2pd(
     };
 
     *daemon = builder.spawn().await.context("restarting p2pd")?;
-    *client = daemon.client().await.context("p2pd client reconnect after restart")?;
+    *client = daemon
+        .client()
+        .await
+        .context("p2pd client reconnect after restart")?;
 
     client
         .register_stream_handler(&handler_addr_str, dht_protocols)
         .await
         .context("re-registering stream handlers after restart")?;
-    info!("  p2pd restarted and handlers re-registered");
+    info!("p2pd restarted and handlers re-registered");
 
     Ok(())
 }
@@ -1110,13 +1122,13 @@ async fn restart_p2pd(
 /// Called from the reannounce tick. If `pending_restart` holds new addresses
 /// and `active_rpc_streams` is zero, delegates to `restart_p2pd` then updates
 /// the caller's mutable state. If streams are still active, logs and returns.
-/// Self-discover external address via IDENTIFY and restart p2pd with announce addrs.
+/// Discover observed addresses via IDENTIFY and restart p2pd with them.
 ///
 /// When no explicit `announce_addr` or `public_ip` is configured, we rely on the
 /// libp2p IDENTIFY protocol: after bootstrap peers connect they report our observed
-/// external address back to us. Once 2 independent responses agree we shut the
-/// initial p2pd down, rebuild it with the confirmed address as its announce addr,
-/// and return the new daemon + client along with the discovered addresses.
+/// addresses back to us. Once `min_confirmations` independent responses agree we
+/// shut the initial p2pd down, rebuild it with the confirmed addresses as its
+/// announce addrs, and return the new daemon + client along with those addresses.
 ///
 /// If IDENTIFY yields nothing the original daemon is returned unchanged and the
 /// returned address list is empty (the node will fall back to relay mode).
@@ -1129,43 +1141,64 @@ async fn discover_and_restart_with_announce(
     p2pd_path: &Option<std::path::PathBuf>,
     handler_addr: &std::net::SocketAddr,
     no_relay: bool,
+    port: u16,
+    min_confirmations: usize,
+    timeout_secs: u64,
 ) -> anyhow::Result<(
     kwaai_p2p_daemon::P2PDaemon,
     kwaai_p2p_daemon::P2PClient,
     Vec<String>,
 )> {
-    info!("No explicit announce address — discovering via IDENTIFY...");
-    let discovered_addrs =
-        collect_observed_addresses(&mut client, 2, Duration::from_secs(10)).await;
+    info!("No explicit announce address — discovering addresses via IDENTIFY...");
+
+    // Give bootstrap peer(s) a moment to complete the IDENTIFY exchange before
+    // polling. The TCP connection is established by the time we're called, but
+    // IDENTIFY runs asynchronously after it.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let discovered_addrs = collect_observed_addresses(
+        &mut client,
+        min_confirmations,
+        Duration::from_secs(timeout_secs),
+        port,
+    )
+    .await;
 
     if discovered_addrs.is_empty() {
         warn!(
-            "⚠️ Could not confirm external address via IDENTIFY \
+            "⚠️ Could not confirm any announce addresses via IDENTIFY \
              — node may appear Unreachable on map.kwaai.ai. \
              Set public_ip or announce_addr in config to override."
         );
         return Ok((daemon, client, discovered_addrs));
     }
 
-    info!("Confirmed external address(es) — restarting p2pd with announce addrs:");
+    info!("Confirmed announce address(es) — restarting p2pd:");
     for addr in &discovered_addrs {
         info!("  - {}", addr);
     }
 
     restart_p2pd(
-        &mut daemon, &mut client, &discovered_addrs,
-        host_addr, bootstrap_peers, identity_key_path,
-        p2pd_path, handler_addr, no_relay,
-    ).await?;
+        &mut daemon,
+        &mut client,
+        &discovered_addrs,
+        host_addr,
+        bootstrap_peers,
+        identity_key_path,
+        p2pd_path,
+        handler_addr,
+        no_relay,
+    )
+    .await?;
 
     Ok((daemon, client, discovered_addrs))
 }
 
 /// Poll `identify_with_addrs()` until `min_confirmations` separate responses
-/// all include the same public multiaddr, or `timeout` elapses.
+/// all include the same multiaddr, or `timeout` elapses.
 ///
-/// Returns the confirmed public addresses as multiaddr strings (e.g.
-/// `/ip4/203.0.113.1/tcp/8080`). Private/loopback addresses are filtered out.
+/// Returns the confirmed addresses as multiaddr strings (e.g.
+/// `/ip4/203.0.113.1/tcp/8080`). Unspecified and link-local addresses are
+/// filtered out; private/loopback addresses are included.
 ///
 /// "Confirmation" here means the address appeared in at least
 /// `min_confirmations` distinct IDENTIFY responses. p2pd refreshes its
@@ -1176,80 +1209,116 @@ async fn collect_observed_addresses(
     client: &mut kwaai_p2p_daemon::P2PClient,
     min_confirmations: usize,
     timeout: Duration,
+    port: u16,
 ) -> Vec<String> {
     use libp2p::Multiaddr;
     use std::collections::HashMap;
 
+    // Poll for the full timeout window so every address has an equal chance
+    // to accumulate confirmations. Returning early as soon as any address hits
+    // the threshold causes addresses that appear later (e.g. the public IP
+    // observed by the second bootstrap peer) to be dropped.
     let deadline = tokio::time::Instant::now() + timeout;
     let mut counts: HashMap<String, usize> = HashMap::new();
 
     loop {
         match client.identify_with_addrs().await {
             Ok((_peer_id, addrs)) => {
+                tracing::debug!("IDENTIFY returned {} addr(s)", addrs.len());
                 for addr_bytes in &addrs {
-                    // Parse as libp2p Multiaddr so we can inspect the components.
                     if let Ok(ma) = Multiaddr::try_from(addr_bytes.clone()) {
                         let s = ma.to_string();
-                        if is_public_multiaddr(&ma) {
-                            *counts.entry(s).or_insert(0) += 1;
+                        if let Some(normalized) = normalize_announce_addr(&ma, port) {
+                            let count = counts.entry(normalized.clone()).or_insert(0);
+                            *count += 1;
+                            tracing::debug!("  addr={} → {} ({}x)", s, normalized, count);
+                        } else {
+                            tracing::debug!("  addr={} → filtered", s);
                         }
                     }
                 }
             }
-            Err(e) => {
-                tracing::debug!("identify_with_addrs error: {}", e);
-            }
-        }
-
-        let confirmed: Vec<String> = counts
-            .iter()
-            .filter(|(_, &c)| c >= min_confirmations)
-            .map(|(addr, _)| addr.clone())
-            .collect();
-
-        if !confirmed.is_empty() {
-            return confirmed;
+            Err(e) => tracing::debug!("identify_with_addrs error: {}", e),
         }
 
         if tokio::time::Instant::now() >= deadline {
-            // Return whatever we have (even unconfirmed) as a best-effort
-            // fallback if we got at least one observation.
-            let best_effort: Vec<String> = counts.into_keys().collect();
-            if !best_effort.is_empty() {
-                tracing::warn!(
-                    "IDENTIFY: could not get {} confirmations within {:?}; \
-                     using best-effort address(es): {:?}",
-                    min_confirmations,
-                    timeout,
-                    best_effort
-                );
-            }
-            return best_effort;
+            break;
         }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+
+    let confirmed: Vec<String> = counts
+        .into_iter()
+        .filter(|(_, c)| *c >= min_confirmations)
+        .map(|(addr, _)| addr)
+        .collect();
+
+    if confirmed.is_empty() {
+        tracing::warn!(
+            "IDENTIFY: no addresses reached {} confirmation(s) within {:?}",
+            min_confirmations,
+            timeout,
+        );
+    }
+
+    confirmed
 }
 
-/// Returns true if the multiaddr represents a publicly routable address.
-/// Filters out loopback, RFC-1918 private ranges, and link-local.
-fn is_public_multiaddr(ma: &libp2p::Multiaddr) -> bool {
+/// Normalise a multiaddr from `host.Addrs()` into an announce address, or
+/// return `None` if it should be filtered.
+///
+/// `host.Addrs()` contains two kinds of entries:
+///   - Our own listen addresses (loopback, LAN) — always on `our_port`.
+///   - Peer-observed addresses from the libp2p IDENTIFY protocol — our IP as
+///     seen by the peer, but with an ephemeral source port because they were
+///     recorded from our outbound TCP connections to those peers.
+///
+/// Private and loopback addresses are accepted as-is — `host.Addrs()` only
+/// ever contains our own interfaces for these ranges, so no port filter is
+/// needed.
+///
+/// Unspecified (`0.0.0.0`/`::`) and link-local addresses are rejected.
+/// Addresses with no TCP component are rejected.
+fn normalize_announce_addr(ma: &libp2p::Multiaddr, our_port: u16) -> Option<String> {
     use libp2p::multiaddr::Protocol;
+    use std::net::IpAddr;
+
+    let mut ip: Option<IpAddr> = None;
+    let mut has_tcp = false;
+
     for proto in ma.iter() {
         match proto {
-            Protocol::Ip4(ip) => {
-                return !ip.is_loopback()
-                    && !ip.is_private()
-                    && !ip.is_link_local()
-                    && !ip.is_unspecified();
+            Protocol::Ip4(a) => {
+                if a.is_unspecified() || a.is_link_local() {
+                    return None;
+                }
+                ip = Some(IpAddr::V4(a));
             }
-            Protocol::Ip6(ip) => {
-                return !ip.is_loopback() && !ip.is_unspecified();
+            Protocol::Ip6(a) => {
+                if a.is_unspecified() {
+                    return None;
+                }
+                ip = Some(IpAddr::V6(a));
             }
+            Protocol::Tcp(_) => has_tcp = true,
             _ => {}
         }
     }
-    false
+
+    let ip = ip?;
+    if !has_tcp {
+        return None;
+    }
+
+    // Always announce on our_port. For peer-observed addresses the port is
+    // ephemeral (outbound NAT mapping) and must be replaced. For listen
+    // addresses our_port is already correct.
+    let normalized = match ip {
+        IpAddr::V4(a) => format!("/ip4/{}/tcp/{}", a, our_port),
+        IpAddr::V6(a) => format!("/ip6/{}/tcp/{}", a, our_port),
+    };
+    Some(normalized)
 }
 
 /// Dial bootstrap peers and poll `list_peers()` until at least one is

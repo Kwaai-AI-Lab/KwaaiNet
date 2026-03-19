@@ -112,6 +112,15 @@ pub struct KwaaiNetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpk_local_port: Option<u16>,
 
+    /// Minimum number of independent IDENTIFY responses that must report the
+    /// same address before it is accepted as confirmed (default: 2).
+    #[serde(default = "default_identify_min_confirmations")]
+    pub identify_min_confirmations: usize,
+
+    /// How long to poll IDENTIFY for address confirmations, in seconds (default: 10).
+    #[serde(default = "default_identify_timeout_secs")]
+    pub identify_timeout_secs: u64,
+
     // ── Block rebalancing ─────────────────────────────────────────────────────
     /// Enable periodic block rebalancing (only active with `shard serve --auto`).
     /// When true, the shard server periodically checks DHT coverage and moves
@@ -264,6 +273,12 @@ fn default_backoff_multiplier() -> f64 {
 fn default_jitter_factor() -> f64 {
     0.5
 }
+fn default_identify_min_confirmations() -> usize {
+    2
+}
+fn default_identify_timeout_secs() -> u64 {
+    10
+}
 fn default_rebalance_interval() -> u64 {
     300
 }
@@ -297,6 +312,8 @@ impl Default for KwaaiNetConfig {
             vpk_mode: None,
             vpk_endpoint: None,
             vpk_local_port: None,
+            identify_min_confirmations: default_identify_min_confirmations(),
+            identify_timeout_secs: default_identify_timeout_secs(),
             auto_rebalance: false,
             rebalance_interval_secs: default_rebalance_interval(),
             rebalance_min_redundancy: default_rebalance_min_redundancy(),
@@ -455,6 +472,16 @@ impl KwaaiNetConfig {
             "rebalance_min_redundancy" => {
                 self.rebalance_min_redundancy = value.parse().map_err(|_| {
                     anyhow::anyhow!("rebalance_min_redundancy must be a positive integer")
+                })?
+            }
+            "identify_min_confirmations" => {
+                self.identify_min_confirmations = value.parse().map_err(|_| {
+                    anyhow::anyhow!("identify_min_confirmations must be a positive integer")
+                })?
+            }
+            "identify_timeout_secs" => {
+                self.identify_timeout_secs = value.parse().map_err(|_| {
+                    anyhow::anyhow!("identify_timeout_secs must be a positive integer")
                 })?
             }
             _ => anyhow::bail!(
