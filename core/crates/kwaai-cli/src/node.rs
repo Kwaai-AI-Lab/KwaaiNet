@@ -446,7 +446,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // poll until 2 separate responses agree on the same address, then restart
     // p2pd with that address as its announce addr so map.kwaai.ai can reach us.
     // -----------------------------------------------------------------------
-    let discovered_addrs: Vec<String>;
+    let mut discovered_addrs: Vec<String>;
     if announce_addr.is_none() {
         (daemon, client, discovered_addrs) = discover_and_restart_with_announce(
             daemon,
@@ -620,6 +620,17 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // start_block/blocks when SIGHUP triggers a config re-read.
     let mut config = config.clone();
     let storage_clone = storage.clone();
+
+    // Tracks the number of RPC stream handler tasks currently in-flight.
+    // Used to gate p2pd restarts: we defer any restart until this reaches zero
+    // so we never tear down the daemon mid-request.
+    let active_rpc_streams: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
+    // When IDENTIFY detects an address change while RPC streams are active we
+    // store the new addresses here and apply the restart at the next reannounce
+    // tick once the node is idle (active_rpc_streams == 0).
+    let mut pending_restart: Option<Vec<String>> = None;
+
     let mut reannounce = tokio::time::interval(Duration::from_secs(120));
     reannounce.tick().await; // skip the immediate first tick
 
@@ -648,10 +659,13 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     Ok((mut stream, addr)) => {
                         info!("Incoming RPC from {}", addr);
                         let s = storage_clone.clone();
+                        let counter = active_rpc_streams.clone();
+                        counter.fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             if let Err(e) = handle_rpc_stream(&mut stream, s).await {
                                 warn!("RPC handler error: {}", e);
                             }
+                            counter.fetch_sub(1, Ordering::Relaxed);
                         });
                     }
                     Err(e) => warn!("Accept error: {}", e),
@@ -692,6 +706,34 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
             // Periodic re-announcement
             _ = reannounce.tick() => {
+                // If IDENTIFY detected an address change while RPC streams were
+                // active, apply the deferred p2pd restart now — but only once
+                // all in-flight RPC handler tasks have completed.
+                if let Some(ref new_addrs) = pending_restart.clone() {
+                    if active_rpc_streams.load(Ordering::Relaxed) > 0 {
+                        info!(
+                            "p2pd restart pending ({} active RPC stream(s)) — will retry next tick",
+                            active_rpc_streams.load(Ordering::Relaxed)
+                        );
+                    } else {
+                        info!("Applying deferred p2pd restart with new announce addr(s):");
+                        for addr in new_addrs {
+                            info!("  {}", addr);
+                        }
+                        if let Err(e) = restart_p2pd(
+                            &mut daemon, &mut client, new_addrs,
+                            &host_addr, &bootstrap_peers, &identity_key_path,
+                            &p2pd_path, &handler_addr, config.no_relay,
+                        ).await {
+                            warn!("Deferred p2pd restart failed: {}", e);
+                        } else {
+                            discovered_addrs = new_addrs.clone();
+                            server_info.using_relay = false;
+                            pending_restart = None;
+                        }
+                    }
+                }
+
                 // Re-read config to pick up start_block changes written by
                 // `shard serve` (via signal_reannounce) or `kwaainet config set`.
                 // On Windows this also drains the reannounce.flag file.
@@ -743,74 +785,19 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             _ = identify_check.tick(), if !explicit_announce => {
                 let fresh = collect_observed_addresses(&mut client, 2, Duration::from_secs(8)).await;
                 if !fresh.is_empty() && fresh != discovered_addrs {
-                    info!("External address changed — restarting p2pd:");
+                    info!("External address changed:");
                     for addr in &discovered_addrs {
                         info!("  old: {}", addr);
                     }
                     for addr in &fresh {
                         info!("  new: {}", addr);
                     }
-                    // Unregister handlers, restart p2pd with new announce addrs.
-                    let _ = client
-                        .remove_stream_handler(
-                            &format!("/ip4/127.0.0.1/tcp/{}", handler_addr.port()),
-                            vec![
-                                "DHTProtocol.rpc_ping".to_string(),
-                                "DHTProtocol.rpc_store".to_string(),
-                                "DHTProtocol.rpc_find".to_string(),
-                            ],
-                        )
-                        .await;
-                    let _ = daemon.shutdown().await;
-
-                    let builder = P2PDaemon::builder()
-                        .dht(true)
-                        .relay(!config.no_relay)
-                        .auto_relay(true)
-                        .auto_nat(true)
-                        .nat_portmap(true)
-                        .host_addrs([host_addr.clone()])
-                        .bootstrap_peers(bootstrap_peers.clone())
-                        .announce_addrs(fresh.iter().map(|s| s.as_str()))
-                        .with_identity_key(&identity_key_path);
-                    let builder = if let Some(ref path) = p2pd_path {
-                        builder.with_binary_path(path)
-                    } else {
-                        builder
-                    };
-                    let builder = if let Ok(sock) = std::env::var("KWAAINET_SOCKET") {
-                        #[cfg(unix)]
-                        let sock_addr = format!("/unix/{}", sock);
-                        #[cfg(not(unix))]
-                        let sock_addr = sock;
-                        builder.with_listen_addr(sock_addr)
-                    } else {
-                        builder
-                    };
-
-                    match builder.spawn().await {
-                        Ok(new_daemon) => {
-                            daemon = new_daemon;
-                            match daemon.client().await {
-                                Ok(new_client) => {
-                                    client = new_client;
-                                    discovered_addrs = fresh;
-                                    server_info.using_relay = false;
-                                    let sb = config.start_block as i32;
-                                    let eb = config.effective_end_block() as i32;
-                                    if let Err(e) = announce(
-                                        &mut client, peer_id, &storage, &bootstrap_peers,
-                                        &prefix, &repository, config.model_total_blocks(),
-                                        sb, eb, &server_info,
-                                    ).await {
-                                        warn!("Re-announce after address change failed: {}", e);
-                                    }
-                                }
-                                Err(e) => warn!("p2pd client reconnect failed: {}", e),
-                            }
-                        }
-                        Err(e) => warn!("p2pd restart failed: {}", e),
-                    }
+                    // Don't restart p2pd immediately — doing so mid-inference would
+                    // tear down active relay circuits and orphan in-flight RPC streams.
+                    // Instead record the new addresses and let the reannounce tick
+                    // apply the restart once the node is idle.
+                    pending_restart = Some(fresh);
+                    info!("  p2pd restart deferred until node is idle");
                 }
             }
 
@@ -1043,6 +1030,86 @@ async fn send_to_bootstrap(
 ///
 /// Explicitly dials each bootstrap peer so p2pd opens the TCP connection
 /// immediately, then polls list_peers() until ≥1 peer is confirmed
+/// Unregister DHT stream handlers, shut down p2pd, rebuild and spawn it with
+/// new announce addresses, reconnect the client, and re-register handlers.
+///
+/// This is the common restart sequence shared by the startup IDENTIFY restart
+/// and the deferred reannounce-tick restart. The only thing that varies between
+/// call sites is `announce_addrs`; all builder flags are fixed.
+///
+/// `remove_stream_handler` failures are non-fatal (daemon may already be
+/// unresponsive). All other failures are returned as `Err` for the caller to
+/// handle at the appropriate severity.
+async fn restart_p2pd(
+    daemon: &mut kwaai_p2p_daemon::P2PDaemon,
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    announce_addrs: &[String],
+    host_addr: &str,
+    bootstrap_peers: &[String],
+    identity_key_path: &std::path::Path,
+    p2pd_path: &Option<std::path::PathBuf>,
+    handler_addr: &std::net::SocketAddr,
+    no_relay: bool,
+) -> anyhow::Result<()> {
+    let handler_addr_str = format!("/ip4/127.0.0.1/tcp/{}", handler_addr.port());
+    let dht_protocols = vec![
+        "DHTProtocol.rpc_ping".to_string(),
+        "DHTProtocol.rpc_store".to_string(),
+        "DHTProtocol.rpc_find".to_string(),
+    ];
+
+    // Unregister handlers before shutdown so the listener port is freed
+    // cleanly before we rebind. Non-fatal if the daemon is already gone.
+    if let Err(e) = client
+        .remove_stream_handler(&handler_addr_str, dht_protocols.clone())
+        .await
+    {
+        warn!("remove_stream_handler before restart: {}", e);
+    }
+    daemon.shutdown().await?;
+
+    let builder = P2PDaemon::builder()
+        .dht(true)
+        .relay(!no_relay)
+        .auto_relay(true)
+        .auto_nat(true)
+        .nat_portmap(true)
+        .host_addrs([host_addr])
+        .bootstrap_peers(bootstrap_peers.to_vec())
+        .announce_addrs(announce_addrs.iter().map(|s| s.as_str()))
+        .with_identity_key(identity_key_path);
+    let builder = if let Some(ref path) = p2pd_path {
+        builder.with_binary_path(path)
+    } else {
+        builder
+    };
+    let builder = if let Ok(sock) = std::env::var("KWAAINET_SOCKET") {
+        #[cfg(unix)]
+        let sock_addr = format!("/unix/{}", sock);
+        #[cfg(not(unix))]
+        let sock_addr = sock;
+        builder.with_listen_addr(sock_addr)
+    } else {
+        builder
+    };
+
+    *daemon = builder.spawn().await.context("restarting p2pd")?;
+    *client = daemon.client().await.context("p2pd client reconnect after restart")?;
+
+    client
+        .register_stream_handler(&handler_addr_str, dht_protocols)
+        .await
+        .context("re-registering stream handlers after restart")?;
+    info!("  p2pd restarted and handlers re-registered");
+
+    Ok(())
+}
+
+/// Apply a deferred p2pd restart if one is pending and the node is idle.
+///
+/// Called from the reannounce tick. If `pending_restart` holds new addresses
+/// and `active_rpc_streams` is zero, delegates to `restart_p2pd` then updates
+/// the caller's mutable state. If streams are still active, logs and returns.
 /// Self-discover external address via IDENTIFY and restart p2pd with announce addrs.
 ///
 /// When no explicit `announce_addr` or `public_ip` is configured, we rely on the
@@ -1085,49 +1152,11 @@ async fn discover_and_restart_with_announce(
         info!("  - {}", addr);
     }
 
-    // Unregister stream handlers before shutting down the daemon so
-    // the RPC listener port is freed before we rebind.
-    let _ = client
-        .remove_stream_handler(
-            &format!("/ip4/127.0.0.1/tcp/{}", handler_addr.port()),
-            vec![
-                "DHTProtocol.rpc_ping".to_string(),
-                "DHTProtocol.rpc_store".to_string(),
-                "DHTProtocol.rpc_find".to_string(),
-            ],
-        )
-        .await;
-    daemon.shutdown().await?;
-
-    // Rebuild the builder with the same settings + announce addrs.
-    let builder = P2PDaemon::builder()
-        .dht(true)
-        .relay(!no_relay)
-        .auto_relay(true)
-        .auto_nat(true)
-        .nat_portmap(true)
-        .host_addrs([host_addr])
-        .bootstrap_peers(bootstrap_peers.to_vec())
-        .announce_addrs(discovered_addrs.iter().map(|s| s.as_str()))
-        .with_identity_key(identity_key_path);
-    let builder = if let Some(ref path) = p2pd_path {
-        builder.with_binary_path(path)
-    } else {
-        builder
-    };
-    let builder = if let Ok(sock) = std::env::var("KWAAINET_SOCKET") {
-        #[cfg(unix)]
-        let sock_addr = format!("/unix/{}", sock);
-        #[cfg(not(unix))]
-        let sock_addr = sock;
-        builder.with_listen_addr(sock_addr)
-    } else {
-        builder
-    };
-
-    daemon = builder.spawn().await.context("restarting p2pd with announce addrs")?;
-    client = daemon.client().await.context("p2pd client (restart)")?;
-    info!("  p2pd restarted with announce addr(s)");
+    restart_p2pd(
+        &mut daemon, &mut client, &discovered_addrs,
+        host_addr, bootstrap_peers, identity_key_path,
+        p2pd_path, handler_addr, no_relay,
+    ).await?;
 
     Ok((daemon, client, discovered_addrs))
 }
