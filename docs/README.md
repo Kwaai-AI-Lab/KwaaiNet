@@ -33,6 +33,8 @@ Each page will label its primary audience at the top to make navigation easier.
   Big-picture view of a KwaaiNet node: trust, compute, storage, network, and the Layer 8 stack.
 - `trust-and-identity.md` *(planned)*
   Ed25519 identities, `did:peer:` DIDs, Verifiable Credentials, and local trust scores.
+- [`reputation.md`](reputation.md)
+  Local trust scores, fulfilled-promise ratios, EigenTrust-style propagation, and endorsement accountability.
 - `knowledge-and-VPK.md` *(planned)*
   Virtual Private Knowledge, encrypted vector search, and distributed personal AI memory.
 - `network-and-intent-routing.md` *(planned)*
