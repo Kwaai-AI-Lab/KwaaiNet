@@ -43,7 +43,13 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/Kwaai-AI-Lab/Kwaai
 brew install kwaai-ai-lab/tap/kwaainet
 ```
 
-### 2.4 Build from source (Rust toolchain required)
+### 2.4 cargo binstall (downloads prebuilt binary via Rust toolchain)
+
+```bash
+cargo binstall kwaainet
+```
+
+### 2.5 Build from source (Rust toolchain required)
 
 ```bash
 cargo install --git https://github.com/Kwaai-AI-Lab/KwaaiNet kwaainet
