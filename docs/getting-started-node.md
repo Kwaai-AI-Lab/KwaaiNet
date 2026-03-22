@@ -12,7 +12,7 @@ This guide walks you through installing the `kwaainet` CLI, starting a node, and
 
 You'll need:
 
-- A 64-bit Linux, macOS, or Windows machine.
+- A Linux, macOS, or Windows machine — x86_64 or ARM64 (including Raspberry Pi 4/5 and Apple Silicon).
 - An Internet connection (for DHT bootstrap and optional model downloads).
 - Basic terminal access and permissions to install binaries.
 
