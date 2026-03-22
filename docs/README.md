@@ -60,7 +60,7 @@ Each page will label its primary audience at the top to make navigation easier.
 
 - [`roadmap.md`](roadmap.md)
   Gap-based roadmap: aspirational Layer 8 architecture vs. current Rust implementation vs. planned work.
-- `contributor-guide.md` *(planned)*
+- [`contributor-guide.md`](contributor-guide.md)
   How to contribute code, docs, research, and operator feedback; "1 hour / 1 day / 1 week" paths.
 
 ---
