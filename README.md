@@ -78,7 +78,13 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/Kwaai-AI-Lab/Kwaai
 brew install kwaai-ai-lab/tap/kwaainet
 ```
 
-**Build from source (Rust toolchain required):**
+**cargo binstall (downloads prebuilt binary):**
+
+```bash
+cargo binstall kwaainet
+```
+
+**Build from source:**
 
 ```bash
 cargo install --git https://github.com/Kwaai-AI-Lab/KwaaiNet kwaainet
@@ -117,7 +123,7 @@ The node will:
 ### 3. Call the OpenAI-compatible API
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "your-model-id",
@@ -129,7 +135,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 This sends a chat-completion request to your local node, which may route it through a shard chain of other nodes depending on configuration and trust requirements.
 
-More detailed getting-started guides (including Windows/macOS specifics, Docker, and advanced configuration) will live under `docs/` in future PRs.
+For a full walkthrough including platform specifics, model discovery, and Python/JS examples see **[docs/getting-started-node.md](docs/getting-started-node.md)** and **[docs/api-quickstart.md](docs/api-quickstart.md)**.
 
 ---
 
@@ -144,7 +150,7 @@ KwaaiNet's roadmap is defined as the **gap** between the aspirational Layer 8 ar
 | Storage | Fully distributed personal AI memory via cross-node VPK sharding and DHT-backed resolution. | VPK process, roles (bob/eve/both), encrypted vector search, and DHT advertisement shipped. |
 | Network | Intent-casting as a Layer 8 business protocol with economic settlement and neutrality guarantees. | libp2p + Kademlia DHT, trust-gated routing by model/trust/latency shipped. |
 
-A more detailed, living roadmap (with phases, issues, and contribution ideas) will be maintained in `docs/roadmap.md` and linked here in a follow-up PR.
+See **[docs/roadmap.md](docs/roadmap.md)** for the full living roadmap with contribution ideas for each area.
 
 ---
 
@@ -168,22 +174,28 @@ Learn more at [kwaai.ai](https://www.kwaai.ai) and the [Kwaai-AI-Lab GitHub orga
 
 ---
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/README.md](docs/README.md) | Docs index — audience map and navigation guide |
+| [docs/getting-started-node.md](docs/getting-started-node.md) | Install, initialize, and run your first node |
+| [docs/api-quickstart.md](docs/api-quickstart.md) | Call the OpenAI-compatible API from curl, Python, and JS |
+| [docs/roadmap.md](docs/roadmap.md) | Layer 8 destination vs current implementation vs gaps |
+| [docs/reputation.md](docs/reputation.md) | Local trust scores, EigenTrust propagation, endorsement accountability |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Node architecture, lobes, and Layer 8 stack |
+| [docs/WHITEPAPER.md](docs/WHITEPAPER.md) | Layer 8: The Decentralized AI Trust Layer (whitepaper) |
+| [docs/contributor-guide.md](docs/contributor-guide.md) | How to contribute — 1 hour / 1 day / 1 week paths |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow and code contribution guidelines |
+| [CONTRIBUTORS.md](CONTRIBUTORS.md) | Project contributors |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+
+---
+
 ## Contributing
 
-KwaaiNet is a volunteer-driven project and welcomes contributions from node operators, application developers, protocol researchers, and documentation writers.
+KwaaiNet welcomes contributions from node operators, application developers, protocol researchers, and documentation writers.
 
-Until a dedicated `CONTRIBUTING.md` and `docs/contributor-guide.md` are added, you can:
-
-- Explore [open issues and discussions](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues) in this repository.
-- Join Kwaai community channels listed on [kwaai.ai](https://www.kwaai.ai) to coordinate on roadmap items and design questions.
-- Open PRs that:
-  - Improve docs and onboarding.
-  - Harden distributed inference and networking.
-  - Prototype pieces of the trust, VPK, and intent-casting roadmap.
-
-Future PRs will add:
-
-- `docs/README.md` — docs index and audience map.
-- `docs/architecture-overview.md` — node lobes, Layer 8 stack, and subsystems.
-- `docs/roadmap.md` — detailed gap-based roadmap derived from the whitepapers and crate releases.
-- `CONTRIBUTING.md` and `docs/contributor-guide.md` — practical on-ramp for new contributors.
+- Read **[docs/contributor-guide.md](docs/contributor-guide.md)** for "1 hour / 1 day / 1 week" entry points mapped to the roadmap.
+- Read **[CONTRIBUTING.md](CONTRIBUTING.md)** for the development workflow and code contribution guidelines.
+- Explore [open issues](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues) and join Kwaai community channels at [kwaai.ai](https://www.kwaai.ai).
