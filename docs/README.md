@@ -37,8 +37,8 @@ Each page will label its primary audience at the top to make navigation easier.
   Local trust scores, fulfilled-promise ratios, EigenTrust-style propagation, and endorsement accountability.
 - `knowledge-and-VPK.md` *(planned)*
   Virtual Private Knowledge, encrypted vector search, and distributed personal AI memory.
-- `network-and-intent-routing.md` *(planned)*
-  libp2p + Kademlia DHT, trust-gated routing, and intent-casting as a Layer 8 business protocol.
+- [`network-and-intent-routing.md`](network-and-intent-routing.md)
+  libp2p + Kademlia DHT, trust-gated routing, and the full intent lifecycle: creation, negotiation, fulfillment, and settlement.
 
 ### 3. How-to guides
 
