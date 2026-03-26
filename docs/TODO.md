@@ -194,6 +194,18 @@
 
 ---
 
+## Benchmark — Realistic Shard Throughput
+
+- [ ] **Rewrite `kwaainet benchmark` to use TransformerShard** — Current benchmark uses `InferenceEngine` → `candle_transformers::Llama::load()`, a different code path from actual sharded inference. Metal reports 0.3 tok/s (vs 2.5 tok/s CPU) because candle_transformers isn't Metal-optimized. Fix: replace with `TransformerShard::load()` + `forward_full()` — the same path as `shard run --local`. Measure prefill tok/s (prompt processing) and decode tok/s (autoregressive generation) separately. Add `--no-gpu` and `--model-path` flags. Update `throughput_cache.json` to store both metrics. Changes to `main.rs` (rewrite Benchmark arm), `cli.rs` (new flags), `throughput.rs` (prefill field). No new deps. See plan: `.claude/plans/glistening-seeking-dijkstra.md`.
+
+---
+
+## Bug Reporting — `kwaainet bug`
+
+- [ ] **`kwaainet bug "comment"`** — create a GitHub issue with node diagnostics. Bundles user comment, version/OS/arch, peer ID, node name, and last 100 lines of `kwaainet.log` into a markdown issue body with `<details>` log block. Auth via `GITHUB_TOKEN` env var or `--token` flag. Supports `--dry-run` and `--log-lines N`. Config opt-in: `bug_reporting: true` (default until v1.0, `kwaainet config --set bug_reporting false` to disable). New files: `bug.rs` handler; changes to `cli.rs`, `config.rs`, `main.rs`. No new deps (reqwest + serde_json already available). See plan: `.claude/plans/glistening-seeking-dijkstra.md`.
+
+---
+
 ## Networking
 
 - [ ] **Fix relay fallback** — `metro@kwaai` (peer `...5bZ251`) connects via p2p-circuit relay through `76.91.214.120` instead of direct on configured public IP `75.141.127.202:8080`. Node should establish a direct connection. Investigate NAT traversal / port forwarding and `announceAddrs` config.
