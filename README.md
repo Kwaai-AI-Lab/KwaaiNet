@@ -62,8 +62,7 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 **Shell installer (macOS / Linux):**
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh
 ```
 
 **PowerShell installer (Windows):**
