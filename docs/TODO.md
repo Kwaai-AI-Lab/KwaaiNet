@@ -4,6 +4,8 @@
 
 - [ ] **Bundle `p2pd` in release tarball** — `DAEMON_BINARY_PATH` is baked in at compile time (`env!("P2PD_PATH")`) pointing to the build output dir. When `kwaainet` is installed on a clean machine the path doesn't exist and the node fails to start. Fix options: (1) include `p2pd` alongside `kwaainet` in the release archive, (2) resolve at runtime by searching `~/.local/bin`, `/usr/local/bin`, same dir as `kwaainet` binary, then fall back to compile-time path.
 
+- [ ] **`kwaainet update` fails in restricted environments (Kasm, containers)** — `install_update()` in `updater.rs` downloads the installer script to `std::env::temp_dir()` which may be read-only or noexec in containerized environments like Kasm workspaces. The cargo-dist installer also uses `mktemp` inside `~/.cargo/bin/` for atomic writes, which fails if that dir has restrictive permissions. Fix: (1) respect `TMPDIR` env var in `updater.rs`, fall back to `~/.kwaainet/tmp/` if system temp is unwritable, (2) handle permission errors gracefully with a helpful message suggesting `TMPDIR=~/tmp kwaainet update`, (3) consider adding `--install-dir` flag to `kwaainet update` for non-standard layouts. Reported on Rocky Linux (stale binaries in `/home/linuxbrew/`, `~/.local/bin/`, `/usr/local/bin/` shadowing `~/.cargo/bin/`) and Kasm (permission denied on `mktemp` in `~/.cargo/bin/`).
+
 ## map.kwaai.ai — Public Web UI
 
 > v1 shipped: DHT crawler (`core/crates/map-server`), React SPA (`apps/map`).
