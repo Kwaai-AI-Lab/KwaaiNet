@@ -595,6 +595,10 @@ pub struct ShardRunArgs {
     /// Disable GPU and use CPU only (applies when --local is set)
     #[arg(long)]
     pub no_gpu: bool,
+
+    /// Print per-token timing stats after generation
+    #[arg(long)]
+    pub stats: bool,
 }
 
 #[derive(Args)]

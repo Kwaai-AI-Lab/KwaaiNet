@@ -950,11 +950,17 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     }
     println!();
 
+    let show_stats = args.stats;
+    let mut token_times_ms: Vec<f64> = Vec::new();
+    let generation_start = std::time::Instant::now();
+
     print!("  Assistant: ");
     use std::io::Write as _;
     std::io::stdout().flush().ok();
 
     loop {
+        let token_start = std::time::Instant::now();
+
         // Build first request
         let (shape, data) = token_ids_to_bytes(&current_ids);
         let request = InferenceRequest {
@@ -1033,6 +1039,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             std::io::stdout().flush().ok();
         }
 
+        let token_ms = token_start.elapsed().as_secs_f64() * 1000.0;
+        token_times_ms.push(token_ms);
+
         generated_ids.push(next_id);
         seq_pos += current_ids.len(); // advance by tokens sent this step
 
@@ -1045,9 +1054,54 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         current_ids = vec![next_id];
     }
 
+    let total_secs = generation_start.elapsed().as_secs_f64();
+    let n = generated_ids.len();
+
     println!();
     println!();
-    print_success(&format!("Generated {} token(s)", generated_ids.len()));
+    print_success(&format!("Generated {} token(s)", n));
+
+    if show_stats && !token_times_ms.is_empty() {
+        let prefill_ms = token_times_ms[0];
+        let decode_times: &[f64] = if token_times_ms.len() > 1 {
+            &token_times_ms[1..]
+        } else {
+            &[]
+        };
+        let decode_avg_ms = if decode_times.is_empty() {
+            0.0
+        } else {
+            decode_times.iter().sum::<f64>() / decode_times.len() as f64
+        };
+        let decode_min = decode_times.iter().copied().fold(f64::INFINITY, f64::min);
+        let decode_max = decode_times
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let tps = if total_secs > 0.0 {
+            n as f64 / total_secs
+        } else {
+            0.0
+        };
+
+        println!();
+        println!("  ── Timing ────────────────────────────────────────────────");
+        println!(
+            "  Prefill:       {:>8.0}ms  ({} input tokens)",
+            prefill_ms,
+            token_ids.len()
+        );
+        if !decode_times.is_empty() {
+            println!(
+                "  Decode avg:    {:>8.0}ms/tok  (min {:.0}, max {:.0})",
+                decode_avg_ms, decode_min, decode_max
+            );
+        }
+        println!("  Total:         {:>8.1}s", total_secs);
+        println!("  Throughput:    {:>8.1} tok/s", tps);
+        println!("  Hops:          {:>8}", pinned_path.len());
+    }
+
     print_separator();
 
     Ok(())

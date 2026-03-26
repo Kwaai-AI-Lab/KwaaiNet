@@ -26,7 +26,7 @@ use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 // ── Lazy-load cell ─────────────────────────────────────────────────────────────
 
@@ -284,6 +284,7 @@ pub async fn handle_inference_request(
     );
 
     // Dispatch based on payload type and node role
+    let deser_start = std::time::Instant::now();
     let (output, is_logits) = match req.payload_type {
         PayloadType::TokenIds => {
             // Only the first node should receive token IDs
@@ -294,31 +295,56 @@ pub async fn handle_inference_request(
                 );
             }
             let token_ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
-            if shard.is_last() {
+            let deser_ms = deser_start.elapsed().as_secs_f64() * 1000.0;
+            let fwd_start = std::time::Instant::now();
+            let result = if shard.is_last() {
                 // Single-node shard covers the whole model — embed + blocks + head in one pass
                 let logits = shard.forward_full(session_id, &token_ids, seq_pos)?;
                 (logits, true)
             } else {
                 let hidden = shard.forward_first(session_id, &token_ids, seq_pos)?;
                 (hidden, false)
-            }
+            };
+            let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+            info!(
+                deser_ms = format!("{deser_ms:.1}"),
+                fwd_ms = format!("{fwd_ms:.1}"),
+                payload = "TokenIds",
+                blocks = format!("[{}..{})", shard.start_block, shard.end_block),
+                "hop timing"
+            );
+            result
         }
 
         PayloadType::HiddenStates => {
             let hidden = f16_bytes_to_tensor(&req.data, &req.shape, device)
                 .context("decode hidden states")?;
-            if shard.is_last() {
+            let deser_ms = deser_start.elapsed().as_secs_f64() * 1000.0;
+            let fwd_start = std::time::Instant::now();
+            let result = if shard.is_last() {
                 let logits = shard.forward_last(session_id, hidden, seq_pos)?;
                 (logits, true)
             } else {
                 let out = shard.forward_middle(session_id, hidden, seq_pos)?;
                 (out, false)
-            }
+            };
+            let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+            info!(
+                deser_ms = format!("{deser_ms:.1}"),
+                fwd_ms = format!("{fwd_ms:.1}"),
+                payload = "HiddenStates",
+                blocks = format!("[{}..{})", shard.start_block, shard.end_block),
+                "hop timing"
+            );
+            result
         }
     };
 
     // Serialise output tensor to f16 bytes
+    let ser_start = std::time::Instant::now();
     let (shape, data) = tensor_to_f16_bytes(&output).context("serialise output tensor")?;
+    let ser_ms = ser_start.elapsed().as_secs_f64() * 1000.0;
+    debug!(ser_ms = format!("{ser_ms:.1}"), "response serialization");
 
     Ok(InferenceResponse {
         session_id,
