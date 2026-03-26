@@ -194,6 +194,40 @@
 
 ---
 
+## Inference Throughput — Path to Conversational Speed
+
+Current distributed inference runs at ~0.17 tok/s (2-hop chain) vs ~3 tok/s local. Target: 10+ tok/s. The bottleneck is **compute time per hop** (~500ms for 24 blocks), not network (~10ms RTT) or serialization (~8KB hidden state at F16). Improvements below are ordered by impact and dependency.
+
+### Tier 1 — Instrumentation (prerequisite for everything else)
+
+- [ ] **Per-hop timing in `handle_inference_request()`** — Add `Instant::now()` around the forward call in `block_rpc.rs:handle_inference_request()` and log `forward_ms`, `serialize_ms`, `total_ms`. Without this we can't distinguish compute vs overhead. Also add timing in `forward_through_chain()` to measure per-hop wall time from coordinator's perspective (includes network RTT). Output: `tracing::info!` with structured fields so operators can diagnose their nodes.
+
+- [ ] **`kwaainet shard run --stats`** — Print per-token timing summary after generation: prefill time, average decode time, tok/s, per-hop latency breakdown. Reuses the instrumentation above. Changes to `shard_cmd.rs` (`cmd_shard_run`), `cli.rs` (add `--stats` flag to `ShardRunArgs`).
+
+### Tier 2 — Reduce per-block compute time
+
+- [ ] **Profile individual block timing** — Add per-block `Instant` in `run_blocks()` (`shard.rs:574`). Identify if specific blocks (attention, MLP, RoPE) are disproportionately slow. Check for CPU fallback in candle Metal backend (some ops may silently fall back to CPU, causing GPU→CPU→GPU round-trips).
+
+- [ ] **Fused attention kernel** — candle's default attention is separate matmul + scale + mask + softmax + matmul. Investigate `candle_flash_attn` or a custom Metal kernel for fused scaled-dot-product attention. Expected 2-3x speedup on attention-bound blocks.
+
+- [ ] **Reduce KV-cache mutex contention** — `run_blocks()` holds `sessions.lock()` for the entire block iteration (`shard.rs:580`). For 24 blocks that's one long critical section. Consider per-session `RwLock` or moving session lookup outside the hot loop.
+
+### Tier 3 — Pipeline tokens across hops (~2-3x)
+
+- [ ] **Overlapped pipeline** — While Peer B processes token N (blocks 24–31), send token N+1 to Peer A (blocks 0–23). Both peers work in parallel instead of sequentially. Requires: (1) coordinator sends token N+1 to Peer A before receiving token N's logits from Peer B, (2) Peer A can start forward pass while previous token's hidden states are still in flight to Peer B. Changes to `forward_through_chain()` in `shard_cmd.rs` — replace sequential loop with async pipeline using `tokio::spawn` per hop. The inference loop in `cmd_shard_run()` would issue the next token's embedding call concurrently with the current token's tail hop.
+
+### Tier 4 — Speculative decoding (~2-4x)
+
+- [ ] **Draft-model speculation** — First peer generates K candidate tokens using argmax (no sampling) after its forward pass, sends all K hidden states in one batch to the next peer. The final peer validates candidates against its own forward pass and accepts the longest correct prefix. Amortizes per-token network cost by K. Requires: new `PayloadType::SpeculativeBatch` in `block_rpc.rs`, modified `forward_through_chain()` to handle batch validation, and rollback logic when candidates are rejected.
+
+### Tier 5 — Serialization and protocol optimization
+
+- [ ] **Zero-copy F16 tensor transfer** — Replace per-element `to_le_bytes()` iteration in `tensor_to_f16_bytes()` (`block_rpc.rs:111`) with unsafe `slice::from_raw_parts` transmute. Saves ~0.3ms per hop per token. Also applies to `f16_bytes_to_tensor()`.
+
+- [ ] **Binary protocol** — Replace msgpack named fields with positional binary encoding (fixed header: session_id u64 + seq_pos u32 + payload_type u8 + shape_len u8 + shape bytes + data bytes). Saves ~80-120 bytes overhead per message and eliminates serde dispatch. Consider only if Tier 1 instrumentation shows serialization > 5% of per-token time.
+
+---
+
 ## Benchmark — Realistic Shard Throughput
 
 - [ ] **Rewrite `kwaainet benchmark` to use TransformerShard** — Current benchmark uses `InferenceEngine` → `candle_transformers::Llama::load()`, a different code path from actual sharded inference. Metal reports 0.3 tok/s (vs 2.5 tok/s CPU) because candle_transformers isn't Metal-optimized. Fix: replace with `TransformerShard::load()` + `forward_full()` — the same path as `shard run --local`. Measure prefill tok/s (prompt processing) and decode tok/s (autoregressive generation) separately. Add `--no-gpu` and `--model-path` flags. Update `throughput_cache.json` to store both metrics. Changes to `main.rs` (rewrite Benchmark arm), `cli.rs` (new flags), `throughput.rs` (prefill field). No new deps. See plan: `.claude/plans/glistening-seeking-dijkstra.md`.
