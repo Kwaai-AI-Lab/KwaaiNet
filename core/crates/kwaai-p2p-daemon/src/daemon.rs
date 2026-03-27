@@ -7,8 +7,11 @@ use crate::client::P2PClient;
 use crate::error::{Error, Result};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use tracing::{debug, info, warn};
+use tokio::sync::Mutex;
+use tracing::{debug, error, info, warn};
 
 /// Configuration builder for the p2p daemon
 #[derive(Default)]
@@ -253,7 +256,7 @@ impl DaemonBuilder {
 
         debug!("Spawning daemon: {:?}", cmd);
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             Error::Process(format!(
                 "Failed to spawn daemon at {}: {}",
                 binary_path.display(),
@@ -263,9 +266,29 @@ impl DaemonBuilder {
 
         info!("Daemon process spawned (PID: {:?})", child.id());
 
+        // Capture stderr in a background task so we can surface crash reasons
+        let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let buf = stderr_buf.clone();
+            tokio::spawn(async move {
+                let mut reader = stderr;
+                let mut output = String::new();
+                // Read up to 8KB — enough for crash diagnostics
+                let mut raw = vec![0u8; 8192];
+                loop {
+                    match reader.read(&mut raw).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => output.push_str(&String::from_utf8_lossy(&raw[..n])),
+                    }
+                }
+                *buf.lock().await = output;
+            });
+        }
+
         Ok(P2PDaemon {
             process: Some(child),
             listen_addr,
+            stderr_buf,
         })
     }
 }
@@ -274,6 +297,8 @@ impl DaemonBuilder {
 pub struct P2PDaemon {
     process: Option<Child>,
     listen_addr: String,
+    /// Captured stderr from the daemon process (populated by background reader)
+    stderr_buf: Arc<Mutex<String>>,
 }
 
 impl P2PDaemon {
@@ -288,10 +313,53 @@ impl P2PDaemon {
     }
 
     /// Create a client connected to this daemon
-    pub async fn client(&self) -> Result<P2PClient> {
-        // Give daemon a moment to start listening
-        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+    ///
+    /// Waits for the daemon to create its IPC socket (up to 5 s), checking
+    /// that the process is still alive on each poll.  If the daemon exits
+    /// before the socket appears, its captured stderr is included in the
+    /// error so the operator can see *why* it crashed.
+    pub async fn client(&mut self) -> Result<P2PClient> {
+        // Determine the filesystem path we're waiting for
+        #[cfg(unix)]
+        let socket_path = self.listen_addr.strip_prefix("/unix/").map(PathBuf::from);
+        #[cfg(not(unix))]
+        let socket_path: Option<PathBuf> = None; // TCP — no file to poll
 
+        let poll_interval = tokio::time::Duration::from_millis(100);
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+
+        while tokio::time::Instant::now() < deadline {
+            // Check if the daemon is still alive
+            if let Some(child) = &mut self.process {
+                if let Ok(Some(status)) = child.try_wait() {
+                    // Daemon exited — give the stderr reader a moment to finish
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    let stderr = self.stderr_buf.lock().await;
+                    let detail = if stderr.is_empty() {
+                        format!("p2pd exited with {status} (no stderr output)")
+                    } else {
+                        format!("p2pd exited with {status}:\n{}", stderr.trim())
+                    };
+                    error!("{}", detail);
+                    return Err(Error::Process(detail));
+                }
+            }
+
+            // Check if the socket file exists yet (Unix only)
+            if let Some(ref path) = socket_path {
+                if path.exists() {
+                    debug!("Socket ready: {}", path.display());
+                    return P2PClient::connect(&self.listen_addr).await;
+                }
+            } else {
+                // TCP mode — just try connecting directly
+                break;
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+
+        // Final attempt (covers TCP mode and timeout after polling)
         P2PClient::connect(&self.listen_addr).await
     }
 
