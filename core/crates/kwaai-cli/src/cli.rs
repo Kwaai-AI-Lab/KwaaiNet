@@ -501,6 +501,36 @@ pub enum ShardAction {
     Download(ShardDownloadArgs),
     /// Show which block range this node would auto-assign (dry-run, no model load)
     Gap,
+    /// Manage inference circuits (long-lived peer paths for multi-turn chat)
+    #[command(subcommand)]
+    Circuit(CircuitAction),
+}
+
+#[derive(Subcommand)]
+pub enum CircuitAction {
+    /// Create a new circuit (discover chain, pin peer path)
+    Create(CircuitCreateArgs),
+    /// List active circuits
+    List,
+    /// Close and remove a circuit
+    Close(CircuitCloseArgs),
+}
+
+#[derive(Args)]
+pub struct CircuitCreateArgs {
+    /// Only use block servers whose public_name contains this string
+    #[arg(long, value_name = "SUBSTR")]
+    pub name_filter: Option<String>,
+
+    /// Circuit time-to-live in minutes (default 30)
+    #[arg(long, default_value = "30")]
+    pub ttl_minutes: u64,
+}
+
+#[derive(Args)]
+pub struct CircuitCloseArgs {
+    /// Circuit ID to close
+    pub id: String,
 }
 
 #[derive(Args, Clone)]
@@ -599,6 +629,11 @@ pub struct ShardRunArgs {
     /// Print per-token timing stats after generation
     #[arg(long)]
     pub stats: bool,
+
+    /// Use an existing circuit instead of discovering the chain fresh.
+    /// Create one with: kwaainet shard circuit create
+    #[arg(long, value_name = "ID")]
+    pub circuit: Option<String>,
 }
 
 #[derive(Args)]

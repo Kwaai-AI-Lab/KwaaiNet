@@ -35,7 +35,8 @@ use crate::block_rpc::{
     InferenceRequest, PayloadType, ShardCell,
 };
 use crate::cli::{
-    ShardAction, ShardArgs, ShardChainArgs, ShardDownloadArgs, ShardRunArgs, ShardServeArgs,
+    CircuitAction, CircuitCloseArgs, CircuitCreateArgs, ShardAction, ShardArgs, ShardChainArgs,
+    ShardDownloadArgs, ShardRunArgs, ShardServeArgs,
 };
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
@@ -74,6 +75,11 @@ pub async fn run(args: ShardArgs) -> Result<()> {
         ShardAction::Api(a) => crate::shard_api::run(a).await,
         ShardAction::Download(a) => cmd_shard_download(a).await,
         ShardAction::Gap => cmd_shard_gap().await,
+        ShardAction::Circuit(action) => match action {
+            CircuitAction::Create(a) => cmd_circuit_create(a).await,
+            CircuitAction::List => cmd_circuit_list().await,
+            CircuitAction::Close(a) => cmd_circuit_close(a).await,
+        },
     }
 }
 
@@ -796,51 +802,76 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let our_peer_id =
         PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
 
-    // Discover the block chain from DHT
-    print!("  Discovering block chain from DHT… ");
-    let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
-        NetworkConfig::with_petals_bootstrap().bootstrap_peers
-    } else {
-        cfg.initial_peers.clone()
-    };
+    // ── Resolve chain: from circuit or fresh DHT discovery ─────────────────
+    let (chain, using_circuit) = if let Some(ref circuit_id) = args.circuit {
+        // Load pre-formed circuit — skip DHT discovery
+        let mut circuit = load_circuit_by_id(circuit_id)?;
+        circuit.last_used_epoch = now_epoch();
 
-    let chain = discover_chain(
-        &mut client,
-        &our_peer_id,
-        &dht_prefix,
-        total_blocks,
-        &bootstrap_peers,
-    )
-    .await;
+        // Persist updated last_used timestamp
+        let mut all = load_circuits();
+        if let Some(c) = all.iter_mut().find(|c| c.id == circuit.id) {
+            c.last_used_epoch = circuit.last_used_epoch;
+        }
+        let _ = save_circuits(&all);
 
-    // Apply optional name filter (e.g. --name-filter v0.2.3)
-    let chain = if let Some(ref f) = args.name_filter {
-        let filtered: Vec<_> = chain
-            .into_iter()
-            .filter(|e| e.public_name.contains(f.as_str()))
+        let entries: Vec<BlockServerEntry> = circuit
+            .chain
+            .iter()
+            .filter_map(|e| e.to_entry())
             .collect();
-        if filtered.is_empty() {
-            println!("no nodes matched filter {:?}", f);
-            print_warning(&format!(
-                "No block servers with name containing {:?} found.",
-                f
-            ));
+        println!("  Circuit:      {}", circuit.id);
+        println!("  Nodes:        {} (from circuit)", entries.len());
+        (entries, true)
+    } else {
+        // Fresh DHT discovery
+        print!("  Discovering block chain from DHT… ");
+        let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
+            NetworkConfig::with_petals_bootstrap().bootstrap_peers
+        } else {
+            cfg.initial_peers.clone()
+        };
+
+        let chain = discover_chain(
+            &mut client,
+            &our_peer_id,
+            &dht_prefix,
+            total_blocks,
+            &bootstrap_peers,
+        )
+        .await;
+
+        // Apply optional name filter (e.g. --name-filter v0.2.3)
+        let chain = if let Some(ref f) = args.name_filter {
+            let filtered: Vec<_> = chain
+                .into_iter()
+                .filter(|e| e.public_name.contains(f.as_str()))
+                .collect();
+            if filtered.is_empty() {
+                println!("no nodes matched filter {:?}", f);
+                print_warning(&format!(
+                    "No block servers with name containing {:?} found.",
+                    f
+                ));
+                print_separator();
+                return Ok(());
+            }
+            filtered
+        } else {
+            chain
+        };
+
+        if chain.is_empty() {
+            println!("no nodes found");
+            println!();
+            print_warning("No block servers found in DHT for this model.");
+            print_info("Start serving with: kwaainet shard serve --model <path>");
             print_separator();
             return Ok(());
         }
-        filtered
-    } else {
-        chain
+        (chain, false)
     };
-
-    if chain.is_empty() {
-        println!("no nodes found");
-        println!();
-        print_warning("No block servers found in DHT for this model.");
-        print_info("Start serving with: kwaainet shard serve --model <path>");
-        print_separator();
-        return Ok(());
-    }
+    let _ = using_circuit; // used for display above
     println!("{} node(s)", chain.len());
 
     // Validate coverage
@@ -1635,6 +1666,267 @@ pub fn build_pinned_path(
         }
     }
     Ok(path)
+}
+
+// ── Circuits ─────────────────────────────────────────────────────────────────
+
+/// A long-lived peer path that can serve multiple chat completions.
+/// Created once (chain discovery + path pinning), reused across invocations.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Circuit {
+    pub id: String,
+    pub pinned_path: Vec<SerializableEntry>,
+    pub chain: Vec<SerializableEntry>,
+    pub total_blocks: usize,
+    pub ttl_secs: u64,
+    pub created_epoch: u64,
+    pub last_used_epoch: u64,
+}
+
+/// Serializable version of BlockServerEntry (PeerId is not Serialize).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializableEntry {
+    pub peer_id_b58: String,
+    pub start_block: usize,
+    pub end_block: usize,
+    pub public_name: String,
+}
+
+impl SerializableEntry {
+    fn from_entry(e: &BlockServerEntry) -> Self {
+        Self {
+            peer_id_b58: e.peer_id.to_base58(),
+            start_block: e.start_block,
+            end_block: e.end_block,
+            public_name: e.public_name.clone(),
+        }
+    }
+
+    fn to_entry(&self) -> Option<BlockServerEntry> {
+        let peer_id = self.peer_id_b58.parse::<PeerId>().ok()?;
+        Some(BlockServerEntry {
+            peer_id,
+            start_block: self.start_block,
+            end_block: self.end_block,
+            public_name: self.public_name.clone(),
+        })
+    }
+}
+
+fn circuits_file() -> PathBuf {
+    crate::config::run_dir().join("circuits.json")
+}
+
+fn load_circuits() -> Vec<Circuit> {
+    let path = circuits_file();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn save_circuits(circuits: &[Circuit]) -> Result<()> {
+    let path = circuits_file();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(circuits)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn circuit_id_from(seed: &str) -> String {
+    use sha1::Digest;
+    let hash = sha1::Sha1::digest(seed.as_bytes());
+    hex::encode(&hash[..4])
+}
+
+/// Prune expired circuits and return the live ones.
+fn prune_circuits(mut circuits: Vec<Circuit>) -> Vec<Circuit> {
+    let now = now_epoch();
+    circuits.retain(|c| now.saturating_sub(c.last_used_epoch) < c.ttl_secs);
+    circuits
+}
+
+pub fn load_circuit_by_id(id: &str) -> Result<Circuit> {
+    let circuits = prune_circuits(load_circuits());
+    circuits
+        .into_iter()
+        .find(|c| c.id == id || c.id.starts_with(id))
+        .ok_or_else(|| anyhow::anyhow!("Circuit '{}' not found (expired or never created)", id))
+}
+
+// ── Circuit commands ─────────────────────────────────────────────────────────
+
+async fn cmd_circuit_create(args: CircuitCreateArgs) -> Result<()> {
+    let cfg = KwaaiNetConfig::load_or_create()?;
+    let dht_prefix = cfg.effective_dht_prefix();
+    let total_blocks = cfg.model_total_blocks() as usize;
+
+    print_box_header("🔗 Create Inference Circuit");
+    println!("  Model prefix: {}", dht_prefix);
+    println!("  Total blocks: {}", total_blocks);
+    println!();
+
+    // Connect to p2pd
+    let daemon_addr = daemon_socket();
+    let mut client = P2PClient::connect(&daemon_addr)
+        .await
+        .context("Cannot connect to node — is it running? (`kwaainet start --daemon`)")?;
+    let peer_id_hex = client.identify().await.context("identify peer")?;
+    let our_peer_id =
+        PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
+
+    // Discover chain
+    let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
+        NetworkConfig::with_petals_bootstrap().bootstrap_peers
+    } else {
+        cfg.initial_peers.clone()
+    };
+
+    print_info("Discovering block chain from DHT…");
+    let chain = discover_chain(
+        &mut client,
+        &our_peer_id,
+        &dht_prefix,
+        total_blocks,
+        &bootstrap_peers,
+    )
+    .await;
+
+    // Apply optional name filter
+    let chain = if let Some(ref f) = args.name_filter {
+        let filtered: Vec<_> = chain
+            .into_iter()
+            .filter(|e| e.public_name.contains(f.as_str()))
+            .collect();
+        if filtered.is_empty() {
+            bail!("No block servers matched name filter {:?}", f);
+        }
+        filtered
+    } else {
+        chain
+    };
+
+    println!("  Found {} node(s)", chain.len());
+
+    // Build pinned path
+    let failed_peers = std::collections::HashSet::new();
+    let pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+
+    // Generate circuit ID
+    let seed = format!("{}{}", now_epoch(), our_peer_id.to_base58());
+    let id = circuit_id_from(&seed);
+
+    let circuit = Circuit {
+        id: id.clone(),
+        pinned_path: pinned_path.iter().map(SerializableEntry::from_entry).collect(),
+        chain: chain.iter().map(SerializableEntry::from_entry).collect(),
+        total_blocks,
+        ttl_secs: args.ttl_minutes * 60,
+        created_epoch: now_epoch(),
+        last_used_epoch: now_epoch(),
+    };
+
+    // Persist
+    let mut circuits = prune_circuits(load_circuits());
+    circuits.push(circuit);
+    save_circuits(&circuits)?;
+
+    println!();
+    print_success(&format!("Circuit {} established", id));
+    println!();
+    println!("  Pinned path:");
+    for (i, entry) in pinned_path.iter().enumerate() {
+        println!(
+            "    [{:>2}] blocks {:>3}–{:>3}  {}",
+            i + 1,
+            entry.start_block,
+            entry.end_block - 1,
+            entry.public_name,
+        );
+    }
+    println!();
+    println!(
+        "  TTL: {} minutes",
+        args.ttl_minutes
+    );
+    print_info(&format!(
+        "Use: kwaainet shard run \"prompt\" --circuit {}",
+        id
+    ));
+    print_separator();
+    Ok(())
+}
+
+async fn cmd_circuit_list() -> Result<()> {
+    let circuits = prune_circuits(load_circuits());
+    save_circuits(&circuits)?; // write back pruned list
+
+    print_box_header("🔗 Active Circuits");
+
+    if circuits.is_empty() {
+        println!("  No active circuits.");
+        println!();
+        print_info("Create one: kwaainet shard circuit create");
+        print_separator();
+        return Ok(());
+    }
+
+    let now = now_epoch();
+    for c in &circuits {
+        let age_secs = now.saturating_sub(c.created_epoch);
+        let age = if age_secs >= 3600 {
+            format!("{}h {}m", age_secs / 3600, (age_secs % 3600) / 60)
+        } else {
+            format!("{}m", age_secs / 60)
+        };
+        let hops = c.pinned_path.len();
+        let path_str: Vec<String> = c
+            .pinned_path
+            .iter()
+            .map(|e| {
+                e.public_name
+                    .split('/')
+                    .next()
+                    .unwrap_or(&e.public_name)
+                    .to_string()
+            })
+            .collect();
+        println!(
+            "  {}  {} hop(s)  {}  created {} ago",
+            c.id,
+            hops,
+            path_str.join(" → "),
+            age
+        );
+    }
+
+    println!();
+    print_separator();
+    Ok(())
+}
+
+async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
+    let mut circuits = load_circuits();
+    let before = circuits.len();
+    circuits.retain(|c| c.id != args.id && !c.id.starts_with(&args.id));
+    let removed = before - circuits.len();
+    save_circuits(&circuits)?;
+
+    if removed > 0 {
+        print_success(&format!("Circuit {} closed", args.id));
+    } else {
+        print_warning(&format!("Circuit '{}' not found", args.id));
+    }
+    Ok(())
 }
 
 // ── Forward through chain ─────────────────────────────────────────────────────
