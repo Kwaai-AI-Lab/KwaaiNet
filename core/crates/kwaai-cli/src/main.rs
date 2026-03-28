@@ -933,10 +933,13 @@ async fn main() -> Result<()> {
             let cfg = KwaaiNetConfig::load_or_create()?;
             let model = args.model.as_deref().unwrap_or(&cfg.model).to_string();
 
-            let device_type = if args.no_gpu {
-                kwaai_inference::DeviceType::Cpu
-            } else {
+            // Default to CPU — candle's Metal backend is not yet optimized for
+            // sequential single-token decode (130s/tok vs 0.2s/tok on CPU).
+            // Use --gpu to explicitly opt in to GPU benchmarking.
+            let device_type = if args.gpu {
                 kwaai_inference::DeviceType::detect_best()
+            } else {
+                kwaai_inference::DeviceType::Cpu
             };
 
             print_box_header("⚡ KwaaiNet Benchmark");
@@ -1001,66 +1004,53 @@ async fn main() -> Result<()> {
                 token_ids.insert(0, bos);
             }
 
-            // ── Warm-up (5 steps, separate session) ──────────────────────────
-            println!("  Warming up (5 steps)…");
-            {
-                let warmup_shard = shard.clone();
-                let warmup_ids = token_ids.clone();
-                tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                    let session = 0xDEAD_BEEF_u64;
-                    let mut ids = warmup_ids;
-                    let mut sp = 0usize;
-                    for _ in 0..5 {
-                        let logits = warmup_shard
-                            .forward_full(session, &ids, sp)
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
-                        let logits_cpu = logits.to_device(&candle_core::Device::Cpu)?;
-                        let flat = logits_cpu.flatten_all()?;
-                        let next = shard_cmd::sample_token(&flat, 1.0, 0, 1.0)? as u32;
-                        sp += ids.len();
-                        ids = vec![next];
-                    }
-                    Ok(())
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("warm-up join: {e}"))??;
-            }
-
-            // ── Prefill measurement ──────────────────────────────────────────
+            // Run warm-up, prefill, and decode in a single blocking thread
+            // to avoid Metal command-queue contention across thread boundaries.
             let n_prompt = token_ids.len();
-            let prefill_shard = shard.clone();
-            let prefill_ids = token_ids.clone();
-            let (prefill_ms, first_logits) = tokio::task::spawn_blocking(
-                move || -> anyhow::Result<(f64, candle_core::Tensor)> {
-                    let session = 0xBE_0001_u64;
-                    let start = std::time::Instant::now();
-                    let logits = prefill_shard
-                        .forward_full(session, &prefill_ids, 0)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    let ms = start.elapsed().as_secs_f64() * 1000.0;
-                    Ok((ms, logits))
-                },
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("prefill join: {e}"))??;
-
-            // Sample first token from prefill
-            let first_logits_cpu = first_logits.to_device(&candle_core::Device::Cpu)?;
-            let flat = first_logits_cpu.flatten_all()?;
-            let next_id = shard_cmd::sample_token(&flat, 1.0, 0, 1.0)? as u32;
-
-            // ── Decode measurement ───────────────────────────────────────────
             let n_steps = args.steps;
+            let bench_shard = shard.clone();
+            let bench_ids = token_ids.clone();
+
+            println!("  Warming up (5 steps)…");
             println!("  Measuring ({n_steps} decode steps)…");
-            let decode_shard = shard.clone();
-            let decode_ms =
-                tokio::task::spawn_blocking(move || -> anyhow::Result<f64> {
+
+            let (prefill_ms, decode_ms) = tokio::task::spawn_blocking(
+                move || -> anyhow::Result<(f64, f64)> {
+                    // ── Warm-up (separate session, not timed) ────────────────
+                    {
+                        let session = 0xDEAD_BEEF_u64;
+                        let mut ids = bench_ids.clone();
+                        let mut sp = 0usize;
+                        for _ in 0..5 {
+                            let logits = bench_shard
+                                .forward_full(session, &ids, sp)
+                                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                            let logits_cpu = logits.to_device(&candle_core::Device::Cpu)?;
+                            let flat = logits_cpu.flatten_all()?;
+                            let next =
+                                shard_cmd::sample_token(&flat, 1.0, 0, 1.0)? as u32;
+                            sp += ids.len();
+                            ids = vec![next];
+                        }
+                    }
+
+                    // ── Prefill (timed) ──────────────────────────────────────
                     let session = 0xBE_0001_u64;
+                    let prefill_start = std::time::Instant::now();
+                    let logits = bench_shard
+                        .forward_full(session, &bench_ids, 0)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let prefill_ms = prefill_start.elapsed().as_secs_f64() * 1000.0;
+
+                    let logits_cpu = logits.to_device(&candle_core::Device::Cpu)?;
+                    let flat = logits_cpu.flatten_all()?;
+                    let mut id = shard_cmd::sample_token(&flat, 1.0, 0, 1.0)? as u32;
+
+                    // ── Decode (timed) ───────────────────────────────────────
                     let mut sp = n_prompt;
-                    let mut id = next_id;
-                    let start = std::time::Instant::now();
+                    let decode_start = std::time::Instant::now();
                     for _ in 0..n_steps {
-                        let logits = decode_shard
+                        let logits = bench_shard
                             .forward_full(session, &[id], sp)
                             .map_err(|e| anyhow::anyhow!("{e}"))?;
                         let logits_cpu = logits.to_device(&candle_core::Device::Cpu)?;
@@ -1068,11 +1058,13 @@ async fn main() -> Result<()> {
                         id = shard_cmd::sample_token(&flat, 1.0, 0, 1.0)? as u32;
                         sp += 1;
                     }
-                    let ms = start.elapsed().as_secs_f64() * 1000.0;
-                    Ok(ms)
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("decode join: {e}"))??;
+                    let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
+
+                    Ok((prefill_ms, decode_ms))
+                },
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("benchmark join: {e}"))??;
 
             let prefill_tps = n_prompt as f64 / (prefill_ms / 1000.0);
             let decode_tps = n_steps as f64 / (decode_ms / 1000.0);

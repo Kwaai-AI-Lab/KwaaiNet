@@ -359,9 +359,10 @@ pub struct BenchmarkArgs {
     #[arg(long, default_value = "20")]
     pub steps: usize,
 
-    /// Force CPU-only inference (skip Metal / CUDA).
+    /// Use GPU (Metal / CUDA) instead of CPU. Off by default because candle's
+    /// Metal backend is not yet optimized for sequential decode.
     #[arg(long)]
-    pub no_gpu: bool,
+    pub gpu: bool,
 
     /// Path to model directory (skip HF cache resolution).
     #[arg(long, value_name = "PATH")]
