@@ -254,7 +254,7 @@ Metal decode is 130s/token while CPU is 0.2s/token. Prefill is the opposite (Met
 
 - [ ] **Tier 4: Upgrade candle or custom MPS kernels** — Check if candle 0.9+ has Metal decode fixes. Write custom Metal shading language kernels for the attention hot path. (1-2 weeks)
 
-- [ ] **Tier 5: MLX backend** — Apple's MLX framework is purpose-built for Apple Silicon (unified memory, lazy eval, automatic fusion). Reports ~30 tok/s Llama 8B on M2 Pro. Add as alternative behind `DeviceType` enum. (2-4 weeks)
+- [ ] **Tier 5: MLX backend** — Apple's MLX framework is purpose-built for Apple Silicon (unified memory, lazy eval, automatic fusion). Reports ~30-40 tok/s Llama 8B on M2 Pro. Research spike complete: mlx-rs v0.25.3 has all needed ops (SafeTensors, RMSNorm, RoPE, Attention, KV-cache, SiLU). Requires porting ~200 line Python Llama to Rust, adding `DeviceType::Mlx` variant, and `brew install mlx` as system dep. Feature-gated: `cfg(target_os = "macos")`. See full plan: [`docs/MLX_BACKEND_PLAN.md`](MLX_BACKEND_PLAN.md). (1-2 weeks)
 
 ---
 
