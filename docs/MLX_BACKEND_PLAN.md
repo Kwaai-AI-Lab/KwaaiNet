@@ -98,7 +98,28 @@ Port the ~200 line Python Llama reference to Rust using mlx-rs primitives:
 4. Update `kwaainet setup --get-deps` to install mlx-c on macOS
 5. Documentation
 
-## Dependencies for users
+## Build Dependencies (BLOCKER)
+
+`mlx-sys` (the Rust FFI crate) compiles MLX's Metal shaders from source. This requires the **full Xcode app** (not just CommandLineTools) for the `metal` shader compiler:
+
+```bash
+# Required (not optional):
+xcode-select --install           # CommandLineTools (NOT sufficient)
+# Must install Xcode.app (~12GB) from App Store or developer.apple.com
+
+# Also needed:
+brew install cmake               # For mlx-sys build system
+brew install mlx                 # Pre-built library (but mlx-sys ignores it)
+```
+
+**Current status:** `mlx-sys v0.2.0` does not support linking against pre-built `libmlx.dylib` from Homebrew. It always builds from source via cmake, which requires the Metal shader compiler. This is a hard blocker for developers without full Xcode.
+
+**Workarounds under investigation:**
+1. Upstream PR to mlx-sys to support `MLX_DIR` env var for pre-built linking
+2. Fork mlx-sys to link against brew-installed libmlx.dylib + mlx.metallib
+3. Wait for mlx-rs to add pre-built binary support
+
+## Runtime Dependencies for users
 
 ```bash
 # macOS users need:
