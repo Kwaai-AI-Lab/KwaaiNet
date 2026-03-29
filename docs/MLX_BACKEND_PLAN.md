@@ -119,6 +119,34 @@ brew install mlx                 # Pre-built library (but mlx-sys ignores it)
 2. Fork mlx-sys to link against brew-installed libmlx.dylib + mlx.metallib
 3. Wait for mlx-rs to add pre-built binary support
 
+## Investigation Results (March 2026)
+
+### What works
+- MlxTransformerShard loads Llama 8B and produces correct output
+- fast::scaled_dot_product_attention, fast::rope, fast::rms_norm integrated
+- Pre-transposed weights, contiguous F16 memory layout
+- Raw matmul with loaded weights = **1.1ms** (GPU is fast)
+- All 13 mlx-rs API tests pass
+
+### What doesn't work — 85-105s per decode step
+The bottleneck is **JIT graph recompilation on every eval()**. Despite trying:
+- ✗ Per-block eval vs single eval at end — same ~95s
+- ✗ enable_compile() global flag — doesn't cache across eval() calls
+- ✗ transforms::compile() wrapper with pure function — still recompiles
+- ✗ compile(shapeless=true) — same, no caching observed
+- ✗ fast:: APIs (reduces ops but JIT cost is per-graph, not per-op)
+- ✗ Pre-transposed weights (avoids lazy .t() but doesn't help JIT)
+- ✗ Contiguous memory copy (F32 roundtrip) — same performance
+
+### Root cause
+The mlx-rs `compile()` wrapper calls `f.compile(shapeless)` on every invocation, which may create a new compiled function rather than reusing the cache. This differs from Python's `mx.compile()` which caches by function identity.
+
+### Path forward
+1. **File upstream issue** on mlx-rs about compile() not caching across calls
+2. **Try calling mlx-sys C API directly** — `mlx_compile()` + `mlx_detail_compile()` with explicit function ID for manual cache control
+3. **Consider mlx-swift** or Python MLX subprocess as alternative (Python MLX achieves 30+ tok/s)
+4. **CPU at 4.9 tok/s** remains the practical default for Apple Silicon
+
 ## Runtime Dependencies for users
 
 ```bash
