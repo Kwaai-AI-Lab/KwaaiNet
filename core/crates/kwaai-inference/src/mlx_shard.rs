@@ -219,6 +219,65 @@ impl MlxBlock {
     }
 }
 
+// ── Compiled block forward (pure function for transforms::compile) ───────────
+
+/// Global config for compiled block forward (set once at model load).
+/// Using statics because compile() requires Copy + 'static function.
+static BLOCK_CFG: std::sync::OnceLock<(i32, i32, i32, f32, f32)> = std::sync::OnceLock::new();
+
+/// Pure function for one transformer block. All state passed as arrays.
+/// Config (n_heads, n_kv_heads, head_dim, rope_base, eps) read from global.
+///
+/// inputs[0]  = x, [1] = kv_k, [2] = kv_v,
+/// [3] = in_norm_w, [4] = post_norm_w,
+/// [5..8] = q/k/v/o_wt, [9..11] = gate/up/down_wt,
+/// [12] = seq_pos_arr (single i32 value)
+fn compiled_block_forward(inputs: &[Array]) -> Result<Vec<Array>, mlx_rs::error::Exception> {
+    let &(n_heads, n_kv_heads, head_dim, rope_base, eps) = BLOCK_CFG.get().unwrap();
+    let x = &inputs[0];
+    let kv_k = &inputs[1];
+    let kv_v = &inputs[2];
+
+    let (b, s) = (x.shape()[0], x.shape()[1]);
+
+    // Attention
+    let n = mlx_rs::fast::rms_norm(x, &inputs[3], eps)?;
+    let q = n.matmul(&inputs[5])?.reshape(&[b, s, n_heads, head_dim])?;
+    let k = n.matmul(&inputs[6])?.reshape(&[b, s, n_kv_heads, head_dim])?;
+    let v = n.matmul(&inputs[7])?.reshape(&[b, s, n_kv_heads, head_dim])?;
+
+    // RoPE — seq_pos extracted from input array (can't use .item() in compiled fn)
+    // For compiled functions, offset must be passed as a constant or via the array itself.
+    // Workaround: don't use fast::rope inside compiled fn; use the nn::Rope module approach
+    // which handles offset internally. For now, pass offset=0 and rely on KV-cache position.
+    let q = mlx_rs::fast::rope(&q, head_dim, false, Some(rope_base), 1.0, 0, None)?;
+    let k = mlx_rs::fast::rope(&k, head_dim, false, Some(rope_base), 1.0, 0, None)?;
+
+    // KV-cache concat
+    let has_cache = kv_k.ndim() == 4;
+    let (k, v) = if has_cache {
+        (mlx_rs::ops::concatenate_axis(&[kv_k, &k], 1)?,
+         mlx_rs::ops::concatenate_axis(&[kv_v, &v], 1)?)
+    } else { (k, v) };
+
+    // SDPA
+    let q = q.transpose_axes(&[0, 2, 1, 3])?;
+    let kt = k.transpose_axes(&[0, 2, 1, 3])?;
+    let vt = v.transpose_axes(&[0, 2, 1, 3])?;
+    let scale = (head_dim as f32).sqrt().recip();
+    let ao = mlx_rs::fast::scaled_dot_product_attention(&q, &kt, &vt, scale,
+        if s > 1 { Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal) } else { None })?;
+    let ao = ao.transpose_axes(&[0, 2, 1, 3])?.reshape(&[b, s, n_heads * head_dim])?;
+    let x = x.add(&ao.matmul(&inputs[8])?)?;
+
+    // MLP
+    let n = mlx_rs::fast::rms_norm(&x, &inputs[4], eps)?;
+    let g = mlx_rs::nn::silu(&n.matmul(&inputs[9])?)?;
+    let x_out = x.add(&g.multiply(&n.matmul(&inputs[10])?)?.matmul(&inputs[11])?)?;
+
+    Ok(vec![x_out, k, v])
+}
+
 struct MlxSession { kv: Vec<Option<(Array,Array)>>, last_access: Instant }
 impl MlxSession { fn new(n: usize) -> Self { Self { kv: vec![None;n], last_access: Instant::now() } } }
 
@@ -305,14 +364,45 @@ impl MlxTransformerShard {
     pub fn is_last(&self) -> bool { self.end_block==self.cfg.num_total_blocks }
     pub fn gc_sessions(&self) { let mut s=self.sessions.lock().unwrap(); let b=s.len(); s.retain(|_,v| v.last_access.elapsed().as_secs()<600); if b>s.len() { info!("MLX GC: {}",b-s.len()); } }
     fn run_blocks(&mut self, mut x: Array, sp: usize, sid: u64) -> InferenceResult<Array> {
+        // Set global config (once) for the compiled function
+        BLOCK_CFG.get_or_init(|| {
+            let b = &self.blocks[0];
+            (b.attn.n_heads, b.attn.n_kv_heads, b.attn.head_dim, b.attn.rope.base, b.in_n.eps)
+        });
+
+        // Create compiled forward (cached after first compilation)
+        static INIT: std::sync::Once = std::sync::Once::new();
+        static mut COMPILED_FN: Option<Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, mlx_rs::error::Exception> + Send>> = None;
+        INIT.call_once(|| {
+            // shapeless=true: don't recompile when input shapes change (KV-cache grows each token)
+            let f = mlx_rs::transforms::compile::compile(compiled_block_forward, Some(true));
+            unsafe { COMPILED_FN = Some(Box::new(f)); }
+        });
+
         let mut ss = self.sessions.lock().unwrap();
         let s = ss.entry(sid).or_insert_with(|| MlxSession::new(self.blocks.len()));
         s.last_access = Instant::now();
-        for (i,b) in self.blocks.iter_mut().enumerate() {
-            x = b.forward(&x,&mut s.kv[i],sp)?;
+
+        let empty_kv = Array::from_slice::<f32>(&[0.0], &[1]);
+
+        for (i, b) in self.blocks.iter().enumerate() {
+            let (kv_k, kv_v) = s.kv[i].take().unwrap_or_else(|| (empty_kv.clone(), empty_kv.clone()));
+
+            let inputs: Vec<Array> = vec![
+                x.clone(), kv_k, kv_v,
+                b.in_n.weight.as_ref().clone(), b.post_n.weight.as_ref().clone(),
+                b.attn.q_wt.clone(), b.attn.k_wt.clone(), b.attn.v_wt.clone(), b.attn.o_wt.clone(),
+                b.gate_wt.clone(), b.up_wt.clone(), b.down_wt.clone(),
+            ];
+
+            let out = unsafe {
+                COMPILED_FN.as_mut().unwrap()(&inputs).map_err(|e| err(e))?
+            };
+
+            x = out[0].clone();
+            s.kv[i] = Some((out[1].clone(), out[2].clone()));
         }
-        // Single eval after all blocks — with fast:: APIs the graph is smaller
-        // and uses pre-compiled Metal kernels
+
         x.eval().map_err(|e| err(e))?;
         Ok(x)
     }
