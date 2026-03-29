@@ -40,8 +40,12 @@ criterion = { workspace = true }
 name = "inference_bench"
 harness = false
 
+[target.'cfg(target_os = "macos")'.dependencies]
+mlx-rs = { version = "0.25", optional = true }
+
 [features]
 default = ["cpu"]
 cpu = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+mlx = ["mlx-rs"]

@@ -37,6 +37,9 @@ pub mod model;
 pub mod shard;
 pub mod tokenizer;
 
+#[cfg(feature = "mlx")]
+pub mod mlx_shard;
+
 pub use config::EngineConfig;
 pub use engine::InferenceEngine;
 pub use error::{InferenceError, InferenceResult};
@@ -138,16 +141,27 @@ pub enum DeviceType {
     Cpu,
     /// CUDA GPU inference
     Cuda(usize),
-    /// Metal GPU inference (Apple Silicon)
+    /// Metal GPU inference (Apple Silicon) — candle backend, slow for decode
     Metal(usize),
+    /// Apple MLX inference — unified memory, fast prefill + decode
+    Mlx,
 }
 
 impl DeviceType {
-    /// Detect the best available device
+    /// Detect the best available device.
+    ///
+    /// Priority: CUDA > MLX > Metal > CPU.
+    /// MLX is preferred over Metal on macOS because candle's Metal backend
+    /// is 10x slower than CPU for single-token decode.
     pub fn detect_best() -> Self {
         #[cfg(feature = "cuda")]
         if candle_core::utils::cuda_is_available() {
             return Self::Cuda(0);
+        }
+
+        #[cfg(feature = "mlx")]
+        {
+            return Self::Mlx;
         }
 
         #[cfg(feature = "metal")]
@@ -174,6 +188,11 @@ impl DeviceType {
             DeviceType::Cuda(_) => Err(InferenceError::DeviceNotAvailable("CUDA".to_string())),
             #[cfg(not(feature = "metal"))]
             DeviceType::Metal(_) => Err(InferenceError::DeviceNotAvailable("Metal".to_string())),
+            DeviceType::Mlx => {
+                // MLX doesn't use candle devices — return CPU as a fallback
+                // (callers should check for Mlx and use MlxTransformerShard directly)
+                Ok(candle_core::Device::Cpu)
+            }
         }
     }
 }
