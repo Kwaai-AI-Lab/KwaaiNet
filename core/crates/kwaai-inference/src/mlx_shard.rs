@@ -116,55 +116,52 @@ impl MlxAttention {
     }
     fn forward(&mut self, x: &Array, kv: &mut Option<(Array,Array)>, sp: usize) -> InferenceResult<Array> {
         let (b,s) = (x.shape()[0], x.shape()[1]);
-        let t0 = Instant::now();
-        // Use pre-transposed weights stored in wt_* fields (no .t() during forward)
+
+        // QKV projections using pre-transposed weights
         let q = x.matmul(&self.q_wt).map_err(|e| err(e))?;
         let k = x.matmul(&self.k_wt).map_err(|e| err(e))?;
         let v = x.matmul(&self.v_wt).map_err(|e| err(e))?;
-        q.eval().map_err(|e| err(e))?; k.eval().map_err(|e| err(e))?; v.eval().map_err(|e| err(e))?;
-        let t_qkv = t0.elapsed();
-        let t1 = Instant::now();
+
+        // Reshape to [b, seq, n_heads, head_dim]
         let q = q.reshape(&[b,s,self.n_heads,self.head_dim]).map_err(|e| err(e))?;
         let k = k.reshape(&[b,s,self.n_kv_heads,self.head_dim]).map_err(|e| err(e))?;
         let v = v.reshape(&[b,s,self.n_kv_heads,self.head_dim]).map_err(|e| err(e))?;
-        let q = self.rope.forward((&q, sp as i32)).map_err(|e| err(e))?;
-        let k = self.rope.forward((&k, sp as i32)).map_err(|e| err(e))?;
-        q.eval().map_err(|e| err(e))?; k.eval().map_err(|e| err(e))?;
-        let t_rope = t1.elapsed();
-        let t2 = Instant::now();
+
+        // fast::rope — optimized Metal kernel
+        let q = mlx_rs::fast::rope(&q, self.head_dim, false, Some(self.rope.base), 1.0, sp as i32, None)
+            .map_err(|e| err(e))?;
+        let k = mlx_rs::fast::rope(&k, self.head_dim, false, Some(self.rope.base), 1.0, sp as i32, None)
+            .map_err(|e| err(e))?;
+
+        // KV-cache append
         let (k,v): (Array,Array) = if let Some((ck,cv)) = kv.take() {
             (mlx_rs::ops::concatenate_axis(&[&ck,&k],1).map_err(|e| err(e))?,
              mlx_rs::ops::concatenate_axis(&[&cv,&v],1).map_err(|e| err(e))?)
         } else { (k,v) };
         *kv = Some((k.clone(), v.clone()));
-        let t_kv = t2.elapsed();
-        let t3 = Instant::now();
+
+        // Transpose to [b, heads, seq, head_dim] for attention
         let q = q.transpose_axes(&[0,2,1,3]).map_err(|e| err(e))?;
         let k = k.transpose_axes(&[0,2,1,3]).map_err(|e| err(e))?;
         let v = v.transpose_axes(&[0,2,1,3]).map_err(|e| err(e))?;
-        let k = if self.n_rep>1 { repeat_kv(&k,self.n_rep)? } else { k };
-        let v = if self.n_rep>1 { repeat_kv(&v,self.n_rep)? } else { v };
-        let sc = q.matmul(&k.transpose_axes(&[0,1,3,2]).map_err(|e| err(e))?).map_err(|e| err(e))?;
-        let sc = sc.multiply(&scalar((self.head_dim as f32).sqrt().recip())).map_err(|e| err(e))?;
-        let sc = if s>1 {
-            let kl = k.shape()[2];
-            let mask = mlx_rs::ops::tri::<f32>(s,Some(kl),Some(-(kl-s))).map_err(|e| err(e))?;
-            mlx_rs::ops::r#where(&mask,&sc,&scalar(f32::NEG_INFINITY)).map_err(|e| err(e))?
-        } else { sc };
-        let aw = mlx_rs::ops::softmax_axis(&sc,-1,None).map_err(|e| err(e))?;
-        let ao = aw.matmul(&v).map_err(|e| err(e))?;
-        let ao = ao.transpose_axes(&[0,2,1,3]).map_err(|e| err(e))?.reshape(&[b,s,self.n_heads*self.head_dim]).map_err(|e| err(e))?;
-        let out = ao.matmul(&self.o_wt).map_err(|e| err(e))?;
-        out.eval().map_err(|e| err(e))?;
-        let t_attn = t3.elapsed();
-        // Log first block only to avoid spam
-        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!("[ATTN] qkv={:.0}ms rope={:.0}ms kv={:.0}ms attn+o={:.0}ms total={:.0}ms",
-                t_qkv.as_secs_f64()*1e3, t_rope.as_secs_f64()*1e3, t_kv.as_secs_f64()*1e3,
-                t_attn.as_secs_f64()*1e3, t0.elapsed().as_secs_f64()*1e3);
-        }
-        Ok(out)
+
+        // fast::scaled_dot_product_attention — fused Metal kernel
+        // Handles GQA (different Q vs KV head counts) internally
+        let scale = (self.head_dim as f32).sqrt().recip();
+        let mask = if s > 1 {
+            Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal)
+        } else {
+            None
+        };
+        let ao = mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, scale, mask)
+            .map_err(|e| err(e))?;
+
+        // Merge heads → [b, seq, hidden]
+        let ao = ao.transpose_axes(&[0,2,1,3]).map_err(|e| err(e))?
+            .reshape(&[b,s,self.n_heads*self.head_dim]).map_err(|e| err(e))?;
+
+        // Output projection
+        ao.matmul(&self.o_wt).map_err(|e| err(e))
     }
 }
 fn repeat_kv(x: &Array, n: usize) -> InferenceResult<Array> {
@@ -209,11 +206,12 @@ impl MlxBlock {
         Ok(())
     }
     fn forward(&mut self, x: &Array, kv: &mut Option<(Array,Array)>, sp: usize) -> InferenceResult<Array> {
-        let n = self.in_n.forward(x).map_err(|e| err(e))?;
+        // fast::rms_norm — optimized Metal kernel
+        let n = mlx_rs::fast::rms_norm(x, self.in_n.weight.as_ref(), self.in_n.eps).map_err(|e| err(e))?;
         let a = self.attn.forward(&n,kv,sp)?;
         let x = x.add(&a).map_err(|e| err(e))?;
-        let n = self.post_n.forward(&x).map_err(|e| err(e))?;
-        // Use pre-transposed weights — no .t() during forward
+        let n = mlx_rs::fast::rms_norm(&x, self.post_n.weight.as_ref(), self.post_n.eps).map_err(|e| err(e))?;
+        // SwiGLU MLP with pre-transposed weights
         let g = nn::silu(&n.matmul(&self.gate_wt).map_err(|e| err(e))?).map_err(|e| err(e))?;
         let f = g.multiply(&n.matmul(&self.up_wt).map_err(|e| err(e))?).map_err(|e| err(e))?;
         let f = f.matmul(&self.down_wt).map_err(|e| err(e))?;
@@ -310,11 +308,10 @@ impl MlxTransformerShard {
         s.last_access = Instant::now();
         for (i,b) in self.blocks.iter_mut().enumerate() {
             x = b.forward(&x,&mut s.kv[i],sp)?;
-            // Eval after each block to keep the lazy graph small.
-            // Large graphs (32 blocks × 20 ops) cause MLX graph compilation
-            // to take ~100s. Per-block eval keeps it fast.
-            x.eval().map_err(|e| err(e))?;
         }
+        // Single eval after all blocks — with fast:: APIs the graph is smaller
+        // and uses pre-compiled Metal kernels
+        x.eval().map_err(|e| err(e))?;
         Ok(x)
     }
     pub fn forward_full(&mut self, sid: u64, tids: &[u32], sp: usize) -> InferenceResult<Array> {
@@ -327,12 +324,12 @@ impl MlxTransformerShard {
         let t1 = Instant::now();
         let x = self.run_blocks(h, sp, sid)?;
         let tb = t1.elapsed();
-        let norm = self.norm.as_mut().ok_or_else(|| err("no norm"))?;
+        let norm = self.norm.as_ref().ok_or_else(|| err("no norm"))?;
         let lm_wt = self.lm_head_wt.as_ref().ok_or_else(|| err("no lm_head_wt"))?;
         let t2 = Instant::now();
         let s = x.shape()[1];
         let xl = if s>1 { x.index((.., (s-1).., ..)) } else { x };
-        let xl = norm.forward(&xl).map_err(|e| err(e))?;
+        let xl = mlx_rs::fast::rms_norm(&xl, norm.weight.as_ref(), norm.eps).map_err(|e| err(e))?;
         let logits = xl.matmul(lm_wt).map_err(|e| err(e))?;
         logits.eval().map_err(|e| err(e))?;
         let th = t2.elapsed();
