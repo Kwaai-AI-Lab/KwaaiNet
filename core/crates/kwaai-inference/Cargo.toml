@@ -35,6 +35,8 @@ tracing = { workspace = true }
 tokio-test = "0.4"
 tracing-subscriber = { workspace = true }
 criterion = { workspace = true }
+safetensors = "0.4"
+dirs = "5"
 
 [[bench]]
 name = "inference_bench"
