@@ -150,25 +150,34 @@ pub enum DeviceType {
 impl DeviceType {
     /// Detect the best available device.
     ///
-    /// Priority: CUDA > MLX > Metal > CPU.
-    /// MLX is preferred over Metal on macOS because candle's Metal backend
-    /// is 10x slower than CPU for single-token decode.
+    /// Priority: CUDA > MLX > CPU.
+    /// Metal is intentionally excluded — candle's Metal backend is 10x slower
+    /// than CPU for single-token decode. Use `DeviceType::Metal(0)` directly
+    /// if you need to force it.
     pub fn detect_best() -> Self {
         #[cfg(feature = "cuda")]
         if candle_core::utils::cuda_is_available() {
+            tracing::info!("CUDA device detected");
             return Self::Cuda(0);
         }
 
         #[cfg(feature = "mlx")]
-        {
+        if crate::mlx_shard::mlx_available() {
+            tracing::info!("MLX device detected");
             return Self::Mlx;
         }
 
+        // Metal is skipped: candle's Metal backend has ~3% GPU utilization for
+        // single-token decode due to per-op kernel launch overhead.
         #[cfg(feature = "metal")]
         if candle_core::utils::metal_is_available() {
-            return Self::Metal(0);
+            tracing::warn!(
+                "Metal GPU available but skipped (decode is 10x slower than CPU). \
+                 Use --use-gpu to force Metal."
+            );
         }
 
+        tracing::info!("Using CPU for inference");
         Self::Cpu
     }
 

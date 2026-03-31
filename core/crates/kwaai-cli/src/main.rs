@@ -934,9 +934,6 @@ async fn main() -> Result<()> {
             let cfg = KwaaiNetConfig::load_or_create()?;
             let model = args.model.as_deref().unwrap_or(&cfg.model).to_string();
 
-            // Default to CPU — candle's Metal backend is not yet optimized for
-            // sequential single-token decode (130s/tok vs 0.2s/tok on CPU).
-            // Use --gpu to explicitly opt in to GPU benchmarking.
             let device_type = if args.gpu {
                 kwaai_inference::DeviceType::detect_best()
             } else {

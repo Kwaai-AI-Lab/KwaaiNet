@@ -296,24 +296,13 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     };
 
     // Detect device early (before any model I/O).
-    // On macOS, default to CPU: candle's Metal backend is 10x slower than CPU
-    // for single-token decode (the bottleneck for autoregressive generation).
-    // CUDA is fine. Users can force Metal with `--use-gpu`.
+    // detect_best() already skips Metal (too slow for decode) and logs why.
     let device_type = if args.no_gpu {
         DeviceType::Cpu
     } else if args.use_gpu {
-        DeviceType::detect_best() // explicit opt-in, no override
+        DeviceType::detect_best()
     } else if cfg.use_gpu {
-        let detected = DeviceType::detect_best();
-        match detected {
-            DeviceType::Metal(_) => {
-                print_info(
-                    "Using CPU (Metal decode is 10x slower). Pass --use-gpu to force Metal.",
-                );
-                DeviceType::Cpu
-            }
-            other => other, // CUDA — use as detected
-        }
+        DeviceType::detect_best()
     } else {
         DeviceType::Cpu
     };
@@ -660,15 +649,10 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
     }
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
 
-    // Pick device — default Metal to CPU (10x faster for decode).
     let device_type = if args.no_gpu {
         kwaai_inference::DeviceType::Cpu
     } else {
-        let detected = kwaai_inference::DeviceType::detect_best();
-        match detected {
-            kwaai_inference::DeviceType::Metal(_) => kwaai_inference::DeviceType::Cpu,
-            other => other,
-        }
+        kwaai_inference::DeviceType::detect_best()
     };
     let device = device_type
         .to_candle_device()
