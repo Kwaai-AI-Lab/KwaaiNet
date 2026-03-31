@@ -157,6 +157,52 @@ if [ -n "$GO_ACTION" ]; then
     fi
 fi
 
+# 6. NVIDIA CUDA toolkit (Linux only, when GPU is detected)
+CARGO_FEATURES=""
+if [ "$OS" = "linux" ] && command -v nvidia-smi &> /dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    echo "✅ NVIDIA GPU detected: $GPU_NAME"
+
+    if command -v nvcc &> /dev/null; then
+        echo "✅ CUDA toolkit found: $(nvcc --version | grep 'release' | sed 's/.*release //' | sed 's/,.*//')"
+        CARGO_FEATURES="--features cuda"
+    else
+        echo "⚠️  CUDA toolkit not found — GPU detected but nvcc is missing."
+
+        # Try common CUDA install paths before prompting
+        for cuda_dir in /usr/local/cuda /usr/local/cuda-*; do
+            if [ -x "$cuda_dir/bin/nvcc" ]; then
+                echo "✅ Found nvcc at $cuda_dir/bin/nvcc"
+                export PATH="$cuda_dir/bin:$PATH"
+                RC_LINE="export PATH=$cuda_dir/bin:\$PATH"
+                if [[ "$SHELL" == */zsh ]]; then
+                    grep -qxF "$RC_LINE" ~/.zshrc 2>/dev/null || echo "$RC_LINE" >> ~/.zshrc
+                else
+                    grep -qxF "$RC_LINE" ~/.bashrc 2>/dev/null || echo "$RC_LINE" >> ~/.bashrc
+                fi
+                echo "✅ Added $cuda_dir/bin to PATH"
+                CARGO_FEATURES="--features cuda"
+                break
+            fi
+        done
+
+        if [ -z "$CARGO_FEATURES" ]; then
+            echo ""
+            echo "  To enable GPU acceleration, install the CUDA toolkit:"
+            echo "    # RHEL/Rocky/Alma:"
+            echo "    sudo dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo"
+            echo "    sudo dnf install -y cuda-toolkit-12-6"
+            echo ""
+            echo "    # Ubuntu/Debian:"
+            echo "    sudo apt install -y nvidia-cuda-toolkit"
+            echo ""
+            echo "  Then re-run this script."
+        fi
+    fi
+else
+    echo "ℹ️  No NVIDIA GPU detected — building for CPU only."
+fi
+
 echo ""
 echo "=========================================="
 echo "✅ Setup complete!"
@@ -164,7 +210,12 @@ echo "=========================================="
 echo ""
 echo "Next steps:"
 echo "  1. Navigate to the core directory: cd core"
-echo "  2. Build the project: cargo build --workspace"
-echo "  3. Run tests: cargo test"
-echo "  4. Run example: cargo run --example petals_visible"
+if [ -n "$CARGO_FEATURES" ]; then
+echo "  2. Build with GPU:  cargo build --release -p kwaainet $CARGO_FEATURES"
+echo "  3. Install:         cargo install --path crates/kwaai-cli $CARGO_FEATURES --force"
+else
+echo "  2. Build the project: cargo build --release -p kwaainet"
+echo "  3. Install:           cargo install --path crates/kwaai-cli --force"
+fi
+echo "  4. Run tests: cargo test"
 echo ""
