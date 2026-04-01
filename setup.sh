@@ -205,17 +205,46 @@ fi
 
 echo ""
 echo "=========================================="
+echo "Building KwaaiNet..."
+echo "=========================================="
+echo ""
+
+# Resolve the workspace directory relative to this script
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CORE_DIR="$SCRIPT_DIR/core"
+
+if [ ! -f "$CORE_DIR/Cargo.toml" ]; then
+    echo "❌ Cannot find core/Cargo.toml — run this script from the repo root."
+    exit 1
+fi
+
+if [ -n "$CARGO_FEATURES" ]; then
+    echo "🔨 Building with CUDA GPU acceleration..."
+    echo "   cargo build --release -p kwaainet $CARGO_FEATURES"
+else
+    echo "🔨 Building for CPU..."
+    echo "   cargo build --release -p kwaainet"
+fi
+echo ""
+
+cargo build --release -p kwaainet --manifest-path "$CORE_DIR/Cargo.toml" $CARGO_FEATURES
+
+echo ""
+echo "📦 Installing kwaainet..."
+cargo install --path "$CORE_DIR/crates/kwaai-cli" $CARGO_FEATURES --force
+
+echo ""
+echo "=========================================="
 echo "✅ Setup complete!"
 echo "=========================================="
 echo ""
-echo "Next steps:"
-echo "  1. Navigate to the core directory: cd core"
 if [ -n "$CARGO_FEATURES" ]; then
-echo "  2. Build with GPU:  cargo build --release -p kwaainet $CARGO_FEATURES"
-echo "  3. Install:         cargo install --path crates/kwaai-cli $CARGO_FEATURES --force"
+    echo "  Installed: kwaainet (with CUDA GPU support)"
 else
-echo "  2. Build the project: cargo build --release -p kwaainet"
-echo "  3. Install:           cargo install --path crates/kwaai-cli --force"
+    echo "  Installed: kwaainet (CPU only)"
 fi
-echo "  4. Run tests: cargo test"
+echo ""
+echo "  Run 'kwaainet setup' to create config dirs and identity."
+echo "  Run 'kwaainet setup --get-deps' to download p2pd if needed."
+echo "  Run 'kwaainet benchmark' to measure throughput."
 echo ""
