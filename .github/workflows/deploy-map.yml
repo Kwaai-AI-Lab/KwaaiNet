@@ -1,15 +1,8 @@
 name: Deploy map.kwaai.ai
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
-    paths:
-      - 'apps/map/**'
-      - 'core/crates/map-server/**'
-      - 'docker/map-nginx.conf'
-      - 'Dockerfile.map-server'
-      - 'Dockerfile.map-frontend'
+  # Disabled automatic triggers until map.kwaai.ai infra is ready.
+  # Re-enable push.tags trigger when deployment secrets are configured.
   workflow_dispatch:
 
 permissions:
