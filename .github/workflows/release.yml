@@ -297,6 +297,7 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: kwaainet-x86_64-unknown-linux-gnu-cuda
+            container: quay.io/pypa/manylinux_2_28_x86_64
             ext: tar.xz
             bin: kwaainet
             p2pd: p2pd
@@ -308,6 +309,7 @@ jobs:
             p2pd: p2pd.exe
     name: build-cuda-artifacts (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -315,15 +317,32 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Install build deps (manylinux container)
+        if: matrix.container
+        shell: bash
+        run: |
+          # manylinux_2_28 is AlmaLinux 8 — install Rust, Go, CUDA, OpenSSL
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          # Go
+          curl -sSfL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+          # CUDA toolkit (RHEL 8 repo)
+          dnf install -y -q 'dnf-command(config-manager)'
+          dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+          dnf install -y -q cuda-toolkit-12-6 openssl-devel perl-IPC-Cmd
+          echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
       - name: Install Rust
+        if: ${{ !matrix.container }}
         uses: dtolnay/rust-toolchain@stable
       - name: Install Go (required by kwaai-p2p-daemon build script)
+        if: ${{ !matrix.container }}
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: false
-      - name: Install CUDA toolkit (Linux)
-        if: runner.os == 'Linux'
+      - name: Install CUDA toolkit (Linux, no container)
+        if: runner.os == 'Linux' && !matrix.container
         run: |
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb

@@ -22,9 +22,10 @@ cat > "$CUDA_FUNC" <<'CUDA_PATCH'
 _cuda_selected=""
 _cuda_libs_staged=""
 _try_cuda_upgrade() {
-    # Only applies to x86_64 linux-gnu
+    # Only applies to x86_64 linux targets (gnu or musl fallback)
     case "${_artifact_name:-}" in
-        kwaainet-x86_64-unknown-linux-gnu.tar.xz) ;;
+        kwaainet-x86_64-unknown-linux-gnu*) ;;
+        kwaainet-x86_64-unknown-linux-musl*) ;;
         *) return 0 ;;
     esac
     if ! command -v nvidia-smi >/dev/null 2>&1; then
