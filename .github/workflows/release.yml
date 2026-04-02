@@ -380,6 +380,15 @@ jobs:
           mkdir -p "${LABEL}"
           cp target/release/${{ matrix.bin }} "${LABEL}/"
           [ -f target/release/${{ matrix.p2pd }} ] && cp target/release/${{ matrix.p2pd }} "${LABEL}/"
+          # Bundle CUDA runtime libraries so end users don't need the toolkit
+          CUDA_LIB="/usr/local/cuda-12.6/lib64"
+          for lib in libcudart.so* libcublas.so* libcublasLt.so* libcurand.so* libcusolver.so* libcusparse.so* libcufft.so* libnvrtc.so* libnvrtc-builtins.so*; do
+            found=$(find "${CUDA_LIB}" -name "${lib}" -type f -o -name "${lib}" -type l 2>/dev/null)
+            for f in $found; do
+              cp -P "$f" "${LABEL}/"
+            done
+          done
+          echo "CUDA libs bundled: $(ls ${LABEL}/*.so* 2>/dev/null | wc -l) files"
           chmod +x "${LABEL}"/*
           tar -cJf "${LABEL}.${{ matrix.ext }}" "${LABEL}"
           sha256sum "${LABEL}.${{ matrix.ext }}" | awk '{print $1}' > "${LABEL}.${{ matrix.ext }}.sha256"
@@ -395,6 +404,37 @@ jobs:
           if (Test-Path "target\release\${{ matrix.p2pd }}") {
             Copy-Item "target\release\${{ matrix.p2pd }}" "$LABEL\"
           }
+          # Bundle CUDA runtime DLLs so end users don't need the toolkit
+          $CUDA_BIN = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"
+          $cudaDlls = @(
+            "cudart64_12.dll",
+            "cublas64_12.dll",
+            "cublasLt64_12.dll",
+            "curand64_12.dll",
+            "cusolver64_12.dll",
+            "cusparse64_12.dll",
+            "cufft64_12.dll",
+            "nvrtc64_126_0.dll",
+            "nvrtc-builtins64_126.dll"
+          )
+          $copied = 0
+          foreach ($dll in $cudaDlls) {
+            $src = Join-Path $CUDA_BIN $dll
+            if (Test-Path $src) {
+              Copy-Item $src "$LABEL\"
+              $copied++
+            } else {
+              # Try wildcard match for version variants
+              $match = Get-ChildItem $CUDA_BIN -Filter "$($dll.Split('_')[0])*" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($match) {
+                Copy-Item $match.FullName "$LABEL\"
+                $copied++
+              } else {
+                Write-Host "WARNING: $dll not found in $CUDA_BIN"
+              }
+            }
+          }
+          Write-Host "CUDA DLLs bundled: $copied files"
           Compress-Archive -Path "$LABEL\*" -DestinationPath "$LABEL.${{ matrix.ext }}"
           $hash = (Get-FileHash "$LABEL.${{ matrix.ext }}" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path "$LABEL.${{ matrix.ext }}.sha256" -Value $hash -NoNewline

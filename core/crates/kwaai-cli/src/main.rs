@@ -36,8 +36,45 @@ use daemon::{DaemonManager, ShardManager};
 use display::*;
 use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
 
+/// Add the binary's directory to the library search path so bundled CUDA
+/// runtime libraries (.so/.dll) are found by cudarc's dynamic loading.
+fn setup_cuda_library_path() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let Some(_dir) = exe.parent() else { return };
+
+    #[cfg(target_os = "linux")]
+    {
+        let dir_str = _dir.to_string_lossy();
+        let key = "LD_LIBRARY_PATH";
+        match std::env::var(key) {
+            Ok(existing) if existing.contains(&*dir_str) => {}
+            Ok(existing) => {
+                std::env::set_var(key, format!("{dir_str}:{existing}"));
+            }
+            Err(_) => {
+                std::env::set_var(key, &*dir_str);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let dir_str = _dir.to_string_lossy();
+        let key = "PATH";
+        if let Ok(existing) = std::env::var(key) {
+            if !existing.contains(&*dir_str) {
+                std::env::set_var(key, format!("{dir_str};{existing}"));
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    setup_cuda_library_path();
     let cli = Cli::parse();
 
     // Initialise logging (RUST_LOG overrides, default info)
