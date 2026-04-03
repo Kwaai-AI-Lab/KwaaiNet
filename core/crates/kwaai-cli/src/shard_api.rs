@@ -35,6 +35,22 @@ use crate::shard_cmd::{
     daemon_socket, discover_chain, forward_through_chain, sample_token, BlockServerEntry,
 };
 
+// ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
+
+/// Holds a pre-loaded llama.cpp model for reuse across requests.
+#[cfg(feature = "llama-cpp")]
+pub(crate) struct LlamaModelHolder {
+    pub backend: llama_cpp_2::llama_backend::LlamaBackend,
+    pub model: llama_cpp_2::model::LlamaModel,
+}
+
+// LlamaModel is Send+Sync; LlamaBackend is an empty struct (init guard).
+// We only read the model from spawn_blocking threads via shared reference.
+#[cfg(feature = "llama-cpp")]
+unsafe impl Send for LlamaModelHolder {}
+#[cfg(feature = "llama-cpp")]
+unsafe impl Sync for LlamaModelHolder {}
+
 // ── Shared server state ───────────────────────────────────────────────────────
 
 struct AppState {
@@ -47,6 +63,10 @@ struct AppState {
     eos_id: u32,
     bos_id: Option<u32>,
     our_peer_id: PeerId,
+    /// When set, use llama.cpp Metal inference instead of P2P chain.
+    /// Only populated when: llama-cpp feature + all blocks local + GGUF available.
+    #[cfg(feature = "llama-cpp")]
+    llama_model: Option<Arc<LlamaModelHolder>>,
 }
 
 // ── OpenAI request types ──────────────────────────────────────────────────────
@@ -358,6 +378,63 @@ async fn run_inference(
     // tx dropped here → channel closes → SSE stream ends
 }
 
+// ── llama.cpp local fast path ────────────────────────────────────────────────
+
+#[cfg(feature = "llama-cpp")]
+async fn run_inference_local(
+    holder: Arc<LlamaModelHolder>,
+    prompt: String,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    tx: tokio::sync::mpsc::Sender<String>,
+) {
+    let result = tokio::task::spawn_blocking(move || {
+        crate::llama_local::run_inference_streaming(
+            &holder.backend,
+            &holder.model,
+            &prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            |piece| tx.blocking_send(piece).is_ok(),
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::error!("llama.cpp inference error: {e}"),
+        Err(e) => tracing::error!("llama.cpp inference panicked: {e}"),
+    }
+}
+
+/// Spawn the appropriate inference backend for a request.
+fn spawn_inference(
+    state: Arc<AppState>,
+    prompt: String,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    tx: tokio::sync::mpsc::Sender<String>,
+) {
+    #[cfg(feature = "llama-cpp")]
+    if let Some(ref holder) = state.llama_model {
+        let holder = holder.clone();
+        tokio::spawn(async move {
+            run_inference_local(holder, prompt, max_tokens, temperature, top_k, top_p, tx).await;
+        });
+        return;
+    }
+
+    tokio::spawn(async move {
+        run_inference(state, prompt, max_tokens, temperature, top_k, top_p, tx).await;
+    });
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
@@ -384,10 +461,7 @@ async fn chat_completions(
     let top_p = req.top_p.unwrap_or(1.0);
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(512);
-    let state_c = state.clone();
-    tokio::spawn(async move {
-        run_inference(state_c, prompt, max_tokens, temperature, top_k, top_p, tx).await;
-    });
+    spawn_inference(state, prompt, max_tokens, temperature, top_k, top_p, tx);
 
     if req.stream {
         make_chat_sse(rx, model_id)
@@ -408,10 +482,7 @@ async fn completions(
     let top_p = req.top_p.unwrap_or(1.0);
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(512);
-    let state_c = state.clone();
-    tokio::spawn(async move {
-        run_inference(state_c, prompt, max_tokens, temperature, top_k, top_p, tx).await;
-    });
+    spawn_inference(state, prompt, max_tokens, temperature, top_k, top_p, tx);
 
     if req.stream {
         make_completion_sse(rx, model_id)
@@ -570,6 +641,76 @@ fn estimate_tokens(text: &str) -> u32 {
     ((text.len() as u32) / 4).max(1)
 }
 
+// ── llama.cpp GGUF detection ─────────────────────────────────────────────────
+
+/// Detect whether we can use llama.cpp for full-model local inference.
+///
+/// Returns `Some(path)` when: all blocks are hosted by our peer AND a GGUF
+/// model file is available (via CLI args, Ollama, or ~/.kwaainet/models/).
+#[cfg(feature = "llama-cpp")]
+fn detect_gguf_path(
+    chain: &[BlockServerEntry],
+    total_blocks: usize,
+    our_peer_id: &PeerId,
+    args: &ShardApiArgs,
+    model_ref: &str,
+) -> Option<std::path::PathBuf> {
+    // Explicit --gguf-path always wins (user override, skip coverage check)
+    if let Some(ref p) = args.gguf_path {
+        if p.exists() {
+            return Some(p.clone());
+        }
+    }
+
+    // Explicit --ollama-model also overrides coverage check
+    if let Some(ref name) = args.ollama_model {
+        if let Ok(path) = crate::ollama::resolve_model_blob(name) {
+            return Some(path);
+        }
+    }
+
+    // For auto-detection, require all blocks to be hosted by our peer
+    let covers_all = crate::shard_cmd::build_pinned_path(
+        chain,
+        total_blocks,
+        &std::collections::HashSet::new(),
+    )
+    .ok()
+    .map(|path| path.iter().all(|e| e.peer_id == *our_peer_id))
+    .unwrap_or(false);
+
+    if !covers_all {
+        return None;
+    }
+
+    // Auto-detect via Ollama (try the config model name)
+    if let Ok(path) = crate::ollama::resolve_model_blob(model_ref) {
+        return Some(path);
+    }
+
+    // Scan ~/.kwaainet/models/ for a matching .gguf file
+    if let Some(home) = dirs::home_dir() {
+        let models_dir = home.join(".kwaainet/models");
+        if models_dir.is_dir() {
+            let base = model_ref
+                .split('/')
+                .last()
+                .unwrap_or(model_ref)
+                .to_lowercase();
+            if let Ok(entries) = std::fs::read_dir(&models_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    if name.ends_with(".gguf") && name.contains(&base) {
+                        return Some(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn run(args: ShardApiArgs) -> Result<()> {
@@ -589,8 +730,8 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         .unwrap_or_else(|| cfg.model_total_blocks() as usize);
 
     // Resolve tokenizer directory
-    let model_dir: std::path::PathBuf = if let Some(p) = args.model_path {
-        p
+    let model_dir: std::path::PathBuf = if let Some(ref p) = args.model_path {
+        p.clone()
     } else {
         hf::resolve_snapshot(&model_ref)?
     };
@@ -669,6 +810,35 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         let _ = client.connect_peer(&hint).await;
     }
 
+    // Detect llama.cpp fast path (full model on this node + GGUF available)
+    #[cfg(feature = "llama-cpp")]
+    let llama_model: Option<Arc<LlamaModelHolder>> = {
+        match detect_gguf_path(&chain, total_blocks, &our_peer_id, &args, &model_ref) {
+            Some(gguf_path) => {
+                print_info(&format!(
+                    "Loading llama.cpp model: {}",
+                    gguf_path.display()
+                ));
+                match crate::llama_local::load_model(&gguf_path) {
+                    Ok((backend, model)) => {
+                        print_success("llama.cpp fast path ACTIVE — Metal-accelerated inference");
+                        Some(Arc::new(LlamaModelHolder { backend, model }))
+                    }
+                    Err(e) => {
+                        print_warning(&format!(
+                            "llama.cpp load failed, falling back to P2P: {e}"
+                        ));
+                        None
+                    }
+                }
+            }
+            None => {
+                println!("  Inference: P2P distributed chain");
+                None
+            }
+        }
+    };
+
     let state: Arc<AppState> = Arc::new(AppState {
         client: Arc::new(Mutex::new(client)),
         chain: Arc::new(chain),
@@ -679,6 +849,8 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         eos_id,
         bos_id,
         our_peer_id,
+        #[cfg(feature = "llama-cpp")]
+        llama_model,
     });
 
     let app = Router::new()

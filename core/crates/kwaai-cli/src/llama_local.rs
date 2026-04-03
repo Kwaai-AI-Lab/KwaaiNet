@@ -6,7 +6,7 @@
 //! Feature-gated: only compiled with `--features llama-cpp`.
 
 #[cfg(feature = "llama-cpp")]
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 #[cfg(feature = "llama-cpp")]
 use llama_cpp_2::{
@@ -30,6 +30,100 @@ pub struct GenerationResult {
     pub decode_ms: f64,
 }
 
+/// Load a GGUF model via llama.cpp. Returns the backend and model for reuse
+/// across multiple inference calls.
+#[cfg(feature = "llama-cpp")]
+pub fn load_model(model_path: &Path) -> Result<(LlamaBackend, LlamaModel)> {
+    let backend = LlamaBackend::init().context("Failed to init llama.cpp backend")?;
+    let model_params = LlamaModelParams::default();
+    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
+        .map_err(|e| anyhow::anyhow!("Failed to load model: {e:?}"))?;
+    Ok((backend, model))
+}
+
+/// Sample the next token from logits with temperature, top-k, and top-p.
+#[cfg(feature = "llama-cpp")]
+fn sample_next_token(
+    logits: &[f32],
+    eos: LlamaToken,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+) -> LlamaToken {
+    if temperature <= 0.0 {
+        // Greedy: argmax
+        return logits
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| LlamaToken::new(i as i32))
+            .unwrap_or(eos);
+    }
+
+    // Temperature scaling
+    let scaled: Vec<f32> = logits.iter().map(|&l| l / temperature).collect();
+
+    // Sort indices by descending logit for top-k / top-p filtering
+    let mut indices: Vec<usize> = (0..scaled.len()).collect();
+    indices.sort_unstable_by(|&a, &b| {
+        scaled[b].partial_cmp(&scaled[a]).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Top-k: keep only the top k candidates
+    if top_k > 0 && top_k < indices.len() {
+        indices.truncate(top_k);
+    }
+
+    // Softmax over remaining candidates
+    let max_val = scaled[indices[0]];
+    let mut probs: Vec<(usize, f32)> = indices
+        .iter()
+        .map(|&i| (i, (scaled[i] - max_val).exp()))
+        .collect();
+    let sum: f32 = probs.iter().map(|(_, p)| p).sum();
+    for item in &mut probs {
+        item.1 /= sum;
+    }
+
+    // Top-p (nucleus): accumulate probs and cut off
+    if top_p > 0.0 && top_p < 1.0 {
+        let mut cumsum = 0.0f32;
+        let mut cutoff = probs.len();
+        for (i, &(_, p)) in probs.iter().enumerate() {
+            cumsum += p;
+            if cumsum >= top_p {
+                cutoff = i + 1;
+                break;
+            }
+        }
+        probs.truncate(cutoff);
+        // Renormalize
+        let new_sum: f32 = probs.iter().map(|(_, p)| p).sum();
+        for item in &mut probs {
+            item.1 /= new_sum;
+        }
+    }
+
+    // Random sample
+    let r: f32 = {
+        use std::time::SystemTime;
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        (nanos as f32) / (u32::MAX as f32)
+    };
+    let mut cumsum = 0.0f32;
+    for &(idx, p) in &probs {
+        cumsum += p;
+        if cumsum >= r {
+            return LlamaToken::new(idx as i32);
+        }
+    }
+    // Fallback to last candidate
+    LlamaToken::new(probs.last().map(|&(i, _)| i).unwrap_or(0) as i32)
+}
+
 /// Run local inference via llama.cpp with Metal acceleration.
 ///
 /// Loads a GGUF model, tokenizes the prompt, and generates tokens
@@ -43,21 +137,50 @@ pub fn run_inference(
 ) -> Result<GenerationResult> {
     use crate::display::*;
 
-    // Initialize backend
-    let backend = LlamaBackend::init().context("Failed to init llama.cpp backend")?;
-
-    // Load model with GPU layers
-    let model_params = LlamaModelParams::default();
-    // Metal is auto-enabled on macOS when llama.cpp is built with Metal support
-
     print_info("Loading GGUF model via llama.cpp...");
-    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
-        .map_err(|e| anyhow::anyhow!("Failed to load model: {e:?}"))?;
+    let (backend, model) = load_model(model_path)?;
 
+    run_inference_with_model(&backend, &model, prompt, max_tokens, temperature, 0, 1.0, |piece| {
+        print!("{piece}");
+        std::io::stdout().flush().ok();
+        true
+    })
+}
+
+/// Run streaming inference using a pre-loaded model.
+///
+/// Calls `on_token` with each generated text piece. Return `false` from the
+/// callback to stop generation early (e.g. client disconnected).
+#[cfg(feature = "llama-cpp")]
+pub fn run_inference_streaming(
+    backend: &LlamaBackend,
+    model: &LlamaModel,
+    prompt: &str,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    on_token: impl Fn(String) -> bool,
+) -> Result<GenerationResult> {
+    run_inference_with_model(backend, model, prompt, max_tokens, temperature, top_k, top_p, on_token)
+}
+
+/// Core inference loop shared by `run_inference` and `run_inference_streaming`.
+#[cfg(feature = "llama-cpp")]
+fn run_inference_with_model(
+    backend: &LlamaBackend,
+    model: &LlamaModel,
+    prompt: &str,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    on_token: impl Fn(String) -> bool,
+) -> Result<GenerationResult> {
     // Create context
     let ctx_params = LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(2048));
     let mut ctx = model
-        .new_context(&backend, ctx_params)
+        .new_context(backend, ctx_params)
         .map_err(|e| anyhow::anyhow!("Failed to create context: {e:?}"))?;
 
     // Tokenize prompt
@@ -87,60 +210,23 @@ pub fn run_inference(
     let mut pos = n_prompt as i32;
 
     for _ in 0..max_tokens {
-        // Sample from logits
         let logits = ctx.get_logits_ith((batch.n_tokens() - 1) as i32);
-
-        // Simple temperature sampling
-        let next_token = if temperature <= 0.0 || temperature == 1.0 {
-            // Greedy: argmax
-            logits
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| LlamaToken::new(i as i32))
-                .unwrap_or(eos)
-        } else {
-            // Temperature sampling (simplified — use logit scaling)
-            let scaled: Vec<f32> = logits.iter().map(|&l| l / temperature).collect();
-            let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let exp: Vec<f32> = scaled.iter().map(|&l| (l - max_val).exp()).collect();
-            let sum: f32 = exp.iter().sum();
-            let probs: Vec<f32> = exp.iter().map(|&e| e / sum).collect();
-
-            // Random sample
-            let r: f32 = {
-                use std::time::SystemTime;
-                let nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .subsec_nanos();
-                (nanos as f32) / (u32::MAX as f32)
-            };
-            let mut cumsum = 0.0f32;
-            let mut picked = 0;
-            for (i, &p) in probs.iter().enumerate() {
-                cumsum += p;
-                if cumsum >= r {
-                    picked = i;
-                    break;
-                }
-            }
-            LlamaToken::new(picked as i32)
-        };
+        let next_token = sample_next_token(logits, eos, temperature, top_k, top_p);
 
         // Check EOS
         if model.is_eog_token(next_token) {
             break;
         }
 
-        // Decode token to text
+        // Decode token to text and send via callback
         if let Ok(piece) = model.token_to_str(
             next_token,
             #[allow(deprecated)]
             llama_cpp_2::model::Special::Tokenize,
         ) {
-            print!("{piece}");
-            std::io::stdout().flush().ok();
+            if !on_token(piece) {
+                break; // receiver signalled stop
+            }
         }
 
         generated.push(next_token);
@@ -200,8 +286,21 @@ mod tests {
 
         eprintln!("  Loading model via llama.cpp...");
         let t0 = std::time::Instant::now();
-        let result = run_inference(&model_path, "The capital of France is", 20, 0.0)
-            .expect("inference failed");
+        let (backend, model) = load_model(&model_path).expect("model load failed");
+        let result = run_inference_streaming(
+            &backend,
+            &model,
+            "The capital of France is",
+            20,
+            0.0,
+            0,
+            1.0,
+            |piece| {
+                eprint!("{piece}");
+                true
+            },
+        )
+        .expect("inference failed");
         let total = t0.elapsed().as_secs_f64();
 
         let tps = if result.decode_ms > 0.0 {
