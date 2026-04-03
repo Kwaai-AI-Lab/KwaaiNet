@@ -48,6 +48,7 @@ Today, a KwaaiNet node can:
 - Run **distributed inference across multiple machines** with session-pinned peer paths that keep KV-caches coherent, automatic gap-filling, and graceful failover when peers go offline.
 - Download models selectively with `kwaainet shard download --start-block N --blocks M` — fetch only the weight files needed for your block range (10x reduction for large models).
 - **Dual inference backends**: llama.cpp with Metal GPU for 30+ tok/s on Apple Silicon (GGUF models); candle with CUDA for distributed block sharding on Linux.
+- **llama.cpp fast path**: when a Mac node hosts the full model and a GGUF file is available, the OpenAI API and benchmark automatically bypass the distributed shard engine and use llama.cpp with Metal — delivering 36+ tok/s instead of ~5 tok/s on CPU. Auto-detected from Ollama, `--ollama-model`, `--gguf-path`, or `~/.kwaainet/models/`.
 - Pre-form **inference circuits** (`kwaainet shard circuit create`) for stable, reusable peer paths across multiple chat completions.
 - Auto-detect local models and network state to smart-select what to serve, and appear on the public map when properly configured at [map.kwaai.ai](https://map.kwaai.ai).
 
@@ -132,6 +133,15 @@ On Linux and Windows machines with an NVIDIA GPU, the installer automatically de
 kwaainet benchmark --gpu
 ```
 
+**Apple Silicon (Metal):**
+
+On macOS with a GGUF model available (via Ollama or `~/.kwaainet/models/`), the benchmark and API server automatically use llama.cpp with Metal GPU acceleration:
+
+```bash
+ollama pull llama3.1:8b    # download a GGUF model
+kwaainet benchmark         # auto-detects GGUF → 36+ tok/s via Metal
+```
+
 To check how many model blocks your hardware can serve:
 
 ```bash
@@ -208,7 +218,11 @@ Pinned path:
 
 Add `--stats` to see per-token timing breakdown (prefill, decode, throughput). For local-only inference without networking: `kwaainet shard run "prompt" --local`.
 
-On Apple Silicon Macs with a GGUF model, local inference uses llama.cpp with Metal GPU acceleration (~30 tok/s). Build with `--features llama-cpp` to enable.
+On Apple Silicon Macs with a GGUF model (Ollama or `~/.kwaainet/models/`), inference automatically uses llama.cpp with Metal GPU acceleration (36+ tok/s). The shard API also supports this fast path:
+
+```bash
+kwaainet shard api --port 8080 --ollama-model llama3.1:8b
+```
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
 
