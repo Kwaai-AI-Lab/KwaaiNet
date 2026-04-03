@@ -327,6 +327,11 @@ jobs:
           # Go
           curl -sSfL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz | tar -C /usr/local -xzf -
           echo "/usr/local/go/bin" >> $GITHUB_PATH
+          # GCC 12 — manylinux ships GCC 14 but CUDA 12.6 nvcc only supports up to GCC 13
+          dnf install -y -q gcc-toolset-12-gcc gcc-toolset-12-gcc-c++
+          echo "NVCC_CCBIN=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
+          echo "CC=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
+          echo "CXX=/opt/rh/gcc-toolset-12/root/usr/bin/g++" >> $GITHUB_ENV
           # CUDA toolkit (RHEL 8 repo)
           dnf install -y -q 'dnf-command(config-manager)'
           dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
