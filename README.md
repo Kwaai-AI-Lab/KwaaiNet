@@ -155,13 +155,14 @@ This generates `~/.kwaainet/identity.key` (Ed25519 keypair) and creates a defaul
 Start the node:
 
 ```bash
-kwaainet start --daemon
+kwaainet start --daemon --shard
 ```
 
 The node will:
 
 - Connect to bootstrap peers and announce itself on the DHT.
-- Load or download model shards (depending on your configuration).
+- Auto-detect available hardware and serve the optimal block range for your machine.
+- Load or download the required model shards.
 - Expose an HTTP API compatible with the OpenAI chat-completion interface.
 
 ### 3. Call the OpenAI-compatible API
