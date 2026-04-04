@@ -272,11 +272,11 @@ Metal decode is 130s/token while CPU is 0.2s/token. Prefill is the opposite (Met
 
 ### Phase 0 — Eve operator CLI (KwaaiNet repo)
 
-- [ ] **`kwaainet storage init` command** — provision local PostgreSQL+pgvector, create database, download PHE binary, run migrations, save `StorageConfig` to `~/.kwaainet/config.yaml`. New file: `storage.rs`. Follow `setup.rs` pattern for dependency installation. macOS: `brew install postgresql@17 pgvector`. Linux: apt equivalent.
-- [ ] **`StorageConfig` in config.rs** — add `storage: Option<StorageConfig>` to `KwaaiNetConfig` with fields: `pg_url`, `data_path`, `capacity_gb`, `pg_port` (default 5433).
-- [ ] **`kwaainet storage status/start/stop/destroy`** — PG lifecycle management commands. `status` shows disk usage, tenant count, capacity remaining.
+- [x] **`kwaainet storage init` command** — provision local PostgreSQL+pgvector, create database, save `StorageConfig` to `~/.kwaainet/config.yaml`. New file: `storage.rs`. Detects PG via Homebrew paths, validates pgvector version match, idempotent.
+- [x] **`StorageConfig` in config.rs** — add `storage: Option<StorageConfig>` to `KwaaiNetConfig` with fields: `pg_url`, `data_path`, `capacity_gb`, `pg_port` (default 5433).
+- [x] **`kwaainet storage status/start/stop/destroy`** — PG lifecycle management commands. `status` shows DB size, tenant count (vector tables), VPK health. `destroy` with confirmation prompt.
 - [ ] **PG+PHE lifecycle in `kwaainet start/stop`** — when `storage` config exists, start/stop PostgreSQL and PHE alongside p2pd. Wire into `node.rs` daemon lifecycle.
-- [ ] **`Storage(StorageArgs)` in cli.rs + main.rs** — add `Storage` command variant with `Init/Status/Start/Stop/Destroy` subcommands.
+- [x] **`Storage(StorageArgs)` in cli.rs + main.rs** — add `Storage` command variant with `Init/Status/Start/Stop/Destroy` subcommands.
 
 ### Phase 1 — Database migration for multi-tenancy (PHE repo)
 

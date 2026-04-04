@@ -47,6 +47,11 @@ use clap::{Args, Parser, Subcommand};
   shard serve --blocks 28                  shard serve --start-block 28 --blocks 4
   shard chain --total-blocks 32            # verify full coverage
 
+─── Storage fabric (host encrypted vectors for the network) ─────────
+  kwaainet storage init --capacity-gb 10  provision PostgreSQL+pgvector
+  kwaainet storage status                 show PG health and tenants
+  kwaainet vpk status                     VPK health and DHT status
+
 ─── OpenAI-compatible API ────────────────────────────────────────────
   kwaainet shard api --port 8080
   curl http://localhost:8080/v1/chat/completions \\
@@ -124,6 +129,9 @@ pub enum Command {
 
     /// Manage VPK (Virtual Private Knowledge) vector database integration
     Vpk(VpkArgs),
+
+    /// Manage the local storage fabric (Eve role — host encrypted vectors for the network)
+    Storage(StorageArgs),
 
     /// Uninstall KwaaiNet — stop the node, remove all data, and delete binaries
     Uninstall(UninstallArgs),
@@ -469,6 +477,58 @@ pub enum VpkAction {
         /// Knowledge base identifier
         #[arg(long, value_name = "NAME")]
         kb_id: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// storage
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct StorageArgs {
+    #[command(subcommand)]
+    pub action: StorageAction,
+}
+
+#[derive(Subcommand)]
+pub enum StorageAction {
+    /// Initialize storage: install PostgreSQL+pgvector, create database, save config
+    Init {
+        /// Maximum storage capacity to offer in GB
+        #[arg(long, default_value = "5")]
+        capacity_gb: f64,
+
+        /// Directory for PostgreSQL data files
+        #[arg(long, value_name = "PATH")]
+        data_path: Option<String>,
+
+        /// VPK API port
+        #[arg(long, default_value = "7432")]
+        port: u16,
+
+        /// Public endpoint to advertise on DHT (omit for local-only)
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+
+        /// PostgreSQL port (avoid 5432 to not conflict with system PG)
+        #[arg(long, default_value = "5433")]
+        pg_port: u16,
+    },
+
+    /// Show storage health, disk usage, tenant count, and capacity
+    Status,
+
+    /// Start the managed PostgreSQL instance
+    Start,
+
+    /// Stop the managed PostgreSQL instance
+    Stop,
+
+    /// Remove all storage data and configuration (destructive)
+    Destroy {
+        /// Skip the confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 

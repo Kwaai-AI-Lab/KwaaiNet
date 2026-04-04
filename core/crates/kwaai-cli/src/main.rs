@@ -19,6 +19,7 @@ mod rebalancer;
 mod service;
 mod setup;
 mod shard_api;
+mod storage;
 mod shard_cmd;
 mod throughput;
 mod uninstall;
@@ -1297,6 +1298,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Vpk(args) => {
             vpk::run(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // storage
+        // -------------------------------------------------------------------
+        Command::Storage(args) => {
+            storage::run(args).await?;
         }
 
         // -------------------------------------------------------------------

@@ -112,6 +112,13 @@ pub struct KwaaiNetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpk_local_port: Option<u16>,
 
+    // ── Storage fabric (Eve role) ──────────────────────────────────────────────
+    /// Local storage configuration for Eve role (multi-tenant vector DB).
+    /// Set by `kwaainet storage init`. When present, `kwaainet start` also
+    /// manages a local PostgreSQL instance and the PHE/VPK binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageConfig>,
+
     // ── Block rebalancing ─────────────────────────────────────────────────────
     /// Enable periodic block rebalancing (only active with `shard serve --auto`).
     /// When true, the shard server periodically checks DHT coverage and moves
@@ -199,6 +206,39 @@ pub struct AlertingConfig {
 
     #[serde(default)]
     pub email: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Storage config (Eve role)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// PostgreSQL connection URL for the managed VPK database.
+    pub pg_url: String,
+
+    /// Root directory for PostgreSQL data files.
+    pub data_path: String,
+
+    /// Maximum storage capacity to offer (GB).
+    #[serde(default = "default_capacity_gb")]
+    pub capacity_gb: f64,
+
+    /// Port for the managed PostgreSQL instance (default: 5433).
+    #[serde(default = "default_pg_port")]
+    pub pg_port: u16,
+}
+
+fn default_capacity_gb() -> f64 {
+    5.0
+}
+fn default_pg_port() -> u16 {
+    5433
+}
+
+/// Return the default storage data path: `~/.kwaainet/storage`.
+pub fn storage_dir() -> PathBuf {
+    kwaainet_dir().join("storage")
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +337,7 @@ impl Default for KwaaiNetConfig {
             vpk_mode: None,
             vpk_endpoint: None,
             vpk_local_port: None,
+            storage: None,
             auto_rebalance: false,
             rebalance_interval_secs: default_rebalance_interval(),
             rebalance_min_redundancy: default_rebalance_min_redundancy(),
