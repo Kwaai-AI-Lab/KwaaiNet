@@ -243,6 +243,25 @@ This benchmark will tell us the exact threshold where HNSW pays for itself in th
 
 ---
 
+## Security: Embedding Model as Bob's Secret
+
+**Eve never embeds.** The choice of embedding model — and any fine-tuning or customization — is Bob's function and part of his security posture. If Eve knew both the embedding model and the stored vectors, she could reconstruct semantic meaning from the embeddings, undermining the privacy model.
+
+Bob's embedding pipeline:
+1. Bob selects an embedding model (e.g., all-MiniLM-L6-v2, a fine-tuned domain model, or a custom projection)
+2. Bob embeds his documents locally, producing float vectors
+3. Bob sends only the opaque float vectors to Eve (optionally encrypted via PHE)
+4. Bob embeds his queries locally using the same model before sending to Eve
+
+Eve sees only arrays of floats. She computes `cosine(query_vec, stored_vec)` and returns `(id, score)`. She has no knowledge of:
+- Which embedding model was used
+- What the dimensions represent semantically
+- What the original text was
+
+This also means different Bobs on the same Eve can use entirely different embedding models and dimensions. Eve is model-agnostic — she just does math on whatever vectors Bob gives her.
+
+---
+
 ## Security: Search by Index Protocol
 
 A key security property of the storage fabric: **Eve never returns vectors, only indices and scores.**
