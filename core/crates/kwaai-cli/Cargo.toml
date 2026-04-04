@@ -70,7 +70,7 @@ kwaai-hivemind-dht = { workspace = true }
 kwaai-p2p-daemon = { workspace = true }
 kwaai-inference = { workspace = true }
 kwaai-trust = { workspace = true }
-kwaai-storage = { path = "../kwaai-storage" }
+kwaai-storage = { path = "../kwaai-storage", optional = true }
 
 # Trust graph dependencies
 dirs = { workspace = true }
@@ -89,5 +89,6 @@ kwaai-inference = { workspace = true, features = ["metal"] }
 [features]
 cuda = ["kwaai-inference/cuda"]
 llama-cpp = ["llama-cpp-2"]
+storage = ["kwaai-storage"]
 
 

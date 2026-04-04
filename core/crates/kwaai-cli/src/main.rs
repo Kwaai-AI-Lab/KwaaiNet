@@ -19,6 +19,7 @@ mod rebalancer;
 mod service;
 mod setup;
 mod shard_api;
+#[cfg(feature = "storage")]
 mod storage;
 mod shard_cmd;
 mod throughput;
@@ -1301,10 +1302,15 @@ async fn main() -> Result<()> {
         }
 
         // -------------------------------------------------------------------
-        // storage
+        // storage (requires --features storage)
         // -------------------------------------------------------------------
+        #[cfg(feature = "storage")]
         Command::Storage(args) => {
             storage::run(args).await?;
+        }
+        #[cfg(not(feature = "storage"))]
+        Command::Storage(_) => {
+            print_error("Storage support not compiled. Rebuild with: cargo build --features storage");
         }
 
         // -------------------------------------------------------------------
