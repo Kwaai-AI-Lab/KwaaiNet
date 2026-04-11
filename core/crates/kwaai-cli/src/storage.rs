@@ -1,11 +1,9 @@
 //! `kwaainet storage` — manage the local storage fabric (Eve role).
 //!
-//! Provisions a local PostgreSQL+pgvector instance, creates the VPK database,
-//! and configures the node to offer encrypted vector storage to the network.
+//! Validates an operator-supplied PostgreSQL DSN, enables pgvector, runs schema
+//! migrations, and configures the node to offer encrypted vector storage to the network.
 
-use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
-use std::process::Command as Cmd;
+use anyhow::{Context, Result};
 
 use crate::cli::{StorageAction, StorageArgs};
 use crate::config::{KwaaiNetConfig, StorageConfig};
@@ -14,12 +12,11 @@ use crate::display::*;
 pub async fn run(args: StorageArgs) -> Result<()> {
     match args.action {
         StorageAction::Init {
+            pg_url,
             capacity_gb,
-            data_path,
             port,
             endpoint,
-            pg_port,
-        } => init(capacity_gb, data_path, port, endpoint, pg_port).await,
+        } => init(pg_url, capacity_gb, port, endpoint).await,
         StorageAction::Status => status().await,
         StorageAction::Serve => serve().await,
         StorageAction::Start => start(),
@@ -33,132 +30,29 @@ pub async fn run(args: StorageArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn init(
+    pg_url: String,
     capacity_gb: f64,
-    data_path: Option<String>,
     vpk_port: u16,
     endpoint: Option<String>,
-    pg_port: u16,
 ) -> Result<()> {
     print_box_header("Storage Fabric — Init");
 
-    let data_dir = match data_path {
-        Some(p) => expand_tilde(&p),
-        None => crate::config::storage_dir(),
-    };
-    let pgdata = data_dir.join("pgdata");
+    // 1. Validate connection --------------------------------------------------
+    println!("  [1/3] Validating PostgreSQL connection…");
+    let db = kwaai_storage::StorageDb::connect(&pg_url)
+        .await
+        .context("Cannot connect to PostgreSQL — check the DSN and ensure the server is running")?;
+    println!("         Connected");
 
-    // 1. Check for PostgreSQL -------------------------------------------------
-    println!("  [1/6] Checking PostgreSQL…");
-    let (initdb, pg_ctl, createdb, psql) = find_pg_binaries()?;
-    let pg_version = pg_version_string(&initdb);
-    println!("         {}", pg_version);
+    // 2. Enable pgvector + run migrations ------------------------------------
+    println!("  [2/3] Enabling pgvector and applying schema…");
+    db.migrate()
+        .await
+        .context("Schema migration failed — ensure the connecting user has CREATE EXTENSION privilege")?;
+    println!("         pgvector enabled, schema ready");
 
-    // 2. Check for pgvector extension -----------------------------------------
-    println!("  [2/6] Checking pgvector extension…");
-    check_pgvector_available(&psql, pg_port)?;
-
-    // 3. Init data directory --------------------------------------------------
-    println!("  [3/6] Initializing data directory…");
-    std::fs::create_dir_all(&data_dir)
-        .with_context(|| format!("creating {}", data_dir.display()))?;
-
-    if pgdata.join("PG_VERSION").exists() {
-        println!("         Already initialized at {}", pgdata.display());
-    } else {
-        run_cmd(
-            Cmd::new(&initdb)
-                .arg("--pgdata")
-                .arg(&pgdata)
-                .arg("--auth=trust")
-                .arg("--no-locale")
-                .arg("--encoding=UTF8"),
-            "initdb",
-        )?;
-        // Configure port + listen address
-        let conf_path = pgdata.join("postgresql.conf");
-        let mut conf = std::fs::read_to_string(&conf_path).unwrap_or_default();
-        conf.push_str(&format!(
-            "\n# KwaaiNet storage fabric\nport = {}\nlisten_addresses = 'localhost'\n",
-            pg_port
-        ));
-        std::fs::write(&conf_path, conf)?;
-        println!("         Created at {}", pgdata.display());
-    }
-
-    // 4. Start PostgreSQL -----------------------------------------------------
-    println!("  [4/6] Starting PostgreSQL on port {}…", pg_port);
-    let log_file = crate::config::log_dir().join("postgres.log");
-    std::fs::create_dir_all(log_file.parent().unwrap())?;
-
-    if pg_is_running(&pg_ctl, &pgdata) {
-        println!("         Already running");
-    } else {
-        run_cmd(
-            Cmd::new(&pg_ctl)
-                .arg("start")
-                .arg("-D")
-                .arg(&pgdata)
-                .arg("-l")
-                .arg(&log_file)
-                .arg("-w"), // wait for startup
-            "pg_ctl start",
-        )?;
-        println!("         Started (log: {})", log_file.display());
-    }
-
-    // 5. Create database + enable pgvector ------------------------------------
-    println!("  [5/6] Creating database…");
-    let db_name = "kwaainet_vpk";
-    // Check if DB already exists
-    let db_exists = Cmd::new(&psql)
-        .args([
-            "-p",
-            &pg_port.to_string(),
-            "-h",
-            "localhost",
-            "-d",
-            "postgres",
-            "-tAc",
-            &format!("SELECT 1 FROM pg_database WHERE datname='{}'", db_name),
-        ])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-        .unwrap_or(false);
-
-    if db_exists {
-        println!("         Database '{}' already exists", db_name);
-    } else {
-        run_cmd(
-            Cmd::new(&createdb)
-                .args(["-p", &pg_port.to_string(), "-h", "localhost", db_name]),
-            "createdb",
-        )?;
-        println!("         Created '{}'", db_name);
-    }
-
-    // Enable pgvector extension
-    run_cmd(
-        Cmd::new(&psql)
-            .args([
-                "-p",
-                &pg_port.to_string(),
-                "-h",
-                "localhost",
-                "-d",
-                db_name,
-                "-c",
-                "CREATE EXTENSION IF NOT EXISTS vector",
-            ]),
-        "enable pgvector",
-    )?;
-    println!("         pgvector extension enabled");
-
-    // 6. Save config ----------------------------------------------------------
-    println!("  [6/6] Saving configuration…");
-    let pg_url = format!(
-        "postgresql://localhost:{}/{}",
-        pg_port, db_name
-    );
+    // 3. Save config ----------------------------------------------------------
+    println!("  [3/3] Saving configuration…");
     let mut cfg = KwaaiNetConfig::load_or_create()?;
     cfg.vpk_enabled = true;
     cfg.vpk_mode = Some("eve".to_string());
@@ -168,9 +62,9 @@ async fn init(
     }
     cfg.storage = Some(StorageConfig {
         pg_url: pg_url.clone(),
-        data_path: data_dir.to_string_lossy().to_string(),
         capacity_gb,
-        pg_port,
+        _legacy_data_path: None,
+        _legacy_pg_port: None,
     });
     cfg.save()?;
 
@@ -179,12 +73,7 @@ async fn init(
     println!("  ┌─────────────────────────────────────────┐");
     println!("  │  Storage Fabric Initialized              │");
     println!("  ├─────────────────────────────────────────┤");
-    println!("  │  PostgreSQL: localhost:{}             │", pg_port);
-    println!("  │  Database:   {}              │", db_name);
-    println!(
-        "  │  Data path:  {}",
-        truncate_path(&data_dir.to_string_lossy(), 30)
-    );
+    println!("  │  DSN:        {}", truncate_path(&pg_url, 27));
     println!("  │  Capacity:   {:.1} GB                    │", capacity_gb);
     println!("  │  VPK port:   {}                      │", vpk_port);
     println!("  │  Mode:       Eve (storage provider)     │");
@@ -209,90 +98,73 @@ async fn status() -> Result<()> {
 
     let cfg = KwaaiNetConfig::load_or_create()?;
     let Some(ref storage) = cfg.storage else {
-        print_warning("Storage not initialized. Run: kwaainet storage init");
+        print_warning("Storage not initialized. Run: kwaainet storage init --pg-url <DSN>");
         print_separator();
         return Ok(());
     };
 
-    let pgdata = PathBuf::from(&storage.data_path).join("pgdata");
-    let (_, pg_ctl, _, psql) = find_pg_binaries()?;
-
-    // PG running?
-    let running = pg_is_running(&pg_ctl, &pgdata);
-    println!(
-        "  PostgreSQL:  {} (port {})",
-        if running { "running" } else { "stopped" },
-        storage.pg_port
-    );
-    println!("  Data path:   {}", storage.data_path);
-    println!("  Capacity:    {:.1} GB", storage.capacity_gb);
     println!("  PG URL:      {}", storage.pg_url);
+    println!("  Capacity:    {:.1} GB", storage.capacity_gb);
     println!();
 
-    if running {
-        // Query DB size
-        let output = Cmd::new(&psql)
-            .args([
-                "-p",
-                &storage.pg_port.to_string(),
-                "-h",
-                "localhost",
-                "-d",
-                "kwaainet_vpk",
-                "-tAc",
-                "SELECT pg_size_pretty(pg_database_size('kwaainet_vpk'))",
-            ])
-            .output();
-        if let Ok(out) = output {
-            let size = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !size.is_empty() {
-                println!("  DB size:     {}", size);
-            }
-        }
+    // DB connectivity + schema check -----------------------------------------
+    match kwaai_storage::StorageDb::connect(&storage.pg_url).await {
+        Ok(db) => {
+            print_success("PostgreSQL: reachable");
 
-        // Count tenant tables (eve_vectors_*)
-        let output = Cmd::new(&psql)
-            .args([
-                "-p",
-                &storage.pg_port.to_string(),
-                "-h",
-                "localhost",
-                "-d",
-                "kwaainet_vpk",
-                "-tAc",
-                "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'eve_vectors_%'",
-            ])
-            .output();
-        if let Ok(out) = output {
-            let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !count.is_empty() {
-                println!("  Tenants:     {} (vector tables)", count);
-            }
-        }
+            let client = db.client().await?;
 
-        // Check if 'tenants' table exists (PHE migration has run)
-        let output = Cmd::new(&psql)
-            .args([
-                "-p",
-                &storage.pg_port.to_string(),
-                "-h",
-                "localhost",
-                "-d",
-                "kwaainet_vpk",
-                "-tAc",
-                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'tenants'",
-            ])
-            .output();
-        if let Ok(out) = output {
-            let has_tenants = String::from_utf8_lossy(&out.stdout).trim() == "1";
-            if !has_tenants {
-                println!();
-                print_warning("PHE migrations not yet applied — start VPK to run them automatically");
+            if let Ok(rows) = client
+                .query(
+                    "SELECT pg_size_pretty(pg_database_size(current_database()))",
+                    &[],
+                )
+                .await
+            {
+                if let Some(row) = rows.first() {
+                    let size: &str = row.get(0);
+                    println!("  DB size:     {}", size);
+                }
+            }
+
+            if let Ok(rows) = client
+                .query(
+                    "SELECT count(*) FROM information_schema.tables \
+                     WHERE table_name LIKE 'eve_vectors_%'",
+                    &[],
+                )
+                .await
+            {
+                if let Some(row) = rows.first() {
+                    let count: i64 = row.get(0);
+                    println!("  Tenants:     {} (vector tables)", count);
+                }
+            }
+
+            if let Ok(rows) = client
+                .query(
+                    "SELECT count(*) FROM information_schema.tables \
+                     WHERE table_name = 'tenants'",
+                    &[],
+                )
+                .await
+            {
+                let has_tenants = rows
+                    .first()
+                    .map(|r| {
+                        let n: i64 = r.get(0);
+                        n == 1
+                    })
+                    .unwrap_or(false);
+                if !has_tenants {
+                    println!();
+                    print_warning("Storage schema not yet applied — start VPK to run migrations automatically");
+                }
             }
         }
-    } else {
-        print_warning("PostgreSQL is not running");
-        print_info("Start it: kwaainet storage start");
+        Err(e) => {
+            print_warning(&format!("PostgreSQL: not reachable — {}", e));
+        }
     }
 
     // VPK health (if port configured)
@@ -369,67 +241,32 @@ async fn serve() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn start() -> Result<()> {
-    print_box_header("Storage Fabric — Start PostgreSQL");
+    print_box_header("Storage Fabric — Start");
 
     let cfg = KwaaiNetConfig::load_or_create()?;
-    let Some(ref storage) = cfg.storage else {
-        print_warning("Storage not initialized. Run: kwaainet storage init");
+    if cfg.storage.is_none() {
+        print_warning("Storage not initialized. Run: kwaainet storage init --pg-url <DSN>");
         print_separator();
         return Ok(());
-    };
-
-    let pgdata = PathBuf::from(&storage.data_path).join("pgdata");
-    let (_, pg_ctl, _, _) = find_pg_binaries()?;
-
-    if pg_is_running(&pg_ctl, &pgdata) {
-        print_success("PostgreSQL is already running");
-    } else {
-        let log_file = crate::config::log_dir().join("postgres.log");
-        run_cmd(
-            Cmd::new(&pg_ctl)
-                .arg("start")
-                .arg("-D")
-                .arg(&pgdata)
-                .arg("-l")
-                .arg(&log_file)
-                .arg("-w"),
-            "pg_ctl start",
-        )?;
-        print_success(&format!("PostgreSQL started on port {}", storage.pg_port));
     }
 
+    print_info("Use 'kwaainet storage serve' to run the API server in the foreground.");
+    print_info("Use 'kwaainet start --daemon' to start all services including the storage API.");
     print_separator();
     Ok(())
 }
 
 fn stop() -> Result<()> {
-    print_box_header("Storage Fabric — Stop PostgreSQL");
+    print_box_header("Storage Fabric — Stop");
 
     let cfg = KwaaiNetConfig::load_or_create()?;
-    let Some(ref storage) = cfg.storage else {
-        print_warning("Storage not initialized. Run: kwaainet storage init");
+    if cfg.storage.is_none() {
+        print_warning("Storage not initialized — nothing to stop.");
         print_separator();
         return Ok(());
-    };
-
-    let pgdata = PathBuf::from(&storage.data_path).join("pgdata");
-    let (_, pg_ctl, _, _) = find_pg_binaries()?;
-
-    if !pg_is_running(&pg_ctl, &pgdata) {
-        print_success("PostgreSQL is already stopped");
-    } else {
-        run_cmd(
-            Cmd::new(&pg_ctl)
-                .arg("stop")
-                .arg("-D")
-                .arg(&pgdata)
-                .arg("-m")
-                .arg("fast"),
-            "pg_ctl stop",
-        )?;
-        print_success("PostgreSQL stopped");
     }
 
+    print_info("Use 'kwaainet stop' to stop all services including the storage API.");
     print_separator();
     Ok(())
 }
@@ -442,19 +279,15 @@ fn destroy(skip_confirm: bool) -> Result<()> {
     print_box_header("Storage Fabric — Destroy");
 
     let cfg = KwaaiNetConfig::load_or_create()?;
-    let Some(ref storage) = cfg.storage else {
+    if cfg.storage.is_none() {
         print_warning("Storage not initialized — nothing to destroy.");
         print_separator();
         return Ok(());
-    };
+    }
 
-    let data_dir = PathBuf::from(&storage.data_path);
-    let pgdata = data_dir.join("pgdata");
-
-    println!("  This will permanently delete:");
-    println!("    - PostgreSQL data at {}", pgdata.display());
-    println!("    - All tenant data and encrypted vectors");
+    println!("  This will permanently remove:");
     println!("    - Storage configuration from config.yaml");
+    println!("  (Your PostgreSQL data is untouched)");
     println!();
 
     if !skip_confirm {
@@ -468,26 +301,6 @@ fn destroy(skip_confirm: bool) -> Result<()> {
             print_separator();
             return Ok(());
         }
-    }
-
-    // Stop PG if running
-    if let Ok((_, pg_ctl, _, _)) = find_pg_binaries() {
-        if pg_is_running(&pg_ctl, &pgdata) {
-            let _ = Cmd::new(&pg_ctl)
-                .arg("stop")
-                .arg("-D")
-                .arg(&pgdata)
-                .arg("-m")
-                .arg("immediate")
-                .status();
-        }
-    }
-
-    // Remove data directory
-    if data_dir.exists() {
-        std::fs::remove_dir_all(&data_dir)
-            .with_context(|| format!("removing {}", data_dir.display()))?;
-        print_success(&format!("Removed {}", data_dir.display()));
     }
 
     // Clear storage config
@@ -505,207 +318,6 @@ fn destroy(skip_confirm: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Locate PostgreSQL binaries on PATH or common install locations.
-fn find_pg_binaries() -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
-    let bins = ["initdb", "pg_ctl", "createdb", "psql"];
-    let mut found: Vec<PathBuf> = Vec::new();
-
-    for name in &bins {
-        if let Some(p) = find_in_path(name) {
-            found.push(p);
-        } else if let Some(p) = find_in_brew(name) {
-            found.push(p);
-        } else {
-            bail!(
-                "'{}' not found. Install PostgreSQL:\n  macOS:  brew install postgresql@17\n  Linux:  sudo apt install postgresql",
-                name
-            );
-        }
-    }
-
-    Ok((
-        found[0].clone(),
-        found[1].clone(),
-        found[2].clone(),
-        found[3].clone(),
-    ))
-}
-
-/// Check if the pgvector extension is available in the PostgreSQL installation.
-fn check_pgvector_available(psql: &Path, pg_port: u16) -> Result<()> {
-    // Strategy 1: Use pg_config --sharedir to find the extension file
-    let pg_config = find_in_path("pg_config").or_else(|| find_in_brew("pg_config"));
-    if let Some(pg_config_path) = pg_config {
-        let ext_output = Cmd::new(&pg_config_path).arg("--sharedir").output();
-        if let Ok(out) = ext_output {
-            let sharedir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let vector_control = PathBuf::from(&sharedir)
-                .join("extension")
-                .join("vector.control");
-            if vector_control.exists() {
-                println!("         pgvector extension found");
-                return Ok(());
-            }
-        }
-    }
-
-    // Strategy 2: If PG is already running, check pg_available_extensions
-    let ext_check = Cmd::new(psql)
-        .args([
-            "-p",
-            &pg_port.to_string(),
-            "-h",
-            "localhost",
-            "-d",
-            "postgres",
-            "-tAc",
-            "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
-        ])
-        .output();
-    if let Ok(out) = ext_check {
-        if String::from_utf8_lossy(&out.stdout).trim() == "1" {
-            println!("         pgvector extension found");
-            return Ok(());
-        }
-    }
-
-    // Strategy 3: Scan common Homebrew share directories (pgvector may be
-    // installed for a different PG major version than the one on PATH).
-    let pg_version = get_pg_major_version(psql);
-    let bases = ["/opt/homebrew/share", "/usr/local/share"];
-    let pg_versions = ["14", "15", "16", "17", "18"];
-    for base in &bases {
-        for ver in &pg_versions {
-            for fmt in &[format!("postgresql@{}", ver), format!("postgresql{}", ver)] {
-                let candidate = PathBuf::from(base).join(fmt).join("extension").join("vector.control");
-                if candidate.exists() {
-                    // Found pgvector — check if it matches our PG version
-                    if let Some(ref our_ver) = pg_version {
-                        if our_ver != ver {
-                            print_warning(&format!(
-                                "pgvector is installed for PostgreSQL {} but you have PostgreSQL {}",
-                                ver, our_ver
-                            ));
-                            print_info(&format!(
-                                "Fix: brew install postgresql@{} (upgrade PG) or rebuild pgvector for PG {}",
-                                ver, our_ver
-                            ));
-                            bail!("pgvector/PostgreSQL version mismatch");
-                        }
-                    }
-                    println!("         pgvector extension found");
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    // Extension not found — give install instructions
-    print_warning("pgvector extension not found");
-    print_info("Install it:");
-    #[cfg(target_os = "macos")]
-    print_info("  brew install pgvector");
-    #[cfg(target_os = "linux")]
-    print_info("  sudo apt install postgresql-17-pgvector");
-    bail!("pgvector extension is required for the storage fabric");
-}
-
-/// Get the major version of the PostgreSQL installation.
-fn get_pg_major_version(psql: &Path) -> Option<String> {
-    let output = Cmd::new(psql).arg("--version").output().ok()?;
-    let version_str = String::from_utf8_lossy(&output.stdout);
-    // "psql (PostgreSQL) 16.12 (Homebrew)" → "16"
-    version_str
-        .split_whitespace()
-        .find(|s| s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
-        .and_then(|v| v.split('.').next())
-        .map(|s| s.to_string())
-}
-
-/// Check if PostgreSQL is running for the given data directory.
-fn pg_is_running(pg_ctl: &Path, pgdata: &Path) -> bool {
-    Cmd::new(pg_ctl)
-        .arg("status")
-        .arg("-D")
-        .arg(pgdata)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Get PostgreSQL version string.
-fn pg_version_string(initdb: &Path) -> String {
-    Cmd::new(initdb)
-        .arg("--version")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "PostgreSQL (unknown version)".to_string())
-}
-
-/// Run a command, returning an error with context on failure.
-fn run_cmd(cmd: &mut Cmd, label: &str) -> Result<()> {
-    let output = cmd
-        .output()
-        .with_context(|| format!("failed to run {}", label))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("{} failed: {}", label, stderr.trim());
-    }
-    Ok(())
-}
-
-/// Search PATH for a binary.
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&paths) {
-        let candidate = dir.join(name);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-/// Search common Homebrew PostgreSQL locations.
-fn find_in_brew(name: &str) -> Option<PathBuf> {
-    // Homebrew on Apple Silicon
-    for version in &["17", "16", "15", "14"] {
-        let candidate = PathBuf::from(format!(
-            "/opt/homebrew/opt/postgresql@{}/bin/{}",
-            version, name
-        ));
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    // Homebrew on Intel Mac
-    for version in &["17", "16", "15", "14"] {
-        let candidate = PathBuf::from(format!(
-            "/usr/local/opt/postgresql@{}/bin/{}",
-            version, name
-        ));
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    // Homebrew unversioned
-    let candidate = PathBuf::from(format!("/opt/homebrew/bin/{}", name));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    None
-}
-
-/// Expand `~` at the start of a path to the user's home directory.
-fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(p)
-}
 
 /// Truncate a path string for display in the summary box.
 fn truncate_path(s: &str, max: usize) -> String {

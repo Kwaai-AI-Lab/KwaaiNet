@@ -222,6 +222,10 @@ pub struct LogsArgs {
     /// Show shard server log instead of the node log
     #[arg(long)]
     pub shard: bool,
+
+    /// Show storage API log instead of the node log
+    #[arg(long)]
+    pub storage: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -492,15 +496,15 @@ pub struct StorageArgs {
 
 #[derive(Subcommand)]
 pub enum StorageAction {
-    /// Initialize storage: install PostgreSQL+pgvector, create database, save config
+    /// Initialize storage: validate DSN, enable pgvector, run schema migrations, save config
     Init {
+        /// PostgreSQL DSN provided by the operator (e.g. postgres://user:pass@host:5432/dbname)
+        #[arg(long, value_name = "DSN")]
+        pg_url: String,
+
         /// Maximum storage capacity to offer in GB
         #[arg(long, default_value = "5")]
         capacity_gb: f64,
-
-        /// Directory for PostgreSQL data files
-        #[arg(long, value_name = "PATH")]
-        data_path: Option<String>,
 
         /// VPK API port
         #[arg(long, default_value = "7432")]
@@ -509,25 +513,21 @@ pub enum StorageAction {
         /// Public endpoint to advertise on DHT (omit for local-only)
         #[arg(long, value_name = "URL")]
         endpoint: Option<String>,
-
-        /// PostgreSQL port (avoid 5432 to not conflict with system PG)
-        #[arg(long, default_value = "5433")]
-        pg_port: u16,
     },
 
-    /// Show storage health, disk usage, tenant count, and capacity
+    /// Show storage health, DB connectivity, tenant count, and capacity
     Status,
 
     /// Start the storage API server (runs in foreground)
     Serve,
 
-    /// Start the managed PostgreSQL instance
+    /// Start the storage API HTTP server
     Start,
 
-    /// Stop the managed PostgreSQL instance
+    /// Stop the storage API HTTP server
     Stop,
 
-    /// Remove all storage data and configuration (destructive)
+    /// Remove storage configuration (does not touch the external PostgreSQL)
     Destroy {
         /// Skip the confirmation prompt
         #[arg(long, short = 'y')]

@@ -114,8 +114,8 @@ pub struct KwaaiNetConfig {
 
     // ── Storage fabric (Eve role) ──────────────────────────────────────────────
     /// Local storage configuration for Eve role (multi-tenant vector DB).
-    /// Set by `kwaainet storage init`. When present, `kwaainet start` also
-    /// manages a local PostgreSQL instance and the PHE/VPK binary.
+    /// Set by `kwaainet storage init --pg-url <DSN>`. When present,
+    /// `kwaainet start` also manages the storage API process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<StorageConfig>,
 
@@ -214,31 +214,22 @@ pub struct AlertingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// PostgreSQL connection URL for the managed VPK database.
+    /// PostgreSQL DSN provided by the operator.
     pub pg_url: String,
-
-    /// Root directory for PostgreSQL data files.
-    pub data_path: String,
 
     /// Maximum storage capacity to offer (GB).
     #[serde(default = "default_capacity_gb")]
     pub capacity_gb: f64,
 
-    /// Port for the managed PostgreSQL instance (default: 5433).
-    #[serde(default = "default_pg_port")]
-    pub pg_port: u16,
+    // Ignored fields for upgrading from older configs that had these keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub _legacy_data_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub _legacy_pg_port: Option<u16>,
 }
 
 fn default_capacity_gb() -> f64 {
     5.0
-}
-fn default_pg_port() -> u16 {
-    5433
-}
-
-/// Return the default storage data path: `~/.kwaainet/storage`.
-pub fn storage_dir() -> PathBuf {
-    kwaainet_dir().join("storage")
 }
 
 // ---------------------------------------------------------------------------

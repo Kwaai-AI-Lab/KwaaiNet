@@ -17,14 +17,14 @@ KwaaiNet's compute layer (block-sharded inference) is shipped. The storage fabri
 ```
   Bob (Data Owner)                    Eve (Storage Host)
   ┌──────────────┐                    ┌──────────────────────┐
-  │  PHE binary   │                    │  PHE binary (Eve)    │
+  │  PHE binary   │                    │  kwaainet (Eve role) │
   │  ┌──────────┐ │    encrypted      │  ┌────────────────┐  │
   │  │ Encrypt  │ │───vectors────────▶│  │  PGVector       │  │
   │  │ Scramble │ │    HTTP API       │  │  (per-tenant    │  │
   │  │ Fan-out  │ │◀──scores─────────│  │   HNSW tables)  │  │
   │  └──────────┘ │                    │  └────────────────┘  │
   │  PostgreSQL   │                    │  PostgreSQL          │
-  │  (plaintext)  │                    │  (encrypted only)    │
+  │  (plaintext)  │                    │  (operator-managed)  │
   └──────────────┘                    └──────────────────────┘
          │                                      │
          └──── KwaaiNet DHT (discovery) ────────┘
@@ -45,7 +45,7 @@ KwaaiNet's compute layer (block-sharded inference) is shipped. The storage fabri
 | Eve vector DB backend | **PGVector** | Most memory-efficient (9.9GB), most consistent (CV=1.4%), HNSW+IVFFlat. Sweet spot 10k–500k vectors/tenant. Reuses existing PHE PostgreSQL dependency. |
 | Tenant isolation | **Per-tenant PGVector tables** | `eve_vectors_{tenant_hex8}` with individual HNSW indexes. No cross-tenant FKs. Clean capacity tracking via `pg_total_relation_size()`. |
 | PHE integration model | **Separate binary** | PHE stays in its own repo. KwaaiNet manages PG lifecycle and discovers/advertises PHE via DHT. Same pattern as p2pd. |
-| PG provisioning | **KwaaiNet-managed** | `kwaainet storage init` installs PG+pgvector, creates a dedicated data dir, runs migrations. Operators don't need to be DBAs. |
+| PG provisioning | **Operator-provided DSN** | `kwaainet storage init --pg-url <DSN>` validates the connection, enables pgvector, and runs schema migrations. Operators supply their own PostgreSQL instance. |
 | Auth (Phase 1) | **PeerId + tenant_secret** | Bob registers with PeerId, Eve issues a UUID API key. Simple, functional. Designed for upgrade to Ed25519-signed requests via intent protocol. |
 | HNSW tuning | **m=16, ef_construction=64** | Optimized for 10k–500k chunks per tenant per benchmarking results. |
 | Index strategy | **Flat first, HNSW optional** | See "Index Strategy" section below. When Bob shards across many Eves, each holds a small slice where brute-force beats HNSW. |

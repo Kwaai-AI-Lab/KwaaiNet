@@ -37,6 +37,9 @@ impl StorageDb {
         client
             .batch_execute(
                 r#"
+-- pgvector extension (idempotent; requires superuser or CREATE privilege)
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- Tenants table
 CREATE TABLE IF NOT EXISTS tenants (
     tenant_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
