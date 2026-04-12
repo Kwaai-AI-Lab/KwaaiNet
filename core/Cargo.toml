@@ -17,7 +17,7 @@ members = [
 # Root package for examples
 [package]
 name = "kwaai-core"
-version = "0.3.49"
+version = "0.4.0"
 edition = "2021"
 publish = false
 
@@ -123,7 +123,7 @@ name = "query_dht_state"
 path = "examples/query_dht_state.rs"
 
 [workspace.package]
-version = "0.3.49"
+version = "0.4.0"
 
 edition = "2021"
 authors = ["Kwaai AI Lab <dev@kwaai.ai>"]
@@ -134,15 +134,15 @@ keywords = ["ai", "decentralized", "p2p", "wasm", "inference"]
 categories = ["network-programming", "wasm", "science"]
 
 [workspace.dependencies]
-kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.3.14" }
-kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.3.14" }
-kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.3.14" }
-kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.3.14" }
-kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.3.14" }
-kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.3.14" }
-kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.3.14" }
+kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.4.0" }
+kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.4.0" }
+kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.4.0" }
+kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.4.0" }
+kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.4.0" }
+kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.4.0" }
+kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.4.0" }
 kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.1.4" }
-kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.3.14" }
+kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.4.0" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
