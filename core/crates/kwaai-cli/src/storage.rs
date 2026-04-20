@@ -1,9 +1,9 @@
 //! `kwaainet storage` — manage the local storage fabric (Eve role).
 //!
-//! Validates an operator-supplied PostgreSQL DSN, enables pgvector, runs schema
-//! migrations, and configures the node to offer encrypted vector storage to the network.
+//! Uses an embedded hnsw_rs + redb backend — no PostgreSQL or Docker required.
 
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 use crate::cli::{StorageAction, StorageArgs};
 use crate::config::{KwaaiNetConfig, StorageConfig};
@@ -12,11 +12,10 @@ use crate::display::*;
 pub async fn run(args: StorageArgs) -> Result<()> {
     match args.action {
         StorageAction::Init {
-            pg_url,
             capacity_gb,
             port,
             endpoint,
-        } => init(pg_url, capacity_gb, port, endpoint).await,
+        } => init(capacity_gb, port, endpoint).await,
         StorageAction::Status => status().await,
         StorageAction::Serve => serve().await,
         StorageAction::Start => start(),
@@ -30,39 +29,32 @@ pub async fn run(args: StorageArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn init(
-    pg_url: String,
     capacity_gb: f64,
     vpk_port: u16,
     endpoint: Option<String>,
 ) -> Result<()> {
     print_box_header("Storage Fabric — Init");
 
-    // 1. Validate connection --------------------------------------------------
-    println!("  [1/3] Validating PostgreSQL connection…");
-    let db = kwaai_storage::StorageDb::connect(&pg_url)
-        .await
-        .context("Cannot connect to PostgreSQL — check the DSN and ensure the server is running")?;
-    println!("         Connected");
+    // 1. Open (or create) the embedded store -----------------------------------
+    println!("  [1/2] Opening embedded vector store…");
+    let data_dir = default_data_dir();
+    kwaai_storage::StorageDb::open(&data_dir)
+        .with_context(|| format!("cannot open embedded store at {}", data_dir.display()))?;
+    println!("         Store ready at {}", data_dir.display());
 
-    // 2. Enable pgvector + run migrations ------------------------------------
-    println!("  [2/3] Enabling pgvector and applying schema…");
-    db.migrate()
-        .await
-        .context("Schema migration failed — ensure the connecting user has CREATE EXTENSION privilege")?;
-    println!("         pgvector enabled, schema ready");
-
-    // 3. Save config ----------------------------------------------------------
-    println!("  [3/3] Saving configuration…");
+    // 2. Save config -----------------------------------------------------------
+    println!("  [2/2] Saving configuration…");
     let mut cfg = KwaaiNetConfig::load_or_create()?;
     cfg.vpk_enabled = true;
     cfg.vpk_mode = Some("eve".to_string());
     cfg.vpk_local_port = Some(vpk_port);
-    if let Some(ep) = endpoint.clone() {
-        cfg.vpk_endpoint = Some(ep);
+    if let Some(ref ep) = endpoint {
+        cfg.vpk_endpoint = Some(ep.clone());
     }
     cfg.storage = Some(StorageConfig {
-        pg_url: pg_url.clone(),
+        data_dir: data_dir.to_string_lossy().into_owned(),
         capacity_gb,
+        _legacy_pg_url: None,
         _legacy_data_path: None,
         _legacy_pg_port: None,
     });
@@ -73,12 +65,15 @@ async fn init(
     println!("  ┌─────────────────────────────────────────┐");
     println!("  │  Storage Fabric Initialized              │");
     println!("  ├─────────────────────────────────────────┤");
-    println!("  │  DSN:        {}", truncate_path(&pg_url, 27));
+    println!(
+        "  │  Store:      {}│",
+        truncate_path(&data_dir.to_string_lossy(), 27)
+    );
     println!("  │  Capacity:   {:.1} GB                    │", capacity_gb);
     println!("  │  VPK port:   {}                      │", vpk_port);
     println!("  │  Mode:       Eve (storage provider)     │");
     if let Some(ref ep) = endpoint {
-        println!("  │  Endpoint:   {}", truncate_path(ep, 28));
+        println!("  │  Endpoint:   {}│", truncate_path(ep, 28));
     }
     println!("  └─────────────────────────────────────────┘");
     println!();
@@ -98,72 +93,37 @@ async fn status() -> Result<()> {
 
     let cfg = KwaaiNetConfig::load_or_create()?;
     let Some(ref storage) = cfg.storage else {
-        print_warning("Storage not initialized. Run: kwaainet storage init --pg-url <DSN>");
+        print_warning("Storage not initialized. Run: kwaainet storage init");
         print_separator();
         return Ok(());
     };
 
-    println!("  PG URL:      {}", storage.pg_url);
+    let data_dir = PathBuf::from(&storage.data_dir);
+    println!("  Store:       {}", data_dir.display());
     println!("  Capacity:    {:.1} GB", storage.capacity_gb);
     println!();
 
-    // DB connectivity + schema check -----------------------------------------
-    match kwaai_storage::StorageDb::connect(&storage.pg_url).await {
+    // Embedded store check ---------------------------------------------------
+    match kwaai_storage::StorageDb::open(&data_dir) {
         Ok(db) => {
-            print_success("PostgreSQL: reachable");
+            use kwaai_storage::TenantManager;
+            print_success("Embedded store: reachable");
 
-            let client = db.client().await?;
+            let tm = TenantManager::new(db);
+            let tenant_count = tm.count().await.unwrap_or(0);
+            let total_vectors = tm.total_vectors().await.unwrap_or(0);
+            println!("  Tenants:     {} (vector tables)", tenant_count);
+            println!("  Vectors:     {}", total_vectors);
 
-            if let Ok(rows) = client
-                .query(
-                    "SELECT pg_size_pretty(pg_database_size(current_database()))",
-                    &[],
-                )
-                .await
+            // Disk usage
+            if let Ok(db_size) = std::fs::metadata(data_dir.join("metadata.redb"))
+                .map(|m| m.len())
             {
-                if let Some(row) = rows.first() {
-                    let size: &str = row.get(0);
-                    println!("  DB size:     {}", size);
-                }
-            }
-
-            if let Ok(rows) = client
-                .query(
-                    "SELECT count(*) FROM information_schema.tables \
-                     WHERE table_name LIKE 'eve_vectors_%'",
-                    &[],
-                )
-                .await
-            {
-                if let Some(row) = rows.first() {
-                    let count: i64 = row.get(0);
-                    println!("  Tenants:     {} (vector tables)", count);
-                }
-            }
-
-            if let Ok(rows) = client
-                .query(
-                    "SELECT count(*) FROM information_schema.tables \
-                     WHERE table_name = 'tenants'",
-                    &[],
-                )
-                .await
-            {
-                let has_tenants = rows
-                    .first()
-                    .map(|r| {
-                        let n: i64 = r.get(0);
-                        n == 1
-                    })
-                    .unwrap_or(false);
-                if !has_tenants {
-                    println!();
-                    print_warning("Storage schema not yet applied — start VPK to run migrations automatically");
-                }
+                println!("  DB size:     {:.1} KB", db_size as f64 / 1024.0);
             }
         }
         Err(e) => {
-            print_warning(&format!("PostgreSQL: not reachable — {}", e));
+            print_warning(&format!("Embedded store: not reachable — {}", e));
         }
     }
 
@@ -211,19 +171,17 @@ async fn serve() -> Result<()> {
 
     let vpk_port = cfg.vpk_local_port.unwrap_or(7432);
     let bind_addr = format!("0.0.0.0:{}", vpk_port);
+    let data_dir = PathBuf::from(&storage.data_dir);
 
     print_box_header("Storage Fabric — API Server");
-    println!("  PG URL:   {}", storage.pg_url);
+    println!("  Store:    {}", data_dir.display());
     println!("  Bind:     {}", bind_addr);
     println!("  Capacity: {:.1} GB", storage.capacity_gb);
     println!();
 
-    // Connect to PG and run migrations
-    let db = kwaai_storage::StorageDb::connect(&storage.pg_url).await?;
-    db.migrate().await?;
-    print_success("Database connected, migrations applied");
+    let db = kwaai_storage::StorageDb::open(&data_dir)?;
+    print_success("Embedded store opened, indices loaded");
 
-    // Get peer ID for health endpoint
     let peer_id = crate::identity::NodeIdentity::load_or_create()
         .map(|id| id.peer_id.to_base58())
         .unwrap_or_else(|_| "unknown".to_string());
@@ -242,14 +200,12 @@ async fn serve() -> Result<()> {
 
 fn start() -> Result<()> {
     print_box_header("Storage Fabric — Start");
-
     let cfg = KwaaiNetConfig::load_or_create()?;
     if cfg.storage.is_none() {
-        print_warning("Storage not initialized. Run: kwaainet storage init --pg-url <DSN>");
+        print_warning("Storage not initialized. Run: kwaainet storage init");
         print_separator();
         return Ok(());
     }
-
     print_info("Use 'kwaainet storage serve' to run the API server in the foreground.");
     print_info("Use 'kwaainet start --daemon' to start all services including the storage API.");
     print_separator();
@@ -258,14 +214,12 @@ fn start() -> Result<()> {
 
 fn stop() -> Result<()> {
     print_box_header("Storage Fabric — Stop");
-
     let cfg = KwaaiNetConfig::load_or_create()?;
     if cfg.storage.is_none() {
         print_warning("Storage not initialized — nothing to stop.");
         print_separator();
         return Ok(());
     }
-
     print_info("Use 'kwaainet stop' to stop all services including the storage API.");
     print_separator();
     Ok(())
@@ -285,9 +239,15 @@ fn destroy(skip_confirm: bool) -> Result<()> {
         return Ok(());
     }
 
+    let data_dir = cfg
+        .storage
+        .as_ref()
+        .map(|s| s.data_dir.clone())
+        .unwrap_or_default();
+
     println!("  This will permanently remove:");
     println!("    - Storage configuration from config.yaml");
-    println!("  (Your PostgreSQL data is untouched)");
+    println!("    - Embedded store at: {}", data_dir);
     println!();
 
     if !skip_confirm {
@@ -303,7 +263,16 @@ fn destroy(skip_confirm: bool) -> Result<()> {
         }
     }
 
-    // Clear storage config
+    // Delete the embedded store directory
+    if !data_dir.is_empty() {
+        let path = PathBuf::from(&data_dir);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("removing store at {}", path.display()))?;
+            print_success(&format!("Store removed: {}", path.display()));
+        }
+    }
+
     let mut cfg = KwaaiNetConfig::load_or_create()?;
     cfg.storage = None;
     cfg.vpk_enabled = false;
@@ -319,11 +288,14 @@ fn destroy(skip_confirm: bool) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Truncate a path string for display in the summary box.
+fn default_data_dir() -> PathBuf {
+    crate::config::kwaainet_dir().join("storage")
+}
+
 fn truncate_path(s: &str, max: usize) -> String {
     if s.len() <= max {
-        format!("{:<width$}│", s, width = max)
+        format!("{:<width$}", s, width = max)
     } else {
-        format!("…{:<width$}│", &s[s.len() - max + 1..], width = max - 1)
+        format!("…{:<width$}", &s[s.len() - max + 1..], width = max - 1)
     }
 }

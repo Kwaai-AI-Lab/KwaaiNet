@@ -1,64 +1,42 @@
-//! Per-tenant vector storage backed by PGVector.
-//!
-//! Each tenant gets a dedicated table (`eve_vectors_{tenant_hex8}`) with
-//! an HNSW index for fast cosine similarity search.
+//! Per-tenant vector storage backed by hnsw_rs (in-memory) + redb (persistence).
 
 use anyhow::{Context, Result};
-use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::db::StorageDb;
-use crate::tenant::vector_table_name;
+use crate::db::{DbInner, StorageDb, VECTORS_TABLE, f32s_to_bytes, vector_key};
 
-/// A single search result: scrambled ID + similarity score.
+/// A single search result: opaque doc ID + cosine similarity score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub id: i64,
     pub score: f64,
 }
 
-/// Per-tenant PGVector storage.
+/// Per-tenant vector store (hnsw_rs + redb).
 #[derive(Clone)]
 pub struct VectorStore {
-    db: StorageDb,
+    store: StorageDb,
 }
 
 impl VectorStore {
-    pub fn new(db: StorageDb) -> Self {
-        Self { db }
+    pub fn new(store: StorageDb) -> Self {
+        Self { store }
     }
 
-    /// Ensure the per-tenant vector table and HNSW index exist.
-    pub async fn ensure_table(&self, tenant_id: Uuid, dimension: usize) -> Result<()> {
-        let client = self.db.client().await?;
-        let table = vector_table_name(tenant_id);
+    fn inner(&self) -> &DbInner {
+        &self.store.inner
+    }
 
-        // Create table + HNSW index (idempotent)
-        client
-            .batch_execute(&format!(
-                r#"
-CREATE TABLE IF NOT EXISTS {table} (
-    id          BIGINT PRIMARY KEY,
-    embedding   VECTOR({dimension}) NOT NULL,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_{table}_hnsw
-    ON {table} USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-"#,
-            ))
-            .await
-            .with_context(|| format!("creating vector table {}", table))?;
-
+    /// No-op: index is created by TenantManager::create. Kept for API compatibility.
+    pub async fn ensure_table(&self, _tenant_id: Uuid, _dimension: usize) -> Result<()> {
         Ok(())
     }
 
     /// Upload a batch of vectors for a tenant.
     ///
-    /// Each vector is a `(id, embedding)` pair. IDs are opaque to Eve —
-    /// they may be scrambled document IDs from Bob's encryption pipeline,
-    /// or plain document IDs in the no-encryption case.
+    /// Each entry is `(doc_id, embedding)`. Doc IDs are opaque to Eve — they
+    /// are the scrambled/plain document IDs from Bob's pipeline.
     pub async fn upload(
         &self,
         tenant_id: Uuid,
@@ -68,63 +46,63 @@ CREATE INDEX IF NOT EXISTS idx_{table}_hnsw
             return Ok(0);
         }
 
-        let client = self.db.client().await?;
-        let table = vector_table_name(tenant_id);
+        // Verify the tenant's index exists.
+        let arc = {
+            let indices = self.inner().indices.read().unwrap();
+            indices
+                .get(&tenant_id)
+                .cloned()
+                .context("tenant not found")?
+        };
 
-        // Prepared statement for upsert — executed once per vector.
-        // For large batches a COPY approach would be faster, but this is
-        // simpler and sufficient for typical upload sizes (100s of vectors).
-        let stmt = client
-            .prepare(&format!(
-                "INSERT INTO {} (id, embedding) VALUES ($1, $2) \
-                 ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding, created_at = NOW()",
-                table
-            ))
-            .await
-            .context("prepare upload statement")?;
-
-        let mut uploaded = 0usize;
-        for (id, embedding) in vectors {
-            let vec = Vector::from(embedding.clone());
-            client.execute(&stmt, &[id, &vec]).await.context("insert vector")?;
-            uploaded += 1;
+        // Persist to redb (one write transaction for the whole batch).
+        {
+            let wtxn = self.inner().db.begin_write()?;
+            {
+                let mut table = wtxn.open_table(VECTORS_TABLE)?;
+                for (doc_id, embedding) in vectors {
+                    let key = vector_key(tenant_id, *doc_id);
+                    let bytes = f32s_to_bytes(embedding);
+                    table.insert(key.as_ref(), bytes.as_slice())?;
+                }
+            }
+            wtxn.commit()?;
         }
 
-        Ok(uploaded)
+        // Update in-memory HNSW index.
+        {
+            let mut index = arc.lock().unwrap();
+            for (doc_id, embedding) in vectors {
+                index.insert(*doc_id, embedding);
+            }
+        }
+
+        Ok(vectors.len())
     }
 
-    /// Search for the top-K most similar vectors using cosine distance.
+    /// ANN search for the top-K most similar vectors (cosine similarity).
     pub async fn search(
         &self,
         tenant_id: Uuid,
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<SearchResult>> {
-        let client = self.db.client().await?;
-        let table = vector_table_name(tenant_id);
-        let query_vec = Vector::from(query.to_vec());
+        let arc = {
+            let indices = self.inner().indices.read().unwrap();
+            indices
+                .get(&tenant_id)
+                .cloned()
+                .context("tenant not found")?
+        };
 
-        let rows = client
-            .query(
-                &format!(
-                    "SELECT id, 1 - (embedding <=> $1) AS score FROM {} ORDER BY embedding <=> $1 LIMIT $2",
-                    table
-                ),
-                &[&query_vec, &(top_k as i64)],
-            )
-            .await
-            .context("vector search")?;
-
-        Ok(rows
-            .iter()
-            .map(|r| SearchResult {
-                id: r.get(0),
-                score: r.get(1),
-            })
+        let results = arc.lock().unwrap().search(query, top_k);
+        Ok(results
+            .into_iter()
+            .map(|(id, score)| SearchResult { id, score })
             .collect())
     }
 
-    /// Delete vectors by IDs.
+    /// Delete vectors by doc ID.
     pub async fn delete(
         &self,
         tenant_id: Uuid,
@@ -134,39 +112,47 @@ CREATE INDEX IF NOT EXISTS idx_{table}_hnsw
             return Ok(0);
         }
 
-        let client = self.db.client().await?;
-        let table = vector_table_name(tenant_id);
+        let arc = {
+            let indices = self.inner().indices.read().unwrap();
+            indices
+                .get(&tenant_id)
+                .cloned()
+                .context("tenant not found")?
+        };
 
-        let n = client
-            .execute(
-                &format!("DELETE FROM {} WHERE id = ANY($1)", table),
-                &[&ids],
-            )
-            .await
-            .context("delete vectors")?;
-
-        Ok(n as usize)
-    }
-
-    /// Count vectors for a tenant.
-    pub async fn count(&self, tenant_id: Uuid) -> Result<i64> {
-        let client = self.db.client().await?;
-        let table = vector_table_name(tenant_id);
-
-        // If table doesn't exist yet, return 0
-        let exists = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
-                &[&table],
-            )
-            .await?;
-        if !exists.get::<_, bool>(0) {
-            return Ok(0);
+        // Remove from redb.
+        {
+            let wtxn = self.inner().db.begin_write()?;
+            {
+                let mut table = wtxn.open_table(VECTORS_TABLE)?;
+                for &doc_id in ids {
+                    let key = vector_key(tenant_id, doc_id);
+                    table.remove(key.as_ref())?;
+                }
+            }
+            wtxn.commit()?;
         }
 
-        let row = client
-            .query_one(&format!("SELECT COUNT(*) FROM {}", table), &[])
-            .await?;
-        Ok(row.get(0))
+        // Tombstone in-memory index.
+        let mut deleted = 0;
+        {
+            let mut index = arc.lock().unwrap();
+            for &doc_id in ids {
+                if index.tombstone(doc_id) {
+                    deleted += 1;
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
+    /// Count live vectors for a tenant.
+    pub async fn count(&self, tenant_id: Uuid) -> Result<i64> {
+        let indices = self.inner().indices.read().unwrap();
+        Ok(indices
+            .get(&tenant_id)
+            .map(|arc| arc.lock().unwrap().live_count() as i64)
+            .unwrap_or(0))
     }
 }

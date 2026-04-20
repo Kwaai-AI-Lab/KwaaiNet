@@ -1,7 +1,7 @@
 //! REST API for the storage fabric.
 //!
-//! Exposes tenant management and per-tenant vector operations over HTTP.
-//! Remote Bobs call these endpoints to rent space and upload/search vectors.
+//! URL surface is unchanged — remote Bobs call the same endpoints regardless
+//! of whether the backend is PostgreSQL or the embedded hnsw_rs+redb store.
 
 use axum::{
     extract::{Path, State},
@@ -18,7 +18,6 @@ use crate::db::StorageDb;
 use crate::tenant::{TenantInfo, TenantManager, TenantStats};
 use crate::vectors::{SearchResult, VectorStore};
 
-/// Shared application state.
 struct AppState {
     tenants: TenantManager,
     vectors: VectorStore,
@@ -46,14 +45,11 @@ pub async fn run_storage_api(
         .allow_headers(Any);
 
     let app = Router::new()
-        // Health
         .route("/api/health", get(health))
-        // Tenant management
         .route("/api/tenants", post(create_tenant))
         .route("/api/tenants", get(list_tenants))
         .route("/api/tenants/:id", get(get_tenant))
         .route("/api/tenants/:id", delete(delete_tenant))
-        // Per-tenant vector operations
         .route("/api/tenants/:id/vectors", post(upload_vectors))
         .route("/api/tenants/:id/search", post(search_vectors))
         .route("/api/tenants/:id/vectors", delete(delete_vectors))
@@ -61,7 +57,6 @@ pub async fn run_storage_api(
         .with_state(state);
 
     tracing::info!("storage API listening on {}", bind_addr);
-
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -85,9 +80,8 @@ struct HealthResponse {
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let tenant_count = state.tenants.count().await.unwrap_or(0);
     let total_vectors = state.tenants.total_vectors().await.unwrap_or(0);
-
-    // Rough capacity estimate: 384-dim float64 vectors ≈ 3KB each with HNSW overhead
-    let used_gb = (total_vectors as f64 * 3.0) / 1_048_576.0;
+    // 384-dim float32 ≈ 1.5 KB per vector with HNSW overhead
+    let used_gb = (total_vectors as f64 * 1.5) / 1_048_576.0;
     let available = (state.capacity_gb - used_gb).max(0.0);
 
     Json(HealthResponse {
@@ -115,12 +109,8 @@ struct CreateTenantRequest {
     vector_dimension: usize,
 }
 
-fn default_capacity() -> i64 {
-    1024
-}
-fn default_dimension() -> usize {
-    384
-}
+fn default_capacity() -> i64 { 1024 }
+fn default_dimension() -> usize { 384 }
 
 async fn create_tenant(
     State(state): State<Arc<AppState>>,
@@ -132,14 +122,8 @@ async fn create_tenant(
             &req.peer_id,
             req.capacity_limit_mb,
             req.display_name.as_deref(),
+            req.vector_dimension,
         )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Create the vector table for this tenant
-    state
-        .vectors
-        .ensure_table(info.tenant_id, req.vector_dimension)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -222,7 +206,6 @@ async fn upload_vectors(
     Path(tenant_id): Path<Uuid>,
     Json(req): Json<UploadRequest>,
 ) -> Result<Json<UploadResponse>, (StatusCode, String)> {
-    // Verify tenant exists
     state
         .tenants
         .get(tenant_id)
@@ -252,9 +235,7 @@ struct SearchRequest {
     top_k: usize,
 }
 
-fn default_top_k() -> usize {
-    5
-}
+fn default_top_k() -> usize { 5 }
 
 #[derive(Serialize)]
 struct SearchResponse {

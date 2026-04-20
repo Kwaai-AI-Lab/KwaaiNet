@@ -3,10 +3,10 @@
 //! Each KwaaiNet node can act as an Eve (storage host), holding encrypted
 //! vectors for multiple Bobs (data owners). This crate provides:
 //!
-//! - **PGVector storage** with per-tenant HNSW-indexed tables
+//! - **Embedded HNSW storage** via hnsw_rs (pure Rust, no Docker/Postgres)
+//! - **Persistent metadata** via redb (pure Rust ACID key-value store)
 //! - **Tenant management** (create, list, delete, capacity enforcement)
 //! - **REST API** for remote Bobs to upload/search vectors
-//! - **Health endpoint** compatible with KwaaiNet's DHT advertisement
 
 pub mod api;
 pub mod db;

@@ -496,13 +496,8 @@ pub struct StorageArgs {
 
 #[derive(Subcommand)]
 pub enum StorageAction {
-    /// Initialize storage: validate DSN, enable pgvector, run schema migrations, save config
+    /// Initialize storage: create the embedded vector store, save config
     Init {
-        /// PostgreSQL DSN provided by the operator (e.g. postgres://user:pass@host:5432/dbname).
-        /// Can also be set via the PG_URL environment variable.
-        #[arg(long, value_name = "DSN", env = "PG_URL")]
-        pg_url: String,
-
         /// Maximum storage capacity to offer in GB
         #[arg(long, default_value = "5")]
         capacity_gb: f64,

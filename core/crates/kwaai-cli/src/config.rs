@@ -214,18 +214,26 @@ pub struct AlertingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// PostgreSQL DSN provided by the operator.
-    pub pg_url: String,
+    /// Directory where the embedded store (redb + HNSW indices) lives.
+    /// Defaults to ~/.kwaainet/storage/.
+    #[serde(default = "default_storage_dir")]
+    pub data_dir: String,
 
     /// Maximum storage capacity to offer (GB).
     #[serde(default = "default_capacity_gb")]
     pub capacity_gb: f64,
 
-    // Ignored fields for upgrading from older configs that had these keys.
+    // Legacy fields — ignored on read, never written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub _legacy_pg_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub _legacy_data_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub _legacy_pg_port: Option<u16>,
+}
+
+fn default_storage_dir() -> String {
+    kwaainet_dir().join("storage").to_string_lossy().into_owned()
 }
 
 fn default_capacity_gb() -> f64 {
