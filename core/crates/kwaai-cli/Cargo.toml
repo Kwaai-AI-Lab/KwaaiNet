@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Config
 serde_yaml = { workspace = true }
@@ -85,6 +85,9 @@ llama-cpp-2 = { version = "0.1", optional = true }
 # Cargo merges features from target-specific sections with the base [dependencies] entry.
 [target.'cfg(target_os = "macos")'.dependencies]
 kwaai-inference = { workspace = true, features = ["metal"] }
+
+[package.metadata.dist]
+features = ["storage"]
 
 [features]
 default = ["storage"]

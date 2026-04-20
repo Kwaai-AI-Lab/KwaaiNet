@@ -31,6 +31,9 @@ set -euo pipefail
 KWAAINET="${KWAAINET:-kwaainet}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVE_PORT="${EVE_PORT:-7432}"
+# PostgreSQL DSN for Eve's database (required on Eve side).
+# If unset, defaults to a local Docker-based pgvector instance.
+PG_URL="${PG_URL:-postgres://postgres:test@localhost:5433/kwaainet_vpk}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
@@ -88,7 +91,15 @@ run_eve() {
 
     # ── Step 1: Init storage (idempotent) ──────────────────────────────────
     step "Step 1 — Initialize storage"
-    "$KWAAINET" storage init --endpoint "http://${ip}:${EVE_PORT}"
+    if [[ -z "${PG_URL:-}" ]]; then
+        export PG_URL="postgres://postgres:test@localhost:5433/kwaainet_vpk"
+        warn "PG_URL not set — defaulting to ${PG_URL}"
+        warn "Start pgvector with: docker run -d -e POSTGRES_PASSWORD=test -p 5433:5432 pgvector/pgvector:pg16"
+    else
+        export PG_URL
+    fi
+    "$KWAAINET" storage init \
+        --endpoint "http://${ip}:${EVE_PORT}"
     pass "Storage initialized"
 
     # ── Step 2: Check storage status ───────────────────────────────────────
