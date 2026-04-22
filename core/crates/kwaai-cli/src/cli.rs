@@ -130,7 +130,7 @@ pub enum Command {
     /// Manage VPK (Virtual Private Knowledge) vector database integration
     Vpk(VpkArgs),
 
-    /// Manage the local storage fabric (Eve role — host encrypted vectors for the network)
+    /// Manage the local storage fabric (Eve role — host opaque vectors for Bob nodes on the network)
     Storage(StorageArgs),
 
     /// Uninstall KwaaiNet — stop the node, remove all data, and delete binaries
@@ -496,39 +496,42 @@ pub struct StorageArgs {
 
 #[derive(Subcommand)]
 pub enum StorageAction {
-    /// Initialize storage: create the embedded vector store, save config
+    /// One-time setup: create the embedded vector store and save config.
+    /// No Docker or PostgreSQL required — pure embedded storage.
     Init {
-        /// Maximum storage capacity to offer in GB
+        /// Storage capacity to offer to the network, in GB
         #[arg(long, default_value = "5")]
         capacity_gb: f64,
 
-        /// VPK API port
+        /// Port the storage API will listen on
         #[arg(long, default_value = "7432")]
         port: u16,
 
-        /// Path to store vector data (default: ~/.kwaainet/storage).
-        /// Use this to point to an external or secondary drive.
+        /// Directory to write vector data (default: ~/.kwaainet/storage).
+        /// Point this at an external or secondary drive for extra capacity.
         #[arg(long, value_name = "PATH")]
         data_dir: Option<std::path::PathBuf>,
 
-        /// Public endpoint to advertise on DHT (omit for local-only)
+        /// Public HTTP endpoint advertised on the DHT so Bob nodes can reach this Eve.
+        /// Omit for local-only / LAN use.
         #[arg(long, value_name = "URL")]
         endpoint: Option<String>,
     },
 
-    /// Show storage health, DB connectivity, tenant count, and capacity
+    /// Show embedded store health, tenant count, vector count, and disk usage
     Status,
 
-    /// Start the storage API server (runs in foreground)
+    /// Run the storage API server in the foreground (Ctrl+C to stop).
+    /// Use 'kwaainet start --daemon' to run everything as a background service.
     Serve,
 
-    /// Start the storage API HTTP server
+    /// Alias for 'kwaainet start --daemon' (starts storage API alongside the node)
     Start,
 
-    /// Stop the storage API HTTP server
+    /// Alias for 'kwaainet stop' (stops all services including storage API)
     Stop,
 
-    /// Remove storage configuration and delete the embedded vector store
+    /// Permanently delete all vector data and remove storage configuration
     Destroy {
         /// Skip the confirmation prompt
         #[arg(long, short = 'y')]
