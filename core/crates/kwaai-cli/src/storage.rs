@@ -174,11 +174,12 @@ async fn serve() -> Result<()> {
     let vpk_port = cfg.vpk_local_port.unwrap_or(7432);
     let bind_addr = format!("0.0.0.0:{}", vpk_port);
     let data_dir = PathBuf::from(&storage.data_dir);
+    let capacity_gb = storage.capacity_gb;
 
     print_box_header("Storage Fabric — API Server");
     println!("  Store:    {}", data_dir.display());
     println!("  Bind:     {}", bind_addr);
-    println!("  Capacity: {:.1} GB", storage.capacity_gb);
+    println!("  Capacity: {:.1} GB", capacity_gb);
     println!();
 
     let db = kwaai_storage::StorageDb::open(&data_dir)?;
@@ -188,10 +189,36 @@ async fn serve() -> Result<()> {
         .map(|id| id.peer_id.to_base58())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    print_success(&format!("Starting API on {}", bind_addr));
+    // Register the p2p relay handler so Eve can be reached without port forwarding.
+    let handler = crate::storage_rpc::make_storage_rpc_handler(
+        db.clone(),
+        capacity_gb,
+        peer_id.clone(),
+    );
+    let daemon_addr = crate::shard_cmd::daemon_socket();
+    match kwaai_p2p_daemon::P2PClient::connect(&daemon_addr).await {
+        Ok(p2p_client) => {
+            match p2p_client
+                .add_unary_handler(crate::storage_rpc::STORAGE_PROTO, handler, false)
+                .await
+            {
+                Ok(()) => print_success(&format!(
+                    "P2P relay handler registered ({})",
+                    crate::storage_rpc::STORAGE_PROTO
+                )),
+                Err(e) => print_warning(&format!("P2P handler registration failed: {e}")),
+            }
+        }
+        Err(_) => {
+            print_info("KwaaiNet node not running — P2P relay unavailable (HTTP-only mode)");
+            print_info("Start the node first for relay access: kwaainet start --daemon");
+        }
+    }
+
+    print_success(&format!("Starting HTTP API on {}", bind_addr));
     print_separator();
 
-    kwaai_storage::run_storage_api(db, &bind_addr, storage.capacity_gb, peer_id).await?;
+    kwaai_storage::run_storage_api(db, &bind_addr, capacity_gb, peer_id).await?;
 
     Ok(())
 }

@@ -275,23 +275,55 @@ async fn discover() -> Result<()> {
     if found.is_empty() {
         print_warning("No VPK-capable nodes found in DHT.");
         print_info("If VPK was just enabled, wait up to 120 s for the first announce cycle.");
-        print_info("Enable VPK on a node: kwaainet vpk enable --mode both --endpoint <url>");
-    } else {
-        println!("  Found {} VPK-capable node(s):\n", found.len());
-        for (i, entry) in found.iter().enumerate() {
-            let short_id = if entry.peer_id.len() > 20 {
-                format!("{}…", &entry.peer_id[..20])
+        print_info("Enable VPK on a node: kwaainet storage init then kwaainet start --daemon");
+        print_separator();
+        return Ok(());
+    }
+
+    println!("  Found {} VPK-capable node(s) — verifying reachability…\n", found.len());
+
+    for (i, entry) in found.iter().enumerate() {
+        let short_id = if entry.peer_id.len() > 20 {
+            format!("{}…", &entry.peer_id[..20])
+        } else {
+            entry.peer_id.clone()
+        };
+
+        // Try p2p relay health check first, fall back to HTTP endpoint.
+        let relay_status = if entry.peer_id != "unknown" {
+            if let Ok(peer_id) = entry.peer_id.parse::<PeerId>() {
+                match crate::storage_rpc::rpc_health(&client, &peer_id).await {
+                    Ok(h) => format!(
+                        "🟢 relay  {} tenant(s)  {:.1} GB free",
+                        h.tenant_count, h.capacity_gb_available
+                    ),
+                    Err(_) => "🟡 relay unreachable".to_string(),
+                }
             } else {
-                entry.peer_id.clone()
-            };
-            println!("  [{:>2}] PeerID:   {}", i + 1, short_id);
-            println!("       Mode:     {}", entry.mode);
+                "🟡 invalid peer_id".to_string()
+            }
+        } else if !entry.endpoint.is_empty() && entry.endpoint != "unknown" {
+            let url = format!("{}/api/health", entry.endpoint.trim_end_matches('/'));
+            let hc = reqwest::Client::builder()
+                .timeout(Duration::from_secs(4))
+                .build()
+                .unwrap();
+            match hc.get(&url).send().await {
+                Ok(r) if r.status().is_success() => "🟢 http".to_string(),
+                _ => "🔴 http unreachable".to_string(),
+            }
+        } else {
+            "⚫ no connectivity info".to_string()
+        };
+
+        println!("  [{:>2}] {}", i + 1, relay_status);
+        println!("       PeerID:   {}", short_id);
+        println!("       Mode:     {}", entry.mode);
+        if !entry.endpoint.is_empty() && entry.endpoint != "unknown" {
             println!("       Endpoint: {}", entry.endpoint);
-            println!("       Capacity: {:.1} GB available", entry.capacity_gb);
-            println!("       Tenants:  {}", entry.tenant_count);
-            println!("       VPK:      v{}", entry.vpk_version);
-            println!();
         }
+        println!("       Capacity: {:.1} GB  |  Tenants: {}", entry.capacity_gb, entry.tenant_count);
+        println!();
     }
 
     print_separator();

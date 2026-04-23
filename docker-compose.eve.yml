@@ -1,0 +1,42 @@
+# Eve Storage Node — Docker Compose
+#
+# Runs a multi-tenant encrypted vector storage node on any platform.
+# Uses the embedded hnsw_rs+redb backend — no PostgreSQL or Docker volumes needed.
+#
+# USAGE (any platform with Docker):
+#   docker compose -f docker-compose.eve.yml up --build
+#
+# On Bob's machine, set:
+#   EVE_ENDPOINT=http://<eve-host-ip>:7432
+#
+# To run in background (detached):
+#   docker compose -f docker-compose.eve.yml up --build -d
+#
+# To stop and remove:
+#   docker compose -f docker-compose.eve.yml down -v
+
+version: "3.9"
+
+services:
+
+  eve:
+    build:
+      context: core
+      dockerfile: ../Dockerfile.eve
+    environment:
+      CAPACITY_GB: "5"
+      EVE_PORT: "7432"
+      RUST_LOG: "info,kwaai_storage=debug"
+    ports:
+      - "7432:7432"
+    volumes:
+      - eve_data:/home/eve/.kwaainet
+    command: >
+      sh -c "
+        kwaainet storage init --capacity-gb $$CAPACITY_GB --port $$EVE_PORT &&
+        kwaainet storage serve
+      "
+    restart: unless-stopped
+
+volumes:
+  eve_data:

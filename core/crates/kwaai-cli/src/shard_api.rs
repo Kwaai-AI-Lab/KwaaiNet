@@ -274,6 +274,7 @@ async fn run_inference(
             request,
             Some(&state.our_peer_id),
             &mut failed_peers,
+            None,
         )
         .await
         {
@@ -305,6 +306,7 @@ async fn run_inference(
                             retry,
                             Some(&state.our_peer_id),
                             &mut failed_peers,
+                            None,
                         )
                         .await
                         {

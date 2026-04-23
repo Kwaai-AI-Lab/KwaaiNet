@@ -71,6 +71,7 @@ kwaai-p2p-daemon = { workspace = true }
 kwaai-inference = { workspace = true }
 kwaai-trust = { workspace = true }
 kwaai-storage = { path = "../kwaai-storage", optional = true }
+uuid = { workspace = true, optional = true }
 
 # Trust graph dependencies
 dirs = { workspace = true }
@@ -93,6 +94,6 @@ features = ["storage"]
 default = ["storage"]
 cuda = ["kwaai-inference/cuda"]
 llama-cpp = ["llama-cpp-2"]
-storage = ["kwaai-storage"]
+storage = ["kwaai-storage", "uuid"]
 
 

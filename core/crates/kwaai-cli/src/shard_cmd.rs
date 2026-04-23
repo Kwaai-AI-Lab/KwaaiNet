@@ -991,6 +991,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let show_stats = args.stats;
     let mut token_times_ms: Vec<f64> = Vec::new();
+    // Per-token hop breakdowns: outer index = token, inner = hops for that token.
+    let mut all_hop_timings: Vec<Vec<HopTiming>> = Vec::new();
     let generation_start = std::time::Instant::now();
 
     print!("  Assistant: ");
@@ -1011,6 +1013,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         };
 
         // Forward through the pinned path
+        let mut token_hops: Vec<HopTiming> = Vec::new();
         let logits_bytes = match forward_through_chain(
             &mut client,
             &pinned_path,
@@ -1020,6 +1023,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             request,
             Some(&our_peer_id),
             &mut failed_peers,
+            show_stats.then_some(&mut token_hops),
         )
         .await
         {
@@ -1030,6 +1034,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
                 ));
                 pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+                token_hops.clear();
                 // Retry this token with the new path
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
@@ -1048,10 +1053,14 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     retry_req,
                     Some(&our_peer_id),
                     &mut failed_peers,
+                    show_stats.then_some(&mut token_hops),
                 )
                 .await?
             }
         };
+        if show_stats && !token_hops.is_empty() {
+            all_hop_timings.push(token_hops);
+        }
 
         // logits_bytes.data is f16 bytes of shape [1, 1, vocab_size] or [1, seq_len, vocab_size]
         // We need only the last position
@@ -1139,6 +1148,33 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         println!("  Total:         {:>8.1}s", total_secs);
         println!("  Throughput:    {:>8.1} tok/s", tps);
         println!("  Hops:          {:>8}", pinned_path.len());
+
+        // Per-hop breakdown: average elapsed across all decode tokens (skip prefill at index 0).
+        if !all_hop_timings.is_empty() {
+            let decode_hops: Vec<&Vec<HopTiming>> = all_hop_timings.iter().skip(1).collect();
+            if !decode_hops.is_empty() {
+                println!();
+                println!("  ── Per-hop (decode avg) ──────────────────────────────────");
+                // Use first token's hops as the slot template (path is pinned, so slots are stable).
+                let n_hops = decode_hops[0].len();
+                for slot in 0..n_hops {
+                    let times: Vec<f64> = decode_hops
+                        .iter()
+                        .filter_map(|tok| tok.get(slot).map(|h| h.3))
+                        .collect();
+                    if times.is_empty() { continue; }
+                    let avg = times.iter().sum::<f64>() / times.len() as f64;
+                    let min = times.iter().copied().fold(f64::INFINITY, f64::min);
+                    let max = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    let (name, start, end, _) = &decode_hops[0][slot];
+                    let blocks = end - start;
+                    println!(
+                        "  [{slot}] {name:<35} blocks {start:>3}–{end:>3} ({blocks:>2} blks)  \
+                         avg {avg:>6.0}ms  min {min:.0}  max {max:.0}",
+                    );
+                }
+            }
+        }
     }
 
     print_separator();
@@ -1954,6 +1990,9 @@ async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
 /// widest coverage (largest end_block first). This allows nodes running older code
 /// without an inference handler to be transparently skipped in favour of the next
 /// available peer that covers the same range.
+/// Per-hop timing record: (peer display name, start_block, end_block, elapsed_ms).
+pub type HopTiming = (String, usize, usize, f64);
+
 pub async fn forward_through_chain(
     client: &mut P2PClient,
     chain: &[BlockServerEntry],
@@ -1963,6 +2002,7 @@ pub async fn forward_through_chain(
     first_request: InferenceRequest,
     our_peer_id: Option<&PeerId>,
     failed_peers: &mut std::collections::HashSet<PeerId>,
+    mut hop_timings: Option<&mut Vec<HopTiming>>,
 ) -> Result<crate::block_rpc::InferenceResponse> {
     use crate::block_rpc::InferenceResponse;
 
@@ -1993,6 +2033,7 @@ pub async fn forward_through_chain(
         for candidate in &candidates {
             // Self-bypass: avoid libp2p "dial to self" by using the local TCP server.
             let is_self = our_peer_id == Some(&candidate.peer_id);
+            let hop_start = std::time::Instant::now();
             let result = if is_self {
                 match local_port {
                     Some(port) => local_inference_call(port, &request).await,
@@ -2003,9 +2044,18 @@ pub async fn forward_through_chain(
             } else {
                 call_block_forward(client, &candidate.peer_id, &request).await
             };
+            let hop_ms = hop_start.elapsed().as_secs_f64() * 1000.0;
 
             match result {
                 Ok(resp) => {
+                    if let Some(ref mut timings) = hop_timings {
+                        timings.push((
+                            candidate.public_name.clone(),
+                            candidate.start_block,
+                            candidate.end_block,
+                            hop_ms,
+                        ));
+                    }
                     pos = candidate.end_block;
                     if pos < total_blocks {
                         request = InferenceRequest {

@@ -1,0 +1,59 @@
+# Eve Storage Node — Dockerfile
+# Builds a minimal kwaainet image with the storage feature enabled.
+#
+# Build context: core/ (the Rust workspace)
+#
+# Used by docker-compose.eve.yml — not intended for direct use.
+
+FROM rust:1.83-slim AS builder
+
+# System dependencies for building
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Cache dependencies first
+COPY Cargo.toml Cargo.lock ./
+COPY crates/kwaai-storage/Cargo.toml crates/kwaai-storage/
+COPY crates/kwaai-cli/Cargo.toml crates/kwaai-cli/
+COPY crates/kwaai-p2p/Cargo.toml crates/kwaai-p2p/
+COPY crates/kwaai-p2p-daemon/Cargo.toml crates/kwaai-p2p-daemon/
+COPY crates/kwaai-hivemind-dht/Cargo.toml crates/kwaai-hivemind-dht/
+COPY crates/kwaai-trust/Cargo.toml crates/kwaai-trust/
+COPY crates/kwaai-inference/Cargo.toml crates/kwaai-inference/
+COPY crates/summit-server/Cargo.toml crates/summit-server/
+
+# Stub out source files so the dependency layer caches
+RUN find crates -name Cargo.toml | while read f; do \
+      dir=$(dirname "$f"); \
+      mkdir -p "$dir/src"; \
+      echo 'fn main() {}' > "$dir/src/main.rs" 2>/dev/null || true; \
+      echo '' > "$dir/src/lib.rs" 2>/dev/null || true; \
+    done
+
+# Pull in dependencies (cached separately from source)
+RUN cargo build --release -p kwaainet --features storage 2>&1 | grep -v "^warning" || true
+
+# Copy real source and build
+COPY . .
+RUN touch crates/kwaai-cli/src/main.rs crates/kwaai-storage/src/lib.rs && \
+    cargo build --release -p kwaainet --features storage
+
+# ── Runtime image ─────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/target/release/kwaainet /usr/local/bin/kwaainet
+
+# kwaainet reads config from ~/.kwaainet — set a writable home
+ENV HOME=/home/eve
+RUN useradd -m -d /home/eve eve
+USER eve
+
+EXPOSE 7432
+
+ENTRYPOINT ["/usr/local/bin/kwaainet"]

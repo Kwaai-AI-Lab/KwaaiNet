@@ -21,6 +21,8 @@ mod setup;
 mod shard_api;
 #[cfg(feature = "storage")]
 mod storage;
+#[cfg(feature = "storage")]
+mod storage_rpc;
 mod shard_cmd;
 mod throughput;
 mod uninstall;
