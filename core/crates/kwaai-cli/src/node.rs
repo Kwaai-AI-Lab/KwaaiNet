@@ -354,6 +354,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     let builder = P2PDaemon::builder()
         .dht(true)
+        .bootstrap(!bootstrap_peers.is_empty())
         .relay(!config.no_relay)
         .auto_relay(true)
         .auto_nat(true)

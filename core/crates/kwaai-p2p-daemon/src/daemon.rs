@@ -19,6 +19,7 @@ pub struct DaemonBuilder {
     binary_path: Option<PathBuf>,
     listen_addr: Option<String>,
     bootstrap_peers: Vec<String>,
+    bootstrap: bool,
     dht: bool,
     relay: bool,
     auto_relay: bool,
@@ -138,6 +139,17 @@ impl DaemonBuilder {
         self
     }
 
+    /// Enable Kademlia DHT bootstrap (`-b` flag)
+    ///
+    /// When enabled, the daemon connects to the bootstrap peers and runs a
+    /// Kademlia self-lookup to populate routing tables. Without this, the
+    /// daemon's DHT routing table stays empty and the node is invisible to
+    /// peers performing DHT lookups (e.g. the health service).
+    pub fn bootstrap(mut self, enable: bool) -> Self {
+        self.bootstrap = enable;
+        self
+    }
+
     /// Set the path to a protobuf-encoded Ed25519 private key file (`-id` flag)
     ///
     /// When provided, p2pd uses this key so the node's `PeerId` is stable
@@ -233,9 +245,15 @@ impl DaemonBuilder {
             }
         }
 
-        // Bootstrap peers
-        for peer in &self.bootstrap_peers {
-            cmd.arg("-bootstrapPeers").arg(peer);
+        // Bootstrap peers (comma-separated; Go flag.String accepts one value)
+        if !self.bootstrap_peers.is_empty() {
+            cmd.arg("-bootstrapPeers")
+                .arg(self.bootstrap_peers.join(","));
+        }
+
+        // Kademlia bootstrap walk (connect to bootstrap peers + self-lookup)
+        if self.bootstrap {
+            cmd.arg("-b");
         }
 
         // Persistent identity key — makes PeerId stable across restarts
