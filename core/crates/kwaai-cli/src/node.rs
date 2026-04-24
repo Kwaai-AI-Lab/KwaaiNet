@@ -344,10 +344,12 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // p2pd listens for P2P traffic on the configured port
     let host_addr = format!("/ip4/0.0.0.0/tcp/{}", config.port);
 
-    // Announce the public IP so the health monitor can reach us
+    // Announce the public IP so the health monitor can reach us.
+    // An empty string means "no public IP" (disables auto-detected announce).
     let announce_addr = config
         .public_ip
         .as_deref()
+        .filter(|ip| !ip.is_empty())
         .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port));
 
     let identity_key_path = NodeIdentity::key_file_path();
@@ -449,7 +451,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     //   network_rps   = download_bps / (hidden_size × 16)
     // using_relay: true only if we have no public IP (behind NAT) and relay is allowed.
     // If a public IP is configured, we're directly reachable — no relay needed.
-    let using_relay = config.public_ip.is_none() && !config.no_relay;
+    let has_public_ip = config
+        .public_ip
+        .as_deref()
+        .is_some_and(|ip| !ip.is_empty());
+    let using_relay = !has_public_ip && !config.no_relay;
 
     // Measure network bandwidth once at startup (1 MiB Cloudflare probe).
     // Stored so re-announcements can recompute effective_tps without re-probing.
