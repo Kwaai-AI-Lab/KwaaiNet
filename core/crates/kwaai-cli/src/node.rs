@@ -347,10 +347,12 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Announce address: prefer explicit announce_addr, fall back to public_ip.
     // announce_addr is a raw multiaddr (e.g. /dns/kwaainet/tcp/8080).
     // public_ip is an IP address formatted as /ip4/<ip>/tcp/<port>.
+    // An empty string public_ip is treated as "no public IP".
     let announce_addr = config.announce_addr.clone().or_else(|| {
         config
             .public_ip
             .as_deref()
+            .filter(|ip| !ip.is_empty())
             .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port))
     });
 
@@ -358,12 +360,15 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     let builder = P2PDaemon::builder()
         .dht(true)
+        .bootstrap(!bootstrap_peers.is_empty())
         .relay(!config.no_relay)
         .auto_relay(true)
         .auto_nat(true)
+        .force_reachability_private(announce_addr.is_none() && !config.no_relay)
         .nat_portmap(true)
         .host_addrs([host_addr])
         .bootstrap_peers(bootstrap_peers.clone())
+        .trusted_relays(bootstrap_peers.clone())
         .with_identity_key(&identity_key_path);
 
     let builder = if let Some(ref addr) = announce_addr {
@@ -451,9 +456,8 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     //   effective_tps = min(compute_tps, network_rps × relay_penalty)
     //   network_rps   = download_bps / (hidden_size × 16)
     // using_relay: true only if we have no reachable address (behind NAT) and relay is allowed.
-    // If a public IP or announce_addr is configured, we're directly reachable — no relay needed.
-    let using_relay =
-        config.public_ip.is_none() && config.announce_addr.is_none() && !config.no_relay;
+    // announce_addr already encodes both explicit announce_addr and non-empty public_ip.
+    let using_relay = announce_addr.is_none() && !config.no_relay;
 
     // Measure network bandwidth once at startup (1 MiB Cloudflare probe).
     // Stored so re-announcements can recompute effective_tps without re-probing.
