@@ -183,15 +183,20 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let repo_dir = out_dir.join("go-libp2p-daemon");
 
-    // Use profile directory for the daemon binary (easier to find and use)
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let target_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join(&profile);
+
+    // Honor CARGO_TARGET_DIR when set
+    let target_dir = if let Ok(dir) = env::var("CARGO_TARGET_DIR") {
+        PathBuf::from(dir).join(&profile)
+    } else {
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target")
+            .join(&profile)
+    };
 
     let daemon_binary = if cfg!(windows) {
         target_dir.join("p2pd.exe")
