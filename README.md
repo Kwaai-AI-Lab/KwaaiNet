@@ -1,4 +1,5 @@
 # KwaaiNet
+<img width="1429" height="799" alt="image" src="https://github.com/user-attachments/assets/14b8c335-b2c2-4943-b9cd-d2291d97a0d0" />
 
 [![KwaaiNet — Sovereign AI Infrastructure](https://img.youtube.com/vi/ES9iQWkAFeY/maxresdefault.jpg)](https://youtu.be/ES9iQWkAFeY)
 
