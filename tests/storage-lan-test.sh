@@ -88,7 +88,10 @@ run_eve() {
 
     # ── Step 1: Init storage (idempotent) ──────────────────────────────────
     step "Step 1 — Initialize storage"
+    local pg_port="${PG_PORT:-5433}"
+    local pg_url="${PG_URL:-postgresql://localhost:${pg_port}/kwaainet_vpk}"
     "$KWAAINET" storage init \
+        --pg-url "$pg_url" \
         --endpoint "http://${ip}:${EVE_PORT}"
     pass "Storage initialized"
 
