@@ -1,6 +1,4 @@
 # KwaaiNet
-<img width="1429" height="799" alt="image" src="https://github.com/user-attachments/assets/14b8c335-b2c2-4943-b9cd-d2291d97a0d0" />
-
 [![How Kwaai Democratizes AI in under 5 minutes](docs/assets/hero-video-thumbnail.png)](https://youtu.be/ES9iQWkAFeY)
 
 KwaaiNet is a decentralized AI node architecture for **Layer 8** — the trust and intelligence layer above the traditional network stack — built by the [Kwaai Foundation](https://www.kwaai.ai), a 501(c)(3) nonprofit AI lab focused on democratizing AI.
