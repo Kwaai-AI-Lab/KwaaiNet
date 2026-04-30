@@ -292,7 +292,6 @@ async fn main() -> Result<()> {
                 if cfg.storage.is_some() {
                     match StorageApiManager::spawn_storage_child() {
                         Ok(storage_pid) => {
-                            StorageApiManager::new().write_pid(storage_pid);
                             print_success(&format!("Storage API started    (PID {})", storage_pid));
                             print_info("Storage logs: kwaainet logs --storage");
                         }
