@@ -501,7 +501,12 @@ impl StorageApiManager {
             Some(pid) => {
                 let mut sys = System::new();
                 sys.refresh_process(Pid::from_u32(pid));
-                sys.process(Pid::from_u32(pid)).is_some()
+                let alive = sys.process(Pid::from_u32(pid)).is_some();
+                // Scrub a stale PID file so the next spawn doesn't false-positive.
+                if !alive {
+                    self.remove_pid();
+                }
+                alive
             }
             None => false,
         }

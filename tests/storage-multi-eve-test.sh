@@ -7,38 +7,42 @@
 # Each Eve holds a non-overlapping shard of Bob's vectors. On search, Bob
 # queries all Eves in parallel, merges the top-k results locally by score,
 # and resolves IDs back to documents from his local KB.
-#
-# Bob's machine runs this script. Eve machines each run:
-#   bash tests/storage-multi-eve-test.sh eve [<bind-ip>]
+# Eve never sees plaintext — only float vectors and a tenant_id.
 #
 # USAGE
-#   # On each Eve machine (run in separate terminals / machines):
+# ─────
+#   # On each Eve machine (run in a terminal; repeat for each Eve):
 #   bash tests/storage-multi-eve-test.sh eve [<bind-ip>]
+#   # Named aliases also work:
+#   bash tests/storage-multi-eve-test.sh eve-a [<bind-ip>]
+#   bash tests/storage-multi-eve-test.sh eve-b [<bind-ip>]
 #
-#   # On Bob's machine (comma-separated <ip:port> pairs, no spaces):
-#   bash tests/storage-multi-eve-test.sh bob <ip1:port1>,<ip2:port2>[,<ip3:port3>...]
+#   # On Bob's machine — pass each Eve as IP, host:port, URL, or public_name:
+#   bash tests/storage-multi-eve-test.sh bob <eve1> <eve2> [<eve3> ...]
 #
-#   Port can be omitted to use the EVE_PORT default (7432):
-#   bash tests/storage-multi-eve-test.sh bob <ip1>,<ip2>
+# EXAMPLES
+#   # Two Eves by IP
+#   bash tests/storage-multi-eve-test.sh bob 192.168.1.10 192.168.1.11
 #
-# EXAMPLE (three Eves — two on the same host, different ports)
-#   bash tests/storage-multi-eve-test.sh bob 192.168.1.10:7432,192.168.1.10:7433,192.168.1.11:7432
+#   # Two Eves by ip:port
+#   bash tests/storage-multi-eve-test.sh bob 192.168.1.10:7432 192.168.1.11:7433
+#
+#   # Two Eves by public_name (resolved via kwaainet vpk discover --json)
+#   bash tests/storage-multi-eve-test.sh bob metro_win metro-linux-x86_64
 #
 # PREREQUISITES
-#   Bob's machine:
-#     - kwaainet binary built or installed
-#     - Python 3.8+ with sentence-transformers: pip install sentence-transformers
-#   Each Eve machine:
-#     - kwaainet binary built or installed
-#     - PostgreSQL 14+ with pgvector extension
-#     - kwaainet storage init (run once per machine)
+#   All machines: kwaainet binary installed or built at ./core/target/release/
+#   Bob only: Python 3.8+ with sentence-transformers
+#     pip install sentence-transformers
 #
 # SHARDING STRATEGY
 #   Bob partitions his document corpus across Eves by round-robin assignment:
-#     doc_id % N_EVES → Eve index
+#     (doc_id - 1) % N_EVES → Eve index
 #   This keeps each shard balanced without coordination between Eves.
 #   Eve never learns which shard it holds or how many Eves Bob is using.
 #
+# PORTS
+#   EVE_PORT (default 7432) — used when no port is given in the Eve argument.
 # =============================================================================
 
 set -euo pipefail
@@ -59,13 +63,14 @@ step()  { echo -e "\n${BOLD}── $* ──${RESET}"; }
 label() { echo -e "  ${BLUE}$*${RESET}"; }
 
 ROLE="${1:-}"
-ARG2="${2:-}"
 
 if [[ -z "$ROLE" ]]; then
-    echo "Usage: $0 <eve|bob> [arg]"
+    echo "Usage: $0 <eve|eve-a|eve-b|bob> [args...]"
     echo
-    echo "  eve [bind-ip]                    — Run on a storage host machine"
-    echo "  bob <eve1-ip>,<eve2-ip>[,...]    — Run on Bob's machine"
+    echo "  eve|eve-a|eve-b [bind-ip]           — Run on a storage host machine"
+    echo "  bob <eve1> <eve2> [eve3 ...]         — Run on Bob's machine"
+    echo
+    echo "  Eve args: bare IP, host:port, http:// URL, or public_name (DHT lookup)"
     exit 1
 fi
 
@@ -76,7 +81,7 @@ check_kwaainet() {
     step "Checking kwaainet binary"
     if ! command -v "$KWAAINET" &>/dev/null; then
         KWAAINET="$SCRIPT_DIR/../core/target/release/kwaainet"
-        [[ -x "$KWAAINET" ]] || fail "kwaainet not found. Build with: cargo build --release -p kwaainet"
+        [[ -x "$KWAAINET" ]] || fail "kwaainet not found. Build with: cd core && cargo build --release -p kwaainet"
     fi
     VERSION=$("$KWAAINET" --version 2>&1 | head -1)
     pass "Found: $VERSION"
@@ -90,23 +95,77 @@ check_python_embeddings() {
 }
 
 # ---------------------------------------------------------------------------
+# Resolve an Eve argument to an HTTP endpoint.
+#
+# Accepts:
+#   - bare IP:          192.168.1.10       → http://192.168.1.10:${EVE_PORT}
+#   - host:port:        192.168.1.10:7433  → http://192.168.1.10:7433
+#   - http(s):// URL:   http://…           → used as-is
+#   - public_name:      metro-node-1       → resolved via kwaainet vpk discover --json
+# ---------------------------------------------------------------------------
+resolve_endpoint() {
+    local arg="$1"
+    # Already a full URL
+    if [[ "$arg" == http://* || "$arg" == https://* ]]; then
+        echo "${arg%/}"
+        return
+    fi
+    # host:port pair (has a colon followed only by digits)
+    if [[ "$arg" =~ ^[0-9a-fA-F.:]+:[0-9]+$ ]]; then
+        echo "http://${arg}"
+        return
+    fi
+    # Bare IP (only digits and dots)
+    if [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "http://${arg}:${EVE_PORT}"
+        return
+    fi
+    # Treat as public_name — resolve via DHT
+    info "Resolving '${arg}' via kwaainet vpk discover --json …"
+    local disc
+    disc=$("$KWAAINET" vpk discover --json 2>/dev/null || true)
+    if [[ -z "$disc" || "$disc" == "[]" ]]; then
+        fail "DHT discovery returned no nodes. Is 'kwaainet start --daemon' running?"
+    fi
+    local endpoint
+    endpoint=$(echo "$disc" | python3 -c "
+import sys, json
+nodes = json.load(sys.stdin)
+name = '${arg}'
+for n in nodes:
+    if n.get('public_name','') == name:
+        ep = n.get('endpoint','')
+        if ep and ep != 'unknown':
+            print(ep.rstrip('/'))
+            sys.exit(0)
+print('')
+" 2>/dev/null || true)
+    if [[ -z "$endpoint" ]]; then
+        fail "No Eve node named '${arg}' found in DHT. Check: kwaainet vpk discover"
+    fi
+    echo "$endpoint"
+}
+
+# ---------------------------------------------------------------------------
 # Eve role: init storage and serve
 # ---------------------------------------------------------------------------
 run_eve() {
-    local ip="${ARG2:-$(hostname -I 2>/dev/null | awk '{print $1}' || ipconfig getifaddr en0 2>/dev/null || echo 'localhost')}"
+    local eve_label="${1:-Eve}"
+    local ip="${2:-$(hostname -I 2>/dev/null | awk '{print $1}' || ipconfig getifaddr en0 2>/dev/null || echo 'localhost')}"
 
     echo
     echo -e "${BOLD}╔══════════════════════════════════════════════╗"
-    echo -e "║  Multi-Eve Storage Test — Eve (Storage)      ║"
+    echo -e "║  Multi-Eve Storage Test — ${eve_label} (Storage)  ║"
     echo -e "╚══════════════════════════════════════════════╝${RESET}"
     echo
 
     check_kwaainet
 
     step "Initialize storage (idempotent)"
-    local pg_port="${PG_PORT:-5433}"
-    local pg_url="${PG_URL:-postgresql://localhost:${pg_port}/kwaainet_vpk}"
-    "$KWAAINET" storage init --pg-url "$pg_url" --endpoint "http://${ip}:${EVE_PORT}"
+    "$KWAAINET" storage init \
+        --capacity-gb 5 \
+        --port "$EVE_PORT" \
+        --endpoint "http://${ip}:${EVE_PORT}"
     pass "Storage initialized"
 
     step "Storage status"
@@ -114,12 +173,12 @@ run_eve() {
 
     step "Starting storage API"
     echo
-    echo -e "  ${BOLD}Eve is ready.${RESET}"
+    echo -e "  ${BOLD}${eve_label} is ready.${RESET}"
     echo -e "  Bind IP:   ${CYAN}${ip}${RESET}"
     echo -e "  Endpoint:  ${CYAN}http://${ip}:${EVE_PORT}${RESET}"
     echo
-    echo -e "  Add ${YELLOW}${ip}:${EVE_PORT}${RESET} to Bob's Eve list, then run:"
-    echo -e "    ${YELLOW}bash tests/storage-multi-eve-test.sh bob <ip1:port1>,<ip2:port2>,...${RESET}"
+    echo -e "  Pass ${YELLOW}${ip}:${EVE_PORT}${RESET} (or this node's public_name) to Bob:"
+    echo -e "    ${YELLOW}bash tests/storage-multi-eve-test.sh bob <eve1> <eve2> ...${RESET}"
     echo
     echo -e "  ${DIM}Press Ctrl+C to stop.${RESET}"
     echo
@@ -131,38 +190,31 @@ run_eve() {
 # Bob role: shard across N Eves, fan-out search, merge results
 # ---------------------------------------------------------------------------
 run_bob() {
-    if [[ -z "$ARG2" ]]; then
-        echo "Usage: $0 bob <eve1-ip:port>,<eve2-ip:port>[,...]"
-        echo "  Port is optional; omit to use EVE_PORT (default: ${EVE_PORT})"
+    local -a EVE_ARGS=("$@")
+    local N_EVES=${#EVE_ARGS[@]}
+
+    if [[ $N_EVES -lt 1 ]]; then
+        echo "Usage: $0 bob <eve1> <eve2> [eve3 ...]"
+        echo "  Each Eve arg: bare IP, host:port, http:// URL, or public_name"
         exit 1
     fi
 
-    # Parse <ip:port> entries — port falls back to EVE_PORT when omitted
-    declare -a EVE_APIS
-    IFS=',' read -ra EVE_ENTRIES <<< "$ARG2"
-    local N_EVES=${#EVE_ENTRIES[@]}
-    for i in "${!EVE_ENTRIES[@]}"; do
-        local entry="${EVE_ENTRIES[$i]}"
-        if [[ "$entry" == *:* ]]; then
-            EVE_APIS[$i]="http://${entry}"
-        else
-            EVE_APIS[$i]="http://${entry}:${EVE_PORT}"
-        fi
-    done
-
     echo
-    echo -e "${BOLD}╔══════════════════════════════════════════════╗"
-    echo -e "║  Multi-Eve Storage Test — Bob (Owner)        ║"
-    echo -e "╚══════════════════════════════════════════════╝${RESET}"
-    echo
-    label "Eves (${N_EVES}):"
-    for i in "${!EVE_APIS[@]}"; do
-        label "  Eve $((i+1)): ${EVE_APIS[$i]}"
-    done
+    echo -e "${BOLD}╔══════════════════════════════════════════════════════════╗"
+    echo -e "║  Multi-Eve Storage Test — Bob (data owner)               ║"
+    echo -e "╚══════════════════════════════════════════════════════════╝${RESET}"
     echo
 
     check_kwaainet
     check_python_embeddings
+
+    # Resolve all Eve arguments to endpoint URLs
+    step "Resolving Eve endpoints"
+    declare -a EVE_APIS
+    for i in "${!EVE_ARGS[@]}"; do
+        EVE_APIS[$i]=$(resolve_endpoint "${EVE_ARGS[$i]}")
+        pass "Eve $((i+1)): ${EVE_APIS[$i]}"
+    done
 
     # ── Step 1: Reachability check for all Eves ───────────────────────────
     step "Step 1 — Check all Eves are reachable"
@@ -263,10 +315,9 @@ PYEOF
     # ── Step 6: Fan-out search — query all Eves, merge top-k ─────────────
     run_fanout_search() {
         local QUERY_TEXT="$1"
-        local LABEL="$2"
 
         step "Search: '${QUERY_TEXT}'"
-        info "Bob embeds query locally, fans out to all ${N_EVES} Eves, merges results"
+        info "Bob embeds query locally, fans out to all ${N_EVES} Eve(s), merges results"
 
         QUERY_VEC=$(python3 << PYEOF
 import json
@@ -290,16 +341,14 @@ PYEOF
 
             # Merge into accumulated results
             MERGED_RESULTS_NEW=$(mktemp)
-            python3 << PYEOF
+            python3 - "${MERGED_RESULTS}" "${MERGED_RESULTS_NEW}" "${TOP_K}" << PYEOF
 import json, sys
-
-existing = json.load(open('${MERGED_RESULTS}'))
-new_results = json.loads('''${SHARD_RESP}''')['results']
+existing = json.load(open(sys.argv[1]))
+new_results = json.loads("""${SHARD_RESP}""")['results']
 merged = existing + new_results
-# Sort by score descending, keep top TOP_K
 merged.sort(key=lambda r: r['score'], reverse=True)
-merged = merged[:${TOP_K}]
-with open('${MERGED_RESULTS_NEW}', 'w') as f:
+merged = merged[:int(sys.argv[3])]
+with open(sys.argv[2], 'w') as f:
     json.dump(merged, f)
 PYEOF
             mv "$MERGED_RESULTS_NEW" "$MERGED_RESULTS"
@@ -316,13 +365,14 @@ for line in open('${BOB_KB}'):
         docs[d['id']] = d['text']
 
 results = json.load(open('${MERGED_RESULTS}'))
+n_eves = ${N_EVES}
 
 print()
 for i, r in enumerate(results):
     doc_id = r['id']
     score  = r['score']
     text   = docs.get(doc_id, '(not found)')
-    eve_idx = (doc_id - 1) % ${N_EVES} + 1
+    eve_idx = (doc_id - 1) % n_eves + 1
     print(f"  [{i+1}] ID={doc_id}  score={score:.4f}  (stored on Eve {eve_idx})")
     print(f"       {text[:110]}")
     print()
@@ -331,9 +381,9 @@ PYEOF
         pass "Top-${TOP_K} results merged from ${N_EVES} Eve(s)"
     }
 
-    run_fanout_search "How does gene editing work?" "gene editing"
-    run_fanout_search "What should I eat for a healthy diet?" "healthy diet"
-    run_fanout_search "How do neural networks learn?" "neural networks"
+    run_fanout_search "How does gene editing work?"
+    run_fanout_search "What should I eat for a healthy diet?"
+    run_fanout_search "How do neural networks learn?"
 
     # ── Step 7: Tenant isolation check — cross-tenant search must fail ────
     step "Step 7 — Tenant isolation: cross-tenant search must fail"
@@ -392,7 +442,7 @@ print(f\"    tenant_id={d['tenant_id']}  vectors={d.get('vector_count','?')}  st
     echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗"
     echo -e "║              All multi-Eve tests passed!                     ║"
     echo -e "╠══════════════════════════════════════════════════════════════╣"
-    printf  "║  ✅ %-57s║\n" "${N_EVES} Eves reachable and healthy"
+    printf  "║  ✅ %-57s║\n" "${N_EVES} Eve(s) reachable and healthy"
     printf  "║  ✅ %-57s║\n" "Tenants created on each Eve independently"
     printf  "║  ✅ %-57s║\n" "Documents embedded locally (Eve never sees text)"
     printf  "║  ✅ %-57s║\n" "Corpus sharded round-robin across ${N_EVES} Eve(s)"
@@ -408,10 +458,20 @@ print(f\"    tenant_id={d['tenant_id']}  vectors={d.get('vector_count','?')}  st
 # Dispatch
 # ---------------------------------------------------------------------------
 case "$ROLE" in
-    eve)  run_eve ;;
-    bob)  run_bob ;;
+    eve|eve-a|eve-b)
+        run_eve "${ROLE}" "${2:-}"
+        ;;
+    bob)
+        shift
+        run_bob "$@"
+        ;;
     *)
-        echo "Unknown role '${ROLE}'. Use: eve or bob"
+        echo "Unknown role '${ROLE}'."
+        echo "Usage:"
+        echo "  $0 eve|eve-a|eve-b [bind-ip]         — on a storage host machine"
+        echo "  $0 bob <eve1> [eve2 ...]              — on Bob's machine"
+        echo
+        echo "  Eve args: bare IP, host:port, http:// URL, or public_name (DHT lookup)"
         exit 1
         ;;
 esac

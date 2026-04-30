@@ -40,6 +40,7 @@ struct VpkInfo {
     capacity_gb: f64,
     tenant_count: u32,
     vpk_version: String,
+    public_name: String,
 }
 
 impl VpkInfo {
@@ -65,6 +66,10 @@ impl VpkInfo {
             (
                 rmpv::Value::from("vpk_version"),
                 rmpv::Value::from(self.vpk_version.as_str()),
+            ),
+            (
+                rmpv::Value::from("public_name"),
+                rmpv::Value::from(self.public_name.as_str()),
             ),
         ])
     }
@@ -515,11 +520,23 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("  Using relay: {}", using_relay);
 
     // Check local VPK health when integration is enabled.
-    // VPK is a separate binary — KwaaiNet never spawns it, only discovers it.
+    // Retries up to 5 times with 1 s gaps to avoid a race with the storage
+    // child process (spawned by `kwaainet start --daemon` just before us).
     let vpk_info = if config.vpk_enabled {
         let port = config.vpk_local_port.unwrap_or(7432);
         info!("VPK enabled — checking local service on port {}", port);
-        match check_vpk_health(port).await {
+        let mut health_result = None;
+        for attempt in 0..5u32 {
+            if let Some(h) = check_vpk_health(port).await {
+                health_result = Some(h);
+                break;
+            }
+            if attempt < 4 {
+                info!("VPK not ready yet, retrying in 1 s… ({}/5)", attempt + 1);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+        match health_result {
             Some(health) => {
                 let mode = config
                     .vpk_mode
@@ -542,11 +559,12 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     capacity_gb,
                     tenant_count,
                     vpk_version,
+                    public_name: public_name.clone(),
                 })
             }
             None => {
                 warn!(
-                    "VPK health check failed on port {} — skipping DHT advertisement",
+                    "VPK health check failed on port {} after 5 attempts — skipping DHT advertisement",
                     port
                 );
                 None
@@ -690,6 +708,36 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                         server_info.throughput, fresh_tps
                     );
                     server_info.throughput = fresh_tps;
+                }
+
+                // Re-check VPK health so that storage serve started after the
+                // daemon comes online without requiring a full daemon restart.
+                if config.vpk_enabled {
+                    let port = config.vpk_local_port.unwrap_or(7432);
+                    let fresh_vpk = match check_vpk_health(port).await {
+                        Some(health) => {
+                            let mode = config.vpk_mode.clone().unwrap_or_else(|| "both".to_string());
+                            let endpoint = config.vpk_endpoint.clone()
+                                .unwrap_or_else(|| format!("http://localhost:{}", port));
+                            Some(VpkInfo {
+                                mode,
+                                endpoint,
+                                capacity_gb: health["capacity_gb_available"].as_f64().unwrap_or(0.0),
+                                tenant_count: health["tenant_count"].as_u64().unwrap_or(0) as u32,
+                                vpk_version: health["version"].as_str().unwrap_or("unknown").to_string(),
+                                public_name: public_name.clone(),
+                            })
+                        }
+                        None => None,
+                    };
+                    if fresh_vpk.is_some() != server_info.vpk_info.is_some() {
+                        info!(
+                            "VPK state changed: {} → {}",
+                            if server_info.vpk_info.is_some() { "enabled" } else { "disabled" },
+                            if fresh_vpk.is_some() { "enabled" } else { "disabled" },
+                        );
+                    }
+                    server_info.vpk_info = fresh_vpk;
                 }
 
                 let sb = config.start_block as i32;

@@ -31,7 +31,7 @@ pub async fn run(args: VpkArgs) -> Result<()> {
         } => enable(mode, endpoint, port),
         VpkAction::Disable => disable(),
         VpkAction::Status => status().await,
-        VpkAction::Discover => discover().await,
+        VpkAction::Discover { json } => discover(json).await,
         VpkAction::Shard { kb_id, eve_count } => shard(kb_id, eve_count).await,
         VpkAction::Resolve { kb_id } => resolve(kb_id).await,
     }
@@ -170,12 +170,14 @@ async fn status() -> Result<()> {
 // spawning a new daemon. Requires `kwaainet start --daemon` to be running.
 // ---------------------------------------------------------------------------
 
-async fn discover() -> Result<()> {
+async fn discover(json_output: bool) -> Result<()> {
     let cfg = KwaaiNetConfig::load_or_create()?;
 
-    print_box_header("🔐 VPK Node Discovery");
-    println!("  Querying DHT for VPK-capable nodes…");
-    println!();
+    if !json_output {
+        print_box_header("🔐 VPK Node Discovery");
+        println!("  Querying DHT for VPK-capable nodes…");
+        println!();
+    }
 
     // Connect to the running node's p2pd over its IPC socket.
     // Construct the same address the daemon uses.
@@ -271,15 +273,38 @@ async fn discover() -> Result<()> {
         }
     }
 
-    println!();
     if found.is_empty() {
-        print_warning("No VPK-capable nodes found in DHT.");
-        print_info("If VPK was just enabled, wait up to 120 s for the first announce cycle.");
-        print_info("Enable VPK on a node: kwaainet storage init then kwaainet start --daemon");
-        print_separator();
+        if json_output {
+            println!("[]");
+        } else {
+            println!();
+            print_warning("No VPK-capable nodes found in DHT.");
+            print_info("If VPK was just enabled, wait up to 120 s for the first announce cycle.");
+            print_info("Enable VPK on a node: kwaainet storage init then kwaainet start --daemon");
+            print_separator();
+        }
         return Ok(());
     }
 
+    if json_output {
+        // Machine-readable output — one JSON array, no ANSI codes.
+        let mut items: Vec<String> = Vec::new();
+        for entry in &found {
+            items.push(format!(
+                r#"{{"public_name":{},"peer_id":{},"endpoint":{},"mode":{},"capacity_gb":{},"tenant_count":{}}}"#,
+                serde_json::to_string(&entry.public_name).unwrap_or_default(),
+                serde_json::to_string(&entry.peer_id).unwrap_or_default(),
+                serde_json::to_string(&entry.endpoint).unwrap_or_default(),
+                serde_json::to_string(&entry.mode).unwrap_or_default(),
+                entry.capacity_gb,
+                entry.tenant_count,
+            ));
+        }
+        println!("[{}]", items.join(","));
+        return Ok(());
+    }
+
+    println!();
     println!("  Found {} VPK-capable node(s) — verifying reachability…\n", found.len());
 
     for (i, entry) in found.iter().enumerate() {
@@ -317,6 +342,9 @@ async fn discover() -> Result<()> {
         };
 
         println!("  [{:>2}] {}", i + 1, relay_status);
+        if !entry.public_name.is_empty() && entry.public_name != "unknown" {
+            println!("       Name:     {}", entry.public_name);
+        }
         println!("       PeerID:   {}", short_id);
         println!("       Mode:     {}", entry.mode);
         if !entry.endpoint.is_empty() && entry.endpoint != "unknown" {
@@ -377,6 +405,7 @@ struct VpkNodeEntry {
     capacity_gb: f64,
     tenant_count: u32,
     vpk_version: String,
+    public_name: String,
 }
 
 /// Decode a FoundRegular value (direct msgpack VPK map) into a VpkNodeEntry.
@@ -478,5 +507,6 @@ fn decode_vpk_map(bytes: &[u8], peer_id: String) -> Option<VpkNodeEntry> {
         capacity_gb: get_f64("capacity_gb"),
         tenant_count: get_u32("tenant_count"),
         vpk_version: get_str("vpk_version"),
+        public_name: get_str("public_name"),
     })
 }

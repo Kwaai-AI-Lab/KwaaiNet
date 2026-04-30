@@ -483,7 +483,11 @@ pub enum VpkAction {
     Status,
 
     /// Discover VPK-capable nodes via DHT
-    Discover,
+    Discover {
+        /// Output machine-readable JSON (array of {public_name, peer_id, endpoint, ...})
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Shard a knowledge base across Eve nodes discovered via DHT
     Shard {
