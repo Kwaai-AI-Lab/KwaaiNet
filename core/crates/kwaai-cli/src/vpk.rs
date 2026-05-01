@@ -273,6 +273,10 @@ async fn discover(json_output: bool) -> Result<()> {
         }
     }
 
+    // Remove the local node — dialling self is always rejected by p2pd.
+    let local_b58 = peer_id.to_string();
+    found.retain(|e| e.peer_id != local_b58);
+
     if found.is_empty() {
         if json_output {
             println!("[]");
