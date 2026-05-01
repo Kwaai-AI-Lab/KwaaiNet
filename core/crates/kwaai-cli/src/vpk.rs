@@ -323,29 +323,24 @@ async fn discover(json_output: bool) -> Result<()> {
 
         // Try p2p relay health check first, fall back to HTTP endpoint.
         let relay_status = if entry.peer_id != "unknown" {
-            if let Ok(peer_id) = entry.peer_id.parse::<PeerId>() {
-                match crate::storage_rpc::rpc_health(&client, &peer_id).await {
+            if let Ok(pid) = entry.peer_id.parse::<PeerId>() {
+                match crate::storage_rpc::rpc_health(&client, &pid).await {
                     Ok(h) => format!(
                         "🟢 relay  {} tenant(s)  {:.1} GB free",
                         h.tenant_count, h.capacity_gb_available
                     ),
+                    Err(e) if format!("{:#}", e).contains("protocols not supported") => {
+                        // Peer is reachable on P2P but hasn't registered the
+                        // storage handler — try the HTTP endpoint instead.
+                        http_health_check(&entry.endpoint).await
+                    }
                     Err(_) => "🟡 relay unreachable".to_string(),
                 }
             } else {
                 "🟡 invalid peer_id".to_string()
             }
-        } else if !entry.endpoint.is_empty() && entry.endpoint != "unknown" {
-            let url = format!("{}/api/health", entry.endpoint.trim_end_matches('/'));
-            let hc = reqwest::Client::builder()
-                .timeout(Duration::from_secs(4))
-                .build()
-                .unwrap();
-            match hc.get(&url).send().await {
-                Ok(r) if r.status().is_success() => "🟢 http".to_string(),
-                _ => "🔴 http unreachable".to_string(),
-            }
         } else {
-            "⚫ no connectivity info".to_string()
+            http_health_check(&entry.endpoint).await
         };
 
         println!("  [{:>2}] {}", i + 1, relay_status);
@@ -400,6 +395,21 @@ async fn resolve(kb_id: String) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+async fn http_health_check(endpoint: &str) -> String {
+    if endpoint.is_empty() || endpoint == "unknown" {
+        return "⚫ no connectivity info".to_string();
+    }
+    let url = format!("{}/api/health", endpoint.trim_end_matches('/'));
+    let hc = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .unwrap();
+    match hc.get(&url).send().await {
+        Ok(r) if r.status().is_success() => "🟢 http".to_string(),
+        _ => "🔴 http unreachable".to_string(),
+    }
+}
 
 /// SHA1(msgpack(raw_key)) — same as Hivemind's DHTID.generate().
 fn vpk_dht_id(raw_key: &str) -> Vec<u8> {
