@@ -678,6 +678,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
             // Periodic re-announcement
             _ = reannounce.tick() => {
+                // p2pd watchdog: restart if the child process died unexpectedly.
+                if !daemon.is_running() {
+                    warn!("⚠️  p2pd process died — attempting restart…");
+                    match restart_p2pd(
+                        &mut daemon, &mut client, &p2pd_path, &config,
+                        &bootstrap_peers, &announce_addr, handler_addr,
+                    ).await {
+                        Ok(()) => info!("✅ p2pd restarted and handlers re-registered"),
+                        Err(e) => warn!("p2pd restart failed: {} — will retry in 120s", e),
+                    }
+                }
+
                 // Re-read config to pick up start_block changes written by
                 // `shard serve` (via signal_reannounce) or `kwaainet config set`.
                 // On Windows this also drains the reannounce.flag file.
@@ -1006,8 +1018,13 @@ async fn announce(
     Ok(())
 }
 
-/// Connect to all bootstrap peers and send a STORE request to each.
+/// Send a STORE request to each bootstrap peer.
 /// Returns true if at least one peer accepted the store.
+///
+/// Does NOT call connect_peer() — p2pd already has bootstrap addresses from
+/// its own DHT bootstrap (via -b flag) and dials internally when needed.
+/// Calling connect_peer() to Hivemind bootstrap servers crashes p2pd's
+/// background goroutines via the gRPC control path.
 async fn send_to_bootstrap(
     client: &mut kwaai_p2p_daemon::P2PClient,
     bootstrap_peers: &[String],
@@ -1037,19 +1054,6 @@ async fn send_to_bootstrap(
                 continue;
             }
         };
-
-        match tokio::time::timeout(Duration::from_secs(20), client.connect_peer(addr)).await {
-            Ok(Ok(_)) => { /* success, continue */ }
-            Ok(Err(e)) => {
-                warn!("Bootstrap connect failed ({}): {}", addr, e);
-                continue;
-            }
-            Err(_) => {
-                warn!("Bootstrap connect timeout ({}): exceeded 20s", addr);
-                continue;
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         match tokio::time::timeout(
             Duration::from_secs(30),
@@ -1094,12 +1098,15 @@ async fn send_to_bootstrap(
     succeeded > 0
 }
 
-/// Dial bootstrap peers and wait for confirmation.
+/// Wait for p2pd's own DHT bootstrap to establish connections.
 ///
-/// Explicitly dials each bootstrap peer so p2pd opens the TCP connection
-/// immediately, then polls list_peers() until ≥1 peer is confirmed
-/// connected or the 30 s timeout expires. Called once at startup only —
-/// subsequent re-announcements use send_to_bootstrap() directly.
+/// p2pd bootstraps independently using the -b addresses it was started with.
+/// We must NOT call connect_peer() here — doing so via the gRPC control path
+/// crashes p2pd's background goroutines when the target speaks Hivemind DHT
+/// (not the standard go-libp2p-daemon control protocol).
+///
+/// Instead, we poll list_peers() until p2pd shows at least one bootstrap peer
+/// connected (via its own bootstrap walk) or the 30 s timeout expires.
 async fn dial_and_wait_for_bootstrap(
     client: &mut kwaai_p2p_daemon::P2PClient,
     bootstrap_peers: &[String],
@@ -1109,22 +1116,6 @@ async fn dial_and_wait_for_bootstrap(
 
     let start = tokio::time::Instant::now();
     let max_wait = Duration::from_secs(MAX_WAIT_SECS);
-
-    // Proactively dial every bootstrap peer so p2pd opens the TCP
-    // connection now rather than waiting for the DHT to need it.
-    // Track whether at least one dial succeeded so we can suppress the
-    // spurious timeout warning when list_peers() just hasn't caught up yet.
-    let mut dialed_ok = false;
-    for addr in bootstrap_peers {
-        match tokio::time::timeout(Duration::from_secs(10), client.connect_peer(addr)).await {
-            Ok(Ok(_)) => {
-                info!("Dialed bootstrap peer {}", addr);
-                dialed_ok = true;
-            }
-            Ok(Err(e)) => warn!("Bootstrap dial failed ({}): {}", addr, e),
-            Err(_) => warn!("Bootstrap dial timeout ({}): exceeded 10s", addr),
-        }
-    }
 
     // Extract bootstrap peer IDs as base58 strings for matching.
     // list_peers() returns raw protobuf bytes which don't match PeerId::to_bytes()
@@ -1161,9 +1152,7 @@ async fn dial_and_wait_for_bootstrap(
 
                 // Log progress every 5 seconds
                 let elapsed = start.elapsed();
-                if elapsed.as_secs().is_multiple_of(5)
-                    && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2
-                {
+                if elapsed.as_secs() % 5 == 0 && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2 {
                     info!("   Waiting for bootstrap peers... ({:.0}s elapsed, {} total peers connected)",
                           elapsed.as_secs_f64(), peers.len());
                 }
@@ -1175,17 +1164,11 @@ async fn dial_and_wait_for_bootstrap(
 
         // Check timeout
         if start.elapsed() >= max_wait {
-            if dialed_ok {
-                // Dial succeeded — list_peers() just hasn't confirmed it yet.
-                // The connection is live; send_to_bootstrap will use it.
-                info!("Bootstrap peer dialed but not yet visible in peer list — continuing");
-            } else {
-                warn!(
-                    "⚠️  Bootstrap timeout after {}s — no bootstrap peers connected",
-                    MAX_WAIT_SECS
-                );
-                warn!("   Node will still announce, but may not be visible on map initially");
-            }
+            warn!(
+                "⚠️  Bootstrap timeout after {}s — no bootstrap peers visible yet",
+                MAX_WAIT_SECS
+            );
+            warn!("   Node will still announce, but may not be visible on map initially");
             return Ok(());
         }
 
@@ -1320,6 +1303,76 @@ fn compute_effective_tps(model: &str, dl_bps: f64, using_relay: bool) -> f64 {
         Some(entry) => crate::throughput::effective_tps(&entry, dl_bps, using_relay),
         None => 10.0, // fallback until benchmark is run
     }
+}
+
+/// Spawn a fresh p2pd and reconnect the P2PClient.
+/// Called by the watchdog when the daemon detects p2pd has exited.
+async fn restart_p2pd(
+    daemon: &mut P2PDaemon,
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    p2pd_path: &Option<std::path::PathBuf>,
+    config: &crate::config::KwaaiNetConfig,
+    bootstrap_peers: &[String],
+    announce_addr: &Option<String>,
+    handler_addr: std::net::SocketAddr,
+) -> Result<()> {
+    // Drop the dead daemon handle (reaps the zombie if still pending).
+    let _ = daemon.shutdown().await;
+
+    let host_addr = format!("/ip4/0.0.0.0/tcp/{}", config.port);
+    let identity_key_path = crate::identity::NodeIdentity::key_file_path();
+
+    let builder = P2PDaemon::builder()
+        .dht(true)
+        .bootstrap(!bootstrap_peers.is_empty())
+        .relay(!config.no_relay)
+        .auto_relay(true)
+        .auto_nat(true)
+        .force_reachability_private(announce_addr.is_none() && !config.no_relay)
+        .nat_portmap(true)
+        .host_addrs([host_addr])
+        .bootstrap_peers(bootstrap_peers.to_vec())
+        .trusted_relays(bootstrap_peers.to_vec())
+        .with_identity_key(&identity_key_path);
+
+    let builder = match announce_addr {
+        Some(addr) => builder.announce_addrs([addr.as_str()]),
+        None => builder,
+    };
+    let builder = match p2pd_path {
+        Some(path) => builder.with_binary_path(path),
+        None => builder,
+    };
+    let builder = if let Ok(sock) = std::env::var("KWAAINET_SOCKET") {
+        #[cfg(unix)]
+        let addr = format!("/unix/{}", sock);
+        #[cfg(not(unix))]
+        let addr = sock;
+        builder.with_listen_addr(addr)
+    } else {
+        builder
+    };
+
+    let mut new_daemon = builder.spawn().await.context("restarting p2pd")?;
+    let mut new_client = new_daemon.client().await.context("p2pd client (restart)")?;
+
+    new_client
+        .register_stream_handler(
+            &format!("/ip4/127.0.0.1/tcp/{}", handler_addr.port()),
+            vec![
+                "DHTProtocol.rpc_ping".to_string(),
+                "DHTProtocol.rpc_store".to_string(),
+                "DHTProtocol.rpc_find".to_string(),
+            ],
+        )
+        .await
+        .context("re-registering stream handlers")?;
+
+    dial_and_wait_for_bootstrap(&mut new_client, bootstrap_peers).await?;
+
+    *daemon = new_daemon;
+    *client = new_client;
+    Ok(())
 }
 
 fn find_p2pd_binary() -> Option<std::path::PathBuf> {
