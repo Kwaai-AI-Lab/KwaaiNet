@@ -536,6 +536,13 @@ async fn main() -> Result<()> {
                         if let Some(ref ip) = cfg.public_ip {
                             println!("  📋 public_ip:    {}", ip);
                         }
+                        if cfg.vpk_enabled {
+                            println!();
+                            println!("  🔐 vpk_enabled:  true");
+                            println!("  🔐 vpk_mode:     {}", cfg.vpk_mode.as_deref().unwrap_or("(not set)"));
+                            println!("  🔐 vpk_port:     {}", cfg.vpk_local_port.unwrap_or(7432));
+                            println!("  🔐 vpk_endpoint: {}", cfg.vpk_endpoint.as_deref().unwrap_or("(auto: public_ip)"));
+                        }
                         print_separator();
                     }
                 }

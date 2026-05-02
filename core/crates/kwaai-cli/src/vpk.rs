@@ -48,19 +48,28 @@ fn enable(mode: String, endpoint: Option<String>, port: u16) -> Result<()> {
     }
 
     let mut cfg = KwaaiNetConfig::load_or_create()?;
+    // Discard loopback/empty endpoints — the node auto-detects public IP at
+    // runtime. Saving localhost here would suppress that detection permanently.
+    let effective_endpoint = endpoint.clone().filter(|ep| {
+        !ep.is_empty()
+            && !ep.contains("localhost")
+            && !ep.contains("127.0.0.1")
+            && !ep.contains("::1")
+    });
+
     cfg.vpk_enabled = true;
     cfg.vpk_mode = Some(mode.clone());
-    cfg.vpk_endpoint = endpoint.clone();
+    cfg.vpk_endpoint = effective_endpoint.clone();
     cfg.vpk_local_port = Some(port);
     cfg.save()?;
 
     print_box_header("🔐 VPK Integration Enabled");
     println!("  Mode:     {}", mode);
     println!("  Port:     {}", port);
-    if let Some(ref ep) = endpoint {
+    if let Some(ref ep) = effective_endpoint {
         println!("  Endpoint: {}", ep);
     } else {
-        println!("  Endpoint: (not advertised — local-only)");
+        println!("  Endpoint: (auto: http://<public-ip>:{port})");
     }
     println!();
     print_success("VPK integration enabled. Restart the node to advertise on DHT.");
