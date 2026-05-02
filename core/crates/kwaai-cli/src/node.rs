@@ -1447,6 +1447,26 @@ async fn restart_p2pd(
 
     *daemon = new_daemon;
     *client = new_client;
+
+    // The storage API holds a persistent connection to p2pd and registers
+    // /kwaai/storage/1.0.0 once at startup. Since p2pd just restarted, that
+    // connection is dead and the handler is gone. Restart the storage API so
+    // it reconnects and re-registers with the fresh p2pd.
+    #[cfg(feature = "storage")]
+    if config.storage.is_some() {
+        let storage_mgr = crate::daemon::StorageApiManager::new();
+        if storage_mgr.is_running() {
+            storage_mgr.stop_process();
+        }
+        match crate::daemon::StorageApiManager::spawn_storage_child() {
+            Ok(pid) => {
+                storage_mgr.write_pid(pid);
+                info!("✅ storage API restarted after p2pd restart (PID {})", pid);
+            }
+            Err(e) => warn!("failed to restart storage API after p2pd restart: {}", e),
+        }
+    }
+
     Ok(())
 }
 

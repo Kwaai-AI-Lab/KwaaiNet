@@ -400,6 +400,14 @@ async fn http_health_check(endpoint: &str) -> String {
     if endpoint.is_empty() || endpoint == "unknown" {
         return "⚫ no connectivity info".to_string();
     }
+    // Loopback endpoints can't be verified from a remote node — the request
+    // would hit the caller's own localhost, not the advertised node's service.
+    if endpoint.contains("localhost")
+        || endpoint.contains("127.0.0.1")
+        || endpoint.contains("::1")
+    {
+        return "⚫ local endpoint only".to_string();
+    }
     let url = format!("{}/api/health", endpoint.trim_end_matches('/'));
     let hc = reqwest::Client::builder()
         .timeout(Duration::from_secs(4))
