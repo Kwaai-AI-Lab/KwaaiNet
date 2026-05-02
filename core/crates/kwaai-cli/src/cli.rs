@@ -537,6 +537,14 @@ pub struct BenchArgs {
     /// Vectors per RPC upload batch
     #[arg(long, default_value = "500")]
     pub batch_size: usize,
+
+    /// Qdrant base URL to include in comparison (default: http://localhost:6333, skip if unreachable)
+    #[arg(long, default_value = "http://localhost:6333")]
+    pub qdrant_url: String,
+
+    /// Qdrant API key (required for Qdrant Cloud, omit for local Docker)
+    #[arg(long, value_name = "KEY")]
+    pub qdrant_api_key: Option<String>,
 }
 
 #[derive(Args)]
