@@ -507,6 +507,36 @@ pub enum VpkAction {
 
     /// Manage storage tenants on Eve nodes via /kwaai/storage/1.0.0
     Tenant(TenantArgs),
+
+    /// Benchmark: sharded Eve vector DB vs single local index
+    Bench(BenchArgs),
+}
+
+#[derive(Args)]
+pub struct BenchArgs {
+    /// Comma-separated Eve node PeerIds (base58) to shard across
+    #[arg(long, value_name = "PEER_IDS")]
+    pub eve_peer_ids: String,
+
+    /// Total number of vectors in the corpus
+    #[arg(long, default_value = "50000")]
+    pub vectors: usize,
+
+    /// Vector dimensions (must match Eve's dimension setting)
+    #[arg(long, default_value = "384")]
+    pub dimensions: usize,
+
+    /// Number of search queries to run
+    #[arg(long, default_value = "200")]
+    pub queries: usize,
+
+    /// Top-K results per query
+    #[arg(long, default_value = "10")]
+    pub top_k: usize,
+
+    /// Vectors per RPC upload batch
+    #[arg(long, default_value = "500")]
+    pub batch_size: usize,
 }
 
 #[derive(Args)]

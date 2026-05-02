@@ -30,6 +30,7 @@ pub async fn run(args: VpkArgs) -> Result<()> {
         VpkAction::Shard { kb_id, eve_count } => shard(kb_id, eve_count).await,
         VpkAction::Resolve { kb_id } => resolve(kb_id).await,
         VpkAction::Tenant(args) => tenant(args.action).await,
+        VpkAction::Bench(args) => crate::vpk_bench::run(args).await,
     }
 }
 

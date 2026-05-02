@@ -28,6 +28,7 @@ mod throughput;
 mod uninstall;
 mod updater;
 mod vpk;
+mod vpk_bench;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
