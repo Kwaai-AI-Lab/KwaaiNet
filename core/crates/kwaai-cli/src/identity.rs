@@ -79,9 +79,9 @@ impl NodeIdentity {
         kwaai_trust::peer_id_to_did(&self.peer_id)
     }
 
-    /// Path to the identity key file (`~/.kwaainet/identity.key`)
+    /// Path to the identity key file (`~/.kwaainet/identity.key`, or `$KWAAINET_HOME/identity.key`)
     pub fn key_file_path() -> PathBuf {
-        kwaainet_home().join("identity.key")
+        crate::config::kwaainet_dir().join("identity.key")
     }
 }
 
@@ -306,8 +306,3 @@ fn abbreviate_did(did: &str, max_len: usize) -> String {
     }
 }
 
-fn kwaainet_home() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".kwaainet")
-}

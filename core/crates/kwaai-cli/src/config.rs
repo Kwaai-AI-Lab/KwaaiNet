@@ -13,6 +13,9 @@ use tracing::{debug, info};
 // ---------------------------------------------------------------------------
 
 pub fn kwaainet_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("KWAAINET_HOME") {
+        return PathBuf::from(home);
+    }
     dirs_home().join(".kwaainet")
 }
 

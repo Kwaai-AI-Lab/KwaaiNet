@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use kwaai_hivemind_dht::protocol::{FindRequest, FindResponse, NodeInfo, RequestAuthInfo};
 use kwaai_p2p::NetworkConfig;
-use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+use kwaai_p2p_daemon::P2PClient;
 use libp2p::PeerId;
 use prost::Message as _;
 use sha1::{Digest, Sha1};
@@ -166,11 +166,8 @@ async fn discover(json_output: bool) -> Result<()> {
     }
 
     // Connect to the running node's p2pd over its IPC socket.
-    // Construct the same address the daemon uses.
-    #[cfg(unix)]
-    let daemon_addr = format!("/unix/{}", DEFAULT_SOCKET_NAME);
-    #[cfg(not(unix))]
-    let daemon_addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+    // Respects KWAAINET_SOCKET so multi-instance setups (KWAAINET_HOME) work.
+    let daemon_addr = crate::shard_cmd::daemon_socket();
 
     let mut client = match P2PClient::connect(&daemon_addr).await {
         Ok(c) => c,
