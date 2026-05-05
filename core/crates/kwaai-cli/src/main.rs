@@ -1636,7 +1636,18 @@ async fn serve_command(args: ServeArgs) -> Result<()> {
         match engine.load_model(&blob, ModelFormat::Gguf) {
             Ok(h) => h,
             Err(e) => {
-                print_error(&format!("{e}"));
+                let msg = e.to_string();
+                print_error(&format!("{msg}"));
+                if msg.contains("unknown dtype") {
+                    print_info("This model uses a quantization type not yet supported by the");
+                    print_info("candle inference backend. Use llama.cpp instead:");
+                    print_info(&format!(
+                        "  kwaainet shard api --model-path {} --port {}",
+                        blob.display(),
+                        args.port
+                    ));
+                    print_info("llama.cpp supports all GGUF quantization types including IQ* and Q4_0_8_8.");
+                }
                 return Ok(());
             }
         }

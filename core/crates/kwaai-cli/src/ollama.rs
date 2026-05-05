@@ -112,6 +112,9 @@ pub fn list_local_models() -> Vec<String> {
     for sub in &["Documents/Kwaai/ollama", "Documents/ollama"] {
         roots.push(home.join(sub).join("manifests"));
     }
+    roots.push(
+        PathBuf::from("/usr/share/ollama/.ollama/models").join("manifests"),
+    );
     roots.push(home.join(".ollama").join("models").join("manifests"));
 
     let mut models: Vec<String> = Vec::new();
@@ -216,7 +219,15 @@ fn find_ollama_roots() -> Result<(PathBuf, PathBuf)> {
         }
     }
 
-    // 3. Default ~/.ollama with the `models/` subdirectory.
+    // 3. System-wide Ollama service layout (Linux: `systemctl enable ollama`).
+    //    When Ollama runs as a system service under user `ollama`, models land at
+    //    /usr/share/ollama/.ollama/models — not in any user home directory.
+    let system_root = PathBuf::from("/usr/share/ollama/.ollama/models");
+    if system_root.join("blobs").is_dir() && system_root.join("manifests").is_dir() {
+        return Ok((system_root.join("manifests"), system_root.join("blobs")));
+    }
+
+    // 4. Default ~/.ollama with the `models/` subdirectory.
     let default = home.join(".ollama").join("models");
     Ok((default.join("manifests"), default.join("blobs")))
 }
