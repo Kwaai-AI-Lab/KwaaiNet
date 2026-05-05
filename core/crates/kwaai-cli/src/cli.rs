@@ -538,13 +538,21 @@ pub struct BenchArgs {
     #[arg(long, default_value = "500")]
     pub batch_size: usize,
 
-    /// Qdrant base URL to include in comparison (default: http://localhost:6333, skip if unreachable)
+    /// Qdrant local base URL (default: http://localhost:6333, skip if unreachable)
     #[arg(long, default_value = "http://localhost:6333")]
     pub qdrant_url: String,
 
-    /// Qdrant API key (required for Qdrant Cloud, omit for local Docker)
+    /// Qdrant API key for local instance (usually not needed)
     #[arg(long, value_name = "KEY")]
     pub qdrant_api_key: Option<String>,
+
+    /// Qdrant Cloud cluster URL (e.g. https://xyz.aws.cloud.qdrant.io:6333), skipped if omitted
+    #[arg(long, value_name = "URL")]
+    pub qdrant_cloud_url: Option<String>,
+
+    /// Qdrant Cloud API key (required when --qdrant-cloud-url is set)
+    #[arg(long, value_name = "KEY")]
+    pub qdrant_cloud_api_key: Option<String>,
 }
 
 #[derive(Args)]

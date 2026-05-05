@@ -222,6 +222,23 @@ impl TenantManager {
             .sum();
         Ok(n)
     }
+
+    /// Total storage bytes across all active tenants (used for Eve-level capacity check).
+    /// Uses the same formula as per-tenant stats: live_count * (4 * dim + 24).
+    pub async fn total_storage_bytes(&self) -> Result<i64> {
+        let bytes = self
+            .inner()
+            .indices
+            .read()
+            .unwrap()
+            .values()
+            .map(|arc| {
+                let idx = arc.lock().unwrap();
+                idx.live_count() as i64 * (4 * idx.dimension as i64 + 24)
+            })
+            .sum();
+        Ok(bytes)
+    }
 }
 
 fn record_to_info(tenant_id: Uuid, rec: &TenantRecord) -> TenantInfo {

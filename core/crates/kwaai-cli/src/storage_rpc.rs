@@ -197,6 +197,17 @@ async fn dispatch(
                 Err(e) => return StorageResponse::err(format!("payload: {e}")),
             };
             let tm = TenantManager::new(db);
+            // Reject if Eve doesn't have enough headroom for the requested quota.
+            let used_bytes = tm.total_storage_bytes().await.unwrap_or(0);
+            let eve_capacity_bytes = (capacity_gb * 1_073_741_824.0) as i64;
+            let requested_bytes = input.capacity_limit_mb * 1024 * 1024;
+            if eve_capacity_bytes > 0 && used_bytes + requested_bytes > eve_capacity_bytes {
+                let available_mb = (eve_capacity_bytes - used_bytes).max(0) / (1024 * 1024);
+                return StorageResponse::err(format!(
+                    "Eve storage full: only {} MB available, {} MB requested",
+                    available_mb, input.capacity_limit_mb,
+                ));
+            }
             match tm
                 .create(
                     &input.peer_id,
@@ -250,6 +261,47 @@ async fn dispatch(
                 Ok(v) => v,
                 Err(e) => return StorageResponse::err(format!("payload: {e}")),
             };
+
+            // Capacity checks before any writes.
+            let tm = TenantManager::new(db.clone());
+            let dim = input.vectors.first().map(|v| v.embedding.len()).unwrap_or(384) as i64;
+            let bytes_per_vec = 4 * dim + 24;
+            let incoming_bytes = input.vectors.len() as i64 * bytes_per_vec;
+
+            // 1. Per-tenant quota.
+            let tenant_info = match tm.get(tid).await {
+                Ok(Some(i)) => i,
+                Ok(None) => return StorageResponse::err("tenant not found"),
+                Err(e) => return StorageResponse::err(format!("tenant lookup: {e}")),
+            };
+            if tenant_info.capacity_limit_mb > 0 {
+                let stats = match tm.stats(tid).await {
+                    Ok(s) => s,
+                    Err(e) => return StorageResponse::err(format!("stats: {e}")),
+                };
+                let limit_bytes = tenant_info.capacity_limit_mb * 1024 * 1024;
+                if stats.storage_bytes + incoming_bytes > limit_bytes {
+                    return StorageResponse::err(format!(
+                        "tenant quota exceeded: {}/{} MB used",
+                        (stats.storage_bytes + incoming_bytes) / (1024 * 1024),
+                        tenant_info.capacity_limit_mb,
+                    ));
+                }
+            }
+
+            // 2. Eve total capacity.
+            let eve_capacity_bytes = (capacity_gb * 1_073_741_824.0) as i64;
+            if eve_capacity_bytes > 0 {
+                let total_bytes = tm.total_storage_bytes().await.unwrap_or(0);
+                if total_bytes + incoming_bytes > eve_capacity_bytes {
+                    let used_gb = total_bytes as f64 / 1_073_741_824.0;
+                    return StorageResponse::err(format!(
+                        "Eve storage full: {:.2}/{:.2} GB used",
+                        used_gb, capacity_gb,
+                    ));
+                }
+            }
+
             let vectors: Vec<(i64, Vec<f32>)> = input
                 .vectors
                 .into_iter()

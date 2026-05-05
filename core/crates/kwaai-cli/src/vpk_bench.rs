@@ -52,6 +52,8 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let batch = args.batch_size;
     let qdrant_url = args.qdrant_url.clone();
     let qdrant_api_key = args.qdrant_api_key.clone();
+    let qdrant_cloud_url = args.qdrant_cloud_url.clone();
+    let qdrant_cloud_api_key = args.qdrant_cloud_api_key.clone();
     let k = eves.len();
 
     println!("  Max vectors:   {:>8}", n_max);
@@ -223,24 +225,24 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             recall_sum += hits as f64 / top_k as f64;
         }
 
-        // ── Qdrant benchmark ─────────────────────────────────────────────────
-        let qdrant_result = bench_qdrant(
-            &qdrant_url,
-            qdrant_api_key.as_deref(),
-            &corpus[..n],
-            &query_vecs,
-            top_k,
-            batch,
-            dim,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            println!("    ⚠ Qdrant error: {e}");
-            None
-        });
+        // ── Qdrant benchmark (local + Cloud in parallel) ─────────────────────
+        let (qdrant_local, qdrant_cloud) = tokio::join!(
+            bench_qdrant(&qdrant_url, qdrant_api_key.as_deref(), &corpus[..n], &query_vecs, top_k, batch, dim),
+            async {
+                match &qdrant_cloud_url {
+                    Some(url) => bench_qdrant(url, qdrant_cloud_api_key.as_deref(), &corpus[..n], &query_vecs, top_k, batch, dim).await,
+                    None => Ok(None),
+                }
+            }
+        );
+        let qdrant_result = qdrant_local.unwrap_or_else(|e| { println!("    ⚠ Qdrant local error: {e}"); None });
+        let qdrant_cloud_result = qdrant_cloud.unwrap_or_else(|e| { println!("    ⚠ Qdrant Cloud error: {e}"); None });
 
         if let Some(ref qr) = qdrant_result {
-            println!("         qdrant p50={} µs", qr.search.p50);
+            println!("         qdrant-local p50={} µs", qr.search.p50);
+        }
+        if let Some(ref qr) = qdrant_cloud_result {
+            println!("         qdrant-cloud p50={} µs", qr.search.p50);
         }
 
         scale_results.push(ScaleResult {
@@ -251,6 +253,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             sharded: percentiles(&mut shard_lat),
             recall_pct: recall_sum / n_queries as f64 * 100.0,
             qdrant: qdrant_result,
+            qdrant_cloud: qdrant_cloud_result,
         });
 
         println!(
@@ -277,7 +280,25 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     // Search latency table
     let has_qdrant = scale_results.iter().any(|r| r.qdrant.is_some());
     println!("  Search latency (µs)");
-    if has_qdrant {
+    let has_qdrant_cloud = scale_results.iter().any(|r| r.qdrant_cloud.is_some());
+    if has_qdrant && has_qdrant_cloud {
+        println!(
+            "  {:>10}  {:>10}  {:>10}  {:>12}  {:>12}  {:>8}  {:>8}  {:>8}  {:>9}",
+            "Vectors", "Local p50", "Shard p50", "Qdrant-loc", "Qdrant-cld", "Speedup", "L p95", "S p95", "Recall"
+        );
+        println!("  {}", "─".repeat(108));
+        for r in &scale_results {
+            let speedup = r.local.p50 as f64 / r.sharded.p50.max(1) as f64;
+            let winner = if r.sharded.p50 < r.local.p50 { "✅" } else { "❌" };
+            let ql = r.qdrant.as_ref().map(|q| format!("{:>12}", q.search.p50)).unwrap_or_else(|| format!("{:>12}", "n/a"));
+            let qc = r.qdrant_cloud.as_ref().map(|q| format!("{:>12}", q.search.p50)).unwrap_or_else(|| format!("{:>12}", "n/a"));
+            println!(
+                "  {:>10}  {:>10}  {:>10}  {}  {}  {:>7.2}×{}  {:>8}  {:>8}  {:>8.1}%",
+                r.n, r.local.p50, r.sharded.p50, ql, qc, speedup, winner,
+                r.local.p95, r.sharded.p95, r.recall_pct
+            );
+        }
+    } else if has_qdrant {
         println!(
             "  {:>10}  {:>10}  {:>10}  {:>11}  {:>8}  {:>8}  {:>8}  {:>9}",
             "Vectors", "Local p50", "Shard p50", "Qdrant p50", "Speedup", "L p95", "S p95", "Recall"
@@ -369,26 +390,23 @@ pub async fn run(args: BenchArgs) -> Result<()> {
 
     // Upload time comparison
     println!("  Upload time (ms)");
-    if has_qdrant {
-        println!(
-            "  {:>10}  {:>12}  {:>12}  {:>12}",
-            "Vectors", "Local", "Sharded", "Qdrant"
-        );
+    if has_qdrant && has_qdrant_cloud {
+        println!("  {:>10}  {:>12}  {:>12}  {:>14}  {:>14}", "Vectors", "Local", "Sharded", "Qdrant-local", "Qdrant-Cloud");
+        println!("  {}", "─".repeat(68));
+        for r in &scale_results {
+            let ql = r.qdrant.as_ref().map(|q| format!("{:>14}", q.upload_ms)).unwrap_or_else(|| format!("{:>14}", "n/a"));
+            let qc = r.qdrant_cloud.as_ref().map(|q| format!("{:>14}", q.upload_ms)).unwrap_or_else(|| format!("{:>14}", "n/a"));
+            println!("  {:>10}  {:>12}  {:>12}  {}  {}", r.n, r.local_upload_ms, r.shard_upload_ms, ql, qc);
+        }
+    } else if has_qdrant {
+        println!("  {:>10}  {:>12}  {:>12}  {:>12}", "Vectors", "Local", "Sharded", "Qdrant");
         println!("  {}", "─".repeat(52));
         for r in &scale_results {
-            let q_col = r.qdrant.as_ref()
-                .map(|q| format!("{:>12}", q.upload_ms))
-                .unwrap_or_else(|| format!("{:>12}", "n/a"));
-            println!(
-                "  {:>10}  {:>12}  {:>12}  {}",
-                r.n, r.local_upload_ms, r.shard_upload_ms, q_col
-            );
+            let q_col = r.qdrant.as_ref().map(|q| format!("{:>12}", q.upload_ms)).unwrap_or_else(|| format!("{:>12}", "n/a"));
+            println!("  {:>10}  {:>12}  {:>12}  {}", r.n, r.local_upload_ms, r.shard_upload_ms, q_col);
         }
     } else {
-        println!(
-            "  {:>10}  {:>12}  {:>12}",
-            "Vectors", "Local (ms)", "Sharded (ms)"
-        );
+        println!("  {:>10}  {:>12}  {:>12}", "Vectors", "Local (ms)", "Sharded (ms)");
         println!("  {}", "─".repeat(40));
         for r in &scale_results {
             println!("  {:>10}  {:>12}  {:>12}", r.n, r.local_upload_ms, r.shard_upload_ms);
@@ -616,6 +634,7 @@ struct ScaleResult {
     sharded: Stats,
     recall_pct: f64,
     qdrant: Option<QdrantStats>,
+    qdrant_cloud: Option<QdrantStats>,
 }
 
 struct QdrantStats {
