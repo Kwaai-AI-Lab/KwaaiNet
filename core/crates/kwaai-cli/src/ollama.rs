@@ -189,7 +189,8 @@ fn manifest_path_to_ref(manifest: &Path, root: &Path) -> Option<String> {
 ///
 /// 1. `OLLAMA_MODELS` env var (custom layout: `$dir/manifests/`, `$dir/blobs/`)
 /// 2. Common macOS custom paths under `~/Documents` (same layout)
-/// 3. Default `~/.ollama/models/` (default layout)
+/// 3. System-wide location for system-managed Ollama (`/usr/share/ollama/.ollama/models/`)
+/// 4. Default `~/.ollama/models/` (default layout)
 fn find_ollama_roots() -> Result<(PathBuf, PathBuf)> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
 
@@ -206,6 +207,10 @@ fn find_ollama_roots() -> Result<(PathBuf, PathBuf)> {
         candidates.push(home.join(sub));
     }
 
+    // 3. System-wide Ollama (common on Linux when running as a system service).
+    // Ollama service typically runs as user "ollama" with home /usr/share/ollama.
+    candidates.push(PathBuf::from("/usr/share/ollama/.ollama/models"));
+
     // For each candidate check whether it uses the "custom" layout
     // (blobs/ directly under the root) and return if found.
     for dir in &candidates {
@@ -216,7 +221,7 @@ fn find_ollama_roots() -> Result<(PathBuf, PathBuf)> {
         }
     }
 
-    // 3. Default ~/.ollama with the `models/` subdirectory.
+    // 4. Default ~/.ollama with the `models/` subdirectory.
     let default = home.join(".ollama").join("models");
     Ok((default.join("manifests"), default.join("blobs")))
 }
