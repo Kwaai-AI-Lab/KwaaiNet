@@ -440,20 +440,30 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | Bob fan-out to multiple Eves (`kwaainet vpk shard`) | 🔄 Phase 2 |
 | DHT-backed shard resolution (`kwaainet vpk resolve`) | 🔄 Phase 3 |
 
-### Benchmark results (2026-05-02)
+### Benchmark results
 
-Measured on two metro Eve nodes (WAN P2P RTT p50 = 25.6 ms), 50K vectors, dim=384:
+Two runs, 50K vectors, dim=384:
+
+**Run 1 — 2026-05-02, K=2 metro Eves (WAN RTT p50 = 25.6 ms)**
 
 | Backend | Search p50 | Upload (50K vecs) |
 |---------|-----------|-------------------|
 | KwaaiNet local HNSW | **2.5 ms** | 53 s |
-| KwaaiNet WAN sharded (2 Eves) | 31 ms | 224 s |
+| KwaaiNet WAN K=2 | 31 ms | 224 s |
 | Qdrant local Docker | 1.2 ms | 2.8 s |
 | Qdrant Cloud (us-west-1) | 67 ms † | 298 s |
 
+**Run 2 — 2026-05-05, K=11 geographically diverse Eves (WAN RTT p50 = 92.5 ms)**
+
+| Backend | Search p50 | Upload (50K vecs) |
+|---------|-----------|-------------------|
+| KwaaiNet local HNSW | **2.6 ms** | 53 s |
+| KwaaiNet WAN K=11 | 115 ms | 298 s |
+| Qdrant local Docker | 1.2 ms | 2.8 s |
+
 † 50K spike — likely index-rebuild threshold on the free-tier cluster.
 
-**Key finding:** WAN sharding across Eve nodes is RTT-dominated and cannot beat local HNSW on query latency at any corpus size (breakeven requires K ≈ 2⁶³ shards). Sharding is justified by **capacity** — distributing a corpus too large for one machine's RAM — not latency. LAN-range Eves (≤1 ms RTT) break even at K ≈ 11. PHE-encrypted vectors work equally well on Qdrant; KwaaiNet Eve's unique value is **decentralised, peer-owned storage** with no company intermediary.
+**Key finding:** WAN sharding is RTT-dominated and cannot reduce search latency at any corpus size. 7 of 11 nodes sat at 95–105 ms; every fan-out query pays that floor regardless of shard count or corpus size. Sharding is justified by **capacity** — distributing a corpus too large for one machine's RAM — not latency. LAN-range Eves (≤1 ms RTT) break even at K ≈ 11. PHE-encrypted vectors work equally well on Qdrant; KwaaiNet Eve's unique value is **decentralised, peer-owned storage** with no company intermediary.
 
 Full write-up: [docs/vpk-shard-bench/README.md](docs/vpk-shard-bench/README.md)
 
