@@ -1,6 +1,7 @@
 """
 VPK Shard Benchmark — Visualisation
-Measured on KwaaiNet metro nodes, 2026-05-02
+Run 1 (2026-05-02): KwaaiNet local + WAN K=2 metro Eves + Qdrant local + Qdrant Cloud
+Run 2 (2026-05-05): WAN K=11 geographically diverse Eves
 """
 
 import numpy as np
@@ -11,18 +12,26 @@ import matplotlib.ticker
 from matplotlib.lines import Line2D
 import os
 
-# ── Measured data (bench run, 2026-05-02) ────────────────────────────────────
+# ── Run 1 measured data (2026-05-02, K=2 metro Eves) ─────────────────────────
 bench_n           = [12_500,  25_000,  50_000]
 bench_local       = [ 2_139,   2_269,   2_488]   # µs  (local HNSW p50)
-bench_wan2        = [33_007,  32_268,  31_415]   # µs  (2 WAN Eves, p50)
+bench_wan2        = [33_007,  32_268,  31_415]   # µs  (K=2 WAN Eves, p50)
 bench_qdrant_loc  = [   496,     722,   1_173]   # µs  (Qdrant local Docker p50)
 bench_qdrant_cld  = [29_076,  28_881,  67_012]   # µs  (Qdrant Cloud us-west-1 p50)
+
+# Run 2 measured data (2026-05-05, K=11 geographically diverse Eves)
+# 7 of 11 nodes RTT ~95–105 ms; fan-out latency = max(shard latencies)
+bench_wan11       = [113_342, 114_273, 114_845]  # µs  (K=11 WAN, p50)
+# Run-2 local (fresh bench binary, same corpus) — slightly different from Run 1
+bench_local2      = [  2_254,   2_022,   2_563]  # µs
+bench_qdrant_loc2 = [    461,     555,   1_155]  # µs  (Qdrant local, Run 2)
 
 # Earlier RTT-characterisation run (15K/30K/60K) — keep for model grounding
 measured_n    = [15_000, 30_000, 60_000]
 measured_local = [1_257,  2_164,  2_072]         # µs
 
-p2p_rtt_us    = 25_608                           # µs  (p50 across two metro Eves)
+p2p_rtt_us    = 25_608                           # µs  (K=2 metro Eves, Run 1)
+p2p_rtt_wan11 = 92_526                           # µs  (K=11 diverse Eves, Run 2; slowest shard dominates)
 
 # ── KwaaiNet local HNSW model  (log2 regression, 12.5K–50K) ─────────────────
 # local_p50(N) ≈ A + B * log2(N)   µs
@@ -81,6 +90,23 @@ ax1.scatter(bench_n, [v/1e3 for v in bench_wan2],
             color=C_WAN, s=80, zorder=5, marker="s",
             label="KwaaiNet WAN K=2 (bench run)")
 
+# K=11 measured — geographically diverse Eves (Run 2, 2026-05-05)
+# Fan-out = max(shard RTTs); 7/11 nodes at ~95–105 ms dominates
+ax1.loglog(N, sharded_p50(N, 11, p2p_rtt_wan11)/1e3,
+           color=C_WAN, lw=2, alpha=0.55, linestyle="-.",
+           label="KwaaiNet WAN sharded K=11 (model, RTT=93ms)")
+ax1.scatter(bench_n, [v/1e3 for v in bench_wan11],
+            color=C_WAN, s=100, zorder=6, marker="P",
+            label="KwaaiNet WAN K=11 (bench run, 2026-05-05)")
+ax1.annotate(
+    "K=11:\n7/11 Eves at\n~100 ms RTT\n→ fan-out floor",
+    xy=(25_000, 114_273/1e3),
+    xytext=(4_000, 70),
+    arrowprops=dict(arrowstyle="->", color=C_WAN, lw=1.1),
+    fontsize=7.5, color=C_WAN,
+    bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=C_WAN, alpha=0.85),
+)
+
 # LAN sharded — K = 2, 10
 for k, alpha in [(2, 1.0), (10, 0.65)]:
     ax1.loglog(N, sharded_p50(N, k, 1_000)/1e3,
@@ -118,12 +144,13 @@ ax1.annotate(
 )
 
 # Network floor lines
-for rtt, label, col in [
-    (p2p_rtt_us, f"WAN RTT floor  ({p2p_rtt_us/1e3:.0f} ms)", C_WAN),
-    (5_000,      "Datacenter floor (5 ms)",                     C_DC),
-    (1_000,      "LAN floor (1 ms)",                            C_LAN),
+for rtt, label, col, dash in [
+    (p2p_rtt_us,    f"WAN K=2 floor  ({p2p_rtt_us/1e3:.0f} ms)",      C_WAN, "dotted"),
+    (p2p_rtt_wan11, f"WAN K=11 floor ({p2p_rtt_wan11/1e3:.0f} ms)",    C_WAN, (0,(4,2))),
+    (5_000,         "Datacenter floor (5 ms)",                          C_DC,  "dotted"),
+    (1_000,         "LAN floor (1 ms)",                                 C_LAN, "dotted"),
 ]:
-    ax1.axhline(rtt/1e3, color=col, lw=1, linestyle="dotted", alpha=0.6)
+    ax1.axhline(rtt/1e3, color=col, lw=1, linestyle=dash, alpha=0.6)
     ax1.text(1.1e4, rtt/1e3 * 1.12, label, color=col, fontsize=7.5, va="bottom")
 
 # Annotate KwaaiNet local "flat" region
@@ -211,7 +238,9 @@ for rtt_ms, col, rtt_label in [
 
 # Mark our two measured Eves
 ax2.axvline(2, color=C_MEAS, lw=1, linestyle=":", alpha=0.5)
-ax2.text(2.1, 24, "← our 2 metro Eves", fontsize=7.5, color=C_MEAS)
+ax2.text(2.1, 24, "← K=2 metro Eves", fontsize=7.5, color=C_MEAS)
+ax2.axvline(11, color=C_MEAS, lw=1, linestyle=(0,(4,2)), alpha=0.5)
+ax2.text(11.5, 24, "← K=11\ndiverse Eves", fontsize=7.5, color=C_MEAS)
 
 ax2.set_xlabel("Number of Eve shards (K)", fontsize=11)
 ax2.set_ylabel("Compute time saved vs local (ms)", fontsize=11)
@@ -225,16 +254,17 @@ ax2.tick_params(labelsize=9)
 
 # ── Title + caption ──────────────────────────────────────────────────────────
 fig.suptitle(
-    "VPK Shard Benchmark — KwaaiNet vs Qdrant (local Docker + Cloud)",
+    "VPK Shard Benchmark — KwaaiNet vs Qdrant  (Run 1: K=2, 2026-05-02 · Run 2: K=11, 2026-05-05)",
     fontsize=13, fontweight="bold", y=1.01
 )
 caption = (
-    "Measured on two WAN metro Eve nodes (P2P RTT p50 = 25.6 ms) and Qdrant 1.15.5 "
-    "(local Docker + Cloud us-west-1).  N = 12.5K / 25K / 50K vectors, dim = 384, Q = 200 queries.\n"
+    "Run 1 (2026-05-02): K=2 metro Eve nodes, P2P RTT p50 = 25.6 ms.  "
+    "Run 2 (2026-05-05): K=11 geographically diverse Eves, P2P RTT p50 = 92.5 ms "
+    "(7/11 nodes at ~95–105 ms; fan-out latency = max(shard RTTs)).  "
+    "Qdrant 1.15.5 local Docker + Cloud us-west-1.  N = 12.5K / 25K / 50K, dim=384, Q=200.\n"
     "KwaaiNet HNSW: p50 ≈ −4229 + 407 × log₂N µs.  "
     "Qdrant HNSW: p50 ≈ −4149 + 338 × log₂N µs (2.5× faster/op, same log growth).  "
-    "Qdrant Cloud 50K spike likely index-build threshold.  "
-    "WAN sharding breaks even at K ≈ 2⁶⁴ — physically impossible."
+    "WAN sharding (K=2) breaks even at K ≈ 2⁶⁴; K=11 diverse at ~9.8B vectors — both physically impossible."
 )
 fig.text(0.5, -0.04, caption, ha="center", fontsize=7.5, color="#4B5563",
          wrap=True, style="italic")

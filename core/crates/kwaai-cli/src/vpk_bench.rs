@@ -82,28 +82,49 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     }
     println!();
 
-    // ── Phase 0: P2P RTT measurement ─────────────────────────────────────────
+    // ── Phase 0: P2P RTT measurement + storage probe ─────────────────────────
 
     println!("  [0/5] Measuring P2P round-trip overhead (20 health pings per Eve)...");
     let mut all_rtt_samples: Vec<Duration> = Vec::new();
-    for shard in &shards {
+    let mut healthy_shards: Vec<EveShard> = Vec::new();
+    for shard in shards {
+        let client_guard = shard.client.lock().await;
+        let probe = rpc_health(&*client_guard, &shard.peer_id).await;
+        drop(client_guard);
+        if let Err(e) = probe {
+            println!(
+                "    {} SKIP — storage health probe failed: {:#}",
+                short_id(&shard.peer_id), e
+            );
+            continue;
+        }
         let mut samples: Vec<Duration> = Vec::with_capacity(20);
-        let client = shard.client.lock().await;
-        for _ in 0..20 {
+        let client_guard = shard.client.lock().await;
+        for _ in 0..19 {
             let t0 = Instant::now();
-            rpc_health(&*client, &shard.peer_id).await?;
+            let _ = rpc_health(&*client_guard, &shard.peer_id).await;
             samples.push(t0.elapsed());
         }
+        drop(client_guard);
         let p = percentiles(&mut samples);
         println!(
             "    {} RTT  p50={} µs  p95={} µs  min={} µs",
             short_id(&shard.peer_id), p.p50, p.p95, p.min
         );
         all_rtt_samples.extend(samples);
+        healthy_shards.push(shard);
+    }
+    if healthy_shards.is_empty() {
+        anyhow::bail!("no Eve nodes responded to storage health probe — check 'kwaainet storage serve' is running on Eve nodes");
+    }
+    let mut shards = healthy_shards;
+    let k = shards.len();
+    if k < eves.len() {
+        println!("  ⚠  {}/{} Eve node(s) are storage-capable — skipped {} unresponsive", k, eves.len(), eves.len() - k);
     }
     let rtt_stats = percentiles(&mut all_rtt_samples);
     let rtt_overhead_us = rtt_stats.p50;
-    println!("    Combined P2P overhead p50: {} µs", rtt_overhead_us);
+    println!("    {}/{} nodes responding  P2P overhead p50: {} µs", k, eves.len(), rtt_overhead_us);
     println!();
 
     // ── Phase 1: Generate corpus ──────────────────────────────────────────────

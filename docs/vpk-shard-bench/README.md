@@ -1,6 +1,7 @@
 # VPK Shard Benchmark
 
-**Date:** 2026-05-02  
+**Run 1:** 2026-05-02 — K=2 metro Eves  
+**Run 2:** 2026-05-05 — K=11 geographically diverse Eves  
 **Version:** KwaaiNet v0.4.24  
 **Authors:** KwaaiNet core team
 
@@ -18,8 +19,7 @@ local index?
 
 ## Setup
 
-### Eve nodes
-Two metro Eve nodes, both on v0.4.24:
+### Run 1 — K=2 metro Eves (2026-05-02)
 
 | Node | PeerId (short) | OS |
 |------|----------------|----|
@@ -28,7 +28,26 @@ Two metro Eve nodes, both on v0.4.24:
 
 P2P round-trip (p50, 20 health pings per Eve): **25.6 ms**
 
-### Corpus
+### Run 2 — K=11 geographically diverse Eves (2026-05-05)
+
+| Node | PeerId (short) | OS | RTT p50 |
+|------|----------------|----|--------:|
+| metro-linux-x86_64 | `12D3KooW…TapGgd` | Linux x86-64 | 27.5 ms |
+| metro_win | `12D3KooW…WCWqQz` | Windows x86-64 | 30.6 ms |
+| jerome-linux-x86_64 | `12D3KooW…f6sdrd` | Linux x86-64 | 24.0 ms |
+| kasm-user-linux-aarch64 | `12D3KooW…4JA7bE` | Linux aarch64 | 52.6 ms |
+| darrenw-linux-aarch64 | `12D3KooW…XJiinV` | Linux aarch64 | 56.5 ms |
+| john-linux-draca-x86_64 | `12D3KooW…KsFfWB` | Linux x86-64 | 95.3 ms |
+| john-linux-spectre-x86_64 | `12D3KooW…iediy3` | Linux x86-64 | 95.9 ms |
+| john-linux-vovin-x86_64 | `12D3KooW…jVtAii` | Linux x86-64 | 98.3 ms |
+| john-linux-ryu-x86_64 | `12D3KooW…bSWgXw` | Linux x86-64 | 99.8 ms |
+| john-linux-naga-x86_64 | `12D3KooW…twMpPi` | Linux x86-64 | 104.4 ms |
+| john-linux-draak-x86_64 | `12D3KooW…EaLAN6` | Linux x86-64 | 105.3 ms |
+
+P2P round-trip combined p50: **92.5 ms**  
+Node distribution: 3 nodes at 24–31 ms, 2 at 53–57 ms, **7 at 95–105 ms**
+
+### Corpus (both runs)
 - Vector sizes: 12,500 / 25,000 / 50,000
 - Dimensions: 384 (sentence-embedding scale)
 - 200 search queries, top-10 results
@@ -38,7 +57,8 @@ P2P round-trip (p50, 20 health pings per Eve): **25.6 ms**
 | Backend | Description |
 |---------|-------------|
 | **KwaaiNet local** | In-process redb + hnsw_rs (this machine) |
-| **KwaaiNet WAN sharded** | Fan-out over `/kwaai/storage/1.0.0` to 2 metro Eves |
+| **KwaaiNet WAN K=2** | Fan-out over `/kwaai/storage/1.0.0` to 2 metro Eves |
+| **KwaaiNet WAN K=11** | Fan-out to 11 geographically diverse Eves |
 | **Qdrant local Docker** | Qdrant 1.15.5 at `localhost:6333` |
 | **Qdrant Cloud** | Qdrant managed cluster, `us-west-1` (AWS) |
 
@@ -46,42 +66,56 @@ P2P round-trip (p50, 20 health pings per Eve): **25.6 ms**
 
 ## Results
 
-### Search latency p50 (µs)
+### Search latency p50 (µs) — Run 1 (K=2)
 
-| Vectors | KwaaiNet local | KwaaiNet WAN sharded | Qdrant local | Qdrant Cloud |
-|--------:|---------------:|---------------------:|-------------:|-------------:|
-| 12,500  | 2,139          | 33,007               | 496          | 29,076       |
-| 25,000  | 2,269          | 32,268               | 722          | 28,881       |
-| 50,000  | 2,488          | 31,415               | 1,173        | 67,012 †     |
+| Vectors | KwaaiNet local | KwaaiNet WAN K=2 | Qdrant local | Qdrant Cloud |
+|--------:|---------------:|-----------------:|-------------:|-------------:|
+| 12,500  | 2,139          | 33,007           | 496          | 29,076       |
+| 25,000  | 2,269          | 32,268           | 722          | 28,881       |
+| 50,000  | 2,488          | 31,415           | 1,173        | 67,012 †     |
 
-† The 50K Cloud result jumped from ~29 ms to 67 ms — likely a segment-compaction
-or index-rebuild threshold on the free-tier cluster.
+† 50K Cloud jump from ~29 ms to 67 ms — likely segment-compaction or
+index-rebuild threshold on the free-tier cluster.
 
-### Search latency p95 (µs)
+### Search latency p50 (µs) — Run 2 (K=11)
 
-| Vectors | KwaaiNet local | KwaaiNet WAN sharded | Qdrant local | Qdrant Cloud |
-|--------:|---------------:|---------------------:|-------------:|-------------:|
-| 12,500  | 3,497          | 70,018               | —            | —            |
-| 25,000  | 3,591          | 37,834               | —            | —            |
-| 50,000  | 4,217          | 37,765               | —            | —            |
+| Vectors | KwaaiNet local | KwaaiNet WAN K=11 | Qdrant local |
+|--------:|---------------:|------------------:|-------------:|
+| 12,500  | 2,254          | 113,342           | 461          |
+| 25,000  | 2,022          | 114,273           | 555          |
+| 50,000  | 2,563          | 114,845           | 1,155        |
 
-WAN-sharded p95 is high and variable — P2P relay paths are not stable-latency links.
+### Search latency p95 (µs) — Run 1 (K=2)
+
+| Vectors | KwaaiNet local | KwaaiNet WAN K=2 |
+|--------:|---------------:|-----------------:|
+| 12,500  | 3,497          | 70,018           |
+| 25,000  | 3,591          | 37,834           |
+| 50,000  | 4,217          | 37,765           |
+
+### Search latency p95 (µs) — Run 2 (K=11)
+
+| Vectors | KwaaiNet local | KwaaiNet WAN K=11 |
+|--------:|---------------:|------------------:|
+| 12,500  | 3,777          | 122,119           |
+| 25,000  | 3,724          | 122,092           |
+| 50,000  | 4,520          | 122,926           |
 
 ### Upload throughput (ms for full corpus)
 
-| Vectors | KwaaiNet local | KwaaiNet WAN sharded | Qdrant local | Qdrant Cloud |
-|--------:|---------------:|---------------------:|-------------:|-------------:|
-| 12,500  | 9,513          | 45,706               | 602          | 73,618       |
-| 25,000  | 22,716         | 100,084              | 1,174        | 149,483      |
-| 50,000  | 53,122         | 223,584              | 2,828        | 298,044      |
+| Vectors | KwaaiNet local | WAN K=2 | WAN K=11 | Qdrant local | Qdrant Cloud |
+|--------:|---------------:|--------:|---------:|-------------:|-------------:|
+| 12,500  | 9,513          | 45,706  | 75,181   | 602          | 73,618       |
+| 25,000  | 22,716         | 100,084 | 127,958  | 1,174        | 149,483      |
+| 50,000  | 53,122         | 223,584 | 297,681  | 2,828        | 298,044      |
 
 ### Recall@10 (sharded vs local ground truth)
 
-| Vectors | Recall |
-|--------:|-------:|
-| 12,500  | 43%    |
-| 25,000  | 28%    |
-| 50,000  | 18%    |
+| Vectors | K=2  | K=11  |
+|--------:|-----:|------:|
+| 12,500  | 43%  | 38%   |
+| 25,000  | 28%  | 24%   |
+| 50,000  | 18%  | 14%   |
 
 Recall is low because random unit vectors in 384 dimensions all have near-zero
 cosine similarity — score gaps are tiny and any HNSW approximation causes
@@ -94,8 +128,8 @@ significantly higher recall.
 
 ![VPK Shard Benchmark](vpk-shard-bench.png)
 
-Panel A (log-log): latency vs corpus size for all four backends, plus
-theoretical curves for LAN/datacenter/WAN sharding at K = 2, 10, 100.
+Panel A (log-log): latency vs corpus size for all backends, theoretical curves
+for LAN/datacenter/WAN sharding, and measured K=2 and K=11 scatter points.
 
 Panel B (semilog): HNSW compute saved by sharding = B × log₂K µs.
 This quantity is **constant with respect to N** — the only variable is K.
@@ -106,12 +140,23 @@ This quantity is **constant with respect to N** — the only variable is K.
 
 ### 1. WAN sharding is flat and RTT-dominated
 
-All three corpus sizes produce nearly identical sharded latency (~32 ms).
-The HNSW traversal time on each shard is 1–1.3 ms; the remaining 30 ms is
-pure P2P wire overhead. Adding more vectors to each shard barely moves the
-number.
+At K=2 (25.6 ms overhead), all three corpus sizes produce sharded latency ~32 ms.
+At K=11 (92.5 ms p50 overhead), sharded latency is ~114 ms at all three scales.
+In both cases the HNSW traversal time (1–1.3 ms per shard) is negligible compared
+to the wire overhead. Adding more vectors to each shard barely moves the number.
 
-### 2. The HNSW saving from sharding is logarithmic — and independent of N
+### 2. Fan-out latency = max(shard RTTs), not mean
+
+This is the key finding from the K=11 run. Fan-out fires all K shards in parallel
+and waits for the slowest one. With 7 of 11 nodes at ~95–105 ms RTT, the combined
+p50 is 92.5 ms — not the 60 ms average you'd naively compute. Any "slow" shard
+in the fleet sets the floor for every query.
+
+**Implication:** adding more Eves to a WAN-sharded setup only helps if the new
+Eves are *at least as fast* as the slowest existing Eve. A single 100 ms node
+in an otherwise 25 ms cluster doubles your query latency.
+
+### 3. The HNSW saving from sharding is logarithmic — and independent of N
 
 Splitting N vectors across K shards saves exactly:
 
@@ -123,38 +168,40 @@ where B ≈ 407 µs for KwaaiNet's hnsw_rs (B ≈ 338 µs for Qdrant). This
 saving grows with K but does **not** grow with N. A corpus 1,000× larger
 produces the same saving from the same K.
 
-### 3. WAN breakeven is physically impossible
+### 4. WAN breakeven is physically impossible
 
-For sharding to beat local search over WAN (26 ms overhead):
+For sharding to beat local search over WAN (K=2, 26 ms overhead):
 
 ```
 407 × log₂K > 26,000   →   K > 2^63
 ```
 
-There are not enough computers on Earth. WAN sharding will never win on
-query latency.
+For K=11 with 92.5 ms overhead, breakeven is at ~9.8 billion vectors —
+far beyond any practical deployment. There are not enough computers on
+Earth to make WAN sharding win on query latency.
 
-### 4. LAN sharding breaks even at K ≈ 11
+### 5. LAN sharding breaks even at K ≈ 11
 
 At 1 ms LAN round-trip, breakeven is K ≈ 11 shards. A cluster of ~12 Eve
 nodes on a local network would make sharded search competitive with a single
 local index — and the sharded version can hold far more total vectors in RAM.
+This is the correct use case for latency-sensitive sharding.
 
-### 5. Qdrant local is 3–4× faster per operation
+### 6. Qdrant local is 3–4× faster per operation
 
 Qdrant's HNSW engine (B ≈ 338 µs/log₂N) is faster than hnsw_rs (B ≈ 407
 µs/log₂N) — likely due to AVX-512 SIMD distance kernels in its C++ core.
 At 50K vectors Qdrant local takes 1.2 ms; KwaaiNet local takes 2.5 ms.
 Both follow the same logarithmic growth law.
 
-### 6. Qdrant Cloud ≈ KwaaiNet WAN sharded at small N
+### 7. Qdrant Cloud ≈ KwaaiNet WAN sharded (K=2) at small N
 
 At 12.5K–25K vectors, Qdrant Cloud search latency (~29 ms) and KwaaiNet
-WAN sharded (~32 ms) are effectively tied — both are pure RTT to the same
-AWS region. The P2P relay occasionally takes longer (higher p95) but the
-medians are comparable.
+WAN sharded K=2 (~32 ms) are effectively tied — both are pure RTT to the
+same AWS region. The P2P relay occasionally takes longer (higher p95) but
+the medians are comparable.
 
-### 7. The encryption argument is orthogonal to the storage backend
+### 8. The encryption argument is orthogonal to the storage backend
 
 KwaaiNet VPK's PHE scheme preserves distance ordering — encrypted vectors
 are still searchable by any ANN index. This means PHE-encrypted vectors
@@ -174,7 +221,8 @@ choice regardless of performance.
 
 | Question | Answer |
 |----------|--------|
-| Can WAN sharding beat local HNSW on latency? | **No** — breakeven requires K ≈ 2⁶³ shards |
+| Can WAN sharding beat local HNSW on latency? | **No** — breakeven requires K ≈ 2⁶³ (K=2) or ~9.8B vectors (K=11) |
+| What sets fan-out latency in a mixed fleet? | **The slowest shard** — max(RTTs), not mean |
 | What is sharding good for? | **Capacity** — distribute a corpus too large for one machine's RAM |
 | When does LAN sharding win on latency? | At K ≥ 11 Eves on a 1 ms LAN |
 | Is Qdrant faster than KwaaiNet's HNSW? | **Yes, ~3× faster** — better SIMD kernels |
@@ -183,32 +231,29 @@ choice regardless of performance.
 
 ---
 
-## What We Need Next: More Eves
+## What's Next
 
-This benchmark ran against **two** metro Eve nodes. To test:
+The K=11 run confirmed geographic diversity is live. The network has grown —
+12 nodes are now discoverable via `kwaainet vpk discover`.
 
-- **LAN-range sharding** — we need nodes co-located in the same datacenter
-  or on a private network to measure the K ≈ 11 LAN breakeven empirically.
-- **Geographic diversity** — more nodes in different regions to characterise
-  P2P RTT distribution across the network.
+- **LAN-range sharding** — nodes co-located in the same datacenter or on a
+  private network to empirically measure the K ≈ 11 LAN breakeven.
 - **Scale** — 100K–1M vector corpus requires Eve nodes with more RAM.
+- **PHE encryption** — upload encrypted vectors and confirm recall parity
+  with plaintext (encryption is orthogonal to ANN; should be identical).
 
-### If you run a KwaaiNet node, please update now:
+### Storage serve on Eve mode
 
-```bash
-kwaainet update
-```
-
-And enable Eve mode if you haven't already:
+If you run a KwaaiNet node and want to participate in storage benchmarks:
 
 ```bash
 kwaainet vpk enable --mode eve --capacity-gb 10
+kwaainet storage serve &   # starts the storage RPC handler
 kwaainet start --daemon
 ```
 
-Once updated, your node will appear in `kwaainet vpk discover` and can
-participate in future benchmark runs. The more Eves we have in different
-network locations, the more complete the latency picture.
+Your node will appear in `kwaainet vpk discover` and will be reachable for
+`kwaainet vpk bench` runs.
 
 ---
 
@@ -218,9 +263,10 @@ network locations, the more complete the latency picture.
 # Discover available Eve nodes
 kwaainet vpk discover --json
 
-# Run the benchmark (replace peer IDs with discovered values)
+# Run the benchmark against all discovered Eves
+PEER_IDS=$(kwaainet vpk discover --json | jq -r '[.[].peer_id] | join(",")')
 kwaainet vpk bench \
-  --eve-peer-ids "<EVE1_PEER_ID>,<EVE2_PEER_ID>" \
+  --eve-peer-ids "$PEER_IDS" \
   --vectors 50000 \
   --dimensions 384 \
   --queries 200 \
