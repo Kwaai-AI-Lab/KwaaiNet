@@ -132,6 +132,15 @@ pub struct KwaaiNetConfig {
     /// consider moving. Prevents moving when we are the sole coverage.
     #[serde(default = "default_rebalance_min_redundancy")]
     pub rebalance_min_redundancy: usize,
+
+    // ── Peer reputation ──────────────────────────────────────────────────────
+    /// Local peer reputation and trust scoring configuration.
+    #[serde(default, skip_serializing_if = "reputation_config_is_default")]
+    pub reputation: ReputationConfig,
+}
+
+fn reputation_config_is_default(r: &ReputationConfig) -> bool {
+    r.enabled && r.max_observations_per_peer == 100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +216,33 @@ pub struct AlertingConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Reputation config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReputationConfig {
+    /// Enable local peer reputation tracking.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Maximum number of observations stored per peer (ring buffer).
+    #[serde(default = "default_max_observations")]
+    pub max_observations_per_peer: usize,
+}
+
+fn default_max_observations() -> usize {
+    100
+}
+
+impl Default for ReputationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_observations_per_peer: default_max_observations(),
+        }
+    }
+}
+
 // Storage config (Eve role)
 // ---------------------------------------------------------------------------
 
@@ -340,6 +376,7 @@ impl Default for KwaaiNetConfig {
             auto_rebalance: false,
             rebalance_interval_secs: default_rebalance_interval(),
             rebalance_min_redundancy: default_rebalance_min_redundancy(),
+            reputation: ReputationConfig::default(),
         }
     }
 }

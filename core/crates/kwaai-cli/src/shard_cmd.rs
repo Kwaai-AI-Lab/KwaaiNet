@@ -41,6 +41,7 @@ use crate::cli::{
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
+use crate::reputation::{now_secs, PeerObservation, ReputationStore};
 
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
@@ -888,6 +889,23 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let _ = using_circuit; // used for display above
     println!("{} node(s)", chain.len());
 
+    // Load reputation store and enrich chain entries with local trust scores.
+    let rep_store = if cfg.reputation.enabled {
+        let store = ReputationStore::load();
+        let mut enriched = chain;
+        for entry in &mut enriched {
+            let peer_b58 = entry.peer_id.to_base58();
+            let score = store.score(&peer_b58);
+            entry.trust_score = Some(score.score);
+        }
+        // Re-assign so borrow checker is happy.
+        let rep = Arc::new(std::sync::Mutex::new(store));
+        (enriched, Some(rep))
+    } else {
+        (chain, None)
+    };
+    let (chain, reputation) = rep_store;
+
     // Validate coverage
     let covered = coverage_check(&chain, total_blocks);
     if !covered {
@@ -896,19 +914,23 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     println!();
     for (i, entry) in chain.iter().enumerate() {
+        let tier_label = if let Some(ref rep) = reputation {
+            if let Ok(store) = rep.lock() {
+                format!("  {}", store.score(&entry.peer_id.to_base58()).tier.as_str())
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
         println!(
-            "  [{:>2}] blocks {:>3}–{:>3}  {}  ({})",
+            "  [{:>2}] blocks {:>3}–{:>3}  {}  ({}){}",
             i + 1,
             entry.start_block,
             entry.end_block - 1,
-            entry
-                .peer_id
-                .to_base58()
-                .chars()
-                .take(16)
-                .collect::<String>()
-                + "…",
-            entry.public_name,
+            truncate_str(&entry.peer_id.to_base58(), 17),
+            truncate_str(&entry.public_name, 30),
+            tier_label,
         );
     }
     println!();
@@ -1029,6 +1051,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             Some(&our_peer_id),
             &mut failed_peers,
             show_stats.then_some(&mut token_hops),
+            reputation.clone(),
         )
         .await
         {
@@ -1059,6 +1082,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     Some(&our_peer_id),
                     &mut failed_peers,
                     show_stats.then_some(&mut token_hops),
+                    reputation.clone(),
                 )
                 .await?
             }
@@ -1269,6 +1293,13 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Load reputation store for trust tier display.
+    let rep_store = if cfg.reputation.enabled {
+        Some(ReputationStore::load())
+    } else {
+        None
+    };
+
     // Build coverage bitmap
     let mut covered = vec![false; total_blocks];
     for entry in &chain {
@@ -1283,22 +1314,24 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
         total_blocks
     );
     println!(
-        "  {:<6} {:<6} {:<18} NAME",
-        "START", "END", "PEER ID (prefix)"
+        "  {:<5}  {:<5}  {:<18} {:<10} NAME",
+        "START", "END", "PEER ID (prefix)", "TRUST"
     );
-    println!("  {}", "─".repeat(60));
+    println!("  {}", "─".repeat(65));
     for entry in &chain {
-        let peer_short = {
-            let b58 = entry.peer_id.to_base58();
-            if b58.len() > 16 {
-                format!("{}…", &b58[..16])
-            } else {
-                b58
-            }
+        let peer_short = truncate_str(&entry.peer_id.to_base58(), 17);
+        let tier_label = if let Some(ref store) = rep_store {
+            store.score(&entry.peer_id.to_base58()).tier.as_str()
+        } else {
+            "—"
         };
         println!(
-            "  {:>5}  {:>5}  {:<18} {}",
-            entry.start_block, entry.end_block, peer_short, entry.public_name,
+            "  {:>5}  {:>5}  {:<18} {:<10} {}",
+            entry.start_block,
+            entry.end_block,
+            peer_short,
+            tier_label,
+            truncate_str(&entry.public_name, 24),
         );
     }
     println!();
@@ -1333,6 +1366,8 @@ pub struct BlockServerEntry {
     pub start_block: usize,
     pub end_block: usize,
     pub public_name: String,
+    /// Local trust score for this peer (None until enriched from ReputationStore).
+    pub trust_score: Option<f64>,
 }
 
 /// Query bootstrap peers for all block keys of `dht_prefix` and return a
@@ -1526,6 +1561,7 @@ fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)
             start_block,
             end_block,
             public_name,
+            trust_score: None,
         },
     ))
 }
@@ -1602,6 +1638,7 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
                 start_block,
                 end_block,
                 public_name,
+                trust_score: None,
             });
         }
     }
@@ -1767,6 +1804,7 @@ impl SerializableEntry {
             start_block: self.start_block,
             end_block: self.end_block,
             public_name: self.public_name.clone(),
+            trust_score: None,
         })
     }
 }
@@ -1798,6 +1836,17 @@ fn now_epoch() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Truncate to `max` Unicode scalar values, appending "..." if cut.
+/// Uses char boundaries — safe for any UTF-8 input.
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
 }
 
 fn circuit_id_from(seed: &str) -> String {
@@ -2010,6 +2059,7 @@ pub async fn forward_through_chain(
     our_peer_id: Option<&PeerId>,
     failed_peers: &mut std::collections::HashSet<PeerId>,
     mut hop_timings: Option<&mut Vec<HopTiming>>,
+    reputation: Option<Arc<std::sync::Mutex<ReputationStore>>>,
 ) -> Result<crate::block_rpc::InferenceResponse> {
     use crate::block_rpc::InferenceResponse;
 
@@ -2023,14 +2073,24 @@ pub async fn forward_through_chain(
     let mut pos = 0;
 
     while pos < total_blocks {
-        // All nodes whose range covers `pos`, widest first.
+        // All nodes whose range covers `pos`.
+        // Primary sort: widest coverage first (largest end_block).
+        // Secondary sort: highest local trust score first.
         // Skip peers that already failed with protocol errors in this session.
         let mut candidates: Vec<&BlockServerEntry> = chain
             .iter()
             .filter(|e| e.start_block <= pos && e.end_block > pos)
             .filter(|e| !failed_peers.contains(&e.peer_id))
             .collect();
-        candidates.sort_by(|a, b| b.end_block.cmp(&a.end_block));
+        candidates.sort_by(|a, b| {
+            b.end_block
+                .cmp(&a.end_block)
+                .then_with(|| {
+                    b.trust_score
+                        .partial_cmp(&a.trust_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        });
 
         if candidates.is_empty() {
             anyhow::bail!("No server covers block {} — chain has a gap (all candidates failed or blacklisted)", pos);
@@ -2055,6 +2115,22 @@ pub async fn forward_through_chain(
 
             match result {
                 Ok(resp) => {
+                    // Record successful hop in local reputation store.
+                    if let Some(ref rep) = reputation {
+                        if let Ok(mut store) = rep.lock() {
+                            store.record(
+                                &candidate.peer_id.to_base58(),
+                                &candidate.public_name,
+                                PeerObservation {
+                                    timestamp_secs: now_secs(),
+                                    latency_ms: hop_ms,
+                                    success: true,
+                                    observed_tps: None,
+                                    claimed_tps: None,
+                                },
+                            );
+                        }
+                    }
                     if let Some(ref mut timings) = hop_timings {
                         timings.push((
                             candidate.public_name.clone(),
@@ -2078,6 +2154,22 @@ pub async fn forward_through_chain(
                     break;
                 }
                 Err(e) => {
+                    // Record failed hop in local reputation store.
+                    if let Some(ref rep) = reputation {
+                        if let Ok(mut store) = rep.lock() {
+                            store.record(
+                                &candidate.peer_id.to_base58(),
+                                &candidate.public_name,
+                                PeerObservation {
+                                    timestamp_secs: now_secs(),
+                                    latency_ms: hop_ms,
+                                    success: false,
+                                    observed_tps: None,
+                                    claimed_tps: None,
+                                },
+                            );
+                        }
+                    }
                     let err_str = format!("{e:#}");
                     // Protocol negotiation failures mean the peer has no inference
                     // handler registered (running `kwaainet start` but not

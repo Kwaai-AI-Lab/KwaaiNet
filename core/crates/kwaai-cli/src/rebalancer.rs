@@ -145,6 +145,7 @@ mod tests {
             start_block: start,
             end_block: end,
             public_name: format!("node-{}", start),
+            trust_score: None,
         }
     }
 

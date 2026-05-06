@@ -16,6 +16,8 @@ mod monitor;
 mod node;
 mod ollama;
 mod rebalancer;
+mod reputation;
+mod reputation_cmd;
 mod service;
 mod setup;
 mod shard_api;
@@ -1407,6 +1409,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Vpk(args) => {
             vpk::run(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // reputation
+        // -------------------------------------------------------------------
+        Command::Reputation(args) => {
+            reputation_cmd::run(args).await?;
         }
 
         // -------------------------------------------------------------------

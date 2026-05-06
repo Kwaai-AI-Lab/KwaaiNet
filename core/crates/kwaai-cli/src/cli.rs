@@ -131,6 +131,9 @@ pub enum Command {
     /// Manage VPK (Virtual Private Knowledge) vector database integration
     Vpk(VpkArgs),
 
+    /// View and manage the local peer reputation store (trust scores, observed performance)
+    Reputation(ReputationArgs),
+
     /// Manage the local storage fabric (Eve role — host opaque vectors for Bob nodes on the network)
     Storage(StorageArgs),
 
@@ -945,4 +948,32 @@ pub struct SetupArgs {
     /// Download and install missing dependencies (e.g. p2pd)
     #[arg(long)]
     pub get_deps: bool,
+}
+
+// ---------------------------------------------------------------------------
+// reputation
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct ReputationArgs {
+    #[command(subcommand)]
+    pub action: ReputationAction,
+}
+
+#[derive(Subcommand)]
+pub enum ReputationAction {
+    /// List all known peers with their local trust tier and score
+    List,
+
+    /// Show detailed reputation breakdown for a peer (accepts a peer ID prefix)
+    Show {
+        /// Full peer ID or unique prefix (≥ 12 chars)
+        peer_id: String,
+    },
+
+    /// Clear all recorded observations for a peer (accepts a peer ID prefix)
+    Reset {
+        /// Full peer ID or unique prefix (≥ 12 chars)
+        peer_id: String,
+    },
 }
