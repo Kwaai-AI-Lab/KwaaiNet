@@ -183,22 +183,35 @@ impl UpdateChecker {
             // We check four signals in order — the first hit short-circuits:
             //   1. %CUDA_PATH% env var (set by the CUDA toolkit installer)
             //   2. %CUDA_HOME% env var (common alternative)
-            //   3. nvidia-smi.exe on PATH (always present with NVIDIA drivers)
+            //   3. nvidia-smi.exe on PATH (capped at 4 s — NVML init is slow on Windows)
             //   4. cublas*.dll in the kwaainet install dir (bundled by previous update)
-            // Checking only the install dir (the old behaviour) misses system-wide
-            // toolkit installs, causing the full PS1 installer to re-run every time.
-            let cuda_installed = std::env::var_os("CUDA_PATH").is_some()
-                || std::env::var_os("CUDA_HOME").is_some()
-                || which_nvidia_smi()
-                || std::fs::read_dir(&install_dir)
-                    .ok()
-                    .map(|dir| {
-                        dir.filter_map(|e| e.ok()).any(|e| {
-                            let name = e.file_name().to_string_lossy().to_lowercase();
-                            name.starts_with("cublas") && name.ends_with(".dll")
-                        })
+            print!("  Detecting GPU…");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let cuda_installed = if std::env::var_os("CUDA_PATH").is_some() {
+                println!(" CUDA_PATH set");
+                true
+            } else if std::env::var_os("CUDA_HOME").is_some() {
+                println!(" CUDA_HOME set");
+                true
+            } else if nvidia_smi_async().await {
+                println!(" nvidia-smi found");
+                true
+            } else if std::fs::read_dir(&install_dir)
+                .ok()
+                .map(|dir| {
+                    dir.filter_map(|e| e.ok()).any(|e| {
+                        let name = e.file_name().to_string_lossy().to_lowercase();
+                        name.starts_with("cublas") && name.ends_with(".dll")
                     })
-                    .unwrap_or(false);
+                })
+                .unwrap_or(false)
+            {
+                println!(" cublas DLLs found");
+                true
+            } else {
+                println!(" no GPU/CUDA detected");
+                false
+            };
 
             // For the full (non-CUDA) path we need the PS1 installer on disk before
             // writing the batch file; download it now while we're still async.
@@ -310,9 +323,32 @@ impl UpdateChecker {
     }
 }
 
+/// Query nvidia-smi asynchronously with a 4-second timeout.
+/// Returns true if nvidia-smi exits successfully within the time limit.
+/// Avoids blocking the async runtime during NVML cold-start on Windows.
+#[cfg(windows)]
+async fn nvidia_smi_async() -> bool {
+    use tokio::process::Command;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        Command::new("nvidia-smi")
+            .arg("--query-gpu=name")
+            .arg("--format=csv,noheader")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    )
+    .await;
+    result.ok().and_then(|r| r.ok()).map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+async fn nvidia_smi_async() -> bool {
+    false
+}
+
 /// Returns true if `nvidia-smi.exe` is reachable on the current PATH.
-/// Used on Windows to detect an existing NVIDIA driver/CUDA install without
-/// scanning DLL directories, which may miss system-wide toolkit installs.
+/// Synchronous fallback used only for the post-detection reason string.
 #[cfg(windows)]
 fn which_nvidia_smi() -> bool {
     std::process::Command::new("nvidia-smi")
