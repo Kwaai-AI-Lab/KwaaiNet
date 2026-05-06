@@ -19,6 +19,7 @@ use tracing::info;
 pub enum GgufWeights {
     Llama(candle_transformers::models::quantized_llama::ModelWeights),
     Qwen2(candle_transformers::models::quantized_qwen2::ModelWeights),
+    Gemma3(candle_transformers::models::quantized_gemma3::ModelWeights),
 }
 
 impl GgufWeights {
@@ -31,6 +32,7 @@ impl GgufWeights {
         match self {
             GgufWeights::Llama(w) => w.forward(x, index_pos),
             GgufWeights::Qwen2(w) => w.forward(x, index_pos),
+            GgufWeights::Gemma3(w) => w.forward(x, index_pos),
         }
     }
 }
@@ -54,7 +56,7 @@ pub struct GgufModel {
 /// Reads `general.architecture` from the GGUF metadata to pick the right
 /// weight loader, then extracts architecture config and loads real weights.
 pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
-    use candle_transformers::models::{quantized_llama, quantized_qwen2};
+    use candle_transformers::models::{quantized_gemma3, quantized_llama, quantized_qwen2};
 
     let mut file = std::fs::File::open(path).map_err(|e| {
         InferenceError::ModelLoadError(format!("Cannot open {}: {e}", path.display()))
@@ -120,10 +122,17 @@ pub fn load_gguf(path: &Path, device: &Device) -> InferenceResult<GgufModel> {
                 )?;
                 GgufWeights::Qwen2(w)
             }
+            "gemma3" | "gemma2" | "gemma" | "gemma4" => {
+                let w = quantized_gemma3::ModelWeights::from_gguf(gguf, &mut file, device)
+                    .map_err(|e| {
+                        InferenceError::ModelLoadError(format!("Cannot build {arch} weights: {e}"))
+                    })?;
+                GgufWeights::Gemma3(w)
+            }
             other => {
                 return Err(InferenceError::InvalidFormat(format!(
                     "GGUF architecture '{other}' is not yet supported. \
-                 Supported: llama, mistral, qwen2. \
+                 Supported: llama, mistral, qwen2, gemma3. \
                  See CONTRIBUTORS.md to add support."
                 )));
             }
