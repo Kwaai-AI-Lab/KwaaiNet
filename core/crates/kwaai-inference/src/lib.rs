@@ -210,13 +210,20 @@ impl DeviceType {
                 .status()
                 .is_ok();
 
-            let msg = if has_nvidia {
-                "NVIDIA GPU detected but this binary was compiled without CUDA support.\n  \
-                 Reinstall with: curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | bash"
+            let reinstall = if cfg!(target_os = "windows") {
+                "irm https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.ps1 | iex"
             } else {
-                "No GPU found. This binary was compiled without CUDA support and no NVIDIA GPU was detected."
+                "curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | bash"
             };
-            return Err(InferenceError::DeviceNotAvailable(msg.to_string()));
+            let msg = if has_nvidia {
+                format!(
+                    "NVIDIA GPU detected but this binary was compiled without CUDA support.\n  \
+                     Reinstall with: {reinstall}"
+                )
+            } else {
+                "No GPU found. This binary was compiled without CUDA support and no NVIDIA GPU was detected.".to_string()
+            };
+            return Err(InferenceError::DeviceNotAvailable(msg));
         }
 
         #[allow(unreachable_code)]
@@ -242,9 +249,14 @@ impl DeviceType {
                     let gpu = String::from_utf8_lossy(&output.stdout);
                     let gpu = gpu.trim();
                     if !gpu.is_empty() {
+                        let reinstall = if cfg!(target_os = "windows") {
+                            "irm https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.ps1 | iex"
+                        } else {
+                            "curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | bash"
+                        };
                         eprintln!(
                             "\n  ⚠ NVIDIA GPU detected ({gpu}) but this binary lacks CUDA support.\n    \
-                             Reinstall with: curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | bash\n"
+                             Reinstall with: {reinstall}\n"
                         );
                     }
                 }
