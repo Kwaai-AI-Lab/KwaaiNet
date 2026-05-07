@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use kwaai_hivemind_dht::{
     codec::DHTRequest,
-    protocol::{FindRequest, NodeInfo, RequestAuthInfo, StoreRequest},
+    protocol::{NodeInfo, RequestAuthInfo, StoreRequest},
     value::get_dht_time,
     DHTStorage,
 };
@@ -615,6 +615,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         announce_start,
         announce_end,
         &server_info,
+        None,
     )
     .await
     .context("initial DHT announcement")?;
@@ -651,11 +652,12 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     announce_start,
                     announce_end,
                     &server_info,
+                    None,
                 )
                 .await
                 {
                     warn!(
-                        "Initial announce retry failed: {} — will retry at 120s tick",
+                        "Initial announce retry failed: {} — will retry at 300s tick",
                         e
                     );
                 }
@@ -682,8 +684,16 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // start_block/blocks when SIGHUP triggers a config re-read.
     let mut config = config.clone();
     let storage_clone = storage.clone();
-    let mut reannounce = tokio::time::interval(Duration::from_secs(120));
-    reannounce.tick().await; // skip the immediate first tick
+
+    // Re-announce every 300 s ± 30 s (jittered so nodes don't thundering-herd
+    // the bootstrap peers after a network partition or mass restart).
+    // DHT TTL is 360 s, so 270–330 s keeps every record refreshed with
+    // at least 30 s headroom.  One observation per peer per cycle is recorded
+    // in the reputation store, piggybacked on the STORE RPC latency.
+    let mut rep_store = crate::reputation::ReputationStore::load();
+    let mut next_announce = Box::pin(tokio::time::sleep(Duration::from_secs(jitter_secs(
+        300, 30,
+    ))));
 
     // (SIGHUP handler installed above before announce() — see Step 5 setup)
 
@@ -731,14 +741,14 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
                     &prefix, &repository, config.model_total_blocks(),
-                    sb, eb, &server_info,
+                    sb, eb, &server_info, None,
                 ).await {
                     warn!("Re-announce after SIGHUP failed: {}", e);
                 }
             }
 
-            // Periodic re-announcement
-            _ = reannounce.tick() => {
+            // Periodic re-announcement (300 s ± 30 s jitter)
+            _ = &mut next_announce => {
                 // p2pd watchdog: restart if the child process died unexpectedly.
                 if !daemon.is_running() {
                     let stderr = daemon.captured_stderr().await;
@@ -814,9 +824,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     server_info.vpk_info = fresh_vpk;
                 }
 
-                // Passive reputation probing — measure latency to bootstrap peers.
-                probe_bootstrap_peers(&mut client, &bootstrap_peers, &peer_id).await;
-
                 // Auto-update — installs new binary when available (pre-v1.0).
                 // If installed, break the event loop so the daemon exits cleanly
                 // and can be restarted (by systemd/launchd or manually) with the
@@ -836,10 +843,15 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
                     &prefix, &repository, config.model_total_blocks(),
-                    sb, eb, &server_info,
+                    sb, eb, &server_info, Some(&mut rep_store),
                 ).await {
                     warn!("Re-announce failed: {}", e);
                 }
+
+                // Schedule the next tick with fresh jitter.
+                next_announce
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_secs(jitter_secs(300, 30)));
             }
 
             // Shutdown signal
@@ -987,6 +999,7 @@ async fn announce(
     start_block: i32,
     end_block: i32,
     server_info: &DHTServerInfo,
+    rep: Option<&mut crate::reputation::ReputationStore>,
 ) -> Result<()> {
     info!(
         "DHT prefix: {} (blocks .{} – .{})",
@@ -1032,11 +1045,30 @@ async fn announce(
             let _ = g.handle_store(block_req.clone());
         }
 
-        // Push to bootstrap peers
-        if send_to_bootstrap(client, bootstrap_peers, block_req).await {
+        // Push to bootstrap peers; piggyback reputation observations on the
+        // STORE latency — no extra RPCs needed.
+        let (ok, timings) = send_to_bootstrap(client, bootstrap_peers, block_req).await;
+        if ok {
             info!("✅ Announced {} blocks", end_block - start_block);
         } else {
             warn!("❌ Block announcement failed — node will not appear on map");
+        }
+        if let Some(rep) = rep {
+            use crate::reputation::{now_secs, PeerObservation};
+            for (peer_id_str, latency_ms, success) in timings {
+                let short = &peer_id_str[..peer_id_str.len().min(12)];
+                rep.record(
+                    &peer_id_str,
+                    short,
+                    PeerObservation {
+                        timestamp_secs: now_secs(),
+                        latency_ms,
+                        success,
+                        observed_tps: None,
+                        claimed_tps: None,
+                    },
+                );
+            }
         }
     }
 
@@ -1059,7 +1091,10 @@ async fn announce(
         let g = storage.read().await;
         let _ = g.handle_store(registry_req.clone());
     }
-    if send_to_bootstrap(client, bootstrap_peers, registry_req).await {
+    if send_to_bootstrap(client, bootstrap_peers, registry_req)
+        .await
+        .0
+    {
         info!("✅ Announced model to _petals.models registry");
     } else {
         warn!("❌ Model registry announcement failed");
@@ -1084,7 +1119,7 @@ async fn announce(
             let g = storage.read().await;
             let _ = g.handle_store(vpk_req.clone());
         }
-        if send_to_bootstrap(client, bootstrap_peers, vpk_req).await {
+        if send_to_bootstrap(client, bootstrap_peers, vpk_req).await.0 {
             info!("✅ Announced VPK capability to _kwaai.vpk.nodes");
         } else {
             warn!("❌ VPK nodes announcement failed");
@@ -1095,7 +1130,10 @@ async fn announce(
 }
 
 /// Send a STORE request to each bootstrap peer.
-/// Returns true if at least one peer accepted the store.
+///
+/// Returns `(any_success, per_peer_timings)` where timings are
+/// `(peer_id_str, latency_ms, success)` — one entry per bootstrap peer.
+/// Callers that record reputation use the timings; others discard them.
 ///
 /// Does NOT call connect_peer() — p2pd already has bootstrap addresses from
 /// its own DHT bootstrap (via -b flag) and dials internally when needed.
@@ -1105,19 +1143,21 @@ async fn send_to_bootstrap(
     client: &mut kwaai_p2p_daemon::P2PClient,
     bootstrap_peers: &[String],
     req: StoreRequest,
-) -> bool {
+) -> (bool, Vec<(String, f64, bool)>) {
     if bootstrap_peers.is_empty() {
-        return false;
+        return (false, vec![]);
     }
 
     use prost::Message;
     let mut bytes = Vec::new();
     if let Err(e) = req.encode(&mut bytes) {
         warn!("Encode STORE request failed: {}", e);
-        return false;
+        return (false, vec![]);
     }
 
     let mut succeeded = 0usize;
+    let mut timings: Vec<(String, f64, bool)> = Vec::with_capacity(bootstrap_peers.len());
+
     for addr in bootstrap_peers {
         let Some(peer_id_str) = addr.split("/p2p/").nth(1) else {
             warn!("Bootstrap peer has no /p2p/ component: {}", addr);
@@ -1131,12 +1171,21 @@ async fn send_to_bootstrap(
             }
         };
 
-        match tokio::time::timeout(
+        let t0 = std::time::Instant::now();
+        let result = tokio::time::timeout(
             Duration::from_secs(30),
             client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_store", &bytes),
         )
-        .await
-        {
+        .await;
+        let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        let rpc_ok = match &result {
+            Ok(Ok(_)) => true,
+            _ => false,
+        };
+        timings.push((peer_id_str.to_string(), latency_ms, rpc_ok));
+
+        match result {
             Ok(Ok(resp_bytes)) => {
                 use kwaai_hivemind_dht::protocol::StoreResponse;
                 if let Ok(resp) = StoreResponse::decode(&resp_bytes[..]) {
@@ -1171,7 +1220,7 @@ async fn send_to_bootstrap(
             bootstrap_peers.len()
         );
     }
-    succeeded > 0
+    (succeeded > 0, timings)
 }
 
 /// Wait for p2pd's own DHT bootstrap to establish connections.
@@ -1347,63 +1396,19 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
 
 /// Send a lightweight DHT find to each bootstrap peer and record latency +
 /// connectivity in the reputation store. Called every 120 s from the event loop.
-async fn probe_bootstrap_peers(
-    client: &mut kwaai_p2p_daemon::P2PClient,
-    bootstrap_peers: &[String],
-    our_peer_id: &PeerId,
-) {
-    use crate::reputation::{now_secs, PeerObservation, ReputationStore};
-    use prost::Message;
-
-    let our_dhtid = sha1::Sha1::new()
-        .chain_update(our_peer_id.to_bytes())
-        .finalize()
-        .to_vec();
-
-    // Minimal find key — our own node ID is fine, any key works.
-    let find_req = FindRequest {
-        auth: Some(RequestAuthInfo::new()),
-        keys: vec![our_dhtid.clone()],
-        peer: Some(NodeInfo { node_id: our_dhtid }),
-    };
-    let mut req_bytes = Vec::new();
-    if find_req.encode(&mut req_bytes).is_err() {
-        return;
-    }
-
-    let mut store = ReputationStore::load();
-
-    for addr in bootstrap_peers {
-        let Some(peer_str) = addr.split("/p2p/").nth(1) else {
-            continue;
-        };
-        let Ok(bp) = peer_str.parse::<PeerId>() else {
-            continue;
-        };
-
-        let t0 = std::time::Instant::now();
-        let _ = client.connect_peer(addr).await;
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_find", &req_bytes),
-        )
-        .await;
-        let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        let success = result.ok().and_then(|r| r.ok()).is_some();
-
-        let name = peer_str.get(..12).unwrap_or(peer_str).to_string();
-        store.record(
-            peer_str,
-            &name,
-            PeerObservation {
-                timestamp_secs: now_secs(),
-                latency_ms,
-                success,
-                observed_tps: None,
-                claimed_tps: None,
-            },
-        );
-    }
+/// Return `base ± spread` seconds using a fast LCG over the current nanosecond
+/// timestamp. No `rand` crate needed. Range: `[base - spread, base + spread]`.
+fn jitter_secs(base: u64, spread: u64) -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0) as u64;
+    let r = ns
+        .wrapping_mul(6_364_136_223_846_793_005_u64)
+        .wrapping_add(1_442_695_040_888_963_407_u64);
+    let range = 2 * spread + 1;
+    base - spread + (r >> 32) % range
 }
 
 // ---------------------------------------------------------------------------
