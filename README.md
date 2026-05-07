@@ -172,6 +172,8 @@ kwaainet start --daemon
 
 The node will connect to bootstrap peers, announce itself on the DHT, auto-detect available hardware, and appear on [map.kwaai.ai](https://map.kwaai.ai). No Python, no build tools, no manual configuration required.
 
+> **Pre-release note (< v1.0):** `kwaainet start --daemon` automatically starts shard serving (if a local model is present) and storage serving (if storage has been initialised). This opt-out default keeps the network dense during the insider phase. Run with `--no-contribute` to start the node without contributing, or permanently disable with `kwaainet config set contribute.shards false`.
+
 ## Vision
 
 KwaaiNet is creating a new paradigm for AI infrastructure - one where users maintain complete sovereignty over their computational contributions and personal data. We're building an open-source distributed AI platform that combines:
@@ -425,10 +427,13 @@ Bob (any node)                         Eve (storage node)
 
 Eve returns only `{id, score}` pairs — vectors never travel back over the wire. Nodes are addressed by PeerId; NAT traversal and routing are handled by the P2P relay layer, never by IP addresses.
 
-### Current status (v0.4.24)
+### Current status (v0.4.27)
 
 | Capability | Status |
 |------------|--------|
+| Auto-contribute on daemon start (shard + storage, opt-out with `--no-contribute`) | ✅ Shipped |
+| Local peer reputation system (`kwaainet reputation list/show/reset`) | ✅ Shipped |
+| Gemma3/4 GGUF inference support (candle 0.10, BF16) | ✅ Shipped |
 | Eve storage node (`kwaainet storage init`, `kwaainet vpk enable --mode eve`) | ✅ Shipped |
 | Multi-tenant vector store (redb + hnsw_rs, cosine distance) | ✅ Shipped |
 | P2P vector protocol (`/kwaai/storage/1.0.0` — CreateTenant, UploadVectors, SearchVectors, DeleteTenant) | ✅ Shipped |
