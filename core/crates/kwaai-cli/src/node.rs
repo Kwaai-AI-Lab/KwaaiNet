@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use kwaai_hivemind_dht::{
     codec::DHTRequest,
-    protocol::{NodeInfo, RequestAuthInfo, StoreRequest},
+    protocol::{FindRequest, NodeInfo, RequestAuthInfo, StoreRequest},
     value::get_dht_time,
     DHTStorage,
 };
@@ -790,6 +790,17 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     server_info.vpk_info = fresh_vpk;
                 }
 
+                // Passive reputation probing — measure latency to bootstrap peers.
+                probe_bootstrap_peers(&mut client, &bootstrap_peers, &peer_id).await;
+
+                // Auto-update — installs and exec's new binary when available (pre-v1.0).
+                let auto_update = KwaaiNetConfig::load_or_create()
+                    .map(|c| c.contribute_policy(false).auto_update)
+                    .unwrap_or(false);
+                if auto_update {
+                    maybe_auto_update().await;
+                }
+
                 let sb = config.start_block as i32;
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
@@ -1300,6 +1311,108 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
     tcp.write_all(&response_bytes).await?;
     tcp.flush().await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Passive reputation probing
+// ---------------------------------------------------------------------------
+
+/// Send a lightweight DHT find to each bootstrap peer and record latency +
+/// connectivity in the reputation store. Called every 120 s from the event loop.
+async fn probe_bootstrap_peers(
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    bootstrap_peers: &[String],
+    our_peer_id: &PeerId,
+) {
+    use crate::reputation::{now_secs, PeerObservation, ReputationStore};
+    use prost::Message;
+
+    let our_dhtid = sha1::Sha1::new()
+        .chain_update(our_peer_id.to_bytes())
+        .finalize()
+        .to_vec();
+
+    // Minimal find key — our own node ID is fine, any key works.
+    let find_req = FindRequest {
+        auth: Some(RequestAuthInfo::new()),
+        keys: vec![our_dhtid.clone()],
+        peer: Some(NodeInfo { node_id: our_dhtid }),
+    };
+    let mut req_bytes = Vec::new();
+    if find_req.encode(&mut req_bytes).is_err() {
+        return;
+    }
+
+    let mut store = ReputationStore::load();
+
+    for addr in bootstrap_peers {
+        let Some(peer_str) = addr.split("/p2p/").nth(1) else { continue };
+        let Ok(bp) = peer_str.parse::<PeerId>() else { continue };
+
+        let t0 = std::time::Instant::now();
+        let _ = client.connect_peer(addr).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_find", &req_bytes),
+        )
+        .await;
+        let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let success = result.ok().and_then(|r| r.ok()).is_some();
+
+        let name = peer_str.get(..12).unwrap_or(peer_str).to_string();
+        store.record(peer_str, &name, PeerObservation {
+            timestamp_secs: now_secs(),
+            latency_ms,
+            success,
+            observed_tps: None,
+            claimed_tps: None,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update
+// ---------------------------------------------------------------------------
+
+/// Check for a newer release and, if found, install it automatically.
+/// On Unix the installer runs synchronously then we exec the new binary in-place
+/// (same PID, seamless for the daemon supervisor).
+/// On Windows the batch installer runs detached; the daemon will be replaced when
+/// the batch completes (no in-place exec available).
+async fn maybe_auto_update() {
+    let checker = crate::updater::UpdateChecker::new();
+    let update = match checker.check(false).await {
+        Ok(Some(u)) => u,
+        _ => return,
+    };
+
+    info!("Auto-update: new version {} available — installing…", update.version);
+
+    if let Err(e) = checker.install_update(&update.version).await {
+        warn!("Auto-update install failed: {e}");
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        // Replace this process image with the newly installed binary.
+        // The same arguments (run-node) are preserved — PID stays identical.
+        use std::os::unix::process::CommandExt;
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => { warn!("Auto-update exec failed (can't find exe): {e}"); return; }
+        };
+        info!("Auto-update: exec'ing new binary at {}", exe.display());
+        let err = std::process::Command::new(&exe).arg("run-node").exec();
+        warn!("Auto-update exec failed: {err}");
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Windows: the installer batch handles process replacement.
+        // The daemon will be killed by the batch and replaced on disk.
+        info!("Auto-update: installer launched — daemon will restart when complete.");
+    }
 }
 
 // ---------------------------------------------------------------------------

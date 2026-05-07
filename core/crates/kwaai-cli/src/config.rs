@@ -164,22 +164,27 @@ pub struct ContributeConfig {
     /// Automatically start shard serving on daemon start (when a model is available).
     #[serde(default = "default_true")]
     pub shards: bool,
+
+    /// Automatically install updates when a new version is available (pre-v1.0 default: true).
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
 }
 
 impl Default for ContributeConfig {
     fn default() -> Self {
-        Self { storage: true, shards: true }
+        Self { storage: true, shards: true, auto_update: true }
     }
 }
 
 fn contribute_config_is_default(c: &ContributeConfig) -> bool {
-    c.storage && c.shards
+    c.storage && c.shards && c.auto_update
 }
 
 /// Resolved contribution policy after applying CLI overrides.
 pub struct ContributePolicy {
     pub storage: bool,
     pub shards: bool,
+    pub auto_update: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +342,16 @@ fn default_port() -> u16 {
 }
 fn default_true() -> bool {
     true
+}
+
+/// Returns true when the running binary is a pre-v1.0 build (major version == 0).
+pub fn is_pre_release() -> bool {
+    crate::updater::CURRENT_VERSION
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .map(|major| major == 0)
+        .unwrap_or(true)
 }
 fn default_log_level() -> String {
     std::env::var("KWAAINET_LOG_LEVEL").unwrap_or_else(|_| "info".to_string())
@@ -551,6 +566,7 @@ impl KwaaiNetConfig {
         ContributePolicy {
             storage: self.contribute.storage && !cli_no_contribute,
             shards: self.contribute.shards && !cli_no_contribute,
+            auto_update: self.contribute.auto_update && is_pre_release(),
         }
     }
 
@@ -584,6 +600,7 @@ impl KwaaiNetConfig {
             }
             "contribute.storage" => self.contribute.storage = parse_bool(value)?,
             "contribute.shards" => self.contribute.shards = parse_bool(value)?,
+            "contribute.auto_update" => self.contribute.auto_update = parse_bool(value)?,
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Run `kwaainet config set --help` to see valid keys.",
                 key
