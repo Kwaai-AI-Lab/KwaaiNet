@@ -394,6 +394,9 @@ impl ShardManager {
     }
 
     /// Stop the shard serve child, if running.
+    ///
+    /// Sends SIGTERM and waits up to 5 s for a clean exit, then sends SIGKILL
+    /// so the CUDA context (and VRAM) is always freed before returning.
     pub fn stop_process(&self) {
         let Some(pid) = self.read_pid() else { return };
         info!("Stopping shard server PID {}", pid);
@@ -408,9 +411,12 @@ impl ShardManager {
                 let mut sys = System::new();
                 sys.refresh_process(Pid::from_u32(pid));
                 if sys.process(Pid::from_u32(pid)).is_none() {
-                    break;
+                    self.remove_pid();
+                    return;
                 }
             }
+            warn!("Shard process {} did not exit after SIGTERM — sending SIGKILL", pid);
+            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGKILL);
         }
         #[cfg(not(unix))]
         {
@@ -424,7 +430,18 @@ impl ShardManager {
 
     /// Spawn `kwaainet shard serve --auto --auto-rebalance` as a detached
     /// background process, appending output to `shard.log`.
+    ///
+    /// Kills any already-running shard child first so its CUDA context is freed
+    /// before the new process allocates GPU memory.
     pub fn spawn_shard_child() -> Result<u32> {
+        let mgr = Self::new();
+        if mgr.is_running() {
+            info!("Existing shard child running — stopping it before respawn");
+            mgr.stop_process();
+        }
+        // Clear stale ready sentinel so callers don't see the old state.
+        let _ = std::fs::remove_file(Self::ready_file());
+
         let exe = std::env::current_exe().context("finding own executable")?;
         let log = log_dir().join("shard.log");
         std::fs::create_dir_all(log.parent().unwrap()).ok();
