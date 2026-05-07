@@ -29,7 +29,7 @@ pub async fn run(args: StorageArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn init(
-    capacity_gb: f64,
+    capacity_gb: Option<f64>,
     vpk_port: u16,
     data_dir_override: Option<PathBuf>,
 ) -> Result<()> {
@@ -38,6 +38,13 @@ async fn init(
     // 1. Open (or create) the embedded store -----------------------------------
     println!("  [1/2] Opening embedded vector store…");
     let data_dir = data_dir_override.unwrap_or_else(default_data_dir);
+
+    // Resolve capacity: explicit arg, or 10% of available disk (min 1 GB).
+    let auto_capacity = capacity_gb.is_none();
+    let capacity_gb = capacity_gb.unwrap_or_else(|| available_disk_10pct(&data_dir));
+    if auto_capacity {
+        println!("         Capacity: {:.1} GB (10% of available disk — use --capacity-gb to override)", capacity_gb);
+    }
     kwaai_storage::StorageDb::open(&data_dir)
         .with_context(|| format!("cannot open embedded store at {}", data_dir.display()))?;
     println!("         Store ready at {}", data_dir.display());
@@ -341,6 +348,33 @@ fn destroy(skip_confirm: bool) -> Result<()> {
 
 fn default_data_dir() -> PathBuf {
     crate::config::kwaainet_dir().join("storage")
+}
+
+/// Return 10% of the available space on the disk that contains `path`,
+/// clamped to a minimum of 1 GB. Falls back to 5 GB if disk info is
+/// unavailable.
+fn available_disk_10pct(path: &std::path::Path) -> f64 {
+    use sysinfo::Disks;
+
+    // Ensure the target directory exists so we can match it against mount points.
+    let _ = std::fs::create_dir_all(path);
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    let disks = Disks::new_with_refreshed_list();
+
+    // Find the disk whose mount point is the longest prefix of our path
+    // (most specific mount wins).
+    let best = disks
+        .iter()
+        .filter(|d| canonical.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len());
+
+    let available_gb = match best {
+        Some(disk) => disk.available_space() as f64 / 1_073_741_824.0,
+        None => return 5.0,
+    };
+
+    (available_gb * 0.10).max(1.0)
 }
 
 fn truncate_path(s: &str, max: usize) -> String {

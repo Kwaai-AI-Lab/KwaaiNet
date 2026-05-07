@@ -636,9 +636,10 @@ pub enum StorageAction {
     /// One-time setup: create the embedded vector store and save config.
     /// No Docker or PostgreSQL required — pure embedded storage.
     Init {
-        /// Storage capacity to offer to the network, in GB
-        #[arg(long, default_value = "5")]
-        capacity_gb: f64,
+        /// Storage capacity to offer to the network, in GB.
+        /// Defaults to 10% of available disk space (automatically detected).
+        #[arg(long)]
+        capacity_gb: Option<f64>,
 
         /// Port for the local storage health-check API (localhost only).
         /// Remote Bobs connect via PeerId over /kwaai/storage/1.0.0 — no port forwarding needed.
