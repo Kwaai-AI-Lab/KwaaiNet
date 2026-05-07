@@ -15,6 +15,7 @@ mod map;
 mod monitor;
 mod node;
 mod ollama;
+mod progress;
 mod rebalancer;
 mod reputation;
 mod reputation_cmd;

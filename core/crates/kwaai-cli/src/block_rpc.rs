@@ -236,7 +236,7 @@ pub fn make_block_rpc_handler(
                         ))
                     })
                 }
-                Some(s) => match handle_inference_request(&s, &device, &data).await {
+                Some(s) => match handle_inference_request(s, device, data).await {
                     Ok(resp) => rmp_serde::to_vec_named(&resp).map_err(|e| {
                         kwaai_p2p_daemon::error::Error::Protocol(format!(
                             "Failed to serialise response: {e}"
@@ -264,81 +264,79 @@ pub fn make_block_rpc_handler(
 }
 
 /// Process one incoming inference request against the local shard.
+///
+/// The synchronous forward pass is moved to [`tokio::task::spawn_blocking`] so the
+/// tokio worker thread is not blocked for the duration of compute — this lets other
+/// async tasks (announcements, spinner updates, etc.) make progress while the GPU/CPU
+/// is crunching.
 pub async fn handle_inference_request(
-    shard: &TransformerShard,
-    device: &Device,
-    raw: &[u8],
+    shard: Arc<TransformerShard>,
+    device: Device,
+    raw: Vec<u8>,
 ) -> Result<InferenceResponse> {
     let req: InferenceRequest =
-        rmp_serde::from_slice(raw).context("deserialise InferenceRequest")?;
+        rmp_serde::from_slice(&raw).context("deserialise InferenceRequest")?;
 
     let session_id = req.session_id;
     let seq_pos = req.seq_pos as usize;
+    let is_first = shard.is_first();
+    let is_last = shard.is_last();
+    let start_blk = shard.start_block;
+    let end_blk = shard.end_block;
 
     debug!(
         session = session_id,
         seq_pos,
-        is_first = shard.is_first(),
-        is_last = shard.is_last(),
+        is_first,
+        is_last,
         "Handling inference request"
     );
 
-    // Dispatch based on payload type and node role
-    let deser_start = std::time::Instant::now();
-    let (output, is_logits) = match req.payload_type {
-        PayloadType::TokenIds => {
-            // Only the first node should receive token IDs
-            if !shard.is_first() {
-                bail!(
-                    "Received TokenIds payload but this shard starts at block {} (not 0)",
-                    shard.start_block
-                );
-            }
-            let token_ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
-            let deser_ms = deser_start.elapsed().as_secs_f64() * 1000.0;
+    // Run the synchronous forward pass on the blocking thread pool so the
+    // tokio runtime stays responsive to other tasks during compute.
+    let (output, is_logits) =
+        tokio::task::spawn_blocking(move || -> Result<(candle_core::Tensor, bool)> {
             let fwd_start = std::time::Instant::now();
-            let result = if shard.is_last() {
-                // Single-node shard covers the whole model — embed + blocks + head in one pass
-                let logits = shard.forward_full(session_id, &token_ids, seq_pos)?;
-                (logits, true)
-            } else {
-                let hidden = shard.forward_first(session_id, &token_ids, seq_pos)?;
-                (hidden, false)
+            let result = match req.payload_type {
+                PayloadType::TokenIds => {
+                    if !is_first {
+                        bail!(
+                            "Received TokenIds payload but this shard starts at block {} (not 0)",
+                            start_blk
+                        );
+                    }
+                    let token_ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
+                    if is_last {
+                        let logits = shard.forward_full(session_id, &token_ids, seq_pos)?;
+                        (logits, true)
+                    } else {
+                        let hidden = shard.forward_first(session_id, &token_ids, seq_pos)?;
+                        (hidden, false)
+                    }
+                }
+                PayloadType::HiddenStates => {
+                    let hidden = f16_bytes_to_tensor(&req.data, &req.shape, &device)
+                        .context("decode hidden states")?;
+                    if is_last {
+                        let logits = shard.forward_last(session_id, hidden, seq_pos)?;
+                        (logits, true)
+                    } else {
+                        let out = shard.forward_middle(session_id, hidden, seq_pos)?;
+                        (out, false)
+                    }
+                }
             };
             let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
             info!(
-                deser_ms = format!("{deser_ms:.1}"),
                 fwd_ms = format!("{fwd_ms:.1}"),
-                payload = "TokenIds",
-                blocks = format!("[{}..{})", shard.start_block, shard.end_block),
+                payload = format!("{:?}", req.payload_type),
+                blocks = format!("[{start_blk}..{end_blk})"),
                 "hop timing"
             );
-            result
-        }
-
-        PayloadType::HiddenStates => {
-            let hidden = f16_bytes_to_tensor(&req.data, &req.shape, device)
-                .context("decode hidden states")?;
-            let deser_ms = deser_start.elapsed().as_secs_f64() * 1000.0;
-            let fwd_start = std::time::Instant::now();
-            let result = if shard.is_last() {
-                let logits = shard.forward_last(session_id, hidden, seq_pos)?;
-                (logits, true)
-            } else {
-                let out = shard.forward_middle(session_id, hidden, seq_pos)?;
-                (out, false)
-            };
-            let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
-            info!(
-                deser_ms = format!("{deser_ms:.1}"),
-                fwd_ms = format!("{fwd_ms:.1}"),
-                payload = "HiddenStates",
-                blocks = format!("[{}..{})", shard.start_block, shard.end_block),
-                "hop timing"
-            );
-            result
-        }
-    };
+            Ok(result)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("forward pass panicked: {e}"))??;
 
     // Serialise output tensor to f16 bytes
     let ser_start = std::time::Instant::now();

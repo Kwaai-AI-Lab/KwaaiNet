@@ -374,6 +374,80 @@ primary destruction, with data-loss window bounded to the backup interval.
 
 - [ ] **Background peer discovery + ping loop** — Nodes only accumulate reputation data for bootstrap peers (passively, every 300 s via STORE RPC timing) and for inference peers actually used in `shard run`. All other network nodes remain invisible in the reputation list until a user happens to route inference through them. Fix: add a `tokio::spawn` background loop in `run_node()` that fires every ~30 minutes. Each cycle: (1) sends `FindRequest` for a sample of block keys (`{prefix}.0`, `{prefix}.N/2`, `{prefix}.N-1`) to bootstrap peers to get the current FoundDictionary of all serving peers, (2) for each discovered peer_id (excluding self) calls `call_unary_handler(&peer_id_bytes, "DHTProtocol.rpc_find", &probe_bytes)` with a 5 s timeout — p2pd handles routing via peer_id, no multiaddr needed, (3) records `PeerObservation { latency_ms, success }` in the local `ReputationStore`. The FoundDictionary parsing logic should be extracted from `shard_cmd.rs::discover_chain()` into a shared utility rather than duplicated. Frequency chosen to balance freshness vs. network load: 30 min gives ~48 passive pings/day per peer, well below any reasonable rate limit.
 
+## RAG Application Stack
+
+> Full implementation plan: `.claude/plans/loook-at-https-github-com-kwaai-ai-lab-k-parsed-breeze.md`
+>
+> Builds on top of the existing storage fabric (`kwaainet storage`, port 7432) and OpenAI-compatible
+> inference API (`kwaainet shard api`, port 8080). Embedding via Ollama `nomic-embed-text` (768-dim).
+> UI: minimal embedded HTML at `/` served by `kwaainet rag serve`, plus OpenWebUI as a production
+> frontend pointing at port 9090 as a custom OpenAI base URL.
+>
+> **Critical constraint**: Eve stores only opaque `(i64, Vec<f32>)` tuples. All chunk text and
+> metadata live locally on Bob at `~/.kwaainet/rag/<tenant_id>.redb` (redb sidecar).
+
+### Phase 1 — Personal Knowledge Base (new crate `kwaai-rag`)
+
+- [ ] **New crate `crates/kwaai-rag`** — library crate with no binary; add to workspace `[members]` and `[workspace.dependencies]`. Deps: `anyhow`, `serde`, `serde_json`, `tokio`, `reqwest`, `redb = "2"`, `uuid`, `tracing`, `sha2`, `base64`.
+
+- [ ] **`chunker.rs`** — `ChunkConfig { chunk_size: 800, chunk_overlap: 200 }`, `Chunk { id: i64, text, doc_name, chunk_index, page_num? }`. `split_text()` sliding window over Unicode scalars. `chunk_id()` = truncate(SHA-256(doc_name + "::" + chunk_index), 8 bytes) → i64 — stable across re-ingest.
+
+- [ ] **`embedder.rs`** — `EmbedClient { base_url, model: "nomic-embed-text" }`. `embed_one()` and `embed_batch()` POST to `localhost:11434/api/embed`. At serve-startup: test-embed `""`, assert `len == 768`, clear error if Ollama not running.
+
+- [ ] **`meta_store.rs`** — redb sidecar at `~/.kwaainet/rag/<tenant_id>.redb`. Compound key = `tenant_uuid[16] + chunk_id_i64_le[8]` for single-file multi-tenant storage. `ChunkMeta { doc_name, chunk_index, text, page_num?, ingested_at }`. Methods: `put_chunks`, `get_chunks`, `list_docs`, `delete_doc` (returns `Vec<i64>` for Eve deletion).
+
+- [ ] **`ingestion.rs`** — `ingest_text(cfg, doc_name, text, upload_fn, progress?)`. `upload_fn` closure is provided by the CLI caller (closes over `P2PClient + Eve PeerId`) — keeps `kwaai-rag` free of `kwaai-p2p-daemon` dependency. Batch size: 256 vectors per RPC call.
+
+- [ ] **`retriever.rs`** — `retrieve(query, cfg, embed, meta, search_fn)`. `search_fn` closure same pattern as `upload_fn`. Returns `Vec<RetrievedChunk { chunk_meta, score, source_kb? }>`.
+
+- [ ] **`prompt.rs`** — `build_rag_prompt()` and `build_chat_messages()` with numbered context blocks injected as system message. `max_context_chars: 6000` default (configurable via `--max-context` on `rag serve`).
+
+- [ ] **`crates/kwaai-cli/src/rag_cmd.rs`** — subcommands wired to `kwaainet rag`:
+  - `rag init --eve-peer-id <PEER> [--capacity-mb 2048] [--embed-model nomic-embed-text]` → `rpc_create_tenant(..vector_dimension:768..)` + MetaStore create + write `~/.kwaainet/rag/config.toml`. Dimension guard: before first upload verify tenant dimension == 768 via `rpc_list_tenants`.
+  - `rag ingest <file>` → txt/md via `read_to_string`; PDF via `lopdf` (optional feature `rag-pdf`); calls `ingest_text` with progress bar.
+  - `rag query <text> [--top-k 5]` → retrieve + display chunks, no LLM (debug tool).
+  - `rag chat` → interactive REPL: retrieve → `build_chat_messages` → POST `localhost:8080/v1/chat/completions` → stream SSE.
+  - `rag docs` → `meta_store.list_docs()`.
+  - `rag delete-doc <name> [--yes]` → `rpc_delete_vectors(ids)` + `meta_store.delete_doc()`.
+  - `rag serve [--port 9090] [--inference-url http://localhost:8080]` → starts `rag_api` HTTP server.
+
+- [ ] **`crates/kwaai-cli/src/rag_api.rs`** — Axum HTTP server shared state `RagState { tenant_id, eve_peer, p2p_client, embed_client, meta_store, inference_base_url, top_k, http_client }`. Routes:
+  - `GET /v1/models` → `"kwaai-rag"`
+  - `POST /v1/chat/completions` → RAG pipeline: extract last user message → retrieve → `build_chat_messages` → proxy to shard API (transparent SSE streaming via reqwest; reuse pattern from `shard_api.rs:508-569`)
+  - `POST /v1/completions` → same pipeline
+  - `POST /api/ingest` → multipart file upload
+  - `GET /api/docs` → list docs
+  - `DELETE /api/docs/:name` → delete doc
+  - `GET /` → `include_str!("../assets/rag_ui.html")` minimal chat UI
+
+- [ ] **`config.rs`** — add `RagConfig { tenant_id: Option<Uuid>, eve_peer_id: Option<String>, embed_model: String, inference_url: String }` with `Default`; `pub rag: Option<RagConfig>` with `#[serde(default)]` in `KwaaiNetConfig`.
+
+- [ ] **`cli.rs` + `main.rs`** — add `Rag(RagArgs)` to `Command` enum; `RagArgs`/`RagAction`; `mod rag_cmd; mod rag_api;` + dispatch arm.
+
+- [ ] **`kwaai-storage/src/tenant.rs`** — add `vector_dimension: u32` to `TenantInfo` and `TenantRecord` (needed for dimension guard in `rag init`).
+
+- [ ] **OpenWebUI integration** — document: run `kwaainet rag serve --port 9090`, then in OpenWebUI Settings → Connections add `http://localhost:9090` as custom OpenAI base URL; select model `kwaai-rag`. File upload via embedded UI or `kwaainet rag ingest`; OpenWebUI file uploads use its own pipeline, not KwaaiNet VPK.
+
+### Phase 2 — Federated Multi-KB RAG
+
+- [ ] **`crates/kwaai-rag/src/federation.rs`** — `advertise_kb(client, kb_id, tenant_id)` announces on DHT key `_kwaai.vpk.kb.<kb_id>` (SHA1-msgpack hashing, same as `vpk_dht_id()` pattern). `resolve_kb(client, kb_id) → Vec<KbEndpoint { eve_peer_id, tenant_id, owner_peer_id, display_name }>`.
+
+- [ ] **P2P protocol `/kwaai/rag/1.0.0`** — Bob-to-Bob query relay. Request: `{ query_embedding: Vec<f32>, top_k: usize, tenant_id: Uuid, vc_token: Option<String> }`. Response: `{ results: Vec<(i64, f64)> }` — only IDs+scores, no chunk text (preserving Bob's privacy). Serving Bob validates optional VC from `kwaai-trust` before answering.
+
+- [ ] **`rag_api.rs` federated fan-out** — `RagState` gains `Vec<KbEndpoint>`. `rag_chat_completions` fans out `retrieve()` across all endpoints concurrently via `tokio::join_all`, merge-sort by score, inject global top-K.
+
+- [ ] **CLI additions** — `kwaainet rag kb-share --name <NAME>`, `kwaainet rag kb-list`, `--kb-ids` flag on `rag serve` for federated mode.
+
+### Phase 3 — GraphRAG + Reasoning Harnesses
+
+- [ ] **`crates/kwaai-rag/src/graph.rs`** — `KgNode { id, label, node_type, chunk_ids }`, `KgEdge { source_id, target_id, relation }`, `KnowledgeGraph`. Built during ingestion via structured-output entity extraction (calls `shard_api` — no new services). Persisted as a third redb table in the MetaStore sidecar.
+
+- [ ] **`crates/kwaai-rag/src/reasoning.rs`** — `ReasoningStrategy` enum: `Naive`, `GraphExpanded`, `ChainOfThought`, `Agentic { max_steps }`. Graph-augmented retrieval: top-K dense chunks → expand entity neighborhood (1–2 hops) → add neighborhood chunks to context.
+
+- [ ] **`--strategy` flag on `kwaainet rag serve`** — `--strategy graph` enables GraphRAG; `--strategy cot` enables chain-of-thought prompting.
+
+---
+
 ## Networking
 
 - [ ] **Fix relay fallback** — `metro@kwaai` (peer `...5bZ251`) connects via p2p-circuit relay through `76.91.214.120` instead of direct on configured public IP `75.141.127.202:8080`. Node should establish a direct connection. Investigate NAT traversal / port forwarding and `announceAddrs` config.

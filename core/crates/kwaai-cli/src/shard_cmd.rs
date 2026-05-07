@@ -693,19 +693,29 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
         bail!("No .safetensors files found in {}", model_dir.display());
     }
 
-    print_info(&format!(
-        "Loading {} shard(s) on {:?}…",
-        paths.len(),
-        device_type
+    let load_spinner = crate::progress::Spinner::start(format!(
+        "Loading model — {} block(s)  {} shard file(s)",
+        total_blocks,
+        paths.len()
     ));
 
-    let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+    let paths_owned = paths.clone();
+    let config_path_owned = config_path.clone();
+    let device_clone = device.clone();
     let shard = Arc::new(
-        TransformerShard::load(&path_refs, &config_path, &device, 0, total_blocks)
-            .context("Failed to load model")?,
+        tokio::task::spawn_blocking(move || {
+            let refs: Vec<&std::path::Path> =
+                paths_owned.iter().map(|p| p.as_path()).collect();
+            TransformerShard::load(&refs, &config_path_owned, &device_clone, 0, total_blocks)
+        })
+        .await
+        .context("model load task panicked")?
+        .context("Failed to load model")?,
     );
 
-    print_success(&format!("Model loaded ({} blocks)", total_blocks));
+    load_spinner
+        .finish(format!("✓ Model loaded  {} blocks", total_blocks))
+        .await;
     println!("  Input tokens: {}", token_ids.len());
     println!();
 
@@ -714,17 +724,24 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
     let temperature = args.temperature;
     let top_k = args.top_k;
     let top_p = args.top_p;
+    let n_input = token_ids.len();
 
     let mut generated_ids: Vec<u32> = Vec::new();
     let mut seq_pos: usize = 0;
     let mut current_ids = token_ids.clone();
 
-    print!("  Assistant: ");
+    let mut prefill_spinner: Option<crate::progress::Spinner> = Some(
+        crate::progress::Spinner::start(format!("Prefilling {} input tokens", n_input)),
+    );
+    let mut gen_bar: Option<crate::progress::GenBar> = None;
+    let mut token_times_ms: Vec<f64> = Vec::new();
+
     use std::io::Write as _;
-    std::io::stdout().flush().ok();
 
     loop {
-        // Run full forward pass in-process
+        let token_start = std::time::Instant::now();
+
+        // Run full forward pass in-process (already spawn_blocking inside local path)
         let logits = tokio::task::spawn_blocking({
             let shard = shard.clone();
             let ids = current_ids.clone();
@@ -734,6 +751,21 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
         .await
         .context("join forward_full")?
         .context("forward_full")?;
+
+        // Stop prefill spinner on first token
+        if generated_ids.is_empty() {
+            let prefill_ms = token_start.elapsed().as_secs_f64() * 1000.0;
+            if let Some(sp) = prefill_spinner.take() {
+                sp.finish(format!(
+                    "✓ Prefill  {:.0} ms  ({} input tokens)",
+                    prefill_ms, n_input
+                ))
+                .await;
+            }
+            println!();
+            print!("  Assistant: ");
+            std::io::stdout().flush().ok();
+        }
 
         // logits shape: [1, seq_len, vocab] or [vocab]
         let last_logits = {
@@ -755,8 +787,17 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
             std::io::stdout().flush().ok();
         }
 
+        let token_ms = token_start.elapsed().as_secs_f64() * 1000.0;
+        token_times_ms.push(token_ms);
         generated_ids.push(next_id);
         seq_pos += current_ids.len();
+
+        // Start or tick the generation bar (skip first token = prefill)
+        if generated_ids.len() == 1 {
+            gen_bar = Some(crate::progress::GenBar::new(max_tokens));
+        } else if let Some(ref mut bar) = gen_bar {
+            bar.tick(generated_ids.len(), token_ms);
+        }
 
         if next_id == eos_id || generated_ids.len() >= max_tokens {
             break;
@@ -765,9 +806,20 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
         current_ids = vec![next_id];
     }
 
+    if let Some(bar) = gen_bar {
+        bar.finish();
+    }
+
+    let n = generated_ids.len();
+    let total_secs = token_times_ms.iter().sum::<f64>() / 1000.0;
+    let tps = if total_secs > 0.0 { n as f64 / total_secs } else { 0.0 };
+
     println!();
     println!();
-    print_success(&format!("Generated {} token(s)", generated_ids.len()));
+    print_success(&format!(
+        "Generated {} token(s)  ({:.1} tok/s)",
+        n, tps
+    ));
     print_separator();
     Ok(())
 }
@@ -1025,9 +1077,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let mut all_hop_timings: Vec<Vec<HopTiming>> = Vec::new();
     let generation_start = std::time::Instant::now();
 
-    print!("  Assistant: ");
-    use std::io::Write as _;
-    std::io::stdout().flush().ok();
+    let n_input = token_ids.len();
+    let mut prefill_spinner: Option<crate::progress::Spinner> = Some(
+        crate::progress::Spinner::start(format!("Prefilling {n_input} input token(s)"))
+    );
+    let mut gen_bar: Option<crate::progress::GenBar> = None;
 
     loop {
         let token_start = std::time::Instant::now();
@@ -1094,6 +1148,21 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             all_hop_timings.push(token_hops);
         }
 
+        // Stop prefill spinner and print "Assistant:" header after the first forward pass.
+        if generated_ids.is_empty() {
+            let prefill_ms = token_start.elapsed().as_secs_f64() * 1000.0;
+            if let Some(sp) = prefill_spinner.take() {
+                sp.finish(format!(
+                    "✓ Prefill  {prefill_ms:.0} ms  ({n_input} input token(s))"
+                ))
+                .await;
+            }
+            println!();
+            print!("  Assistant: ");
+            use std::io::Write as _;
+            std::io::stdout().flush().ok();
+        }
+
         // logits_bytes.data is f16 bytes of shape [1, 1, vocab_size] or [1, seq_len, vocab_size]
         // We need only the last position
         let logits_shape = &logits_bytes.shape;
@@ -1116,6 +1185,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         // Decode and print incrementally
         if let Ok(piece) = tokenizer.decode(&[next_id]) {
             print!("{}", piece);
+            use std::io::Write as _;
             std::io::stdout().flush().ok();
         }
 
@@ -1125,6 +1195,13 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         generated_ids.push(next_id);
         seq_pos += current_ids.len(); // advance by tokens sent this step
 
+        // Start or tick the generation progress bar.
+        if generated_ids.len() == 1 {
+            gen_bar = Some(crate::progress::GenBar::new(max_tokens));
+        } else if let Some(ref mut bar) = gen_bar {
+            bar.tick(generated_ids.len(), token_ms);
+        }
+
         // Stopping conditions
         if next_id == eos_id || generated_ids.len() >= max_tokens {
             break;
@@ -1132,6 +1209,10 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
         // Next decode step: send just the new token
         current_ids = vec![next_id];
+    }
+
+    if let Some(bar) = gen_bar {
+        bar.finish();
     }
 
     let total_secs = generation_start.elapsed().as_secs_f64();
@@ -2097,21 +2178,34 @@ pub async fn forward_through_chain(
             anyhow::bail!("No server covers block {} — chain has a gap (all candidates failed or blacklisted)", pos);
         }
 
+        // Per-hop deadline: 5 minutes is generous enough for slow CPU prefill of
+        // large models while still eventually unblocking a hung/crashed peer.
+        const HOP_TIMEOUT: Duration = Duration::from_secs(300);
+
         let mut succeeded = false;
         for candidate in &candidates {
             // Self-bypass: avoid libp2p "dial to self" by using the local TCP server.
             let is_self = our_peer_id == Some(&candidate.peer_id);
             let hop_start = std::time::Instant::now();
-            let result = if is_self {
-                match local_port {
-                    Some(port) => local_inference_call(port, &request).await,
-                    None => Err(anyhow::anyhow!(
-                        "shard serve is not running on this machine (no local port file)"
-                    )),
+            let result = tokio::time::timeout(HOP_TIMEOUT, async {
+                if is_self {
+                    match local_port {
+                        Some(port) => local_inference_call(port, &request).await,
+                        None => Err(anyhow::anyhow!(
+                            "shard serve is not running on this machine (no local port file)"
+                        )),
+                    }
+                } else {
+                    call_block_forward(client, &candidate.peer_id, &request).await
                 }
-            } else {
-                call_block_forward(client, &candidate.peer_id, &request).await
-            };
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "hop timeout after {}s — peer unresponsive or compute too slow",
+                    HOP_TIMEOUT.as_secs()
+                ))
+            });
             let hop_ms = hop_start.elapsed().as_secs_f64() * 1000.0;
 
             match result {
@@ -2279,7 +2373,7 @@ async fn start_local_inference_server(
                         rmp_serde::to_vec_named(&err_resp).unwrap_or_default()
                     }
                     Some(s) => {
-                        match crate::block_rpc::handle_inference_request(&s, &device, &buf).await {
+                        match crate::block_rpc::handle_inference_request(s, device.clone(), buf).await {
                             Ok(r) => rmp_serde::to_vec_named(&r).unwrap_or_default(),
                             Err(e) => {
                                 let err_resp = crate::block_rpc::InferenceResponse {
