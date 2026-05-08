@@ -71,7 +71,7 @@ kwaai-p2p-daemon = { workspace = true }
 kwaai-inference = { workspace = true }
 kwaai-trust = { workspace = true }
 kwaai-storage = { path = "../kwaai-storage", optional = true }
-kwaai-rag = { path = "../kwaai-rag", optional = true }
+kwaai-rag = { path = "../kwaai-rag", optional = true, features = ["pdf"] }
 uuid = { workspace = true, optional = true }
 
 # Trust graph dependencies

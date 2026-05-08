@@ -511,3 +511,134 @@ pub async fn rpc_list_tenants(client: &P2PClient, peer_id: &PeerId) -> Result<Ve
     .await?;
     rmp_serde::from_slice(&resp.payload).context("decode TenantInfo list")
 }
+
+// ── HTTP-based client (for local Eve — bypasses P2P dial-to-self) ─────────────
+
+#[derive(serde::Serialize)]
+struct HttpCreateTenantReq<'a> {
+    peer_id: &'a str,
+    capacity_limit_mb: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<&'a str>,
+    vector_dimension: usize,
+}
+
+#[derive(serde::Serialize)]
+struct HttpVectorEntry {
+    id: i64,
+    embedding: Vec<f32>,
+}
+
+#[derive(serde::Serialize)]
+struct HttpUploadReq {
+    vectors: Vec<HttpVectorEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpUploadResp {
+    uploaded: usize,
+}
+
+#[derive(serde::Serialize)]
+struct HttpSearchReq {
+    query: Vec<f32>,
+    top_k: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpSearchResp {
+    results: Vec<SearchResult>,
+}
+
+#[derive(serde::Serialize)]
+struct HttpDeleteReq {
+    ids: Vec<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpDeleteResp {
+    deleted: usize,
+}
+
+pub async fn http_create_tenant(
+    http: &reqwest::Client,
+    base_url: &str,
+    payload: CreateTenantPayload,
+) -> Result<TenantInfo> {
+    let resp = http
+        .post(format!("{base_url}/api/tenants"))
+        .json(&HttpCreateTenantReq {
+            peer_id: &payload.peer_id,
+            capacity_limit_mb: payload.capacity_limit_mb,
+            display_name: payload.display_name.as_deref(),
+            vector_dimension: payload.vector_dimension,
+        })
+        .send()
+        .await
+        .context("http_create_tenant")?;
+    if !resp.status().is_success() {
+        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    resp.json().await.context("decode TenantInfo")
+}
+
+pub async fn http_upload_vectors(
+    http: &reqwest::Client,
+    base_url: &str,
+    tenant_id: Uuid,
+    vectors: Vec<(i64, Vec<f32>)>,
+) -> Result<usize> {
+    let req = HttpUploadReq {
+        vectors: vectors
+            .into_iter()
+            .map(|(id, embedding)| HttpVectorEntry { id, embedding })
+            .collect(),
+    };
+    let resp = http
+        .post(format!("{base_url}/api/tenants/{tenant_id}/vectors"))
+        .json(&req)
+        .send()
+        .await
+        .context("http_upload_vectors")?;
+    if !resp.status().is_success() {
+        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    Ok(resp.json::<HttpUploadResp>().await?.uploaded)
+}
+
+pub async fn http_search_vectors(
+    http: &reqwest::Client,
+    base_url: &str,
+    tenant_id: Uuid,
+    query: Vec<f32>,
+    top_k: usize,
+) -> Result<Vec<SearchResult>> {
+    let resp = http
+        .post(format!("{base_url}/api/tenants/{tenant_id}/search"))
+        .json(&HttpSearchReq { query, top_k })
+        .send()
+        .await
+        .context("http_search_vectors")?;
+    if !resp.status().is_success() {
+        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    Ok(resp.json::<HttpSearchResp>().await?.results)
+}
+
+pub async fn http_delete_vectors(
+    http: &reqwest::Client,
+    base_url: &str,
+    tenant_id: Uuid,
+    ids: Vec<i64>,
+) -> Result<usize> {
+    let resp = http
+        .delete(format!("{base_url}/api/tenants/{tenant_id}/vectors"))
+        .json(&HttpDeleteReq { ids })
+        .send()
+        .await
+        .context("http_delete_vectors")?;
+    if !resp.status().is_success() {
+        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    Ok(resp.json::<HttpDeleteResp>().await?.deleted)
+}

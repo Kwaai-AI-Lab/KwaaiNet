@@ -1011,6 +1011,11 @@ pub enum RagAction {
         /// Ollama embedding model (must produce 768-dim vectors)
         #[arg(long, default_value = "nomic-embed-text")]
         embed_model: String,
+
+        /// Directory for chunk metadata (defaults to ~/.kwaainet/rag/).
+        /// Point to an external drive for large corpora.
+        #[arg(long, value_name = "PATH")]
+        rag_dir: Option<std::path::PathBuf>,
     },
 
     /// Ingest a document into the knowledge base
@@ -1082,5 +1087,27 @@ pub enum RagAction {
         /// Number of context chunks to inject per request
         #[arg(long, short = 'k', default_value = "5")]
         top_k: usize,
+    },
+
+    /// Sync a folder of documents into the knowledge base
+    Sync {
+        /// Folder to scan for documents
+        folder: std::path::PathBuf,
+
+        /// File extensions to include (comma-separated)
+        #[arg(long, default_value = "txt,md,pdf,docx,doc")]
+        extensions: String,
+
+        /// Remove KB entries whose source files no longer exist
+        #[arg(long)]
+        delete: bool,
+
+        /// Watch for changes and sync continuously
+        #[arg(long)]
+        watch: bool,
+
+        /// Polling interval in seconds (watch mode only)
+        #[arg(long, default_value = "60")]
+        interval: u64,
     },
 }

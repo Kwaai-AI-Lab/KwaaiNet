@@ -19,11 +19,13 @@ use kwaai_rag::{
     retriever::{retrieve, RetrieveConfig},
 };
 
-use crate::config::kwaainet_dir;
 use crate::display::*;
 
 #[cfg(feature = "storage")]
-use crate::storage_rpc::{rpc_search_vectors, rpc_upload_vectors};
+use crate::storage_rpc::{
+    http_delete_vectors, http_search_vectors, http_upload_vectors, rpc_delete_vectors,
+    rpc_search_vectors, rpc_upload_vectors,
+};
 use kwaai_p2p_daemon::P2PClient;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
@@ -31,7 +33,10 @@ use kwaai_p2p_daemon::P2PClient;
 struct RagState {
     tenant_id: Uuid,
     eve_peer: PeerId,
-    client: Arc<Mutex<P2PClient>>,
+    /// Set when Eve is local; storage calls use HTTP instead of P2P.
+    storage_url: Option<String>,
+    /// Only populated when storage_url is None (remote Eve via P2P).
+    client: Option<Arc<Mutex<P2PClient>>>,
     embed: EmbedClient,
     meta: Arc<MetaStore>,
     inference_url: String,
@@ -63,19 +68,25 @@ pub async fn run(port: u16, inference_url: String, top_k: usize) -> Result<()> {
             .as_deref()
             .context("no eve_peer_id")?
             .parse()?;
+        let storage_url = rag.storage_url.clone();
 
         let embed = EmbedClient::new(None, Some(rag.embed_model.clone()));
         print_info("Probing embedding model…");
         embed.check_dim().await?;
 
-        let (p2p_client, _) = crate::vpk::p2p_connect().await?;
-        let data_dir = kwaainet_dir().join("rag");
-        let meta = Arc::new(MetaStore::open(&data_dir, tenant_id)?);
+        let p2p_client = if storage_url.is_none() {
+            let (c, _) = crate::vpk::p2p_connect().await?;
+            Some(Arc::new(Mutex::new(c)))
+        } else {
+            None
+        };
+        let meta = Arc::new(MetaStore::open(&rag.data_dir(), tenant_id)?);
 
         let state = Arc::new(RagState {
             tenant_id,
             eve_peer,
-            client: Arc::new(Mutex::new(p2p_client)),
+            storage_url,
+            client: p2p_client,
             embed,
             meta,
             inference_url: inference_url.clone(),
@@ -177,10 +188,8 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
 
     #[cfg(feature = "storage")]
     {
-        // Retrieve context.
         let tenant_id = state.tenant_id;
         let eve_peer = state.eve_peer;
-        let client = state.client.clone();
 
         let cfg = RetrieveConfig {
             top_k: state.top_k,
@@ -188,21 +197,42 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
             use_sentence_window: false,
         };
 
-        let chunks = retrieve(
-            &query,
-            &cfg,
-            &state.embed,
-            &state.meta,
-            move |emb, k| {
-                let client = client.clone();
-                Box::pin(async move {
-                    let guard = client.lock().await;
-                    let raw = rpc_search_vectors(&*guard, &eve_peer, tenant_id, emb, k).await?;
-                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-            },
-        )
-        .await?;
+        let chunks = if let Some(ref url) = state.storage_url {
+            let http = state.http.clone();
+            let url = url.clone();
+            retrieve(
+                &query,
+                &cfg,
+                &state.embed,
+                &state.meta,
+                move |emb, k| {
+                    let h = http.clone();
+                    let u = url.clone();
+                    Box::pin(async move {
+                        let raw = http_search_vectors(&h, &u, tenant_id, emb, k).await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                },
+            )
+            .await?
+        } else {
+            let client = state.client.as_ref().unwrap().clone();
+            retrieve(
+                &query,
+                &cfg,
+                &state.embed,
+                &state.meta,
+                move |emb, k| {
+                    let c = client.clone();
+                    Box::pin(async move {
+                        let guard = c.lock().await;
+                        let raw = rpc_search_vectors(&*guard, &eve_peer, tenant_id, emb, k).await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                },
+            )
+            .await?
+        };
 
         // Build history from prior messages (all but last).
         let history: Vec<kwaai_rag::prompt::ChatMessage> = req
@@ -288,14 +318,12 @@ async fn api_delete_doc(
         if ids.is_empty() {
             return (axum::http::StatusCode::NOT_FOUND, "document not found").into_response();
         }
-        let client = state.client.lock().await;
-        let _ = crate::storage_rpc::rpc_delete_vectors(
-            &*client,
-            &state.eve_peer,
-            state.tenant_id,
-            ids.clone(),
-        )
-        .await;
+        if let Some(ref url) = state.storage_url {
+            let _ = http_delete_vectors(&state.http, url, state.tenant_id, ids.clone()).await;
+        } else {
+            let client = state.client.as_ref().unwrap().lock().await;
+            let _ = rpc_delete_vectors(&*client, &state.eve_peer, state.tenant_id, ids.clone()).await;
+        }
         Json(serde_json::json!({"deleted": ids.len()})).into_response()
     }
 }
@@ -341,25 +369,45 @@ async fn api_ingest(
 
             let tenant_id = state.tenant_id;
             let eve_peer = state.eve_peer;
-            let client = state.client.clone();
             let meta = state.meta.clone();
             let cfg = IngestConfig::new(state.embed.clone());
 
-            let result = ingest_text(
-                &cfg,
-                &meta,
-                &doc_name,
-                &text,
-                move |vectors| {
-                    let client = client.clone();
-                    Box::pin(async move {
-                        let guard = client.lock().await;
-                        rpc_upload_vectors(&*guard, &eve_peer, tenant_id, vectors).await
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
-                },
-                None::<fn(usize, usize)>,
-            )
-            .await;
+            let result = if let Some(ref url) = state.storage_url {
+                let http = state.http.clone();
+                let url = url.clone();
+                ingest_text(
+                    &cfg,
+                    &meta,
+                    &doc_name,
+                    &text,
+                    move |vectors| {
+                        let h = http.clone();
+                        let u = url.clone();
+                        Box::pin(async move {
+                            http_upload_vectors(&h, &u, tenant_id, vectors).await
+                        }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                    },
+                    None::<fn(usize, usize)>,
+                )
+                .await
+            } else {
+                let client = state.client.as_ref().unwrap().clone();
+                ingest_text(
+                    &cfg,
+                    &meta,
+                    &doc_name,
+                    &text,
+                    move |vectors| {
+                        let c = client.clone();
+                        Box::pin(async move {
+                            let guard = c.lock().await;
+                            rpc_upload_vectors(&*guard, &eve_peer, tenant_id, vectors).await
+                        }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                    },
+                    None::<fn(usize, usize)>,
+                )
+                .await
+            };
 
             match result {
                 Ok(r) => {

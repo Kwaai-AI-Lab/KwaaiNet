@@ -321,6 +321,16 @@ pub struct RagConfig {
     /// Number of context chunks to inject per request.
     #[serde(default = "default_top_k")]
     pub top_k: usize,
+
+    /// When Eve is the local node, store its HTTP base URL here (e.g. "http://localhost:7432")
+    /// so commands bypass the P2P dial-to-self restriction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_url: Option<String>,
+
+    /// Directory for chunk metadata (text, doc index, sync state).
+    /// Defaults to ~/.kwaainet/rag/. Set to an external drive path for large corpora.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rag_data_dir: Option<String>,
 }
 
 fn default_embed_model() -> String {
@@ -335,6 +345,16 @@ fn default_top_k() -> usize {
     5
 }
 
+impl RagConfig {
+    /// Resolve the chunk-metadata directory: explicit config or ~/.kwaainet/rag/
+    pub fn data_dir(&self) -> std::path::PathBuf {
+        match &self.rag_data_dir {
+            Some(p) => std::path::PathBuf::from(p),
+            None => kwaainet_dir().join("rag"),
+        }
+    }
+}
+
 impl Default for RagConfig {
     fn default() -> Self {
         Self {
@@ -343,6 +363,8 @@ impl Default for RagConfig {
             embed_model: default_embed_model(),
             inference_url: default_inference_url(),
             top_k: default_top_k(),
+            storage_url: None,
+            rag_data_dir: None,
         }
     }
 }

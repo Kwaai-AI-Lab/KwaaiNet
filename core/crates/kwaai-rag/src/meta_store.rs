@@ -11,6 +11,21 @@ const CHUNKS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("chunks
 /// key = tenant_uuid[16] + doc_name_bytes → chunk_id list JSON
 const DOCS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("docs");
 
+/// key = tenant_uuid[16] + doc_name_bytes → SyncMeta JSON
+/// Tracks the last-seen mtime/size for folder-sync change detection.
+const SYNC_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("sync");
+
+/// Metadata stored per-doc by `rag sync` for change detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncMeta {
+    /// Absolute path to the source file on disk.
+    pub file_path: String,
+    /// Seconds since Unix epoch of the file's last modification time.
+    pub mtime_secs: u64,
+    /// File size in bytes.
+    pub file_size: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkMeta {
     pub doc_name: String,
@@ -37,6 +52,7 @@ impl MetaStore {
         let wtxn = db.begin_write()?;
         wtxn.open_table(CHUNKS_TABLE)?;
         wtxn.open_table(DOCS_TABLE)?;
+        wtxn.open_table(SYNC_TABLE)?;
         wtxn.commit()?;
 
         Ok(Self { db, tenant_id })
@@ -172,5 +188,66 @@ impl MetaStore {
 
     pub fn now_rfc3339() -> String {
         Utc::now().to_rfc3339()
+    }
+
+    // ── Sync metadata ────────────────────────────────────────────────────────
+
+    fn sync_key(tenant_id: Uuid, doc_name: &str) -> Vec<u8> {
+        let mut k = tenant_id.as_bytes().to_vec();
+        k.extend_from_slice(doc_name.as_bytes());
+        k
+    }
+
+    pub fn put_sync_meta(&self, doc_name: &str, meta: &SyncMeta) -> Result<()> {
+        let key = Self::sync_key(self.tenant_id, doc_name);
+        let val = serde_json::to_vec(meta)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(SYNC_TABLE)?;
+            table.insert(key.as_slice(), val.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_sync_meta(&self, doc_name: &str) -> Result<Option<SyncMeta>> {
+        let key = Self::sync_key(self.tenant_id, doc_name);
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(SYNC_TABLE)?;
+        match table.get(key.as_slice())? {
+            Some(v) => Ok(Some(serde_json::from_slice(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_sync_meta(&self, doc_name: &str) -> Result<()> {
+        let key = Self::sync_key(self.tenant_id, doc_name);
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(SYNC_TABLE)?;
+            table.remove(key.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Return all (doc_name, SyncMeta) pairs for this tenant.
+    pub fn all_sync_metas(&self) -> Result<Vec<(String, SyncMeta)>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(SYNC_TABLE)?;
+        let prefix = self.tenant_id.as_bytes();
+        let start: Vec<u8> = prefix.to_vec();
+        let mut out = Vec::new();
+        for entry in table.range(start.as_slice()..)? {
+            let (k, v) = entry?;
+            let kb = k.value();
+            if kb.len() < 16 || &kb[..16] != prefix.as_ref() {
+                break;
+            }
+            let name = String::from_utf8_lossy(&kb[16..]).into_owned();
+            let meta: SyncMeta = serde_json::from_slice(v.value())?;
+            out.push((name, meta));
+        }
+        Ok(out)
     }
 }

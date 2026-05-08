@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod document;
 pub mod embedder;
 pub mod ingestion;
 pub mod meta_store;
