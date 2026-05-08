@@ -663,6 +663,36 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
     }
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
 
+    // If `shard serve` is already running on this machine, reuse its loaded model
+    // via the local TCP bypass server instead of loading the model a second time.
+    let local_port: Option<u16> = std::fs::read_to_string(local_server_port_file())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|&port| {
+            // Quick liveness check: verify the port is still accepting connections.
+            // A stale port file is common after an unclean shutdown.
+            std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok()
+        });
+    if let Some(port) = local_port {
+        print_info("Shard serve detected — reusing loaded model (skipping model load)");
+        println!();
+        let n_input = token_ids.len();
+        return run_via_local_bypass(
+            port,
+            &tokenizer,
+            token_ids,
+            eos_id,
+            args.session_id.unwrap_or_else(rand_session_id),
+            args.max_tokens,
+            args.temperature,
+            args.top_k,
+            args.top_p,
+            n_input,
+            args.stats,
+        )
+        .await;
+    }
+
     let device_type = if args.no_gpu {
         kwaai_inference::DeviceType::Cpu
     } else {
@@ -2307,6 +2337,134 @@ pub async fn forward_through_chain(
     }
 
     response.ok_or_else(|| anyhow::anyhow!("Empty chain — no peers to forward through"))
+}
+
+// ── Bypass generation loop (reuse shard serve's loaded model) ────────────────
+
+/// Run the `--local` generation loop through the running `shard serve` TCP bypass
+/// server instead of loading the model a second time.
+async fn run_via_local_bypass(
+    port: u16,
+    tokenizer: &kwaai_inference::tokenizer::BpeTokenizer,
+    token_ids: Vec<u32>,
+    eos_id: u32,
+    session_id: u64,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    n_input: usize,
+    show_stats: bool,
+) -> Result<()> {
+    use kwaai_inference::tokenizer::Tokenizer as _;
+    use std::io::Write as _;
+
+    let mut current_ids = token_ids;
+    let mut generated_ids: Vec<u32> = Vec::new();
+    let mut seq_pos: usize = 0;
+
+    let mut prefill_spinner: Option<crate::progress::Spinner> = Some(
+        crate::progress::Spinner::start(format!("Prefilling {} input tokens", n_input)),
+    );
+    let mut gen_bar = crate::progress::GenBar::new(max_tokens);
+    let mut token_times_ms: Vec<f64> = Vec::new();
+
+    let cpu = candle_core::Device::Cpu;
+
+    loop {
+        let token_start = std::time::Instant::now();
+
+        let (shape, data) = token_ids_to_bytes(&current_ids);
+        let request = InferenceRequest {
+            session_id,
+            seq_pos: seq_pos as u32,
+            payload_type: PayloadType::TokenIds,
+            shape,
+            data,
+        };
+
+        let response = local_inference_call(port, &request).await?;
+
+        if response.response_type != crate::block_rpc::ResponseType::Logits {
+            bail!(
+                "Local shard does not cover all blocks — got {:?} response, need Logits. \
+                 Ensure shard serve is configured to serve the full model.",
+                response.response_type
+            );
+        }
+
+        let logits = f16_bytes_to_tensor(&response.data, &response.shape, &cpu)
+            .context("decode logits from bypass response")?;
+
+        // Stop prefill spinner on first token
+        if generated_ids.is_empty() {
+            let prefill_ms = token_start.elapsed().as_secs_f64() * 1000.0;
+            if let Some(sp) = prefill_spinner.take() {
+                sp.finish(format!(
+                    "✓ Prefill  {:.0} ms  ({} input tokens)",
+                    prefill_ms, n_input
+                ))
+                .await;
+            }
+            println!();
+            println!("  Assistant:");
+            print!("  ");
+            std::io::stdout().flush().ok();
+        }
+
+        let last_logits = {
+            let dims = logits.dims();
+            if dims.len() == 3 && dims[1] > 1 {
+                use candle_core::IndexOp as _;
+                logits.i((0, dims[1] - 1, ..))?
+            } else {
+                logits.flatten_all()?
+            }
+        };
+        let next_id = sample_token(&last_logits, temperature, top_k, top_p)? as u32;
+
+        if let Ok(piece) = tokenizer.decode(&[next_id]) {
+            print!("{}", piece);
+            std::io::stdout().flush().ok();
+        }
+
+        let token_ms = token_start.elapsed().as_secs_f64() * 1000.0;
+        token_times_ms.push(token_ms);
+        generated_ids.push(next_id);
+        seq_pos += current_ids.len();
+
+        if generated_ids.len() > 1 {
+            gen_bar.tick(generated_ids.len(), token_ms);
+        }
+
+        if next_id == eos_id || generated_ids.len() >= max_tokens {
+            break;
+        }
+
+        current_ids = vec![next_id];
+    }
+
+    let n = generated_ids.len();
+    let total_secs = token_times_ms.iter().sum::<f64>() / 1000.0;
+    let tps = gen_bar.tps();
+
+    println!();
+    println!();
+    print_success(&format!(
+        "Generated {} tok  •  {:.1} tok/s  •  {:.1}s",
+        n, tps, total_secs
+    ));
+
+    if show_stats && !token_times_ms.is_empty() {
+        println!();
+        println!("  Per-token latency (ms):");
+        for (i, ms) in token_times_ms.iter().enumerate() {
+            println!("    [{:>4}]  {:.1}", i + 1, ms);
+        }
+    }
+
+    print_separator();
+    Ok(())
 }
 
 // ── Local inference bypass (avoids libp2p self-dial) ─────────────────────────
