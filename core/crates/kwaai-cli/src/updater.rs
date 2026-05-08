@@ -240,29 +240,30 @@ impl UpdateChecker {
                 ping -n 2 127.0.0.1 > nul\r\n";
 
             let bat_content = if cuda_installed {
-                // Fast path: download the CPU-only archive (much smaller), extract
-                // just the .exe files, and leave the existing CUDA DLLs in place.
+                // CUDA path: download the CUDA-enabled archive so the installed
+                // kwaainet.exe has GPU support compiled in.  The archive also
+                // contains updated CUDA runtime DLLs which replace any older ones.
                 let archive_url = format!(
-                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc.zip"
+                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda.zip"
                 );
                 let dir = install_dir.to_string_lossy().into_owned();
                 format!(
                     "{kill_header}\
                      powershell -ExecutionPolicy Bypass -Command \"\
-                       $zip = [System.IO.Path]::GetTempPath() + 'kwaainet-cpu-update.zip'; \
-                       $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cpu-extract'; \
-                       Write-Host 'Downloading CPU archive...'; \
+                       $zip = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-update.zip'; \
+                       $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-extract'; \
+                       Write-Host 'Downloading CUDA archive...'; \
                        Invoke-WebRequest -Uri '{archive_url}' -OutFile $zip -UseBasicParsing; \
                        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
                        Expand-Archive -Path $zip -DestinationPath $tmp -Force; \
-                       Get-ChildItem $tmp -Recurse -Filter '*.exe' | ForEach-Object {{ \
+                       Get-ChildItem $tmp -Recurse -Include '*.exe','*.dll' | ForEach-Object {{ \
                          $dest = '{dir}\\' + $_.Name; \
                          Write-Host ('Installing ' + $_.Name); \
                          Move-Item $_.FullName $dest -Force \
                        }}; \
                        Remove-Item $zip -Force -ErrorAction SilentlyContinue; \
                        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
-                       Write-Host 'Update complete. CUDA DLLs preserved.' \
+                       Write-Host 'Update complete. CUDA binary and DLLs installed.' \
                      \" >> \"{log_path}\" 2>&1\r\n\
                      del /f \"%~f0\"\r\n"
                 )
@@ -293,7 +294,7 @@ impl UpdateChecker {
                     "cublas DLLs in install dir"
                 };
                 println!(
-                    "  CUDA detected ({reason}) — downloading CPU archive only (fast update)."
+                    "  CUDA detected ({reason}) — downloading CUDA archive."
                 );
             }
 
