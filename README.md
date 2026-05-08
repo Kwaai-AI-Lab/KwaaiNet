@@ -48,6 +48,8 @@ Today, a KwaaiNet node can:
 - Download models selectively with `kwaainet shard download --start-block N --blocks M` — fetch only the weight files needed for your block range (10x reduction for large models).
 - **Dual inference backends**: llama.cpp with Metal GPU for 30+ tok/s on Apple Silicon (GGUF models); candle with CUDA for distributed block sharding on Linux.
 - **llama.cpp fast path**: when a Mac node hosts the full model and a GGUF file is available, the OpenAI API and benchmark automatically bypass the distributed shard engine and use llama.cpp with Metal — delivering 36+ tok/s instead of ~5 tok/s on CPU. Auto-detected from Ollama, `--ollama-model`, `--gguf-path`, or `~/.kwaainet/models/`.
+- **`shard run --local` model reuse** — if `shard serve` is already running on the same machine, `shard run --local` detects the live bypass port and routes through it instead of loading the model a second time, cutting cold-start latency to near zero.
+- **Flash Attention (CUDA)** — candle block sharding on NVIDIA GPUs uses a fused QK-softmax-V kernel (`candle-flash-attn`) when built with `--features cuda,flash-attn`, alongside a contiguous KV-cache layout that eliminates strided cuBLAS slowdown. Combined, these push decode throughput toward 30–36 tok/s FP16 on an RTX A5000 (up from ~27 tok/s baseline).
 - Pre-form **inference circuits** (`kwaainet shard circuit create`) for stable, reusable peer paths across multiple chat completions.
 - Auto-detect local models and network state to smart-select what to serve, and appear on the public map when properly configured at [map.kwaai.ai](https://map.kwaai.ai).
 - **Run as a VPK Eve storage node** — initialize an encrypted vector database (`kwaainet storage init --capacity-gb N`), enable VPK mode (`kwaainet vpk enable --mode eve`), and serve vector search to remote Bob nodes over the P2P fabric.
@@ -119,6 +121,15 @@ Copy the binary to your RISC-V board and run. See **[nix/README.md](nix/README.m
 
 ```bash
 cargo install --git https://github.com/Kwaai-AI-Lab/KwaaiNet kwaainet
+```
+
+**Build from source with GPU auto-detection (recommended for CUDA machines):**
+
+```bash
+git clone https://github.com/Kwaai-AI-Lab/KwaaiNet && cd KwaaiNet
+./scripts/build.sh          # auto-detects NVIDIA GPU + nvcc → enables CUDA + Flash Attention
+./scripts/build.sh --no-gpu # force CPU-only build
+./scripts/build.sh --install # build + cargo install
 ```
 
 Then confirm:
