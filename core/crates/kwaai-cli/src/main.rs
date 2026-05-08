@@ -32,6 +32,10 @@ mod uninstall;
 mod updater;
 mod vpk;
 mod vpk_bench;
+#[cfg(feature = "rag")]
+mod rag_api;
+#[cfg(feature = "rag")]
+mod rag_cmd;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
@@ -1553,6 +1557,18 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Shard(args) => {
             shard_cmd::run(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // rag
+        // -------------------------------------------------------------------
+        #[cfg(feature = "rag")]
+        Command::Rag(args) => {
+            rag_cmd::run(args).await?;
+        }
+        #[cfg(not(feature = "rag"))]
+        Command::Rag(_) => {
+            print_error("RAG support not compiled. Rebuild with: cargo build --features rag");
         }
 
         // -------------------------------------------------------------------

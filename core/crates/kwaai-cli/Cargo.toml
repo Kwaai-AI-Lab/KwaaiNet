@@ -59,7 +59,7 @@ rmpv = "1.0"
 half = { workspace = true }
 
 # HTTP server (OpenAI API)
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "multipart"] }
 
 # ML (needed for tensor ops in block_rpc and shard_cmd)
 candle-core = { workspace = true }
@@ -71,6 +71,7 @@ kwaai-p2p-daemon = { workspace = true }
 kwaai-inference = { workspace = true }
 kwaai-trust = { workspace = true }
 kwaai-storage = { path = "../kwaai-storage", optional = true }
+kwaai-rag = { path = "../kwaai-rag", optional = true }
 uuid = { workspace = true, optional = true }
 
 # Trust graph dependencies
@@ -91,9 +92,10 @@ kwaai-inference = { workspace = true, features = ["metal"] }
 features = ["storage"]
 
 [features]
-default = ["storage"]
+default = ["storage", "rag"]
 cuda = ["kwaai-inference/flash-attn"]
 llama-cpp = ["llama-cpp-2"]
 storage = ["kwaai-storage", "uuid"]
+rag = ["kwaai-rag", "uuid"]
 
 

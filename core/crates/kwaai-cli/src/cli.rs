@@ -156,6 +156,9 @@ A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
   shard download  Download a HuggingFace SafeTensors model (no huggingface-cli needed)")]
     Shard(ShardArgs),
 
+    /// Build and query a local RAG knowledge base
+    Rag(RagArgs),
+
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
     RunNode,
@@ -980,5 +983,104 @@ pub enum ReputationAction {
     Reset {
         /// Full peer ID or unique prefix (≥ 12 chars)
         peer_id: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// rag
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct RagArgs {
+    #[command(subcommand)]
+    pub action: RagAction,
+}
+
+#[derive(Subcommand)]
+pub enum RagAction {
+    /// Initialise a RAG knowledge base (creates Eve tenant + local metadata store)
+    Init {
+        /// Eve node peer ID (base58). Defaults to the local node's peer ID.
+        #[arg(long, value_name = "PEER_ID")]
+        eve_peer_id: Option<String>,
+
+        /// Storage capacity to request from Eve (MB)
+        #[arg(long, default_value = "2048")]
+        capacity_mb: i64,
+
+        /// Ollama embedding model (must produce 768-dim vectors)
+        #[arg(long, default_value = "nomic-embed-text")]
+        embed_model: String,
+    },
+
+    /// Ingest a document into the knowledge base
+    Ingest {
+        /// Path to the file to ingest (.txt, .md)
+        file: std::path::PathBuf,
+
+        /// Override the document name stored in metadata (default: file name)
+        #[arg(long)]
+        doc_name: Option<String>,
+
+        /// Chunk size in characters
+        #[arg(long, default_value = "800")]
+        chunk_size: usize,
+
+        /// Chunk overlap in characters
+        #[arg(long, default_value = "200")]
+        chunk_overlap: usize,
+    },
+
+    /// Retrieve top-K chunks for a query (no LLM — debug tool)
+    Query {
+        /// Query text
+        text: String,
+
+        /// Number of results to return
+        #[arg(long, short = 'k', default_value = "5")]
+        top_k: usize,
+
+        /// Minimum cosine similarity score (0.0–1.0)
+        #[arg(long, default_value = "0.0")]
+        min_score: f64,
+    },
+
+    /// Interactive RAG chat REPL (streams from shard API)
+    Chat {
+        /// Number of context chunks to inject
+        #[arg(long, short = 'k', default_value = "5")]
+        top_k: usize,
+
+        /// Shard API base URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        inference_url: String,
+    },
+
+    /// List ingested documents
+    Docs,
+
+    /// Delete a document from the knowledge base
+    DeleteDoc {
+        /// Document name (as shown by `rag docs`)
+        name: String,
+
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Serve an OpenAI-compatible RAG API (port 9090 by default)
+    Serve {
+        /// HTTP port to listen on
+        #[arg(long, default_value = "9090")]
+        port: u16,
+
+        /// Shard API base URL for inference
+        #[arg(long, default_value = "http://localhost:8080")]
+        inference_url: String,
+
+        /// Number of context chunks to inject per request
+        #[arg(long, short = 'k', default_value = "5")]
+        top_k: usize,
     },
 }

@@ -12,6 +12,7 @@ members = [
     "crates/kwaai-trust",
     "crates/map-server",
     "crates/kwaai-storage",
+    "crates/kwaai-rag",
 ]
 
 # Root package for examples

@@ -416,7 +416,7 @@ async fn tenant(action: TenantAction) -> Result<()> {
     }
 }
 
-async fn p2p_connect() -> Result<(P2PClient, PeerId)> {
+pub(crate) async fn p2p_connect() -> Result<(P2PClient, PeerId)> {
     let daemon_addr = crate::shard_cmd::daemon_socket();
     let client = P2PClient::connect(&daemon_addr)
         .await

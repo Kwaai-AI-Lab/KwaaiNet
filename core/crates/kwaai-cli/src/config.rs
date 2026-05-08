@@ -143,6 +143,11 @@ pub struct KwaaiNetConfig {
     /// Defaults to true for both (opt-out model for insider builds).
     #[serde(default, skip_serializing_if = "contribute_config_is_default")]
     pub contribute: ContributeConfig,
+
+    // ── RAG (Bob role) ────────────────────────────────────────────────────────
+    /// Local RAG knowledge base configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rag: Option<RagConfig>,
 }
 
 fn reputation_config_is_default(r: &ReputationConfig) -> bool {
@@ -287,6 +292,57 @@ impl Default for ReputationConfig {
         Self {
             enabled: true,
             max_observations_per_peer: default_max_observations(),
+        }
+    }
+}
+
+// RAG config (Bob role)
+// ---------------------------------------------------------------------------
+
+/// Configuration for the local RAG knowledge base.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RagConfig {
+    /// UUID of the Eve tenant that holds the vector index for this KB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+
+    /// Peer ID of the Eve node this KB is stored on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eve_peer_id: Option<String>,
+
+    /// Ollama embedding model (must produce 768-dim vectors).
+    #[serde(default = "default_embed_model")]
+    pub embed_model: String,
+
+    /// Base URL of the shard inference API.
+    #[serde(default = "default_inference_url")]
+    pub inference_url: String,
+
+    /// Number of context chunks to inject per request.
+    #[serde(default = "default_top_k")]
+    pub top_k: usize,
+}
+
+fn default_embed_model() -> String {
+    "nomic-embed-text".to_string()
+}
+
+fn default_inference_url() -> String {
+    "http://localhost:8080".to_string()
+}
+
+fn default_top_k() -> usize {
+    5
+}
+
+impl Default for RagConfig {
+    fn default() -> Self {
+        Self {
+            tenant_id: None,
+            eve_peer_id: None,
+            embed_model: default_embed_model(),
+            inference_url: default_inference_url(),
+            top_k: default_top_k(),
         }
     }
 }
@@ -436,6 +492,7 @@ impl Default for KwaaiNetConfig {
             rebalance_min_redundancy: default_rebalance_min_redundancy(),
             reputation: ReputationConfig::default(),
             contribute: ContributeConfig::default(),
+            rag: None,
         }
     }
 }

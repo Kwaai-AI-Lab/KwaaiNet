@@ -18,6 +18,8 @@ pub struct TenantInfo {
     pub capacity_limit_mb: i64,
     pub status: String,
     pub created_at: String,
+    #[serde(default)]
+    pub vector_dimension: u32,
 }
 
 /// Per-tenant storage statistics.
@@ -87,6 +89,7 @@ impl TenantManager {
             capacity_limit_mb: record.capacity_limit_mb,
             status: record.status,
             created_at,
+            vector_dimension: record.vector_dimension as u32,
         })
     }
 
@@ -249,5 +252,6 @@ fn record_to_info(tenant_id: Uuid, rec: &TenantRecord) -> TenantInfo {
         capacity_limit_mb: rec.capacity_limit_mb,
         status: rec.status.clone(),
         created_at: rec.created_at.clone(),
+        vector_dimension: rec.vector_dimension as u32,
     }
 }
