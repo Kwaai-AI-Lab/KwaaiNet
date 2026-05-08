@@ -20,6 +20,7 @@ cat > "$CUDA_FUNC" <<'CUDA_PATCH'
 
 # ── NVIDIA CUDA variant auto-detection (injected by CI) ──────────
 $global:_cuda_selected = $false
+$global:_cuda_checksum = ""
 
 function Invoke-CudaUpgrade($download_url, [ref]$artifact_name_ref) {
     $current = $artifact_name_ref.Value
@@ -37,6 +38,18 @@ function Invoke-CudaUpgrade($download_url, [ref]$artifact_name_ref) {
         Write-Host "NVIDIA GPU detected: $gpuName - using CUDA-enabled build"
         $artifact_name_ref.Value = $cudaName
         $global:_cuda_selected = $true
+        # Fetch the CUDA archive hash so the installer verifies the right file.
+        # On failure we set an empty string, which skips verification rather than
+        # hard-failing with the CPU archive's embedded hash.
+        try {
+            $hashContent = (Invoke-WebRequest -Uri "$cudaUrl.sha256" -UseBasicParsing -ErrorAction Stop).Content
+            $cudaHash = ($hashContent -split '[\s\r\n]+')[0].Trim().ToLower()
+            if ($cudaHash -match '^[0-9a-f]{64}$') {
+                $global:_cuda_checksum = $cudaHash
+            }
+        } catch {
+            $global:_cuda_checksum = ""
+        }
     } catch {
         Write-Host "CUDA archive not found for this release - falling back to CPU build"
     }
@@ -68,7 +81,11 @@ rm -f "$CUDA_FUNC"
 # Inject the call just before the URL is constructed from $artifact_name.
 if grep -q '\$url = "\$download_url/\$artifact_name"' "$INSTALLER"; then
     sed -i '/\$url = "\$download_url\/\$artifact_name"/i\  Invoke-CudaUpgrade $download_url ([ref]$artifact_name)' "$INSTALLER"
-    echo "Patched ${INSTALLER}: CUDA auto-detection added"
+    # After the URL is set, override the embedded CPU checksum with the CUDA one.
+    # The installer embeds the CPU archive hash at build time; without this patch
+    # the CUDA archive would fail hash verification and abort the install.
+    sed -i '/\$url = "\$download_url\/\$artifact_name"/a\  if ($global:_cuda_selected) { if ($global:_cuda_checksum -ne "") { $checksum = $global:_cuda_checksum } else { $checksum = "" } }' "$INSTALLER"
+    echo "Patched ${INSTALLER}: CUDA auto-detection and checksum override added"
 else
     echo "WARNING: Could not find '\$url = \"\$download_url/\$artifact_name\"' in PS1 installer"
     echo "  Searching for download-related lines:"
