@@ -16,6 +16,8 @@ use crate::{
     error::{InferenceError, InferenceResult},
     tokenizer::BpeTokenizer,
 };
+#[cfg(feature = "flash-attn")]
+use candle_flash_attn;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{Module, VarBuilder};
 use std::{collections::HashMap, path::Path, sync::Mutex, time::Instant};
@@ -289,8 +291,13 @@ impl ShardBlock {
         // Append to KV-cache and update it
         let t2 = Instant::now();
         let (k, v) = if let Some((ck, cv)) = kv.take() {
-            let k = Tensor::cat(&[&ck, &k], 2).map_err(InferenceError::from)?;
-            let v = Tensor::cat(&[&cv, &v], 2).map_err(InferenceError::from)?;
+            // contiguous() after cat avoids strided access on the growing KV cache
+            let k = Tensor::cat(&[&ck, &k], 2)
+                .and_then(|t| t.contiguous())
+                .map_err(InferenceError::from)?;
+            let v = Tensor::cat(&[&cv, &v], 2)
+                .and_then(|t| t.contiguous())
+                .map_err(InferenceError::from)?;
             (k, v)
         } else {
             (k, v)
@@ -300,34 +307,48 @@ impl ShardBlock {
 
         let kv_seq = k.dim(2).map_err(InferenceError::from)?; // total keys
 
-        // GQA: repeat K and V to match query heads
         let t3 = Instant::now();
-        let k_full = repeat_kv(&k, self.cfg.n_rep())?;
-        let v_full = repeat_kv(&v, self.cfg.n_rep())?;
 
-        // Scaled dot-product attention
-        let scale = (hd as f64).sqrt().recip();
-        let scores = q
-            .matmul(&k_full.transpose(2, 3).map_err(InferenceError::from)?)
-            .map_err(InferenceError::from)?; // [b, n_h, s, kv_seq]
-        let scores = (scores * scale).map_err(InferenceError::from)?;
-
-        // Causal mask (only needed when new tokens > 1, i.e. prefill)
-        let scores = if s > 1 {
-            let mask = causal_mask(s, kv_seq, seq_pos, device, self.cfg.dtype)?;
-            // Broadcast mask from [s, kv_seq] to [1, 1, s, kv_seq]
-            let mask = mask
-                .unsqueeze(0)
-                .and_then(|t| t.unsqueeze(0))
-                .map_err(InferenceError::from)?;
-            scores.broadcast_add(&mask).map_err(InferenceError::from)?
-        } else {
-            scores
+        // Flash attention: fused QK softmax V in a single CUDA kernel.
+        // flash_attn expects [b, s, n_heads, hd]; handles GQA natively.
+        #[cfg(feature = "flash-attn")]
+        let attn_out = {
+            let q_fa = q.transpose(1, 2).map_err(InferenceError::from)?; // [b, s, n_h, hd]
+            let k_fa = k.transpose(1, 2).map_err(InferenceError::from)?; // [b, kv_seq, n_kv, hd]
+            let v_fa = v.transpose(1, 2).map_err(InferenceError::from)?;
+            let scale = (hd as f32).sqrt().recip();
+            // Causal mask only needed for multi-token prefill starting at position 0.
+            // For decode (s==1) or continued prefill (seq_pos>0) use non-causal full attention.
+            let is_causal = s > 1 && seq_pos == 0;
+            let out = candle_flash_attn::flash_attn(&q_fa, &k_fa, &v_fa, scale, is_causal)
+                .map_err(InferenceError::from)?; // [b, s, n_h, hd]
+            out.transpose(1, 2).map_err(InferenceError::from)? // [b, n_h, s, hd]
         };
 
-        let attn_w = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)
-            .map_err(InferenceError::from)?;
-        let attn_out = attn_w.matmul(&v_full).map_err(InferenceError::from)?; // [b, n_h, s, hd]
+        // Standard scaled dot-product attention fallback (no flash-attn feature).
+        #[cfg(not(feature = "flash-attn"))]
+        let attn_out = {
+            let k_full = repeat_kv(&k, self.cfg.n_rep())?;
+            let v_full = repeat_kv(&v, self.cfg.n_rep())?;
+            let scale = (hd as f64).sqrt().recip();
+            let scores = q
+                .matmul(&k_full.transpose(2, 3).map_err(InferenceError::from)?)
+                .map_err(InferenceError::from)?;
+            let scores = (scores * scale).map_err(InferenceError::from)?;
+            let scores = if s > 1 {
+                let mask = causal_mask(s, kv_seq, seq_pos, device, self.cfg.dtype)?;
+                let mask = mask
+                    .unsqueeze(0)
+                    .and_then(|t| t.unsqueeze(0))
+                    .map_err(InferenceError::from)?;
+                scores.broadcast_add(&mask).map_err(InferenceError::from)?
+            } else {
+                scores
+            };
+            let attn_w = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)
+                .map_err(InferenceError::from)?;
+            attn_w.matmul(&v_full).map_err(InferenceError::from)?
+        };
 
         // Merge heads: [b, s, h]
         let h = self.cfg.hidden_dim;

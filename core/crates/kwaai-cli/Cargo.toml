@@ -92,7 +92,7 @@ features = ["storage"]
 
 [features]
 default = ["storage"]
-cuda = ["kwaai-inference/cuda"]
+cuda = ["kwaai-inference/flash-attn"]
 llama-cpp = ["llama-cpp-2"]
 storage = ["kwaai-storage", "uuid"]
 

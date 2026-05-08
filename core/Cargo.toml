@@ -156,6 +156,7 @@ libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "t
 candle-core = "0.10"
 candle-nn = "0.10"
 candle-transformers = "0.10"
+candle-flash-attn = "0.10"
 half = { version = "2.4", features = ["std", "serde"] }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 
