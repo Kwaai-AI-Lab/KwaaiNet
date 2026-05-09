@@ -92,14 +92,16 @@ async fn info() -> Result<()> {
         return Ok(());
     };
 
-    let (peer_id_bytes, addrs_bytes) = client
+    let (peer_id_hex, addrs_bytes) = client
         .identify_with_addrs()
         .await
         .context("IDENTIFY request to p2pd failed")?;
 
-    let peer_id = PeerId::from_bytes(&peer_id_bytes)
+    let peer_id = hex::decode(&peer_id_hex)
+        .ok()
+        .and_then(|b| PeerId::from_bytes(&b).ok())
         .map(|p| p.to_base58())
-        .unwrap_or_else(|_| format!("0x{} (unparseable)", hex::encode(&peer_id_bytes)));
+        .unwrap_or_else(|| format!("0x{} (unparseable)", peer_id_hex));
 
     let addrs: Vec<Multiaddr> = addrs_bytes
         .iter()
