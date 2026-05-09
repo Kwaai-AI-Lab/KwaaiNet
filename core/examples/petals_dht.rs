@@ -109,16 +109,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Listening on: {}", address);
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        if !connected {
-                            connected = true;
-                            println!("[CONNECTED] to Petals network via {}", peer_id);
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } if !connected => {
+                        connected = true;
+                        println!("[CONNECTED] to Petals network via {}", peer_id);
 
-                            // Start DHT bootstrap
-                            println!("[DHT] Starting bootstrap...");
-                            if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
-                                warn!("Bootstrap error: {}", e);
-                            }
+                        // Start DHT bootstrap
+                        println!("[DHT] Starting bootstrap...");
+                        if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                            warn!("Bootstrap error: {}", e);
                         }
                     }
                     SwarmEvent::Behaviour(DhtBehaviourEvent::Identify(
@@ -135,17 +133,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             result: QueryResult::Bootstrap(Ok(stats)),
                             ..
                         },
-                    )) => {
-                        if !bootstrap_done {
-                            bootstrap_done = true;
-                            println!("[DHT] Bootstrap complete! {} peers in routing table",
-                                     stats.num_remaining + 1);
+                    )) if !bootstrap_done => {
+                        bootstrap_done = true;
+                        println!(
+                            "[DHT] Bootstrap complete! {} peers in routing table",
+                            stats.num_remaining + 1
+                        );
 
-                            // Now find random peers to discover more nodes
-                            println!("[DHT] Searching for random peers...");
-                            let random_peer = PeerId::random();
-                            swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
-                        }
+                        // Now find random peers to discover more nodes
+                        println!("[DHT] Searching for random peers...");
+                        let random_peer = PeerId::random();
+                        swarm.behaviour_mut().kademlia.get_closest_peers(random_peer);
                     }
                     SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(
                         kad::Event::OutboundQueryProgressed {
