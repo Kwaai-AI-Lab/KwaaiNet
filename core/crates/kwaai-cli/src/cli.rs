@@ -1083,6 +1083,13 @@ pub enum RagAction {
         yes: bool,
     },
 
+    /// Permanently delete the local knowledge base and all its data
+    Destroy {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
     /// Serve an OpenAI-compatible RAG API (port 9090 by default)
     Serve {
         /// HTTP port to listen on

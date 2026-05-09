@@ -58,6 +58,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
 
         RagAction::DeleteDoc { name, yes } => cmd_delete_doc(name, yes).await,
 
+        RagAction::Destroy { yes } => cmd_destroy(yes).await,
+
         RagAction::Serve {
             port,
             inference_url,
@@ -747,6 +749,55 @@ fn truncate(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+// ── destroy ───────────────────────────────────────────────────────────────────
+
+async fn cmd_destroy(yes: bool) -> Result<()> {
+    let cfg = KwaaiNetConfig::load_or_create()?;
+    let rag = cfg
+        .rag
+        .as_ref()
+        .context("No knowledge base initialised (nothing to destroy).")?;
+
+    let data_dir = match &rag.rag_data_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => kwaainet_dir().join("rag"),
+    };
+
+    let tenant_id = rag.tenant_id.as_deref().unwrap_or("<unknown>");
+
+    print_box_header("RAG Destroy");
+    println!("  Knowledge base: {}", data_dir.display());
+    println!("  Tenant:         {tenant_id}");
+    println!();
+    print_warning("This will permanently delete all vectors, chunks, and metadata.");
+    println!();
+
+    if !yes {
+        print!("  Type 'yes' to confirm: ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut input = String::new();
+        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut input)?;
+        if input.trim() != "yes" {
+            print_info("Aborted — knowledge base not deleted.");
+            return Ok(());
+        }
+    }
+
+    if data_dir.exists() {
+        std::fs::remove_dir_all(&data_dir)
+            .with_context(|| format!("deleting {}", data_dir.display()))?;
+    }
+
+    // Clear the rag section from config.
+    let mut cfg = KwaaiNetConfig::load_or_create()?;
+    cfg.rag = None;
+    cfg.save()?;
+
+    print_success("Knowledge base destroyed.");
+    println!("  Run  kwaainet rag init  to start fresh.");
+    Ok(())
 }
 
 // ── sync ──────────────────────────────────────────────────────────────────────
