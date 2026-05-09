@@ -55,6 +55,9 @@ Today, a KwaaiNet node can:
 - **Run as a VPK Eve storage node** — initialize an encrypted vector database (`kwaainet storage init --capacity-gb N`), enable VPK mode (`kwaainet vpk enable --mode eve`), and serve vector search to remote Bob nodes over the P2P fabric.
 - **Discover VPK-capable peers** with `kwaainet vpk discover` — finds all Eve nodes on the DHT and returns their PeerId, mode, capacity, and tenant count; no IP addresses involved.
 - **Benchmark storage performance** with `kwaainet vpk bench` — measures local HNSW vs WAN-sharded Eve vs Qdrant (local or cloud) across multiple corpus scales, with recall and upload-time breakdowns.
+- **RAG knowledge base** — ingest local documents (`txt`, `md`, `pdf`, `docx`, `doc`) into a private vector knowledge base with `kwaainet rag ingest`, then query it with semantic search or run a RAG-augmented chat session. Supports external drives for large corpora.
+- **Folder sync** — `kwaainet rag sync <folder>` continuously mirrors a directory into the knowledge base, detecting new, changed, and deleted files. Pass `--watch` for continuous mode.
+- **OpenAI-compatible RAG server** — `kwaainet rag serve` exposes an OpenAI-compatible HTTP API on port 9090 with RAG baked in. Point OpenWebUI or any OpenAI-compatible client at it as a custom base URL.
 
 See the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) for the most recent feature list and release notes.
 
@@ -438,7 +441,7 @@ Bob (any node)                         Eve (storage node)
 
 Eve returns only `{id, score}` pairs — vectors never travel back over the wire. Nodes are addressed by PeerId; NAT traversal and routing are handled by the P2P relay layer, never by IP addresses.
 
-### Current status (v0.4.27)
+### Current status (v0.4.39)
 
 | Capability | Status |
 |------------|--------|
@@ -452,9 +455,16 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | Eve discovery (`kwaainet vpk discover`) | ✅ Shipped |
 | Self-update preserves CUDA DLLs on Windows (`kwaainet update`) | ✅ Shipped |
 | Performance benchmark (`kwaainet vpk bench`) | ✅ Shipped |
+| RAG knowledge base — ingest, query, chat (`kwaainet rag init/ingest/query/chat/docs`) | ✅ Shipped |
+| Folder sync with change detection (`kwaainet rag sync --watch`) | ✅ Shipped |
+| PDF, DOCX, DOC document parsing (native Rust, no external tools for PDF/DOCX) | ✅ Shipped |
+| OpenAI-compatible RAG HTTP server with embedded UI (`kwaainet rag serve`) | ✅ Shipped |
+| External drive support for RAG corpus (`rag init --rag-dir <path>`) | ✅ Shipped |
 | PHE encryption layer (vectors encrypted before leaving Bob) | 🔄 Phase 2 |
+| Hybrid BM25 + dense retrieval, reranking, HyDE query expansion | 🔄 Phase 2 |
 | Bob fan-out to multiple Eves (`kwaainet vpk shard`) | 🔄 Phase 2 |
 | DHT-backed shard resolution (`kwaainet vpk resolve`) | 🔄 Phase 3 |
+| Federated multi-KB RAG across nodes (`rag kb-share`, `rag serve --kb-ids`) | 🔄 Phase 3 |
 
 ### Benchmark results
 
@@ -497,6 +507,101 @@ kwaainet vpk discover                            # verify you appear to peers
 
 ---
 
+## RAG Knowledge Base
+
+KwaaiNet includes a built-in Retrieval-Augmented Generation (RAG) pipeline. Documents live locally on your node (Bob); their embeddings are stored in the VPK vector store (Eve). The LLM used for answering queries can be your local node's inference API or any OpenAI-compatible endpoint.
+
+### Quickstart
+
+```bash
+# 1. Pull the embedding model (768-dim, runs locally via Ollama)
+ollama pull nomic-embed-text
+
+# 2. Start the storage node (Eve) — skip if already running
+kwaainet storage init --capacity-gb 10
+kwaainet start --daemon
+
+# 3. Initialize a knowledge base (creates a tenant on Eve, sets up local metadata store)
+kwaainet rag init --eve-peer-id $(kwaainet identity | grep PeerID | awk '{print $2}')
+
+# Optional: store chunk metadata on an external drive
+kwaainet rag init --eve-peer-id <PEER> --rag-dir /Volumes/WD2/kwaainet-rag
+
+# 4. Ingest documents
+kwaainet rag ingest /path/to/document.pdf
+kwaainet rag ingest /path/to/report.docx
+
+# 5. Sync a whole folder (incremental — only ingests changed files)
+kwaainet rag sync /path/to/my-documents/
+
+# 6. Semantic search (no LLM required)
+kwaainet rag query "What are the main risk factors?"
+
+# 7. RAG-augmented chat (streams from your shard API)
+kwaainet shard api --port 8080 &
+kwaainet rag chat
+
+# 8. OpenAI-compatible RAG HTTP server (for OpenWebUI or any API client)
+kwaainet rag serve --port 9090
+# → Point OpenWebUI at http://localhost:9090 as a custom OpenAI base URL
+```
+
+### Document types supported
+
+| Format | Method |
+|--------|--------|
+| `.txt`, `.md`, `.rst`, `.csv`, `.json`, `.yaml`, `.toml` | Read as UTF-8 |
+| `.pdf` | Native Rust extraction (no external tools) |
+| `.docx` | Pure-Rust OOXML parser (no LibreOffice needed) |
+| `.doc` | `antiword` or LibreOffice headless (must be installed) |
+
+### Folder sync
+
+`kwaainet rag sync` tracks each file's modification time and size. On each run it ingests new files, re-ingests changed files, and (with `--delete`) removes vectors for files that no longer exist.
+
+```bash
+# One-shot sync
+kwaainet rag sync ~/Documents/research/
+
+# Watch mode — re-syncs every 60 seconds
+kwaainet rag sync ~/Documents/research/ --watch --interval 60
+
+# Only specific extensions
+kwaainet rag sync ~/Documents/ --extensions "pdf,docx,md"
+
+# Delete vectors for removed files
+kwaainet rag sync ~/Documents/ --delete
+```
+
+### RAG commands
+
+| Command | What it does |
+|---------|-------------|
+| `rag init` | Create a knowledge base tenant on Eve, initialize local metadata store |
+| `rag ingest <file>` | Chunk, embed, and upload a single document |
+| `rag sync <folder>` | Incrementally sync a directory (new/changed/deleted files) |
+| `rag query <text>` | Semantic search — returns top-K chunks, no LLM |
+| `rag chat` | Interactive REPL: retrieve context → augment prompt → stream LLM answer |
+| `rag docs` | List all ingested documents |
+| `rag delete-doc <name>` | Remove a document's vectors and metadata |
+| `rag serve [--port 9090]` | OpenAI-compatible RAG HTTP server with embedded web UI |
+
+### External drive support
+
+Large corpora can exceed local disk. Point chunk metadata and cached text at any path:
+
+```bash
+kwaainet rag init --eve-peer-id <PEER> --rag-dir /Volumes/WD2/kwaainet-rag
+```
+
+The Eve vector store path is set separately at init time:
+
+```bash
+kwaainet storage init --capacity-gb 500 --data-dir /Volumes/WD2/kwaainet-storage
+```
+
+---
+
 ## Roadmap: destination vs current implementation
 
 KwaaiNet's roadmap is defined as the **gap** between the aspirational Layer 8 architecture in the whitepapers and the currently shipping Rust implementation.
@@ -505,7 +610,7 @@ KwaaiNet's roadmap is defined as the **gap** between the aspirational Layer 8 ar
 |---------|--------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
 | Trust   | 5-layer trust pipeline including Testable Credentials (PVP-1) and EigenTrust propagation. | Identity + VC wallet + local time-decayed trust scores shipped; ToIP work in progress. |
 | Compute | Sharded inference, decentralized training, safe tool-calling with trust-gated policies.   | Dual backend: llama.cpp for 30+ tok/s local on Apple Silicon, candle for distributed block sharding on Linux/CUDA. Auto-detected GPU with bundled CUDA runtime (no toolkit install needed). Inference circuits, session-pinned paths, selective download, OpenAI-compatible API shipped. |
-| Storage | Fully distributed personal AI memory via cross-node VPK sharding and DHT-backed resolution. | **Phase 1 complete**: Eve nodes serve multi-tenant vector storage over `/kwaai/storage/1.0.0` libp2p RPC; Bob nodes discover Eves by PeerId via DHT; `kwaainet vpk bench` benchmarks sharded vs local vs Qdrant performance. PHE encryption layer (Phase 2) is next. See [VPK Shard Benchmark](docs/vpk-shard-bench/README.md). |
+| Storage | Fully distributed personal AI memory via cross-node VPK sharding and DHT-backed resolution. | **VPK Phase 1 complete**: Eve nodes serve multi-tenant vector storage over `/kwaai/storage/1.0.0` libp2p RPC; Bob nodes discover Eves by PeerId via DHT; `kwaainet vpk bench` benchmarks sharded vs local vs Qdrant performance. **RAG Phase 1 complete**: `kwaainet rag` ingests PDF/DOCX/MD/TXT documents, syncs folders, serves an OpenAI-compatible RAG API. PHE encryption and hybrid retrieval (Phase 2) are next. See [VPK Shard Benchmark](docs/vpk-shard-bench/README.md). |
 | Network | Intent-casting as a Layer 8 business protocol with economic settlement and neutrality guarantees. | libp2p + Kademlia DHT, trust-gated routing by model/trust/latency shipped. |
 
 See **[docs/roadmap.md](docs/roadmap.md)** for the full living roadmap with contribution ideas for each area.
