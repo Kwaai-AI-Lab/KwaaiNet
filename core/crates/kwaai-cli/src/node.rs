@@ -361,17 +361,26 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     let identity_key_path = NodeIdentity::key_file_path();
 
+    // Trusted relays: empty means "let AutoRelay discover via DHT". When the
+    // user configures explicit trusted_relays we pass them through; otherwise
+    // we leave the list empty rather than auto-promoting bootstraps to relays
+    // (bootstraps may not run a hop relay service, which causes reservations
+    // to silently fail).
+    let trusted_relays = config.trusted_relays.clone();
+
     let builder = P2PDaemon::builder()
         .dht(true)
         .bootstrap(!bootstrap_peers.is_empty())
         .relay(!config.no_relay)
         .auto_relay(true)
         .auto_nat(true)
-        .force_reachability_private(announce_addr.is_none() && !config.no_relay)
+        // Pre-declaring private blocks AutoNAT from ever promoting the node
+        // to public, even if it actually is. Only honour an explicit opt-in.
+        .force_reachability_private(config.force_private)
         .nat_portmap(true)
         .host_addrs([host_addr])
         .bootstrap_peers(bootstrap_peers.clone())
-        .trusted_relays(bootstrap_peers.clone())
+        .trusted_relays(trusted_relays.clone())
         .with_identity_key(&identity_key_path);
 
     let builder = if let Some(ref addr) = announce_addr {
@@ -1589,11 +1598,11 @@ async fn restart_p2pd(
         .relay(!config.no_relay)
         .auto_relay(true)
         .auto_nat(true)
-        .force_reachability_private(announce_addr.is_none() && !config.no_relay)
+        .force_reachability_private(config.force_private)
         .nat_portmap(true)
         .host_addrs([host_addr])
         .bootstrap_peers(bootstrap_peers.to_vec())
-        .trusted_relays(bootstrap_peers.to_vec())
+        .trusted_relays(config.trusted_relays.clone())
         .with_identity_key(&identity_key_path);
 
     let builder = match announce_addr {

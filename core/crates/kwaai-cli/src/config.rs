@@ -81,6 +81,22 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_peers")]
     pub initial_peers: Vec<String>,
 
+    /// Multiaddrs of peers to use as trusted circuit relays (for AutoRelay).
+    /// When set, AutoRelay reserves circuits with these peers instead of (or
+    /// in addition to) discovering relays via the DHT. Useful when DHT
+    /// discovery is unreliable (small networks, NAT-isolated test topologies)
+    /// or when you want to force traffic through specific known-good relays.
+    /// Empty means "let AutoRelay discover relays via DHT" (the default).
+    #[serde(default)]
+    pub trusted_relays: Vec<String>,
+
+    /// When true, pre-declare this node as private (`-forceReachabilityPrivate`)
+    /// so AutoRelay activates immediately without waiting for AutoNAT probes.
+    /// Side effect: AutoNAT can never *promote* the node to public, even if
+    /// it actually is. Off by default — leave AutoNAT to decide.
+    #[serde(default)]
+    pub force_private: bool,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -502,6 +518,8 @@ impl Default for KwaaiNetConfig {
             announce_addr: None,
             no_relay: false,
             initial_peers: default_peers(),
+            trusted_relays: Vec::new(),
+            force_private: false,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
