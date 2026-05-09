@@ -257,28 +257,33 @@ impl UpdateChecker {
             };
 
             let bat_content = if cuda_installed {
-                // Zip is already on disk — batch only unzips and swaps the exes.
-                let zip = cuda_zip_tmp
-                    .as_ref()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned();
-                let dir = install_dir.to_string_lossy().into_owned();
+                // Zip is already on disk — write a .ps1 for the swap so paths
+                // are never processed by cmd.exe's character expansion (%, ^, !).
+                let zip_path = cuda_zip_tmp.as_ref().unwrap();
+                let ps1 = std::env::temp_dir().join("kwaainet-cuda-swap.ps1");
+                let ps1_content = format!(
+                    "$zip = @'\r\n{zip}\r\n'@\r\n\
+                     $dest_dir = @'\r\n{dir}\r\n'@\r\n\
+                     $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-extract'\r\n\
+                     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
+                     Expand-Archive -Path $zip -DestinationPath $tmp -Force\r\n\
+                     Get-ChildItem $tmp -Recurse -Filter '*.exe' | ForEach-Object {{\r\n\
+                       $dest = Join-Path $dest_dir $_.Name\r\n\
+                       Move-Item $_.FullName $dest -Force\r\n\
+                       Write-Host ('Installed ' + $_.Name)\r\n\
+                     }}\r\n\
+                     Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n\
+                     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
+                     Write-Host 'Update complete. CUDA DLLs preserved.'\r\n",
+                    zip = zip_path.to_string_lossy(),
+                    dir = install_dir.to_string_lossy(),
+                );
+                std::fs::write(&ps1, &ps1_content).context("Failed to write CUDA swap script")?;
+                let ps1_str = ps1.to_string_lossy().into_owned();
                 format!(
                     "{kill_header}\
-                     powershell -ExecutionPolicy Bypass -Command \"\
-                       $zip = '{zip}'; \
-                       $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-extract'; \
-                       Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
-                       Expand-Archive -Path $zip -DestinationPath $tmp -Force; \
-                       Get-ChildItem $tmp -Recurse -Filter '*.exe' | ForEach-Object {{ \
-                         $dest = '{dir}\\' + $_.Name; \
-                         Move-Item $_.FullName $dest -Force \
-                       }}; \
-                       Remove-Item $zip -Force -ErrorAction SilentlyContinue; \
-                       Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
-                       Write-Host 'Update complete. CUDA DLLs preserved.' \
-                     \" >> \"{log_path}\" 2>&1\r\n\
+                     powershell -ExecutionPolicy Bypass -File \"{ps1_str}\" >> \"{log_path}\" 2>&1\r\n\
+                     del /f \"{ps1_str}\"\r\n\
                      del /f \"%~f0\"\r\n"
                 )
             } else {
