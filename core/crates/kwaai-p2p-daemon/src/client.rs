@@ -288,6 +288,36 @@ impl P2PClient {
         }
     }
 
+    /// Send an IDENTIFY request and return both our peer ID (binary) and the
+    /// listen + observed multiaddrs the daemon is reporting.
+    ///
+    /// `identify()` only returns the peer ID and discards the addresses; this
+    /// variant preserves them for diagnostic use (e.g. comparing bound vs
+    /// observed addrs to infer NAT status).
+    pub async fn identify_with_addrs(&mut self) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
+        let request = Request {
+            r#type: request::Type::Identify as i32,
+            connect: None,
+            stream_open: None,
+            stream_handler: None,
+            remove_stream_handler: None,
+            dht: None,
+            conn_manager: None,
+            disconnect: None,
+            pubsub: None,
+        };
+
+        let response = self.send_request(request).await?;
+
+        if let Some(id) = response.identify {
+            Ok((id.id, id.addrs))
+        } else {
+            Err(Error::InvalidResponse(
+                "Expected IDENTIFY response".to_string(),
+            ))
+        }
+    }
+
     /// Connect to a peer using a multiaddr
     ///
     /// The multiaddr should be in the format: /ip4/1.2.3.4/tcp/1234/p2p/QmPeerID

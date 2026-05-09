@@ -15,6 +15,7 @@ mod map;
 mod monitor;
 mod node;
 mod ollama;
+mod p2p_cmd;
 mod progress;
 mod rebalancer;
 mod reputation;
@@ -1441,6 +1442,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Identity(args) => {
             identity::run_identity_command(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // p2p
+        // -------------------------------------------------------------------
+        Command::P2p(args) => {
+            p2p_cmd::run(args).await?;
         }
 
         // -------------------------------------------------------------------
