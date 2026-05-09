@@ -107,7 +107,9 @@ pub struct GenBar {
 
 impl GenBar {
     pub fn new(_max_tokens: usize) -> Self {
-        Self { recent: Vec::with_capacity(8) }
+        Self {
+            recent: Vec::with_capacity(8),
+        }
     }
 
     /// Record the wall-time for the most recent token (milliseconds).
@@ -125,7 +127,11 @@ impl GenBar {
             return 0.0;
         }
         let avg_ms = self.recent.iter().sum::<f64>() / self.recent.len() as f64;
-        if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 }
+        if avg_ms > 0.0 {
+            1000.0 / avg_ms
+        } else {
+            0.0
+        }
     }
 
     /// No-op — no bar was drawn, nothing to clear.

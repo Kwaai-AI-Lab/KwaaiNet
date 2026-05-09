@@ -16,9 +16,9 @@ use crate::{
     error::{InferenceError, InferenceResult},
     tokenizer::BpeTokenizer,
 };
+use candle_core::{DType, Device, Tensor};
 #[cfg(feature = "flash-attn")]
 use candle_flash_attn;
-use candle_core::{DType, Device, Tensor};
 use candle_nn::{Module, VarBuilder};
 use std::{collections::HashMap, path::Path, sync::Mutex, time::Instant};
 use tracing::{debug, info};

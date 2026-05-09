@@ -16,6 +16,10 @@ mod monitor;
 mod node;
 mod ollama;
 mod progress;
+#[cfg(feature = "rag")]
+mod rag_api;
+#[cfg(feature = "rag")]
+mod rag_cmd;
 mod rebalancer;
 mod reputation;
 mod reputation_cmd;
@@ -32,10 +36,6 @@ mod uninstall;
 mod updater;
 mod vpk;
 mod vpk_bench;
-#[cfg(feature = "rag")]
-mod rag_api;
-#[cfg(feature = "rag")]
-mod rag_cmd;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;

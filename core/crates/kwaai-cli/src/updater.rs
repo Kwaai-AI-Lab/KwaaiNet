@@ -293,9 +293,7 @@ impl UpdateChecker {
                 } else {
                     "cublas DLLs in install dir"
                 };
-                println!(
-                    "  CUDA detected ({reason}) — downloading CUDA archive."
-                );
+                println!("  CUDA detected ({reason}) — downloading CUDA archive.");
             }
 
             std::fs::write(&bat, &bat_content).context("Failed to write updater batch script")?;

@@ -58,11 +58,7 @@ pub async fn run(port: u16, inference_url: String, top_k: usize) -> Result<()> {
             .rag
             .context("RAG not initialised. Run: kwaainet rag init")?;
 
-        let tenant_id: Uuid = rag
-            .tenant_id
-            .as_deref()
-            .context("no tenant_id")?
-            .parse()?;
+        let tenant_id: Uuid = rag.tenant_id.as_deref().context("no tenant_id")?.parse()?;
         let eve_peer: PeerId = rag
             .eve_peer_id
             .as_deref()
@@ -200,37 +196,27 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
         let chunks = if let Some(ref url) = state.storage_url {
             let http = state.http.clone();
             let url = url.clone();
-            retrieve(
-                &query,
-                &cfg,
-                &state.embed,
-                &state.meta,
-                move |emb, k| {
-                    let h = http.clone();
-                    let u = url.clone();
-                    Box::pin(async move {
-                        let raw = http_search_vectors(&h, &u, tenant_id, emb, k).await?;
-                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                },
-            )
+            retrieve(&query, &cfg, &state.embed, &state.meta, move |emb, k| {
+                let h = http.clone();
+                let u = url.clone();
+                Box::pin(async move {
+                    let raw = http_search_vectors(&h, &u, tenant_id, emb, k).await?;
+                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                })
+                    as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+            })
             .await?
         } else {
             let client = state.client.as_ref().unwrap().clone();
-            retrieve(
-                &query,
-                &cfg,
-                &state.embed,
-                &state.meta,
-                move |emb, k| {
-                    let c = client.clone();
-                    Box::pin(async move {
-                        let guard = c.lock().await;
-                        let raw = rpc_search_vectors(&*guard, &eve_peer, tenant_id, emb, k).await?;
-                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                },
-            )
+            retrieve(&query, &cfg, &state.embed, &state.meta, move |emb, k| {
+                let c = client.clone();
+                Box::pin(async move {
+                    let guard = c.lock().await;
+                    let raw = rpc_search_vectors(&*guard, &eve_peer, tenant_id, emb, k).await?;
+                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                })
+                    as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+            })
             .await?
         };
 
@@ -284,11 +270,7 @@ struct DocsResponse {
 async fn api_list_docs(State(state): State<Arc<RagState>>) -> impl IntoResponse {
     match state.meta.list_docs() {
         Ok(docs) => Json(DocsResponse { docs }).into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            e.to_string(),
-        )
-            .into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -308,10 +290,7 @@ async fn api_delete_doc(
         let ids = match state.meta.delete_doc(&name) {
             Ok(ids) => ids,
             Err(e) => {
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    e.to_string(),
-                )
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
                     .into_response()
             }
         };
@@ -322,7 +301,8 @@ async fn api_delete_doc(
             let _ = http_delete_vectors(&state.http, url, state.tenant_id, ids.clone()).await;
         } else {
             let client = state.client.as_ref().unwrap().lock().await;
-            let _ = rpc_delete_vectors(&*client, &state.eve_peer, state.tenant_id, ids.clone()).await;
+            let _ =
+                rpc_delete_vectors(&*client, &state.eve_peer, state.tenant_id, ids.clone()).await;
         }
         Json(serde_json::json!({"deleted": ids.len()})).into_response()
     }
@@ -342,18 +322,11 @@ async fn api_ingest(
     #[cfg(feature = "storage")]
     {
         while let Ok(Some(field)) = multipart.next_field().await {
-            let doc_name = field
-                .file_name()
-                .unwrap_or("upload.txt")
-                .to_string();
+            let doc_name = field.file_name().unwrap_or("upload.txt").to_string();
             let bytes = match field.bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                    return (
-                        axum::http::StatusCode::BAD_REQUEST,
-                        e.to_string(),
-                    )
-                        .into_response()
+                    return (axum::http::StatusCode::BAD_REQUEST, e.to_string()).into_response()
                 }
             };
             let text = match String::from_utf8(bytes.to_vec()) {
@@ -383,9 +356,10 @@ async fn api_ingest(
                     move |vectors| {
                         let h = http.clone();
                         let u = url.clone();
-                        Box::pin(async move {
-                            http_upload_vectors(&h, &u, tenant_id, vectors).await
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                        Box::pin(
+                            async move { http_upload_vectors(&h, &u, tenant_id, vectors).await },
+                        )
+                            as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
                     None::<fn(usize, usize)>,
                 )
@@ -402,7 +376,8 @@ async fn api_ingest(
                         Box::pin(async move {
                             let guard = c.lock().await;
                             rpc_upload_vectors(&*guard, &eve_peer, tenant_id, vectors).await
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                        })
+                            as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
                     None::<fn(usize, usize)>,
                 )
@@ -419,10 +394,7 @@ async fn api_ingest(
                     .into_response()
                 }
                 Err(e) => {
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        e.to_string(),
-                    )
+                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
                         .into_response()
                 }
             }

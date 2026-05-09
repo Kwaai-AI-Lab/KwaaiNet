@@ -415,7 +415,10 @@ impl ShardManager {
                     return;
                 }
             }
-            warn!("Shard process {} did not exit after SIGTERM — sending SIGKILL", pid);
+            warn!(
+                "Shard process {} did not exit after SIGTERM — sending SIGKILL",
+                pid
+            );
             let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGKILL);
         }
         #[cfg(not(unix))]

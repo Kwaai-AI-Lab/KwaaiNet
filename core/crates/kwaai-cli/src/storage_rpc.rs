@@ -577,7 +577,11 @@ pub async fn http_create_tenant(
         .await
         .context("http_create_tenant")?;
     if !resp.status().is_success() {
-        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+        bail!(
+            "storage HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     resp.json().await.context("decode TenantInfo")
 }
@@ -601,7 +605,11 @@ pub async fn http_upload_vectors(
         .await
         .context("http_upload_vectors")?;
     if !resp.status().is_success() {
-        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+        bail!(
+            "storage HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     Ok(resp.json::<HttpUploadResp>().await?.uploaded)
 }
@@ -620,7 +628,11 @@ pub async fn http_search_vectors(
         .await
         .context("http_search_vectors")?;
     if !resp.status().is_success() {
-        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+        bail!(
+            "storage HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     Ok(resp.json::<HttpSearchResp>().await?.results)
 }
@@ -638,7 +650,11 @@ pub async fn http_delete_vectors(
         .await
         .context("http_delete_vectors")?;
     if !resp.status().is_success() {
-        bail!("storage HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+        bail!(
+            "storage HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     Ok(resp.json::<HttpDeleteResp>().await?.deleted)
 }

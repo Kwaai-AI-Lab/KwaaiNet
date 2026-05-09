@@ -4,7 +4,7 @@ use std::pin::Pin;
 use anyhow::Result;
 use tracing::{debug, info};
 
-use crate::chunker::{ChunkConfig, split_text};
+use crate::chunker::{split_text, ChunkConfig};
 use crate::embedder::EmbedClient;
 use crate::meta_store::{ChunkMeta, MetaStore};
 

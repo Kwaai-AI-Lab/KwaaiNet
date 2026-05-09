@@ -88,7 +88,10 @@ mod tests {
 
     #[test]
     fn split_basic() {
-        let cfg = ChunkConfig { chunk_size: 10, chunk_overlap: 2 };
+        let cfg = ChunkConfig {
+            chunk_size: 10,
+            chunk_overlap: 2,
+        };
         let chunks = split_text("Hello world foo bar baz", "test.txt", &cfg);
         assert!(!chunks.is_empty());
         assert!(chunks[0].text.len() <= 10);

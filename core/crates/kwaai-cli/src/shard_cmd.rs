@@ -734,8 +734,7 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
     let device_clone = device.clone();
     let shard = Arc::new(
         tokio::task::spawn_blocking(move || {
-            let refs: Vec<&std::path::Path> =
-                paths_owned.iter().map(|p| p.as_path()).collect();
+            let refs: Vec<&std::path::Path> = paths_owned.iter().map(|p| p.as_path()).collect();
             TransformerShard::load(&refs, &config_path_owned, &device_clone, 0, total_blocks)
         })
         .await
@@ -1103,7 +1102,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let n_input = token_ids.len();
     let mut prefill_spinner: Option<crate::progress::Spinner> = Some(
-        crate::progress::Spinner::start(format!("Prefilling {n_input} input token(s)"))
+        crate::progress::Spinner::start(format!("Prefilling {n_input} input token(s)")),
     );
     let mut gen_bar = crate::progress::GenBar::new(max_tokens);
 
@@ -1250,7 +1249,10 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     println!();
     println!();
-    print_success(&format!("Generated {} tok  •  {:.1} tok/s  •  {:.1}s", n, tps, total_secs));
+    print_success(&format!(
+        "Generated {} tok  •  {:.1} tok/s  •  {:.1}s",
+        n, tps, total_secs
+    ));
 
     if show_stats && !token_times_ms.is_empty() {
         let prefill_ms = token_times_ms[0];
@@ -2531,7 +2533,9 @@ async fn start_local_inference_server(
                         rmp_serde::to_vec_named(&err_resp).unwrap_or_default()
                     }
                     Some(s) => {
-                        match crate::block_rpc::handle_inference_request(s, device.clone(), buf).await {
+                        match crate::block_rpc::handle_inference_request(s, device.clone(), buf)
+                            .await
+                        {
                             Ok(r) => rmp_serde::to_vec_named(&r).unwrap_or_default(),
                             Err(e) => {
                                 let err_resp = crate::block_rpc::InferenceResponse {

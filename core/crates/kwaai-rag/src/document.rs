@@ -21,14 +21,15 @@ pub fn extract_text(path: &Path) -> Result<String> {
         "pdf" => extract_pdf(path),
         "docx" => extract_docx(path),
         "doc" => extract_doc_legacy(path),
-        _ => std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display())),
+        _ => std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display())),
     }
 }
 
 /// Returns the file extensions this module can handle, for use as sync defaults.
 pub fn supported_extensions() -> &'static [&'static str] {
-    &["txt", "md", "rst", "csv", "json", "yaml", "toml", "pdf", "docx", "doc"]
+    &[
+        "txt", "md", "rst", "csv", "json", "yaml", "toml", "pdf", "docx", "doc",
+    ]
 }
 
 // ── PDF ───────────────────────────────────────────────────────────────────────
@@ -47,8 +48,7 @@ fn extract_pdf(_path: &Path) -> Result<String> {
 // ── DOCX ──────────────────────────────────────────────────────────────────────
 
 fn extract_docx(path: &Path) -> Result<String> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("reading DOCX archive {}", path.display()))?;
 

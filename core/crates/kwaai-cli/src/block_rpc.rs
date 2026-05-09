@@ -286,10 +286,7 @@ pub async fn handle_inference_request(
 
     debug!(
         session = session_id,
-        seq_pos,
-        is_first,
-        is_last,
-        "Handling inference request"
+        seq_pos, is_first, is_last, "Handling inference request"
     );
 
     // Run the synchronous forward pass on the blocking thread pool so the

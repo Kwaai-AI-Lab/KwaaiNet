@@ -48,7 +48,10 @@ pub async fn run(args: RagArgs) -> Result<()> {
             min_score,
         } => cmd_query(text, top_k, min_score).await,
 
-        RagAction::Chat { top_k, inference_url } => cmd_chat(top_k, inference_url).await,
+        RagAction::Chat {
+            top_k,
+            inference_url,
+        } => cmd_chat(top_k, inference_url).await,
 
         RagAction::Docs => cmd_docs().await,
 
@@ -211,11 +214,14 @@ async fn cmd_ingest(
                 move |vectors| {
                     let http = http.clone();
                     let url = storage_url.clone();
-                    Box::pin(async move {
-                        http_upload_vectors(&http, &url, tenant_id, vectors).await
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                    Box::pin(
+                        async move { http_upload_vectors(&http, &url, tenant_id, vectors).await },
+                    )
+                        as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                 },
-                Some(|done: usize, total: usize| { let _ = (done, total); }),
+                Some(|done: usize, total: usize| {
+                    let _ = (done, total);
+                }),
             )
             .await?
         } else {
@@ -231,9 +237,12 @@ async fn cmd_ingest(
                     Box::pin(async move {
                         let guard = client.lock().await;
                         rpc_upload_vectors(&*guard, &eve_peer_id, tenant_id, vectors).await
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                    })
+                        as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                 },
-                Some(|done: usize, total: usize| { let _ = (done, total); }),
+                Some(|done: usize, total: usize| {
+                    let _ = (done, total);
+                }),
             )
             .await?
         };
@@ -270,38 +279,29 @@ async fn cmd_query(query: String, top_k: usize, min_score: f64) -> Result<()> {
         let spinner = crate::progress::Spinner::start("Retrieving…");
         let results = if let Some(storage_url) = rag_cfg.storage_url.clone() {
             let http = reqwest::Client::new();
-            retrieve(
-                &query,
-                &cfg,
-                &embed,
-                &meta,
-                move |embedding, k| {
-                    let http = http.clone();
-                    let url = storage_url.clone();
-                    Box::pin(async move {
-                        let raw = http_search_vectors(&http, &url, tenant_id, embedding, k).await?;
-                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                },
-            )
+            retrieve(&query, &cfg, &embed, &meta, move |embedding, k| {
+                let http = http.clone();
+                let url = storage_url.clone();
+                Box::pin(async move {
+                    let raw = http_search_vectors(&http, &url, tenant_id, embedding, k).await?;
+                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                })
+                    as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+            })
             .await?
         } else {
             let (client, _) = crate::vpk::p2p_connect().await?;
             let client = Arc::new(tokio::sync::Mutex::new(client));
-            retrieve(
-                &query,
-                &cfg,
-                &embed,
-                &meta,
-                move |embedding, k| {
-                    let client = client.clone();
-                    Box::pin(async move {
-                        let guard = client.lock().await;
-                        let raw = rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k).await?;
-                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                },
-            )
+            retrieve(&query, &cfg, &embed, &meta, move |embedding, k| {
+                let client = client.clone();
+                Box::pin(async move {
+                    let guard = client.lock().await;
+                    let raw =
+                        rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k).await?;
+                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                })
+                    as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+            })
             .await?
         };
         spinner.finish("").await;
@@ -381,37 +381,33 @@ async fn cmd_chat(top_k: usize, inference_url: String) -> Result<()> {
             let chunks = if let Some(ref url) = local_url {
                 let http2 = http.clone();
                 let url2 = url.clone();
-                retrieve(
-                    &query,
-                    &retrieve_cfg,
-                    &embed,
-                    &meta,
-                    move |embedding, k| {
-                        let h = http2.clone();
-                        let u = url2.clone();
-                        Box::pin(async move {
-                            let raw = http_search_vectors(&h, &u, tenant_id, embedding, k).await?;
-                            Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                    },
-                )
+                retrieve(&query, &retrieve_cfg, &embed, &meta, move |embedding, k| {
+                    let h = http2.clone();
+                    let u = url2.clone();
+                    Box::pin(async move {
+                        let raw = http_search_vectors(&h, &u, tenant_id, embedding, k).await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
                 .await?
             } else {
                 let client2 = p2p_client.as_ref().unwrap().clone();
-                retrieve(
-                    &query,
-                    &retrieve_cfg,
-                    &embed,
-                    &meta,
-                    move |embedding, k| {
-                        let c = client2.clone();
-                        Box::pin(async move {
-                            let guard = c.lock().await;
-                            let raw = rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k).await?;
-                            Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                    },
-                )
+                retrieve(&query, &retrieve_cfg, &embed, &meta, move |embedding, k| {
+                    let c = client2.clone();
+                    Box::pin(async move {
+                        let guard = c.lock().await;
+                        let raw =
+                            rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k)
+                                .await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
                 .await?
             };
 
@@ -512,10 +508,7 @@ async fn cmd_delete_doc(name: String, yes: bool) -> Result<()> {
                 .context("deleting vectors from Eve")?;
         }
 
-        print_success(&format!(
-            "Deleted '{name}' ({} chunks removed)",
-            ids.len()
-        ));
+        print_success(&format!("Deleted '{name}' ({} chunks removed)", ids.len()));
         Ok(())
     }
 }
@@ -544,7 +537,6 @@ fn load_rag_config() -> Result<(RagConfig, Uuid, PeerId)> {
 
     Ok((rag, tenant_id, eve_peer_id))
 }
-
 
 fn truncate(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
@@ -585,10 +577,14 @@ async fn cmd_sync(
         print_separator();
 
         loop {
-            let result =
-                run_sync_pass(&folder, &exts, delete).await?;
+            let result = run_sync_pass(&folder, &exts, delete).await?;
 
-            let SyncResult { ingested, updated, deleted, skipped } = result;
+            let SyncResult {
+                ingested,
+                updated,
+                deleted,
+                skipped,
+            } = result;
             if ingested + updated + deleted > 0 {
                 print_success(&format!(
                     "ingested={ingested}  updated={updated}  deleted={deleted}  skipped={skipped}"
@@ -667,14 +663,15 @@ async fn run_sync_pass(
             if !old_ids.is_empty() {
                 if let Some(ref url) = rag_cfg.storage_url {
                     let http = reqwest::Client::new();
-                    let _ = crate::storage_rpc::http_delete_vectors(
-                        &http, url, tenant_id, old_ids,
-                    )
-                    .await;
+                    let _ = crate::storage_rpc::http_delete_vectors(&http, url, tenant_id, old_ids)
+                        .await;
                 } else {
                     let (client, _) = crate::vpk::p2p_connect().await?;
                     let _ = crate::storage_rpc::rpc_delete_vectors(
-                        &client, &eve_peer_id, tenant_id, old_ids,
+                        &client,
+                        &eve_peer_id,
+                        tenant_id,
+                        old_ids,
                     )
                     .await;
                 }
@@ -708,7 +705,8 @@ async fn run_sync_pass(
                     let u = url.clone();
                     Box::pin(async move {
                         crate::storage_rpc::http_upload_vectors(&h, &u, tenant_id, vectors).await
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                    })
+                        as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                 },
                 None::<fn(usize, usize)>,
             )
@@ -726,10 +724,14 @@ async fn run_sync_pass(
                     Box::pin(async move {
                         let guard = c.lock().await;
                         crate::storage_rpc::rpc_upload_vectors(
-                            &*guard, &eve_peer_id, tenant_id, vectors,
+                            &*guard,
+                            &eve_peer_id,
+                            tenant_id,
+                            vectors,
                         )
                         .await
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+                    })
+                        as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                 },
                 None::<fn(usize, usize)>,
             )
@@ -773,14 +775,15 @@ async fn run_sync_pass(
             if !old_ids.is_empty() {
                 if let Some(ref url) = rag_cfg.storage_url {
                     let http = reqwest::Client::new();
-                    let _ = crate::storage_rpc::http_delete_vectors(
-                        &http, url, tenant_id, old_ids,
-                    )
-                    .await;
+                    let _ = crate::storage_rpc::http_delete_vectors(&http, url, tenant_id, old_ids)
+                        .await;
                 } else {
                     let (client, _) = crate::vpk::p2p_connect().await?;
                     let _ = crate::storage_rpc::rpc_delete_vectors(
-                        &client, &eve_peer_id, tenant_id, old_ids,
+                        &client,
+                        &eve_peer_id,
+                        tenant_id,
+                        old_ids,
                     )
                     .await;
                 }
