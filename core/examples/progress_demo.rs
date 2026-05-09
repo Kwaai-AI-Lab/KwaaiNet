@@ -63,11 +63,7 @@ const FAKE_TOKENS: &[&str] = &[
 const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn bar_str(done: usize, total: usize, width: usize) -> String {
-    let filled = if total == 0 {
-        0
-    } else {
-        (done.min(total) * width) / total
-    };
+    let filled = (done.min(total) * width).checked_div(total).unwrap_or(0);
     format!(
         "[{}{}]",
         "█".repeat(filled),

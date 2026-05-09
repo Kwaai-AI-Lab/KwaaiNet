@@ -51,41 +51,25 @@ fn parse_args() -> (Option<u16>, Option<Multiaddr>, Command) {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--listen" => {
-                if i + 1 < args.len() {
-                    listen_port = args[i + 1].parse().ok();
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--listen" if i + 1 < args.len() => {
+                listen_port = args[i + 1].parse().ok();
+                i += 2;
             }
-            "--bootstrap" => {
-                if i + 1 < args.len() {
-                    bootstrap = args[i + 1].parse().ok();
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--bootstrap" if i + 1 < args.len() => {
+                bootstrap = args[i + 1].parse().ok();
+                i += 2;
             }
-            "--provide" => {
-                if i + 1 < args.len() {
-                    command = Command::Provide {
-                        capability: args[i + 1].clone(),
-                    };
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--provide" if i + 1 < args.len() => {
+                command = Command::Provide {
+                    capability: args[i + 1].clone(),
+                };
+                i += 2;
             }
-            "--find" => {
-                if i + 1 < args.len() {
-                    command = Command::Find {
-                        capability: args[i + 1].clone(),
-                    };
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--find" if i + 1 < args.len() => {
+                command = Command::Find {
+                    capability: args[i + 1].clone(),
+                };
+                i += 2;
             }
             _ => {
                 i += 1;
