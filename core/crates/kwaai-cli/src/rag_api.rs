@@ -226,7 +226,9 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
                         let raw = vs.search(tenant_id, &emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             }
@@ -240,7 +242,9 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
                         let raw = http_search_vectors(&h, &u, tenant_id, emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             }
@@ -254,7 +258,9 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
                         let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             }
@@ -424,7 +430,10 @@ async fn api_ingest(
                 Some("local") => {
                     let vs = Arc::new(state.local_vs.as_ref().unwrap().clone());
                     ingest_text(
-                        &cfg, &meta, &doc_name, &text,
+                        &cfg,
+                        &meta,
+                        &doc_name,
+                        &text,
                         move |vectors| {
                             let vs = vs.clone();
                             Box::pin(async move { vs.upload(tenant_id, &vectors).await })
@@ -438,11 +447,16 @@ async fn api_ingest(
                     let http = state.http.clone();
                     let url = state.storage_url.clone().unwrap();
                     ingest_text(
-                        &cfg, &meta, &doc_name, &text,
+                        &cfg,
+                        &meta,
+                        &doc_name,
+                        &text,
                         move |vectors| {
                             let h = http.clone();
                             let u = url.clone();
-                            Box::pin(async move { http_upload_vectors(&h, &u, tenant_id, vectors).await })
+                            Box::pin(async move {
+                                http_upload_vectors(&h, &u, tenant_id, vectors).await
+                            })
                                 as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                         },
                         None::<fn(usize, usize)>,
@@ -453,7 +467,10 @@ async fn api_ingest(
                     let ep = state.eve_peer.unwrap();
                     let client = state.client.as_ref().unwrap().clone();
                     ingest_text(
-                        &cfg, &meta, &doc_name, &text,
+                        &cfg,
+                        &meta,
+                        &doc_name,
+                        &text,
                         move |vectors| {
                             let c = client.clone();
                             Box::pin(async move {

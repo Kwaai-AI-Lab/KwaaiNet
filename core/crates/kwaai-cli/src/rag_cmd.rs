@@ -28,7 +28,10 @@ use crate::storage_rpc::{
 
 pub async fn run(args: RagArgs) -> Result<()> {
     match args.action {
-        RagAction::Init { embed_model, rag_dir } => cmd_init(embed_model, rag_dir).await,
+        RagAction::Init {
+            embed_model,
+            rag_dir,
+        } => cmd_init(embed_model, rag_dir).await,
 
         RagAction::ConnectEve { peer_id, url } => cmd_connect_eve(peer_id, url).await,
 
@@ -91,8 +94,7 @@ async fn cmd_init(embed_model: String, rag_dir: Option<std::path::PathBuf>) -> R
         print_success("Embedding model OK (768 dimensions)");
 
         // Create local embedded vector store + tenant — no network required.
-        let db = kwaai_storage::StorageDb::open(&data_dir)
-            .context("opening local vector store")?;
+        let db = kwaai_storage::StorageDb::open(&data_dir).context("opening local vector store")?;
         let tm = kwaai_storage::TenantManager::new(db);
         let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
         let info = tm
@@ -207,7 +209,9 @@ async fn cmd_ingest(
                         Box::pin(async move { vs.upload(tenant_id, &vectors).await })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
-                    Some(|done: usize, total: usize| { let _ = (done, total); }),
+                    Some(|done: usize, total: usize| {
+                        let _ = (done, total);
+                    }),
                 )
                 .await?
             }
@@ -222,10 +226,14 @@ async fn cmd_ingest(
                     move |vectors| {
                         let http = http.clone();
                         let url = url.clone();
-                        Box::pin(async move { http_upload_vectors(&http, &url, tenant_id, vectors).await })
+                        Box::pin(async move {
+                            http_upload_vectors(&http, &url, tenant_id, vectors).await
+                        })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
-                    Some(|done: usize, total: usize| { let _ = (done, total); }),
+                    Some(|done: usize, total: usize| {
+                        let _ = (done, total);
+                    }),
                 )
                 .await?
             }
@@ -246,7 +254,9 @@ async fn cmd_ingest(
                         })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
-                    Some(|done: usize, total: usize| { let _ = (done, total); }),
+                    Some(|done: usize, total: usize| {
+                        let _ = (done, total);
+                    }),
                 )
                 .await?
             }
@@ -295,7 +305,9 @@ async fn cmd_query(query: String, top_k: usize, min_score: f64, json_out: bool) 
                         let raw = vs.search(tenant_id, &embedding, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             }
@@ -309,7 +321,9 @@ async fn cmd_query(query: String, top_k: usize, min_score: f64, json_out: bool) 
                         let raw = http_search_vectors(&http, &url, tenant_id, embedding, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             }
@@ -322,10 +336,13 @@ async fn cmd_query(query: String, top_k: usize, min_score: f64, json_out: bool) 
                     Box::pin(async move {
                         let guard = client.lock().await;
                         let raw =
-                            rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k).await?;
+                            rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k)
+                                .await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             }
@@ -438,7 +455,9 @@ async fn cmd_chat(top_k: usize, inference_url: String) -> Result<()> {
                         let raw = vs.search(tenant_id, &embedding, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             } else if let Some(ref url) = storage_mode {
@@ -451,7 +470,9 @@ async fn cmd_chat(top_k: usize, inference_url: String) -> Result<()> {
                         let raw = http_search_vectors(&h, &u, tenant_id, embedding, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             } else {
@@ -467,7 +488,9 @@ async fn cmd_chat(top_k: usize, inference_url: String) -> Result<()> {
                                 .await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
-                        as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 })
                 .await?
             };
@@ -632,7 +655,8 @@ async fn sync_delete_vectors(rag_cfg: &RagConfig, tenant_id: uuid::Uuid, ids: Ve
         None => {
             if let Ok(ep) = eve_peer_id(rag_cfg) {
                 if let Ok((client, _)) = crate::vpk::p2p_connect().await {
-                    let _ = crate::storage_rpc::rpc_delete_vectors(&client, &ep, tenant_id, ids).await;
+                    let _ =
+                        crate::storage_rpc::rpc_delete_vectors(&client, &ep, tenant_id, ids).await;
                 }
             }
         }
@@ -784,7 +808,10 @@ async fn run_sync_pass(
             Some("local") => {
                 let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
                 ingest_text(
-                    &ingest_cfg, &meta, doc_name, &text,
+                    &ingest_cfg,
+                    &meta,
+                    doc_name,
+                    &text,
                     move |vectors| {
                         let vs = vs.clone();
                         Box::pin(async move { vs.upload(tenant_id, &vectors).await })
@@ -798,12 +825,16 @@ async fn run_sync_pass(
                 let http = reqwest::Client::new();
                 let url = url.to_string();
                 ingest_text(
-                    &ingest_cfg, &meta, doc_name, &text,
+                    &ingest_cfg,
+                    &meta,
+                    doc_name,
+                    &text,
                     move |vectors| {
                         let h = http.clone();
                         let u = url.clone();
                         Box::pin(async move {
-                            crate::storage_rpc::http_upload_vectors(&h, &u, tenant_id, vectors).await
+                            crate::storage_rpc::http_upload_vectors(&h, &u, tenant_id, vectors)
+                                .await
                         })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
@@ -816,12 +847,16 @@ async fn run_sync_pass(
                 let (client, _) = crate::vpk::p2p_connect().await?;
                 let client = Arc::new(tokio::sync::Mutex::new(client));
                 ingest_text(
-                    &ingest_cfg, &meta, doc_name, &text,
+                    &ingest_cfg,
+                    &meta,
+                    doc_name,
+                    &text,
                     move |vectors| {
                         let c = client.clone();
                         Box::pin(async move {
                             let guard = c.lock().await;
-                            crate::storage_rpc::rpc_upload_vectors(&*guard, &ep, tenant_id, vectors).await
+                            crate::storage_rpc::rpc_upload_vectors(&*guard, &ep, tenant_id, vectors)
+                                .await
                         })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },

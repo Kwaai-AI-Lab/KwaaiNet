@@ -1348,9 +1348,7 @@ async fn dial_and_wait_for_bootstrap(
 /// `encode_uvarint(len) + protobuf_bytes`; our own nodes send raw protobuf).
 /// Returns the decoded message and whether the prefix was present (so the
 /// response can be framed consistently).
-fn decode_with_varint_fallback<T: prost::Message + Default>(
-    bytes: &[u8],
-) -> Result<(T, bool)> {
+fn decode_with_varint_fallback<T: prost::Message + Default>(bytes: &[u8]) -> Result<(T, bool)> {
     // Try 1: raw protobuf (our own nodes)
     if let Ok(msg) = T::decode(bytes) {
         return Ok((msg, false));
@@ -1386,18 +1384,21 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
 
     let (req, varint_framed) = match info.proto.as_str() {
         "DHTProtocol.rpc_store" => {
-            let (r, vf) = decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::StoreRequest>(&bytes)
-                .map_err(|e| anyhow::anyhow!("decode StoreRequest: {}", e))?;
+            let (r, vf) =
+                decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::StoreRequest>(&bytes)
+                    .map_err(|e| anyhow::anyhow!("decode StoreRequest: {}", e))?;
             (DHTRequest::Store(r), vf)
         }
         "DHTProtocol.rpc_find" => {
-            let (r, vf) = decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::FindRequest>(&bytes)
-                .map_err(|e| anyhow::anyhow!("decode FindRequest: {}", e))?;
+            let (r, vf) =
+                decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::FindRequest>(&bytes)
+                    .map_err(|e| anyhow::anyhow!("decode FindRequest: {}", e))?;
             (DHTRequest::Find(r), vf)
         }
         _ => {
-            let (r, vf) = decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::PingRequest>(&bytes)
-                .map_err(|e| anyhow::anyhow!("decode PingRequest: {}", e))?;
+            let (r, vf) =
+                decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::PingRequest>(&bytes)
+                    .map_err(|e| anyhow::anyhow!("decode PingRequest: {}", e))?;
             (DHTRequest::Ping(r), vf)
         }
     };
