@@ -53,42 +53,26 @@ fn parse_args() -> (Option<u16>, Option<Multiaddr>, Command) {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--listen" => {
-                if i + 1 < args.len() {
-                    listen_port = args[i + 1].parse().ok();
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--listen" if i + 1 < args.len() => {
+                listen_port = args[i + 1].parse().ok();
+                i += 2;
             }
-            "--bootstrap" => {
-                if i + 1 < args.len() {
-                    bootstrap = args[i + 1].parse().ok();
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--bootstrap" if i + 1 < args.len() => {
+                bootstrap = args[i + 1].parse().ok();
+                i += 2;
             }
-            "--put" => {
-                if i + 2 < args.len() {
-                    command = Command::Put {
-                        key: args[i + 1].clone(),
-                        value: args[i + 2].clone(),
-                    };
-                    i += 3;
-                } else {
-                    i += 1;
-                }
+            "--put" if i + 2 < args.len() => {
+                command = Command::Put {
+                    key: args[i + 1].clone(),
+                    value: args[i + 2].clone(),
+                };
+                i += 3;
             }
-            "--get" => {
-                if i + 1 < args.len() {
-                    command = Command::Get {
-                        key: args[i + 1].clone(),
-                    };
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--get" if i + 1 < args.len() => {
+                command = Command::Get {
+                    key: args[i + 1].clone(),
+                };
+                i += 2;
             }
             _ => {
                 i += 1;

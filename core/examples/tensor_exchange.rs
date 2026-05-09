@@ -195,21 +195,13 @@ fn parse_args() -> Command {
 
     while i < args.len() {
         match args[i].as_str() {
-            "--listen" => {
-                if i + 1 < args.len() {
-                    port = args[i + 1].parse().unwrap_or(0);
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--listen" if i + 1 < args.len() => {
+                port = args[i + 1].parse().unwrap_or(0);
+                i += 2;
             }
-            "--connect" => {
-                if i + 1 < args.len() {
-                    connect_addr = args[i + 1].parse().ok();
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            "--connect" if i + 1 < args.len() => {
+                connect_addr = args[i + 1].parse().ok();
+                i += 2;
             }
             "--send" => {
                 send = true;
