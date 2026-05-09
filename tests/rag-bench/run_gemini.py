@@ -10,6 +10,14 @@ from pathlib import Path
 CORPUS_DIR = Path(os.environ.get("CORPUS_DIR", "/Users/rezarassool/Source/PreRAG/output"))
 QUESTIONS_FILE = Path(__file__).parent / "questions.json"
 RESULTS_DIR = Path(__file__).parent / "results"
+
+# Load .env from the same directory if present
+_env_file = Path(__file__).parent / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        if "=" in _line and not _line.startswith("#"):
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 FILE_REFS_CACHE = RESULTS_DIR / "gemini_file_refs.json"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")
 

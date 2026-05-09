@@ -105,3 +105,4 @@ result-*
 tests/rag-bench/results/*.json
 tests/rag-bench/results/*.md
 
+tests/rag-bench/.env
