@@ -240,30 +240,30 @@ impl UpdateChecker {
                 ping -n 2 127.0.0.1 > nul\r\n";
 
             let bat_content = if cuda_installed {
-                // CUDA path: download the CUDA-enabled archive so the installed
-                // kwaainet.exe has GPU support compiled in.  The archive also
-                // contains updated CUDA runtime DLLs which replace any older ones.
+                // CUDA path: download the exe-only CUDA archive (~30 MB vs ~1 GB full
+                // archive) — contains only kwaainet.exe and p2pd.exe built with CUDA
+                // support, without the DLLs (already present from previous install).
                 let archive_url = format!(
-                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda.zip"
+                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda-exes.zip"
                 );
                 let dir = install_dir.to_string_lossy().into_owned();
                 format!(
                     "{kill_header}\
                      powershell -ExecutionPolicy Bypass -Command \"\
-                       $zip = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-update.zip'; \
-                       $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-extract'; \
-                       Write-Host 'Downloading CUDA archive...'; \
+                       $zip = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-update.zip'; \
+                       $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-extract'; \
+                       Write-Host 'Downloading CUDA binary update (~30 MB)...'; \
                        Invoke-WebRequest -Uri '{archive_url}' -OutFile $zip -UseBasicParsing; \
                        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
                        Expand-Archive -Path $zip -DestinationPath $tmp -Force; \
-                       Get-ChildItem $tmp -Recurse -Include '*.exe','*.dll' | ForEach-Object {{ \
+                       Get-ChildItem $tmp -Recurse -Filter '*.exe' | ForEach-Object {{ \
                          $dest = '{dir}\\' + $_.Name; \
                          Write-Host ('Installing ' + $_.Name); \
                          Move-Item $_.FullName $dest -Force \
                        }}; \
                        Remove-Item $zip -Force -ErrorAction SilentlyContinue; \
                        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
-                       Write-Host 'Update complete. CUDA binary and DLLs installed.' \
+                       Write-Host 'Update complete. CUDA DLLs preserved.' \
                      \" >> \"{log_path}\" 2>&1\r\n\
                      del /f \"%~f0\"\r\n"
                 )
@@ -293,7 +293,7 @@ impl UpdateChecker {
                 } else {
                     "cublas DLLs in install dir"
                 };
-                println!("  CUDA detected ({reason}) — downloading CUDA archive.");
+                println!("  CUDA detected ({reason}) — downloading CUDA binary (~30 MB, DLLs preserved).");
             }
 
             std::fs::write(&bat, &bat_content).context("Failed to write updater batch script")?;

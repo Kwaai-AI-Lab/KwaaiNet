@@ -463,6 +463,18 @@ jobs:
           $hash = (Get-FileHash "$LABEL.${{ matrix.ext }}" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path "$LABEL.${{ matrix.ext }}.sha256" -Value $hash -NoNewline
           Write-Host "CUDA archive: $LABEL.${{ matrix.ext }}"
+          # Produce a small exe-only archive for fast updates (no DLL re-download).
+          # kwaainet update uses this when CUDA DLLs are already installed.
+          $EXES_LABEL = "$LABEL-exes"
+          New-Item -ItemType Directory -Force -Path $EXES_LABEL
+          Copy-Item "target\release\${{ matrix.bin }}" "$EXES_LABEL\"
+          if (Test-Path "target\release\${{ matrix.p2pd }}") {
+            Copy-Item "target\release\${{ matrix.p2pd }}" "$EXES_LABEL\"
+          }
+          Compress-Archive -Path "$EXES_LABEL\*" -DestinationPath "$EXES_LABEL.${{ matrix.ext }}"
+          $exesHash = (Get-FileHash "$EXES_LABEL.${{ matrix.ext }}" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "$EXES_LABEL.${{ matrix.ext }}.sha256" -Value $exesHash -NoNewline
+          Write-Host "CUDA exe-only archive: $EXES_LABEL.${{ matrix.ext }}"
       - name: "Upload CUDA artifact"
         uses: actions/upload-artifact@v6
         with:
@@ -470,6 +482,8 @@ jobs:
           path: |
             core/${{ matrix.label }}.${{ matrix.ext }}
             core/${{ matrix.label }}.${{ matrix.ext }}.sha256
+            core/${{ matrix.label }}-exes.${{ matrix.ext }}
+            core/${{ matrix.label }}-exes.${{ matrix.ext }}.sha256
 
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
