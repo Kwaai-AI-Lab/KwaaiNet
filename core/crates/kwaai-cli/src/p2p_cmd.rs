@@ -93,7 +93,7 @@ async fn info() -> Result<()> {
     };
 
     let (peer_id_hex, addrs_bytes) = client
-        .identify_with_addrs()
+        .identify_full()
         .await
         .context("IDENTIFY request to p2pd failed")?;
 

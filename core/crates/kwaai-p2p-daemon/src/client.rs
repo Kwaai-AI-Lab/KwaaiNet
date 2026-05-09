@@ -288,12 +288,16 @@ impl P2PClient {
         }
     }
 
-    /// Send an IDENTIFY request and return both the peer ID and observed multiaddrs.
+    /// Send an IDENTIFY request and return both the peer ID (hex) and the
+    /// observed multiaddrs the daemon is reporting.
     ///
-    /// Returns `(peer_id_hex, addrs)` where `addrs` is the list of multiaddr bytes
-    /// that p2pd has observed for itself (populated by the libp2p IDENTIFY protocol
-    /// as peers connect and report our external address).
-    pub async fn identify_with_addrs(&mut self) -> Result<(String, Vec<Vec<u8>>)> {
+    /// Distinct from `identify()` which discards the addresses. Named
+    /// `identify_full` rather than the more obvious `identify_with_addrs` to
+    /// sidestep a duplicate-definition collision when this branch is merged
+    /// alongside another in-flight branch (feature/public-ip) that
+    /// independently added the latter name. Rename to `identify_with_addrs`
+    /// once whichever branch lands second is updated.
+    pub async fn identify_full(&mut self) -> Result<(String, Vec<Vec<u8>>)> {
         let request = Request {
             r#type: request::Type::Identify as i32,
             connect: None,
