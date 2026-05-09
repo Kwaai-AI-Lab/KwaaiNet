@@ -128,6 +128,9 @@ pub enum Command {
     /// Manage node identity and verifiable credentials
     Identity(IdentityArgs),
 
+    /// Inspect live p2p state (identity, connected peers) via the local p2pd
+    P2p(P2pArgs),
+
     /// Manage VPK (Virtual Private Knowledge) vector database integration
     Vpk(VpkArgs),
 
@@ -1109,5 +1112,46 @@ pub enum RagAction {
         /// Polling interval in seconds (watch mode only)
         #[arg(long, default_value = "60")]
         interval: u64,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// p2p
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct P2pArgs {
+    #[command(subcommand)]
+    pub action: P2pAction,
+}
+
+#[derive(Subcommand)]
+pub enum P2pAction {
+    /// Show this node's peer ID, listen addresses, observed addresses, and a NAT verdict
+    Info,
+
+    /// Inspect active connections to other peers
+    Peers(PeersArgs),
+}
+
+#[derive(Args)]
+pub struct PeersArgs {
+    #[command(subcommand)]
+    pub action: PeersAction,
+}
+
+#[derive(Subcommand)]
+pub enum PeersAction {
+    /// List all live connections (one row per connection — direct or via relay)
+    List,
+
+    /// Active DHT lookup: what addresses does the network advertise for this peer?
+    Find {
+        /// Peer ID (base58, e.g. 12D3KooW…)
+        peer_id: String,
+
+        /// Lookup timeout in seconds
+        #[arg(long, default_value = "10")]
+        timeout: i64,
     },
 }
