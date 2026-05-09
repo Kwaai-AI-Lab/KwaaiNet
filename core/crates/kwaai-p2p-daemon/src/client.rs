@@ -288,12 +288,11 @@ impl P2PClient {
         }
     }
 
-    /// Send an IDENTIFY request and return both the peer ID (hex) and the
-    /// listen + observed multiaddrs the daemon is reporting.
+    /// Send an IDENTIFY request and return both the peer ID and observed multiaddrs.
     ///
-    /// `identify()` only returns the peer ID and discards the addresses; this
-    /// variant preserves them for diagnostic use (e.g. comparing bound vs
-    /// observed addrs to infer NAT status).
+    /// Returns `(peer_id_hex, addrs)` where `addrs` is the list of multiaddr bytes
+    /// that p2pd has observed for itself (populated by the libp2p IDENTIFY protocol
+    /// as peers connect and report our external address).
     pub async fn identify_with_addrs(&mut self) -> Result<(String, Vec<Vec<u8>>)> {
         let request = Request {
             r#type: request::Type::Identify as i32,
