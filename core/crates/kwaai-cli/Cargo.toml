@@ -57,6 +57,7 @@ sha1 = "0.10"
 hex = "0.4"
 rmpv = "1.0"
 half = { workspace = true }
+unicode-width = "0.1"
 
 # HTTP server (OpenAI API)
 axum = { version = "0.7", features = ["json", "multipart"] }
