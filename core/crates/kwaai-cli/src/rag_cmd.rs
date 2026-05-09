@@ -93,7 +93,33 @@ async fn cmd_init(embed_model: String, rag_dir: Option<std::path::PathBuf>) -> R
         embed.check_dim().await?;
         print_success("Embedding model OK (768 dimensions)");
 
-        // Create local embedded vector store + tenant — no network required.
+        // If already initialised with local storage, skip DB creation (idempotent).
+        // The DB may be held open by a running `rag serve` process.
+        let existing_cfg = KwaaiNetConfig::load_or_create()?;
+        if let Some(ref rag) = existing_cfg.rag {
+            if rag.storage_url.as_deref() == Some("local") {
+                if let Some(ref tid) = rag.tenant_id {
+                    let tenant_id: Uuid = tid.parse().context("invalid tenant_id in config")?;
+                    print_info(&format!("Knowledge base:  {}", data_dir.display()));
+                    print_success(&format!(
+                        "Already initialised (tenant {tenant_id}) — embedding model updated."
+                    ));
+                    // Update embed model in case it changed.
+                    let mut cfg = existing_cfg;
+                    if let Some(ref mut r) = cfg.rag {
+                        r.embed_model = embed_model;
+                        if rag_data_dir_str.is_some() {
+                            r.rag_data_dir = rag_data_dir_str;
+                        }
+                    }
+                    cfg.save()?;
+                    println!("  Next:  kwaainet rag ingest <file>");
+                    return Ok(());
+                }
+            }
+        }
+
+        // Fresh init: create local embedded vector store + tenant — no network required.
         let db = kwaai_storage::StorageDb::open(&data_dir).context("opening local vector store")?;
         let tm = kwaai_storage::TenantManager::new(db);
         let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
@@ -274,6 +300,46 @@ async fn cmd_ingest(
 
 // ── query ─────────────────────────────────────────────────────────────────────
 
+/// When `rag serve` is running it holds the redb files open.  Try proxying
+/// the search through the running server before opening the DB directly.
+///
+/// Returns:
+///   Ok(Some(results)) — server answered /api/search
+///   Ok(None)          — server not running (connection refused)
+///   Err(_)            — server running but /api/search missing (needs restart)
+async fn try_serve_query(
+    query: &str,
+    top_k: usize,
+    min_score: f64,
+    port: u16,
+) -> Result<Option<Vec<serde_json::Value>>> {
+    let url = format!("http://localhost:{port}/api/search");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let resp = match client
+        .post(&url)
+        .json(&serde_json::json!({"q": query, "top_k": top_k, "min_score": min_score}))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_connect() => return Ok(None), // server not running
+        Err(e) => return Err(anyhow::anyhow!("{e}")),
+    };
+    if resp.status().is_success() {
+        Ok(Some(resp.json().await?))
+    } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // Server is running but doesn't have /api/search — needs restart.
+        anyhow::bail!(
+            "rag serve is running on port {port} but is out of date.\n  \
+             Restart it with: kwaainet rag serve"
+        )
+    } else {
+        anyhow::bail!("rag serve returned {}", resp.status())
+    }
+}
+
 async fn cmd_query(query: String, top_k: usize, min_score: f64, json_out: bool) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -281,6 +347,16 @@ async fn cmd_query(query: String, top_k: usize, min_score: f64, json_out: bool) 
     #[cfg(feature = "storage")]
     {
         let (rag_cfg, tenant_id) = load_rag_config()?;
+
+        // If local mode, try proxying through a running `rag serve` first.
+        // This avoids the redb exclusive-lock conflict when the server is up.
+        if rag_cfg.storage_url.as_deref() == Some("local") {
+            match try_serve_query(&query, top_k, min_score, 9090).await {
+                Ok(Some(results)) => return render_query_results(&query, &results, json_out),
+                Ok(None) => {} // server not running, fall through to direct DB access
+                Err(e) => return Err(e),
+            }
+        }
 
         let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
@@ -351,43 +427,45 @@ async fn cmd_query(query: String, top_k: usize, min_score: f64, json_out: bool) 
             s.finish("").await;
         }
 
-        if json_out {
-            let arr: Vec<serde_json::Value> = results
-                .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    serde_json::json!({
-                        "rank": i + 1,
-                        "score": r.score,
-                        "doc": r.chunk_meta.doc_name,
-                        "chunk": r.chunk_meta.chunk_index,
-                        "text": r.chunk_meta.text,
-                    })
+        let arr: Vec<serde_json::Value> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                serde_json::json!({
+                    "rank": i + 1,
+                    "score": r.score,
+                    "doc": r.chunk_meta.doc_name,
+                    "chunk": r.chunk_meta.chunk_index,
+                    "text": r.chunk_meta.text,
                 })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&arr)?);
-            return Ok(());
-        }
-
-        if results.is_empty() {
-            print_warning("No results found.");
-            return Ok(());
-        }
-
-        print_box_header(&format!("Top {} results for: {}", results.len(), query));
-        for (i, r) in results.iter().enumerate() {
-            println!(
-                "  [{}] score={:.4}  doc={}  chunk={}",
-                i + 1,
-                r.score,
-                r.chunk_meta.doc_name,
-                r.chunk_meta.chunk_index
-            );
-            println!("      {}", truncate(&r.chunk_meta.text, 200));
-            println!();
-        }
-        Ok(())
+            })
+            .collect();
+        render_query_results(&query, &arr, json_out)
     }
+}
+
+fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bool) -> Result<()> {
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(results)?);
+        return Ok(());
+    }
+    if results.is_empty() {
+        print_warning("No results found.");
+        return Ok(());
+    }
+    print_box_header(&format!("Top {} results for: {}", results.len(), query));
+    for r in results {
+        println!(
+            "  [{}] score={:.4}  doc={}  chunk={}",
+            r["rank"].as_u64().unwrap_or(0),
+            r["score"].as_f64().unwrap_or(0.0),
+            r["doc"].as_str().unwrap_or(""),
+            r["chunk"].as_u64().unwrap_or(0),
+        );
+        println!("      {}", truncate(r["text"].as_str().unwrap_or(""), 200));
+        println!();
+    }
+    Ok(())
 }
 
 // ── chat ──────────────────────────────────────────────────────────────────────

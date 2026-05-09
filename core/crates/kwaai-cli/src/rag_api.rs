@@ -112,6 +112,7 @@ pub async fn run(port: u16, inference_url: String, top_k: usize) -> Result<()> {
             .route("/v1/models", get(list_models))
             .route("/v1/chat/completions", post(chat_completions))
             .route("/api/ingest", post(api_ingest))
+            .route("/api/search", post(api_search))
             .route("/api/docs", get(api_list_docs))
             .route("/api/docs/:name", delete(api_delete_doc))
             .route("/", get(serve_ui))
@@ -327,6 +328,114 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
         }
 
         Ok(body)
+    }
+}
+
+// ── /api/search ───────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SearchRequest {
+    q: String,
+    #[serde(default = "default_top_k")]
+    top_k: usize,
+    #[serde(default)]
+    min_score: f64,
+}
+
+fn default_top_k() -> usize {
+    5
+}
+
+async fn api_search(
+    State(state): State<Arc<RagState>>,
+    Json(req): Json<SearchRequest>,
+) -> impl IntoResponse {
+    match do_search(&state, &req.q, req.top_k, req.min_score).await {
+        Ok(results) => Json(results).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Pure retrieval — no LLM call. Returns the same JSON shape as `kwaainet rag query --json`.
+async fn do_search(
+    state: &RagState,
+    query: &str,
+    top_k: usize,
+    min_score: f64,
+) -> Result<Vec<serde_json::Value>> {
+    #[cfg(not(feature = "storage"))]
+    bail!("storage feature required");
+
+    #[cfg(feature = "storage")]
+    {
+        use kwaai_rag::retriever::RetrieveConfig;
+        let tenant_id = state.tenant_id;
+        let cfg = RetrieveConfig {
+            top_k,
+            min_score,
+            use_sentence_window: false,
+        };
+        let chunks = match state.storage_url.as_deref() {
+            Some("local") => {
+                let vs = state.local_vs.as_ref().unwrap().clone();
+                retrieve(query, &cfg, &state.embed, &state.meta, move |emb, k| {
+                    let vs = vs.clone();
+                    Box::pin(async move {
+                        let raw = vs.search(tenant_id, &emb, k).await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
+            }
+            Some(_) => {
+                let http = state.http.clone();
+                let url = state.storage_url.clone().unwrap();
+                retrieve(query, &cfg, &state.embed, &state.meta, move |emb, k| {
+                    let h = http.clone();
+                    let u = url.clone();
+                    Box::pin(async move {
+                        let raw = http_search_vectors(&h, &u, tenant_id, emb, k).await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
+            }
+            None => {
+                let ep = state.eve_peer.unwrap();
+                let client = state.client.as_ref().unwrap().clone();
+                retrieve(query, &cfg, &state.embed, &state.meta, move |emb, k| {
+                    let c = client.clone();
+                    Box::pin(async move {
+                        let guard = c.lock().await;
+                        let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
+                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
+            }
+        };
+        Ok(chunks
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                serde_json::json!({
+                    "rank": i + 1,
+                    "score": r.score,
+                    "doc": r.chunk_meta.doc_name,
+                    "chunk": r.chunk_meta.chunk_index,
+                    "text": r.chunk_meta.text,
+                })
+            })
+            .collect())
     }
 }
 
