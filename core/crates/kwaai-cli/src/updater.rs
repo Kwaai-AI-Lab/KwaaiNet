@@ -239,26 +239,40 @@ impl UpdateChecker {
                 taskkill /IM kwaainet.exe /F /T > nul 2>&1\r\n\
                 ping -n 2 127.0.0.1 > nul\r\n";
 
-            let bat_content = if cuda_installed {
-                // CUDA path: download the exe-only CUDA archive (~30 MB vs ~1 GB full
-                // archive) — contains only kwaainet.exe and p2pd.exe built with CUDA
-                // support, without the DLLs (already present from previous install).
+            // For the CUDA fast path, download the exe-only zip NOW (in-process,
+            // foreground) so the user sees progress. The batch script only needs
+            // to do the exe swap after kwaainet exits — that's near-instant.
+            let cuda_zip_tmp: Option<PathBuf> = if cuda_installed {
                 let archive_url = format!(
                     "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda-exes.zip"
                 );
+                let zip_path = std::env::temp_dir().join("kwaainet-cuda-exes-update.zip");
+                print!("  Downloading CUDA binary update (~30 MB)…");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                self.download_to(&archive_url, &zip_path).await?;
+                println!(" done.");
+                Some(zip_path)
+            } else {
+                None
+            };
+
+            let bat_content = if cuda_installed {
+                // Zip is already on disk — batch only unzips and swaps the exes.
+                let zip = cuda_zip_tmp
+                    .as_ref()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
                 let dir = install_dir.to_string_lossy().into_owned();
                 format!(
                     "{kill_header}\
                      powershell -ExecutionPolicy Bypass -Command \"\
-                       $zip = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-update.zip'; \
+                       $zip = '{zip}'; \
                        $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-extract'; \
-                       Write-Host 'Downloading CUDA binary update (~30 MB)...'; \
-                       Invoke-WebRequest -Uri '{archive_url}' -OutFile $zip -UseBasicParsing; \
                        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; \
                        Expand-Archive -Path $zip -DestinationPath $tmp -Force; \
                        Get-ChildItem $tmp -Recurse -Filter '*.exe' | ForEach-Object {{ \
                          $dest = '{dir}\\' + $_.Name; \
-                         Write-Host ('Installing ' + $_.Name); \
                          Move-Item $_.FullName $dest -Force \
                        }}; \
                        Remove-Item $zip -Force -ErrorAction SilentlyContinue; \
@@ -306,7 +320,11 @@ impl UpdateChecker {
                 .spawn()
                 .context("Failed to spawn updater batch")?;
 
-            println!("  Update running in background (installer launched).");
+            if cuda_installed {
+                println!("  Swapping binaries in background (will complete in seconds).");
+            } else {
+                println!("  Installer running in background.");
+            }
             println!("  Log: {}", log_path);
             println!("  Run  kwaainet start --daemon  once it finishes.");
         }
