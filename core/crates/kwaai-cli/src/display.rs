@@ -1,11 +1,13 @@
 //! Console formatting helpers
 
+use unicode_width::UnicodeWidthStr;
+
 const WIDTH: usize = 69;
 
-/// Returns the display width of a string, counting ASCII chars as 1 column
-/// and non-ASCII (emoji, CJK, etc.) as 2 columns.
+/// Returns the display width of a string in terminal columns, accounting for
+/// East Asian Width and emoji presentation flags via `unicode-width`.
 fn display_width(s: &str) -> usize {
-    s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+    UnicodeWidthStr::width(s)
 }
 
 pub fn print_box_header(title: &str) {
