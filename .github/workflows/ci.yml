@@ -1,5 +1,20 @@
 name: CI
 
+# Fast gate: fmt + clippy + tests run in parallel.
+# Target wall-clock: ~12-15 min on a warm cache, ~20-25 min cold.
+#
+# What changed vs the old ci.yml:
+#   - build.rs skips `go build` when binary already exists (cached target/)
+#   - protoc installed via apt instead of downloaded at runtime by build.rs
+#   - Go module cache enabled on all jobs that need Go
+#   - Single unified cargo cache key shared by clippy + test (same artifacts)
+#   - clippy uses default features only (was --all-features; CUDA/Metal are
+#     only needed for the release build, not the lint gate)
+#   - test matrix: ubuntu only on PRs; ubuntu + macOS on pushes to main
+#   - wasm-pack binary cached so `cargo install wasm-pack` only runs once
+#   - dropped `build --release` job (slow, redundant with release.yml)
+#   - dropped `docs` job (nice-to-have, not a merge gate)
+
 on:
   push:
     branches: [main]
@@ -11,8 +26,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  check:
-    name: Check
+  # ── 1. Formatting (instant fail-fast, no cargo cache needed) ───────────────
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,98 +36,98 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Install Go (required by kwaai-p2p-daemon build script)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: false
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          components: rustfmt
 
       - name: Check formatting
         working-directory: core
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        working-directory: core
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Go (required by kwaai-p2p-daemon build script)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: false
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run tests
-        working-directory: core
-        run: cargo test --all
-
-  build:
-    name: Build
+  # ── 2. Clippy (default features — CUDA/Metal checked only in release.yml) ──
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
-      - name: Install Go (required by kwaai-p2p-daemon build script)
+      - name: Install Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: false
+          cache: true
+          cache-dependency-path: '**/go.sum'
 
-      - name: Cache cargo
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo + target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      - name: Build release
+      - name: Clippy
         working-directory: core
-        run: cargo build --release --all
+        run: cargo clippy --all-targets -- -D warnings
 
+  # ── 3. Tests (ubuntu for PRs; ubuntu + macOS on pushes to main) ────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event_name == 'pull_request' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "macos-latest"]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        working-directory: core
+        run: cargo test --all
+
+  # ── 4. WASM build (wasm-pack cached to avoid reinstall every run) ──────────
   wasm:
-    name: WASM Build
+    name: WASM
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,45 +137,29 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Install wasm-pack
+      - name: Cache wasm-pack binary
+        id: wasm-pack-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: wasm-pack-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install wasm-pack (cache miss only)
+        if: steps.wasm-pack-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-pack
 
-      - name: Cache cargo
+      - name: Cache cargo + target (wasm)
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
 
       - name: Build WASM
         working-directory: core/crates/kwaai-wasm
         run: wasm-pack build --target web
-
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Go (required by kwaai-p2p-daemon build script)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: false
-
-      - name: Build docs
-        working-directory: core
-        run: cargo doc --no-deps --all
-
-      - name: Upload docs
-        uses: actions/upload-artifact@v4
-        with:
-          name: docs
-          path: core/target/doc

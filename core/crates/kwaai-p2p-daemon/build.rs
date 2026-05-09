@@ -241,41 +241,49 @@ fn main() {
         println!("cargo:warning=Using existing go-libp2p-daemon repository");
     }
 
-    // 4. Build the daemon
-    //
-    // On Linux, set CGO_ENABLED=0 so the Go binary is statically linked and
-    // runs on any distro regardless of glibc version (e.g. Rocky Linux 8 ships
-    // glibc 2.28 but a default Go build may link against newer symbols).
-    println!("cargo:warning=Building p2pd daemon from source...");
+    // 4. Build the daemon — skip if the binary already exists (CI cache path).
+    //    build.rs only re-runs when build.rs or p2pd.proto changes (see
+    //    cargo:rerun-if-changed above), so a cached target/ directory means
+    //    the binary is already up-to-date and we can skip the Go build entirely.
+    if daemon_binary.exists() {
+        println!(
+            "cargo:warning=p2pd binary already exists, skipping Go build: {}",
+            daemon_binary.display()
+        );
+    } else {
+        // On Linux, set CGO_ENABLED=0 so the Go binary is statically linked and
+        // runs on any distro regardless of glibc version.
+        println!("cargo:warning=Building p2pd daemon from source...");
 
-    let mut go_cmd = Command::new("go");
-    go_cmd
-        .args(["build", "-o"])
-        .arg(&daemon_binary)
-        .arg("./p2pd")
-        .current_dir(&repo_dir);
+        let mut go_cmd = Command::new("go");
+        go_cmd
+            .args(["build", "-o"])
+            .arg(&daemon_binary)
+            .arg("./p2pd")
+            .current_dir(&repo_dir);
 
-    if cfg!(target_os = "linux") {
-        go_cmd.env("CGO_ENABLED", "0");
-        println!("cargo:warning=CGO_ENABLED=0 (static binary for Linux)");
-    }
-
-    let build_status = go_cmd.status();
-
-    match build_status {
-        Ok(status) if status.success() => {
-            println!(
-                "cargo:warning=Successfully built p2pd daemon at: {}",
-                daemon_binary.display()
-            );
+        if cfg!(target_os = "linux") {
+            go_cmd.env("CGO_ENABLED", "0");
+            println!("cargo:warning=CGO_ENABLED=0 (static binary for Linux)");
         }
-        Ok(status) => {
-            eprintln!("Failed to build p2pd: exit code {:?}", status.code());
-            panic!("Go build failed");
-        }
-        Err(e) => {
-            eprintln!("Failed to execute go build: {}", e);
-            panic!("Go build execution failed");
+
+        let build_status = go_cmd.status();
+
+        match build_status {
+            Ok(status) if status.success() => {
+                println!(
+                    "cargo:warning=Successfully built p2pd daemon at: {}",
+                    daemon_binary.display()
+                );
+            }
+            Ok(status) => {
+                eprintln!("Failed to build p2pd: exit code {:?}", status.code());
+                panic!("Go build failed");
+            }
+            Err(e) => {
+                eprintln!("Failed to execute go build: {}", e);
+                panic!("Go build execution failed");
+            }
         }
     }
 

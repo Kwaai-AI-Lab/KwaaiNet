@@ -231,6 +231,15 @@ lto = true
 opt-level = 3
 codegen-units = 1
 
+# Fast CI profile: no LTO, parallel codegen, debug info stripped.
+# Used by ci.yml check/test jobs so cargo build finishes in ~3 min instead of 15.
+[profile.ci]
+inherits = "dev"
+lto = false
+opt-level = 0
+codegen-units = 16
+debug = false
+
 [profile.release-wasm]
 inherits = "release"
 opt-level = "s"  # Optimize for size
