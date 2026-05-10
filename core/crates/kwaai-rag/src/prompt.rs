@@ -71,10 +71,7 @@ fn build_context_block(chunks: &[RetrievedChunk], max_chars: usize) -> String {
 }
 
 fn reorder_for_context(chunks: &[RetrievedChunk]) -> Vec<&RetrievedChunk> {
-    let (evens, odds): (Vec<_>, Vec<_>) = chunks
-        .iter()
-        .enumerate()
-        .partition(|(i, _)| i % 2 == 0);
+    let (evens, odds): (Vec<_>, Vec<_>) = chunks.iter().enumerate().partition(|(i, _)| i % 2 == 0);
     let mut result: Vec<&RetrievedChunk> = evens.into_iter().map(|(_, c)| c).collect();
     result.extend(odds.into_iter().rev().map(|(_, c)| c));
     result

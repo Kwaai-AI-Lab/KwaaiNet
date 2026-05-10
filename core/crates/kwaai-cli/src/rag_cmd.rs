@@ -132,7 +132,11 @@ async fn cmd_init(
                         false
                     };
                     if tenant_in_db {
-                        print_info(&format!("Knowledge base '{}':  {}", name, data_dir.display()));
+                        print_info(&format!(
+                            "Knowledge base '{}':  {}",
+                            name,
+                            data_dir.display()
+                        ));
                         print_success(&format!(
                             "Already initialised (tenant {tenant_id}) — embedding model updated."
                         ));
@@ -147,7 +151,9 @@ async fn cmd_init(
                         println!("  Next:  kwaainet rag ingest <file> --kb {name}");
                         return Ok(());
                     }
-                    print_warning("Tenant record missing from local DB — recreating knowledge base.");
+                    print_warning(
+                        "Tenant record missing from local DB — recreating knowledge base.",
+                    );
                 }
             }
         }
@@ -157,13 +163,22 @@ async fn cmd_init(
         let tm = kwaai_storage::TenantManager::new(db);
         let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
         let info = tm
-            .create(&local_peer_id.to_base58(), 0, Some(&format!("kwaai-rag/{name}")), 768)
+            .create(
+                &local_peer_id.to_base58(),
+                0,
+                Some(&format!("kwaai-rag/{name}")),
+                768,
+            )
             .await
             .context("creating local tenant")?;
         let tenant_id = info.tenant_id;
 
         MetaStore::open(&data_dir, tenant_id)?;
-        print_info(&format!("Knowledge base '{}':  {}", name, data_dir.display()));
+        print_info(&format!(
+            "Knowledge base '{}':  {}",
+            name,
+            data_dir.display()
+        ));
 
         let mut cfg = KwaaiNetConfig::load_or_create()?;
         cfg.set_rag_kb(
@@ -180,7 +195,10 @@ async fn cmd_init(
         );
         cfg.save()?;
 
-        print_success(&format!("Knowledge base '{}' initialised  (tenant {tenant_id})", name));
+        print_success(&format!(
+            "Knowledge base '{}' initialised  (tenant {tenant_id})",
+            name
+        ));
         if name == "default" {
             println!("  Next:  kwaainet rag ingest <file>");
         } else {
@@ -228,8 +246,14 @@ async fn cmd_connect_eve(peer_id: String, url: Option<String>, kb: String) -> Re
     let rag = cfg
         .rag_kbs
         .get_mut(&kb)
-        .or(if kb == "default" { cfg.rag.as_mut() } else { None })
-        .with_context(|| format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}"))?;
+        .or(if kb == "default" {
+            cfg.rag.as_mut()
+        } else {
+            None
+        })
+        .with_context(|| {
+            format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
+        })?;
 
     rag.eve_peer_id = Some(peer_id);
     // url = Some("http://...") for HTTP transport, None for P2P RPC.
@@ -437,7 +461,9 @@ async fn cmd_query(
             if let Some(rag_cfg) = global_cfg.get_rag_kb(&kb_names[0]) {
                 if rag_cfg.storage_url.as_deref() == Some("local") {
                     match try_serve_query(&query, top_k, min_score, 9090).await {
-                        Ok(Some(results)) => return render_query_results(&query, &results, json_out),
+                        Ok(Some(results)) => {
+                            return render_query_results(&query, &results, json_out)
+                        }
                         Ok(None) => {}
                         Err(e) => return Err(e),
                     }
@@ -445,54 +471,94 @@ async fn cmd_query(
             }
         }
 
-        let retrieve_cfg = RetrieveConfig { top_k, min_score, use_sentence_window: false };
-        let spinner = if json_out { None } else { Some(crate::progress::Spinner::start("Retrieving…")) };
+        let retrieve_cfg = RetrieveConfig {
+            top_k,
+            min_score,
+            use_sentence_window: false,
+        };
+        let spinner = if json_out {
+            None
+        } else {
+            Some(crate::progress::Spinner::start("Retrieving…"))
+        };
 
         let mut all_results: Vec<kwaai_rag::retriever::RetrievedChunk> = vec![];
 
         for kb_name in &kb_names {
             let (rag_cfg, tenant_id) = match load_rag_config_for(kb_name) {
                 Ok(v) => v,
-                Err(e) => { tracing::warn!("skipping KB '{kb_name}': {e}"); continue; }
+                Err(e) => {
+                    tracing::warn!("skipping KB '{kb_name}': {e}");
+                    continue;
+                }
             };
             let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
             let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
-            let infer_url = inference_url.clone().unwrap_or_else(|| rag_cfg.inference_url.clone());
+            let infer_url = inference_url
+                .clone()
+                .unwrap_or_else(|| rag_cfg.inference_url.clone());
 
             let mut chunks = match rag_cfg.storage_url.as_deref() {
                 Some("local") => {
                     let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
                     if understand {
                         kwaai_rag::query_understanding::retrieve_with_understanding(
-                            &query, &retrieve_cfg, &embed, &meta, &infer_url,
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            &infer_url,
                             move |emb, k| {
                                 let vs = vs.clone();
                                 Box::pin(async move {
                                     let raw = vs.search(tenant_id, &emb, k).await?;
                                     Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                                }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                                })
+                                    as Pin<
+                                        Box<
+                                            dyn std::future::Future<
+                                                    Output = Result<Vec<(i64, f64)>>,
+                                                > + Send,
+                                        >,
+                                    >
                             },
-                        ).await?
+                        )
+                        .await?
                     } else {
                         retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, move |emb, k| {
                             let vs = vs.clone();
                             Box::pin(async move {
                                 let raw = vs.search(tenant_id, &emb, k).await?;
                                 Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                            }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                        }).await?
+                            })
+                                as Pin<
+                                    Box<
+                                        dyn std::future::Future<Output = Result<Vec<(i64, f64)>>>
+                                            + Send,
+                                    >,
+                                >
+                        })
+                        .await?
                     }
                 }
                 Some(url) => {
                     let http = reqwest::Client::new();
                     let url = url.to_string();
                     retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, move |emb, k| {
-                        let http = http.clone(); let url = url.clone();
+                        let http = http.clone();
+                        let url = url.clone();
                         Box::pin(async move {
                             let raw = http_search_vectors(&http, &url, tenant_id, emb, k).await?;
                             Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                    }).await?
+                        })
+                            as Pin<
+                                Box<
+                                    dyn std::future::Future<Output = Result<Vec<(i64, f64)>>>
+                                        + Send,
+                                >,
+                            >
+                    })
+                    .await?
                 }
                 None => {
                     let ep = eve_peer_id(&rag_cfg)?;
@@ -504,20 +570,35 @@ async fn cmd_query(
                             let guard = client.lock().await;
                             let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
                             Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                    }).await?
+                        })
+                            as Pin<
+                                Box<
+                                    dyn std::future::Future<Output = Result<Vec<(i64, f64)>>>
+                                        + Send,
+                                >,
+                            >
+                    })
+                    .await?
                 }
             };
             if kb_names.len() > 1 {
-                for c in &mut chunks { c.source_kb = Some(kb_name.clone()); }
+                for c in &mut chunks {
+                    c.source_kb = Some(kb_name.clone());
+                }
             }
             all_results.append(&mut chunks);
         }
 
-        all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        all_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         all_results.truncate(top_k);
 
-        if let Some(s) = spinner { s.finish("").await; }
+        if let Some(s) = spinner {
+            s.finish("").await;
+        }
 
         let arr: Vec<serde_json::Value> = all_results
             .iter()
@@ -628,12 +709,21 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                     Box::pin(async move {
                         let raw = vs.search(tenant_id, &emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 };
                 if understand {
                     kwaai_rag::query_understanding::retrieve_with_understanding(
-                        &query, &retrieve_cfg, &embed, &meta, &inference_url, search_fn,
-                    ).await?
+                        &query,
+                        &retrieve_cfg,
+                        &embed,
+                        &meta,
+                        &inference_url,
+                        search_fn,
+                    )
+                    .await?
                 } else {
                     retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, search_fn).await?
                 }
@@ -646,8 +736,12 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                     Box::pin(async move {
                         let raw = http_search_vectors(&h, &u, tenant_id, embedding, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                }).await?
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
             } else {
                 let (client2, eve) = p2p_client.as_ref().unwrap();
                 let client2 = client2.clone();
@@ -656,10 +750,16 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                     let c = client2.clone();
                     Box::pin(async move {
                         let guard = c.lock().await;
-                        let raw = rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k).await?;
+                        let raw =
+                            rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k)
+                                .await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                }).await?
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
             };
 
             let messages = build_chat_messages(&query, &chunks, &history, 8192);
@@ -709,7 +809,9 @@ async fn cmd_docs(kb: String) -> Result<()> {
 
     let docs = meta.list_docs()?;
     if docs.is_empty() {
-        print_info(&format!("No documents ingested yet. Run: kwaainet rag ingest <file> --kb {kb}"));
+        print_info(&format!(
+            "No documents ingested yet. Run: kwaainet rag ingest <file> --kb {kb}"
+        ));
     } else {
         print_box_header(&format!("{} document(s)", docs.len()));
         for d in &docs {
@@ -778,10 +880,9 @@ async fn cmd_delete_doc(name: String, yes: bool, kb: String) -> Result<()> {
 
 fn load_rag_config_for(kb: &str) -> Result<(RagConfig, Uuid)> {
     let cfg = KwaaiNetConfig::load_or_create()?;
-    let rag = cfg
-        .get_rag_kb(kb)
-        .cloned()
-        .with_context(|| format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}"))?;
+    let rag = cfg.get_rag_kb(kb).cloned().with_context(|| {
+        format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
+    })?;
 
     let tenant_id: Uuid = rag
         .tenant_id

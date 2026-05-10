@@ -21,11 +21,7 @@ use crate::retriever::{retrieve_hybrid, RetrieveConfig, RetrievedChunk};
 ///
 /// Returns the original query plus the generated variants (deduplicated).
 /// Falls back to `[query]` if the LLM call fails, so callers are always safe.
-pub async fn decompose_query(
-    query: &str,
-    n_variants: usize,
-    inference_url: &str,
-) -> Vec<String> {
+pub async fn decompose_query(query: &str, n_variants: usize, inference_url: &str) -> Vec<String> {
     match decompose_inner(query, n_variants, inference_url).await {
         Ok(mut qs) => {
             // Always include the original in case decomposition is lossy.
@@ -59,7 +55,10 @@ async fn decompose_inner(
          Question: {query}"
     );
 
-    let url = format!("{}/v1/chat/completions", inference_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        inference_url.trim_end_matches('/')
+    );
     let body = json!({
         "model": "default",
         "messages": [{"role": "user", "content": prompt}],
@@ -130,12 +129,14 @@ where
     );
 
     // Retrieve for each sub-query, collect all chunks.
-    let mut best_by_id: std::collections::HashMap<i64, RetrievedChunk> = std::collections::HashMap::new();
+    let mut best_by_id: std::collections::HashMap<i64, RetrievedChunk> =
+        std::collections::HashMap::new();
 
     for sq in &sub_queries {
         let results = retrieve_hybrid(sq, cfg, embed, meta, search_fn.clone()).await?;
         for chunk in results {
-            let stable_key = stable_chunk_key(&chunk.chunk_meta.doc_name, chunk.chunk_meta.chunk_index);
+            let stable_key =
+                stable_chunk_key(&chunk.chunk_meta.doc_name, chunk.chunk_meta.chunk_index);
             best_by_id
                 .entry(stable_key)
                 .and_modify(|existing| {

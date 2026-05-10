@@ -183,7 +183,13 @@ impl BM25Index {
                 // Fall back to individual term union if parse fails (e.g. special chars)
                 let safe: String = query_text
                     .chars()
-                    .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == ' ' {
+                            c
+                        } else {
+                            ' '
+                        }
+                    })
                     .collect();
                 match parser.parse_query(&safe) {
                     Ok(q) => q,
@@ -226,11 +232,7 @@ impl BM25Index {
 
 /// Reciprocal Rank Fusion: merge two ranked lists into one combined ranking.
 /// k=60 is the standard value (Cormack et al. 2009).
-pub fn rrf_merge(
-    semantic: &[(i64, f64)],
-    keyword: &[(i64, f64)],
-    top_k: usize,
-) -> Vec<(i64, f64)> {
+pub fn rrf_merge(semantic: &[(i64, f64)], keyword: &[(i64, f64)], top_k: usize) -> Vec<(i64, f64)> {
     const K: f64 = 60.0;
     let mut rrf: HashMap<i64, f64> = HashMap::new();
 
@@ -281,7 +283,10 @@ mod tests {
         idx.build_from_chunks(&chunks).unwrap();
         let results = idx.search("TLSA teacher league south africa", 3);
         assert!(!results.is_empty(), "should find at least one result");
-        assert_eq!(results[0].0, 1, "Chapter 14 should rank first for TLSA query");
+        assert_eq!(
+            results[0].0, 1,
+            "Chapter 14 should rank first for TLSA query"
+        );
     }
 
     #[test]
@@ -297,7 +302,8 @@ mod tests {
         // Delete doc_b
         idx.delete_doc("doc_b.docx").unwrap();
         // Add a new chunk to doc_b replacement
-        idx.add_chunks(&[(12i64, "doc_c.docx", "cricket sport bat wicket")]).unwrap();
+        idx.add_chunks(&[(12i64, "doc_c.docx", "cricket sport bat wicket")])
+            .unwrap();
 
         let res = idx.search("apartheid", 5);
         // doc_b deleted — should no longer appear
