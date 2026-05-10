@@ -41,11 +41,11 @@ impl P2PClient {
     /// - **Windows**: `addr` should be a multiaddr like `/ip4/127.0.0.1/tcp/5005`
     /// - **Unix**: `addr` should be a multiaddr like `/unix/tmp/p2pd.sock`
     pub async fn connect(addr: &str) -> Result<Self> {
-        debug!("Connecting to daemon at: {}", addr);
+        trace!("Connecting to daemon at: {}", addr);
 
         let stream = Self::connect_stream(addr).await?;
 
-        debug!("Connected to daemon");
+        trace!("Connected to daemon");
 
         Ok(Self {
             stream,
@@ -138,8 +138,7 @@ impl P2PClient {
 
     /// Send a request to the daemon and receive a response
     pub async fn send_request(&mut self, request: Request) -> Result<Response> {
-        // Debug: print request type
-        debug!("Request type field = {}", request.r#type);
+        trace!("Request type field = {}", request.r#type);
 
         // Serialize request
         let mut buf = BytesMut::new();
@@ -147,7 +146,7 @@ impl P2PClient {
             .encode(&mut buf)
             .map_err(|e| Error::Protocol(format!("Failed to encode request: {}", e)))?;
 
-        debug!(
+        trace!(
             "Encoded {} bytes - hex: {}",
             buf.len(),
             buf.iter()
@@ -362,9 +361,9 @@ impl P2PClient {
             pubsub: None,
         };
 
-        debug!("Connecting to peer with multiaddr: {}", peer_multiaddr);
+        trace!("Connecting to peer with multiaddr: {}", peer_multiaddr);
         let _response = self.send_request(request).await?;
-        debug!("Connected successfully");
+        trace!("Connected successfully");
         Ok(())
     }
 
@@ -446,9 +445,10 @@ impl P2PClient {
             remove_stream_handler: None,
         };
 
-        debug!(
+        trace!(
             "STREAM_HANDLER request: type={}, protocols={:?}",
-            request.r#type, protocols
+            request.r#type,
+            protocols
         );
 
         let response = self.send_request(request).await?;
@@ -536,7 +536,7 @@ impl P2PClient {
             .stream_info
             .ok_or_else(|| Error::Protocol("No StreamInfo in response".to_string()))?;
 
-        debug!(
+        trace!(
             "StreamInfo received: proto={}, peer_len={}, addr_len={}",
             stream_info.proto,
             stream_info.peer.len(),
@@ -573,14 +573,14 @@ impl P2PClient {
         let port = port.ok_or_else(|| Error::Protocol("No TCP port in multiaddr".to_string()))?;
 
         let socket_addr = std::net::SocketAddr::new(ip, port);
-        debug!("Connecting to daemon stream at: {}", socket_addr);
+        trace!("Connecting to daemon stream at: {}", socket_addr);
 
         // Connect to the daemon's forwarded stream
         let stream = tokio::net::TcpStream::connect(socket_addr)
             .await
             .map_err(Error::Io)?;
 
-        debug!("Connected to daemon stream");
+        trace!("Connected to daemon stream");
         Ok(stream)
     }
 
@@ -658,7 +658,7 @@ impl P2PClient {
             )));
         }
 
-        debug!("Successfully upgraded to persistent connection");
+        trace!("Successfully upgraded to persistent connection");
 
         // Create persistent connection
         let conn = Arc::new(PersistentConnection::new(reader, writer));

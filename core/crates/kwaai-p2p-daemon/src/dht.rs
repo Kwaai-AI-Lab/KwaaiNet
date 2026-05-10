@@ -10,7 +10,7 @@
 use crate::client::P2PClient;
 use crate::error::{Error, Result};
 use crate::protocol::p2pd::{dht_request, request, DhtRequest, Request};
-use tracing::{debug, trace};
+use tracing::trace;
 
 /// DHT peer information
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ impl P2PClient {
         value: Vec<u8>,
         timeout_secs: Option<i64>,
     ) -> Result<()> {
-        debug!(
+        trace!(
             "DHT PUT_VALUE: key len={}, value len={}",
             key.len(),
             value.len()
@@ -94,7 +94,7 @@ impl P2PClient {
         key: Vec<u8>,
         timeout_secs: Option<i64>,
     ) -> Result<DhtValue> {
-        debug!("DHT GET_VALUE: key len={}", key.len());
+        trace!("DHT GET_VALUE: key len={}", key.len());
 
         let dht_request = DhtRequest {
             r#type: dht_request::Type::GetValue as i32,
@@ -146,7 +146,7 @@ impl P2PClient {
         peer_id: Vec<u8>,
         timeout_secs: Option<i64>,
     ) -> Result<DhtPeerInfo> {
-        debug!("DHT FIND_PEER: peer_id len={}", peer_id.len());
+        trace!("DHT FIND_PEER: peer_id len={}", peer_id.len());
 
         let dht_request = DhtRequest {
             r#type: dht_request::Type::FindPeer as i32,
@@ -200,7 +200,7 @@ impl P2PClient {
         count: i32,
         timeout_secs: Option<i64>,
     ) -> Result<Option<DhtPeerInfo>> {
-        debug!("DHT FIND_PROVIDERS: cid len={}, count={}", cid.len(), count);
+        trace!("DHT FIND_PROVIDERS: cid len={}, count={}", cid.len(), count);
 
         let dht_request = DhtRequest {
             r#type: dht_request::Type::FindProviders as i32,
@@ -245,7 +245,7 @@ impl P2PClient {
     /// * `cid` - Content identifier (binary)
     /// * `timeout_secs` - Optional timeout in seconds
     pub async fn dht_provide(&mut self, cid: Vec<u8>, timeout_secs: Option<i64>) -> Result<()> {
-        debug!("DHT PROVIDE: cid len={}", cid.len());
+        trace!("DHT PROVIDE: cid len={}", cid.len());
 
         let dht_request = DhtRequest {
             r#type: dht_request::Type::Provide as i32,
