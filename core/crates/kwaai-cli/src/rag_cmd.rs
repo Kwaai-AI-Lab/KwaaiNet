@@ -96,27 +96,39 @@ async fn cmd_init(embed_model: String, rag_dir: Option<std::path::PathBuf>) -> R
         print_success("Embedding model OK (768 dimensions)");
 
         // If already initialised with local storage, skip DB creation (idempotent).
-        // The DB may be held open by a running `rag serve` process.
+        // Verify the tenant actually exists in the DB — it may be missing if the DB
+        // was wiped externally or the node was upgraded from an older build that used
+        // a per-tenant DB file instead of the shared metadata.redb.
         let existing_cfg = KwaaiNetConfig::load_or_create()?;
         if let Some(ref rag) = existing_cfg.rag {
             if rag.storage_url.as_deref() == Some("local") {
                 if let Some(ref tid) = rag.tenant_id {
                     let tenant_id: Uuid = tid.parse().context("invalid tenant_id in config")?;
-                    print_info(&format!("Knowledge base:  {}", data_dir.display()));
-                    print_success(&format!(
-                        "Already initialised (tenant {tenant_id}) — embedding model updated."
-                    ));
-                    // Update embed model in case it changed.
-                    let mut cfg = existing_cfg;
-                    if let Some(ref mut r) = cfg.rag {
-                        r.embed_model = embed_model;
-                        if rag_data_dir_str.is_some() {
-                            r.rag_data_dir = rag_data_dir_str;
+                    let tenant_in_db = if let Ok(db) = kwaai_storage::StorageDb::open(&data_dir) {
+                        let tm = kwaai_storage::TenantManager::new(db);
+                        tm.get(tenant_id).await.ok().flatten().is_some()
+                    } else {
+                        false
+                    };
+                    if tenant_in_db {
+                        print_info(&format!("Knowledge base:  {}", data_dir.display()));
+                        print_success(&format!(
+                            "Already initialised (tenant {tenant_id}) — embedding model updated."
+                        ));
+                        // Update embed model in case it changed.
+                        let mut cfg = existing_cfg;
+                        if let Some(ref mut r) = cfg.rag {
+                            r.embed_model = embed_model;
+                            if rag_data_dir_str.is_some() {
+                                r.rag_data_dir = rag_data_dir_str;
+                            }
                         }
+                        cfg.save()?;
+                        println!("  Next:  kwaainet rag ingest <file>");
+                        return Ok(());
                     }
-                    cfg.save()?;
-                    println!("  Next:  kwaainet rag ingest <file>");
-                    return Ok(());
+                    // Tenant missing from DB — fall through to recreate it.
+                    print_warning("Tenant record missing from local DB — recreating knowledge base.");
                 }
             }
         }
