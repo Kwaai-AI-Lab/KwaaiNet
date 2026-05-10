@@ -1168,13 +1168,23 @@ pub enum PeersAction {
         timeout: i64,
     },
 
-    /// Manually dial a peer by multiaddr. Forces a connection attempt that
-    /// hole-punching can react to; optionally sends a hello message once the
-    /// connection succeeds.
+    /// Manually dial a peer. Forces a connection attempt that hole-punching
+    /// can react to; optionally sends a hello message once the connection
+    /// succeeds. Specify exactly one of --addr or --peer.
     Connect {
         /// Full multiaddr including /p2p/<peer-id> (and, for relay'd dials,
-        /// /p2p-circuit/p2p/<destination>).
-        multiaddr: String,
+        /// /p2p-circuit/p2p/<destination>). Use this when you have a
+        /// complete address in hand — typically copied from `peers list`
+        /// or `peers find`. No DHT lookup is performed.
+        #[arg(long, conflicts_with = "peer", required_unless_present = "peer")]
+        addr: Option<String>,
+
+        /// Peer ID (base58) to look up in the DHT and dial. The CLI runs
+        /// `dht_find_peer`, picks an address (preferring direct over
+        /// relay'd), appends /p2p/<peer-id>, and dials. Use this when you
+        /// only have a peer ID — e.g. one you saw in `peers list`.
+        #[arg(long, conflicts_with = "addr", required_unless_present = "addr")]
+        peer: Option<String>,
 
         /// Optional message to send over /kwaai/p2p/hello/1.0.0 once the
         /// connection succeeds. The recipient logs the message to stdout.

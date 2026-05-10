@@ -27,7 +27,11 @@ async fn peers(args: PeersArgs) -> Result<()> {
     match args.action {
         PeersAction::List => peers_list().await,
         PeersAction::Find { peer_id, timeout } => peers_find(peer_id, timeout).await,
-        PeersAction::Connect { multiaddr, message } => peers_connect(multiaddr, message).await,
+        PeersAction::Connect {
+            addr,
+            peer,
+            message,
+        } => peers_connect(addr, peer, message).await,
         PeersAction::Send { peer_id, message } => peers_send(peer_id, message).await,
     }
 }
@@ -256,11 +260,17 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
                 println!("  Found in DHT, but no addresses advertised.");
             } else {
                 println!("  Addresses advertised in DHT ({}):", info.addrs.len());
+                // Append `/p2p/<peer-id>` to each address so the printed
+                // form is directly usable as `peers connect --addr …`.
+                // p2pd / Kademlia returns addresses without the trailing
+                // `/p2p/<self>` because the DHT entry is keyed on the peer
+                // ID anyway, but the CLI consumer needs the full form.
                 for a in &info.addrs {
                     match Multiaddr::try_from(a.clone()) {
                         Ok(m) => {
                             let kind = if is_relayed(&m) { "relay" } else { "direct" };
-                            println!("    [{:>6}] {}", kind, m);
+                            let with_dest = m.with(libp2p::multiaddr::Protocol::P2p(target.into()));
+                            println!("    [{:>6}] {}", kind, with_dest);
                         }
                         Err(_) => {
                             println!("    [   ?   ] 0x{} (unparseable)", hex::encode(a))
@@ -285,13 +295,56 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
 // peers connect — manual dial + optional hello DM
 // ---------------------------------------------------------------------------
 
-async fn peers_connect(multiaddr: String, message: Option<String>) -> Result<()> {
+async fn peers_connect(
+    addr: Option<String>,
+    peer: Option<String>,
+    message: Option<String>,
+) -> Result<()> {
     let Some(mut client) = connect_p2pd().await? else {
         return Ok(());
     };
 
+    // Resolve the input form (--addr | --peer) to a (multiaddr_to_dial,
+    // dest_peer_id) pair. clap's `required_unless_present` enforces that
+    // exactly one of the two is set.
+    let (multiaddr, dest_peer) = match (addr, peer) {
+        (Some(a), None) => match resolve_addr(&a) {
+            Ok(pair) => pair,
+            Err(e) => {
+                print_error(&format!("--addr rejected: {}", e));
+                print_separator();
+                return Ok(());
+            }
+        },
+        (None, Some(p)) => {
+            let target: PeerId = match p.parse() {
+                Ok(p) => p,
+                Err(e) => {
+                    print_error(&format!("--peer is not a valid base58 peer ID: {}", e));
+                    print_separator();
+                    return Ok(());
+                }
+            };
+            match resolve_peer(&mut client, target).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    print_error(&format!("--peer DHT lookup failed: {}", e));
+                    print_separator();
+                    return Ok(());
+                }
+            }
+        }
+        // clap should make these unreachable, but be explicit.
+        (Some(_), Some(_)) | (None, None) => {
+            print_error("specify exactly one of --addr or --peer");
+            print_separator();
+            return Ok(());
+        }
+    };
+
     print_box_header("🛰  KwaaiNet P2P — Manual Dial");
-    println!("  Target: {}", multiaddr);
+    println!("  Target peer: {}", dest_peer);
+    println!("  Multiaddr:   {}", multiaddr);
     println!();
 
     if let Err(e) = client.connect_peer(&multiaddr).await {
@@ -302,20 +355,6 @@ async fn peers_connect(multiaddr: String, message: Option<String>) -> Result<()>
     print_success("Connected.");
 
     if let Some(msg) = message {
-        // Pull the destination peer ID out of the multiaddr — for a relay'd
-        // address (`…/p2p/<RELAY>/p2p-circuit/p2p/<DEST>`) the destination is
-        // the LAST /p2p/ component, not the first.
-        let maddr: Multiaddr = multiaddr.parse().context("parse multiaddr for hello")?;
-        let mut last_p2p = None;
-        for proto in maddr.iter() {
-            if let libp2p::multiaddr::Protocol::P2p(hash) = proto {
-                last_p2p = Some(hash);
-            }
-        }
-        let dest = last_p2p.context("multiaddr has no /p2p/<peer-id> component")?;
-        let dest_peer = PeerId::from_multihash(dest.into())
-            .map_err(|e| anyhow::anyhow!("invalid peer multihash: {:?}", e))?;
-
         let from_peer = local_peer_id(&mut client).await?;
         match crate::p2p_hello::send(&client, &dest_peer, &from_peer, &msg).await {
             Ok(()) => print_success(&format!("Sent hello to {} — see their logs.", dest_peer)),
@@ -326,6 +365,99 @@ async fn peers_connect(multiaddr: String, message: Option<String>) -> Result<()>
     }
     print_separator();
     Ok(())
+}
+
+/// Parse an `--addr` multiaddr and identify the destination peer ID.
+///
+/// For a relay'd address (`…/p2p/<RELAY>/p2p-circuit/p2p/<DEST>`) the
+/// destination is the LAST `/p2p/` component. We refuse multiaddrs where
+/// `/p2p-circuit` is present but no `/p2p/<peer>` follows it — those addresses
+/// (as returned by p2pd's DHT layer) name only the relay, not the destination,
+/// and dialing them is almost certainly a copy-paste mistake. The user wanted
+/// to reach the peer, not the relay.
+fn resolve_addr(addr: &str) -> Result<(String, PeerId)> {
+    let maddr: Multiaddr = addr.parse().context("parse --addr as multiaddr")?;
+
+    let mut last_p2p_was_after_circuit = !is_relayed(&maddr);
+    let mut saw_circuit = false;
+    let mut last_p2p = None;
+    for proto in maddr.iter() {
+        match proto {
+            libp2p::multiaddr::Protocol::P2pCircuit => {
+                saw_circuit = true;
+                // Reset: only `/p2p/` components AFTER the circuit hop name
+                // the destination. A `/p2p/` before the circuit names the
+                // relay.
+                last_p2p = None;
+            }
+            libp2p::multiaddr::Protocol::P2p(hash) => {
+                last_p2p = Some(hash);
+                if saw_circuit {
+                    last_p2p_was_after_circuit = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let dest_hash = last_p2p.context(
+        "multiaddr has no /p2p/<peer-id> component — pass a complete address \
+         like /ip4/<IP>/tcp/<PORT>/p2p/<PEER-ID> or use --peer to look it up \
+         in the DHT",
+    )?;
+
+    if saw_circuit && !last_p2p_was_after_circuit {
+        anyhow::bail!(
+            "multiaddr ends with /p2p-circuit but has no /p2p/<destination> \
+             after it — this names only the relay, not the peer you want to \
+             reach. Append /p2p/<destination-peer-id> to the multiaddr, or \
+             use --peer <peer-id> to let the CLI do the DHT lookup for you."
+        );
+    }
+
+    let dest_peer = PeerId::from_multihash(dest_hash.into())
+        .map_err(|e| anyhow::anyhow!("invalid peer multihash in /p2p/: {:?}", e))?;
+    Ok((maddr.to_string(), dest_peer))
+}
+
+/// Look up `target` in the DHT and pick a multiaddr to dial. Prefers a direct
+/// address; falls back to the first relay'd address. Always appends
+/// `/p2p/<target>` so the returned multiaddr names the destination
+/// (p2pd / Kademlia returns addresses without the trailing `/p2p/<self>` since
+/// the DHT entry is keyed on the peer ID anyway).
+async fn resolve_peer(
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    target: PeerId,
+) -> Result<(String, PeerId)> {
+    let info = client
+        .dht_find_peer(target.to_bytes(), Some(10))
+        .await
+        .context("dht_find_peer")?;
+    if info.addrs.is_empty() {
+        anyhow::bail!("peer found in DHT but no addresses advertised");
+    }
+
+    let parsed: Vec<Multiaddr> = info
+        .addrs
+        .iter()
+        .filter_map(|a| Multiaddr::try_from(a.clone()).ok())
+        .collect();
+    if parsed.is_empty() {
+        anyhow::bail!("DHT returned addresses but none parsed as a multiaddr");
+    }
+
+    // Prefer direct over relay'd. If both kinds are present a direct dial is
+    // always faster and gives hole-punching nothing to work on.
+    let pick = parsed
+        .iter()
+        .find(|m| !is_relayed(m))
+        .or_else(|| parsed.first())
+        .expect("parsed is non-empty");
+
+    let with_dest = pick
+        .clone()
+        .with(libp2p::multiaddr::Protocol::P2p(target.into()));
+    Ok((with_dest.to_string(), target))
 }
 
 // ---------------------------------------------------------------------------
