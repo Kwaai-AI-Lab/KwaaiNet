@@ -516,9 +516,19 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // IDENTIFY protocol lets peers report our observed addresses. We poll until
     // min_confirmations separate responses agree on the same address, then
     // restart p2pd with those addresses as its announce addrs.
-    // -----------------------------------------------------------------------
+    //
+    // Skipped when:
+    // - `announce_addr` is set: we already know our address; IDENTIFY can only
+    //   confirm what we said.
+    // - `trusted_relays` is non-empty: the node is intentionally NATed and
+    //   uses one or more configured relays. Its only externally-visible
+    //   address is the `/p2p-circuit/` path through those relays; IDENTIFY
+    //   would only "discover" the same circuit address, and the
+    //   discover-then-restart cycle tears down the in-flight relay
+    //   reservation, leaving the node unable to announce. Trust the
+    //   trusted_relays config and let the relay path stand.
     let mut discovered_addrs: Vec<String>;
-    if announce_addr.is_none() {
+    if announce_addr.is_none() && config.trusted_relays.is_empty() {
         (daemon, client, discovered_addrs) = discover_and_restart_with_announce(
             daemon,
             client,
