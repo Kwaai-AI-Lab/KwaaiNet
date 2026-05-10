@@ -356,14 +356,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     // Announce address: prefer explicit announce_addr, fall back to public_ip.
     // announce_addr is a raw multiaddr (e.g. /dns/kwaainet/tcp/8080).
-    // public_ip is an IP address formatted as /ip4/<ip>/tcp/<port>.
+    // public_ip is an IP address formatted as /ip4/<ip>/tcp/<port>, where
+    // <port> is `public_port` if set (port-forwarded deployments where the
+    // router maps an external port to the node's internal listen port) or
+    // `port` otherwise.
     // An empty string public_ip is treated as "no public IP".
+    let announce_port = config.public_port.unwrap_or(config.port);
     let announce_addr = config.announce_addr.clone().or_else(|| {
         config
             .public_ip
             .as_deref()
             .filter(|ip| !ip.is_empty())
-            .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port))
+            .map(|ip| format!("/ip4/{}/tcp/{}", ip, announce_port))
     });
 
     let identity_key_path = NodeIdentity::key_file_path();

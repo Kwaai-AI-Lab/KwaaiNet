@@ -72,6 +72,15 @@ pub struct KwaaiNetConfig {
     #[serde(default)]
     pub public_ip: Option<String>,
 
+    /// Public-side TCP port to advertise in the announce_addr derived from
+    /// `public_ip`. When `None`, defaults to the listening `port`. Use this
+    /// for port-forwarded deployments where the router maps an external port
+    /// (e.g. 443 or 8443) to the node's internal listen port (e.g. 8080).
+    /// Has no effect when `announce_addr` is set explicitly — that's a full
+    /// multiaddr and carries its own port.
+    #[serde(default)]
+    pub public_port: Option<u16>,
+
     #[serde(default)]
     pub announce_addr: Option<String>,
 
@@ -530,6 +539,7 @@ impl Default for KwaaiNetConfig {
                 std::env::consts::ARCH,
             )),
             public_ip: None,
+            public_port: None,
             announce_addr: None,
             no_relay: false,
             initial_peers: default_peers(),
@@ -698,6 +708,11 @@ impl KwaaiNetConfig {
             "log_level" => self.log_level = value.to_string(),
             "public_name" => self.public_name = Some(value.to_string()),
             "public_ip" => self.public_ip = Some(value.to_string()),
+            "public_port" => {
+                self.public_port = Some(value.parse().map_err(|_| {
+                    anyhow::anyhow!("public_port must be a positive integer between 1 and 65535")
+                })?)
+            }
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
             "start_block" => {
