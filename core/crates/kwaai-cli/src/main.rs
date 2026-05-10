@@ -16,6 +16,7 @@ mod monitor;
 mod node;
 mod ollama;
 mod p2p_cmd;
+mod p2p_hello;
 mod progress;
 #[cfg(feature = "rag")]
 mod rag_api;

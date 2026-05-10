@@ -1167,4 +1167,30 @@ pub enum PeersAction {
         #[arg(long, default_value = "10")]
         timeout: i64,
     },
+
+    /// Manually dial a peer by multiaddr. Forces a connection attempt that
+    /// hole-punching can react to; optionally sends a hello message once the
+    /// connection succeeds.
+    Connect {
+        /// Full multiaddr including /p2p/<peer-id> (and, for relay'd dials,
+        /// /p2p-circuit/p2p/<destination>).
+        multiaddr: String,
+
+        /// Optional message to send over /kwaai/p2p/hello/1.0.0 once the
+        /// connection succeeds. The recipient logs the message to stdout.
+        #[arg(long)]
+        message: Option<String>,
+    },
+
+    /// Send a hello message to an already-connected peer over
+    /// /kwaai/p2p/hello/1.0.0. Doubles as the in-tree example of how to
+    /// invoke a custom unary protocol over the libp2p fabric — see
+    /// `p2p_hello.rs` for the wire format and handler.
+    Send {
+        /// Recipient peer ID (base58)
+        peer_id: String,
+
+        /// Message body (UTF-8)
+        message: String,
+    },
 }

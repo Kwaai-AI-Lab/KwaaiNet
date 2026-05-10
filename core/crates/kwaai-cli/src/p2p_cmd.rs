@@ -27,6 +27,8 @@ async fn peers(args: PeersArgs) -> Result<()> {
     match args.action {
         PeersAction::List => peers_list().await,
         PeersAction::Find { peer_id, timeout } => peers_find(peer_id, timeout).await,
+        PeersAction::Connect { multiaddr, message } => peers_connect(multiaddr, message).await,
+        PeersAction::Send { peer_id, message } => peers_send(peer_id, message).await,
     }
 }
 
@@ -277,4 +279,85 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
     }
     print_separator();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// peers connect — manual dial + optional hello DM
+// ---------------------------------------------------------------------------
+
+async fn peers_connect(multiaddr: String, message: Option<String>) -> Result<()> {
+    let Some(mut client) = connect_p2pd().await? else {
+        return Ok(());
+    };
+
+    print_box_header("🛰  KwaaiNet P2P — Manual Dial");
+    println!("  Target: {}", multiaddr);
+    println!();
+
+    if let Err(e) = client.connect_peer(&multiaddr).await {
+        print_error(&format!("connect_peer failed: {}", e));
+        print_separator();
+        return Ok(());
+    }
+    print_success("Connected.");
+
+    if let Some(msg) = message {
+        // Pull the destination peer ID out of the multiaddr — for a relay'd
+        // address (`…/p2p/<RELAY>/p2p-circuit/p2p/<DEST>`) the destination is
+        // the LAST /p2p/ component, not the first.
+        let maddr: Multiaddr = multiaddr.parse().context("parse multiaddr for hello")?;
+        let mut last_p2p = None;
+        for proto in maddr.iter() {
+            if let libp2p::multiaddr::Protocol::P2p(hash) = proto {
+                last_p2p = Some(hash);
+            }
+        }
+        let dest = last_p2p.context("multiaddr has no /p2p/<peer-id> component")?;
+        let dest_peer = PeerId::from_multihash(dest.into())
+            .map_err(|e| anyhow::anyhow!("invalid peer multihash: {:?}", e))?;
+
+        let from_peer = local_peer_id(&mut client).await?;
+        match crate::p2p_hello::send(&client, &dest_peer, &from_peer, &msg).await {
+            Ok(()) => print_success(&format!("Sent hello to {} — see their logs.", dest_peer)),
+            Err(e) => print_error(&format!("hello send failed: {}", e)),
+        }
+    } else {
+        print_info("Pass --message <text> to send a hello DM that the peer logs.");
+    }
+    print_separator();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// peers send — hello DM to an already-connected peer
+// ---------------------------------------------------------------------------
+
+async fn peers_send(peer_id: String, message: String) -> Result<()> {
+    let Some(mut client) = connect_p2pd().await? else {
+        return Ok(());
+    };
+
+    let dest_peer: PeerId = peer_id.parse().context("invalid recipient peer ID")?;
+    let from_peer = local_peer_id(&mut client).await?;
+
+    print_box_header("🛰  KwaaiNet P2P — Hello DM");
+    println!("  To:      {}", dest_peer);
+    println!("  From:    {}", from_peer);
+    println!("  Message: {}", message);
+    println!();
+
+    match crate::p2p_hello::send(&client, &dest_peer, &from_peer, &message).await {
+        Ok(()) => print_success("Sent — see the recipient's logs for the message."),
+        Err(e) => print_error(&format!("hello send failed: {}", e)),
+    }
+    print_separator();
+    Ok(())
+}
+
+/// Ask the local p2pd for our own peer ID. Used so the recipient knows who
+/// sent them the hello.
+async fn local_peer_id(client: &mut P2PClient) -> Result<PeerId> {
+    let id_hex = client.identify().await.context("identify local peer ID")?;
+    let id_bytes = hex::decode(&id_hex).context("decode identify hex")?;
+    PeerId::from_bytes(&id_bytes).map_err(|e| anyhow::anyhow!("invalid local peer ID: {}", e))
 }
