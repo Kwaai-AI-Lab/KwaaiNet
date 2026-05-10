@@ -331,12 +331,13 @@ impl P2PClient {
             .parse()
             .map_err(|e| Error::Connection(format!("Invalid multiaddr: {}", e)))?;
 
-        // Extract the peer ID from the multiaddr
+        // Extract the destination peer ID from the multiaddr.
+        // For a relay'd address like /ip4/.../p2p/<RELAY>/p2p-circuit/p2p/<DEST>,
+        // the destination is the LAST /p2p/ component, not the first.
         let mut peer_id_bytes = None;
         for component in maddr.iter() {
             if let libp2p::multiaddr::Protocol::P2p(hash) = component {
                 peer_id_bytes = Some(hash.to_bytes());
-                break;
             }
         }
 
