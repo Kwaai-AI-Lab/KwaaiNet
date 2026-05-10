@@ -798,7 +798,17 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // we restart p2pd and trigger an immediate re-announcement.
     let mut identify_check = tokio::time::interval(Duration::from_secs(300));
     identify_check.tick().await; // skip the immediate first tick
-    let explicit_announce = announce_addr.is_some();
+                                 // Skip the periodic IDENTIFY-discover-and-restart loop when:
+                                 // - announce_addr is set: we already know our address; IDENTIFY can only
+                                 //   confirm what we said.
+                                 // - trusted_relays is non-empty: this is an intentionally-NATed node
+                                 //   whose only externally-visible address is the /p2p-circuit/ path
+                                 //   through its configured relay(s). The periodic check would "discover"
+                                 //   that circuit address, see it differs from the empty discovered_addrs
+                                 //   (we skip the initial discover for the same reason), set
+                                 //   pending_restart, and the subsequent restart would tear down the
+                                 //   relay reservation that makes the node reachable in the first place.
+    let explicit_announce = announce_addr.is_some() || !config.trusted_relays.is_empty();
 
     // SIGHUP handler: shard serve sends SIGHUP after updating config.yaml so
     // the daemon re-announces the new block range immediately (Unix only).
