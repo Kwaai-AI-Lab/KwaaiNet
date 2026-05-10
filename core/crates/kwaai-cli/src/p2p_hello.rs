@@ -1,67 +1,35 @@
-//! Direct-message ("hello") protocol over the libp2p fabric.
+//! Plain-text messaging protocol over the libp2p fabric.
 //!
 //! Protocol ID: `/kwaai/p2p/hello/1.0.0`
 //!
-//! A minimal request/response RPC that lets one node send a short message to
-//! another and surfaces the message in the recipient's logs. Doubles as the
-//! example we point at when explaining how to plug a custom protocol into the
-//! KwaaiNet p2p fabric — see [`make_handler`] for the server side and
-//! [`send`] for the client side.
+//! A trivial unary RPC: the request payload is a UTF-8 string, the recipient
+//! logs it, and replies with `b"ok"`. No wrapper, no schema. Doubles as the
+//! canonical example of how to plug a custom protocol into the KwaaiNet p2p
+//! fabric — see [`make_handler`] for the server side.
 //!
-//! Wire format: [`HelloRequest`] / [`HelloResponse`] serialised with msgpack
-//! (matches the convention established by `/kwaai/inference/1.0.0` in
-//! `block_rpc.rs`).
+//! Sending side has no helper here on purpose: callers go through
+//! [`P2PClient::call_unary_handler`] directly with the bytes they want to
+//! send. `peers send --message <text>` and `peers send --payload-hex <hex>`
+//! produce identical wire output for the same bytes — that's the no-magic
+//! property we want from a diagnostic tool.
 
-use anyhow::{Context, Result};
-use kwaai_p2p_daemon::{error::Result as DaemonResult, P2PClient};
-use libp2p::PeerId;
-use serde::{Deserialize, Serialize};
+use kwaai_p2p_daemon::error::Result as DaemonResult;
 use std::pin::Pin;
 use tracing::info;
 
 /// libp2p protocol string registered with the p2p daemon.
 pub const HELLO_PROTO: &str = "/kwaai/p2p/hello/1.0.0";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HelloRequest {
-    /// Sender's peer ID, base58-encoded (e.g. `12D3KooW…`). Filled in by the
-    /// caller from the local node's identity.
-    pub from: String,
-    /// The message body. Plain UTF-8 — no length cap is enforced here, but
-    /// the unary-RPC wire imposes its own framing limits.
-    pub msg: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HelloResponse {
-    /// Always `true` for now — kept as a struct (rather than a unit type) so
-    /// future versions can add fields without breaking the wire format.
-    pub ok: bool,
-}
-
-/// Send a hello message to `peer_id` over an already-established connection.
-///
-/// Returns `Ok(())` once the recipient has acknowledged the message.
-pub async fn send(client: &P2PClient, peer_id: &PeerId, from: &PeerId, msg: &str) -> Result<()> {
-    let req = HelloRequest {
-        from: from.to_base58(),
-        msg: msg.to_string(),
-    };
-    let req_bytes = rmp_serde::to_vec_named(&req).context("serialise HelloRequest")?;
-    let resp_bytes = client
-        .call_unary_handler(&peer_id.to_bytes(), HELLO_PROTO, &req_bytes)
-        .await
-        .context("call_unary_handler")?;
-    let _resp: HelloResponse =
-        rmp_serde::from_slice(&resp_bytes).context("deserialise HelloResponse")?;
-    Ok(())
-}
-
 /// Build a unary handler suitable for [`P2PClient::add_unary_handler`].
 ///
-/// On every inbound message, prints the message to stdout (so it's visible in
-/// `docker logs` even with default tracing filters) and emits a `tracing::info!`
-/// event for structured-log consumers.
+/// Decodes the request payload as UTF-8, prints it to stdout (so it's
+/// visible in `docker logs` even with default tracing filters), and emits a
+/// `tracing::info!` event for structured-log consumers. Replies with
+/// `b"ok"`.
+///
+/// Non-UTF-8 payloads are decoded with `String::from_utf8_lossy` (replacement
+/// chars for invalid sequences) and logged with a leading marker so the
+/// operator can see the protocol was misused.
 #[allow(clippy::type_complexity)]
 pub fn make_handler(
 ) -> impl Fn(Vec<u8>) -> Pin<Box<dyn std::future::Future<Output = DaemonResult<Vec<u8>>> + Send>>
@@ -70,26 +38,18 @@ pub fn make_handler(
        + 'static {
     |data: Vec<u8>| {
         Box::pin(async move {
-            let req: HelloRequest = match rmp_serde::from_slice(&data) {
-                Ok(req) => req,
-                Err(e) => {
-                    let err = format!("hello: bad msgpack: {e}");
-                    println!("⚠️  {err}");
-                    return Err(kwaai_p2p_daemon::error::Error::Protocol(err));
+            match std::str::from_utf8(&data) {
+                Ok(msg) => {
+                    println!("💬 [p2p hello] {}", msg);
+                    info!(msg = %msg, "p2p hello received");
                 }
-            };
-            // Belt-and-braces: stdout for demo visibility, tracing for structured
-            // log consumers. The leading emoji makes the line easy to spot in a
-            // wall of debug output.
-            println!("💬 [p2p hello] from {}: {}", req.from, req.msg);
-            info!(from = %req.from, msg = %req.msg, "p2p hello received");
-
-            let resp = HelloResponse { ok: true };
-            rmp_serde::to_vec_named(&resp).map_err(|e| {
-                kwaai_p2p_daemon::error::Error::Protocol(format!(
-                    "hello: serialise HelloResponse: {e}"
-                ))
-            })
+                Err(_) => {
+                    let lossy = String::from_utf8_lossy(&data);
+                    println!("💬 [p2p hello, non-utf8] {}", lossy);
+                    info!(msg = %lossy, "p2p hello received (non-utf8 payload)");
+                }
+            }
+            Ok(b"ok".to_vec())
         })
     }
 }

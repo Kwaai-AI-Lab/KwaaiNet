@@ -32,7 +32,26 @@ async fn peers(args: PeersArgs) -> Result<()> {
             peer,
             message,
         } => peers_connect(addr, peer, message).await,
-        PeersAction::Send { peer_id, message } => peers_send(peer_id, message).await,
+        PeersAction::Send {
+            peer,
+            proto,
+            message,
+            payload_hex,
+            payload_bin,
+            stdin,
+            timeout,
+        } => {
+            peers_send(
+                peer,
+                proto,
+                message,
+                payload_hex,
+                payload_bin,
+                stdin,
+                timeout,
+            )
+            .await
+        }
     }
 }
 
@@ -355,9 +374,18 @@ async fn peers_connect(
     print_success("Connected.");
 
     if let Some(msg) = message {
-        let from_peer = local_peer_id(&mut client).await?;
-        match crate::p2p_hello::send(&client, &dest_peer, &from_peer, &msg).await {
-            Ok(()) => print_success(&format!("Sent hello to {} — see their logs.", dest_peer)),
+        match client
+            .call_unary_handler(
+                &dest_peer.to_bytes(),
+                crate::p2p_hello::HELLO_PROTO,
+                msg.as_bytes(),
+            )
+            .await
+        {
+            Ok(resp) => {
+                print_success(&format!("Sent hello to {} — see their logs.", dest_peer));
+                print_response(&resp);
+            }
             Err(e) => print_error(&format!("hello send failed: {}", e)),
         }
     } else {
@@ -461,35 +489,145 @@ async fn resolve_peer(
 }
 
 // ---------------------------------------------------------------------------
-// peers send — hello DM to an already-connected peer
+// peers send — invoke a unary RPC on a connected peer
 // ---------------------------------------------------------------------------
 
-async fn peers_send(peer_id: String, message: String) -> Result<()> {
+async fn peers_send(
+    peer: String,
+    proto: String,
+    message: Option<String>,
+    payload_hex: Option<String>,
+    payload_bin: Option<std::path::PathBuf>,
+    stdin: bool,
+    timeout_secs: u64,
+) -> Result<()> {
+    let payload = match resolve_payload(message, payload_hex, payload_bin, stdin) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            print_error(&format!("payload: {}", e));
+            print_separator();
+            return Ok(());
+        }
+    };
+
+    let dest_peer: PeerId = match peer.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            print_error(&format!("invalid recipient peer ID: {}", e));
+            print_separator();
+            return Ok(());
+        }
+    };
+
     let Some(mut client) = connect_p2pd().await? else {
         return Ok(());
     };
 
-    let dest_peer: PeerId = peer_id.parse().context("invalid recipient peer ID")?;
-    let from_peer = local_peer_id(&mut client).await?;
-
-    print_box_header("🛰  KwaaiNet P2P — Hello DM");
+    print_box_header("🛰  KwaaiNet P2P — Unary RPC");
     println!("  To:      {}", dest_peer);
-    println!("  From:    {}", from_peer);
-    println!("  Message: {}", message);
+    println!("  Proto:   {}", proto);
+    println!("  Payload: {} bytes", payload.len());
+    println!("  Timeout: {}s", timeout_secs);
     println!();
 
-    match crate::p2p_hello::send(&client, &dest_peer, &from_peer, &message).await {
-        Ok(()) => print_success("Sent — see the recipient's logs for the message."),
-        Err(e) => print_error(&format!("hello send failed: {}", e)),
+    let dest_bytes = dest_peer.to_bytes();
+    let call = client.call_unary_handler(&dest_bytes, &proto, &payload);
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), call).await {
+        Ok(Ok(resp)) => {
+            print_success("Sent.");
+            print_response(&resp);
+        }
+        Ok(Err(e)) => print_error(&format!("call_unary_handler failed: {}", e)),
+        Err(_) => {
+            print_error(&format!(
+                "no response within {}s — recipient may not handle this protocol, \
+                 or the handler hung on the payload. Try a longer --timeout.",
+                timeout_secs
+            ));
+        }
     }
     print_separator();
     Ok(())
 }
 
-/// Ask the local p2pd for our own peer ID. Used so the recipient knows who
-/// sent them the hello.
-async fn local_peer_id(client: &mut P2PClient) -> Result<PeerId> {
-    let id_hex = client.identify().await.context("identify local peer ID")?;
-    let id_bytes = hex::decode(&id_hex).context("decode identify hex")?;
-    PeerId::from_bytes(&id_bytes).map_err(|e| anyhow::anyhow!("invalid local peer ID: {}", e))
+/// Resolve the user's payload-source flags to the concrete bytes that go on
+/// the wire. Exactly one source must be set; clap groups them but doesn't
+/// enforce one-and-only-one across the whole set, so we validate here.
+fn resolve_payload(
+    message: Option<String>,
+    payload_hex: Option<String>,
+    payload_bin: Option<std::path::PathBuf>,
+    stdin: bool,
+) -> Result<Vec<u8>> {
+    let sources: Vec<&str> = [
+        message.as_ref().map(|_| "--message"),
+        payload_hex.as_ref().map(|_| "--payload-hex"),
+        payload_bin.as_ref().map(|_| "--payload-bin"),
+        stdin.then_some("--stdin"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    match sources.len() {
+        0 => anyhow::bail!(
+            "no payload — pass exactly one of --message, --payload-hex, \
+             --payload-bin, or --stdin"
+        ),
+        1 => {}
+        _ => anyhow::bail!(
+            "multiple payload sources given ({}); pass exactly one",
+            sources.join(", ")
+        ),
+    }
+
+    if let Some(text) = message {
+        return Ok(text.into_bytes());
+    }
+    if let Some(hex_str) = payload_hex {
+        let stripped: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
+        return hex::decode(&stripped).context("decode --payload-hex");
+    }
+    if let Some(path) = payload_bin {
+        return std::fs::read(&path)
+            .with_context(|| format!("read --payload-bin {}", path.display()));
+    }
+    if stdin {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("read --stdin")?;
+        return Ok(buf);
+    }
+    unreachable!("payload source validation above ensures one is set")
+}
+
+/// Display response bytes uniformly: short summary, then either UTF-8 text
+/// (if the bytes are printable) or hex. Mirrors what curl-style tools do
+/// and avoids guessing the wire format the protocol owns.
+fn print_response(resp: &[u8]) {
+    if resp.is_empty() {
+        print_info("Response: (empty)");
+        return;
+    }
+    match std::str::from_utf8(resp) {
+        Ok(s) if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => {
+            print_info(&format!("Response ({} bytes): {}", resp.len(), s));
+        }
+        _ => {
+            let preview: String = resp
+                .iter()
+                .take(64)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let suffix = if resp.len() > 64 { " …" } else { "" };
+            print_info(&format!(
+                "Response ({} bytes): {}{}",
+                resp.len(),
+                preview,
+                suffix
+            ));
+        }
+    }
 }

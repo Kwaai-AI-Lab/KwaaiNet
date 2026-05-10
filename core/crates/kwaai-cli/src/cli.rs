@@ -1192,15 +1192,56 @@ pub enum PeersAction {
         message: Option<String>,
     },
 
-    /// Send a hello message to an already-connected peer over
-    /// /kwaai/p2p/hello/1.0.0. Doubles as the in-tree example of how to
-    /// invoke a custom unary protocol over the libp2p fabric — see
-    /// `p2p_hello.rs` for the wire format and handler.
+    /// Invoke a unary RPC on an already-connected peer. Defaults to the
+    /// `/kwaai/p2p/hello/1.0.0` protocol (the recipient logs the payload
+    /// and replies with `b"ok"`), but with `--proto` works as a generic
+    /// diagnostic for any registered handler. Doubles as the in-tree
+    /// example of how to invoke a custom unary protocol over the libp2p
+    /// fabric — see `p2p_hello.rs` for the handler.
+    ///
+    /// Specify exactly one payload source: --message, --payload-hex,
+    /// --payload-bin, or --stdin. The bytes are sent as-is; no encoding,
+    /// no wrapper. The response is displayed below.
     Send {
         /// Recipient peer ID (base58)
-        peer_id: String,
+        #[arg(long)]
+        peer: String,
 
-        /// Message body (UTF-8)
-        message: String,
+        /// Protocol ID. Default is the hello protocol (a peer running
+        /// kwaainet logs the payload and replies with `b"ok"`); for any
+        /// other in-tree or third-party unary protocol, name it here.
+        #[arg(long, default_value = HELLO_PROTO_DEFAULT)]
+        proto: String,
+
+        /// Send the bytes of this UTF-8 string as the payload. Identical
+        /// to `--payload-bin` of a file containing the same bytes.
+        #[arg(long, group = "payload")]
+        message: Option<String>,
+
+        /// Send the bytes decoded from this hex string as the payload.
+        /// Whitespace in the hex is ignored. Use for short binary payloads
+        /// you want to type inline.
+        #[arg(long, group = "payload", value_name = "HEX")]
+        payload_hex: Option<String>,
+
+        /// Send the contents of this file as the payload. Use for any
+        /// payload too large to type inline, or for binary blobs you
+        /// already have on disk.
+        #[arg(long, group = "payload", value_name = "PATH")]
+        payload_bin: Option<std::path::PathBuf>,
+
+        /// Read the payload from stdin. Combine with shell redirection
+        /// (`< file.bin`), here-docs (`<<<'hi'`), or pipes
+        /// (`echo -n hi | …`). The bytes are sent verbatim.
+        #[arg(long, group = "payload")]
+        stdin: bool,
+
+        /// Maximum seconds to wait for the recipient's response. Useful when
+        /// poking at unfamiliar protocols whose handlers might hang on
+        /// malformed input. Default 10s.
+        #[arg(long, default_value = "10")]
+        timeout: u64,
     },
 }
+
+const HELLO_PROTO_DEFAULT: &str = "/kwaai/p2p/hello/1.0.0";
