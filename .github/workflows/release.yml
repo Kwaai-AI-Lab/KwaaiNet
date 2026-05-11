@@ -145,11 +145,21 @@ jobs:
       # Go is required by the kwaai-p2p-daemon build.rs which clones and
       # compiles go-libp2p-daemon.  The old handwritten workflow had an
       # explicit setup-go step; cargo-dist doesn't know about it.
+      - name: Install sccache
+        if: ${{ !matrix.container }}
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Configure sccache
+        if: ${{ !matrix.container }}
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
       - name: Install Go (required by kwaai-p2p-daemon build script)
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: false
+          cache: true
+          cache-dependency-path: '**/go.sum'
       # build.rs writes p2pd to target/release/ (hardcoded) regardless of
       # --target.  Cargo only creates target/<triple>/release/ when --target
       # is given, so target/release/ must be created manually.
@@ -337,15 +347,32 @@ jobs:
           dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
           dnf install -y -q cuda-toolkit-12-6 openssl-devel perl-IPC-Cmd
           echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
+          # sccache for faster incremental Rust compilation
+          SCCACHE_VERSION="v0.8.1"
+          curl -sSfL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xzf - --strip-components=1 -C /usr/local/bin "sccache-${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache"
+          chmod +x /usr/local/bin/sccache
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
       - name: Install Rust
         if: ${{ !matrix.container }}
         uses: dtolnay/rust-toolchain@stable
+      - name: Install sccache (non-container)
+        if: ${{ !matrix.container }}
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Configure sccache (non-container)
+        if: ${{ !matrix.container }}
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
       - name: Install Go (required by kwaai-p2p-daemon build script)
         if: ${{ !matrix.container }}
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: false
+          cache: true
+          cache-dependency-path: '**/go.sum'
       - name: Install CUDA toolkit (Linux, no container)
         if: runner.os == 'Linux' && !matrix.container
         run: |
@@ -354,13 +381,24 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q cuda-toolkit-12-6 libssl-dev pkg-config
           echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
-      - name: Install CUDA toolkit (Windows)
+      - name: Cache CUDA toolkit (Windows)
         if: runner.os == 'Windows'
+        id: cuda-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6
+          key: cuda-toolkit-12.6.3-windows
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows' && steps.cuda-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $CUDA_URL = "https://developer.download.nvidia.com/compute/cuda/12.6.3/local_installers/cuda_12.6.3_561.17_windows.exe"
           Invoke-WebRequest -Uri $CUDA_URL -OutFile cuda_installer.exe
           Start-Process -FilePath .\cuda_installer.exe -ArgumentList '-s','cudart_12.6','nvcc_12.6','nvrtc_12.6','nvrtc_dev_12.6','cublas_12.6','cublas_dev_12.6','cusolver_12.6','cusolver_dev_12.6','curand_12.6','curand_dev_12.6','cufft_12.6','cufft_dev_12.6','cusparse_12.6','cusparse_dev_12.6','visual_studio_integration_12.6' -Wait -NoNewWindow
+      - name: Add CUDA to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           echo "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Set up MSVC developer environment (Windows)
@@ -709,7 +747,7 @@ jobs:
             kwaai-wasm \
             kwaainet; do
             echo "=== publishing ${crate} ==="
-            out=$(cargo publish -p "${crate}" 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 30; } || {
+            out=$(cargo publish -p "${crate}" 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 15; } || {
               if echo "$out" | grep -qE "already uploaded|already exists on crates"; then
                 echo "=== ${crate} already uploaded, skipping ==="
               else
