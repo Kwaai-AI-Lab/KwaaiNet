@@ -60,11 +60,38 @@ fn fmt_addr(bytes: &[u8]) -> String {
         .unwrap_or_else(|_| format!("0x{} (unparseable)", hex::encode(bytes)))
 }
 
-/// Classify a multiaddr for the dcutr signal we care about most: is this
-/// connection going through a relay circuit, or directly?
-fn is_relayed(m: &Multiaddr) -> bool {
-    m.iter()
+/// Connection classification. `LIST_PEERS` only gives us `(id, addrs)` so this
+/// is derived from the multiaddr alone.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ConnKind {
+    /// Plain `/ip4/.../tcp/...` — directly dialable.
+    Direct,
+    /// Path includes `/p2p-circuit/` — going through a relay.
+    Relay,
+}
+
+fn classify_addr(m: &Multiaddr) -> ConnKind {
+    if m.iter()
         .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
+    {
+        ConnKind::Relay
+    } else {
+        ConnKind::Direct
+    }
+}
+
+/// Backwards-compat shim retained so `info` keeps working unchanged.
+fn is_relayed(m: &Multiaddr) -> bool {
+    classify_addr(m) == ConnKind::Relay
+}
+
+/// Inline ANSI label for a `ConnKind`. Green for direct, yellow for relay.
+/// Keeping ANSI inline avoids pulling in a colour crate for two strings.
+fn fmt_kind(k: ConnKind) -> &'static str {
+    match k {
+        ConnKind::Direct => "\x1b[32m[direct]\x1b[0m",
+        ConnKind::Relay => "\x1b[33m[ relay]\x1b[0m",
+    }
 }
 
 /// Build the set of bootstrap peer IDs the local node was configured to use.
@@ -77,6 +104,20 @@ fn bootstrap_peer_ids() -> HashSet<PeerId> {
     };
 
     bootstraps
+        .iter()
+        .filter_map(|addr| addr.split("/p2p/").nth(1))
+        .filter_map(|id| id.parse::<PeerId>().ok())
+        .collect()
+}
+
+/// Build the set of trusted-relay peer IDs the local node was configured with.
+/// Empty when the user hasn't configured any (the production default).
+fn trusted_relay_peer_ids() -> HashSet<PeerId> {
+    let relays = KwaaiNetConfig::load_or_create()
+        .map(|cfg| cfg.trusted_relays)
+        .unwrap_or_default();
+
+    relays
         .iter()
         .filter_map(|addr| addr.split("/p2p/").nth(1))
         .filter_map(|id| id.parse::<PeerId>().ok())
@@ -171,64 +212,126 @@ async fn peers_list() -> Result<()> {
     }
 
     let bootstraps = bootstrap_peer_ids();
+    let trusted_relays = trusted_relay_peer_ids();
+
+    // Group ordering for the sort: bootstrap first (regardless of conn kind),
+    // then trusted relay, then plain direct, then via-relay. Within each
+    // group, sort by peer ID so output is stable across polls — useful when
+    // watching the list change as peers come and go.
+    fn group_index(is_bootstrap: bool, is_trusted_relay: bool, kind: ConnKind) -> u8 {
+        if is_bootstrap {
+            return 0;
+        }
+        if is_trusted_relay {
+            return 1;
+        }
+        match kind {
+            ConnKind::Direct => 2,
+            ConnKind::Relay => 3,
+        }
+    }
+
+    struct Row {
+        group: u8,
+        id_str: String,
+        kind: ConnKind,
+        is_bootstrap: bool,
+        is_trusted_relay: bool,
+        preview: String,
+        extra_count: usize,
+    }
+
+    let mut rows: Vec<Row> = peers
+        .iter()
+        .map(|p| {
+            let parsed_id = PeerId::from_bytes(&p.id).ok();
+            let id_str = parsed_id
+                .map(|p| p.to_base58())
+                .unwrap_or_else(|| format!("0x{}", hex::encode(&p.id)));
+            let is_bootstrap = parsed_id.map_or(false, |pid| bootstraps.contains(&pid));
+            let is_trusted_relay = parsed_id.map_or(false, |pid| trusted_relays.contains(&pid));
+
+            // Classify by the primary (first) addr. p2pd returns one PeerInfo
+            // per connection; multiple PeerInfos for the same peer ID indicate
+            // multiple simultaneous connections (e.g. relay path + direct path
+            // during a hole-punch upgrade).
+            let kind = p
+                .addrs
+                .first()
+                .and_then(|a| Multiaddr::try_from(a.clone()).ok())
+                .map(|m| classify_addr(&m))
+                .unwrap_or(ConnKind::Direct);
+
+            let preview = p
+                .addrs
+                .first()
+                .map(|a| fmt_addr(a))
+                .unwrap_or_else(|| "(no addrs)".to_string());
+            let extra_count = p.addrs.len().saturating_sub(1);
+
+            Row {
+                group: group_index(is_bootstrap, is_trusted_relay, kind),
+                id_str,
+                kind,
+                is_bootstrap,
+                is_trusted_relay,
+                preview,
+                extra_count,
+            }
+        })
+        .collect();
+
+    rows.sort_by(|a, b| a.group.cmp(&b.group).then_with(|| a.id_str.cmp(&b.id_str)));
 
     let mut direct = 0usize;
     let mut relayed = 0usize;
     let mut bootstrap_hits = 0usize;
-    for p in &peers {
-        let parsed_id = PeerId::from_bytes(&p.id).ok();
-        let id_str = parsed_id
-            .map(|p| p.to_base58())
-            .unwrap_or_else(|| format!("0x{}", hex::encode(&p.id)));
-        let is_bootstrap = parsed_id.map_or(false, |pid| bootstraps.contains(&pid));
-        if is_bootstrap {
+    let mut trusted_relay_hits = 0usize;
+    for r in &rows {
+        match r.kind {
+            ConnKind::Direct => direct += 1,
+            ConnKind::Relay => relayed += 1,
+        }
+        if r.is_bootstrap {
             bootstrap_hits += 1;
         }
-
-        let any_relay = p
-            .addrs
-            .iter()
-            .filter_map(|a| Multiaddr::try_from(a.clone()).ok())
-            .any(|m| is_relayed(&m));
-        if any_relay {
-            relayed += 1;
-        } else {
-            direct += 1;
+        if r.is_trusted_relay {
+            trusted_relay_hits += 1;
         }
-        let kind = if any_relay { "relay" } else { "direct" };
-        let preview = p
-            .addrs
-            .first()
-            .map(|a| fmt_addr(a))
-            .unwrap_or_else(|| "(no addrs)".to_string());
-        let extra = if p.addrs.len() > 1 {
-            format!(" (+{} more)", p.addrs.len() - 1)
+
+        let extra = if r.extra_count > 0 {
+            format!(" (+{} more)", r.extra_count)
         } else {
             String::new()
         };
-        // Cyan for bootstrap so the label stands out at a glance without
-        // being garish. Inline ANSI keeps us off the dep treadmill for a
-        // single annotation; revisit if color use spreads.
-        let label = if is_bootstrap {
+        // Cyan for bootstrap, gold (256-color 220) for trusted relay — both
+        // surface configuration that the user explicitly chose. Inline ANSI
+        // avoids a colour-crate dep for two strings; if colour use spreads,
+        // revisit.
+        let label = if r.is_bootstrap {
             "  \x1b[36m(bootstrap)\x1b[0m"
+        } else if r.is_trusted_relay {
+            "  \x1b[38;5;220m(trusted relay)\x1b[0m"
         } else {
             ""
         };
-        println!("  [{:>6}] {}{}", kind, id_str, label);
-        println!("           {}{}", preview, extra);
+        println!("  {} {}{}", fmt_kind(r.kind), r.id_str, label);
+        println!("           {}{}", r.preview, extra);
     }
 
     println!();
     print_info(&format!(
-        "Total {} connection(s): {} direct, {} via relay; {} to bootstrap peer(s)",
+        "Total {} connection(s): {} direct, {} via relay; \
+         {} to bootstrap peer(s), {} to trusted relay(s)",
         peers.len(),
         direct,
         relayed,
-        bootstrap_hits
+        bootstrap_hits,
+        trusted_relay_hits
     ));
     print_info(
         "Each row is one live connection — a peer with both a direct and a \
-         relay path (e.g. during a dcutr upgrade) appears twice.",
+         relay path (e.g. during a hole-punch upgrade) appears twice.",
     );
     print_separator();
     Ok(())
