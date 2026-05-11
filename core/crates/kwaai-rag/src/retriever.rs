@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -5,6 +6,7 @@ use anyhow::Result;
 
 use crate::bm25::{rrf_merge, BM25Index};
 use crate::embedder::EmbedClient;
+use crate::graph::GraphStore;
 use crate::meta_store::{ChunkMeta, MetaStore};
 
 #[derive(Debug, Clone)]
@@ -72,6 +74,71 @@ pub async fn retrieve_hybrid(
 
     // Merge with RRF.
     let merged = rrf_merge(&semantic_raw, &keyword_raw, cfg.top_k * 2);
+    assemble_results(merged, cfg, meta)
+}
+
+/// Graph-anchored retrieval: entity similarity search → BFS traversal → chunk lookup,
+/// fused with hybrid vector+BM25 results via RRF.
+///
+/// Falls back gracefully to `retrieve_hybrid` if the graph has no entities.
+pub async fn retrieve_graph_anchored(
+    query: &str,
+    cfg: &RetrieveConfig,
+    embed: &EmbedClient,
+    meta: &MetaStore,
+    graph: &GraphStore,
+    search_fn: impl Fn(Vec<f32>, usize) -> Pin<Box<dyn Future<Output = Result<Vec<(i64, f64)>>> + Send>>,
+) -> Result<Vec<RetrievedChunk>> {
+    let candidate_k = cfg.top_k * 4;
+    let embedding = embed.embed_one(query).await?;
+
+    // 1. Find seed entities by embedding similarity.
+    let seed_hits = graph.search_entities(&embedding, 3);
+
+    let graph_chunks: Vec<(i64, f64)> = if seed_hits.is_empty() {
+        vec![]
+    } else {
+        // 2. BFS: collect all entity IDs within 2 hops.
+        let seed_ids: Vec<i64> = seed_hits.iter().map(|(id, _)| *id).collect();
+        let neighbor_ids = graph.bfs_neighbors(&seed_ids, 2);
+
+        // 3. Collect all chunk IDs that mention any of these entities.
+        let chunk_ids = graph.entity_chunks(&neighbor_ids);
+
+        // 4. Score each chunk: base = 1.0 (presence), boost seed entity hits.
+        let seed_set: HashSet<i64> = seed_ids.into_iter().collect();
+        let seed_entity_chunks: HashSet<i64> = seed_hits
+            .iter()
+            .flat_map(|(eid, _)| graph.chunks_for_entity(*eid).iter().copied())
+            .collect();
+
+        chunk_ids
+            .into_iter()
+            .map(|cid| {
+                let score = if seed_entity_chunks.contains(&cid) {
+                    1.0
+                } else {
+                    0.6
+                };
+                let _ = &seed_set;
+                (cid, score)
+            })
+            .collect()
+    };
+
+    // 5. Hybrid vector+BM25 retrieval.
+    let all = meta.all_chunks()?;
+    let triples: Vec<(i64, &str, &str)> = all
+        .iter()
+        .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
+        .collect();
+    let bm25 = BM25Index::build_in_ram(&triples)?;
+    let semantic_raw = search_fn(embedding, candidate_k).await?;
+    let keyword_raw = bm25.search(query, candidate_k);
+    let vector_chunks = rrf_merge(&semantic_raw, &keyword_raw, candidate_k);
+
+    // 6. RRF fusion: graph chunks + vector chunks.
+    let merged = rrf_merge(&graph_chunks, &vector_chunks, cfg.top_k * 2);
     assemble_results(merged, cfg, meta)
 }
 

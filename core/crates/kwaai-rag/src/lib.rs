@@ -1,9 +1,13 @@
 pub mod bm25;
+pub mod cache;
 pub mod chunker;
 pub mod document;
 pub mod embedder;
+pub mod graph;
 pub mod ingestion;
 pub mod meta_store;
+pub mod obsidian;
 pub mod prompt;
 pub mod query_understanding;
 pub mod retriever;
+pub mod wiki;

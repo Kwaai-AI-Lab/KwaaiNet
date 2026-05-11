@@ -1015,6 +1015,10 @@ pub enum RagAction {
         /// ~/.kwaainet/rag/<name>/ for named KBs). Point to an external drive for large corpora.
         #[arg(long, value_name = "PATH")]
         rag_dir: Option<std::path::PathBuf>,
+
+        /// Enable knowledge graph construction (entity + relation extraction during ingest)
+        #[arg(long)]
+        graph: bool,
     },
 
     /// List all knowledge bases
@@ -1055,6 +1059,18 @@ pub enum RagAction {
         #[arg(long, default_value = "100")]
         min_chunk_len: usize,
 
+        /// Extract entities and relations into the knowledge graph during ingest
+        #[arg(long)]
+        extract_entities: bool,
+
+        /// Inference URL for entity extraction (defaults to config inference_url)
+        #[arg(long, value_name = "URL")]
+        inference_url: Option<String>,
+
+        /// Model name for entity extraction (e.g. "llama3.2:3b"; default: "default")
+        #[arg(long, default_value = "default", value_name = "MODEL")]
+        extraction_model: String,
+
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
@@ -1088,6 +1104,10 @@ pub enum RagAction {
         /// Inference URL for query understanding (defaults to config inference_url)
         #[arg(long, value_name = "URL")]
         inference_url: Option<String>,
+
+        /// Retrieval mode: "vector" (default hybrid), "graph" (entity-anchored), "auto" (router)
+        #[arg(long, default_value = "vector", value_name = "MODE")]
+        mode: String,
     },
 
     /// Interactive RAG chat REPL (streams from shard API)
@@ -1107,6 +1127,10 @@ pub enum RagAction {
         /// Decompose each user query into sub-queries via LLM for better recall
         #[arg(long)]
         understand: bool,
+
+        /// Model name for the chat completions call (e.g. "llama3.2:3b"; default: "default")
+        #[arg(long, default_value = "default")]
+        model: String,
     },
 
     /// List ingested documents
@@ -1193,10 +1217,84 @@ pub enum RagAction {
         #[arg(long, default_value = "100")]
         min_chunk_len: usize,
 
+        /// Extract entities and relations into the knowledge graph during sync
+        #[arg(long)]
+        extract_entities: bool,
+
+        /// Inference URL for entity extraction (defaults to config inference_url)
+        #[arg(long, value_name = "URL")]
+        inference_url: Option<String>,
+
+        /// Model name for entity extraction (e.g. "llama3.2:3b"; default: "default")
+        #[arg(long, default_value = "default", value_name = "MODEL")]
+        extraction_model: String,
+
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
     },
+
+    /// Inspect and query the knowledge graph
+    Graph {
+        #[command(subcommand)]
+        action: GraphAction,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, global = true, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+
+    /// Manage the semantic query cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, global = true, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GraphAction {
+    /// Show entity and relation counts for the knowledge base
+    Stats,
+
+    /// Show an entity and its immediate neighbours
+    Show {
+        /// Entity name (case-insensitive)
+        name: String,
+    },
+
+    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards
+    Clear {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Extract entities from all already-ingested chunks (populates graph without re-ingesting)
+    Build {
+        /// Inference URL for entity extraction (defaults to config inference_url)
+        #[arg(long, value_name = "URL")]
+        inference_url: Option<String>,
+
+        /// Model name for the chat completions call (e.g. "llama3.2:3b"; default: "default")
+        #[arg(long, default_value = "default", value_name = "MODEL")]
+        model: String,
+
+        /// Process at most this many chunks (default: all)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CacheAction {
+    /// Show cache statistics (entry count, hit count, expired entries)
+    Stats,
+    /// Remove all cached queries
+    Clear,
 }
 
 // ---------------------------------------------------------------------------

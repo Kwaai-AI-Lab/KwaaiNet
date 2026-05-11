@@ -1,21 +1,23 @@
 use std::io::{self, BufRead, Write as _};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use libp2p::PeerId;
 use uuid::Uuid;
 
 use kwaai_rag::{
+    cache::QueryCache,
     document,
     embedder::EmbedClient,
-    ingestion::{ingest_text, IngestConfig},
+    graph::GraphStore,
+    ingestion::{ingest_text, GraphIngestConfig, IngestConfig},
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
-    retriever::{retrieve_hybrid, RetrieveConfig},
+    retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
 };
 
-use crate::cli::{RagAction, RagArgs};
+use crate::cli::{CacheAction, GraphAction, RagAction, RagArgs};
 use crate::config::{kwaainet_dir, KwaaiNetConfig, RagConfig};
 use crate::display::*;
 
@@ -32,7 +34,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
             name,
             embed_model,
             rag_dir,
-        } => cmd_init(name, embed_model, rag_dir).await,
+            graph,
+        } => cmd_init(name, embed_model, rag_dir, graph).await,
 
         RagAction::List => cmd_list().await,
 
@@ -44,8 +47,11 @@ pub async fn run(args: RagArgs) -> Result<()> {
             chunk_size,
             chunk_overlap,
             min_chunk_len,
+            extract_entities,
+            inference_url,
+            extraction_model,
             kb,
-        } => cmd_ingest(file, doc_name, chunk_size, chunk_overlap, min_chunk_len, kb).await,
+        } => cmd_ingest(file, doc_name, chunk_size, chunk_overlap, min_chunk_len, extract_entities, inference_url, extraction_model, kb).await,
 
         RagAction::Query {
             text,
@@ -55,14 +61,16 @@ pub async fn run(args: RagArgs) -> Result<()> {
             kb,
             understand,
             inference_url,
-        } => cmd_query(text, top_k, min_score, json, kb, understand, inference_url).await,
+            mode,
+        } => cmd_query(text, top_k, min_score, json, kb, understand, inference_url, mode).await,
 
         RagAction::Chat {
             top_k,
             inference_url,
             kb,
             understand,
-        } => cmd_chat(top_k, inference_url, kb, understand).await,
+            model,
+        } => cmd_chat(top_k, inference_url, kb, understand, model).await,
 
         RagAction::Docs { kb } => cmd_docs(kb).await,
 
@@ -86,8 +94,15 @@ pub async fn run(args: RagArgs) -> Result<()> {
             chunk_size,
             chunk_overlap,
             min_chunk_len,
+            extract_entities,
+            inference_url,
+            extraction_model,
             kb,
-        } => cmd_sync(folder, extensions, delete, watch, interval, chunk_size, chunk_overlap, min_chunk_len, kb).await,
+        } => cmd_sync(folder, extensions, delete, watch, interval, chunk_size, chunk_overlap, min_chunk_len, extract_entities, inference_url, extraction_model, kb).await,
+
+        RagAction::Graph { action, kb } => cmd_graph(action, kb).await,
+
+        RagAction::Cache { action, kb } => cmd_cache(action, kb).await,
     }
 }
 
@@ -97,6 +112,7 @@ async fn cmd_init(
     name: String,
     embed_model: String,
     rag_dir: Option<std::path::PathBuf>,
+    graph: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature. Rebuild with: cargo build --features storage");
@@ -185,6 +201,9 @@ async fn cmd_init(
         cfg.save()?;
 
         print_success(&format!("Knowledge base '{}' initialised  (tenant {tenant_id})", name));
+        if graph {
+            print_info("Graph extraction ready — use --extract-entities when ingesting");
+        }
         if name == "default" {
             println!("  Next:  kwaainet rag ingest <file>");
         } else {
@@ -262,6 +281,9 @@ async fn cmd_ingest(
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_len: usize,
+    extract_entities: bool,
+    inference_url: Option<String>,
+    extraction_model: String,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -293,6 +315,20 @@ async fn cmd_ingest(
         cfg.chunk_cfg.chunk_size = chunk_size;
         cfg.chunk_cfg.chunk_overlap = chunk_overlap;
         cfg.chunk_cfg.min_chunk_len = min_chunk_len;
+
+        if extract_entities {
+            let infer_url = inference_url
+                .clone()
+                .unwrap_or_else(|| rag_cfg.inference_url.clone());
+            let store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                .context("opening graph store")?;
+            cfg.graph = Some(GraphIngestConfig {
+                store: Arc::new(Mutex::new(store)),
+                inference_url: infer_url,
+                model: extraction_model.clone(),
+            });
+            print_info("Entity extraction enabled — knowledge graph will be updated");
+        }
 
         let spinner = crate::progress::Spinner::start("Ingesting…");
 
@@ -422,6 +458,7 @@ async fn cmd_query(
     kb: String,
     understand: bool,
     inference_url: Option<String>,
+    mode: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -465,10 +502,29 @@ async fn cmd_query(
             let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
             let infer_url = inference_url.clone().unwrap_or_else(|| rag_cfg.inference_url.clone());
 
+            // Resolve effective mode: "auto" routes to graph if entities exist.
+            let effective_mode = if mode == "auto" {
+                if rag_cfg.storage_url.as_deref() == Some("local") {
+                    if let Ok(g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+                        if g.node_count() > 0 { "graph" } else { "vector" }
+                    } else { "vector" }
+                } else { "vector" }
+            } else { mode.as_str() };
+
             let mut chunks = match rag_cfg.storage_url.as_deref() {
                 Some("local") => {
                     let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
-                    if understand {
+                    if effective_mode == "graph" {
+                        let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .context("opening graph store for graph-anchored retrieval")?;
+                        retrieve_graph_anchored(&query, &retrieve_cfg, &embed, &meta, &graph, move |emb, k| {
+                            let vs = vs.clone();
+                            Box::pin(async move {
+                                let raw = vs.search(tenant_id, &emb, k).await?;
+                                Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                            }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                        }).await?
+                    } else if understand {
                         kwaai_rag::query_understanding::retrieve_with_understanding(
                             &query, &retrieve_cfg, &embed, &meta, &infer_url,
                             move |emb, k| {
@@ -572,7 +628,7 @@ fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bo
 
 // ── chat ──────────────────────────────────────────────────────────────────────
 
-async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: bool) -> Result<()> {
+async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: bool, model: String) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
 
@@ -607,6 +663,13 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
             None
         };
 
+        // Open semantic query cache (local KB only).
+        let mut query_cache = if storage_mode.as_deref() == Some("local") {
+            QueryCache::open(&rag_cfg.data_dir(), tenant_id).ok()
+        } else {
+            None
+        };
+
         print_box_header("RAG Chat  (type 'exit' to quit)");
 
         let stdin = io::stdin();
@@ -624,6 +687,19 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
             }
             if query == "exit" || query == "quit" {
                 break;
+            }
+
+            // Semantic cache check (local KB only).
+            if let Some(ref mut cache) = query_cache {
+                if let Ok(query_emb) = embed.embed_one(&query).await {
+                    if let Some(hit) = cache.get(&query_emb) {
+                        println!("\n  Assistant: {}  \x1b[2m(cached)\x1b[0m", hit.answer);
+                        history.push(ChatMessage { role: "user".to_string(), content: query.clone() });
+                        history.push(ChatMessage { role: "assistant".to_string(), content: hit.answer });
+                        if history.len() > 20 { history.drain(0..2); }
+                        continue;
+                    }
+                }
             }
 
             // Retrieve context (with optional query understanding).
@@ -670,7 +746,7 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
 
             let messages = build_chat_messages(&query, &chunks, &history, 8192);
             let payload = serde_json::json!({
-                "model": "default",
+                "model": model,
                 "messages": messages,
                 "stream": false,
             });
@@ -689,6 +765,14 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                 .to_string();
 
             println!("\n  Assistant: {answer}");
+
+            // Store in cache (local KB only, fire-and-forget).
+            if let Some(ref mut cache) = query_cache {
+                if let Ok(query_emb) = embed.embed_one(&query).await {
+                    let chunk_ids: Vec<i64> = chunks.iter().map(|_| 0i64).collect();
+                    let _ = cache.put(query.clone(), query_emb, answer.clone(), chunk_ids);
+                }
+            }
 
             history.push(ChatMessage {
                 role: "user".to_string(),
@@ -899,6 +983,9 @@ async fn cmd_sync(
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_len: usize,
+    extract_entities: bool,
+    inference_url: Option<String>,
+    extraction_model: String,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -920,12 +1007,15 @@ async fn cmd_sync(
         if watch {
             println!("  Watch mode: polling every {interval}s (Ctrl+C to stop)");
         }
+        if extract_entities {
+            print_info("Entity extraction enabled — knowledge graph will be updated");
+        }
         print_separator();
 
         let chunk_cfg = kwaai_rag::chunker::ChunkConfig { chunk_size, chunk_overlap, min_chunk_len };
 
         loop {
-            let result = run_sync_pass(&folder, &exts, delete, &kb, &chunk_cfg).await?;
+            let result = run_sync_pass(&folder, &exts, delete, &kb, &chunk_cfg, extract_entities, inference_url.clone(), extraction_model.clone()).await?;
 
             let SyncResult {
                 ingested,
@@ -965,6 +1055,9 @@ async fn run_sync_pass(
     delete: bool,
     kb: &str,
     chunk_cfg: &kwaai_rag::chunker::ChunkConfig,
+    extract_entities: bool,
+    inference_url: Option<String>,
+    extraction_model: String,
 ) -> Result<SyncResult> {
     use std::time::UNIX_EPOCH;
 
@@ -1029,6 +1122,19 @@ async fn run_sync_pass(
         let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
         let mut ingest_cfg = IngestConfig::new(embed);
         ingest_cfg.chunk_cfg = chunk_cfg.clone();
+
+        if extract_entities {
+            let infer_url = inference_url
+                .clone()
+                .unwrap_or_else(|| rag_cfg.inference_url.clone());
+            if let Ok(store) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+                ingest_cfg.graph = Some(GraphIngestConfig {
+                    store: Arc::new(Mutex::new(store)),
+                    inference_url: infer_url,
+                    model: extraction_model.clone(),
+                });
+            }
+        }
 
         let ingest_result = match rag_cfg.storage_url.as_deref() {
             Some("local") => {
@@ -1135,6 +1241,178 @@ async fn run_sync_pass(
     }
 
     Ok(result)
+}
+
+// ── graph ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+
+        match action {
+            GraphAction::Stats => {
+                let store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                print_box_header(&format!("Knowledge Graph ({})", kb));
+                println!("  Entities:  {}", store.node_count());
+                println!("  Relations: {}", store.relation_count());
+            }
+
+            GraphAction::Show { name } => {
+                let store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                match store.find_by_name(&name) {
+                    None => print_warning(&format!("Entity '{}' not found.", name)),
+                    Some(node) => {
+                        print_box_header(&format!("Entity: {} [{}]", node.name, node.entity_type));
+                        println!("  Description: {}", node.description);
+                        println!("  Mentions:    {}", node.mention_count);
+                        let neighbors = store.neighbors_of(node.id);
+                        if neighbors.is_empty() {
+                            println!("  Neighbors:   (none)");
+                        } else {
+                            println!("  Neighbors ({}):", neighbors.len());
+                            for (nid, rel, strength) in &neighbors {
+                                if let Some(n) = store.get_entity(*nid) {
+                                    println!(
+                                        "    → {} [{}]  strength={:.2}",
+                                        n.name, rel, strength
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            GraphAction::Clear { yes } => {
+                if !yes {
+                    print!("  Wipe the knowledge graph for '{kb}'? [y/N] ");
+                    io::stdout().flush().ok();
+                    let mut line = String::new();
+                    io::stdin().lock().read_line(&mut line)?;
+                    if !line.trim().eq_ignore_ascii_case("y") {
+                        print_info("Aborted.");
+                        return Ok(());
+                    }
+                }
+                // Delete the graph redb file so it is recreated fresh on next open.
+                let graph_path = rag_cfg.data_dir().join(
+                    format!("graph-{}.redb", tenant_id)
+                );
+                if graph_path.exists() {
+                    std::fs::remove_file(&graph_path)
+                        .with_context(|| format!("deleting {}", graph_path.display()))?;
+                }
+                print_success(&format!(
+                    "Knowledge graph for '{}' cleared. Run `kwaainet rag graph build --kb {}` to rebuild.",
+                    kb, kb
+                ));
+            }
+
+            GraphAction::Build { inference_url, model, limit } => {
+                let infer_url = inference_url
+                    .unwrap_or_else(|| rag_cfg.inference_url.clone());
+
+                let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+                let mut all_chunks = meta.all_chunks()?;
+                if let Some(n) = limit {
+                    all_chunks.truncate(n);
+                }
+                let total = all_chunks.len();
+
+                if total == 0 {
+                    print_warning("No chunks found — ingest documents first.");
+                    return Ok(());
+                }
+
+                print_box_header(&format!("Graph Build ({})", kb));
+                println!("  Chunks to process: {total}");
+                println!("  Inference URL:     {infer_url}");
+                println!("  This may take a while — one LLM call per chunk.\n");
+
+                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let store = Arc::new(Mutex::new(
+                    GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                        .context("opening graph store")?,
+                ));
+                let graph_cfg = kwaai_rag::ingestion::GraphIngestConfig {
+                    store: store.clone(),
+                    inference_url: infer_url,
+                    model,
+                };
+
+                let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
+                    .iter()
+                    .map(|(id, cm)| kwaai_rag::chunker::Chunk {
+                        id: *id,
+                        doc_name: cm.doc_name.clone(),
+                        chunk_index: cm.chunk_index,
+                        text: cm.text.clone(),
+                        surrounding: cm.surrounding.clone(),
+                        page_num: cm.page_num,
+                    })
+                    .collect();
+                let ids: Vec<i64> = all_chunks.iter().map(|(id, _)| *id).collect();
+
+                kwaai_rag::ingestion::extract_and_store_entities_pub(
+                    &chunks,
+                    &ids,
+                    &embed,
+                    &graph_cfg,
+                    Some(|done: usize, total: usize, entities: usize, relations: usize| {
+                        if done % 50 == 0 || done == total {
+                            println!("  [{done:>4}/{total}]  entities={entities}  relations={relations}");
+                        }
+                    }),
+                )
+                .await;
+
+                let final_store = store.lock().unwrap();
+                print_success(&format!(
+                    "Graph built — {} entities, {} relations",
+                    final_store.node_count(),
+                    final_store.relation_count()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── cache ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_cache(action: CacheAction, kb: String) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+        let mut cache = QueryCache::open(&rag_cfg.data_dir(), tenant_id)
+            .context("opening query cache")?;
+
+        match action {
+            CacheAction::Stats => {
+                print_box_header(&format!("Query Cache ({})", kb));
+                println!("  Entries:  {}", cache.entry_count());
+                println!("  Hits:     {}", cache.total_hits());
+                println!("  Expired:  {}", cache.expired_count());
+                println!("  TTL:      {}h", cache.ttl_secs / 3600);
+                println!("  Max:      {}", cache.max_entries);
+                println!("  Threshold: {:.2}", cache.similarity_threshold);
+            }
+            CacheAction::Clear => {
+                let removed = cache.clear()?;
+                print_success(&format!("Cleared {removed} cached queries from '{kb}'"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Recursively collect files under `root` that match `exts`.

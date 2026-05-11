@@ -1,17 +1,31 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::chunker::{split_text, ChunkConfig};
+use crate::chunker::{split_text, Chunk, ChunkConfig};
 use crate::embedder::EmbedClient;
+use crate::graph::{entity_id, extract_from_text, EntityNode, ExtractedEntity, GraphStore};
 use crate::meta_store::{ChunkMeta, MetaStore};
+
+/// Optional graph extraction config attached to an ingestion run.
+pub struct GraphIngestConfig {
+    pub store: Arc<Mutex<GraphStore>>,
+    pub inference_url: String,
+    /// Model name for the chat completions call (e.g. "llama3.2:3b").
+    /// Defaults to "default" which works with the kwaainet shard API.
+    pub model: String,
+}
 
 pub struct IngestConfig {
     pub embed: EmbedClient,
     pub chunk_cfg: ChunkConfig,
     pub upload_batch_size: usize,
+    /// When set, entities are extracted and stored in the knowledge graph
+    /// after chunks are embedded. Has no effect on chunk storage or vector upload.
+    pub graph: Option<GraphIngestConfig>,
 }
 
 impl IngestConfig {
@@ -20,6 +34,7 @@ impl IngestConfig {
             embed,
             chunk_cfg: ChunkConfig::default(),
             upload_batch_size: 64,
+            graph: None,
         }
     }
 }
@@ -90,8 +105,171 @@ pub async fn ingest_text(
 
     meta.put_chunks(&metas, &ids)?;
 
+    // Optional: extract entities from each chunk and populate the knowledge graph.
+    if let Some(graph_cfg) = &cfg.graph {
+        extract_and_store_entities(&chunks, &ids, &cfg.embed, graph_cfg).await;
+    }
+
     Ok(IngestionResult {
         chunks_ingested: total,
         vectors_uploaded: total_uploaded,
     })
+}
+
+/// Public entry point for the `graph build` command.
+/// `progress` is called after each chunk: `(chunks_done, total_chunks, entity_count, relation_count)`.
+pub async fn extract_and_store_entities_pub(
+    chunks: &[Chunk],
+    chunk_ids: &[i64],
+    embed: &EmbedClient,
+    graph_cfg: &GraphIngestConfig,
+    progress: Option<impl Fn(usize, usize, usize, usize)>,
+) {
+    let total = chunks.len();
+    for (i, (chunk, &chunk_id)) in chunks.iter().zip(chunk_ids.iter()).enumerate() {
+        let (entities, relations) =
+            match extract_from_text(&chunk.text, &graph_cfg.inference_url, &graph_cfg.model).await {
+                Ok(r) => r,
+                Err(e) => { warn!("entity extraction error for chunk {chunk_id}: {e}"); continue; }
+            };
+
+        if !entities.is_empty() {
+            let descriptions: Vec<&str> = entities.iter().map(|e| e.description.as_str()).collect();
+            let embeddings = match embed.embed_batch(&descriptions).await {
+                Ok(e) => e,
+                Err(e) => { warn!("entity embedding error for chunk {chunk_id}: {e}"); continue; }
+            };
+
+            let mut graph = match graph_cfg.store.lock() {
+                Ok(g) => g,
+                Err(_) => { warn!("graph store mutex poisoned"); continue; }
+            };
+
+            let mut entity_ids_for_chunk = Vec::new();
+            for (extracted, emb) in entities.iter().zip(embeddings.into_iter()) {
+                let eid = crate::graph::entity_id(&extracted.name, &extracted.entity_type);
+                let node = crate::graph::EntityNode {
+                    id: eid,
+                    name: extracted.name.clone(),
+                    entity_type: extracted.entity_type.clone(),
+                    description: extracted.description.clone(),
+                    embedding: emb,
+                    mention_count: 1,
+                    first_chunk_id: chunk_id,
+                };
+                if let Err(e) = graph.upsert_entity(node) { warn!("upsert_entity: {e}"); continue; }
+                entity_ids_for_chunk.push(eid);
+            }
+
+            for rel in &relations {
+                // Resolve entity IDs: prefer current-chunk extract, then graph lookup,
+                // then Unknown fallback. This prevents mismatched IDs when a relation
+                // endpoint was extracted in an earlier chunk under a different type.
+                let src = resolve_entity_id(&rel.from, &entities, &graph);
+                let dst = resolve_entity_id(&rel.to, &entities, &graph);
+                if let Err(e) = graph.upsert_relation(src, dst, &rel.relation, chunk_id) {
+                    warn!("upsert_relation: {e}");
+                }
+            }
+            if let Err(e) = graph.link_chunk(chunk_id, &entity_ids_for_chunk) { warn!("link_chunk: {e}"); }
+
+            if let Some(ref prog) = progress {
+                prog(i + 1, total, graph.node_count(), graph.relation_count());
+            }
+        } else if let Some(ref prog) = progress {
+            prog(i + 1, total, {
+                graph_cfg.store.lock().map(|g| g.node_count()).unwrap_or(0)
+            }, {
+                graph_cfg.store.lock().map(|g| g.relation_count()).unwrap_or(0)
+            });
+        }
+    }
+}
+
+/// Extract entities from all chunks and persist them to the GraphStore.
+/// Errors are logged and swallowed so they never block document ingestion.
+async fn extract_and_store_entities(
+    chunks: &[Chunk],
+    chunk_ids: &[i64],
+    embed: &EmbedClient,
+    graph_cfg: &GraphIngestConfig,
+) {
+    for (chunk, &chunk_id) in chunks.iter().zip(chunk_ids.iter()) {
+        let (entities, relations) =
+            match extract_from_text(&chunk.text, &graph_cfg.inference_url, &graph_cfg.model).await {
+                Ok(r) => r,
+                Err(e) => { warn!("entity extraction error for chunk {chunk_id}: {e}"); continue; }
+            };
+
+        if entities.is_empty() {
+            continue;
+        }
+
+        // Embed all entity descriptions in one batch.
+        let descriptions: Vec<&str> = entities.iter().map(|e| e.description.as_str()).collect();
+        let embeddings = match embed.embed_batch(&descriptions).await {
+            Ok(e) => e,
+            Err(e) => { warn!("entity embedding error for chunk {chunk_id}: {e}"); continue; }
+        };
+
+        let mut graph = match graph_cfg.store.lock() {
+            Ok(g) => g,
+            Err(_) => { warn!("graph store mutex poisoned"); continue; }
+        };
+
+        let mut entity_ids_for_chunk = Vec::new();
+        for (extracted, emb) in entities.iter().zip(embeddings.into_iter()) {
+            let eid = entity_id(&extracted.name, &extracted.entity_type);
+            let node = EntityNode {
+                id: eid,
+                name: extracted.name.clone(),
+                entity_type: extracted.entity_type.clone(),
+                description: extracted.description.clone(),
+                embedding: emb,
+                mention_count: 1,
+                first_chunk_id: chunk_id,
+            };
+            if let Err(e) = graph.upsert_entity(node) {
+                warn!("upsert_entity failed: {e}");
+                continue;
+            }
+            entity_ids_for_chunk.push(eid);
+        }
+
+        for rel in &relations {
+            let src = resolve_entity_id(&rel.from, &entities, &graph);
+            let dst = resolve_entity_id(&rel.to, &entities, &graph);
+            if let Err(e) = graph.upsert_relation(src, dst, &rel.relation, chunk_id) {
+                warn!("upsert_relation failed: {e}");
+            }
+        }
+
+        if let Err(e) = graph.link_chunk(chunk_id, &entity_ids_for_chunk) {
+            warn!("link_chunk failed: {e}");
+        }
+
+        debug!(
+            chunk_id,
+            entities = entity_ids_for_chunk.len(),
+            relations = relations.len(),
+            "graph updated"
+        );
+    }
+}
+
+/// Resolve a relation endpoint to an entity ID.
+/// Priority: (1) current-chunk extraction, (2) existing graph node by name, (3) Unknown fallback.
+/// This prevents dangling adjacency entries when a cross-chunk relation references an entity
+/// that was extracted in an earlier chunk under a non-Unknown type.
+fn resolve_entity_id(name: &str, current_entities: &[ExtractedEntity], graph: &GraphStore) -> i64 {
+    if let Some(e) = current_entities
+        .iter()
+        .find(|e| e.name.to_lowercase() == name.to_lowercase())
+    {
+        return entity_id(&e.name, &e.entity_type);
+    }
+    if let Some(node) = graph.find_by_name(name) {
+        return node.id;
+    }
+    entity_id(name, "Unknown")
 }

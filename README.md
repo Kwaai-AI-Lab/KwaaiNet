@@ -442,7 +442,7 @@ Bob (any node)                         Eve (storage node)
 
 Eve returns only `{id, score}` pairs — vectors never travel back over the wire. Nodes are addressed by PeerId; NAT traversal and routing are handled by the P2P relay layer, never by IP addresses.
 
-### Current status (v0.4.44)
+### Current status (v0.4.45)
 
 | Capability | Status |
 |------------|--------|
@@ -467,6 +467,10 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | External drive support for RAG corpus (`rag init --rag-dir <path>`) | ✅ Shipped |
 | Configurable chunking (`rag sync/ingest --chunk-size`, `--chunk-overlap`, `--min-chunk-len`) | ✅ Shipped |
 | Tuned HNSW build params: ef_construction 64→200, adaptive ef_search; exact search below 2K vectors | ✅ Shipped |
+| Knowledge graph extraction (`rag graph build`) — entity/relation graph from corpus via LLM | ✅ Shipped |
+| Graph-anchored retrieval (`rag query --mode graph`) — BFS entity traversal + RRF fusion with vector results | ✅ Shipped |
+| Semantic query cache (`rag cache stats/clear`) — 24h TTL, cosine similarity dedup, redb-backed | ✅ Shipped |
+| Obsidian vault & MediaWiki ingestion (`rag ingest` with markdown/wiki format detection) | ✅ Shipped |
 | PHE encryption layer (vectors encrypted before leaving Bob) | 🔄 Phase 3 |
 | HyDE query expansion | 🔄 Phase 3 |
 | Bob fan-out to multiple Eves (`kwaainet vpk shard`) | 🔄 Phase 2 |

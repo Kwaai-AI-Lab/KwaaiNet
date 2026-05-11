@@ -1,0 +1,510 @@
+//! Knowledge graph: entity nodes, directed relations, BFS traversal, and
+//! LLM-based entity extraction.
+//!
+//! Persists to a per-tenant `graph-<uuid>.redb` file alongside the chunk store.
+//! In-memory adjacency list and entity index are rebuilt on open — same pattern
+//! as kwaai-storage's HNSW index.
+
+use anyhow::{Context, Result};
+use redb::{Database, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use uuid::Uuid;
+
+// ── redb table definitions ────────────────────────────────────────────────────
+
+/// key = entity_id i64 LE (8 bytes) → EntityNode JSON
+const ENTITIES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entities");
+
+/// key = src_id_le(8) ++ dst_id_le(8) ++ relation_type_bytes → RelationRecord JSON
+const RELATIONS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("relations");
+
+/// key = chunk_id i64 LE (8 bytes) → [entity_id] JSON array
+const CHUNK_ENTITY_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("chunk_entities");
+
+/// key = entity_id i64 LE (8 bytes) → [chunk_id] JSON array
+const ENTITY_CHUNK_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entity_chunks");
+
+// ── Ontology constants ────────────────────────────────────────────────────────
+
+/// Supported entity types for LLM extraction prompts.
+pub const ENTITY_TYPES: &[&str] = &[
+    "Person", "Organization", "Location", "Event", "Concept",
+    "Method", "Claim", "Quantity", "Date", "Document",
+    "Product", "Technology", "Role", "Topic", "Unknown",
+];
+
+/// Supported relation types for LLM extraction prompts.
+pub const RELATION_TYPES: &[&str] = &[
+    // Agent
+    "works_at", "founded", "manages", "belongs_to", "endorses",
+    // Structural
+    "part_of", "contains", "located_in", "instance_of", "subtype_of",
+    // Temporal
+    "occurred_on", "started", "ended", "followed_by", "precedes",
+    // Semantic
+    "related_to", "contradicts", "supports", "cites", "implements",
+    // Informational
+    "defined_by", "described_in", "measured_by", "associated_with", "caused_by",
+];
+
+// ── Core types ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityNode {
+    /// Deterministic: sha256(name.lower() + "::" + entity_type)[..8] as i64 LE.
+    pub id: i64,
+    pub name: String,
+    pub entity_type: String,
+    /// 1–2 sentence LLM-generated summary.
+    pub description: String,
+    /// 768-dim embedding of the description for similarity search.
+    pub embedding: Vec<f32>,
+    pub mention_count: u32,
+    pub first_chunk_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationRecord {
+    pub src_id: i64,
+    pub dst_id: i64,
+    pub relation_type: String,
+    /// 0.0–1.0; grows with evidence count: min(1.0, len(evidence) / 10).
+    pub strength: f32,
+    pub evidence_chunk_ids: Vec<i64>,
+}
+
+/// Raw extraction output from the LLM before embedding / storing.
+#[derive(Debug, Deserialize)]
+pub struct ExtractedEntity {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExtractedRelation {
+    pub from: String,
+    pub to: String,
+    pub relation: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtractionPayload {
+    #[serde(default)]
+    entities: Vec<ExtractedEntity>,
+    #[serde(default)]
+    relations: Vec<ExtractedRelation>,
+}
+
+// ── Deterministic entity ID ───────────────────────────────────────────────────
+
+pub fn entity_id(name: &str, entity_type: &str) -> i64 {
+    let mut h = Sha256::new();
+    h.update(name.to_lowercase().as_bytes());
+    h.update(b"::");
+    h.update(entity_type.as_bytes());
+    let d = h.finalize();
+    i64::from_le_bytes(d[..8].try_into().unwrap())
+}
+
+// ── GraphStore ────────────────────────────────────────────────────────────────
+
+pub struct GraphStore {
+    db: Database,
+    /// entity_id → EntityNode
+    nodes: HashMap<i64, EntityNode>,
+    /// src_id → [(dst_id, relation_type, strength)] — bidirectional for traversal
+    adj: HashMap<i64, Vec<(i64, String, f32)>>,
+    /// chunk_id → [entity_id]
+    chunk_to_entities: HashMap<i64, Vec<i64>>,
+    /// entity_id → [chunk_id]
+    entity_to_chunks: HashMap<i64, Vec<i64>>,
+}
+
+impl GraphStore {
+    /// Open (or create) the graph store for a tenant.
+    pub fn open(data_dir: &Path, tenant_id: Uuid) -> Result<Self> {
+        std::fs::create_dir_all(data_dir)?;
+        let path = data_dir.join(format!("graph-{}.redb", tenant_id));
+        let db = Database::create(&path)
+            .with_context(|| format!("opening graph store at {}", path.display()))?;
+
+        {
+            let wtxn = db.begin_write()?;
+            wtxn.open_table(ENTITIES_TABLE)?;
+            wtxn.open_table(RELATIONS_TABLE)?;
+            wtxn.open_table(CHUNK_ENTITY_TABLE)?;
+            wtxn.open_table(ENTITY_CHUNK_TABLE)?;
+            wtxn.commit()?;
+        }
+
+        let mut store = Self {
+            db,
+            nodes: HashMap::new(),
+            adj: HashMap::new(),
+            chunk_to_entities: HashMap::new(),
+            entity_to_chunks: HashMap::new(),
+        };
+        store.rebuild()?;
+        Ok(store)
+    }
+
+    fn rebuild(&mut self) -> Result<()> {
+        let rtxn = self.db.begin_read()?;
+
+        {
+            let table = rtxn.open_table(ENTITIES_TABLE)?;
+            for entry in table.iter()? {
+                let (_, v) = entry?;
+                let node: EntityNode = serde_json::from_slice(v.value())?;
+                self.nodes.insert(node.id, node);
+            }
+        }
+
+        {
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            for entry in table.iter()? {
+                let (_, v) = entry?;
+                let rel: RelationRecord = serde_json::from_slice(v.value())?;
+                self.adj
+                    .entry(rel.src_id)
+                    .or_default()
+                    .push((rel.dst_id, rel.relation_type.clone(), rel.strength));
+                self.adj
+                    .entry(rel.dst_id)
+                    .or_default()
+                    .push((rel.src_id, rel.relation_type.clone(), rel.strength));
+            }
+        }
+
+        {
+            let table = rtxn.open_table(CHUNK_ENTITY_TABLE)?;
+            for entry in table.iter()? {
+                let (k, v) = entry?;
+                if k.value().len() != 8 { continue; }
+                let cid = i64::from_le_bytes(k.value().try_into().unwrap());
+                let eids: Vec<i64> = serde_json::from_slice(v.value()).unwrap_or_default();
+                self.chunk_to_entities.insert(cid, eids);
+            }
+        }
+
+        {
+            let table = rtxn.open_table(ENTITY_CHUNK_TABLE)?;
+            for entry in table.iter()? {
+                let (k, v) = entry?;
+                if k.value().len() != 8 { continue; }
+                let eid = i64::from_le_bytes(k.value().try_into().unwrap());
+                let cids: Vec<i64> = serde_json::from_slice(v.value()).unwrap_or_default();
+                self.entity_to_chunks.insert(eid, cids);
+            }
+        }
+
+        tracing::info!(
+            entities = self.nodes.len(),
+            relations = self.adj.values().map(|v| v.len()).sum::<usize>() / 2,
+            "graph store loaded"
+        );
+        Ok(())
+    }
+
+    // ── Writes ────────────────────────────────────────────────────────────────
+
+    /// Insert or merge an entity. Increments mention_count; keeps longer description.
+    pub fn upsert_entity(&mut self, node: EntityNode) -> Result<()> {
+        let merged = match self.nodes.get(&node.id) {
+            Some(existing) => EntityNode {
+                id: node.id,
+                name: existing.name.clone(),
+                entity_type: existing.entity_type.clone(),
+                description: if node.description.len() > existing.description.len() {
+                    node.description.clone()
+                } else {
+                    existing.description.clone()
+                },
+                embedding: if node.description.len() > existing.description.len() {
+                    node.embedding.clone()
+                } else {
+                    existing.embedding.clone()
+                },
+                mention_count: existing.mention_count + 1,
+                first_chunk_id: existing.first_chunk_id,
+            },
+            None => node,
+        };
+
+        let key = merged.id.to_le_bytes();
+        let val = serde_json::to_vec(&merged)?;
+        let wtxn = self.db.begin_write()?;
+        { let mut t = wtxn.open_table(ENTITIES_TABLE)?; t.insert(key.as_ref(), val.as_slice())?; }
+        wtxn.commit()?;
+        self.nodes.insert(merged.id, merged);
+        Ok(())
+    }
+
+    /// Insert or strengthen a directed relation, adding the evidence chunk.
+    pub fn upsert_relation(&mut self, src_id: i64, dst_id: i64, relation_type: &str, evidence_chunk_id: i64) -> Result<()> {
+        let key = relation_key(src_id, dst_id, relation_type);
+
+        let merged = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            match table.get(key.as_slice())? {
+                Some(v) => {
+                    let mut r: RelationRecord = serde_json::from_slice(v.value())?;
+                    if !r.evidence_chunk_ids.contains(&evidence_chunk_id) {
+                        r.evidence_chunk_ids.push(evidence_chunk_id);
+                        r.strength = (r.evidence_chunk_ids.len() as f32 / 10.0).min(1.0);
+                    }
+                    r
+                }
+                None => RelationRecord {
+                    src_id,
+                    dst_id,
+                    relation_type: relation_type.to_string(),
+                    strength: 0.1,
+                    evidence_chunk_ids: vec![evidence_chunk_id],
+                },
+            }
+        };
+
+        let val = serde_json::to_vec(&merged)?;
+        let wtxn = self.db.begin_write()?;
+        { let mut t = wtxn.open_table(RELATIONS_TABLE)?; t.insert(key.as_slice(), val.as_slice())?; }
+        wtxn.commit()?;
+
+        // Update in-memory adjacency (both directions).
+        update_adj(&mut self.adj, src_id, dst_id, relation_type, merged.strength);
+        update_adj(&mut self.adj, dst_id, src_id, relation_type, merged.strength);
+        Ok(())
+    }
+
+    /// Record which entities are mentioned in a chunk.
+    pub fn link_chunk(&mut self, chunk_id: i64, entity_ids: &[i64]) -> Result<()> {
+        if entity_ids.is_empty() { return Ok(()); }
+
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut ce = wtxn.open_table(CHUNK_ENTITY_TABLE)?;
+            let mut ec = wtxn.open_table(ENTITY_CHUNK_TABLE)?;
+
+            let ck = chunk_id.to_le_bytes();
+            let mut eids: Vec<i64> = match ce.get(ck.as_ref())? {
+                Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
+                None => vec![],
+            };
+            for &eid in entity_ids {
+                if !eids.contains(&eid) { eids.push(eid); }
+            }
+            ce.insert(ck.as_ref(), serde_json::to_vec(&eids)?.as_slice())?;
+
+            for &eid in entity_ids {
+                let ek = eid.to_le_bytes();
+                let mut cids: Vec<i64> = match ec.get(ek.as_ref())? {
+                    Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
+                    None => vec![],
+                };
+                if !cids.contains(&chunk_id) { cids.push(chunk_id); }
+                ec.insert(ek.as_ref(), serde_json::to_vec(&cids)?.as_slice())?;
+            }
+        }
+        wtxn.commit()?;
+
+        let ce = self.chunk_to_entities.entry(chunk_id).or_default();
+        for &eid in entity_ids {
+            if !ce.contains(&eid) { ce.push(eid); }
+            let ec = self.entity_to_chunks.entry(eid).or_default();
+            if !ec.contains(&chunk_id) { ec.push(chunk_id); }
+        }
+        Ok(())
+    }
+
+    /// Increment mention_count for query enrichment (called after a successful query).
+    pub fn increment_mention(&mut self, entity_id: i64) -> Result<()> {
+        if let Some(node) = self.nodes.get_mut(&entity_id) {
+            node.mention_count += 1;
+            let key = entity_id.to_le_bytes();
+            let val = serde_json::to_vec(node)?;
+            let wtxn = self.db.begin_write()?;
+            { let mut t = wtxn.open_table(ENTITIES_TABLE)?; t.insert(key.as_ref(), val.as_slice())?; }
+            wtxn.commit()?;
+        }
+        Ok(())
+    }
+
+    // ── Reads ─────────────────────────────────────────────────────────────────
+
+    /// BFS from seed entity IDs, up to `hops` hops. Returns all reachable entity IDs
+    /// including the seeds.
+    pub fn bfs_neighbors(&self, seeds: &[i64], hops: usize) -> Vec<i64> {
+        let mut visited: HashSet<i64> = seeds.iter().copied().collect();
+        let mut frontier: Vec<i64> = seeds.to_vec();
+        for _ in 0..hops {
+            let mut next = Vec::new();
+            for &id in &frontier {
+                if let Some(neighbors) = self.adj.get(&id) {
+                    for &(nbr, _, _) in neighbors {
+                        if visited.insert(nbr) {
+                            next.push(nbr);
+                        }
+                    }
+                }
+            }
+            if next.is_empty() { break; }
+            frontier = next;
+        }
+        visited.into_iter().collect()
+    }
+
+    /// All chunk IDs that mention any of the given entity IDs.
+    pub fn entity_chunks(&self, entity_ids: &[i64]) -> Vec<i64> {
+        let mut out: HashSet<i64> = HashSet::new();
+        for &eid in entity_ids {
+            if let Some(cids) = self.entity_to_chunks.get(&eid) {
+                out.extend(cids.iter().copied());
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Brute-force cosine search over entity description embeddings.
+    /// Adequate for <10K entities; add HNSW later if needed.
+    pub fn search_entities(&self, query_emb: &[f32], top_k: usize) -> Vec<(i64, f64)> {
+        let qnorm: f64 = query_emb.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>().sqrt();
+        if qnorm == 0.0 || self.nodes.is_empty() { return vec![]; }
+
+        let mut scored: Vec<(i64, f64)> = self.nodes.values()
+            .filter(|n| !n.embedding.is_empty())
+            .map(|n| {
+                let dot: f64 = query_emb.iter().zip(n.embedding.iter())
+                    .map(|(&q, &d)| (q as f64) * (d as f64)).sum();
+                let dnorm: f64 = n.embedding.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>().sqrt();
+                let sim = if dnorm > 0.0 { (dot / (qnorm * dnorm)).clamp(-1.0, 1.0) } else { 0.0 };
+                (n.id, sim)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+        scored
+    }
+
+    pub fn get_entity(&self, id: i64) -> Option<&EntityNode> { self.nodes.get(&id) }
+
+    pub fn find_by_name(&self, name: &str) -> Option<&EntityNode> {
+        let lower = name.to_lowercase();
+        self.nodes.values().find(|n| n.name.to_lowercase() == lower)
+    }
+
+    pub fn neighbors_of(&self, entity_id: i64) -> Vec<(i64, String, f32)> {
+        self.adj.get(&entity_id).cloned().unwrap_or_default()
+    }
+
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+
+    pub fn relation_count(&self) -> usize {
+        self.adj.values().map(|v| v.len()).sum::<usize>() / 2
+    }
+
+    pub fn all_entities(&self) -> impl Iterator<Item = &EntityNode> {
+        self.nodes.values()
+    }
+
+    pub fn chunks_for_entity(&self, entity_id: i64) -> &[i64] {
+        self.entity_to_chunks.get(&entity_id).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
+// ── LLM-based entity extraction ───────────────────────────────────────────────
+
+/// Extract entities and relations from a chunk of text using the local LLM.
+/// Returns `Ok((entities, relations))` or `Ok(([], []))` on parse failure so
+/// ingestion can continue without hard errors.
+pub async fn extract_from_text(
+    text: &str,
+    inference_url: &str,
+    model: &str,
+) -> Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)> {
+    let entity_list = ENTITY_TYPES.join(", ");
+    let relation_list = RELATION_TYPES.join(", ");
+
+    let prompt = format!(
+        "You are a precise knowledge extraction engine.\n\
+         Extract named entities and relationships from the text below.\n\
+         Return ONLY valid JSON matching this schema (no markdown, no explanation):\n\
+         {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\"}},...],\
+         \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
+         Entity types: {entity_list}\n\
+         Relation types: {relation_list}\n\n\
+         If no clear entities exist, return {{\"entities\":[],\"relations\":[]}}.\n\n\
+         Text:\n{text}"
+    );
+
+    let url = format!("{}/v1/chat/completions", inference_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 1024,
+    });
+
+    let resp = client.post(&url).json(&body).send().await;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("entity extraction request failed: {e}");
+            return Ok((vec![], vec![]));
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::warn!("entity extraction got HTTP {}", resp.status());
+        return Ok((vec![], vec![]));
+    }
+
+    let v: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => { tracing::warn!("entity extraction parse error: {e}"); return Ok((vec![], vec![])); }
+    };
+
+    let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("{}");
+    let cleaned = content.trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    match serde_json::from_str::<ExtractionPayload>(cleaned) {
+        Ok(p) => Ok((p.entities, p.relations)),
+        Err(e) => {
+            tracing::debug!("entity extraction JSON parse failed: {e}; raw: {cleaned:.200}");
+            Ok((vec![], vec![]))
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn relation_key(src: i64, dst: i64, rel_type: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(16 + rel_type.len());
+    k.extend_from_slice(&src.to_le_bytes());
+    k.extend_from_slice(&dst.to_le_bytes());
+    k.extend_from_slice(rel_type.as_bytes());
+    k
+}
+
+fn update_adj(adj: &mut HashMap<i64, Vec<(i64, String, f32)>>, from: i64, to: i64, rel: &str, strength: f32) {
+    let entry = adj.entry(from).or_default();
+    if let Some(pos) = entry.iter().position(|(d, r, _)| *d == to && r == rel) {
+        entry[pos].2 = strength;
+    } else {
+        entry.push((to, rel.to_string(), strength));
+    }
+}
