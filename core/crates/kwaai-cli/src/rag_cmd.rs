@@ -172,6 +172,10 @@ pub async fn run(args: RagArgs) -> Result<()> {
 
         RagAction::Cache { action, kb } => cmd_cache(action, kb).await,
 
+        RagAction::Export { output_dir, kb } => cmd_export(output_dir, kb).await,
+
+        RagAction::Import { input_dir, since, kb } => cmd_import(input_dir, since, kb).await,
+
         RagAction::Eval {
             questions,
             kb,
@@ -2171,4 +2175,82 @@ fn collect_files(
         }
     }
     Ok(())
+}
+
+// ── export ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_export(output_dir: std::path::PathBuf, kb: String) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+        let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+            .context("opening graph store — run `rag graph build` first")?;
+
+        if graph.node_count() == 0 {
+            print_warning("Graph is empty. Run `kwaainet rag graph build --kb <name>` first.");
+            return Ok(());
+        }
+
+        print_box_header(&format!("RAG Export ({})", kb));
+        print_info(&format!(
+            "Exporting {} entities to {}",
+            graph.node_count(),
+            output_dir.display()
+        ));
+
+        let stats = kwaai_rag::obsidian::export_vault(&graph, &output_dir, &kb)?;
+
+        print_success(&format!(
+            "Vault written — {} entity files, {} relation links",
+            stats.entities,
+            stats.relations / 2
+        ));
+        println!(
+            "  Open {} in Obsidian and enable Graph View (Ctrl/Cmd+G).",
+            output_dir.display()
+        );
+        println!(
+            "  After curation run:  kwaainet rag import --input-dir {} --kb {}",
+            output_dir.display(),
+            kb
+        );
+        Ok(())
+    }
+}
+
+// ── import ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_import(input_dir: std::path::PathBuf, since: u64, kb: String) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+        let mut graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+            .context("opening graph store")?;
+        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+
+        print_box_header(&format!("RAG Import ({})", kb));
+        if since > 0 {
+            print_info(&format!("Processing files modified after Unix timestamp {since}"));
+        } else {
+            print_info("Processing all entity files (--since 0)");
+        }
+
+        let stats =
+            kwaai_rag::obsidian::import_vault(&mut graph, &input_dir, since, &embed).await?;
+
+        print_success(&format!(
+            "Import complete — {} entities updated ({} descriptions re-embedded, {} relations upserted), {} skipped",
+            stats.entities_processed,
+            stats.descriptions_updated,
+            stats.relations_updated,
+            stats.skipped,
+        ));
+        Ok(())
+    }
 }

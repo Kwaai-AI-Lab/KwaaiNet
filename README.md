@@ -448,7 +448,7 @@ Bob (any node)                         Eve (storage node)
 
 Eve returns only `{id, score}` pairs — vectors never travel back over the wire. Nodes are addressed by PeerId; NAT traversal and routing are handled by the P2P relay layer, never by IP addresses.
 
-### Current status (v0.4.45)
+### Current status (v0.4.51)
 
 | Capability | Status |
 |------------|--------|
@@ -477,6 +477,7 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | Graph-anchored retrieval (`rag query --mode graph`) — BFS entity traversal + RRF fusion with vector results | ✅ Shipped |
 | Semantic query cache (`rag cache stats/clear`) — 24h TTL, cosine similarity dedup, redb-backed | ✅ Shipped |
 | Obsidian vault & MediaWiki ingestion (`rag ingest` with markdown/wiki format detection) | ✅ Shipped |
+| Obsidian vault export/import (`rag export/import`) — human-in-the-loop knowledge graph curation via Obsidian Graph View | ✅ Shipped |
 | Grounded RAG answers — mandatory inline citations [1], hard hallucination refusal | ✅ Shipped |
 | HyDE query expansion (`rag query/chat --hyde`) — embeds hypothetical answer for better doc alignment | ✅ Shipped |
 | LLM listwise reranker (`rag query/chat --rerank`) — one LLM call re-orders retrieval candidates | ✅ Shipped |
