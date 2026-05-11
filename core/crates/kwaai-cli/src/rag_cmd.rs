@@ -52,7 +52,21 @@ pub async fn run(args: RagArgs) -> Result<()> {
             extraction_model,
             chunk_strategy,
             kb,
-        } => cmd_ingest(file, doc_name, chunk_size, chunk_overlap, min_chunk_len, extract_entities, inference_url, extraction_model, chunk_strategy, kb).await,
+        } => {
+            cmd_ingest(
+                file,
+                doc_name,
+                chunk_size,
+                chunk_overlap,
+                min_chunk_len,
+                extract_entities,
+                inference_url,
+                extraction_model,
+                chunk_strategy,
+                kb,
+            )
+            .await
+        }
 
         RagAction::Query {
             text,
@@ -67,7 +81,23 @@ pub async fn run(args: RagArgs) -> Result<()> {
             hyde,
             hyde_alpha,
             rerank,
-        } => cmd_query(text, top_k, min_score, json, kb, understand, inference_url, mode, model, hyde, hyde_alpha, rerank).await,
+        } => {
+            cmd_query(
+                text,
+                top_k,
+                min_score,
+                json,
+                kb,
+                understand,
+                inference_url,
+                mode,
+                model,
+                hyde,
+                hyde_alpha,
+                rerank,
+            )
+            .await
+        }
 
         RagAction::Chat {
             top_k,
@@ -78,7 +108,19 @@ pub async fn run(args: RagArgs) -> Result<()> {
             hyde,
             hyde_alpha,
             rerank,
-        } => cmd_chat(top_k, inference_url, kb, understand, model, hyde, hyde_alpha, rerank).await,
+        } => {
+            cmd_chat(
+                top_k,
+                inference_url,
+                kb,
+                understand,
+                model,
+                hyde,
+                hyde_alpha,
+                rerank,
+            )
+            .await
+        }
 
         RagAction::Docs { kb } => cmd_docs(kb).await,
 
@@ -107,7 +149,24 @@ pub async fn run(args: RagArgs) -> Result<()> {
             extraction_model,
             chunk_strategy,
             kb,
-        } => cmd_sync(folder, extensions, delete, watch, interval, chunk_size, chunk_overlap, min_chunk_len, extract_entities, inference_url, extraction_model, chunk_strategy, kb).await,
+        } => {
+            cmd_sync(
+                folder,
+                extensions,
+                delete,
+                watch,
+                interval,
+                chunk_size,
+                chunk_overlap,
+                min_chunk_len,
+                extract_entities,
+                inference_url,
+                extraction_model,
+                chunk_strategy,
+                kb,
+            )
+            .await
+        }
 
         RagAction::Graph { action, kb } => cmd_graph(action, kb).await,
 
@@ -127,7 +186,24 @@ pub async fn run(args: RagArgs) -> Result<()> {
             llm_judge,
             judge_model,
             output,
-        } => cmd_eval(questions, kb, inference_url, model, top_k, mode, hyde, hyde_alpha, rerank, understand, llm_judge, judge_model, output).await,
+        } => {
+            cmd_eval(
+                questions,
+                kb,
+                inference_url,
+                model,
+                top_k,
+                mode,
+                hyde,
+                hyde_alpha,
+                rerank,
+                understand,
+                llm_judge,
+                judge_model,
+                output,
+            )
+            .await
+        }
     }
 }
 
@@ -177,7 +253,11 @@ async fn cmd_init(
                         false
                     };
                     if tenant_in_db {
-                        print_info(&format!("Knowledge base '{}':  {}", name, data_dir.display()));
+                        print_info(&format!(
+                            "Knowledge base '{}':  {}",
+                            name,
+                            data_dir.display()
+                        ));
                         print_success(&format!(
                             "Already initialised (tenant {tenant_id}) — embedding model updated."
                         ));
@@ -192,7 +272,9 @@ async fn cmd_init(
                         println!("  Next:  kwaainet rag ingest <file> --kb {name}");
                         return Ok(());
                     }
-                    print_warning("Tenant record missing from local DB — recreating knowledge base.");
+                    print_warning(
+                        "Tenant record missing from local DB — recreating knowledge base.",
+                    );
                 }
             }
         }
@@ -202,13 +284,22 @@ async fn cmd_init(
         let tm = kwaai_storage::TenantManager::new(db);
         let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
         let info = tm
-            .create(&local_peer_id.to_base58(), 0, Some(&format!("kwaai-rag/{name}")), embed_dim)
+            .create(
+                &local_peer_id.to_base58(),
+                0,
+                Some(&format!("kwaai-rag/{name}")),
+                embed_dim,
+            )
             .await
             .context("creating local tenant")?;
         let tenant_id = info.tenant_id;
 
         MetaStore::open(&data_dir, tenant_id)?;
-        print_info(&format!("Knowledge base '{}':  {}", name, data_dir.display()));
+        print_info(&format!(
+            "Knowledge base '{}':  {}",
+            name,
+            data_dir.display()
+        ));
 
         let mut cfg = KwaaiNetConfig::load_or_create()?;
         cfg.set_rag_kb(
@@ -226,7 +317,10 @@ async fn cmd_init(
         );
         cfg.save()?;
 
-        print_success(&format!("Knowledge base '{}' initialised  (tenant {tenant_id})", name));
+        print_success(&format!(
+            "Knowledge base '{}' initialised  (tenant {tenant_id})",
+            name
+        ));
         if graph {
             print_info("Graph extraction ready — use --extract-entities when ingesting");
         }
@@ -277,8 +371,14 @@ async fn cmd_connect_eve(peer_id: String, url: Option<String>, kb: String) -> Re
     let rag = cfg
         .rag_kbs
         .get_mut(&kb)
-        .or(if kb == "default" { cfg.rag.as_mut() } else { None })
-        .with_context(|| format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}"))?;
+        .or(if kb == "default" {
+            cfg.rag.as_mut()
+        } else {
+            None
+        })
+        .with_context(|| {
+            format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
+        })?;
 
     rag.eve_peer_id = Some(peer_id);
     // url = Some("http://...") for HTTP transport, None for P2P RPC.
@@ -348,8 +448,8 @@ async fn cmd_ingest(
             let infer_url = inference_url
                 .clone()
                 .unwrap_or_else(|| rag_cfg.inference_url.clone());
-            let store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
-                .context("opening graph store")?;
+            let store =
+                GraphStore::open(&rag_cfg.data_dir(), tenant_id).context("opening graph store")?;
             cfg.graph = Some(GraphIngestConfig {
                 store: Arc::new(Mutex::new(store)),
                 inference_url: infer_url,
@@ -512,7 +612,9 @@ async fn cmd_query(
             if let Some(rag_cfg) = global_cfg.get_rag_kb(&kb_names[0]) {
                 if rag_cfg.storage_url.as_deref() == Some("local") {
                     match try_serve_query(&query, top_k, min_score, 9090).await {
-                        Ok(Some(results)) => return render_query_results(&query, &results, json_out),
+                        Ok(Some(results)) => {
+                            return render_query_results(&query, &results, json_out)
+                        }
                         Ok(None) => {}
                         Err(e) => return Err(e),
                     }
@@ -522,7 +624,11 @@ async fn cmd_query(
 
         let hyde_url = if hyde { inference_url.clone() } else { None };
         let hyde_mdl = if hyde { Some(model.clone()) } else { None };
-        let effective_alpha = if hyde { Some(hyde_alpha.unwrap_or(0.5)) } else { None };
+        let effective_alpha = if hyde {
+            Some(hyde_alpha.unwrap_or(0.5))
+        } else {
+            None
+        };
         let retrieve_cfg = RetrieveConfig {
             top_k,
             min_score,
@@ -531,27 +637,46 @@ async fn cmd_query(
             hyde_model: hyde_mdl,
             hyde_alpha: effective_alpha,
         };
-        let spinner = if json_out { None } else { Some(crate::progress::Spinner::start("Retrieving…")) };
+        let spinner = if json_out {
+            None
+        } else {
+            Some(crate::progress::Spinner::start("Retrieving…"))
+        };
 
         let mut all_results: Vec<kwaai_rag::retriever::RetrievedChunk> = vec![];
 
         for kb_name in &kb_names {
             let (rag_cfg, tenant_id) = match load_rag_config_for(kb_name) {
                 Ok(v) => v,
-                Err(e) => { tracing::warn!("skipping KB '{kb_name}': {e}"); continue; }
+                Err(e) => {
+                    tracing::warn!("skipping KB '{kb_name}': {e}");
+                    continue;
+                }
             };
             let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
             let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
-            let infer_url = inference_url.clone().unwrap_or_else(|| rag_cfg.inference_url.clone());
+            let infer_url = inference_url
+                .clone()
+                .unwrap_or_else(|| rag_cfg.inference_url.clone());
 
             // Resolve effective mode: "auto" routes to graph if entities exist.
             let effective_mode = if mode == "auto" {
                 if rag_cfg.storage_url.as_deref() == Some("local") {
                     if let Ok(g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                        if g.node_count() > 0 { "graph" } else { "vector" }
-                    } else { "vector" }
-                } else { "vector" }
-            } else { mode.as_str() };
+                        if g.node_count() > 0 {
+                            "graph"
+                        } else {
+                            "vector"
+                        }
+                    } else {
+                        "vector"
+                    }
+                } else {
+                    "vector"
+                }
+            } else {
+                mode.as_str()
+            };
 
             let mut chunks = match rag_cfg.storage_url.as_deref() {
                 Some("local") => {
@@ -559,44 +684,87 @@ async fn cmd_query(
                     if effective_mode == "graph" {
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store for graph-anchored retrieval")?;
-                        retrieve_graph_anchored(&query, &retrieve_cfg, &embed, &meta, &graph, move |emb, k| {
-                            let vs = vs.clone();
-                            Box::pin(async move {
-                                let raw = vs.search(tenant_id, &emb, k).await?;
-                                Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                            }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                        }).await?
-                    } else if understand {
-                        kwaai_rag::query_understanding::retrieve_with_understanding(
-                            &query, &retrieve_cfg, &embed, &meta, &infer_url, &model,
+                        retrieve_graph_anchored(
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            &graph,
                             move |emb, k| {
                                 let vs = vs.clone();
                                 Box::pin(async move {
                                     let raw = vs.search(tenant_id, &emb, k).await?;
                                     Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                                }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                                })
+                                    as Pin<
+                                        Box<
+                                            dyn std::future::Future<
+                                                    Output = Result<Vec<(i64, f64)>>,
+                                                > + Send,
+                                        >,
+                                    >
                             },
-                        ).await?
+                        )
+                        .await?
+                    } else if understand {
+                        kwaai_rag::query_understanding::retrieve_with_understanding(
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            &infer_url,
+                            &model,
+                            move |emb, k| {
+                                let vs = vs.clone();
+                                Box::pin(async move {
+                                    let raw = vs.search(tenant_id, &emb, k).await?;
+                                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                                })
+                                    as Pin<
+                                        Box<
+                                            dyn std::future::Future<
+                                                    Output = Result<Vec<(i64, f64)>>,
+                                                > + Send,
+                                        >,
+                                    >
+                            },
+                        )
+                        .await?
                     } else {
                         retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, move |emb, k| {
                             let vs = vs.clone();
                             Box::pin(async move {
                                 let raw = vs.search(tenant_id, &emb, k).await?;
                                 Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                            }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                        }).await?
+                            })
+                                as Pin<
+                                    Box<
+                                        dyn std::future::Future<Output = Result<Vec<(i64, f64)>>>
+                                            + Send,
+                                    >,
+                                >
+                        })
+                        .await?
                     }
                 }
                 Some(url) => {
                     let http = reqwest::Client::new();
                     let url = url.to_string();
                     retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, move |emb, k| {
-                        let http = http.clone(); let url = url.clone();
+                        let http = http.clone();
+                        let url = url.clone();
                         Box::pin(async move {
                             let raw = http_search_vectors(&http, &url, tenant_id, emb, k).await?;
                             Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                    }).await?
+                        })
+                            as Pin<
+                                Box<
+                                    dyn std::future::Future<Output = Result<Vec<(i64, f64)>>>
+                                        + Send,
+                                >,
+                            >
+                    })
+                    .await?
                 }
                 None => {
                     let ep = eve_peer_id(&rag_cfg)?;
@@ -608,17 +776,30 @@ async fn cmd_query(
                             let guard = client.lock().await;
                             let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
                             Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                    }).await?
+                        })
+                            as Pin<
+                                Box<
+                                    dyn std::future::Future<Output = Result<Vec<(i64, f64)>>>
+                                        + Send,
+                                >,
+                            >
+                    })
+                    .await?
                 }
             };
             if kb_names.len() > 1 {
-                for c in &mut chunks { c.source_kb = Some(kb_name.clone()); }
+                for c in &mut chunks {
+                    c.source_kb = Some(kb_name.clone());
+                }
             }
             all_results.append(&mut chunks);
         }
 
-        all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        all_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // LLM listwise reranker — retrieve extra candidates then rerank to top_k.
         let all_results = if rerank {
@@ -633,7 +814,9 @@ async fn cmd_query(
             all_results
         };
 
-        if let Some(s) = spinner { s.finish("").await; }
+        if let Some(s) = spinner {
+            s.finish("").await;
+        }
 
         let arr: Vec<serde_json::Value> = all_results
             .iter()
@@ -682,7 +865,16 @@ fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bo
 
 // ── chat ──────────────────────────────────────────────────────────────────────
 
-async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: bool, model: String, hyde: bool, hyde_alpha: Option<f32>, rerank: bool) -> Result<()> {
+async fn cmd_chat(
+    top_k: usize,
+    inference_url: String,
+    kb: String,
+    understand: bool,
+    model: String,
+    hyde: bool,
+    hyde_alpha: Option<f32>,
+    rerank: bool,
+) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
 
@@ -697,9 +889,17 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
             top_k,
             min_score: 0.0,
             use_sentence_window: false,
-            hyde_inference_url: if hyde { Some(inference_url.clone()) } else { None },
+            hyde_inference_url: if hyde {
+                Some(inference_url.clone())
+            } else {
+                None
+            },
             hyde_model: if hyde { Some(model.clone()) } else { None },
-            hyde_alpha: if hyde { Some(hyde_alpha.unwrap_or(0.5)) } else { None },
+            hyde_alpha: if hyde {
+                Some(hyde_alpha.unwrap_or(0.5))
+            } else {
+                None
+            },
         };
 
         let http = reqwest::Client::new();
@@ -751,9 +951,17 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                 if let Ok(query_emb) = embed.embed_one(&query).await {
                     if let Some(hit) = cache.get(&query_emb) {
                         println!("\n  Assistant: {}  \x1b[2m(cached)\x1b[0m", hit.answer);
-                        history.push(ChatMessage { role: "user".to_string(), content: query.clone() });
-                        history.push(ChatMessage { role: "assistant".to_string(), content: hit.answer });
-                        if history.len() > 20 { history.drain(0..2); }
+                        history.push(ChatMessage {
+                            role: "user".to_string(),
+                            content: query.clone(),
+                        });
+                        history.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: hit.answer,
+                        });
+                        if history.len() > 20 {
+                            history.drain(0..2);
+                        }
                         continue;
                     }
                 }
@@ -767,12 +975,22 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                     Box::pin(async move {
                         let raw = vs.search(tenant_id, &emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
                 };
                 if understand {
                     kwaai_rag::query_understanding::retrieve_with_understanding(
-                        &query, &retrieve_cfg, &embed, &meta, &inference_url, &model, search_fn,
-                    ).await?
+                        &query,
+                        &retrieve_cfg,
+                        &embed,
+                        &meta,
+                        &inference_url,
+                        &model,
+                        search_fn,
+                    )
+                    .await?
                 } else {
                     retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, search_fn).await?
                 }
@@ -785,8 +1003,12 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                     Box::pin(async move {
                         let raw = http_search_vectors(&h, &u, tenant_id, embedding, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                }).await?
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
             } else {
                 let (client2, eve) = p2p_client.as_ref().unwrap();
                 let client2 = client2.clone();
@@ -795,15 +1017,22 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                     let c = client2.clone();
                     Box::pin(async move {
                         let guard = c.lock().await;
-                        let raw = rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k).await?;
+                        let raw =
+                            rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k)
+                                .await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                    }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
-                }).await?
+                    })
+                        as Pin<
+                            Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
+                        >
+                })
+                .await?
             };
 
             // LLM listwise reranker (optional).
             let chunks = if rerank {
-                kwaai_rag::reranker::rerank_chunks(&query, chunks, &inference_url, &model, top_k).await
+                kwaai_rag::reranker::rerank_chunks(&query, chunks, &inference_url, &model, top_k)
+                    .await
             } else {
                 chunks
             };
@@ -863,7 +1092,9 @@ async fn cmd_docs(kb: String) -> Result<()> {
 
     let docs = meta.list_docs()?;
     if docs.is_empty() {
-        print_info(&format!("No documents ingested yet. Run: kwaainet rag ingest <file> --kb {kb}"));
+        print_info(&format!(
+            "No documents ingested yet. Run: kwaainet rag ingest <file> --kb {kb}"
+        ));
     } else {
         print_box_header(&format!("{} document(s)", docs.len()));
         for d in &docs {
@@ -932,10 +1163,9 @@ async fn cmd_delete_doc(name: String, yes: bool, kb: String) -> Result<()> {
 
 fn load_rag_config_for(kb: &str) -> Result<(RagConfig, Uuid)> {
     let cfg = KwaaiNetConfig::load_or_create()?;
-    let rag = cfg
-        .get_rag_kb(kb)
-        .cloned()
-        .with_context(|| format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}"))?;
+    let rag = cfg.get_rag_kb(kb).cloned().with_context(|| {
+        format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
+    })?;
 
     let tenant_id: Uuid = rag
         .tenant_id
@@ -1092,7 +1322,17 @@ async fn cmd_sync(
         };
 
         loop {
-            let result = run_sync_pass(&folder, &exts, delete, &kb, &chunk_cfg, extract_entities, inference_url.clone(), extraction_model.clone()).await?;
+            let result = run_sync_pass(
+                &folder,
+                &exts,
+                delete,
+                &kb,
+                &chunk_cfg,
+                extract_entities,
+                inference_url.clone(),
+                extraction_model.clone(),
+            )
+            .await?;
 
             let SyncResult {
                 ingested,
@@ -1378,9 +1618,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     }
                 }
                 // Delete the graph redb file so it is recreated fresh on next open.
-                let graph_path = rag_cfg.data_dir().join(
-                    format!("graph-{}.redb", tenant_id)
-                );
+                let graph_path = rag_cfg.data_dir().join(format!("graph-{}.redb", tenant_id));
                 if graph_path.exists() {
                     std::fs::remove_file(&graph_path)
                         .with_context(|| format!("deleting {}", graph_path.display()))?;
@@ -1391,9 +1629,12 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 ));
             }
 
-            GraphAction::Build { inference_url, model, limit } => {
-                let infer_url = inference_url
-                    .unwrap_or_else(|| rag_cfg.inference_url.clone());
+            GraphAction::Build {
+                inference_url,
+                model,
+                limit,
+            } => {
+                let infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
 
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
                 let mut all_chunks = meta.all_chunks()?;
@@ -1470,8 +1711,8 @@ async fn cmd_cache(action: CacheAction, kb: String) -> Result<()> {
     #[cfg(feature = "storage")]
     {
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
-        let mut cache = QueryCache::open(&rag_cfg.data_dir(), tenant_id)
-            .context("opening query cache")?;
+        let mut cache =
+            QueryCache::open(&rag_cfg.data_dir(), tenant_id).context("opening query cache")?;
 
         match action {
             CacheAction::Stats => {
@@ -1531,8 +1772,9 @@ async fn cmd_eval(
 
         let raw = std::fs::read_to_string(&questions_path)
             .with_context(|| format!("reading {}", questions_path.display()))?;
-        let questions: Vec<EvalQuestion> = serde_json::from_str(&raw)
-            .context("parsing questions JSON — expected array of {id, question, expected_keywords}")?;
+        let questions: Vec<EvalQuestion> = serde_json::from_str(&raw).context(
+            "parsing questions JSON — expected array of {id, question, expected_keywords}",
+        )?;
 
         if questions.is_empty() {
             print_warning("No questions found in file.");
@@ -1551,24 +1793,46 @@ async fn cmd_eval(
             top_k,
             min_score: 0.0,
             use_sentence_window: false,
-            hyde_inference_url: if hyde { Some(inference_url.clone()) } else { None },
+            hyde_inference_url: if hyde {
+                Some(inference_url.clone())
+            } else {
+                None
+            },
             hyde_model: if hyde { Some(model.clone()) } else { None },
-            hyde_alpha: if hyde { Some(hyde_alpha.unwrap_or(0.5)) } else { None },
+            hyde_alpha: if hyde {
+                Some(hyde_alpha.unwrap_or(0.5))
+            } else {
+                None
+            },
         };
 
         // Resolve "auto" mode: use graph if the KB has entities, else vector.
         let effective_mode = if mode == "auto" {
             if let Ok(g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                if g.node_count() > 0 { "graph" } else { "vector" }
-            } else { "vector" }
-        } else { mode.as_str() };
+                if g.node_count() > 0 {
+                    "graph"
+                } else {
+                    "vector"
+                }
+            } else {
+                "vector"
+            }
+        } else {
+            mode.as_str()
+        };
 
-        print_box_header(&format!("RAG Eval  ({} questions, kb={})", questions.len(), kb));
+        print_box_header(&format!(
+            "RAG Eval  ({} questions, kb={})",
+            questions.len(),
+            kb
+        ));
         println!("  Model:     {model}");
         println!("  Inference: {inference_url}");
         let judge_mdl = judge_model.as_deref().unwrap_or(&model);
         println!("  top_k={top_k}  mode={effective_mode}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}");
-        if llm_judge { println!("  Judge model: {judge_mdl}"); }
+        if llm_judge {
+            println!("  Judge model: {judge_mdl}");
+        }
         print_separator();
 
         struct Row {
@@ -1585,7 +1849,12 @@ async fn cmd_eval(
         let mut rows: Vec<Row> = Vec::new();
 
         for (i, q) in questions.iter().enumerate() {
-            print!("  [{:>2}/{}] {} … ", i + 1, questions.len(), truncate(&q.question, 60));
+            print!(
+                "  [{:>2}/{}] {} … ",
+                i + 1,
+                questions.len(),
+                truncate(&q.question, 60)
+            );
             io::stdout().flush().ok();
 
             let t0 = std::time::Instant::now();
@@ -1597,32 +1866,55 @@ async fn cmd_eval(
                 Box::pin(async move {
                     let raw = vs.search(tenant_id, &emb, k).await?;
                     Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+                })
+                    as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
             };
 
             let mut chunks = if effective_mode == "graph" {
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
-                retrieve_graph_anchored(&q.question, &retrieve_cfg, &embed, &meta, &graph, search_fn)
-                    .await.unwrap_or_default()
+                retrieve_graph_anchored(
+                    &q.question,
+                    &retrieve_cfg,
+                    &embed,
+                    &meta,
+                    &graph,
+                    search_fn,
+                )
+                .await
+                .unwrap_or_default()
             } else if understand {
                 kwaai_rag::query_understanding::retrieve_with_understanding(
-                    &q.question, &retrieve_cfg, &embed, &meta,
-                    &inference_url, &model, search_fn,
-                ).await.unwrap_or_default()
+                    &q.question,
+                    &retrieve_cfg,
+                    &embed,
+                    &meta,
+                    &inference_url,
+                    &model,
+                    search_fn,
+                )
+                .await
+                .unwrap_or_default()
             } else {
                 retrieve_hybrid(&q.question, &retrieve_cfg, &embed, &meta, search_fn)
-                    .await.unwrap_or_default()
+                    .await
+                    .unwrap_or_default()
             };
 
             // Rerank (optional).
             if rerank {
                 chunks = kwaai_rag::reranker::rerank_chunks(
-                    &q.question, chunks, &inference_url, &model, top_k,
-                ).await;
+                    &q.question,
+                    chunks,
+                    &inference_url,
+                    &model,
+                    top_k,
+                )
+                .await;
             }
 
-            let retrieved_docs: Vec<String> = chunks.iter()
+            let retrieved_docs: Vec<String> = chunks
+                .iter()
                 .map(|c| c.chunk_meta.doc_name.clone())
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
@@ -1655,7 +1947,9 @@ async fn cmd_eval(
 
             // Score keywords (case-insensitive substring match).
             let answer_lower = answer.to_lowercase();
-            let keyword_hits = q.expected_keywords.iter()
+            let keyword_hits = q
+                .expected_keywords
+                .iter()
                 .filter(|kw| answer_lower.contains(&kw.to_lowercase()))
                 .count();
             let total_keywords = q.expected_keywords.len();
@@ -1693,7 +1987,9 @@ async fn cmd_eval(
                             let text = body["choices"][0]["message"]["content"]
                                 .as_str()
                                 .unwrap_or("0");
-                            text.trim().chars().next()
+                            text.trim()
+                                .chars()
+                                .next()
                                 .and_then(|c| c.to_digit(10))
                                 .map(|d| d.min(2) as u8)
                         }
@@ -1730,12 +2026,20 @@ async fn cmd_eval(
         // Build report.
         let total_hits: usize = rows.iter().map(|r| r.keyword_hits).sum();
         let total_kw: usize = rows.iter().map(|r| r.total_keywords).sum();
-        let overall_score = if total_kw > 0 { total_hits as f64 / total_kw as f64 } else { 0.0 };
-        let avg_latency_ms: u128 = if rows.is_empty() { 0 } else {
+        let overall_score = if total_kw > 0 {
+            total_hits as f64 / total_kw as f64
+        } else {
+            0.0
+        };
+        let avg_latency_ms: u128 = if rows.is_empty() {
+            0
+        } else {
             rows.iter().map(|r| r.latency_ms).sum::<u128>() / rows.len() as u128
         };
         let judge_rows: Vec<u8> = rows.iter().filter_map(|r| r.judge_score).collect();
-        let avg_judge = if judge_rows.is_empty() { None } else {
+        let avg_judge = if judge_rows.is_empty() {
+            None
+        } else {
             Some(judge_rows.iter().map(|&s| s as f64).sum::<f64>() / judge_rows.len() as f64)
         };
 
@@ -1746,8 +2050,11 @@ async fn cmd_eval(
             "**Flags:** top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}\n\n"
         ));
         let judge_summary = if let Some(avg) = avg_judge {
-            format!(" | Avg judge score | {:.2}/2.00 ({} questions scored) |\n",
-                avg, judge_rows.len())
+            format!(
+                " | Avg judge score | {:.2}/2.00 ({} questions scored) |\n",
+                avg,
+                judge_rows.len()
+            )
         } else {
             String::new()
         };
@@ -1773,8 +2080,12 @@ async fn cmd_eval(
         }
         for r in &rows {
             let pct = if r.total_keywords > 0 {
-                format!("{}/{} ({:.0}%)", r.keyword_hits, r.total_keywords,
-                    r.keyword_hits as f64 / r.total_keywords as f64 * 100.0)
+                format!(
+                    "{}/{} ({:.0}%)",
+                    r.keyword_hits,
+                    r.total_keywords,
+                    r.keyword_hits as f64 / r.total_keywords as f64 * 100.0
+                )
             } else {
                 "n/a".to_string()
             };
@@ -1782,14 +2093,21 @@ async fn cmd_eval(
                 let j = r.judge_score.map_or("—".to_string(), |s| format!("{s}/2"));
                 report.push_str(&format!(
                     "| {} | {} | {} | {} | {} | {}ms |\n",
-                    r.id, r.question.replace('|', "\\|"), pct, j,
-                    r.retrieved_docs.join(", "), r.latency_ms,
+                    r.id,
+                    r.question.replace('|', "\\|"),
+                    pct,
+                    j,
+                    r.retrieved_docs.join(", "),
+                    r.latency_ms,
                 ));
             } else {
                 report.push_str(&format!(
                     "| {} | {} | {} | {} | {}ms |\n",
-                    r.id, r.question.replace('|', "\\|"), pct,
-                    r.retrieved_docs.join(", "), r.latency_ms,
+                    r.id,
+                    r.question.replace('|', "\\|"),
+                    pct,
+                    r.retrieved_docs.join(", "),
+                    r.latency_ms,
                 ));
             }
         }

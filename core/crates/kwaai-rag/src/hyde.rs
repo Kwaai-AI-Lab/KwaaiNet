@@ -29,7 +29,10 @@ pub async fn generate_hypothetical_answer(
          Use specific details. Do not mention the question itself.\n\nQuestion: {query}"
     );
 
-    let url = format!("{}/v1/chat/completions", inference_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        inference_url.trim_end_matches('/')
+    );
     let body = json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

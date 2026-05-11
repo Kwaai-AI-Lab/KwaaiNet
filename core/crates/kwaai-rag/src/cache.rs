@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 const ENTRIES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cache_entries");
 
-pub const DEFAULT_TTL_SECS: u64 = 86_400;        // 24 h
+pub const DEFAULT_TTL_SECS: u64 = 86_400; // 24 h
 pub const DEFAULT_MAX_ENTRIES: usize = 2_000;
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.92;
 

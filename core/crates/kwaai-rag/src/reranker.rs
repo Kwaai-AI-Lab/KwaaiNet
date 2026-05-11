@@ -95,7 +95,10 @@ async fn rerank_inner(
          Question: {query}\n\nPassages:\n{passages}"
     );
 
-    let url = format!("{}/v1/chat/completions", inference_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        inference_url.trim_end_matches('/')
+    );
     let body = json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -103,11 +106,7 @@ async fn rerank_inner(
         "max_tokens": 128,
     });
 
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await?;
+    let resp = client.post(&url).json(&body).send().await?;
 
     if !resp.status().is_success() {
         anyhow::bail!("reranker: inference API returned {}", resp.status());

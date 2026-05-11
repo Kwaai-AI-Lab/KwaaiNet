@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ChunkStrategy {
     #[default]
-    Character,  // sliding-window over Unicode scalars (original behaviour)
-    Paragraph,  // paragraph → sentence → character cascade (semantic)
+    Character, // sliding-window over Unicode scalars (original behaviour)
+    Paragraph, // paragraph → sentence → character cascade (semantic)
 }
 
 #[derive(Debug, Clone)]
@@ -200,7 +200,8 @@ fn split_sentences(text: &str, cfg: &ChunkConfig, out: &mut Vec<String>) {
     let mut i = 0;
 
     while i < n {
-        if matches!(chars[i], '.' | '!' | '?') && i + 2 < n
+        if matches!(chars[i], '.' | '!' | '?')
+            && i + 2 < n
             && chars[i + 1].is_whitespace()
             && chars[i + 2].is_alphabetic()
         {
@@ -301,7 +302,12 @@ mod tests {
 
     #[test]
     fn character_split_basic() {
-        let cfg = ChunkConfig { chunk_size: 10, chunk_overlap: 2, min_chunk_len: 5, ..Default::default() };
+        let cfg = ChunkConfig {
+            chunk_size: 10,
+            chunk_overlap: 2,
+            min_chunk_len: 5,
+            ..Default::default()
+        };
         let chunks = split_text("Hello world foo bar baz", "test.txt", &cfg);
         assert!(!chunks.is_empty());
         assert!(chunks[0].text.chars().count() <= 10);

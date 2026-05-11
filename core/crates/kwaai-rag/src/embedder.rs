@@ -111,7 +111,9 @@ impl EmbedClient {
             bail!(
                 "Embedding model '{}' returns {} dimensions but KB was initialised with {}. \
                  Destroy and re-init the KB with the correct model.",
-                self.model, actual, expected,
+                self.model,
+                actual,
+                expected,
             );
         }
         Ok(())

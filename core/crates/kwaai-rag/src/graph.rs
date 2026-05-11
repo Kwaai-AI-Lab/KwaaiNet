@@ -31,23 +31,55 @@ const ENTITY_CHUNK_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("
 
 /// Supported entity types for LLM extraction prompts.
 pub const ENTITY_TYPES: &[&str] = &[
-    "Person", "Organization", "Location", "Event", "Concept",
-    "Method", "Claim", "Quantity", "Date", "Document",
-    "Product", "Technology", "Role", "Topic", "Unknown",
+    "Person",
+    "Organization",
+    "Location",
+    "Event",
+    "Concept",
+    "Method",
+    "Claim",
+    "Quantity",
+    "Date",
+    "Document",
+    "Product",
+    "Technology",
+    "Role",
+    "Topic",
+    "Unknown",
 ];
 
 /// Supported relation types for LLM extraction prompts.
 pub const RELATION_TYPES: &[&str] = &[
     // Agent
-    "works_at", "founded", "manages", "belongs_to", "endorses",
+    "works_at",
+    "founded",
+    "manages",
+    "belongs_to",
+    "endorses",
     // Structural
-    "part_of", "contains", "located_in", "instance_of", "subtype_of",
+    "part_of",
+    "contains",
+    "located_in",
+    "instance_of",
+    "subtype_of",
     // Temporal
-    "occurred_on", "started", "ended", "followed_by", "precedes",
+    "occurred_on",
+    "started",
+    "ended",
+    "followed_by",
+    "precedes",
     // Semantic
-    "related_to", "contradicts", "supports", "cites", "implements",
+    "related_to",
+    "contradicts",
+    "supports",
+    "cites",
+    "implements",
     // Informational
-    "defined_by", "described_in", "measured_by", "associated_with", "caused_by",
+    "defined_by",
+    "described_in",
+    "measured_by",
+    "associated_with",
+    "caused_by",
 ];
 
 // ── Core types ────────────────────────────────────────────────────────────────
@@ -170,14 +202,16 @@ impl GraphStore {
             for entry in table.iter()? {
                 let (_, v) = entry?;
                 let rel: RelationRecord = serde_json::from_slice(v.value())?;
-                self.adj
-                    .entry(rel.src_id)
-                    .or_default()
-                    .push((rel.dst_id, rel.relation_type.clone(), rel.strength));
-                self.adj
-                    .entry(rel.dst_id)
-                    .or_default()
-                    .push((rel.src_id, rel.relation_type.clone(), rel.strength));
+                self.adj.entry(rel.src_id).or_default().push((
+                    rel.dst_id,
+                    rel.relation_type.clone(),
+                    rel.strength,
+                ));
+                self.adj.entry(rel.dst_id).or_default().push((
+                    rel.src_id,
+                    rel.relation_type.clone(),
+                    rel.strength,
+                ));
             }
         }
 
@@ -185,7 +219,9 @@ impl GraphStore {
             let table = rtxn.open_table(CHUNK_ENTITY_TABLE)?;
             for entry in table.iter()? {
                 let (k, v) = entry?;
-                if k.value().len() != 8 { continue; }
+                if k.value().len() != 8 {
+                    continue;
+                }
                 let cid = i64::from_le_bytes(k.value().try_into().unwrap());
                 let eids: Vec<i64> = serde_json::from_slice(v.value()).unwrap_or_default();
                 self.chunk_to_entities.insert(cid, eids);
@@ -196,7 +232,9 @@ impl GraphStore {
             let table = rtxn.open_table(ENTITY_CHUNK_TABLE)?;
             for entry in table.iter()? {
                 let (k, v) = entry?;
-                if k.value().len() != 8 { continue; }
+                if k.value().len() != 8 {
+                    continue;
+                }
                 let eid = i64::from_le_bytes(k.value().try_into().unwrap());
                 let cids: Vec<i64> = serde_json::from_slice(v.value()).unwrap_or_default();
                 self.entity_to_chunks.insert(eid, cids);
@@ -239,14 +277,23 @@ impl GraphStore {
         let key = merged.id.to_le_bytes();
         let val = serde_json::to_vec(&merged)?;
         let wtxn = self.db.begin_write()?;
-        { let mut t = wtxn.open_table(ENTITIES_TABLE)?; t.insert(key.as_ref(), val.as_slice())?; }
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            t.insert(key.as_ref(), val.as_slice())?;
+        }
         wtxn.commit()?;
         self.nodes.insert(merged.id, merged);
         Ok(())
     }
 
     /// Insert or strengthen a directed relation, adding the evidence chunk.
-    pub fn upsert_relation(&mut self, src_id: i64, dst_id: i64, relation_type: &str, evidence_chunk_id: i64) -> Result<()> {
+    pub fn upsert_relation(
+        &mut self,
+        src_id: i64,
+        dst_id: i64,
+        relation_type: &str,
+        evidence_chunk_id: i64,
+    ) -> Result<()> {
         let key = relation_key(src_id, dst_id, relation_type);
 
         let merged = {
@@ -273,18 +320,35 @@ impl GraphStore {
 
         let val = serde_json::to_vec(&merged)?;
         let wtxn = self.db.begin_write()?;
-        { let mut t = wtxn.open_table(RELATIONS_TABLE)?; t.insert(key.as_slice(), val.as_slice())?; }
+        {
+            let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+            t.insert(key.as_slice(), val.as_slice())?;
+        }
         wtxn.commit()?;
 
         // Update in-memory adjacency (both directions).
-        update_adj(&mut self.adj, src_id, dst_id, relation_type, merged.strength);
-        update_adj(&mut self.adj, dst_id, src_id, relation_type, merged.strength);
+        update_adj(
+            &mut self.adj,
+            src_id,
+            dst_id,
+            relation_type,
+            merged.strength,
+        );
+        update_adj(
+            &mut self.adj,
+            dst_id,
+            src_id,
+            relation_type,
+            merged.strength,
+        );
         Ok(())
     }
 
     /// Record which entities are mentioned in a chunk.
     pub fn link_chunk(&mut self, chunk_id: i64, entity_ids: &[i64]) -> Result<()> {
-        if entity_ids.is_empty() { return Ok(()); }
+        if entity_ids.is_empty() {
+            return Ok(());
+        }
 
         let wtxn = self.db.begin_write()?;
         {
@@ -297,7 +361,9 @@ impl GraphStore {
                 None => vec![],
             };
             for &eid in entity_ids {
-                if !eids.contains(&eid) { eids.push(eid); }
+                if !eids.contains(&eid) {
+                    eids.push(eid);
+                }
             }
             ce.insert(ck.as_ref(), serde_json::to_vec(&eids)?.as_slice())?;
 
@@ -307,7 +373,9 @@ impl GraphStore {
                     Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
                     None => vec![],
                 };
-                if !cids.contains(&chunk_id) { cids.push(chunk_id); }
+                if !cids.contains(&chunk_id) {
+                    cids.push(chunk_id);
+                }
                 ec.insert(ek.as_ref(), serde_json::to_vec(&cids)?.as_slice())?;
             }
         }
@@ -315,9 +383,13 @@ impl GraphStore {
 
         let ce = self.chunk_to_entities.entry(chunk_id).or_default();
         for &eid in entity_ids {
-            if !ce.contains(&eid) { ce.push(eid); }
+            if !ce.contains(&eid) {
+                ce.push(eid);
+            }
             let ec = self.entity_to_chunks.entry(eid).or_default();
-            if !ec.contains(&chunk_id) { ec.push(chunk_id); }
+            if !ec.contains(&chunk_id) {
+                ec.push(chunk_id);
+            }
         }
         Ok(())
     }
@@ -329,7 +401,10 @@ impl GraphStore {
             let key = entity_id.to_le_bytes();
             let val = serde_json::to_vec(node)?;
             let wtxn = self.db.begin_write()?;
-            { let mut t = wtxn.open_table(ENTITIES_TABLE)?; t.insert(key.as_ref(), val.as_slice())?; }
+            {
+                let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+                t.insert(key.as_ref(), val.as_slice())?;
+            }
             wtxn.commit()?;
         }
         Ok(())
@@ -353,7 +428,9 @@ impl GraphStore {
                     }
                 }
             }
-            if next.is_empty() { break; }
+            if next.is_empty() {
+                break;
+            }
             frontier = next;
         }
         visited.into_iter().collect()
@@ -373,16 +450,36 @@ impl GraphStore {
     /// Brute-force cosine search over entity description embeddings.
     /// Adequate for <10K entities; add HNSW later if needed.
     pub fn search_entities(&self, query_emb: &[f32], top_k: usize) -> Vec<(i64, f64)> {
-        let qnorm: f64 = query_emb.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>().sqrt();
-        if qnorm == 0.0 || self.nodes.is_empty() { return vec![]; }
+        let qnorm: f64 = query_emb
+            .iter()
+            .map(|&x| (x as f64) * (x as f64))
+            .sum::<f64>()
+            .sqrt();
+        if qnorm == 0.0 || self.nodes.is_empty() {
+            return vec![];
+        }
 
-        let mut scored: Vec<(i64, f64)> = self.nodes.values()
+        let mut scored: Vec<(i64, f64)> = self
+            .nodes
+            .values()
             .filter(|n| !n.embedding.is_empty())
             .map(|n| {
-                let dot: f64 = query_emb.iter().zip(n.embedding.iter())
-                    .map(|(&q, &d)| (q as f64) * (d as f64)).sum();
-                let dnorm: f64 = n.embedding.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>().sqrt();
-                let sim = if dnorm > 0.0 { (dot / (qnorm * dnorm)).clamp(-1.0, 1.0) } else { 0.0 };
+                let dot: f64 = query_emb
+                    .iter()
+                    .zip(n.embedding.iter())
+                    .map(|(&q, &d)| (q as f64) * (d as f64))
+                    .sum();
+                let dnorm: f64 = n
+                    .embedding
+                    .iter()
+                    .map(|&x| (x as f64) * (x as f64))
+                    .sum::<f64>()
+                    .sqrt();
+                let sim = if dnorm > 0.0 {
+                    (dot / (qnorm * dnorm)).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
                 (n.id, sim)
             })
             .collect();
@@ -392,7 +489,9 @@ impl GraphStore {
         scored
     }
 
-    pub fn get_entity(&self, id: i64) -> Option<&EntityNode> { self.nodes.get(&id) }
+    pub fn get_entity(&self, id: i64) -> Option<&EntityNode> {
+        self.nodes.get(&id)
+    }
 
     pub fn find_by_name(&self, name: &str) -> Option<&EntityNode> {
         let lower = name.to_lowercase();
@@ -403,7 +502,9 @@ impl GraphStore {
         self.adj.get(&entity_id).cloned().unwrap_or_default()
     }
 
-    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
 
     pub fn relation_count(&self) -> usize {
         self.adj.values().map(|v| v.len()).sum::<usize>() / 2
@@ -414,7 +515,10 @@ impl GraphStore {
     }
 
     pub fn chunks_for_entity(&self, entity_id: i64) -> &[i64] {
-        self.entity_to_chunks.get(&entity_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.entity_to_chunks
+            .get(&entity_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -443,7 +547,10 @@ pub async fn extract_from_text(
          Text:\n{text}"
     );
 
-    let url = format!("{}/v1/chat/completions", inference_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        inference_url.trim_end_matches('/')
+    );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
@@ -471,11 +578,17 @@ pub async fn extract_from_text(
 
     let v: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(e) => { tracing::warn!("entity extraction parse error: {e}"); return Ok((vec![], vec![])); }
+        Err(e) => {
+            tracing::warn!("entity extraction parse error: {e}");
+            return Ok((vec![], vec![]));
+        }
     };
 
-    let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("{}");
-    let cleaned = content.trim()
+    let content = v["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("{}");
+    let cleaned = content
+        .trim()
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
@@ -500,7 +613,13 @@ fn relation_key(src: i64, dst: i64, rel_type: &str) -> Vec<u8> {
     k
 }
 
-fn update_adj(adj: &mut HashMap<i64, Vec<(i64, String, f32)>>, from: i64, to: i64, rel: &str, strength: f32) {
+fn update_adj(
+    adj: &mut HashMap<i64, Vec<(i64, String, f32)>>,
+    from: i64,
+    to: i64,
+    rel: &str,
+    strength: f32,
+) {
     let entry = adj.entry(from).or_default();
     if let Some(pos) = entry.iter().position(|(d, r, _)| *d == to && r == rel) {
         entry[pos].2 = strength;
