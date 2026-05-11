@@ -56,7 +56,7 @@ Today, a KwaaiNet node can:
 - **Discover VPK-capable peers** with `kwaainet vpk discover` — finds all Eve nodes on the DHT and returns their PeerId, mode, capacity, and tenant count; no IP addresses involved.
 - **Benchmark storage performance** with `kwaainet vpk bench` — measures local HNSW vs WAN-sharded Eve vs Qdrant (local or cloud) across multiple corpus scales, with recall and upload-time breakdowns.
 - **Inspect live P2P state** with `kwaainet p2p info` (peer ID, observed addresses, NAT verdict), `kwaainet p2p peers list` (active connections tagged direct/relay/bootstrap), and `kwaainet p2p peers find <peer>` (active DHT lookup) — all talking to the local p2pd over IPC without touching the network except for `find`.
-- **RAG knowledge base** — ingest local documents (`txt`, `md`, `pdf`, `docx`, `doc`) into a fully local private vector knowledge base (no network required) with `kwaainet rag ingest`. Hybrid BM25 + dense retrieval with lost-in-the-middle context reordering delivers better answers than dense-only search. Supports external drives for large corpora.
+- **RAG knowledge base** — ingest local documents (`txt`, `md`, `pdf`, `docx`, `doc`) into a fully local private vector knowledge base (no network required) with `kwaainet rag ingest`. Hybrid BM25 + dense retrieval, grounded citations, HyDE query expansion, LLM reranker, semantic paragraph chunking, knowledge graph, and an eval harness for accuracy measurement. Supports external drives for large corpora.
 - **Folder sync** — `kwaainet rag sync <folder>` continuously mirrors a directory into the knowledge base, detecting new, changed, and deleted files. Pass `--watch` for continuous mode.
 - **OpenAI-compatible RAG server** — `kwaainet rag serve` exposes an OpenAI-compatible HTTP API on port 9090 with RAG baked in. Point OpenWebUI or any OpenAI-compatible client at it as a custom base URL.
 
@@ -471,8 +471,13 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | Graph-anchored retrieval (`rag query --mode graph`) — BFS entity traversal + RRF fusion with vector results | ✅ Shipped |
 | Semantic query cache (`rag cache stats/clear`) — 24h TTL, cosine similarity dedup, redb-backed | ✅ Shipped |
 | Obsidian vault & MediaWiki ingestion (`rag ingest` with markdown/wiki format detection) | ✅ Shipped |
+| Grounded RAG answers — mandatory inline citations [1], hard hallucination refusal | ✅ Shipped |
+| HyDE query expansion (`rag query/chat --hyde`) — embeds hypothetical answer for better doc alignment | ✅ Shipped |
+| LLM listwise reranker (`rag query/chat --rerank`) — one LLM call re-orders retrieval candidates | ✅ Shipped |
+| Fix `--understand` with Ollama — model param now threaded correctly | ✅ Shipped |
+| Semantic paragraph chunking (`rag sync/ingest --chunk-strategy paragraph`) | ✅ Shipped |
+| Eval harness (`rag eval --questions file.json`) — keyword hit rate scoring, markdown report | ✅ Shipped |
 | PHE encryption layer (vectors encrypted before leaving Bob) | 🔄 Phase 3 |
-| HyDE query expansion | 🔄 Phase 3 |
 | Bob fan-out to multiple Eves (`kwaainet vpk shard`) | 🔄 Phase 2 |
 | DHT-backed shard resolution (`kwaainet vpk resolve`) | 🔄 Phase 3 |
 | Federated multi-KB RAG across nodes (`rag kb-share`, `rag serve --kb-ids`) | 🔄 Phase 3 |
