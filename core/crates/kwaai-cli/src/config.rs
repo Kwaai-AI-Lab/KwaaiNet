@@ -72,6 +72,15 @@ pub struct KwaaiNetConfig {
     #[serde(default)]
     pub public_ip: Option<String>,
 
+    /// Public-side TCP port to advertise in the announce_addr derived from
+    /// `public_ip`. When `None`, defaults to the listening `port`. Use this
+    /// for port-forwarded deployments where the router maps an external port
+    /// (e.g. 443 or 8443) to the node's internal listen port (e.g. 8080).
+    /// Has no effect when `announce_addr` is set explicitly — that's a full
+    /// multiaddr and carries its own port.
+    #[serde(default)]
+    pub public_port: Option<u16>,
+
     #[serde(default)]
     pub announce_addr: Option<String>,
 
@@ -140,6 +149,15 @@ pub struct KwaaiNetConfig {
     /// `kwaainet start` also manages the storage API process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<StorageConfig>,
+
+    /// Minimum number of independent IDENTIFY responses that must report the
+    /// same address before it is accepted as confirmed (default: 2).
+    #[serde(default = "default_identify_min_confirmations")]
+    pub identify_min_confirmations: usize,
+
+    /// How long to poll IDENTIFY for address confirmations, in seconds (default: 10).
+    #[serde(default = "default_identify_timeout_secs")]
+    pub identify_timeout_secs: u64,
 
     // ── Block rebalancing ─────────────────────────────────────────────────────
     /// Enable periodic block rebalancing (only active with `shard serve --auto`).
@@ -524,6 +542,12 @@ fn default_backoff_multiplier() -> f64 {
 fn default_jitter_factor() -> f64 {
     0.5
 }
+fn default_identify_min_confirmations() -> usize {
+    2
+}
+fn default_identify_timeout_secs() -> u64 {
+    45
+}
 fn default_rebalance_interval() -> u64 {
     300
 }
@@ -547,6 +571,7 @@ impl Default for KwaaiNetConfig {
                 std::env::consts::ARCH,
             )),
             public_ip: None,
+            public_port: None,
             announce_addr: None,
             identity_key: None,
             no_relay: false,
@@ -560,6 +585,8 @@ impl Default for KwaaiNetConfig {
             vpk_mode: None,
             vpk_local_port: None,
             storage: None,
+            identify_min_confirmations: default_identify_min_confirmations(),
+            identify_timeout_secs: default_identify_timeout_secs(),
             auto_rebalance: false,
             rebalance_interval_secs: default_rebalance_interval(),
             rebalance_min_redundancy: default_rebalance_min_redundancy(),
@@ -760,6 +787,11 @@ impl KwaaiNetConfig {
             "log_level" => self.log_level = value.to_string(),
             "public_name" => self.public_name = Some(value.to_string()),
             "public_ip" => self.public_ip = Some(value.to_string()),
+            "public_port" => {
+                self.public_port = Some(value.parse().map_err(|_| {
+                    anyhow::anyhow!("public_port must be a positive integer between 1 and 65535")
+                })?)
+            }
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
             "start_block" => {
@@ -781,6 +813,16 @@ impl KwaaiNetConfig {
             "contribute.storage" => self.contribute.storage = parse_bool(value)?,
             "contribute.shards" => self.contribute.shards = parse_bool(value)?,
             "contribute.auto_update" => self.contribute.auto_update = parse_bool(value)?,
+            "identify_min_confirmations" => {
+                self.identify_min_confirmations = value.parse().map_err(|_| {
+                    anyhow::anyhow!("identify_min_confirmations must be a positive integer")
+                })?
+            }
+            "identify_timeout_secs" => {
+                self.identify_timeout_secs = value.parse().map_err(|_| {
+                    anyhow::anyhow!("identify_timeout_secs must be a positive integer")
+                })?
+            }
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Run `kwaainet config set --help` to see valid keys.",
                 key
@@ -795,29 +837,6 @@ fn parse_bool(s: &str) -> Result<bool> {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
         _ => anyhow::bail!("Expected true/false, got {}", s),
-    }
-}
-
-/// Detect public IP via ipify.org (async).
-pub async fn detect_public_ip() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-    let ip = client
-        .get("https://api.ipify.org")
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?
-        .trim()
-        .to_string();
-    if ip.is_empty() {
-        None
-    } else {
-        Some(ip)
     }
 }
 

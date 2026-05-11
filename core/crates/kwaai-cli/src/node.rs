@@ -15,7 +15,14 @@ use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::{stream, P2PDaemon};
 use libp2p::PeerId;
 use sha1::{Digest, Sha1};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{io::AsyncWriteExt, net::TcpListener, signal, sync::RwLock};
 use tracing::{info, warn};
 
@@ -347,7 +354,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // -----------------------------------------------------------------------
     // Step 1: Start p2pd
     // -----------------------------------------------------------------------
-    info!("[1/5] Starting p2p daemon...");
+    info!("[1/6] Starting p2p daemon...");
     let p2pd_path = find_p2pd_binary();
     if p2pd_path.is_none() {
         eprintln!("  ⚠️  p2pd not found — run `kwaainet setup --get-deps` to install it");
@@ -358,14 +365,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     // Announce address: prefer explicit announce_addr, fall back to public_ip.
     // announce_addr is a raw multiaddr (e.g. /dns/kwaainet/tcp/8080).
-    // public_ip is an IP address formatted as /ip4/<ip>/tcp/<port>.
+    // public_ip is an IP address formatted as /ip4/<ip>/tcp/<port>, where
+    // <port> is `public_port` if set (port-forwarded deployments where the
+    // router maps an external port to the node's internal listen port) or
+    // `port` otherwise.
     // An empty string public_ip is treated as "no public IP".
+    let announce_port = config.public_port.unwrap_or(config.port);
     let announce_addr = config.announce_addr.clone().or_else(|| {
         config
             .public_ip
             .as_deref()
             .filter(|ip| !ip.is_empty())
-            .map(|ip| format!("/ip4/{}/tcp/{}", ip, config.port))
+            .map(|ip| format!("/ip4/{}/tcp/{}", ip, announce_port))
     });
 
     let identity_key_path = config
@@ -380,6 +391,28 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // to silently fail).
     let trusted_relays = config.trusted_relays.clone();
 
+    // Trusted relays: empty means "let AutoRelay discover via DHT". When the
+    // user configures explicit trusted_relays we pass them through; otherwise
+    // we leave the list empty rather than auto-promoting bootstraps to relays
+    // (bootstraps may not run a hop relay service, which causes reservations
+    // to silently fail).
+    let trusted_relays = config.trusted_relays.clone();
+
+    // Reachability is decided by libp2p at runtime: AutoNAT probes the
+    // bootstraps, and if dialback fails AutoRelay reserves a circuit on a
+    // trusted relay. The IDENTIFY discover step polls host.Addrs() until
+    // either a verified direct address or a /p2p-circuit address appears,
+    // then announces whatever the daemon reports.
+    //
+    // The DaemonBuilder's dht_server(true) knob (see kwaai-p2p-daemon/src/
+    // daemon.rs) keeps a node in DHT server mode regardless of AutoNAT
+    // verdict — without it p2pd defaults to client mode until reachability
+    // is confirmed, which means the node never gets advertised into peers'
+    // routing tables and FindPeer lookups for it fail. Not used here for
+    // regular nodes (the default `dht(true)` auto-mode is correct), but
+    // available for bootstrap-style deployments that need to be findable
+    // from t=0.
+
     let builder = P2PDaemon::builder()
         .dht(true)
         .bootstrap(!bootstrap_peers.is_empty())
@@ -390,7 +423,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         // to public, even if it actually is. Only honour an explicit opt-in.
         .force_reachability_private(config.force_private)
         .nat_portmap(true)
-        .host_addrs([host_addr])
+        .host_addrs([host_addr.clone()])
         .bootstrap_peers(bootstrap_peers.clone())
         .trusted_relays(trusted_relays.clone())
         .with_identity_key(&identity_key_path);
@@ -430,13 +463,13 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // -----------------------------------------------------------------------
     // Step 2: DHT storage
     // -----------------------------------------------------------------------
-    info!("[2/5] Initialising DHT storage...");
+    info!("[2/6] Initialising DHT storage...");
     let storage: SharedStorage = Arc::new(RwLock::new(DHTStorage::new(peer_id)));
 
     // -----------------------------------------------------------------------
     // Step 3: Register Hivemind RPC stream handlers with p2pd
     // -----------------------------------------------------------------------
-    info!("[3/5] Registering Hivemind RPC handlers...");
+    info!("[3/6] Registering Hivemind RPC handlers...");
     let handler_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .context("binding RPC handler listener")?;
@@ -470,7 +503,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // -----------------------------------------------------------------------
     // Step 4: Wait for DHT bootstrap (intelligent polling)
     // -----------------------------------------------------------------------
-    info!("[4/5] Bootstrapping...");
+    info!("[4/6] Bootstrapping...");
     dial_and_wait_for_bootstrap(&mut client, &bootstrap_peers).await?;
 
     // If p2pd crashed during bootstrap (Kademlia walk goroutine panic in
@@ -497,26 +530,66 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5: Initial DHT announcement
-    // -----------------------------------------------------------------------
-    info!("[5/5] Announcing to DHT...");
+    // Step 5: Self-discover announce addresses via IDENTIFY (when not manually
+    // configured). After at least one bootstrap peer connects, the libp2p
+    // IDENTIFY protocol lets peers report our observed addresses. We poll until
+    // min_confirmations separate responses agree on the same address, then
+    // restart p2pd with those addresses as its announce addrs.
+    //
+    // Skipped when:
+    // - `announce_addr` is set: we already know our address; IDENTIFY can only
+    //   confirm what we said.
+    // - `trusted_relays` is non-empty: the node is intentionally NATed and
+    //   uses one or more configured relays. Its only externally-visible
+    //   address is the `/p2p-circuit/` path through those relays; IDENTIFY
+    //   would only "discover" the same circuit address, and the
+    //   discover-then-restart cycle tears down the in-flight relay
+    //   reservation, leaving the node unable to announce. Trust the
+    //   trusted_relays config and let the relay path stand.
+    let mut discovered_addrs: Vec<String>;
+    if announce_addr.is_none() && config.trusted_relays.is_empty() {
+        (daemon, client, discovered_addrs) = discover_and_restart_with_announce(
+            daemon,
+            client,
+            &host_addr,
+            &bootstrap_peers,
+            &identity_key_path,
+            &p2pd_path,
+            &handler_addr,
+            config.no_relay,
+            config.port,
+            config.identify_min_confirmations,
+            config.identify_timeout_secs,
+        )
+        .await?;
+    } else {
+        discovered_addrs = Vec::new();
+    }
 
-    // Install the SIGHUP handler here — before announce() — so that if
-    // `shard serve` calls signal_reannounce() while announce() is still
-    // running (a ~5 s window), tokio captures the signal instead of
-    // applying the default Unix action (terminate process).
-    #[cfg(unix)]
-    let mut sighup = {
-        use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::hangup()).expect("SIGHUP handler")
-    };
+    // -----------------------------------------------------------------------
+    // Step 6: Initial DHT announcement
+    // -----------------------------------------------------------------------
+    info!("[6/6] Announcing to DHT...");
 
     // Determine effective throughput using the Petals formula:
     //   effective_tps = min(compute_tps, network_rps × relay_penalty)
     //   network_rps   = download_bps / (hidden_size × 16)
-    // using_relay: true only if we have no reachable address (behind NAT) and relay is allowed.
-    // announce_addr already encodes both explicit announce_addr and non-empty public_ip.
-    let using_relay = announce_addr.is_none() && !config.no_relay;
+    //
+    // using_relay drives the map's "Direct" vs "Via relay" badge:
+    //   - explicit announce_addr/public_ip  → false (Direct)
+    //   - all discovered addrs are circuits → true  (Via relay)
+    //   - mix of circuit + direct           → false (Direct, relay is fallback)
+    //   - no usable addrs discovered        → true  (intent is relay; the
+    //     node has no public reachability and no relay reservation succeeded
+    //     yet, but treating it as Direct on the map would be misleading
+    //     since libp2p's leaked LAN listen addr is not actually reachable)
+    let using_relay = if announce_addr.is_some() {
+        false
+    } else if discovered_addrs.is_empty() {
+        true
+    } else {
+        all_addrs_are_relay(&discovered_addrs)
+    };
 
     // Measure network bandwidth once at startup (1 MiB Cloudflare probe).
     // Stored so re-announcements can recompute effective_tps without re-probing.
@@ -728,7 +801,42 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         300, 30,
     ))));
 
-    // (SIGHUP handler installed above before announce() — see Step 5 setup)
+    // Tracks the number of RPC stream handler tasks currently in-flight.
+    // Used to gate p2pd restarts: we defer any restart until this reaches zero
+    // so we never tear down the daemon mid-request.
+    let active_rpc_streams: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
+    // When IDENTIFY detects an address change while RPC streams are active we
+    // store the new addresses here and apply the restart at the next reannounce
+    // tick once the node is idle (active_rpc_streams == 0).
+    let mut pending_restart: Option<Vec<String>> = None;
+
+    // Periodic IDENTIFY check — only active when no explicit announce_addr is
+    // configured. Every 5 minutes we re-poll our observed addresses; if they
+    // differ from what we announced at startup (e.g. after a network change)
+    // we restart p2pd and trigger an immediate re-announcement.
+    let mut identify_check = tokio::time::interval(Duration::from_secs(300));
+    identify_check.tick().await; // skip the immediate first tick
+                                 // Skip the periodic IDENTIFY-discover-and-restart loop when:
+                                 // - announce_addr is set: we already know our address; IDENTIFY can only
+                                 //   confirm what we said.
+                                 // - trusted_relays is non-empty: this is an intentionally-NATed node
+                                 //   whose only externally-visible address is the /p2p-circuit/ path
+                                 //   through its configured relay(s). The periodic check would "discover"
+                                 //   that circuit address, see it differs from the empty discovered_addrs
+                                 //   (we skip the initial discover for the same reason), set
+                                 //   pending_restart, and the subsequent restart would tear down the
+                                 //   relay reservation that makes the node reachable in the first place.
+    let explicit_announce = announce_addr.is_some() || !config.trusted_relays.is_empty();
+
+    // SIGHUP handler: shard serve sends SIGHUP after updating config.yaml so
+    // the daemon re-announces the new block range immediately (Unix only).
+    // On non-Unix this future never resolves — the branch is dead code.
+    #[cfg(unix)]
+    let mut sighup = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::hangup()).expect("SIGHUP handler")
+    };
 
     loop {
         tokio::select! {
@@ -738,10 +846,13 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     Ok((mut stream, addr)) => {
                         info!("Incoming RPC from {}", addr);
                         let s = storage_clone.clone();
+                        let counter = active_rpc_streams.clone();
+                        counter.fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             if let Err(e) = handle_rpc_stream(&mut stream, s).await {
                                 warn!("RPC handler error: {}", e);
                             }
+                            counter.fetch_sub(1, Ordering::Relaxed);
                         });
                     }
                     Err(e) => warn!("Accept error: {}", e),
@@ -795,6 +906,34 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     ).await {
                         Ok(()) => info!("✅ p2pd restarted and handlers re-registered"),
                         Err(e) => warn!("p2pd restart failed: {} — will retry in 120s", e),
+                    }
+                }
+
+                // If IDENTIFY detected an address change while RPC streams were
+                // active, apply the deferred p2pd restart now — but only once
+                // all in-flight RPC handler tasks have completed.
+                if let Some(ref new_addrs) = pending_restart.clone() {
+                    if active_rpc_streams.load(Ordering::Relaxed) > 0 {
+                        info!(
+                            "p2pd restart pending ({} active RPC stream(s)) — will retry next tick",
+                            active_rpc_streams.load(Ordering::Relaxed)
+                        );
+                    } else {
+                        info!("Applying deferred p2pd restart with new announce addr(s):");
+                        for addr in new_addrs {
+                            info!("  {}", addr);
+                        }
+                        if let Err(e) = restart_p2pd_with_addrs(
+                            &mut daemon, &mut client, new_addrs,
+                            &host_addr, &bootstrap_peers, &identity_key_path,
+                            &p2pd_path, &handler_addr, config.no_relay,
+                        ).await {
+                            warn!("Deferred p2pd restart failed: {}", e);
+                        } else {
+                            discovered_addrs = new_addrs.clone();
+                            server_info.using_relay = all_addrs_are_relay(&discovered_addrs);
+                            pending_restart = None;
+                        }
                     }
                 }
 
@@ -885,6 +1024,33 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 next_announce
                     .as_mut()
                     .reset(tokio::time::Instant::now() + Duration::from_secs(jitter_secs(300, 30)));
+            }
+
+            // Periodic IDENTIFY address check (every 5 minutes).
+            // Skipped when announce_addr/public_ip was explicitly configured.
+            _ = identify_check.tick(), if !explicit_announce => {
+                info!("Checking announce addresses via IDENTIFY...");
+                let fresh = collect_observed_addresses(&mut client, config.identify_min_confirmations, Duration::from_secs(config.identify_timeout_secs), config.port).await;
+                info!("  IDENTIFY result: {} addr(s) confirmed", fresh.len());
+                let mut fresh_sorted = fresh.clone();
+                let mut current_sorted = discovered_addrs.clone();
+                fresh_sorted.sort();
+                current_sorted.sort();
+                if !fresh_sorted.is_empty() && fresh_sorted != current_sorted {
+                    info!("Announce addresses changed:");
+                    for addr in &discovered_addrs {
+                        info!("  old: {}", addr);
+                    }
+                    for addr in &fresh {
+                        info!("  new: {}", addr);
+                    }
+                    // Don't restart p2pd immediately — doing so mid-inference would
+                    // tear down active relay circuits and orphan in-flight RPC streams.
+                    // Instead record the new addresses and let the reannounce tick
+                    // apply the restart once the node is idle.
+                    pending_restart = Some(fresh);
+                    info!("  p2pd restart deferred until node is idle");
+                }
             }
 
             // Shutdown signal
@@ -1263,6 +1429,316 @@ async fn send_to_bootstrap(
         );
     }
     (succeeded > 0, timings)
+}
+
+/// Unregister DHT stream handlers, shut down p2pd, rebuild and spawn it with
+/// the supplied set of announce addresses, reconnect the client, and re-register
+/// handlers. Used by the deferred-restart path (reannounce tick), where new
+/// addresses learned via IDENTIFY need to be promoted to the announce set.
+///
+/// Distinct from the `restart_p2pd` function above (which restarts after a p2pd
+/// crash with the original announce_addr); this one takes an explicit
+/// `announce_addrs` slice. Both share the same daemon-spawning shape.
+///
+/// `remove_stream_handler` failures are non-fatal (daemon may already be
+/// unresponsive). All other failures are returned as `Err` for the caller to
+/// handle at the appropriate severity.
+async fn restart_p2pd_with_addrs(
+    daemon: &mut kwaai_p2p_daemon::P2PDaemon,
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    announce_addrs: &[String],
+    host_addr: &str,
+    bootstrap_peers: &[String],
+    identity_key_path: &std::path::Path,
+    p2pd_path: &Option<std::path::PathBuf>,
+    handler_addr: &std::net::SocketAddr,
+    no_relay: bool,
+) -> anyhow::Result<()> {
+    let handler_addr_str = format!("/ip4/127.0.0.1/tcp/{}", handler_addr.port());
+    let dht_protocols = vec![
+        "DHTProtocol.rpc_ping".to_string(),
+        "DHTProtocol.rpc_store".to_string(),
+        "DHTProtocol.rpc_find".to_string(),
+    ];
+
+    // Unregister handlers before shutdown so the listener port is freed
+    // cleanly before we rebind. Non-fatal if the daemon is already gone.
+    if let Err(e) = client
+        .remove_stream_handler(&handler_addr_str, dht_protocols.clone())
+        .await
+    {
+        warn!("remove_stream_handler before restart: {}", e);
+    }
+    daemon.shutdown().await?;
+
+    let builder = P2PDaemon::builder()
+        .dht(true)
+        .relay(!no_relay)
+        .auto_relay(true)
+        .auto_nat(true)
+        .nat_portmap(true)
+        .host_addrs([host_addr])
+        .bootstrap_peers(bootstrap_peers.to_vec())
+        .announce_addrs(announce_addrs.iter().map(|s| s.as_str()))
+        .with_identity_key(identity_key_path);
+    let builder = if let Some(ref path) = p2pd_path {
+        builder.with_binary_path(path)
+    } else {
+        builder
+    };
+    let builder = if let Ok(sock) = std::env::var("KWAAINET_SOCKET") {
+        #[cfg(unix)]
+        let sock_addr = format!("/unix/{}", sock);
+        #[cfg(not(unix))]
+        let sock_addr = sock;
+        builder.with_listen_addr(sock_addr)
+    } else {
+        builder
+    };
+
+    *daemon = builder.spawn().await.context("restarting p2pd")?;
+    *client = daemon
+        .client()
+        .await
+        .context("p2pd client reconnect after restart")?;
+
+    client
+        .register_stream_handler(&handler_addr_str, dht_protocols)
+        .await
+        .context("re-registering stream handlers after restart")?;
+    info!("p2pd restarted and handlers re-registered");
+
+    Ok(())
+}
+/// Discover observed addresses via IDENTIFY and restart p2pd with them.
+///
+/// When no explicit `announce_addr` or `public_ip` is configured, we rely on the
+/// libp2p IDENTIFY protocol: after bootstrap peers connect they report our observed
+/// addresses back to us. Once `min_confirmations` independent responses agree we
+/// shut the initial p2pd down, rebuild it with the confirmed addresses as its
+/// announce addrs, and return the new daemon + client along with those addresses.
+///
+/// If IDENTIFY yields nothing the original daemon is returned unchanged and the
+/// returned address list is empty (the node will fall back to relay mode).
+async fn discover_and_restart_with_announce(
+    mut daemon: kwaai_p2p_daemon::P2PDaemon,
+    mut client: kwaai_p2p_daemon::P2PClient,
+    host_addr: &str,
+    bootstrap_peers: &[String],
+    identity_key_path: &std::path::Path,
+    p2pd_path: &Option<std::path::PathBuf>,
+    handler_addr: &std::net::SocketAddr,
+    no_relay: bool,
+    port: u16,
+    min_confirmations: usize,
+    timeout_secs: u64,
+) -> anyhow::Result<(
+    kwaai_p2p_daemon::P2PDaemon,
+    kwaai_p2p_daemon::P2PClient,
+    Vec<String>,
+)> {
+    info!("No explicit announce address — discovering addresses via IDENTIFY...");
+
+    // Give bootstrap peer(s) a moment to complete the IDENTIFY exchange before
+    // polling. The TCP connection is established by the time we're called, but
+    // IDENTIFY runs asynchronously after it.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let discovered_addrs = collect_observed_addresses(
+        &mut client,
+        min_confirmations,
+        Duration::from_secs(timeout_secs),
+        port,
+    )
+    .await;
+
+    if discovered_addrs.is_empty() {
+        warn!(
+            "⚠️ Could not confirm any announce addresses via IDENTIFY \
+             — node may appear Unreachable on map.kwaai.ai. \
+             Set public_ip or announce_addr in config to override."
+        );
+        return Ok((daemon, client, discovered_addrs));
+    }
+
+    info!("Confirmed announce address(es) — restarting p2pd:");
+    for addr in &discovered_addrs {
+        info!("  - {}", addr);
+    }
+
+    restart_p2pd_with_addrs(
+        &mut daemon,
+        &mut client,
+        &discovered_addrs,
+        host_addr,
+        bootstrap_peers,
+        identity_key_path,
+        p2pd_path,
+        handler_addr,
+        no_relay,
+    )
+    .await?;
+
+    Ok((daemon, client, discovered_addrs))
+}
+
+/// Poll `identify_with_addrs()` until `min_confirmations` separate responses
+/// all include the same multiaddr, or `timeout` elapses.
+///
+/// Returns the confirmed addresses as multiaddr strings (e.g.
+/// `/ip4/203.0.113.1/tcp/8080`). Unspecified and link-local addresses are
+/// filtered out; private/loopback addresses are included.
+///
+/// "Confirmation" here means the address appeared in at least
+/// `min_confirmations` distinct IDENTIFY responses. p2pd refreshes its
+/// observed-address list as more bootstrap peers connect and run IDENTIFY, so
+/// polling with a short interval naturally accumulates multiple independent
+/// observations.
+async fn collect_observed_addresses(
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    min_confirmations: usize,
+    timeout: Duration,
+    _port: u16,
+) -> Vec<String> {
+    use libp2p::Multiaddr;
+    use std::collections::HashMap;
+
+    // host.Addrs() is libp2p's authoritative set of advertised addresses:
+    //   - AutoNAT-confirmed direct addresses (bootstraps verified inbound dialback)
+    //   - AutoRelay-reserved /p2p-circuit addresses
+    //   - Local listen interfaces (loopback, LAN)
+    // Trust the daemon's filtering — we don't second-guess its port or IP.
+    // We only drop entries that are obviously unusable (loopback/link-local).
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    loop {
+        match client.identify_with_addrs().await {
+            Ok((_peer_id, addrs)) => {
+                tracing::debug!("IDENTIFY returned {} addr(s)", addrs.len());
+                for addr_bytes in &addrs {
+                    if let Ok(ma) = Multiaddr::try_from(addr_bytes.clone()) {
+                        let s = ma.to_string();
+                        if is_announceable_addr(&ma) {
+                            let count = counts.entry(s.clone()).or_insert(0);
+                            *count += 1;
+                            tracing::debug!("  addr={} ({}x)", s, count);
+                        } else {
+                            tracing::debug!("  addr={} → filtered", s);
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::debug!("identify_with_addrs error: {}", e),
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    let confirmed: Vec<String> = counts
+        .into_iter()
+        .filter(|(_, c)| *c >= min_confirmations)
+        .map(|(addr, _)| addr)
+        .collect();
+
+    if confirmed.is_empty() {
+        tracing::warn!(
+            "IDENTIFY: no addresses reached {} confirmation(s) within {:?}",
+            min_confirmations,
+            timeout,
+        );
+    }
+
+    confirmed
+}
+
+/// Decide whether a multiaddr from p2pd's `host.Addrs()` is suitable to
+/// announce.
+///
+/// Three kinds of entries appear there:
+///   - AutoNAT-confirmed direct: `/ip4/PUB/tcp/PORT` — the bootstraps verified
+///     they can dial us back at this exact address. Announce.
+///   - AutoRelay-reserved circuit: `/.../p2p-circuit` — we hold a reservation
+///     on a relay; peers can reach us through it. Announce.
+///   - Local listen interface: loopback / LAN — only useful inside our box or
+///     LAN, never as a public announce. Drop.
+///
+/// We accept any address with a `/p2p-circuit` segment, or one with a
+/// globally-routable IP. RFC1918 / CGNAT / loopback / link-local IPs are
+/// rejected when standalone — they appear in `host.Addrs()` because they are
+/// our local listen interfaces, but they are not reachable from outside the
+/// LAN and announcing them produces Direct-but-unreachable nodes.
+///
+/// Operators with unusual topologies (private overlays, port-forwarded
+/// routers, deployments where the public IP genuinely is RFC1918) should set
+/// `public_ip` or `announce_addr` explicitly to bypass IDENTIFY discovery.
+fn is_announceable_addr(ma: &libp2p::Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+
+    let mut has_circuit = false;
+    let mut routable_ip = false;
+    let mut bad_ip = false;
+
+    for proto in ma.iter() {
+        match proto {
+            Protocol::P2pCircuit => has_circuit = true,
+            Protocol::Ip4(a) => {
+                if !is_globally_routable_v4(a) {
+                    bad_ip = true;
+                } else {
+                    routable_ip = true;
+                }
+            }
+            Protocol::Ip6(a) => {
+                if a.is_unspecified() || a.is_loopback() {
+                    bad_ip = true;
+                } else {
+                    routable_ip = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if has_circuit {
+        return true;
+    }
+    routable_ip && !bad_ip
+}
+
+/// True iff `a` is plausibly an externally-reachable IPv4 address. Rejects
+/// loopback, link-local, unspecified, broadcast, multicast, and the RFC1918 /
+/// RFC6598 (CGNAT) private ranges.
+///
+/// We deliberately do NOT reject RFC5737 documentation ranges
+/// (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) here — they are
+/// reserved by IANA but not LAN-private, and our nat-test topology uses
+/// `198.51.100.0/24` as a simulated public network.
+fn is_globally_routable_v4(a: std::net::Ipv4Addr) -> bool {
+    if a.is_unspecified()
+        || a.is_loopback()
+        || a.is_link_local()
+        || a.is_broadcast()
+        || a.is_multicast()
+        || a.is_private()
+    {
+        return false;
+    }
+    let [b0, b1, ..] = a.octets();
+    // RFC6598 carrier-grade NAT: 100.64.0.0/10
+    if b0 == 100 && (64..=127).contains(&b1) {
+        return false;
+    }
+    true
+}
+
+/// Returns true if every confirmed announce address is a relay circuit
+/// (`/p2p-circuit`). Used to set `using_relay` on the DHT record.
+fn all_addrs_are_relay(addrs: &[String]) -> bool {
+    !addrs.is_empty() && addrs.iter().all(|s| s.contains("/p2p-circuit"))
 }
 
 /// Wait for p2pd's own DHT bootstrap to establish connections.

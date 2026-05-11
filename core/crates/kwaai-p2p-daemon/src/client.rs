@@ -263,6 +263,16 @@ impl P2PClient {
     ///
     /// Returns the peer ID as hex-encoded string
     pub async fn identify(&mut self) -> Result<String> {
+        let (peer_id, _) = self.identify_with_addrs().await?;
+        Ok(peer_id)
+    }
+
+    /// Send an IDENTIFY request and return both the peer ID and observed multiaddrs.
+    ///
+    /// Returns `(peer_id_hex, addrs)` where `addrs` is the list of multiaddr bytes
+    /// that p2pd has observed for itself (populated by the libp2p IDENTIFY protocol
+    /// as peers connect and report our external address).
+    pub async fn identify_with_addrs(&mut self) -> Result<(String, Vec<Vec<u8>>)> {
         let request = Request {
             r#type: request::Type::Identify as i32,
             connect: None,
@@ -278,9 +288,8 @@ impl P2PClient {
         let response = self.send_request(request).await?;
 
         if let Some(id) = response.identify {
-            // Peer ID is binary data, encode as hex for display
             let peer_id = hex::encode(&id.id);
-            Ok(peer_id)
+            Ok((peer_id, id.addrs))
         } else {
             Err(Error::InvalidResponse(
                 "Expected IDENTIFY response".to_string(),

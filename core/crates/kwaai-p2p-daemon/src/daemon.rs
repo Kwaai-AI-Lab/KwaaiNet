@@ -20,6 +20,7 @@ pub struct DaemonBuilder {
     bootstrap_peers: Vec<String>,
     bootstrap: bool,
     dht: bool,
+    dht_server: bool,
     relay: bool,
     auto_relay: bool,
     auto_nat: bool,
@@ -58,9 +59,30 @@ impl DaemonBuilder {
         self
     }
 
-    /// Enable DHT support
+    /// Enable DHT support.
+    ///
+    /// Maps to p2pd's `-dht` flag, which uses libp2p's `dht.ModeAuto`: the
+    /// node starts in client mode and only switches to server mode if AutoNAT
+    /// confirms it is publicly reachable. Client-mode peers do not advertise
+    /// themselves into other nodes' routing tables and are not findable via
+    /// FindPeer. For private deployments where every node should be findable
+    /// without depending on AutoNAT, prefer `dht_server(true)`.
     pub fn dht(mut self, enable: bool) -> Self {
         self.dht = enable;
+        self
+    }
+
+    /// Force DHT server mode (`-dhtServer`).
+    ///
+    /// Server mode means the node always advertises itself into peers' routing
+    /// tables and answers DHT queries. Use this when the node should be
+    /// findable regardless of AutoNAT verdict — e.g. on a private network
+    /// where AutoNAT's "public reachability" definition does not apply, or
+    /// when running behind a port-forwarded router that AutoNAT cannot probe.
+    ///
+    /// When set, takes precedence over `dht()` (the `-dht` flag is omitted).
+    pub fn dht_server(mut self, enable: bool) -> Self {
+        self.dht_server = enable;
         self
     }
 
@@ -227,8 +249,12 @@ impl DaemonBuilder {
         // Set listen address
         cmd.arg("-listen").arg(&listen_addr);
 
-        // DHT mode
-        if self.dht {
+        // DHT mode. -dhtServer takes precedence over -dht: server mode forces
+        // the node into the routing table regardless of AutoNAT verdict, while
+        // -dht (auto mode) leaves it as a client until proven reachable.
+        if self.dht_server {
+            cmd.arg("-dhtServer");
+        } else if self.dht {
             cmd.arg("-dht");
         }
 
