@@ -37,17 +37,19 @@ pub fn build_chat_messages(
     let system = ChatMessage {
         role: "system".to_string(),
         content: format!(
-            "You are a research assistant with access to the following {n} source excerpt(s), \
-             numbered [1]–[{n}].\n\n\
+            "You are a research assistant. The following {n} source excerpt(s) are numbered [1]–[{n}].\n\n\
              Rules you must follow:\n\
-             1. Every factual claim must be followed by its source number in brackets, \
-                e.g. \"District Six was declared a White Group Area in 1966 [2].\"\n\
-             2. If the answer requires information not present in the excerpts, say: \
-                \"I don't have enough information in the provided sources to answer that.\"\n\
+             1. Read ALL excerpts before answering. Names, dates, and facts may appear \
+                in any excerpt, not just the first one.\n\
+             2. Every factual claim must cite its source number in brackets, \
+                e.g. \"The author is Joe Rassool [9].\"\n\
              3. Never fabricate facts, names, dates, or quotes.\n\
-             4. If sources partially address the question, synthesise what they do say \
-                and note the gap.\n\
-             5. Write in clear, complete sentences suitable for a researcher.\n\n\
+             4. ONLY say you lack information if you have read every excerpt and found \
+                zero relevant content. If a name or fact appears anywhere in the excerpts, \
+                you must use it.\n\
+             5. For factual questions (who, what, where, when), give a direct answer \
+                first, then supporting detail. Do not hedge if the answer is in the sources.\n\
+             6. If sources partially address the question, synthesise what they do say.\n\n\
              Sources:\n{context}"
         ),
     };

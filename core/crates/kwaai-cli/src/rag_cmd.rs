@@ -807,7 +807,7 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
                 chunks
             };
 
-            let messages = build_chat_messages(&query, &chunks, &history, 8192);
+            let messages = build_chat_messages(&query, &chunks, &history, 24000);
             let payload = serde_json::json!({
                 "model": model,
                 "messages": messages,

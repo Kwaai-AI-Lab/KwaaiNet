@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     // hnsw_rs and kwaai_storage are silenced at INFO — they emit noisy
     // index-load messages that are implementation detail, not user-facing.
     let default_filter = format!(
-        "info,hnsw_rs=warn,kwaai_storage=warn,{}=info",
+        "info,hnsw_rs=warn,kwaai_storage=warn,tantivy=warn,{}=info",
         env!("CARGO_PKG_NAME")
     );
     tracing_subscriber::fmt()
