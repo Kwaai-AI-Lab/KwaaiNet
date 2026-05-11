@@ -442,7 +442,7 @@ Bob (any node)                         Eve (storage node)
 
 Eve returns only `{id, score}` pairs — vectors never travel back over the wire. Nodes are addressed by PeerId; NAT traversal and routing are handled by the P2P relay layer, never by IP addresses.
 
-### Current status (v0.4.40)
+### Current status (v0.4.44)
 
 | Capability | Status |
 |------------|--------|
@@ -465,6 +465,8 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | PDF, DOCX, DOC document parsing (native Rust, no external tools for PDF/DOCX) | ✅ Shipped |
 | OpenAI-compatible RAG HTTP server with embedded UI (`kwaainet rag serve`) | ✅ Shipped |
 | External drive support for RAG corpus (`rag init --rag-dir <path>`) | ✅ Shipped |
+| Configurable chunking (`rag sync/ingest --chunk-size`, `--chunk-overlap`, `--min-chunk-len`) | ✅ Shipped |
+| Tuned HNSW build params: ef_construction 64→200, adaptive ef_search; exact search below 2K vectors | ✅ Shipped |
 | PHE encryption layer (vectors encrypted before leaving Bob) | 🔄 Phase 3 |
 | HyDE query expansion | 🔄 Phase 3 |
 | Bob fan-out to multiple Eves (`kwaainet vpk shard`) | 🔄 Phase 2 |
@@ -534,6 +536,9 @@ kwaainet rag ingest /path/to/report.docx
 
 # 4. Sync a whole folder (incremental — only ingests new/changed files)
 kwaainet rag sync /path/to/my-documents/
+
+# Optional: tune chunking strategy (defaults: 800/200/100)
+kwaainet rag sync /path/to/my-documents/ --chunk-size 600 --chunk-overlap 150 --min-chunk-len 80
 
 # 5. Hybrid semantic + keyword search (no LLM required)
 kwaainet rag query "What are the main risk factors?"
@@ -616,7 +621,7 @@ KwaaiNet's roadmap is defined as the **gap** between the aspirational Layer 8 ar
 |---------|--------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
 | Trust   | 5-layer trust pipeline including Testable Credentials (PVP-1) and EigenTrust propagation. | Identity + VC wallet + local time-decayed trust scores shipped; ToIP work in progress. |
 | Compute | Sharded inference, decentralized training, safe tool-calling with trust-gated policies.   | Dual backend: llama.cpp for 30+ tok/s local on Apple Silicon, candle for distributed block sharding on Linux/CUDA. Auto-detected GPU with bundled CUDA runtime (no toolkit install needed). Inference circuits, session-pinned paths, selective download, OpenAI-compatible API shipped. |
-| Storage | Fully distributed personal AI memory via cross-node VPK sharding and DHT-backed resolution. | **VPK Phase 1 complete**: Eve nodes serve multi-tenant vector storage over `/kwaai/storage/1.0.0` libp2p RPC; Bob nodes discover Eves by PeerId via DHT; `kwaainet vpk bench` benchmarks sharded vs local vs Qdrant performance. **RAG Phase 2 complete**: local-first embedded knowledge base, hybrid BM25 (tantivy) + dense retrieval, brute-force exact search for small corpora, lost-in-the-middle context reordering, `rag destroy`. PHE encryption (Phase 3) is next. See [VPK Shard Benchmark](docs/vpk-shard-bench/README.md). |
+| Storage | Fully distributed personal AI memory via cross-node VPK sharding and DHT-backed resolution. | **VPK Phase 1 complete**: Eve nodes serve multi-tenant vector storage over `/kwaai/storage/1.0.0` libp2p RPC; Bob nodes discover Eves by PeerId via DHT; `kwaainet vpk bench` benchmarks sharded vs local vs Qdrant performance. **RAG Phase 2 complete**: local-first embedded knowledge base, hybrid BM25 (tantivy) + dense retrieval, brute-force exact search for small corpora (< 2K vectors), lost-in-the-middle context reordering, `rag destroy`, configurable chunking. HNSW tuned to m=16, ef_construction=200 (benchmarked: 97–99% recall on text embeddings at all corpus sizes up to 50K). PHE encryption (Phase 3) is next. See [VPK Shard Benchmark](docs/vpk-shard-bench/README.md) and [HNSW Parameter Study](docs/hnsw_vs_brute_force.md). |
 | Network | Intent-casting as a Layer 8 business protocol with economic settlement and neutrality guarantees. | libp2p + Kademlia DHT, trust-gated routing by model/trust/latency shipped. |
 
 See **[docs/roadmap.md](docs/roadmap.md)** for the full living roadmap with contribution ideas for each area.
@@ -659,6 +664,7 @@ Learn more at [kwaai.ai](https://www.kwaai.ai) and the [Kwaai-AI-Lab GitHub orga
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Node architecture, lobes, and Layer 8 stack |
 | [docs/WHITEPAPER.md](docs/WHITEPAPER.md) | Layer 8: The Decentralized AI Trust Layer (whitepaper) |
 | [docs/vpk-shard-bench/README.md](docs/vpk-shard-bench/README.md) | VPK shard benchmark — sharded Eve vs local HNSW vs Qdrant, with chart and analysis |
+| [docs/hnsw_vs_brute_force.md](docs/hnsw_vs_brute_force.md) | HNSW parameter study — ef_search, ef_construction, and m sweeps for dim=768 RAG workloads |
 | [nix/README.md](nix/README.md) | Nix build, dev shell, and test infrastructure |
 | [docs/contributor-guide.md](docs/contributor-guide.md) | How to contribute — 1 hour / 1 day / 1 week paths |
 | [docs/NODE_UI_PLANNING.md](docs/NODE_UI_PLANNING.md) | Node dashboard UI plan — status, config, logs, identity |
