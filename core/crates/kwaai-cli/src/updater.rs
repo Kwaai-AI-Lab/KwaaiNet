@@ -185,11 +185,13 @@ impl UpdateChecker {
                 });
 
             // Check if CUDA is already present on this system.
-            // We check four signals in order — the first hit short-circuits:
+            // We check five signals in order — the first hit short-circuits:
             //   1. %CUDA_PATH% env var (set by the CUDA toolkit installer)
             //   2. %CUDA_HOME% env var (common alternative)
-            //   3. nvidia-smi.exe on PATH (capped at 4 s — NVML init is slow on Windows)
-            //   4. cublas*.dll in the kwaainet install dir (bundled by previous update)
+            //   3. Standard install dir exists (reliable even when env vars aren't
+            //      propagated, e.g. when kwaainet is run from Git Bash)
+            //   4. nvidia-smi.exe on PATH (capped at 4 s — NVML init is slow on Windows)
+            //   5. cublas*.dll in the kwaainet install dir (bundled by previous update)
             print!("  Detecting GPU…");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             let cuda_installed = if std::env::var_os("CUDA_PATH").is_some() {
@@ -197,6 +199,13 @@ impl UpdateChecker {
                 true
             } else if std::env::var_os("CUDA_HOME").is_some() {
                 println!(" CUDA_HOME set");
+                true
+            } else if std::path::Path::new(
+                r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA",
+            )
+            .exists()
+            {
+                println!(" CUDA toolkit dir found");
                 true
             } else if nvidia_smi_async().await {
                 println!(" nvidia-smi found");
@@ -307,6 +316,12 @@ impl UpdateChecker {
                     "CUDA_PATH env var set"
                 } else if std::env::var_os("CUDA_HOME").is_some() {
                     "CUDA_HOME env var set"
+                } else if std::path::Path::new(
+                    r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA",
+                )
+                .exists()
+                {
+                    "CUDA toolkit dir found"
                 } else if which_nvidia_smi() {
                     "nvidia-smi found on PATH"
                 } else {
