@@ -65,8 +65,9 @@ pub async fn run(args: RagArgs) -> Result<()> {
             mode,
             model,
             hyde,
+            hyde_alpha,
             rerank,
-        } => cmd_query(text, top_k, min_score, json, kb, understand, inference_url, mode, model, hyde, rerank).await,
+        } => cmd_query(text, top_k, min_score, json, kb, understand, inference_url, mode, model, hyde, hyde_alpha, rerank).await,
 
         RagAction::Chat {
             top_k,
@@ -75,8 +76,9 @@ pub async fn run(args: RagArgs) -> Result<()> {
             understand,
             model,
             hyde,
+            hyde_alpha,
             rerank,
-        } => cmd_chat(top_k, inference_url, kb, understand, model, hyde, rerank).await,
+        } => cmd_chat(top_k, inference_url, kb, understand, model, hyde, hyde_alpha, rerank).await,
 
         RagAction::Docs { kb } => cmd_docs(kb).await,
 
@@ -118,10 +120,13 @@ pub async fn run(args: RagArgs) -> Result<()> {
             model,
             top_k,
             hyde,
+            hyde_alpha,
             rerank,
             understand,
+            llm_judge,
+            judge_model,
             output,
-        } => cmd_eval(questions, kb, inference_url, model, top_k, hyde, rerank, understand, output).await,
+        } => cmd_eval(questions, kb, inference_url, model, top_k, hyde, hyde_alpha, rerank, understand, llm_judge, judge_model, output).await,
     }
 }
 
@@ -482,6 +487,7 @@ async fn cmd_query(
     mode: String,
     model: String,
     hyde: bool,
+    hyde_alpha: Option<f32>,
     rerank: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -514,12 +520,14 @@ async fn cmd_query(
 
         let hyde_url = if hyde { inference_url.clone() } else { None };
         let hyde_mdl = if hyde { Some(model.clone()) } else { None };
+        let effective_alpha = if hyde { Some(hyde_alpha.unwrap_or(0.5)) } else { None };
         let retrieve_cfg = RetrieveConfig {
             top_k,
             min_score,
             use_sentence_window: false,
             hyde_inference_url: hyde_url,
             hyde_model: hyde_mdl,
+            hyde_alpha: effective_alpha,
         };
         let spinner = if json_out { None } else { Some(crate::progress::Spinner::start("Retrieving…")) };
 
@@ -672,7 +680,7 @@ fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bo
 
 // ── chat ──────────────────────────────────────────────────────────────────────
 
-async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: bool, model: String, hyde: bool, rerank: bool) -> Result<()> {
+async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: bool, model: String, hyde: bool, hyde_alpha: Option<f32>, rerank: bool) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
 
@@ -689,6 +697,7 @@ async fn cmd_chat(top_k: usize, inference_url: String, kb: String, understand: b
             use_sentence_window: false,
             hyde_inference_url: if hyde { Some(inference_url.clone()) } else { None },
             hyde_model: if hyde { Some(model.clone()) } else { None },
+            hyde_alpha: if hyde { Some(hyde_alpha.unwrap_or(0.5)) } else { None },
         };
 
         let http = reqwest::Client::new();
@@ -1488,6 +1497,8 @@ struct EvalQuestion {
     id: String,
     question: String,
     expected_keywords: Vec<String>,
+    #[serde(default)]
+    expected_answer: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1498,8 +1509,11 @@ async fn cmd_eval(
     model: String,
     top_k: usize,
     hyde: bool,
+    hyde_alpha: Option<f32>,
     rerank: bool,
     understand: bool,
+    llm_judge: bool,
+    judge_model: Option<String>,
     output: Option<std::path::PathBuf>,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -1507,6 +1521,11 @@ async fn cmd_eval(
 
     #[cfg(feature = "storage")]
     {
+        // Suppress tantivy/tracing INFO chatter so eval progress lines are readable.
+        if std::env::var("RUST_LOG").is_err() {
+            std::env::set_var("RUST_LOG", "warn");
+        }
+
         let raw = std::fs::read_to_string(&questions_path)
             .with_context(|| format!("reading {}", questions_path.display()))?;
         let questions: Vec<EvalQuestion> = serde_json::from_str(&raw)
@@ -1531,12 +1550,15 @@ async fn cmd_eval(
             use_sentence_window: false,
             hyde_inference_url: if hyde { Some(inference_url.clone()) } else { None },
             hyde_model: if hyde { Some(model.clone()) } else { None },
+            hyde_alpha: if hyde { Some(hyde_alpha.unwrap_or(0.5)) } else { None },
         };
 
         print_box_header(&format!("RAG Eval  ({} questions, kb={})", questions.len(), kb));
         println!("  Model:     {model}");
         println!("  Inference: {inference_url}");
-        println!("  top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}");
+        let judge_mdl = judge_model.as_deref().unwrap_or(&model);
+        println!("  top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}");
+        if llm_judge { println!("  Judge model: {judge_mdl}"); }
         print_separator();
 
         struct Row {
@@ -1547,6 +1569,7 @@ async fn cmd_eval(
             keyword_hits: usize,
             total_keywords: usize,
             latency_ms: u128,
+            judge_score: Option<u8>,
         }
 
         let mut rows: Vec<Row> = Vec::new();
@@ -1621,13 +1644,58 @@ async fn cmd_eval(
                 .filter(|kw| answer_lower.contains(&kw.to_lowercase()))
                 .count();
             let total_keywords = q.expected_keywords.len();
-            let score = if total_keywords > 0 {
-                keyword_hits as f64 / total_keywords as f64
+
+            // LLM-as-judge (optional, only if expected_answer is present).
+            let judge_score: Option<u8> = if llm_judge {
+                if let Some(ref expected) = q.expected_answer {
+                    let judge_prompt = format!(
+                        "Question: {}\n\nReference answer: {}\n\nCandidate answer: {}\n\n\
+                         Score the candidate answer:\n\
+                         0 = wrong, fabricated, or does not answer the question\n\
+                         1 = partially correct (some right facts, but incomplete or mixed with errors)\n\
+                         2 = fully correct\n\n\
+                         Return ONLY the digit (0, 1, or 2). Nothing else.",
+                        q.question, expected, answer
+                    );
+                    let judge_payload = serde_json::json!({
+                        "model": judge_mdl,
+                        "messages": [
+                            {"role": "system", "content": "You are a strict grader. Return only a digit."},
+                            {"role": "user", "content": judge_prompt}
+                        ],
+                        "stream": false,
+                        "temperature": 0.0,
+                        "max_tokens": 4,
+                    });
+                    match http
+                        .post(format!("{inference_url}/v1/chat/completions"))
+                        .json(&judge_payload)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                            let text = body["choices"][0]["message"]["content"]
+                                .as_str()
+                                .unwrap_or("0");
+                            text.trim().chars().next()
+                                .and_then(|c| c.to_digit(10))
+                                .map(|d| d.min(2) as u8)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                }
             } else {
-                1.0
+                None
             };
 
-            println!("{keyword_hits}/{total_keywords} keywords  {latency_ms}ms");
+            let judge_str = match judge_score {
+                Some(s) => format!("  judge={s}/2"),
+                None => String::new(),
+            };
+            println!("{keyword_hits}/{total_keywords} keywords{judge_str}  {latency_ms}ms");
 
             rows.push(Row {
                 id: q.id.clone(),
@@ -1637,11 +1705,11 @@ async fn cmd_eval(
                 keyword_hits,
                 total_keywords,
                 latency_ms,
+                judge_score,
             });
 
             // Brief pause to avoid hammering Ollama.
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-            let _ = score;
         }
 
         // Build report.
@@ -1651,26 +1719,43 @@ async fn cmd_eval(
         let avg_latency_ms: u128 = if rows.is_empty() { 0 } else {
             rows.iter().map(|r| r.latency_ms).sum::<u128>() / rows.len() as u128
         };
+        let judge_rows: Vec<u8> = rows.iter().filter_map(|r| r.judge_score).collect();
+        let avg_judge = if judge_rows.is_empty() { None } else {
+            Some(judge_rows.iter().map(|&s| s as f64).sum::<f64>() / judge_rows.len() as f64)
+        };
 
         let mut report = String::new();
         report.push_str("# RAG Eval Report\n\n");
         report.push_str(&format!("**KB:** `{kb}`  **Model:** `{model}`\n\n"));
         report.push_str(&format!(
-            "**Flags:** top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}\n\n"
+            "**Flags:** top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}\n\n"
         ));
+        let judge_summary = if let Some(avg) = avg_judge {
+            format!(" | Avg judge score | {:.2}/2.00 ({} questions scored) |\n",
+                avg, judge_rows.len())
+        } else {
+            String::new()
+        };
         report.push_str(&format!(
             "## Summary\n\n\
              | Metric | Value |\n\
              |--------|-------|\n\
              | Questions | {} |\n\
              | Overall keyword hit rate | {:.1}% ({total_hits}/{total_kw}) |\n\
+             {judge_summary}\
              | Avg latency | {avg_latency_ms}ms |\n\n",
             rows.len(),
             overall_score * 100.0,
         ));
         report.push_str("## Per-question results\n\n");
-        report.push_str("| ID | Question | Hit rate | Sources | Latency |\n");
-        report.push_str("|----|----------|----------|---------|--------|\n");
+        let has_judge = rows.iter().any(|r| r.judge_score.is_some());
+        if has_judge {
+            report.push_str("| ID | Question | Hit rate | Judge | Sources | Latency |\n");
+            report.push_str("|----|----------|----------|-------|---------|--------|\n");
+        } else {
+            report.push_str("| ID | Question | Hit rate | Sources | Latency |\n");
+            report.push_str("|----|----------|----------|---------|--------|\n");
+        }
         for r in &rows {
             let pct = if r.total_keywords > 0 {
                 format!("{}/{} ({:.0}%)", r.keyword_hits, r.total_keywords,
@@ -1678,14 +1763,20 @@ async fn cmd_eval(
             } else {
                 "n/a".to_string()
             };
-            report.push_str(&format!(
-                "| {} | {} | {} | {} | {}ms |\n",
-                r.id,
-                r.question.replace('|', "\\|"),
-                pct,
-                r.retrieved_docs.join(", "),
-                r.latency_ms,
-            ));
+            if has_judge {
+                let j = r.judge_score.map_or("—".to_string(), |s| format!("{s}/2"));
+                report.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {}ms |\n",
+                    r.id, r.question.replace('|', "\\|"), pct, j,
+                    r.retrieved_docs.join(", "), r.latency_ms,
+                ));
+            } else {
+                report.push_str(&format!(
+                    "| {} | {} | {} | {} | {}ms |\n",
+                    r.id, r.question.replace('|', "\\|"), pct,
+                    r.retrieved_docs.join(", "), r.latency_ms,
+                ));
+            }
         }
         report.push_str("\n## Answers\n\n");
         for r in &rows {
@@ -1694,18 +1785,21 @@ async fn cmd_eval(
         }
 
         // Output.
+        let judge_note = avg_judge
+            .map(|a| format!("  judge={:.2}/2", a))
+            .unwrap_or_default();
         if let Some(ref path) = output {
             std::fs::write(path, &report)
                 .with_context(|| format!("writing report to {}", path.display()))?;
             print_success(&format!(
-                "Report written to {}  ({:.1}% hit rate, {avg_latency_ms}ms avg)",
+                "Report written to {}  ({:.1}% hit rate{judge_note}, {avg_latency_ms}ms avg)",
                 path.display(),
                 overall_score * 100.0,
             ));
         } else {
             println!("\n{report}");
             print_success(&format!(
-                "Overall: {:.1}% keyword hit rate ({total_hits}/{total_kw})  avg {avg_latency_ms}ms",
+                "Overall: {:.1}% keyword hit rate{judge_note}  ({total_hits}/{total_kw})  avg {avg_latency_ms}ms",
                 overall_score * 100.0,
             ));
         }

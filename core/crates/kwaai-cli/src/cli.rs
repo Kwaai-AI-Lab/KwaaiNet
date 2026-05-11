@@ -1056,7 +1056,7 @@ pub enum RagAction {
         chunk_overlap: usize,
 
         /// Minimum chunk length in characters (shorter chunks are dropped)
-        #[arg(long, default_value = "100")]
+        #[arg(long, default_value = "20")]
         min_chunk_len: usize,
 
         /// Extract entities and relations into the knowledge graph during ingest
@@ -1121,6 +1121,10 @@ pub enum RagAction {
         #[arg(long)]
         hyde: bool,
 
+        /// HyDE blend factor (0.0=pure query, 1.0=pure HyDE, 0.5=equal blend; default when --hyde is set: 0.5)
+        #[arg(long, value_name = "ALPHA")]
+        hyde_alpha: Option<f32>,
+
         /// Rerank candidates with a single LLM call before selecting top-k
         #[arg(long)]
         rerank: bool,
@@ -1151,6 +1155,10 @@ pub enum RagAction {
         /// Use HyDE: generate a hypothetical answer and embed that instead of the raw query
         #[arg(long)]
         hyde: bool,
+
+        /// HyDE blend factor (0.0=pure query, 1.0=pure HyDE, 0.5=equal blend; default when --hyde is set: 0.5)
+        #[arg(long, value_name = "ALPHA")]
+        hyde_alpha: Option<f32>,
 
         /// Rerank candidates with a single LLM call before selecting top-k
         #[arg(long)]
@@ -1238,7 +1246,7 @@ pub enum RagAction {
         chunk_overlap: usize,
 
         /// Minimum chunk length in characters (shorter chunks are dropped)
-        #[arg(long, default_value = "100")]
+        #[arg(long, default_value = "20")]
         min_chunk_len: usize,
 
         /// Extract entities and relations into the knowledge graph during sync
@@ -1308,6 +1316,10 @@ pub enum RagAction {
         #[arg(long)]
         hyde: bool,
 
+        /// HyDE blend factor (0.0=pure query, 1.0=pure HyDE, 0.5=equal blend; default when --hyde is set: 0.5)
+        #[arg(long, value_name = "ALPHA")]
+        hyde_alpha: Option<f32>,
+
         /// Rerank candidates with a single LLM call
         #[arg(long)]
         rerank: bool,
@@ -1315,6 +1327,15 @@ pub enum RagAction {
         /// Decompose queries via LLM for better recall
         #[arg(long)]
         understand: bool,
+
+        /// Score answers with an LLM judge (0=wrong, 1=partial, 2=correct)
+        /// Requires expected_answer field in the questions JSON
+        #[arg(long)]
+        llm_judge: bool,
+
+        /// Model to use for LLM judging (defaults to --model if not set)
+        #[arg(long, value_name = "MODEL")]
+        judge_model: Option<String>,
 
         /// Write the markdown report to this file instead of stdout
         #[arg(long, value_name = "FILE")]

@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::bm25::{rrf_merge, BM25Index};
 use crate::embedder::EmbedClient;
 use crate::graph::GraphStore;
-use crate::hyde::embed_with_hyde;
+use crate::hyde::{embed_with_hyde, embed_with_hyde_blend};
 use crate::meta_store::{ChunkMeta, MetaStore};
 
 #[derive(Debug, Clone)]
@@ -26,6 +26,10 @@ pub struct RetrieveConfig {
     /// When set, uses HyDE: embeds a LLM-generated hypothetical answer instead of the raw query.
     pub hyde_inference_url: Option<String>,
     pub hyde_model: Option<String>,
+    /// Blend factor for HyDE (0.0 = pure query, 1.0 = pure HyDE, 0.5 = equal blend).
+    /// Only applies when `hyde_inference_url` and `hyde_model` are set.
+    /// When `None`, defaults to 1.0 (pure HyDE, original behaviour).
+    pub hyde_alpha: Option<f32>,
 }
 
 impl Default for RetrieveConfig {
@@ -36,6 +40,7 @@ impl Default for RetrieveConfig {
             use_sentence_window: false,
             hyde_inference_url: None,
             hyde_model: None,
+            hyde_alpha: None,
         }
     }
 }
@@ -74,9 +79,12 @@ pub async fn retrieve_hybrid(
 
     let candidate_k = cfg.top_k * 4;
 
-    // Dense embedding — use HyDE if configured, else plain query embedding.
+    // Dense embedding — use HyDE (optionally blended) if configured, else plain query embedding.
     let embedding = match (&cfg.hyde_inference_url, &cfg.hyde_model) {
-        (Some(url), Some(model)) => embed_with_hyde(query, embed, url, model).await,
+        (Some(url), Some(model)) => match cfg.hyde_alpha {
+            Some(alpha) => embed_with_hyde_blend(query, embed, url, model, alpha).await,
+            None => embed_with_hyde(query, embed, url, model).await,
+        },
         _ => embed.embed_one(query).await?,
     };
 
@@ -102,9 +110,12 @@ pub async fn retrieve_graph_anchored(
 ) -> Result<Vec<RetrievedChunk>> {
     let candidate_k = cfg.top_k * 4;
 
-    // Dense embedding — use HyDE if configured, else plain query embedding.
+    // Dense embedding — use HyDE (optionally blended) if configured, else plain query embedding.
     let embedding = match (&cfg.hyde_inference_url, &cfg.hyde_model) {
-        (Some(url), Some(model)) => embed_with_hyde(query, embed, url, model).await,
+        (Some(url), Some(model)) => match cfg.hyde_alpha {
+            Some(alpha) => embed_with_hyde_blend(query, embed, url, model, alpha).await,
+            None => embed_with_hyde(query, embed, url, model).await,
+        },
         _ => embed.embed_one(query).await?,
     };
 

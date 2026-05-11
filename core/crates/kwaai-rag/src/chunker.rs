@@ -21,7 +21,7 @@ impl Default for ChunkConfig {
         Self {
             chunk_size: 800,
             chunk_overlap: 200,
-            min_chunk_len: 100,
+            min_chunk_len: 20,
             strategy: ChunkStrategy::Character,
         }
     }

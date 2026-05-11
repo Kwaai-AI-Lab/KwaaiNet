@@ -68,5 +68,75 @@
     "expected_answer": "Kloof Nek is the connecting saddle of land that joins Table Mountain to Lion's Head, overlooking Table Bay on the eastern flank of Cape Town. It was reached from the bottom of Buitencingle Street via Kloof Street, which was also the terminus for the single-decker trackless tram from Adderley Street. Below Kloof Nek lay the Glen — a woodland dell with a babbling brook, dense green canopy, mossy nooks, doves and brightly coloured birds, and a peaceful atmosphere. The author's first visit there at age 14, to study poetry before literature exams, left a profound impression on him.",
     "expected_keywords": ["Kloof Nek", "Table Mountain", "Lion's Head", "Glen", "saddle", "Kloof Street", "Buitencingle"],
     "source_chapter": "Part_1_Chapter_1_The_Setting_in_Time_and_Place.docx"
+  },
+  {
+    "id": "q11",
+    "question": "What was the Teachers League of South Africa (TLSA)?",
+    "expected_answer": "The Teachers League of South Africa (TLSA) was a professional and political organisation for Coloured teachers. It was affiliated with the Non-European Unity Movement and followed the Unity Movement's boycott policy. The TLSA challenged racial discrimination in education and fought for equal opportunities. The author was deeply involved with the TLSA — he served as branch steward and was active in its struggles against the apartheid government's separate schools policy.",
+    "expected_keywords": ["TLSA", "Teachers", "League", "Unity Movement", "boycott", "Coloured"],
+    "source_chapter": "Part_2_Chapter_14_Teacher's_League_of_South_Africa.docx"
+  },
+  {
+    "id": "q12",
+    "question": "Who was Cissie Gool?",
+    "expected_answer": "Cissie Gool (Zainunnissa Gool) was a renowned Cape Town politician and activist, and a member of the prominent Gool family. She was the daughter of Dr. Abdullah Abdurahman, who was a long-serving Cape Town city councillor. Cissie Gool was herself a city councillor and was known for her fiery speeches and dedication to the rights of the Coloured and non-European community. She was a key figure in the Non-European Unity Movement and is remembered as one of the foremost women activists of her time in South Africa.",
+    "expected_keywords": ["Cissie", "Gool", "Zainunnissa", "councillor", "activist", "Cape Town"],
+    "source_chapter": "Multiple chapters"
+  },
+  {
+    "id": "q13",
+    "question": "What was the All Africa Convention?",
+    "expected_answer": "The All Africa Convention (AAC) was a broad political organisation founded in 1935 in response to the Hertzog Bills, which stripped Africans of their limited voting rights. It initially united a wide range of African political groups. Later it became closely allied with the Non-European Unity Movement (NEUM), advocating for non-collaboration with the apartheid government's racial structures. The author was involved in AAC activities.",
+    "expected_keywords": ["All Africa Convention", "AAC", "1935", "Hertzog", "unity", "African"],
+    "source_chapter": "Part_2_Chapter_19_All_Africa_Convention.docx"
+  },
+  {
+    "id": "q14",
+    "question": "Where was District Six and what kind of place was it?",
+    "expected_answer": "District Six was a vibrant, densely populated inner-city neighbourhood of Cape Town, located on the slopes of Devil's Peak, close to the city centre. It was a racially mixed community where Malay, Cape Coloured, African, white, and Jewish residents lived side by side. It had a rich cultural life — jazz clubs, mosques, churches, cinemas, and colourful street characters. It was declared a White Group Area in 1966 and its residents were forcibly removed; by 1982 most of the area had been bulldozed.",
+    "expected_keywords": ["District Six", "Cape Town", "Devil's Peak", "Group Areas", "multicultural", "community"],
+    "source_chapter": "Part_2_Chapter_2_District_Six.docx"
+  },
+  {
+    "id": "q15",
+    "question": "What were the forced removals from District Six?",
+    "expected_answer": "Under the Group Areas Act, the apartheid government declared District Six a White Group Area in 1966. Residents — predominantly Coloured families who had lived there for generations — were forcibly relocated to the Cape Flats, far from the city. Their homes were demolished. By the early 1980s the vibrant community had been completely erased and the land largely left vacant (though some redevelopment occurred). The forced removals destroyed community bonds, cultural life, and livelihoods. The author and his family were among those forced to leave.",
+    "expected_keywords": ["forced", "removals", "Group Areas", "Cape Flats", "demolished", "bulldozed"],
+    "source_chapter": "Part_2_Chapter_21_Leaving_District_Six.docx"
+  },
+  {
+    "id": "q16",
+    "question": "Who was Gandhi and what was his connection to the Gool family?",
+    "expected_answer": "Mahatma Gandhi was a key figure in the Indian independence movement and a pioneer of non-violent resistance (satyagraha). He lived in South Africa from 1893 to 1914 and organised the Indian community's resistance to discriminatory legislation. He had a personal connection to the Gool family: he visited the family mansion at 7 Buitencingle Street and was a subscriber to J.M.H. Gool's Indian Opinion newspaper. Gandhi's presence at Buitencingle is documented in archival records showing his correspondence with J.M.H. Gool.",
+    "expected_keywords": ["Gandhi", "Mahatma", "Buitencingle", "passive", "satyagraha", "India", "non-violent"],
+    "source_chapter": "Part_1_Chapter_6_Gandhi_at_Buitencingle.docx"
+  },
+  {
+    "id": "q17",
+    "question": "What was Hewat Training College?",
+    "expected_answer": "Hewat Training College was the teacher training institution for Coloured students in Cape Town. The author attended Hewat after completing his schooling and received his teacher's training there. Hewat was an important centre of intellectual and political life for the Coloured community — many future activists and teachers were trained there. It was run under the apartheid government's separate education system for Coloured people.",
+    "expected_keywords": ["Hewat", "training", "college", "teachers", "Coloured"],
+    "source_chapter": "Part_2_Chapter_13_Hewat.docx"
+  },
+  {
+    "id": "q18",
+    "question": "What was the New Era Fellowship?",
+    "expected_answer": "The New Era Fellowship (NEF) was a cultural and political discussion society in Cape Town, associated with the Non-European Unity Movement. It held public lectures and debates on political, social, and philosophical topics, and was an important gathering place for progressive intellectuals, teachers, and activists in the Coloured community. The author attended NEF meetings and was influenced by the debates there.",
+    "expected_keywords": ["New Era", "Fellowship", "NEF", "debates", "lectures", "Unity Movement"],
+    "source_chapter": "Part_2_Chapter_17_New_Era_Fellowship.docx"
+  },
+  {
+    "id": "q19",
+    "question": "What was the Non-European Unity Movement?",
+    "expected_answer": "The Non-European Unity Movement (NEUM) was a South African political organisation founded in 1943 that advocated for the unity of all non-European (African, Coloured, and Indian) people in the struggle against apartheid and colonialism. Its programme was based on Ten Point demands for equal rights. It adopted a boycott policy — refusing to collaborate with apartheid government structures. The NEUM had strong support among Coloured teachers and professionals in the Cape and was closely associated with the Teachers League of South Africa (TLSA) and the All Africa Convention (AAC).",
+    "expected_keywords": ["Non-European", "Unity Movement", "NEUM", "boycott", "Ten Point", "1943"],
+    "source_chapter": "Multiple chapters"
+  },
+  {
+    "id": "q20",
+    "question": "Describe the author's involvement in cricket.",
+    "expected_answer": "Cricket was a major passion in the author's life. He played club cricket in District Six and Cape Town and represented non-European cricket organisations. He played for Western Province in the non-European cricket structure. The chapter on cricket describes specific matches, teammates, and the separate cricket world that existed for non-Europeans under apartheid — cut off from the mainstream white cricket structure. Cricket was both a sporting passion and a site of political exclusion for the Coloured community.",
+    "expected_keywords": ["cricket", "Western Province", "club", "District Six", "non-European"],
+    "source_chapter": "Part_2_Chapter_12_Cricket.docx"
   }
 ]

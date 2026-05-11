@@ -83,3 +83,66 @@ pub async fn embed_with_hyde(
         }
     }
 }
+
+/// Blend original query embedding with a HyDE embedding.
+///
+/// `alpha = 0.0` returns the plain query embedding (no HyDE effect).
+/// `alpha = 1.0` returns the pure HyDE embedding.
+/// `alpha = 0.5` (default) is an equal blend — prevents factoid regressions while
+/// still benefiting from document-to-document similarity for descriptive queries.
+///
+/// Falls back to plain query embedding if HyDE generation or embedding fails.
+pub async fn embed_with_hyde_blend(
+    query: &str,
+    embed: &EmbedClient,
+    inference_url: &str,
+    model: &str,
+    alpha: f32,
+) -> Vec<f32> {
+    let query_emb = match embed.embed_one(query).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("query embedding failed: {e}");
+            return vec![];
+        }
+    };
+
+    if alpha <= 0.0 {
+        return query_emb;
+    }
+
+    let hyde_emb = match generate_hypothetical_answer(query, inference_url, model).await {
+        Ok(hypothetical) => match embed.embed_one(&hypothetical).await {
+            Ok(emb) => {
+                tracing::debug!("HyDE blend embedding succeeded");
+                emb
+            }
+            Err(e) => {
+                tracing::warn!("HyDE blend embed failed, using pure query embedding: {e}");
+                return query_emb;
+            }
+        },
+        Err(e) => {
+            tracing::warn!("HyDE blend generation failed, using pure query embedding: {e}");
+            return query_emb;
+        }
+    };
+
+    if alpha >= 1.0 {
+        return hyde_emb;
+    }
+
+    // Linear blend then L2-normalise.
+    let blended: Vec<f32> = query_emb
+        .iter()
+        .zip(hyde_emb.iter())
+        .map(|(q, h)| (1.0 - alpha) * q + alpha * h)
+        .collect();
+
+    let norm = blended.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        blended.into_iter().map(|x| x / norm).collect()
+    } else {
+        blended
+    }
+}
