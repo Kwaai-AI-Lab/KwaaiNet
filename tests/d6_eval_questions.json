@@ -1,0 +1,72 @@
+[
+  {
+    "id": "q01",
+    "question": "Who is the author?",
+    "expected_answer": "Yousuf \"Joe\" Rassool (also written as Y.S. Rassool). He signs the Introduction to the First Edition as Y. S. Rassool (2000).",
+    "expected_keywords": ["Yousuf", "Rassool", "Joe"],
+    "source_chapter": "intro.docx"
+  },
+  {
+    "id": "q02",
+    "question": "Who are the author's children?",
+    "expected_answer": "The author has three children: Feyruz, Reza, and Zarina.",
+    "expected_keywords": ["Feyruz", "Reza", "Zarina"],
+    "source_chapter": "intro.docx (Dedication)"
+  },
+  {
+    "id": "q03",
+    "question": "Who are the author's grandchildren?",
+    "expected_answer": "The author has six named grandchildren: Joseph, Samuel, Alexander, Leonardo, Dylan, and Lewis.",
+    "expected_keywords": ["Joseph", "Samuel", "Alexander", "Leonardo", "Dylan", "Lewis"],
+    "source_chapter": "intro.docx (Dedication)"
+  },
+  {
+    "id": "q04",
+    "question": "To whom is the book dedicated?",
+    "expected_answer": "The book is dedicated to the author's children — Feyruz, Reza, and Zarina — and his grandchildren — Joseph, Samuel, Alexander, Leonardo, Dylan, and Lewis.",
+    "expected_keywords": ["Feyruz", "Reza", "Zarina", "grandchildren"],
+    "source_chapter": "intro.docx (Dedication)"
+  },
+  {
+    "id": "q05",
+    "question": "Who was J.M.H. Gool?",
+    "expected_answer": "J.M.H. Gool (Joosub Maulvi Hamid Gool) was the author's maternal grandfather. He came from India to the Cape in 1884 via Mauritius. He was a prosperous merchant and entrepreneur in the spice trade, and his firm J.M.H. Gool & Co. at 25 Church Street, Cape Town became suppliers to the troops of Queen Victoria. He became very wealthy, founded the Hanaffi Quwatul Islam Mosque in Loop Street (completed 1898), and knew many notables of his time including Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw.",
+    "expected_keywords": ["Joosub", "Maulvi", "Hamid", "Gool", "grandfather", "India", "merchant", "mosque"],
+    "source_chapter": "Part_1_Chapter_2_Two_Tales.docx, Part_1_Chapter_6_Gandhi_at_Buitencingle.docx"
+  },
+  {
+    "id": "q06",
+    "question": "Tell me about Buitencingle.",
+    "expected_answer": "Buitencingle is a street in Cape Town. The name is Dutch in origin — 'cingle' means belt, and Buitencingle was at the time the outermost belt of Cape Town. The street was wide and cobbled with traffic islands sporting stunted palm trees. The author's grandfather's grand 13-room mansion stood at No. 7 Buitencingle Street and was known simply as 'Buitencingle'. The street was a select, exclusive residential area in keeping with J.M.H. Gool's stature. It lay at the foot of Table Mountain, with Kloof Street leading up from its bottom toward Kloof Nek.",
+    "expected_keywords": ["Buitencingle", "Dutch", "belt", "cobbled", "No. 7", "grandfather", "Cape Town", "Table Mountain"],
+    "source_chapter": "Part_1_Chapter_1_The_Setting_in_Time_and_Place.docx"
+  },
+  {
+    "id": "q07",
+    "question": "Who is the author's wife?",
+    "expected_answer": "The author's wife is Professor Nazima Rassool, an academic researcher.",
+    "expected_keywords": ["Nazima", "Rassool", "Professor"],
+    "source_chapter": "intro.docx (Introduction to First Edition)"
+  },
+  {
+    "id": "q08",
+    "question": "Tell me more about the author's wife.",
+    "expected_answer": "Professor Nazima Rassool is an academic researcher. She played a crucial role in shaping the memoir: she urged the author not to rely solely on personal memories but to ground his writing in historical research. Her insistence on scholarly rigour produced what the author describes as 'staggering information' that transformed the book from a purely subjective family recollection into a work revealing a rich historical layer previously unrecorded by any historian.",
+    "expected_keywords": ["Nazima", "Professor", "academic", "researcher", "research", "historical"],
+    "source_chapter": "intro.docx (Introduction to First Edition)"
+  },
+  {
+    "id": "q09",
+    "question": "Who was the author's grandfather?",
+    "expected_answer": "The author's grandfather was J.M.H. Gool (Joosub Maulvi Hamid Gool). His father was a Pushto-speaking Maulvi from the Province of Swat who had moved to Rander in Gujarat. Joosub came to the Cape in 1884 via Mauritius, leaving behind his eleven-year-old bride in India. He became a wealthy merchant in the spice trade, established J.M.H. Gool & Co. at 25 Church Street, Cape Town, supplied British troops during the Anglo-Boer War, founded the Hanaffi Quwatul Islam Mosque in Loop Street, and built the grand house at 7 Buitencingle Street.",
+    "expected_keywords": ["Joosub", "Gool", "grandfather", "Swat", "India", "1884", "spice", "mosque", "Buitencingle"],
+    "source_chapter": "Part_1_Chapter_1_The_Setting_in_Time_and_Place.docx, Part_1_Chapter_2_Two_Tales.docx"
+  },
+  {
+    "id": "q10",
+    "question": "Tell me about Kloof Nek.",
+    "expected_answer": "Kloof Nek is the connecting saddle of land that joins Table Mountain to Lion's Head, overlooking Table Bay on the eastern flank of Cape Town. It was reached from the bottom of Buitencingle Street via Kloof Street, which was also the terminus for the single-decker trackless tram from Adderley Street. Below Kloof Nek lay the Glen — a woodland dell with a babbling brook, dense green canopy, mossy nooks, doves and brightly coloured birds, and a peaceful atmosphere. The author's first visit there at age 14, to study poetry before literature exams, left a profound impression on him.",
+    "expected_keywords": ["Kloof Nek", "Table Mountain", "Lion's Head", "Glen", "saddle", "Kloof Street", "Buitencingle"],
+    "source_chapter": "Part_1_Chapter_1_The_Setting_in_Time_and_Place.docx"
+  }
+]

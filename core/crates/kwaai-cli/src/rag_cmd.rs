@@ -110,6 +110,18 @@ pub async fn run(args: RagArgs) -> Result<()> {
         RagAction::Graph { action, kb } => cmd_graph(action, kb).await,
 
         RagAction::Cache { action, kb } => cmd_cache(action, kb).await,
+
+        RagAction::Eval {
+            questions,
+            kb,
+            inference_url,
+            model,
+            top_k,
+            hyde,
+            rerank,
+            understand,
+            output,
+        } => cmd_eval(questions, kb, inference_url, model, top_k, hyde, rerank, understand, output).await,
     }
 }
 
@@ -1464,6 +1476,238 @@ async fn cmd_cache(action: CacheAction, kb: String) -> Result<()> {
                 let removed = cache.clear()?;
                 print_success(&format!("Cleared {removed} cached queries from '{kb}'"));
             }
+        }
+        Ok(())
+    }
+}
+
+// ── eval ──────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct EvalQuestion {
+    id: String,
+    question: String,
+    expected_keywords: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_eval(
+    questions_path: std::path::PathBuf,
+    kb: String,
+    inference_url: String,
+    model: String,
+    top_k: usize,
+    hyde: bool,
+    rerank: bool,
+    understand: bool,
+    output: Option<std::path::PathBuf>,
+) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let raw = std::fs::read_to_string(&questions_path)
+            .with_context(|| format!("reading {}", questions_path.display()))?;
+        let questions: Vec<EvalQuestion> = serde_json::from_str(&raw)
+            .context("parsing questions JSON — expected array of {id, question, expected_keywords}")?;
+
+        if questions.is_empty() {
+            print_warning("No questions found in file.");
+            return Ok(());
+        }
+
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+        let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+        let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?;
+
+        let retrieve_cfg = RetrieveConfig {
+            top_k,
+            min_score: 0.0,
+            use_sentence_window: false,
+            hyde_inference_url: if hyde { Some(inference_url.clone()) } else { None },
+            hyde_model: if hyde { Some(model.clone()) } else { None },
+        };
+
+        print_box_header(&format!("RAG Eval  ({} questions, kb={})", questions.len(), kb));
+        println!("  Model:     {model}");
+        println!("  Inference: {inference_url}");
+        println!("  top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}");
+        print_separator();
+
+        struct Row {
+            id: String,
+            question: String,
+            answer: String,
+            retrieved_docs: Vec<String>,
+            keyword_hits: usize,
+            total_keywords: usize,
+            latency_ms: u128,
+        }
+
+        let mut rows: Vec<Row> = Vec::new();
+
+        for (i, q) in questions.iter().enumerate() {
+            print!("  [{:>2}/{}] {} … ", i + 1, questions.len(), truncate(&q.question, 60));
+            io::stdout().flush().ok();
+
+            let t0 = std::time::Instant::now();
+
+            // Retrieve chunks.
+            let vs2 = vs.clone();
+            let search_fn = move |emb: Vec<f32>, k: usize| {
+                let vs = vs2.clone();
+                Box::pin(async move {
+                    let raw = vs.search(tenant_id, &emb, k).await?;
+                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+            };
+
+            let mut chunks = if understand {
+                kwaai_rag::query_understanding::retrieve_with_understanding(
+                    &q.question, &retrieve_cfg, &embed, &meta,
+                    &inference_url, &model, search_fn,
+                ).await.unwrap_or_default()
+            } else {
+                retrieve_hybrid(&q.question, &retrieve_cfg, &embed, &meta, search_fn)
+                    .await.unwrap_or_default()
+            };
+
+            // Rerank (optional).
+            if rerank {
+                chunks = kwaai_rag::reranker::rerank_chunks(
+                    &q.question, chunks, &inference_url, &model, top_k,
+                ).await;
+            }
+
+            let retrieved_docs: Vec<String> = chunks.iter()
+                .map(|c| c.chunk_meta.doc_name.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            // Generate answer.
+            let messages = build_chat_messages(&q.question, &chunks, &[], 8192);
+            let payload = serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "stream": false,
+            });
+            let answer = match http
+                .post(format!("{inference_url}/v1/chat/completions"))
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                    body["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or("(no response)")
+                        .to_string()
+                }
+                Err(e) => format!("(error: {e})"),
+            };
+
+            let latency_ms = t0.elapsed().as_millis();
+
+            // Score keywords (case-insensitive substring match).
+            let answer_lower = answer.to_lowercase();
+            let keyword_hits = q.expected_keywords.iter()
+                .filter(|kw| answer_lower.contains(&kw.to_lowercase()))
+                .count();
+            let total_keywords = q.expected_keywords.len();
+            let score = if total_keywords > 0 {
+                keyword_hits as f64 / total_keywords as f64
+            } else {
+                1.0
+            };
+
+            println!("{keyword_hits}/{total_keywords} keywords  {latency_ms}ms");
+
+            rows.push(Row {
+                id: q.id.clone(),
+                question: q.question.clone(),
+                answer,
+                retrieved_docs,
+                keyword_hits,
+                total_keywords,
+                latency_ms,
+            });
+
+            // Brief pause to avoid hammering Ollama.
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            let _ = score;
+        }
+
+        // Build report.
+        let total_hits: usize = rows.iter().map(|r| r.keyword_hits).sum();
+        let total_kw: usize = rows.iter().map(|r| r.total_keywords).sum();
+        let overall_score = if total_kw > 0 { total_hits as f64 / total_kw as f64 } else { 0.0 };
+        let avg_latency_ms: u128 = if rows.is_empty() { 0 } else {
+            rows.iter().map(|r| r.latency_ms).sum::<u128>() / rows.len() as u128
+        };
+
+        let mut report = String::new();
+        report.push_str("# RAG Eval Report\n\n");
+        report.push_str(&format!("**KB:** `{kb}`  **Model:** `{model}`\n\n"));
+        report.push_str(&format!(
+            "**Flags:** top_k={top_k}  hyde={hyde}  rerank={rerank}  understand={understand}\n\n"
+        ));
+        report.push_str(&format!(
+            "## Summary\n\n\
+             | Metric | Value |\n\
+             |--------|-------|\n\
+             | Questions | {} |\n\
+             | Overall keyword hit rate | {:.1}% ({total_hits}/{total_kw}) |\n\
+             | Avg latency | {avg_latency_ms}ms |\n\n",
+            rows.len(),
+            overall_score * 100.0,
+        ));
+        report.push_str("## Per-question results\n\n");
+        report.push_str("| ID | Question | Hit rate | Sources | Latency |\n");
+        report.push_str("|----|----------|----------|---------|--------|\n");
+        for r in &rows {
+            let pct = if r.total_keywords > 0 {
+                format!("{}/{} ({:.0}%)", r.keyword_hits, r.total_keywords,
+                    r.keyword_hits as f64 / r.total_keywords as f64 * 100.0)
+            } else {
+                "n/a".to_string()
+            };
+            report.push_str(&format!(
+                "| {} | {} | {} | {} | {}ms |\n",
+                r.id,
+                r.question.replace('|', "\\|"),
+                pct,
+                r.retrieved_docs.join(", "),
+                r.latency_ms,
+            ));
+        }
+        report.push_str("\n## Answers\n\n");
+        for r in &rows {
+            report.push_str(&format!("### {} — {}\n\n", r.id, r.question));
+            report.push_str(&format!("{}\n\n", r.answer));
+        }
+
+        // Output.
+        if let Some(ref path) = output {
+            std::fs::write(path, &report)
+                .with_context(|| format!("writing report to {}", path.display()))?;
+            print_success(&format!(
+                "Report written to {}  ({:.1}% hit rate, {avg_latency_ms}ms avg)",
+                path.display(),
+                overall_score * 100.0,
+            ));
+        } else {
+            println!("\n{report}");
+            print_success(&format!(
+                "Overall: {:.1}% keyword hit rate ({total_hits}/{total_kw})  avg {avg_latency_ms}ms",
+                overall_score * 100.0,
+            ));
         }
         Ok(())
     }

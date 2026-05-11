@@ -1281,6 +1281,45 @@ pub enum RagAction {
         #[arg(long, global = true, default_value = "default", value_name = "NAME")]
         kb: String,
     },
+
+    /// Evaluate RAG accuracy against a question set with expected keywords
+    Eval {
+        /// Path to questions JSON file (array of {id, question, expected_keywords: [...]})
+        #[arg(long, value_name = "FILE")]
+        questions: std::path::PathBuf,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+
+        /// Inference URL for LLM answer generation
+        #[arg(long, default_value = "http://localhost:11434", value_name = "URL")]
+        inference_url: String,
+
+        /// Model name for answer generation (e.g. "llama3.2:3b")
+        #[arg(long, default_value = "llama3.1:8b", value_name = "MODEL")]
+        model: String,
+
+        /// Number of context chunks to retrieve per question
+        #[arg(long, short = 'k', default_value = "5")]
+        top_k: usize,
+
+        /// Use HyDE: embed a hypothetical answer instead of the raw query
+        #[arg(long)]
+        hyde: bool,
+
+        /// Rerank candidates with a single LLM call
+        #[arg(long)]
+        rerank: bool,
+
+        /// Decompose queries via LLM for better recall
+        #[arg(long)]
+        understand: bool,
+
+        /// Write the markdown report to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        output: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
