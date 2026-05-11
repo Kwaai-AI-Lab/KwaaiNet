@@ -1,4 +1,4 @@
-# KwaaiNet Nix build targets
+# KwaaiNet build targets
 #
 # Each target writes its output to a dedicated result-<name> symlink,
 # so builds don't overwrite each other.
@@ -13,7 +13,8 @@
         containers kwaainet-container map-server-container kwaainet-all-container \
         cross cross-aarch64-gnu cross-aarch64-musl cross-x86_64-musl cross-riscv64-gnu \
         cross-containers cross-containers-aarch64-gnu cross-containers-aarch64-musl cross-containers-x86_64-musl cross-containers-riscv64-gnu \
-        check test test-containers test-cross fmt develop clean
+        check test test-containers test-cross fmt develop clean \
+        ci-check ci-fmt ci-lint ci-test githooks
 
 all: kwaainet map-server
 
@@ -108,6 +109,33 @@ test-cross:
 	nix build .#test-cross-smoke-aarch64-linux-musl -o result-test-cross-aarch64-musl
 	nix build .#test-cross-smoke-x86_64-linux-musl -o result-test-cross-x86_64-musl
 	nix build .#test-cross-smoke-riscv64-linux-gnu -o result-test-cross-riscv64-gnu
+
+# --- Native cargo checks (mirror CI; work without Nix) ---
+#
+# `make check` above runs the Nix-based gate (smoke test + clippy + tests).
+# These targets are the cargo-direct equivalent — faster, no Nix required,
+# matching the exact flags CI uses in .github/workflows/ci.yml.
+
+ci-check: ci-fmt ci-lint ci-test
+
+ci-fmt:
+	cd core && cargo fmt --all -- --check
+
+ci-lint:
+	cd core && cargo clippy --all-targets -- -D warnings
+
+ci-test:
+	cd core && cargo test --all
+
+# --- Git hooks ---
+#
+# Run `make githooks` once per clone to enable the tracked hooks under
+# .githooks/. Sets core.hooksPath, so any later updates to the hook
+# scripts ship with the repo — no need to re-run install.
+
+githooks:
+	git config core.hooksPath .githooks
+	@echo "Enabled tracked git hooks → .githooks/"
 
 # --- Utilities ---
 
