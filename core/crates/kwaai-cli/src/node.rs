@@ -443,6 +443,18 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         .context("registering stream handlers")?;
     info!("RPC handlers ready on {}", handler_addr);
 
+    // Register the /kwaai/p2p/hello/1.0.0 handler so any peer can DM us.
+    // Lives alongside the Hivemind RPC handlers because both belong to the
+    // node's "while we're alive, please answer these" surface area.
+    client
+        .add_unary_handler(
+            kwaai_p2p_daemon::hello::HELLO_PROTO,
+            kwaai_p2p_daemon::hello::make_handler(),
+            false,
+        )
+        .await
+        .context("registering p2p hello handler")?;
+
     // -----------------------------------------------------------------------
     // Step 4: Wait for DHT bootstrap (intelligent polling)
     // -----------------------------------------------------------------------

@@ -27,6 +27,31 @@ async fn peers(args: PeersArgs) -> Result<()> {
     match args.action {
         PeersAction::List => peers_list().await,
         PeersAction::Find { peer_id, timeout } => peers_find(peer_id, timeout).await,
+        PeersAction::Connect {
+            addr,
+            peer,
+            message,
+        } => peers_connect(addr, peer, message).await,
+        PeersAction::Send {
+            peer,
+            proto,
+            message,
+            payload_hex,
+            payload_bin,
+            stdin,
+            timeout,
+        } => {
+            peers_send(
+                peer,
+                proto,
+                message,
+                payload_hex,
+                payload_bin,
+                stdin,
+                timeout,
+            )
+            .await
+        }
     }
 }
 
@@ -357,11 +382,17 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
                 println!("  Found in DHT, but no addresses advertised.");
             } else {
                 println!("  Addresses advertised in DHT ({}):", info.addrs.len());
+                // Append `/p2p/<peer-id>` to each address so the printed
+                // form is directly usable as `peers connect --addr …`.
+                // p2pd / Kademlia returns addresses without the trailing
+                // `/p2p/<self>` because the DHT entry is keyed on the peer
+                // ID anyway, but the CLI consumer needs the full form.
                 for a in &info.addrs {
                     match Multiaddr::try_from(a.clone()) {
                         Ok(m) => {
                             let kind = if is_relayed(&m) { "relay" } else { "direct" };
-                            println!("    [{:>6}] {}", kind, m);
+                            let with_dest = m.with(libp2p::multiaddr::Protocol::P2p(target.into()));
+                            println!("    [{:>6}] {}", kind, with_dest);
                         }
                         Err(_) => {
                             println!("    [   ?   ] 0x{} (unparseable)", hex::encode(a))
@@ -380,4 +411,326 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
     }
     print_separator();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// peers connect — manual dial + optional hello DM
+// ---------------------------------------------------------------------------
+
+async fn peers_connect(
+    addr: Option<String>,
+    peer: Option<String>,
+    message: Option<String>,
+) -> Result<()> {
+    let Some(mut client) = connect_p2pd().await? else {
+        return Ok(());
+    };
+
+    // Resolve the input form (--addr | --peer) to a (multiaddr_to_dial,
+    // dest_peer_id) pair. clap's `required_unless_present` enforces that
+    // exactly one of the two is set.
+    let (multiaddr, dest_peer) = match (addr, peer) {
+        (Some(a), None) => match resolve_addr(&a) {
+            Ok(pair) => pair,
+            Err(e) => {
+                print_error(&format!("--addr rejected: {}", e));
+                print_separator();
+                return Ok(());
+            }
+        },
+        (None, Some(p)) => {
+            let target: PeerId = match p.parse() {
+                Ok(p) => p,
+                Err(e) => {
+                    print_error(&format!("--peer is not a valid base58 peer ID: {}", e));
+                    print_separator();
+                    return Ok(());
+                }
+            };
+            match resolve_peer(&mut client, target).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    print_error(&format!("--peer DHT lookup failed: {}", e));
+                    print_separator();
+                    return Ok(());
+                }
+            }
+        }
+        // clap should make these unreachable, but be explicit.
+        (Some(_), Some(_)) | (None, None) => {
+            print_error("specify exactly one of --addr or --peer");
+            print_separator();
+            return Ok(());
+        }
+    };
+
+    print_box_header("🛰  KwaaiNet P2P — Manual Dial");
+    println!("  Target peer: {}", dest_peer);
+    println!("  Multiaddr:   {}", multiaddr);
+    println!();
+
+    if let Err(e) = client.connect_peer(&multiaddr).await {
+        print_error(&format!("connect_peer failed: {}", e));
+        print_separator();
+        return Ok(());
+    }
+    print_success("Connected.");
+
+    if let Some(msg) = message {
+        match client
+            .call_unary_handler(
+                &dest_peer.to_bytes(),
+                kwaai_p2p_daemon::hello::HELLO_PROTO,
+                msg.as_bytes(),
+            )
+            .await
+        {
+            Ok(resp) => {
+                print_success(&format!("Sent hello to {} — see their logs.", dest_peer));
+                print_response(&resp);
+            }
+            Err(e) => print_error(&format!("hello send failed: {}", e)),
+        }
+    } else {
+        print_info("Pass --message <text> to send a hello DM that the peer logs.");
+    }
+    print_separator();
+    Ok(())
+}
+
+/// Parse an `--addr` multiaddr and identify the destination peer ID.
+///
+/// For a relay'd address (`…/p2p/<RELAY>/p2p-circuit/p2p/<DEST>`) the
+/// destination is the LAST `/p2p/` component. We refuse multiaddrs where
+/// `/p2p-circuit` is present but no `/p2p/<peer>` follows it — those addresses
+/// (as returned by p2pd's DHT layer) name only the relay, not the destination,
+/// and dialing them is almost certainly a copy-paste mistake. The user wanted
+/// to reach the peer, not the relay.
+fn resolve_addr(addr: &str) -> Result<(String, PeerId)> {
+    let maddr: Multiaddr = addr.parse().context("parse --addr as multiaddr")?;
+
+    let mut last_p2p_was_after_circuit = !is_relayed(&maddr);
+    let mut saw_circuit = false;
+    let mut last_p2p = None;
+    for proto in maddr.iter() {
+        match proto {
+            libp2p::multiaddr::Protocol::P2pCircuit => {
+                saw_circuit = true;
+                // Reset: only `/p2p/` components AFTER the circuit hop name
+                // the destination. A `/p2p/` before the circuit names the
+                // relay.
+                last_p2p = None;
+            }
+            libp2p::multiaddr::Protocol::P2p(hash) => {
+                last_p2p = Some(hash);
+                if saw_circuit {
+                    last_p2p_was_after_circuit = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let dest_hash = last_p2p.context(
+        "multiaddr has no /p2p/<peer-id> component — pass a complete address \
+         like /ip4/<IP>/tcp/<PORT>/p2p/<PEER-ID> or use --peer to look it up \
+         in the DHT",
+    )?;
+
+    if saw_circuit && !last_p2p_was_after_circuit {
+        anyhow::bail!(
+            "multiaddr ends with /p2p-circuit but has no /p2p/<destination> \
+             after it — this names only the relay, not the peer you want to \
+             reach. Append /p2p/<destination-peer-id> to the multiaddr, or \
+             use --peer <peer-id> to let the CLI do the DHT lookup for you."
+        );
+    }
+
+    let dest_peer = PeerId::from_multihash(dest_hash.into())
+        .map_err(|e| anyhow::anyhow!("invalid peer multihash in /p2p/: {:?}", e))?;
+    Ok((maddr.to_string(), dest_peer))
+}
+
+/// Look up `target` in the DHT and pick a multiaddr to dial. Prefers a direct
+/// address; falls back to the first relay'd address. Always appends
+/// `/p2p/<target>` so the returned multiaddr names the destination
+/// (p2pd / Kademlia returns addresses without the trailing `/p2p/<self>` since
+/// the DHT entry is keyed on the peer ID anyway).
+async fn resolve_peer(
+    client: &mut kwaai_p2p_daemon::P2PClient,
+    target: PeerId,
+) -> Result<(String, PeerId)> {
+    let info = client
+        .dht_find_peer(target.to_bytes(), Some(10))
+        .await
+        .context("dht_find_peer")?;
+    if info.addrs.is_empty() {
+        anyhow::bail!("peer found in DHT but no addresses advertised");
+    }
+
+    let parsed: Vec<Multiaddr> = info
+        .addrs
+        .iter()
+        .filter_map(|a| Multiaddr::try_from(a.clone()).ok())
+        .collect();
+    if parsed.is_empty() {
+        anyhow::bail!("DHT returned addresses but none parsed as a multiaddr");
+    }
+
+    // Prefer direct over relay'd. If both kinds are present a direct dial is
+    // always faster and gives hole-punching nothing to work on.
+    let pick = parsed
+        .iter()
+        .find(|m| !is_relayed(m))
+        .or_else(|| parsed.first())
+        .expect("parsed is non-empty");
+
+    let with_dest = pick
+        .clone()
+        .with(libp2p::multiaddr::Protocol::P2p(target.into()));
+    Ok((with_dest.to_string(), target))
+}
+
+// ---------------------------------------------------------------------------
+// peers send — invoke a unary RPC on a connected peer
+// ---------------------------------------------------------------------------
+
+async fn peers_send(
+    peer: String,
+    proto: String,
+    message: Option<String>,
+    payload_hex: Option<String>,
+    payload_bin: Option<std::path::PathBuf>,
+    stdin: bool,
+    timeout_secs: u64,
+) -> Result<()> {
+    let payload = match resolve_payload(message, payload_hex, payload_bin, stdin) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            print_error(&format!("payload: {}", e));
+            print_separator();
+            return Ok(());
+        }
+    };
+
+    let dest_peer: PeerId = match peer.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            print_error(&format!("invalid recipient peer ID: {}", e));
+            print_separator();
+            return Ok(());
+        }
+    };
+
+    let Some(mut client) = connect_p2pd().await? else {
+        return Ok(());
+    };
+
+    print_box_header("🛰  KwaaiNet P2P — Unary RPC");
+    println!("  To:      {}", dest_peer);
+    println!("  Proto:   {}", proto);
+    println!("  Payload: {} bytes", payload.len());
+    println!("  Timeout: {}s", timeout_secs);
+    println!();
+
+    let dest_bytes = dest_peer.to_bytes();
+    let call = client.call_unary_handler(&dest_bytes, &proto, &payload);
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), call).await {
+        Ok(Ok(resp)) => {
+            print_success("Sent.");
+            print_response(&resp);
+        }
+        Ok(Err(e)) => print_error(&format!("call_unary_handler failed: {}", e)),
+        Err(_) => {
+            print_error(&format!(
+                "no response within {}s — recipient may not handle this protocol, \
+                 or the handler hung on the payload. Try a longer --timeout.",
+                timeout_secs
+            ));
+        }
+    }
+    print_separator();
+    Ok(())
+}
+
+/// Resolve the user's payload-source flags to the concrete bytes that go on
+/// the wire. Exactly one source must be set; clap groups them but doesn't
+/// enforce one-and-only-one across the whole set, so we validate here.
+fn resolve_payload(
+    message: Option<String>,
+    payload_hex: Option<String>,
+    payload_bin: Option<std::path::PathBuf>,
+    stdin: bool,
+) -> Result<Vec<u8>> {
+    let sources: Vec<&str> = [
+        message.as_ref().map(|_| "--message"),
+        payload_hex.as_ref().map(|_| "--payload-hex"),
+        payload_bin.as_ref().map(|_| "--payload-bin"),
+        stdin.then_some("--stdin"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    match sources.len() {
+        0 => anyhow::bail!(
+            "no payload — pass exactly one of --message, --payload-hex, \
+             --payload-bin, or --stdin"
+        ),
+        1 => {}
+        _ => anyhow::bail!(
+            "multiple payload sources given ({}); pass exactly one",
+            sources.join(", ")
+        ),
+    }
+
+    if let Some(text) = message {
+        return Ok(text.into_bytes());
+    }
+    if let Some(hex_str) = payload_hex {
+        let stripped: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
+        return hex::decode(&stripped).context("decode --payload-hex");
+    }
+    if let Some(path) = payload_bin {
+        return std::fs::read(&path)
+            .with_context(|| format!("read --payload-bin {}", path.display()));
+    }
+    if stdin {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("read --stdin")?;
+        return Ok(buf);
+    }
+    unreachable!("payload source validation above ensures one is set")
+}
+
+/// Display response bytes uniformly: short summary, then either UTF-8 text
+/// (if the bytes are printable) or hex. Mirrors what curl-style tools do
+/// and avoids guessing the wire format the protocol owns.
+fn print_response(resp: &[u8]) {
+    if resp.is_empty() {
+        print_info("Response: (empty)");
+        return;
+    }
+    match std::str::from_utf8(resp) {
+        Ok(s) if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => {
+            print_info(&format!("Response ({} bytes): {}", resp.len(), s));
+        }
+        _ => {
+            let preview: String = resp
+                .iter()
+                .take(64)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let suffix = if resp.len() > 64 { " …" } else { "" };
+            print_info(&format!(
+                "Response ({} bytes): {}{}",
+                resp.len(),
+                preview,
+                suffix
+            ));
+        }
+    }
 }

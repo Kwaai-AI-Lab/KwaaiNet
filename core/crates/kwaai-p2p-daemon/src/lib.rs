@@ -41,6 +41,7 @@ pub mod client;
 pub mod daemon;
 pub mod dht;
 pub mod error;
+pub mod hello;
 pub mod persistent;
 pub mod protocol;
 pub mod stream;

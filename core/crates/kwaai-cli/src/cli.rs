@@ -1428,4 +1428,79 @@ pub enum PeersAction {
         #[arg(long, default_value = "10")]
         timeout: i64,
     },
+
+    /// Manually dial a peer. Forces a connection attempt that hole-punching
+    /// can react to; optionally sends a hello message once the connection
+    /// succeeds. Specify exactly one of --addr or --peer.
+    Connect {
+        /// Full multiaddr including /p2p/<peer-id> (and, for relay'd dials,
+        /// /p2p-circuit/p2p/<destination>). Use this when you have a
+        /// complete address in hand — typically copied from `peers list`
+        /// or `peers find`. No DHT lookup is performed.
+        #[arg(long, conflicts_with = "peer", required_unless_present = "peer")]
+        addr: Option<String>,
+
+        /// Peer ID (base58) to look up in the DHT and dial. The CLI runs
+        /// `dht_find_peer`, picks an address (preferring direct over
+        /// relay'd), appends /p2p/<peer-id>, and dials. Use this when you
+        /// only have a peer ID — e.g. one you saw in `peers list`.
+        #[arg(long, conflicts_with = "addr", required_unless_present = "addr")]
+        peer: Option<String>,
+
+        /// Optional message to send over /kwaai/p2p/hello/1.0.0 once the
+        /// connection succeeds. The recipient logs the message to stdout.
+        #[arg(long)]
+        message: Option<String>,
+    },
+
+    /// Invoke a unary RPC on an already-connected peer. Defaults to the
+    /// `/kwaai/p2p/hello/1.0.0` protocol (the recipient logs the payload
+    /// and replies with `b"ok"`), but with `--proto` works as a generic
+    /// diagnostic for any registered handler. Doubles as the in-tree
+    /// example of how to invoke a custom unary protocol over the libp2p
+    /// fabric — see `kwaai_p2p_daemon::hello` for the handler.
+    ///
+    /// Specify exactly one payload source: --message, --payload-hex,
+    /// --payload-bin, or --stdin. The bytes are sent as-is; no encoding,
+    /// no wrapper. The response is displayed below.
+    Send {
+        /// Recipient peer ID (base58)
+        #[arg(long)]
+        peer: String,
+
+        /// Protocol ID. Default is the hello protocol (a peer running
+        /// kwaainet logs the payload and replies with `b"ok"`); for any
+        /// other in-tree or third-party unary protocol, name it here.
+        #[arg(long, default_value = kwaai_p2p_daemon::hello::HELLO_PROTO)]
+        proto: String,
+
+        /// Send the bytes of this UTF-8 string as the payload. Identical
+        /// to `--payload-bin` of a file containing the same bytes.
+        #[arg(long, group = "payload")]
+        message: Option<String>,
+
+        /// Send the bytes decoded from this hex string as the payload.
+        /// Whitespace in the hex is ignored. Use for short binary payloads
+        /// you want to type inline.
+        #[arg(long, group = "payload", value_name = "HEX")]
+        payload_hex: Option<String>,
+
+        /// Send the contents of this file as the payload. Use for any
+        /// payload too large to type inline, or for binary blobs you
+        /// already have on disk.
+        #[arg(long, group = "payload", value_name = "PATH")]
+        payload_bin: Option<std::path::PathBuf>,
+
+        /// Read the payload from stdin. Combine with shell redirection
+        /// (`< file.bin`), here-docs (`<<<'hi'`), or pipes
+        /// (`echo -n hi | …`). The bytes are sent verbatim.
+        #[arg(long, group = "payload")]
+        stdin: bool,
+
+        /// Maximum seconds to wait for the recipient's response. Useful when
+        /// poking at unfamiliar protocols whose handlers might hang on
+        /// malformed input. Default 10s.
+        #[arg(long, default_value = "10")]
+        timeout: u64,
+    },
 }
