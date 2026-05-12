@@ -2012,18 +2012,29 @@ async fn cmd_eval(
             let judge_score: Option<u8> = if llm_judge {
                 if let Some(ref expected) = q.expected_answer {
                     let judge_prompt = format!(
-                        "Question: {}\n\nReference answer: {}\n\nCandidate answer: {}\n\n\
-                         Score the candidate answer:\n\
-                         0 = wrong, fabricated, or does not answer the question\n\
-                         1 = partially correct (some right facts, but incomplete or mixed with errors)\n\
-                         2 = fully correct\n\n\
-                         Return ONLY the digit (0, 1, or 2). Nothing else.",
-                        q.question, expected, answer
+                        "You are grading a RAG (retrieval-augmented generation) system.\n\
+                         The system had access to documents that DO contain the answer.\n\n\
+                         Question: {q}\n\n\
+                         Reference answer: {ref_ans}\n\n\
+                         Candidate answer: {cand}\n\n\
+                         Scoring rules — judge the CONTENT, not the phrasing:\n\
+                         0 = no correct facts about the question are present, OR the answer \
+                             claims the information doesn't exist and provides nothing useful\n\
+                         1 = some correct key facts present but important ones are missing or wrong\n\
+                         2 = all key facts from the reference are present (wording may differ)\n\n\
+                         An answer that hedges ('I couldn't find…') but still states correct facts \
+                         should be scored on those facts, not the hedge.\n\n\
+                         Return ONLY the digit 0, 1, or 2. Nothing else.",
+                        q = q.question,
+                        ref_ans = expected,
+                        cand = answer
                     );
                     let judge_payload = serde_json::json!({
                         "model": judge_mdl,
                         "messages": [
-                            {"role": "system", "content": "You are a strict grader. Return only a digit."},
+                            {"role": "system", "content": "You are a strict RAG grader. \
+                              Score the factual content of the candidate answer against the \
+                              reference. Return only a single digit: 0, 1, or 2."},
                             {"role": "user", "content": judge_prompt}
                         ],
                         "stream": false,
