@@ -32,11 +32,11 @@ use crate::storage_rpc::{
 pub async fn run(args: RagArgs) -> Result<()> {
     match args.action {
         RagAction::Init {
-            name,
+            kb,
             embed_model,
             rag_dir,
             graph,
-        } => cmd_init(name, embed_model, rag_dir, graph).await,
+        } => cmd_init(kb, embed_model, rag_dir, graph).await,
 
         RagAction::List => cmd_list().await,
 

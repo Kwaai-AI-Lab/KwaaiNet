@@ -1009,9 +1009,9 @@ pub struct RagArgs {
 pub enum RagAction {
     /// Initialise a local RAG knowledge base (no network required)
     Init {
-        /// Knowledge base name (default: "default"). Use --name to create additional KBs.
+        /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
-        name: String,
+        kb: String,
 
         /// Ollama embedding model (must produce 768-dim vectors)
         #[arg(long, default_value = "nomic-embed-text")]
