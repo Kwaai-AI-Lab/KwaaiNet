@@ -1425,6 +1425,18 @@ pub enum GraphAction {
         /// (comma-separated, case-insensitive). Example: --docs "Part_1,intro"
         #[arg(long, value_name = "PATTERNS")]
         docs: Option<String>,
+
+        /// Number of parallel extraction workers (default: 1).
+        /// Each worker holds one Ollama request slot.
+        /// Values > 1 overlap LLM calls; combine with --inference-urls for true multi-machine speedup.
+        #[arg(long, default_value = "1", value_name = "N")]
+        workers: usize,
+
+        /// Comma-separated Ollama base URLs for round-robin multi-endpoint dispatch.
+        /// Overrides --inference-url when set.
+        /// Example: --inference-urls "http://node1:11434,http://node2:11434"
+        #[arg(long, value_name = "URLS")]
+        inference_urls: Option<String>,
     },
 
     /// Seed the graph from a ground-truth YAML family tree — merges aliases and plants family relations

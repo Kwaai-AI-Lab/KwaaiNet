@@ -468,7 +468,9 @@ async fn cmd_ingest(
             cfg.graph = Some(GraphIngestConfig {
                 store: Arc::new(Mutex::new(store)),
                 inference_url: infer_url,
+                inference_urls: vec![],
                 model: extraction_model.clone(),
+                workers: 1,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -1483,7 +1485,9 @@ async fn run_sync_pass(
                 ingest_cfg.graph = Some(GraphIngestConfig {
                     store: Arc::new(Mutex::new(store)),
                     inference_url: infer_url,
+                    inference_urls: vec![],
                     model: extraction_model.clone(),
+                    workers: 1,
                 });
             }
         }
@@ -1669,8 +1673,15 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 model,
                 limit,
                 docs,
+                workers,
+                inference_urls,
             } => {
                 let infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+                let extra_urls: Vec<String> = inference_urls
+                    .as_deref()
+                    .map(|s| s.split(',').map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect())
+                    .unwrap_or_default();
+                let effective_workers = workers.max(1);
 
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
                 let mut all_chunks = meta.all_chunks()?;
@@ -1705,7 +1716,15 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     println!("  Doc filter:        {p}");
                 }
                 println!("  Chunks to process: {total}");
-                println!("  Inference URL:     {infer_url}");
+                if !extra_urls.is_empty() {
+                    println!("  Inference URLs:    {}", extra_urls.join(", "));
+                    println!("  Workers:           {effective_workers}");
+                } else {
+                    println!("  Inference URL:     {infer_url}");
+                    if effective_workers > 1 {
+                        println!("  Workers:           {effective_workers}");
+                    }
+                }
                 println!("  This may take a while — one LLM call per chunk.\n");
 
                 let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
@@ -1716,7 +1735,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let graph_cfg = kwaai_rag::ingestion::GraphIngestConfig {
                     store: store.clone(),
                     inference_url: infer_url,
+                    inference_urls: extra_urls,
                     model,
+                    workers: effective_workers,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
@@ -1737,11 +1758,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     &ids,
                     &embed,
                     &graph_cfg,
-                    Some(|done: usize, total: usize, entities: usize, relations: usize| {
+                    Some(std::sync::Arc::new(|done: usize, total: usize, entities: usize, relations: usize| {
                         if done % 50 == 0 || done == total {
                             println!("  [{done:>4}/{total}]  entities={entities}  relations={relations}");
                         }
-                    }),
+                    })),
                 )
                 .await;
 
