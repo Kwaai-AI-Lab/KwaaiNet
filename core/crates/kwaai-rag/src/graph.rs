@@ -688,6 +688,15 @@ pub async fn extract_from_text(
          \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
          Entity types: {entity_list}\n\
          Relation types: {relation_list}\n\n\
+         IMPORTANT RULES:\n\
+         - Never create an entity whose name is a pronoun or generic role: \
+           do NOT use names like \"I\", \"me\", \"my\", \"he\", \"she\", \"they\", \
+           \"narrator\", \"author\", \"writer\", \"the author\", \"the narrator\", \
+           \"the writer\", \"speaker\", \"subject\".\n\
+         - If the text uses \"I\" or \"the author\" to refer to a named person, \
+           use that person's actual name as the entity name instead.\n\
+         - Only extract entities that have a real proper name or a specific \
+           organisation/place/event name.\n\n\
          If no clear entities exist, return {{\"entities\":[],\"relations\":[]}}.\n\n\
          Text:\n{text}"
     );
