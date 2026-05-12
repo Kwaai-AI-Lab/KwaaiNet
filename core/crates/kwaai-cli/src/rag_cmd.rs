@@ -52,6 +52,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             inference_url,
             extraction_model,
             chunk_strategy,
+            doc_meta,
             kb,
         } => {
             cmd_ingest(
@@ -64,6 +65,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 inference_url,
                 extraction_model,
                 chunk_strategy,
+                doc_meta,
                 kb,
             )
             .await
@@ -149,6 +151,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             inference_url,
             extraction_model,
             chunk_strategy,
+            doc_meta,
             kb,
         } => {
             cmd_sync(
@@ -164,6 +167,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 inference_url,
                 extraction_model,
                 chunk_strategy,
+                doc_meta,
                 kb,
             )
             .await
@@ -416,6 +420,7 @@ async fn cmd_ingest(
     inference_url: Option<String>,
     extraction_model: String,
     chunk_strategy: String,
+    doc_meta_path: Option<std::path::PathBuf>,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -448,6 +453,11 @@ async fn cmd_ingest(
         cfg.chunk_cfg.chunk_overlap = chunk_overlap;
         cfg.chunk_cfg.min_chunk_len = min_chunk_len;
         cfg.chunk_cfg.strategy = parse_chunk_strategy(&chunk_strategy);
+
+        if let Some(path) = doc_meta_path {
+            cfg.doc_meta = load_doc_meta(&path)?;
+            print_info(&format!("Doc-meta loaded: {} entries", cfg.doc_meta.len()));
+        }
 
         if extract_entities {
             let infer_url = inference_url
@@ -1227,6 +1237,14 @@ fn parse_chunk_strategy(s: &str) -> kwaai_rag::chunker::ChunkStrategy {
     }
 }
 
+fn load_doc_meta(path: &std::path::Path) -> Result<std::collections::HashMap<String, String>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading doc-meta file '{}'", path.display()))?;
+    let map: std::collections::HashMap<String, String> = serde_yaml::from_str(&raw)
+        .with_context(|| format!("parsing doc-meta YAML '{}'", path.display()))?;
+    Ok(map)
+}
+
 fn truncate(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
     while !s.is_char_boundary(end) {
@@ -1293,6 +1311,7 @@ async fn cmd_sync(
     inference_url: Option<String>,
     extraction_model: String,
     chunk_strategy: String,
+    doc_meta_path: Option<std::path::PathBuf>,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -1319,6 +1338,14 @@ async fn cmd_sync(
         }
         print_separator();
 
+        let doc_meta = if let Some(path) = doc_meta_path {
+            let m = load_doc_meta(&path)?;
+            print_info(&format!("Doc-meta loaded: {} entries", m.len()));
+            m
+        } else {
+            std::collections::HashMap::new()
+        };
+
         let chunk_cfg = kwaai_rag::chunker::ChunkConfig {
             chunk_size,
             chunk_overlap,
@@ -1336,6 +1363,7 @@ async fn cmd_sync(
                 extract_entities,
                 inference_url.clone(),
                 extraction_model.clone(),
+                doc_meta.clone(),
             )
             .await?;
 
@@ -1380,6 +1408,7 @@ async fn run_sync_pass(
     extract_entities: bool,
     inference_url: Option<String>,
     extraction_model: String,
+    doc_meta: std::collections::HashMap<String, String>,
 ) -> Result<SyncResult> {
     use std::time::UNIX_EPOCH;
 
@@ -1444,6 +1473,7 @@ async fn run_sync_pass(
         let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
         let mut ingest_cfg = IngestConfig::new(embed);
         ingest_cfg.chunk_cfg = chunk_cfg.clone();
+        ingest_cfg.doc_meta = doc_meta.clone();
 
         if extract_entities {
             let infer_url = inference_url

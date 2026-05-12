@@ -1,0 +1,13 @@
+# Doc-level metadata prefixes for D6 knowledge base.
+# Keys are case-insensitive substrings matched against doc_name.
+# Values are prepended to every chunk from matching documents before embedding + storage.
+# Purpose: inject authoritative context that the LLM extractor missed or that BM25 can't find.
+
+intro.docx: >-
+  [Author: Y.S. Rassool, also known as Yousuf Rassool or Joe Rassool.
+  This document is the introduction chapter of "The Setting in Time and Place" written in the first person by Y.S. Rassool himself.
+  The narrator "I" throughout this document refers to Y.S. Rassool.]
+
+dedication: >-
+  [Document type: book dedication page.
+  This page contains the formal dedication of "The Setting in Time and Place" by Y.S. Rassool.]

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,11 @@ pub struct IngestConfig {
     /// When set, entities are extracted and stored in the knowledge graph
     /// after chunks are embedded. Has no effect on chunk storage or vector upload.
     pub graph: Option<GraphIngestConfig>,
+    /// Optional per-document metadata prefixes.
+    /// Keys are substrings matched (case-insensitive) against doc_name.
+    /// The matched prefix is prepended to each chunk's text before embedding and storage.
+    /// Loaded from a YAML file via --doc-meta on rag ingest/sync.
+    pub doc_meta: HashMap<String, String>,
 }
 
 impl IngestConfig {
@@ -35,6 +41,7 @@ impl IngestConfig {
             chunk_cfg: ChunkConfig::default(),
             upload_batch_size: 64,
             graph: None,
+            doc_meta: HashMap::new(),
         }
     }
 }
@@ -56,7 +63,8 @@ pub async fn ingest_text(
     upload_fn: impl Fn(Vec<(i64, Vec<f32>)>) -> Pin<Box<dyn Future<Output = Result<usize>> + Send>>,
     progress: Option<impl Fn(usize, usize)>,
 ) -> Result<IngestionResult> {
-    let chunks = split_text(text, doc_name, &cfg.chunk_cfg);
+    let raw_chunks = split_text(text, doc_name, &cfg.chunk_cfg);
+    let chunks = apply_doc_meta(raw_chunks, doc_name, &cfg.doc_meta);
     let total = chunks.len();
     info!(doc = doc_name, chunks = total, "ingesting document");
 
@@ -312,4 +320,24 @@ fn resolve_entity_id(name: &str, current_entities: &[ExtractedEntity], graph: &G
         return node.id;
     }
     entity_id(name, "Unknown")
+}
+
+/// Prepend doc-level metadata to each chunk's text if the doc_name matches any key.
+/// Keys are matched as case-insensitive substrings of doc_name.
+fn apply_doc_meta(mut chunks: Vec<Chunk>, doc_name: &str, doc_meta: &HashMap<String, String>) -> Vec<Chunk> {
+    if doc_meta.is_empty() {
+        return chunks;
+    }
+    let doc_lower = doc_name.to_lowercase();
+    let prefix = doc_meta
+        .iter()
+        .find(|(k, _)| doc_lower.contains(k.to_lowercase().as_str()))
+        .map(|(_, v)| v.as_str());
+
+    if let Some(pfx) = prefix {
+        for chunk in &mut chunks {
+            chunk.text = format!("{pfx}\n\n{}", chunk.text);
+        }
+    }
+    chunks
 }

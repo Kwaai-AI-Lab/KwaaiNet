@@ -1081,6 +1081,11 @@ pub enum RagAction {
         #[arg(long, default_value = "character", value_name = "STRATEGY")]
         chunk_strategy: String,
 
+        /// YAML file mapping doc-name substrings to metadata prefixes prepended to each chunk.
+        /// Example: intro.docx: "Author: Y.S. Rassool."
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_meta: Option<std::path::PathBuf>,
+
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
@@ -1270,6 +1275,11 @@ pub enum RagAction {
         /// Chunking strategy: "character" (default sliding-window) or "paragraph" (semantic)
         #[arg(long, default_value = "character", value_name = "STRATEGY")]
         chunk_strategy: String,
+
+        /// YAML file mapping doc-name substrings to metadata prefixes prepended to each chunk.
+        /// Example: intro.docx: "Author: Y.S. Rassool."
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_meta: Option<std::path::PathBuf>,
 
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
