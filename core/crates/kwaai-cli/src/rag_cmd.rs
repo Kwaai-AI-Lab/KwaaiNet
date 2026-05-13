@@ -13,6 +13,7 @@ use kwaai_rag::{
     family,
     graph::GraphStore,
     ingestion::{ingest_text, GraphIngestConfig, IngestConfig},
+    iterative::retrieve_iterative,
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
     retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
@@ -113,6 +114,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             hyde,
             hyde_alpha,
             rerank,
+            mode,
         } => {
             cmd_chat(
                 top_k,
@@ -123,6 +125,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 hyde,
                 hyde_alpha,
                 rerank,
+                mode,
             )
             .await
         }
@@ -660,7 +663,7 @@ async fn cmd_query(
             hyde_model: hyde_mdl,
             hyde_alpha: effective_alpha,
         };
-        let spinner = if json_out {
+        let mut spinner = if json_out {
             None
         } else {
             Some(crate::progress::Spinner::start("Retrieving…"))
@@ -704,7 +707,36 @@ async fn cmd_query(
             let mut chunks = match rag_cfg.storage_url.as_deref() {
                 Some("local") => {
                     let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
-                    if effective_mode == "graph" {
+                    if effective_mode == "iterative" {
+                        let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .context("opening graph store for iterative retrieval")?;
+                        drop(spinner.take());
+                        retrieve_iterative(
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            &graph,
+                            move |emb, k| {
+                                let vs = vs.clone();
+                                Box::pin(async move {
+                                    let raw = vs.search(tenant_id, &emb, k).await?;
+                                    Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                                })
+                                    as Pin<
+                                        Box<
+                                            dyn std::future::Future<
+                                                    Output = Result<Vec<(i64, f64)>>,
+                                                > + Send,
+                                        >,
+                                    >
+                            },
+                            &infer_url,
+                            &model,
+                            |msg| println!("{msg}"),
+                        )
+                        .await?
+                    } else if effective_mode == "graph" {
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store for graph-anchored retrieval")?;
                         retrieve_graph_anchored(
@@ -897,6 +929,7 @@ async fn cmd_chat(
     hyde: bool,
     hyde_alpha: Option<f32>,
     rerank: bool,
+    mode: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -990,7 +1023,18 @@ async fn cmd_chat(
                 }
             }
 
-            // Retrieve context (with optional query understanding).
+            // Resolve effective mode for this turn (auto → graph if KB has entities).
+            let effective_mode_chat: &str = if mode == "auto" {
+                if let Ok(g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+                    if g.node_count() > 0 { "graph" } else { "vector" }
+                } else {
+                    "vector"
+                }
+            } else {
+                mode.as_str()
+            };
+
+            // Retrieve context.
             let chunks = if let Some(ref vs) = local_vs {
                 let vs2 = vs.clone();
                 let search_fn = move |emb: Vec<f32>, k: usize| {
@@ -1003,7 +1047,34 @@ async fn cmd_chat(
                             Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
                         >
                 };
-                if understand {
+                if effective_mode_chat == "iterative" {
+                    let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                        .context("opening graph store for iterative retrieval")?;
+                    retrieve_iterative(
+                        &query,
+                        &retrieve_cfg,
+                        &embed,
+                        &meta,
+                        &graph,
+                        search_fn,
+                        &inference_url,
+                        &model,
+                        |msg| println!("{msg}"),
+                    )
+                    .await?
+                } else if effective_mode_chat == "graph" {
+                    let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                        .context("opening graph store for graph-anchored retrieval")?;
+                    retrieve_graph_anchored(
+                        &query,
+                        &retrieve_cfg,
+                        &embed,
+                        &meta,
+                        &graph,
+                        search_fn,
+                    )
+                    .await?
+                } else if understand {
                     kwaai_rag::query_understanding::retrieve_with_understanding(
                         &query,
                         &retrieve_cfg,
@@ -2012,12 +2083,21 @@ async fn cmd_eval(
         let mut rows: Vec<Row> = Vec::new();
 
         for (i, q) in questions.iter().enumerate() {
-            print!(
-                "  [{:>2}/{}] {} … ",
-                i + 1,
-                questions.len(),
-                truncate(&q.question, 60)
-            );
+            if effective_mode == "iterative" {
+                println!(
+                    "  [{:>2}/{}] {}",
+                    i + 1,
+                    questions.len(),
+                    truncate(&q.question, 70)
+                );
+            } else {
+                print!(
+                    "  [{:>2}/{}] {} … ",
+                    i + 1,
+                    questions.len(),
+                    truncate(&q.question, 60)
+                );
+            }
             io::stdout().flush().ok();
 
             let t0 = std::time::Instant::now();
@@ -2033,7 +2113,23 @@ async fn cmd_eval(
                     as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
             };
 
-            let mut chunks = if effective_mode == "graph" {
+            let mut chunks = if effective_mode == "iterative" {
+                let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                retrieve_iterative(
+                    &q.question,
+                    &retrieve_cfg,
+                    &embed,
+                    &meta,
+                    &graph,
+                    search_fn,
+                    &inference_url,
+                    &model,
+                    |msg| println!("{msg}"),
+                )
+                .await
+                .unwrap_or_default()
+            } else if effective_mode == "graph" {
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
                 retrieve_graph_anchored(
@@ -2180,7 +2276,13 @@ async fn cmd_eval(
                 Some(s) => format!("  judge={s}/2"),
                 None => String::new(),
             };
-            println!("{keyword_hits}/{total_keywords} keywords{judge_str}  {latency_ms}ms");
+            if effective_mode == "iterative" {
+                println!(
+                    "         → {keyword_hits}/{total_keywords} keywords{judge_str}  {latency_ms}ms"
+                );
+            } else {
+                println!("{keyword_hits}/{total_keywords} keywords{judge_str}  {latency_ms}ms");
+            }
 
             rows.push(Row {
                 id: q.id.clone(),

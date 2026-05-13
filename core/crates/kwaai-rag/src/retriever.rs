@@ -169,7 +169,7 @@ pub async fn retrieve_graph_anchored(
     assemble_results(merged, cfg, meta)
 }
 
-fn assemble_results(
+pub(crate) fn assemble_results(
     raw: Vec<(i64, f64)>,
     cfg: &RetrieveConfig,
     meta: &MetaStore,

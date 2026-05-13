@@ -12,5 +12,6 @@ pub mod obsidian;
 pub mod prompt;
 pub mod query_understanding;
 pub mod reranker;
+pub mod iterative;
 pub mod retriever;
 pub mod wiki;
