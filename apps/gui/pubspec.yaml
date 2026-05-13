@@ -31,9 +31,12 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  tray_manager: ^0.5.0
+  window_manager: ^0.5.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.5.3
+  file_picker: ^10.3.3
 
 dev_dependencies:
   flutter_test:
@@ -52,10 +55,13 @@ dev_dependencies:
 # The following section is specific to Flutter packages.
 flutter:
 
-  # The following line ensures that the Material Icons font is
-  # included with your application, so that you can use the icons in
-  # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/tray_running.png
+    - assets/tray_stopped.png
+    - assets/tray_error.png
+    - assets/kwaaiai-logo.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
