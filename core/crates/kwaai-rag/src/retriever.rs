@@ -119,8 +119,28 @@ pub async fn retrieve_graph_anchored(
         _ => embed.embed_one(query).await?,
     };
 
-    // 1. Find seed entities by embedding similarity.
-    let seed_hits = graph.search_entities(&embedding, 3);
+    // 1. Find seed entities: embedding similarity + name-token matching.
+    //    Embedding search alone fails for abbreviations/acronyms (e.g. "J.M.H. Gool"
+    //    doesn't match the description embedding of the canonical entity). Name-token
+    //    matching catches those cases by finding entities whose name contains any
+    //    significant query word as a whole token.
+    let mut seed_hits = graph.search_entities(&embedding, 5);
+    let name_stop: &[&str] = &[
+        "who", "what", "was", "were", "the", "tell", "about", "and", "for",
+        "did", "how", "where", "when", "describe", "more", "kind", "place",
+    ];
+    let name_seed_ids: std::collections::HashSet<i64> =
+        seed_hits.iter().map(|(id, _)| *id).collect();
+    for word in query.split_whitespace() {
+        let w = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+        if w.len() >= 3 && !name_stop.contains(&w.as_str()) {
+            for id in graph.find_ids_by_name_token(&w) {
+                if !name_seed_ids.contains(&id) {
+                    seed_hits.push((id, 0.85));
+                }
+            }
+        }
+    }
 
     let graph_chunks: Vec<(i64, f64)> = if seed_hits.is_empty() {
         vec![]

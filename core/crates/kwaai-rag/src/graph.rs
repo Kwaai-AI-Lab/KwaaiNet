@@ -556,6 +556,23 @@ impl GraphStore {
         self.nodes.values().find(|n| normalize_name(&n.name) == norm)
     }
 
+    /// Return all entity IDs whose normalized name contains `token` as a whole word.
+    /// Used to augment embedding-based seed search with query name-token matching.
+    pub fn find_ids_by_name_token(&self, token: &str) -> Vec<i64> {
+        if token.len() < 3 {
+            return vec![];
+        }
+        let token_lc = token.to_lowercase();
+        self.nodes
+            .values()
+            .filter(|n| {
+                let norm = normalize_name(&n.name);
+                norm.split_whitespace().any(|w| w == token_lc)
+            })
+            .map(|n| n.id)
+            .collect()
+    }
+
     /// Merge all relations from `alias_id` into `canonical_id` and delete the alias entity.
     ///
     /// After this call `alias_id` no longer exists in the graph. The in-memory `nodes`
