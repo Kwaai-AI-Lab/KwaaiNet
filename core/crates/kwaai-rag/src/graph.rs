@@ -697,6 +697,91 @@ impl GraphStore {
         Ok(n_moved)
     }
 
+    /// Return (alias_id, canonical_id) pairs where both entities have the same
+    /// normalized name. These are unambiguous duplicates — always safe to auto-merge.
+    /// Canonical is the entity with the higher mention_count.
+    pub fn find_dedup_candidates_exact(&self) -> Vec<(i64, i64)> {
+        let mut by_norm: HashMap<String, Vec<i64>> = HashMap::new();
+        for (&id, node) in &self.nodes {
+            by_norm.entry(normalize_name(&node.name)).or_default().push(id);
+        }
+        let mut pairs = Vec::new();
+        for ids in by_norm.values() {
+            if ids.len() < 2 {
+                continue;
+            }
+            let &canonical = ids
+                .iter()
+                .max_by_key(|&&id| self.nodes.get(&id).map(|n| n.mention_count).unwrap_or(0))
+                .unwrap();
+            for &alias in ids.iter().filter(|&&id| id != canonical) {
+                pairs.push((alias, canonical));
+            }
+        }
+        pairs
+    }
+
+    /// Return (alias_id, canonical_id, sim) triples where the pair shares ≥1 significant
+    /// name token and has embedding cosine similarity ≥ threshold.
+    /// Sorted by similarity descending. Exact-name matches are excluded (Tier 1 handles those).
+    /// Canonical = longer name; tie-break by higher mention_count.
+    pub fn find_dedup_candidates(&self, threshold: f32) -> Vec<(i64, i64, f32)> {
+        let stop: &[&str] = &[
+            "the", "and", "of", "in", "a", "an", "for", "at", "by", "to",
+            "dr", "mr", "mrs", "ms", "prof", "sir",
+        ];
+
+        let mut token_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
+        for (&id, node) in &self.nodes {
+            for token in normalize_name(&node.name).split_whitespace() {
+                if token.len() >= 3 && !stop.contains(&token) {
+                    token_to_ids.entry(token.to_string()).or_default().push(id);
+                }
+            }
+        }
+
+        let mut seen: HashSet<(i64, i64)> = HashSet::new();
+        let mut candidates: Vec<(i64, i64, f32)> = Vec::new();
+
+        for ids in token_to_ids.values() {
+            for i in 0..ids.len() {
+                for j in (i + 1)..ids.len() {
+                    let a = ids[i];
+                    let b = ids[j];
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    let (na, nb) = match (self.nodes.get(&a), self.nodes.get(&b)) {
+                        (Some(x), Some(y)) => (x, y),
+                        _ => continue,
+                    };
+                    if normalize_name(&na.name) == normalize_name(&nb.name) {
+                        continue; // exact matches handled by Tier 1
+                    }
+                    let sim = cosine_sim_f32(&na.embedding, &nb.embedding);
+                    if sim < threshold {
+                        continue;
+                    }
+                    // Canonical = longer name; tie-break by mention_count
+                    let (alias_id, canonical_id) =
+                        if na.name.len() > nb.name.len()
+                            || (na.name.len() == nb.name.len()
+                                && na.mention_count >= nb.mention_count)
+                        {
+                            (b, a)
+                        } else {
+                            (a, b)
+                        };
+                    candidates.push((alias_id, canonical_id, sim));
+                }
+            }
+        }
+
+        candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        candidates
+    }
+
     /// Fully reload in-memory state from the database.
     /// Call once after a batch of `merge_entity_into` calls.
     pub fn rebuild_in_memory(&mut self) -> Result<()> {
@@ -860,6 +945,19 @@ fn relation_key(src: i64, dst: i64, rel_type: &str) -> Vec<u8> {
     k.extend_from_slice(&dst.to_le_bytes());
     k.extend_from_slice(rel_type.as_bytes());
     k
+}
+
+fn cosine_sim_f32(a: &[f32], b: &[f32]) -> f32 {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(&x, &y)| x as f64 * y as f64).sum();
+    let na: f64 = a.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+    let nb: f64 = b.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    (dot / (na * nb)).clamp(-1.0, 1.0) as f32
 }
 
 fn update_adj(

@@ -1900,6 +1900,198 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 ));
             }
 
+            GraphAction::Dedup { threshold, auto, dry_run } => {
+                print_box_header(&format!("Graph Dedup ({})", kb));
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                println!(
+                    "  Graph: {} entities, {} relations\n",
+                    store.node_count(),
+                    store.relation_count()
+                );
+
+                let mut total_merged = 0usize;
+                let mut need_rebuild = false;
+
+                // ── Tier 1: exact normalized name matches ─────────────────
+                let exact = store.find_dedup_candidates_exact();
+                if exact.is_empty() {
+                    println!("  Tier 1  no exact-name duplicates");
+                } else {
+                    println!("  Tier 1  {} exact-name duplicate(s):", exact.len());
+                    if !dry_run {
+                        for (alias_id, canonical_id) in &exact {
+                            let aname = store.get_entity(*alias_id)
+                                .map(|n| n.name.clone()).unwrap_or_default();
+                            let cname = store.get_entity(*canonical_id)
+                                .map(|n| n.name.clone()).unwrap_or_default();
+                            store.merge_entity_into(*alias_id, *canonical_id)?;
+                            println!("    merged '{}' → '{}'", aname, cname);
+                            total_merged += 1;
+                            need_rebuild = true;
+                        }
+                    } else {
+                        for (alias_id, canonical_id) in &exact {
+                            let aname = store.get_entity(*alias_id)
+                                .map(|n| n.name.clone()).unwrap_or_default();
+                            let cname = store.get_entity(*canonical_id)
+                                .map(|n| n.name.clone()).unwrap_or_default();
+                            println!("    '{}' → '{}'", aname, cname);
+                        }
+                    }
+                }
+                println!();
+
+                // ── Tier 2: embedding similarity ──────────────────────────
+                let candidates = store.find_dedup_candidates(threshold);
+                if candidates.is_empty() {
+                    println!("  Tier 2  no candidates above threshold {threshold:.2}");
+                } else {
+                    let total_cands = candidates.len();
+                    println!(
+                        "  Tier 2  {} candidate pair(s) above threshold {threshold:.2}",
+                        total_cands
+                    );
+
+                    if dry_run {
+                        println!();
+                        for (i, (alias_id, canonical_id, sim)) in candidates.iter().enumerate() {
+                            let a = store.get_entity(*alias_id);
+                            let b = store.get_entity(*canonical_id);
+                            if let (Some(a), Some(b)) = (a, b) {
+                                let a_rels = store.neighbors_of(*alias_id).len();
+                                let b_rels = store.neighbors_of(*canonical_id).len();
+                                println!(
+                                    "  {:>3}.  \"{}\"  (mentions={}, relations={})",
+                                    i + 1, a.name, a.mention_count, a_rels
+                                );
+                                println!(
+                                    "         ↔  \"{}\"  (mentions={}, relations={})  sim={:.3}",
+                                    b.name, b.mention_count, b_rels, sim
+                                );
+                            }
+                        }
+                    } else if auto {
+                        let auto_threshold = 0.92f32;
+                        println!("  Auto-merging pairs with sim ≥ {auto_threshold:.2}…\n");
+                        let mut tier2 = 0;
+                        for (alias_id, canonical_id, sim) in &candidates {
+                            if *sim < auto_threshold {
+                                break; // sorted descending, can stop early
+                            }
+                            // Entity may have been absorbed in a prior iteration
+                            if store.get_entity(*alias_id).is_none() {
+                                continue;
+                            }
+                            let aname = store.get_entity(*alias_id)
+                                .map(|n| n.name.clone()).unwrap_or_default();
+                            let cname = store.get_entity(*canonical_id)
+                                .map(|n| n.name.clone()).unwrap_or_default();
+                            store.merge_entity_into(*alias_id, *canonical_id)?;
+                            println!("    merged '{}' → '{}'  sim={:.3}", aname, cname, sim);
+                            tier2 += 1;
+                            need_rebuild = true;
+                        }
+                        let skipped = total_cands - tier2;
+                        if skipped > 0 {
+                            println!("    skipped {} pair(s) below {auto_threshold:.2}", skipped);
+                        }
+                        total_merged += tier2;
+                    } else {
+                        // Interactive review
+                        println!("  [y=merge, n=skip, q=quit, ?=show relations]\n");
+                        let mut quit = false;
+                        for (i, (alias_id, canonical_id, sim)) in candidates.iter().enumerate() {
+                            if quit { break; }
+                            let a = match store.get_entity(*alias_id).cloned() {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            let b = match store.get_entity(*canonical_id).cloned() {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            let a_rels = store.neighbors_of(*alias_id).len();
+                            let b_rels = store.neighbors_of(*canonical_id).len();
+
+                            println!(
+                                "  Candidate {}/{}:",
+                                i + 1, total_cands
+                            );
+                            println!(
+                                "  \"{}\"  (mentions={}, relations={})",
+                                a.name, a.mention_count, a_rels
+                            );
+                            println!(
+                                "    ↔  \"{}\"  (mentions={}, relations={})  sim={:.3}",
+                                b.name, b.mention_count, b_rels, sim
+                            );
+
+                            loop {
+                                use std::io::Write;
+                                print!("  Merge? [y/n/q/?] ");
+                                std::io::stdout().flush()?;
+                                let mut line = String::new();
+                                std::io::stdin().read_line(&mut line)?;
+                                match line.trim() {
+                                    "y" | "Y" => {
+                                        store.merge_entity_into(*alias_id, *canonical_id)?;
+                                        println!("    ✓ merged\n");
+                                        total_merged += 1;
+                                        need_rebuild = true;
+                                        break;
+                                    }
+                                    "q" | "Q" => {
+                                        println!("  Stopping.\n");
+                                        quit = true;
+                                        break;
+                                    }
+                                    "?" => {
+                                        println!("  Relations — \"{}\":", a.name);
+                                        for (nbr_id, rel, _) in store.neighbors_of(*alias_id).iter().take(6) {
+                                            if let Some(nbr) = store.get_entity(*nbr_id) {
+                                                println!("    → {} [{}]", nbr.name, rel);
+                                            }
+                                        }
+                                        println!("  Relations — \"{}\":", b.name);
+                                        for (nbr_id, rel, _) in store.neighbors_of(*canonical_id).iter().take(6) {
+                                            if let Some(nbr) = store.get_entity(*nbr_id) {
+                                                println!("    → {} [{}]", nbr.name, rel);
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        println!("    skipped\n");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if need_rebuild {
+                    store.rebuild_in_memory()?;
+                }
+
+                println!();
+                if dry_run {
+                    print_info("Dry-run — no changes made.");
+                } else {
+                    print_success(&format!("Dedup complete — {} entities merged", total_merged));
+                    println!(
+                        "  Graph now: {} entities, {} relations",
+                        store.node_count(),
+                        store.relation_count()
+                    );
+                    if total_merged > 0 {
+                        println!(
+                            "  Tip: run `kwaainet rag graph reembed --kb {kb}` to re-embed updated alias sets."
+                        );
+                    }
+                }
+            }
+
             GraphAction::Reembed { embed_url } => {
                 print_box_header(&format!("Graph Reembed ({})", kb));
                 let embed_url_str = embed_url.as_deref().unwrap_or("");

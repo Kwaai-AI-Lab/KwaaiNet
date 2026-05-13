@@ -1472,6 +1472,25 @@ pub enum GraphAction {
         kb: String,
     },
 
+    /// Detect and merge duplicate entities.
+    /// Tier 1 (exact normalized name match) is always auto-merged silently.
+    /// Tier 2 (embedding similarity ≥ threshold) is shown for interactive review
+    /// unless --auto or --dry-run is set.
+    /// Merged aliases are preserved on the canonical entity so queries still find it.
+    Dedup {
+        /// Cosine similarity threshold for Tier 2 candidates [default: 0.85]
+        #[arg(long, default_value = "0.85", value_name = "FLOAT")]
+        threshold: f32,
+
+        /// Auto-merge all candidates above 0.92 without interactive review
+        #[arg(long)]
+        auto: bool,
+
+        /// Print candidates without merging anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Re-embed all entities using "{name}: {description}" as the embedded text.
     /// Fixes abbreviation/acronym lookup (e.g. "J.M.H. Gool" finding its canonical entity).
     /// Run once after upgrading from a build that stored description-only embeddings,
