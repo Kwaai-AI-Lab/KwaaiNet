@@ -171,11 +171,74 @@ pub async fn extract_and_store_entities_pub(
     let model = Arc::new(graph_cfg.model.clone());
     let store = graph_cfg.store.clone();
 
+    // Channel capacity must be large enough that spawned tasks never block waiting
+    // to send while the spawn loop holds the only tokio task slot.  Using a
+    // concurrent drain task (below) makes the exact size irrelevant, but a modest
+    // buffer still reduces contention.
     let sem = Arc::new(tokio::sync::Semaphore::new(workers));
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChunkResult>(workers * 2);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChunkResult>(workers.max(4) * 4);
+
+    // Drain runs as a *concurrent* task so it can consume results while the spawn
+    // loop above is still blocking on semaphore acquisition.  Running it sequentially
+    // after the loop causes a deadlock: spawn loop blocks on the semaphore waiting
+    // for a task to finish; the task blocks trying to send into a full channel;
+    // the channel is never drained because the drain hasn't started yet.
+    let drain_store = store.clone();
+    let drain_handle = tokio::spawn(async move {
+        let mut done = 0usize;
+        while let Some(res) = rx.recv().await {
+            done += 1;
+            if res.entities.is_empty() {
+                if let Some(ref prog) = progress {
+                    let (nc, rc) = drain_store.lock().map(|g| (g.node_count(), g.relation_count())).unwrap_or((0, 0));
+                    prog(done, total, nc, rc);
+                }
+                continue;
+            }
+
+            let mut graph = match drain_store.lock() {
+                Ok(g) => g,
+                Err(_) => { warn!("graph store mutex poisoned"); continue; }
+            };
+
+            let mut entity_ids_for_chunk = Vec::new();
+            for (extracted, emb) in res.entities.iter().zip(res.embeddings.into_iter()) {
+                let eid = entity_id(&extracted.name, &extracted.entity_type);
+                let node = EntityNode {
+                    id: eid,
+                    name: extracted.name.clone(),
+                    entity_type: extracted.entity_type.clone(),
+                    description: extracted.description.clone(),
+                    embedding: emb,
+                    mention_count: 1,
+                    first_chunk_id: res.chunk_id,
+                };
+                if let Err(e) = graph.upsert_entity(node) {
+                    warn!("upsert_entity: {e}");
+                    continue;
+                }
+                entity_ids_for_chunk.push(eid);
+            }
+
+            for rel in &res.relations {
+                let src = resolve_entity_id(&rel.from, &res.entities, &graph);
+                let dst = resolve_entity_id(&rel.to, &res.entities, &graph);
+                if let Err(e) = graph.upsert_relation(src, dst, &rel.relation, res.chunk_id) {
+                    warn!("upsert_relation: {e}");
+                }
+            }
+            if let Err(e) = graph.link_chunk(res.chunk_id, &entity_ids_for_chunk) {
+                warn!("link_chunk: {e}");
+            }
+
+            if let Some(ref prog) = progress {
+                prog(done, total, graph.node_count(), graph.relation_count());
+            }
+        }
+    });
 
     // Spawn one extraction task per chunk; semaphore caps concurrency.
-    for (i, (chunk, &chunk_id)) in chunks.iter().zip(chunk_ids.iter()).enumerate() {
+    for (_i, (chunk, &chunk_id)) in chunks.iter().zip(chunk_ids.iter()).enumerate() {
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
         let tx = tx.clone();
         let text = chunk.text.clone();
@@ -214,59 +277,9 @@ pub async fn extract_and_store_entities_pub(
             let _ = tx.send(ChunkResult { chunk_id, entities, relations, embeddings }).await;
         });
     }
-    drop(tx); // signal EOF to drain loop
+    drop(tx); // close sender — drain task's rx.recv() will return None once queue empties
 
-    // Drain: single task holds the graph mutex only during writes (not during LLM calls).
-    let mut done = 0usize;
-    while let Some(res) = rx.recv().await {
-        done += 1;
-        if res.entities.is_empty() {
-            if let Some(ref prog) = progress {
-                let (nc, rc) = store.lock().map(|g| (g.node_count(), g.relation_count())).unwrap_or((0, 0));
-                prog(done, total, nc, rc);
-            }
-            continue;
-        }
-
-        let mut graph = match store.lock() {
-            Ok(g) => g,
-            Err(_) => { warn!("graph store mutex poisoned"); continue; }
-        };
-
-        let mut entity_ids_for_chunk = Vec::new();
-        for (extracted, emb) in res.entities.iter().zip(res.embeddings.into_iter()) {
-            let eid = entity_id(&extracted.name, &extracted.entity_type);
-            let node = EntityNode {
-                id: eid,
-                name: extracted.name.clone(),
-                entity_type: extracted.entity_type.clone(),
-                description: extracted.description.clone(),
-                embedding: emb,
-                mention_count: 1,
-                first_chunk_id: res.chunk_id,
-            };
-            if let Err(e) = graph.upsert_entity(node) {
-                warn!("upsert_entity: {e}");
-                continue;
-            }
-            entity_ids_for_chunk.push(eid);
-        }
-
-        for rel in &res.relations {
-            let src = resolve_entity_id(&rel.from, &res.entities, &graph);
-            let dst = resolve_entity_id(&rel.to, &res.entities, &graph);
-            if let Err(e) = graph.upsert_relation(src, dst, &rel.relation, res.chunk_id) {
-                warn!("upsert_relation: {e}");
-            }
-        }
-        if let Err(e) = graph.link_chunk(res.chunk_id, &entity_ids_for_chunk) {
-            warn!("link_chunk: {e}");
-        }
-
-        if let Some(ref prog) = progress {
-            prog(done, total, graph.node_count(), graph.relation_count());
-        }
-    }
+    drain_handle.await.unwrap_or(());
 }
 
 /// Extract entities from all chunks and persist them to the GraphStore.
