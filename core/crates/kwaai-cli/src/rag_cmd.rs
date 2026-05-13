@@ -252,7 +252,24 @@ async fn cmd_init(
         // Probe embedding model before touching storage — auto-detect dimension.
         let embed = EmbedClient::new(None, Some(embed_model.clone()));
         print_info(&format!("Probing Ollama ({embed_model})…"));
-        let embed_dim = embed.probe_dim().await?;
+        let embed_dim = embed.probe_dim().await.map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("404") || msg.contains("not found") {
+                anyhow::anyhow!(
+                    "Embedding model '{}' is not available in Ollama.\n\
+                     Pull it first:  ollama pull {}\n\
+                     Other supported models: ollama pull mxbai-embed-large\n\
+                     Then re-run:    kwaainet rag init --name {} --embed-model {}",
+                    embed_model, embed_model, name, embed_model
+                )
+            } else if msg.contains("Connection refused") || msg.contains("connect") {
+                anyhow::anyhow!(
+                    "Cannot reach Ollama — is it running?\n  Start it with: ollama serve"
+                )
+            } else {
+                e
+            }
+        })?;
         print_success(&format!("Embedding model OK ({embed_dim} dimensions)"));
 
         // If already initialised, verify the tenant exists in the DB (idempotent).
@@ -1881,6 +1898,21 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     final_store.node_count(),
                     final_store.relation_count()
                 ));
+            }
+
+            GraphAction::Reembed { embed_url } => {
+                print_box_header(&format!("Graph Reembed ({})", kb));
+                let embed_url_str = embed_url.as_deref().unwrap_or("");
+                let embed = EmbedClient::new(
+                    if embed_url_str.is_empty() { None } else { Some(embed_url_str.to_string()) },
+                    Some(rag_cfg.embed_model.clone()),
+                );
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                println!("  Entities to re-embed: {}", store.node_count());
+                let n = store.reembed_all(&embed).await?;
+                print_success(&format!("Re-embedded {n} entities with name+description text."));
+                println!("  Graph entity search now includes name tokens in the embedding.\n");
             }
 
             GraphAction::Seed { file, kb: _ } => {

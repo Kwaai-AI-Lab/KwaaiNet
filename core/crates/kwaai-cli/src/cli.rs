@@ -1466,6 +1466,14 @@ pub enum GraphAction {
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
     },
+
+    /// Re-embed all entities using "{name}: {description}" as the embedded text.
+    /// Run this once after upgrading from an older build that stored description-only embeddings.
+    Reembed {
+        /// Embedding server URL (defaults to config embed_url)
+        #[arg(long, value_name = "URL")]
+        embed_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

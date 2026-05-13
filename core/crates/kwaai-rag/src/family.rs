@@ -73,31 +73,45 @@ pub async fn seed_family_tree(
     for person in &tree.persons {
         progress(&format!("seeding {}", person.canonical));
 
-        let embedding = if !person.description.is_empty() {
-            embed.embed_one(&person.description).await.unwrap_or_default()
+        let desc = if !person.description.is_empty() {
+            person.description.trim().to_string()
         } else {
-            vec![]
+            String::new()
         };
+        let embed_text = if desc.is_empty() {
+            person.canonical.clone()
+        } else {
+            format!("{}: {}", person.canonical, desc)
+        };
+        let embedding = embed.embed_one(&embed_text).await.unwrap_or_default();
 
         let eid = entity_id(&person.canonical, "Person");
         let existing = graph.get_entity(eid).cloned();
+
+        // Merge existing stored aliases with all YAML-declared aliases so that even
+        // previously-merged aliases (no longer in the graph as separate entities) remain
+        // queryable via find_ids_by_name_token.
+        let mut merged_aliases: Vec<String> =
+            existing.as_ref().map(|e| e.aliases.clone()).unwrap_or_default();
+        for a in &person.aliases {
+            if !merged_aliases.contains(a) {
+                merged_aliases.push(a.clone());
+            }
+        }
 
         let node = EntityNode {
             id: eid,
             name: person.canonical.clone(),
             entity_type: "Person".to_string(),
-            description: if !person.description.is_empty() {
-                person.description.trim().to_string()
+            description: if !desc.is_empty() {
+                desc
             } else {
                 existing.as_ref().map(|e| e.description.clone()).unwrap_or_default()
             },
-            embedding: if !embedding.is_empty() {
-                embedding
-            } else {
-                existing.as_ref().map(|e| e.embedding.clone()).unwrap_or_default()
-            },
+            embedding,
             mention_count: existing.as_ref().map(|e| e.mention_count).unwrap_or(1).max(1),
             first_chunk_id: existing.as_ref().map(|e| e.first_chunk_id).unwrap_or(0),
+            aliases: merged_aliases,
         };
 
         graph.upsert_entity(node)?;

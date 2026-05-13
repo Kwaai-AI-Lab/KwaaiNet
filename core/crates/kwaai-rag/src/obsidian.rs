@@ -267,6 +267,7 @@ pub async fn import_vault(
             embedding,
             mention_count: existing.as_ref().map(|e| e.mention_count).unwrap_or(1),
             first_chunk_id: existing.as_ref().map(|e| e.first_chunk_id).unwrap_or(0),
+            aliases: existing.as_ref().map(|e| e.aliases.clone()).unwrap_or_default(),
         };
 
         graph.upsert_entity(node)?;

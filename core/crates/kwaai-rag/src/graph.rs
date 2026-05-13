@@ -107,10 +107,14 @@ pub struct EntityNode {
     pub entity_type: String,
     /// 1–2 sentence LLM-generated summary.
     pub description: String,
-    /// 768-dim embedding of the description for similarity search.
+    /// Embedding of "{name}: {description}" for similarity search.
+    /// Includes the name so abbreviations/acronyms find the right entity.
     pub embedding: Vec<f32>,
     pub mention_count: u32,
     pub first_chunk_id: i64,
+    /// Names of entities that were merged into this one (alias names preserved for lookup).
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +302,7 @@ impl GraphStore {
                 },
                 mention_count: existing.mention_count + 1,
                 first_chunk_id: existing.first_chunk_id,
+                aliases: existing.aliases.clone(),
             },
             None => node,
         };
@@ -556,7 +561,7 @@ impl GraphStore {
         self.nodes.values().find(|n| normalize_name(&n.name) == norm)
     }
 
-    /// Return all entity IDs whose normalized name contains `token` as a whole word.
+    /// Return all entity IDs whose normalized name (or any alias) contains `token` as a whole word.
     /// Used to augment embedding-based seed search with query name-token matching.
     pub fn find_ids_by_name_token(&self, token: &str) -> Vec<i64> {
         if token.len() < 3 {
@@ -566,8 +571,13 @@ impl GraphStore {
         self.nodes
             .values()
             .filter(|n| {
-                let norm = normalize_name(&n.name);
-                norm.split_whitespace().any(|w| w == token_lc)
+                let name_match = normalize_name(&n.name)
+                    .split_whitespace()
+                    .any(|w| w == token_lc);
+                let alias_match = n.aliases.iter().any(|a| {
+                    normalize_name(a).split_whitespace().any(|w| w == token_lc)
+                });
+                name_match || alias_match
             })
             .map(|n| n.id)
             .collect()
@@ -585,6 +595,8 @@ impl GraphStore {
         }
 
         let alias_mention_count = self.nodes.get(&alias_id).map(|n| n.mention_count).unwrap_or(0);
+        let alias_name = self.nodes.get(&alias_id).map(|n| n.name.clone());
+        let alias_aliases = self.nodes.get(&alias_id).map(|n| n.aliases.clone()).unwrap_or_default();
 
         // ── 1. Collect relations involving alias_id ─────────────────────────
         let mut to_rewrite: Vec<RelationRecord> = vec![];
@@ -650,8 +662,20 @@ impl GraphStore {
                 et.remove(&alias_id.to_le_bytes()[..])?;
 
                 if let Some(canonical) = self.nodes.get(&canonical_id).cloned() {
+                    let mut new_aliases = canonical.aliases.clone();
+                    if let Some(ref aname) = alias_name {
+                        if !new_aliases.contains(aname) {
+                            new_aliases.push(aname.clone());
+                        }
+                    }
+                    for a in &alias_aliases {
+                        if !new_aliases.contains(a) {
+                            new_aliases.push(a.clone());
+                        }
+                    }
                     let updated = EntityNode {
                         mention_count: canonical.mention_count + alias_mention_count,
+                        aliases: new_aliases,
                         ..canonical
                     };
                     et.insert(
@@ -681,6 +705,42 @@ impl GraphStore {
         self.chunk_to_entities.clear();
         self.entity_to_chunks.clear();
         self.rebuild()
+    }
+
+    /// Re-embed all entities using "{name}: {description}" as the embedded text.
+    /// Returns the number of entities updated.
+    /// Run this once after upgrading from description-only embeddings.
+    pub async fn reembed_all(&mut self, embed: &crate::embedder::EmbedClient) -> Result<usize> {
+        let ids: Vec<i64> = self.nodes.keys().copied().collect();
+        let texts: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                let n = &self.nodes[id];
+                if n.description.is_empty() {
+                    n.name.clone()
+                } else {
+                    format!("{}: {}", n.name, n.description)
+                }
+            })
+            .collect();
+
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = embed.embed_batch(&text_refs).await?;
+
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            for (id, emb) in ids.iter().zip(embeddings.into_iter()) {
+                if let Some(node) = self.nodes.get_mut(id) {
+                    node.embedding = emb;
+                    let key = id.to_le_bytes();
+                    let val = serde_json::to_vec(node)?;
+                    t.insert(key.as_ref(), val.as_slice())?;
+                }
+            }
+        }
+        wtxn.commit()?;
+        Ok(ids.len())
     }
 }
 

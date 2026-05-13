@@ -212,6 +212,7 @@ pub async fn extract_and_store_entities_pub(
                     embedding: emb,
                     mention_count: 1,
                     first_chunk_id: res.chunk_id,
+                    aliases: vec![],
                 };
                 if let Err(e) = graph.upsert_entity(node) {
                     warn!("upsert_entity: {e}");
@@ -264,8 +265,18 @@ pub async fn extract_and_store_entities_pub(
             let embeddings = if entities.is_empty() {
                 vec![]
             } else {
-                let descs: Vec<&str> = entities.iter().map(|e| e.description.as_str()).collect();
-                match embed.embed_batch(&descs).await {
+                let texts: Vec<String> = entities
+                    .iter()
+                    .map(|e| {
+                        if e.description.is_empty() {
+                            e.name.clone()
+                        } else {
+                            format!("{}: {}", e.name, e.description)
+                        }
+                    })
+                    .collect();
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                match embed.embed_batch(&text_refs).await {
                     Ok(e) => e,
                     Err(e) => {
                         warn!("entity embedding error for chunk {chunk_id}: {e}");
@@ -309,9 +320,19 @@ async fn extract_and_store_entities(
             continue;
         }
 
-        // Embed all entity descriptions in one batch.
-        let descriptions: Vec<&str> = entities.iter().map(|e| e.description.as_str()).collect();
-        let embeddings = match embed.embed_batch(&descriptions).await {
+        // Embed "{name}: {description}" so abbreviations/acronyms match by name.
+        let texts: Vec<String> = entities
+            .iter()
+            .map(|e| {
+                if e.description.is_empty() {
+                    e.name.clone()
+                } else {
+                    format!("{}: {}", e.name, e.description)
+                }
+            })
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = match embed.embed_batch(&text_refs).await {
             Ok(e) => e,
             Err(e) => {
                 warn!("entity embedding error for chunk {chunk_id}: {e}");
@@ -338,6 +359,7 @@ async fn extract_and_store_entities(
                 embedding: emb,
                 mention_count: 1,
                 first_chunk_id: chunk_id,
+                aliases: vec![],
             };
             if let Err(e) = graph.upsert_entity(node) {
                 warn!("upsert_entity failed: {e}");

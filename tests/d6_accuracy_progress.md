@@ -11,20 +11,24 @@
 ```
 55% ┤
     │
-50% ┤                                                             ████ 50.0% ← run-to-run best
-    │                                                        ████ 48.3% ← judge run (stable)
-45% ┤                                              ████ 44.8%
-    │                                         ████ 44.0%
-    │                                    ████ 43.1%
-40% ┤                    ████ 37.9%
-    │               ████ 33.3%
-35% ┤          ████
-30% ┤     ████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
-25% ┤████ 24.6%
+50% ┤                                                             ████ 50.0% ← keyword best
+    │                                                        ████ 49.1% ← iterative (judge best)
+    │                                                   ████ 48.3%
+45% ┤                                         ████ 44.8%
+    │                                    ████ 44.0%
+    │                               ████ 43.1%
+40% ┤               ████ 37.9%
+    │          ████ 33.3%
+35% ┤     ████
+30% ┤████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
+25% ┤24.6%
     │
     └───────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed+judge
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iterative
+                                                           +judge   (new best)
 ```
+
+**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / **1.80** ← new best
 
 ---
 
@@ -48,37 +52,42 @@
 | 11 | v0.4.49 | mxbai, k=30, **--mode auto** | llama3.1:8b | **46.6%** (54/116) | — | Router adds +2 on q06/q12/q19 |
 | 12 | v0.4.51 | auto + **family tree seeding** (61 aliases merged) | llama3.1:8b | **50.0%** (58/116) | 1.85/2 (lenient) | Graph cleaned; new best keyword |
 | 13 | v0.4.51 | same + **strict judge** (content-focused prompt) | llama3.1:8b | **48.3%** (56/116) | **1.65/2** | Calibrated judge; 11×2/2, 8×1/2, 1×0/2 |
+| 14 | v0.4.53 | **--mode iterative**, top_k=10 | llama3.1:8b | **49.1%** (57/116) | **1.80/2** ⬆ | Multi-round gap-fill; **16×2/2, 4×1/2, 0×0/2** — new judge best |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
 ---
 
-## Judge Scores by Question (Milestone 13 — calibrated judge)
+## Judge Scores by Question
 
-| ID | Question | Keywords | Judge | Assessment |
-|----|----------|----------|-------|------------|
-| q01 | Who is the author? | 2/3 | **1/2** | Retrieves Joe Rassool but not Y.S. Rassool attribution |
-| q02 | Author's children? | 3/3 | **2/2** | Solid |
-| q03 | Author's grandchildren? | 0/6 | **1/2** | High run variance — correct in some runs, not others |
-| q04 | Book dedication? | 1/4 | **1/2** | Finds dedication target but misses names |
-| q05 | Who was J.M.H. Gool? | 2/8 | **1/2** | Gets 2 wives but misses merchant/Gujarat/Buitencingle context |
-| q06 | Tell me about Buitencingle. | 5/8 | **2/2** | Solid |
-| q07 | Author's wife? | 1/3 | **2/2** | Correct; keyword miss is phrasing not content |
-| q08 | More about wife? | 5/6 | **2/2** | Solid |
-| q09 | Author's grandfather? | 4/9 | **2/2** | Correct; keyword miss is phrasing |
-| q10 | Kloof Nek? | 2/7 | **1/2** | Partial — gets location, misses social history |
-| q11 | TLSA? | 2/6 | **2/2** | Correct; keywords too specific |
-| q12 | Who was Cissie Gool? | 4/6 | **2/2** | Solid — family seeding helped |
-| q13 | All Africa Convention? | 3/6 | **1/2** | Partial |
-| q14 | Where was District Six? | 3/6 | **2/2** | Solid |
-| q15 | Forced removals? | 3/6 | **1/2** | Retrieves context but hedges on detail |
-| q16 | Gandhi / Gool family? | 3/7 | **2/2** | Solid — graph relations helped |
-| q17 | Hewat College? | 4/5 | **2/2** | Solid |
-| q18 | New Era Fellowship? | 4/6 | **2/2** | Solid |
-| q19 | NEUM? | 4/6 | **2/2** | Solid — graph helped |
-| q20 | Cricket? | 1/5 | **2/2** | Correct content; keywords too specific |
+| ID | Question | M13 kw | M13 judge | M14 kw | M14 judge | Δ judge |
+|----|----------|--------|-----------|--------|-----------|---------|
+| q01 | Who is the author? | 2/3 | 1/2 | 3/3 | **2/2** | ⬆ +1 |
+| q02 | Author's children? | 3/3 | 2/2 | 3/3 | **2/2** | = |
+| q03 | Author's grandchildren? | 0/6 | 1/2 | 6/6 | **2/2** | ⬆ +1 |
+| q04 | Book dedication? | 1/4 | 1/2 | 0/4 | 1/2 | = |
+| q05 | Who was J.M.H. Gool? | 2/8 | 1/2 | 2/8 | **2/2** | ⬆ +1 |
+| q06 | Tell me about Buitencingle. | 5/8 | 2/2 | 1/8 | 1/2 | ⬇ −1 |
+| q07 | Author's wife? | 1/3 | 2/2 | 1/3 | **2/2** | = |
+| q08 | More about wife? | 5/6 | 2/2 | 5/6 | **2/2** | = |
+| q09 | Author's grandfather? | 4/9 | 2/2 | 2/9 | **2/2** | = |
+| q10 | Kloof Nek? | 2/7 | 1/2 | 5/7 | **2/2** | ⬆ +1 |
+| q11 | TLSA? | 2/6 | 2/2 | 3/6 | **2/2** | = |
+| q12 | Who was Cissie Gool? | 4/6 | 2/2 | 3/6 | **2/2** | = |
+| q13 | All Africa Convention? | 3/6 | 1/2 | 2/6 | 1/2 | = |
+| q14 | Where was District Six? | 3/6 | 2/2 | 2/6 | 1/2 | ⬇ −1 |
+| q15 | Forced removals? | 3/6 | 1/2 | 3/6 | **2/2** | ⬆ +1 |
+| q16 | Gandhi / Gool family? | 3/7 | 2/2 | 2/7 | **2/2** | = |
+| q17 | Hewat College? | 4/5 | 2/2 | 4/5 | **2/2** | = |
+| q18 | New Era Fellowship? | 4/6 | 2/2 | 4/6 | **2/2** | = |
+| q19 | NEUM? | 4/6 | 2/2 | 4/6 | **2/2** | = |
+| q20 | Cricket? | 1/5 | 2/2 | 2/5 | **2/2** | = |
 
-**Summary:** 11 questions fully correct (2/2), 8 partial (1/2), 1 zero (0/2)
+**M13 summary:** 11×2/2, 8×1/2, 1×0/2 → judge=1.65/2  
+**M14 summary:** 16×2/2, 4×1/2, 0×0/2 → judge=**1.80/2** ⬆ new best
+
+**Net gains:** q01, q03, q05, q10, q15 improved (+1 each)  
+**Regressions:** q06 (Buitencingle −1), q14 (District Six −1) — top_k=10 vs 30 likely cause
 
 ---
 
@@ -100,14 +109,19 @@ The keyword metric *underestimates* answer quality for questions where the model
 
 | ID | Root cause | Fix path |
 |----|------------|----------|
-| q01 author (1/2) | intro.docx is written in 3rd person — Y.S. Rassool not identified as the narrator | Metadata injection: prepend `[Author: Y.S. Rassool]` to intro chunks |
 | q04 dedication (1/2) | Dedication text doesn't use the word "dedicated" — BM25 blind spot | Metadata injection: tag dedication chunk as `[Document type: dedication page]` |
-| q05 JMH Gool (1/2) | Entity merged + family tree planted but description keywords sparse | Re-run graph build for family chapters with new family relation types |
-| q03 grandchildren (variable) | Content exists in intro but borderline retrieval — sometimes found, sometimes not | Investigate intro chunk sizes and context window |
+| q06 Buitencingle (1/2 at k=10) | top_k=10 too restrictive for broad descriptive questions | Re-test with --top-k 20 in iterative mode |
+| q13 All Africa Conv (1/2) | Correct chapter retrieved but model hedges without enough specific facts | Investigate chapter chunk density |
+| q14 District Six (1/2 at k=10) | Regression from k=30; top_k=10 misses key chunks | Re-test with --top-k 20 in iterative mode |
 
 ---
 
 ## What Changed at Each Phase
+
+### Iterative retrieval (v0.4.53)
+`--mode iterative` adds multi-round gap-filling on top of the Round 1 vector+graph fusion. Coverage check extracts content terms from the query; if < 70% found in retrieved chunks, Round 2 embeds the missing terms and does a targeted graph entity BFS. If still < 75%, Round 3 asks the LLM to reformulate a targeted sub-query and re-runs vector search. Each round narrates what it's doing. **Judge score: 1.65 → 1.80** (+0.15). Notably fixed q01 (author), q03 (grandchildren), q05 (J.M.H. Gool), q10 (Kloof Nek), q15 (forced removals). Two regressions (q06, q14) likely caused by top_k=10 vs 30; test at top_k=20.
+
+
 
 ### Family tree seeding (v0.4.51)
 61 aliases merged into 24 canonical Person entities (e.g., "Joosub Gool", "JMH Gool", "J.M.H. Gool" → "Haji Joosub Maulvi Hamid Gool"). 46 authoritative family relations planted. Eliminated duplicate fragmented entity nodes — context for entity questions now consolidated. q12 (Cissie Gool), q16 (Gandhi+Gool), q19 (NEUM) all improved.
@@ -141,8 +155,9 @@ With k=30 chunks at ~300 chars each, 8192 chars only showed ~16/30 chunks. Raisi
 
 | Priority | Approach | Expected gain |
 |----------|----------|---------------|
-| High | Graph refinement: re-run `graph build` with new family relation types for family-dense chapters | +2–5pp on q05/q09/q16 |
-| High | Chunk metadata injection for q01 (author) + q04 (dedication) | +2–4pp |
-| Medium | `--rerank` and `--understand` on eval — both flags exist, never measured | +1–3pp each |
-| Medium | 3-run eval average — reduce ±4pp variance to ±1–2pp for reliable comparison | Diagnostic |
-| Low | HyDE blending (alpha=0.5) — prevents factoid regression if HyDE adopted | Defensive |
+| High | Re-test iterative at `--top-k 20` — fix q06/q14 regressions without losing q01/q03/q05/q10 gains | +1–2pp judge |
+| High | `graph dedup` command — merge "Hassen Mall"/"Hassen", other Obsidian-visible dups | Cleaner graph → better entity retrieval |
+| High | Chunk metadata injection for q04 (dedication) | +1pp judge on q04 |
+| Medium | `--rerank` on iterative eval — both flags exist, never combined | +1–2pp |
+| Medium | 3-run eval average — reduce ±4pp variance to ±1–2pp | Diagnostic |
+| Low | Fan-out entity extraction to metro nodes (v0.4.53 P2P Ollama proxy) | Faster graph rebuild |
