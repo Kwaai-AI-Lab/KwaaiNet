@@ -717,11 +717,19 @@ pub async fn extract_from_text(
         "max_tokens": 1024,
     });
 
-    let resp = client.post(&url).json(&body).send().await;
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => {
+    let send_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        client.post(&url).json(&body).send(),
+    )
+    .await;
+    let resp = match send_result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             tracing::warn!("entity extraction request failed: {e}");
+            return Ok((vec![], vec![]));
+        }
+        Err(_) => {
+            tracing::warn!("entity extraction send timed out after 30s");
             return Ok((vec![], vec![]));
         }
     };

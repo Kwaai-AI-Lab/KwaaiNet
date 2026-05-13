@@ -15,6 +15,7 @@ mod map;
 mod monitor;
 mod node;
 mod ollama;
+mod ollama_proxy;
 mod p2p_cmd;
 mod progress;
 #[cfg(feature = "rag")]

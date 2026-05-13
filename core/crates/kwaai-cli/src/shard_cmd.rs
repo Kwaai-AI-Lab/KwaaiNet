@@ -353,6 +353,12 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         .await
         .context("Failed to register inference handler with p2pd")?;
 
+    // Ollama proxy — lets remote nodes route LLM requests to our local Ollama.
+    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler();
+    let _ = client
+        .add_unary_handler(crate::ollama_proxy::OLLAMA_PROXY_PROTO, proxy_handler, false)
+        .await;
+
     print_box_header("🧩 KwaaiNet Shard Server");
     println!("  Blocks:      [{}, {})", start_block, end_block);
     println!("  Device:      {}", device_type);

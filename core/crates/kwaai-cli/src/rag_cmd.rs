@@ -1691,12 +1691,35 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 workers,
                 inference_urls,
             } => {
-                let infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
-                let extra_urls: Vec<String> = inference_urls
+                let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+                let raw_extra_urls: Vec<String> = inference_urls
                     .as_deref()
                     .map(|s| s.split(',').map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect())
                     .unwrap_or_default();
                 let effective_workers = workers.max(1);
+
+                // Resolve p2p:// URLs to local HTTP proxies if needed.
+                let all_raw: Vec<String> = std::iter::once(raw_infer_url)
+                    .chain(raw_extra_urls)
+                    .collect();
+                let has_p2p = all_raw.iter().any(|u| u.starts_with("p2p://"));
+                let (_proxy_handles, resolved_all) = if has_p2p {
+                    use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+                    let sock = std::env::var("KWAAINET_SOCKET")
+                        .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+                    #[cfg(unix)]
+                    let addr = format!("/unix/{sock}");
+                    #[cfg(not(unix))]
+                    let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+                    let p2p = Arc::new(P2PClient::connect(&addr).await
+                        .context("connecting to p2pd for p2p:// URL resolution")?);
+                    let (res, handles) = crate::ollama_proxy::resolve_inference_urls(&all_raw, &p2p).await?;
+                    (handles, res)
+                } else {
+                    (vec![], all_raw)
+                };
+                let infer_url = resolved_all[0].clone();
+                let extra_urls: Vec<String> = resolved_all[1..].to_vec();
 
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
                 let mut all_chunks = meta.all_chunks()?;

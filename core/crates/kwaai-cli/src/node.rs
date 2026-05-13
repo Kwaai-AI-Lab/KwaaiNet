@@ -500,6 +500,16 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         .await
         .context("registering p2p hello handler")?;
 
+    // Ollama proxy — lets remote peers route LLM requests to our local Ollama.
+    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler();
+    let _ = client
+        .add_unary_handler(
+            crate::ollama_proxy::OLLAMA_PROXY_PROTO,
+            proxy_handler,
+            false,
+        )
+        .await;
+
     // -----------------------------------------------------------------------
     // Step 4: Wait for DHT bootstrap (intelligent polling)
     // -----------------------------------------------------------------------
