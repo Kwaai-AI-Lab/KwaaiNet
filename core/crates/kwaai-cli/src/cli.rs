@@ -1104,7 +1104,7 @@ pub enum RagAction {
         text: String,
 
         /// Number of results to return
-        #[arg(long, short = 'k', default_value = "5")]
+        #[arg(long, short = 'k', default_value = "20")]
         top_k: usize,
 
         /// Minimum cosine similarity score (0.0–1.0)
@@ -1129,7 +1129,7 @@ pub enum RagAction {
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration)
-        #[arg(long, default_value = "vector", value_name = "MODE")]
+        #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
 
         /// Model name for query understanding / HyDE LLM call (e.g. "llama3.2:3b"; default: "default")
@@ -1152,7 +1152,7 @@ pub enum RagAction {
     /// Interactive RAG chat REPL (streams from shard API)
     Chat {
         /// Number of context chunks to inject
-        #[arg(long, short = 'k', default_value = "5")]
+        #[arg(long, short = 'k', default_value = "20")]
         top_k: usize,
 
         /// Shard API base URL
@@ -1185,7 +1185,7 @@ pub enum RagAction {
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration)
-        #[arg(long, default_value = "auto", value_name = "MODE")]
+        #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
     },
 
@@ -1232,7 +1232,7 @@ pub enum RagAction {
         inference_url: String,
 
         /// Number of context chunks to inject per request
-        #[arg(long, short = 'k', default_value = "5")]
+        #[arg(long, short = 'k', default_value = "20")]
         top_k: usize,
 
         /// Knowledge base name (default: "default")
@@ -1343,12 +1343,12 @@ pub enum RagAction {
         model: String,
 
         /// Number of context chunks to retrieve per question
-        #[arg(long, short = 'k', default_value = "5")]
+        #[arg(long, short = 'k', default_value = "20")]
         top_k: usize,
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration)
-        #[arg(long, default_value = "auto", value_name = "MODE")]
+        #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
 
         /// Use HyDE: embed a hypothetical answer instead of the raw query
