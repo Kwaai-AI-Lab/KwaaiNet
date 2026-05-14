@@ -362,9 +362,26 @@ jobs:
           path: /tmp/sccache
           key: sccache-cuda-linux-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: sccache-cuda-linux-
+      - name: Restore cargo registry (Linux container)
+        if: matrix.container
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-cuda-linux-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-cuda-linux-
       - name: Install Rust
         if: ${{ !matrix.container }}
         uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and build artifacts (non-container)
+        if: ${{ !matrix.container }}
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: cuda
+          cache-targets: "false"
       - name: Install sccache (non-container)
         if: ${{ !matrix.container }}
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -424,6 +441,20 @@ jobs:
       - name: Create target/release for p2pd build script
         run: mkdir -p core/target/release
         shell: bash
+      - name: Cache candle CUDA kernel build artifacts (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: core/target/release/build/candle-core-*
+          key: cuda-kernels-linux-80-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cuda-kernels-linux-80-
+      - name: Cache candle CUDA kernel build artifacts (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: core/target/release/build/candle-core-*
+          key: cuda-kernels-windows-80-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cuda-kernels-windows-80-
       - name: Build kwaainet with CUDA (Linux)
         if: runner.os == 'Linux'
         working-directory: core
