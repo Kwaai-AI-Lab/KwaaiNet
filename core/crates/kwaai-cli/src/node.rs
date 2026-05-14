@@ -2002,10 +2002,29 @@ async fn maybe_auto_update() -> bool {
 
     #[cfg(unix)]
     {
-        info!(
-            "Auto-update: v{} installed — daemon exiting for restart with new binary.",
-            update.version
-        );
+        // Respawn the daemon using the freshly-installed binary so the node
+        // stays visible on the map without requiring a manual restart.
+        // The installer replaces ~/.cargo/bin/kwaainet, so resolve via PATH
+        // rather than current_exe() (which may still point to the old inode).
+        let new_bin = std::env::current_exe()
+            .unwrap_or_else(|_| std::path::PathBuf::from("kwaainet"));
+        match std::process::Command::new(&new_bin)
+            .args(["start", "--daemon"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => info!(
+                "Auto-update: v{} installed — respawned daemon with new binary.",
+                update.version
+            ),
+            Err(e) => warn!(
+                "Auto-update: v{} installed but respawn failed ({e}). \
+                 Run `kwaainet start --daemon` manually.",
+                update.version
+            ),
+        }
         return true;
     }
 
