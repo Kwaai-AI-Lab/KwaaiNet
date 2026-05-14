@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 use crate::embedder::EmbedClient;
-use crate::graph::{entity_id, normalize_name, EntityNode, GraphStore};
+use crate::graph::{entity_id, EntityNode, GraphStore};
 
 // ── YAML types ────────────────────────────────────────────────────────────────
 

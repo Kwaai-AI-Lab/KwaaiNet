@@ -100,7 +100,7 @@ async fn rerank_inner(
         inference_url.trim_end_matches('/')
     );
     // Each index needs ~4 chars + separators; give a comfortable margin.
-    let max_tokens = (n * 6).max(256).min(512) as u64;
+    let max_tokens = (n * 6).clamp(256, 512) as u64;
     let body = json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

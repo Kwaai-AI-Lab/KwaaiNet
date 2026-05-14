@@ -107,6 +107,7 @@ async fn reformulate_query(
 ///
 /// `on_status` receives narration lines as retrieval progresses — print them
 /// directly to give the user a live view of what the pipeline is doing.
+#[allow(clippy::too_many_arguments)]
 pub async fn retrieve_iterative<S>(
     query: &str,
     cfg: &RetrieveConfig,

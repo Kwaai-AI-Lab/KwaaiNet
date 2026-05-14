@@ -159,6 +159,7 @@ struct ChunkResult {
 ///
 /// `progress` is called after each chunk is written to the graph:
 /// `(chunks_done, total_chunks, entity_count, relation_count)`.
+#[allow(clippy::type_complexity)]
 pub async fn extract_and_store_entities_pub(
     chunks: &[Chunk],
     chunk_ids: &[i64],
@@ -247,7 +248,7 @@ pub async fn extract_and_store_entities_pub(
     });
 
     // Spawn one extraction task per chunk; semaphore caps concurrency.
-    for (_i, (chunk, &chunk_id)) in chunks.iter().zip(chunk_ids.iter()).enumerate() {
+    for (chunk, &chunk_id) in chunks.iter().zip(chunk_ids.iter()) {
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
         let tx = tx.clone();
         let text = chunk.text.clone();

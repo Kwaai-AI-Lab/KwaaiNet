@@ -340,8 +340,8 @@ struct ParsedEntity {
 
 fn parse_entity_file(raw: &str) -> Option<ParsedEntity> {
     // Split frontmatter
-    let after_front = if raw.starts_with("---") {
-        let end = raw[3..].find("\n---").map(|i| i + 3 + 4)?;
+    let after_front = if let Some(stripped) = raw.strip_prefix("---") {
+        let end = stripped.find("\n---").map(|i| i + 3 + 4)?;
         &raw[end..]
     } else {
         raw
@@ -421,7 +421,7 @@ fn chrono_iso() -> String {
 fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let mut y = 1970u64;
     loop {
-        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
         let dy = if leap { 366 } else { 365 };
         if days < dy {
             break;
@@ -429,7 +429,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
         days -= dy;
         y += 1;
     }
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
     let months = [
         31u64,
         if leap { 29 } else { 28 },
