@@ -294,8 +294,10 @@ async fn main() -> Result<()> {
                 let policy = cfg.contribute_policy(args.no_contribute);
 
                 // --- Shard serving ---
-                let shard_available = args.shard || model_is_locally_available(&cfg.model);
-                if policy.shards && shard_available {
+                let shard_explicit = args.shard;
+                let shard_available = shard_explicit || model_is_locally_available(&cfg.model);
+                let enough_ram = shard_explicit || system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES;
+                if policy.shards && shard_available && enough_ram {
                     match ShardManager::spawn_shard_child() {
                         Ok(shard_pid) => {
                             ShardManager::new().write_pid(shard_pid);
@@ -304,6 +306,9 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => print_warning(&format!("Could not start shard serving: {e}")),
                     }
+                } else if policy.shards && shard_available && !enough_ram {
+                    print_warning("Low memory (< 10 GB) — skipping shard serving to prevent OOM.");
+                    print_info("Override: kwaainet start --daemon --shard");
                 } else if policy.shards && !shard_available {
                     print_info(&format!(
                         "No local model found for '{}' — skipping shard serving.",
@@ -399,7 +404,10 @@ async fn main() -> Result<()> {
             let restart_cfg = KwaaiNetConfig::load_or_create().unwrap_or_default();
             let policy = restart_cfg.contribute_policy(false);
 
-            if policy.shards && model_is_locally_available(&restart_cfg.model) {
+            if policy.shards
+                && model_is_locally_available(&restart_cfg.model)
+                && system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES
+            {
                 match ShardManager::spawn_shard_child() {
                     Ok(pid) => {
                         ShardManager::new().write_pid(pid);
@@ -1765,6 +1773,15 @@ async fn serve_command(args: ServeArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const SHARD_MIN_RAM_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
+
+fn system_total_ram_bytes() -> u64 {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.total_memory()
+}
 
 fn print_last_lines(path: &std::path::Path, n: usize) {
     match std::fs::read_to_string(path) {
