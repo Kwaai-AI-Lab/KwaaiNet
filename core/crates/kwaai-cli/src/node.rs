@@ -273,6 +273,20 @@ fn dht_id(raw_key: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
+    // Register SIGHUP handler BEFORE writing the PID file.  The shard
+    // auto-rebalance path sends SIGHUP to the daemon PID to trigger a
+    // re-announce.  If an old shard is still running when a new daemon starts,
+    // it reads the new PID immediately and may send SIGHUP during startup
+    // (before the event-loop handler at the bottom of this function is
+    // installed).  Without an early registration, the OS default fires —
+    // terminating the process.  Registering here queues the signals; they are
+    // consumed by the event-loop select! once startup finishes.
+    #[cfg(unix)]
+    let mut sighup = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::hangup()).expect("SIGHUP handler")
+    };
+
     // PID tracking
     let daemon_mgr = DaemonManager::new();
     daemon_mgr
@@ -838,15 +852,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                                  //   pending_restart, and the subsequent restart would tear down the
                                  //   relay reservation that makes the node reachable in the first place.
     let explicit_announce = announce_addr.is_some() || !config.trusted_relays.is_empty();
-
-    // SIGHUP handler: shard serve sends SIGHUP after updating config.yaml so
-    // the daemon re-announces the new block range immediately (Unix only).
-    // On non-Unix this future never resolves — the branch is dead code.
-    #[cfg(unix)]
-    let mut sighup = {
-        use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::hangup()).expect("SIGHUP handler")
-    };
 
     loop {
         tokio::select! {
