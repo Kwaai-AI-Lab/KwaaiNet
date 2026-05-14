@@ -445,14 +445,18 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
-          path: core/target/release/build/candle-core-*
+          path: |
+            core/target/release/build/candle-core-*
+            core/target/release/.fingerprint/candle-core-*
           key: cuda-kernels-linux-80-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cuda-kernels-linux-80-
       - name: Cache candle CUDA kernel build artifacts (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
-          path: core/target/release/build/candle-core-*
+          path: |
+            core/target/release/build/candle-core-*
+            core/target/release/.fingerprint/candle-core-*
           key: cuda-kernels-windows-80-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cuda-kernels-windows-80-
       - name: Build kwaainet with CUDA (Linux)
