@@ -41,7 +41,6 @@ mod vpk_bench;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Command, MonitorAction, ServeArgs, ServiceAction};
@@ -1708,7 +1707,7 @@ async fn serve_command(args: ServeArgs) -> Result<()> {
             Ok(h) => h,
             Err(e) => {
                 let msg = e.to_string();
-                print_error(&format!("{msg}"));
+                print_error(&msg.to_string());
                 if msg.contains("unknown dtype") {
                     print_info("This model uses a quantization type not yet supported by the");
                     print_info("candle inference backend. Use llama.cpp instead:");

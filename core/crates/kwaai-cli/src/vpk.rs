@@ -491,8 +491,8 @@ async fn tenant_list(eve_peer_id: String) -> Result<()> {
         println!("  No tenants found.");
     } else {
         println!(
-            "  {:<36}  {:<20}  {:>8}  {}",
-            "Tenant ID", "Name", "Cap MB", "Status"
+            "  {:<36}  {:<20}  {:>8}  Status",
+            "Tenant ID", "Name", "Cap MB"
         );
         println!(
             "  {}  {}  {}  {}",

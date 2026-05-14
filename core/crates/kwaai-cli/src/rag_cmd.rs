@@ -20,14 +20,13 @@ use kwaai_rag::{
 };
 
 use crate::cli::{CacheAction, GraphAction, RagAction, RagArgs};
-use crate::config::{kwaainet_dir, KwaaiNetConfig, RagConfig};
+use crate::config::{KwaaiNetConfig, RagConfig};
 use crate::display::*;
 
 #[cfg(feature = "storage")]
 use crate::storage_rpc::{
-    http_create_tenant, http_delete_vectors, http_search_vectors, http_upload_vectors,
-    rpc_create_tenant, rpc_delete_vectors, rpc_search_vectors, rpc_upload_vectors,
-    CreateTenantPayload,
+    http_delete_vectors, http_search_vectors, http_upload_vectors, rpc_delete_vectors,
+    rpc_search_vectors, rpc_upload_vectors,
 };
 
 pub async fn run(args: RagArgs) -> Result<()> {
@@ -441,6 +440,7 @@ async fn cmd_connect_eve(peer_id: String, url: Option<String>, kb: String) -> Re
 
 // ── ingest ────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_ingest(
     file: std::path::PathBuf,
     doc_name: Option<String>,
@@ -564,7 +564,7 @@ async fn cmd_ingest(
                         let client = client.clone();
                         Box::pin(async move {
                             let guard = client.lock().await;
-                            rpc_upload_vectors(&*guard, &eve_peer_id, tenant_id, vectors).await
+                            rpc_upload_vectors(&guard, &eve_peer_id, tenant_id, vectors).await
                         })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                     },
@@ -628,6 +628,7 @@ async fn try_serve_query(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_query(
     query: String,
     top_k: usize,
@@ -853,7 +854,7 @@ async fn cmd_query(
                         let client = client.clone();
                         Box::pin(async move {
                             let guard = client.lock().await;
-                            let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
+                            let raw = rpc_search_vectors(&guard, &ep, tenant_id, emb, k).await?;
                             Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                         })
                             as Pin<
@@ -944,6 +945,7 @@ fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bo
 
 // ── chat ──────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_chat(
     top_k: usize,
     inference_url: String,
@@ -1132,9 +1134,8 @@ async fn cmd_chat(
                     let c = client2.clone();
                     Box::pin(async move {
                         let guard = c.lock().await;
-                        let raw =
-                            rpc_search_vectors(&*guard, &eve_peer_id, tenant_id, embedding, k)
-                                .await?;
+                        let raw = rpc_search_vectors(&guard, &eve_peer_id, tenant_id, embedding, k)
+                            .await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
                         as Pin<
@@ -1309,7 +1310,7 @@ fn open_local_vs(data_dir: &std::path::Path) -> Result<kwaai_storage::VectorStor
 /// Fire-and-forget vector delete used by sync — errors are logged, not fatal.
 #[cfg(feature = "storage")]
 async fn sync_delete_vectors(rag_cfg: &RagConfig, tenant_id: uuid::Uuid, ids: Vec<i64>) {
-    let _ = match rag_cfg.storage_url.as_deref() {
+    match rag_cfg.storage_url.as_deref() {
         Some("local") => {
             if let Ok(vs) = open_local_vs(&rag_cfg.data_dir()) {
                 let _ = vs.delete(tenant_id, &ids).await;
@@ -1405,6 +1406,7 @@ async fn cmd_destroy(yes: bool, kb: String) -> Result<()> {
 
 // ── sync ──────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_sync(
     folder: std::path::PathBuf,
     extensions: String,
@@ -1508,6 +1510,7 @@ struct SyncResult {
 }
 
 #[cfg(feature = "storage")]
+#[allow(clippy::too_many_arguments)]
 async fn run_sync_pass(
     folder: &std::path::Path,
     exts: &[String],
@@ -1650,7 +1653,7 @@ async fn run_sync_pass(
                         let c = client.clone();
                         Box::pin(async move {
                             let guard = c.lock().await;
-                            crate::storage_rpc::rpc_upload_vectors(&*guard, &ep, tenant_id, vectors)
+                            crate::storage_rpc::rpc_upload_vectors(&guard, &ep, tenant_id, vectors)
                                 .await
                         })
                             as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
@@ -1900,7 +1903,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     &embed,
                     &graph_cfg,
                     Some(std::sync::Arc::new(|done: usize, total: usize, entities: usize, relations: usize| {
-                        if done % 50 == 0 || done == total {
+                        if done.is_multiple_of(50) || done == total {
                             println!("  [{done:>4}/{total}]  entities={entities}  relations={relations}");
                         }
                     })),

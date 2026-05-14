@@ -93,7 +93,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let mut healthy_shards: Vec<EveShard> = Vec::new();
     for shard in shards {
         let client_guard = shard.client.lock().await;
-        let probe = rpc_health(&*client_guard, &shard.peer_id).await;
+        let probe = rpc_health(&client_guard, &shard.peer_id).await;
         drop(client_guard);
         if let Err(e) = probe {
             println!(
@@ -107,7 +107,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         let client_guard = shard.client.lock().await;
         for _ in 0..19 {
             let t0 = Instant::now();
-            let _ = rpc_health(&*client_guard, &shard.peer_id).await;
+            let _ = rpc_health(&client_guard, &shard.peer_id).await;
             samples.push(t0.elapsed());
         }
         drop(client_guard);
@@ -148,7 +148,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     // ── Phase 1: Generate corpus ──────────────────────────────────────────────
 
     println!("  [1/5] Generating {} vectors (dim={})...", n_max, dim);
-    let corpus: Vec<(i64, Vec<f32>)> = gen_corpus(0xdeadbeef_cafe_u64, n_max, dim);
+    let corpus: Vec<(i64, Vec<f32>)> = gen_corpus(0xdead_beef_cafe_u64, n_max, dim);
     let query_vecs: Vec<Vec<f32>> = gen_query_vecs(0xcafe_f00d_dead_u64, n_queries, dim);
     println!("         Done.");
     println!();
@@ -166,7 +166,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             si + 1,
             scales.len(),
             n,
-            (n + k - 1) / k
+            n.div_ceil(k)
         );
 
         // ── Local setup ──────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         let local_upload_ms = t0.elapsed().as_millis() as u64;
 
         // ── Remote setup ─────────────────────────────────────────────────────
-        let shard_size = (n + k - 1) / k;
+        let shard_size = n.div_ceil(k);
         for (i, shard) in shards.iter_mut().enumerate() {
             let payload = CreateTenantPayload {
                 peer_id: my_peer_id.clone(),
@@ -196,7 +196,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
                 vector_dimension: dim,
             };
             let client = shard.client.lock().await;
-            let info = rpc_create_tenant(&*client, &shard.peer_id, payload)
+            let info = rpc_create_tenant(&client, &shard.peer_id, payload)
                 .await
                 .with_context(|| format!("create tenant on {}", short_id(&shard.peer_id)))?;
             shard.tenant_id = info.tenant_id;
@@ -221,7 +221,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
                 async move {
                     let c = client.lock().await;
                     for chunk in chunks {
-                        rpc_upload_vectors(&*c, &peer_id, tid, chunk).await?;
+                        rpc_upload_vectors(&c, &peer_id, tid, chunk).await?;
                     }
                     anyhow::Ok(())
                 }
@@ -329,7 +329,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         // ── Cleanup ──────────────────────────────────────────────────────────
         for shard in &shards {
             let client = shard.client.lock().await;
-            let _ = rpc_delete_tenant(&*client, &shard.peer_id, shard.tenant_id).await;
+            let _ = rpc_delete_tenant(&client, &shard.peer_id, shard.tenant_id).await;
         }
         let _ = std::fs::remove_dir_all(&local_dir);
         println!();
@@ -604,7 +604,7 @@ async fn search_sharded(
             let q = query.to_vec();
             async move {
                 let c = client.lock().await;
-                rpc_search_vectors(&*c, &peer_id, tid, q, top_k).await
+                rpc_search_vectors(&c, &peer_id, tid, q, top_k).await
             }
         })
         .collect();
@@ -770,7 +770,7 @@ struct Stats {
     max: u64,
 }
 
-fn percentiles(samples: &mut Vec<Duration>) -> Stats {
+fn percentiles(samples: &mut [Duration]) -> Stats {
     samples.sort_unstable();
     let n = samples.len();
     let us = |d: Duration| d.as_micros() as u64;

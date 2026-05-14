@@ -2175,6 +2175,7 @@ async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
 /// Per-hop timing record: (peer display name, start_block, end_block, elapsed_ms).
 pub type HopTiming = (String, usize, usize, f64);
 
+#[allow(clippy::too_many_arguments)]
 pub async fn forward_through_chain(
     client: &mut P2PClient,
     chain: &[BlockServerEntry],
@@ -2315,7 +2316,7 @@ pub async fn forward_through_chain(
                     // handler registered — blacklist for the session.
                     // Transient stream errors are NOT blacklisted: the peer may recover.
                     if err_str.contains("protocols not supported") {
-                        failed_peers.insert(candidate.peer_id.clone());
+                        failed_peers.insert(candidate.peer_id);
                         print_warning(&format!(
                             "Peer {} ({}) has no inference handler — skipping for this session",
                             candidate
@@ -2339,7 +2340,7 @@ pub async fn forward_through_chain(
                             candidate.public_name,
                         ));
                     } else {
-                        failed_peers.insert(candidate.peer_id.clone());
+                        failed_peers.insert(candidate.peer_id);
                         print_warning(&format!(
                             "Peer {} ({}) failed: {e:#}",
                             candidate
@@ -2371,6 +2372,7 @@ pub async fn forward_through_chain(
 
 /// Run the `--local` generation loop through the running `shard serve` TCP bypass
 /// server instead of loading the model a second time.
+#[allow(clippy::too_many_arguments)]
 async fn run_via_local_bypass(
     port: u16,
     tokenizer: &kwaai_inference::tokenizer::BpeTokenizer,

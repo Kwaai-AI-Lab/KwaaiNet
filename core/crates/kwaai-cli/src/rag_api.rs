@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use axum::extract::{Multipart, Path as AxumPath, State};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get, post};
@@ -55,7 +55,6 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
     #[cfg(feature = "storage")]
     {
         use crate::config::KwaaiNetConfig;
-        use crate::rag_cmd::*;
 
         let cfg = KwaaiNetConfig::load_or_create()?;
         let rag = cfg.get_rag_kb(&kb).cloned().with_context(|| {
@@ -163,6 +162,7 @@ async fn list_models() -> Json<ModelsResponse> {
 struct ChatRequest {
     messages: Vec<serde_json::Value>,
     #[serde(default = "default_stream")]
+    #[allow(dead_code)]
     stream: bool,
     #[serde(default)]
     max_tokens: Option<u32>,
@@ -259,7 +259,7 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
                     let c = client.clone();
                     Box::pin(async move {
                         let guard = c.lock().await;
-                        let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
+                        let raw = rpc_search_vectors(&guard, &ep, tenant_id, emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
                         as Pin<
@@ -419,7 +419,7 @@ async fn do_search(
                     let c = client.clone();
                     Box::pin(async move {
                         let guard = c.lock().await;
-                        let raw = rpc_search_vectors(&*guard, &ep, tenant_id, emb, k).await?;
+                        let raw = rpc_search_vectors(&guard, &ep, tenant_id, emb, k).await?;
                         Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
                     })
                         as Pin<
@@ -493,7 +493,7 @@ async fn api_delete_doc(
             None => {
                 let client = state.client.as_ref().unwrap().lock().await;
                 let _ = rpc_delete_vectors(
-                    &*client,
+                    &client,
                     &state.eve_peer.unwrap(),
                     state.tenant_id,
                     ids.clone(),
@@ -518,7 +518,7 @@ async fn api_ingest(
 
     #[cfg(feature = "storage")]
     {
-        while let Ok(Some(field)) = multipart.next_field().await {
+        if let Ok(Some(field)) = multipart.next_field().await {
             let doc_name = field.file_name().unwrap_or("upload.txt").to_string();
             let bytes = match field.bytes().await {
                 Ok(b) => b,
@@ -590,7 +590,7 @@ async fn api_ingest(
                             let c = client.clone();
                             Box::pin(async move {
                                 let guard = c.lock().await;
-                                rpc_upload_vectors(&*guard, &ep, tenant_id, vectors).await
+                                rpc_upload_vectors(&guard, &ep, tenant_id, vectors).await
                             })
                                 as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
                         },

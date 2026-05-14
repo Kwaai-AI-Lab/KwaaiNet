@@ -403,7 +403,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // we leave the list empty rather than auto-promoting bootstraps to relays
     // (bootstraps may not run a hop relay service, which causes reservations
     // to silently fail).
-    let trusted_relays = config.trusted_relays.clone();
+    let _trusted_relays = config.trusted_relays.clone();
 
     // Trusted relays: empty means "let AutoRelay discover via DHT". When the
     // user configures explicit trusted_relays we pass them through; otherwise
@@ -543,7 +543,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             &mut daemon,
             &mut client,
             &p2pd_path,
-            &config,
+            config,
             &bootstrap_peers,
             &announce_addr,
             handler_addr,
@@ -762,7 +762,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             &mut daemon,
             &mut client,
             &p2pd_path,
-            &config,
+            config,
             &bootstrap_peers,
             &announce_addr,
             handler_addr,
@@ -1402,10 +1402,7 @@ async fn send_to_bootstrap(
         .await;
         let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        let rpc_ok = match &result {
-            Ok(Ok(_)) => true,
-            _ => false,
-        };
+        let rpc_ok = matches!(&result, Ok(Ok(_)));
         timings.push((peer_id_str.to_string(), addr.clone(), latency_ms, rpc_ok));
 
         match result {
@@ -1458,6 +1455,7 @@ async fn send_to_bootstrap(
 /// `remove_stream_handler` failures are non-fatal (daemon may already be
 /// unresponsive). All other failures are returned as `Err` for the caller to
 /// handle at the appropriate severity.
+#[allow(clippy::too_many_arguments)]
 async fn restart_p2pd_with_addrs(
     daemon: &mut kwaai_p2p_daemon::P2PDaemon,
     client: &mut kwaai_p2p_daemon::P2PClient,
@@ -1535,6 +1533,7 @@ async fn restart_p2pd_with_addrs(
 ///
 /// If IDENTIFY yields nothing the original daemon is returned unchanged and the
 /// returned address list is empty (the node will fall back to relay mode).
+#[allow(clippy::too_many_arguments)]
 async fn discover_and_restart_with_announce(
     mut daemon: kwaai_p2p_daemon::P2PDaemon,
     mut client: kwaai_p2p_daemon::P2PClient,
@@ -1817,7 +1816,8 @@ async fn dial_and_wait_for_bootstrap(
 
                 // Log progress every 5 seconds
                 let elapsed = start.elapsed();
-                if elapsed.as_secs() % 5 == 0 && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2
+                if elapsed.as_secs().is_multiple_of(5)
+                    && elapsed.as_millis() < POLL_INTERVAL_MS as u128 * 2
                 {
                     info!("   Waiting for bootstrap peers... ({:.0}s elapsed, {} total peers connected)",
                           elapsed.as_secs_f64(), peers.len());
@@ -2011,8 +2011,8 @@ async fn maybe_auto_update() -> bool {
         // stays visible on the map without requiring a manual restart.
         // The installer replaces ~/.cargo/bin/kwaainet, so resolve via PATH
         // rather than current_exe() (which may still point to the old inode).
-        let new_bin = std::env::current_exe()
-            .unwrap_or_else(|_| std::path::PathBuf::from("kwaainet"));
+        let new_bin =
+            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("kwaainet"));
         match std::process::Command::new(&new_bin)
             .args(["start", "--daemon"])
             .stdin(std::process::Stdio::null())
@@ -2030,7 +2030,7 @@ async fn maybe_auto_update() -> bool {
                 update.version
             ),
         }
-        return true;
+        true
     }
 
     #[cfg(not(unix))]

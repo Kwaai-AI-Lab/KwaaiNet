@@ -36,8 +36,8 @@ fn list() -> Result<()> {
     }
 
     println!(
-        "  {:<18}  {:<10}  {:<7}  {:<6}  {:<9}  {}",
-        "PEER NAME", "TIER", "SCORE", "N", "LATENCY", "PEER ID"
+        "  {:<18}  {:<10}  {:<7}  {:<6}  {:<9}  PEER ID",
+        "PEER NAME", "TIER", "SCORE", "N", "LATENCY"
     );
     println!("{TABLE_SEP}");
 

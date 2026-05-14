@@ -201,7 +201,7 @@ pub(crate) fn assemble_results(
 
     let mut results: Vec<RetrievedChunk> = raw
         .into_iter()
-        .zip(metas.into_iter())
+        .zip(metas)
         .filter_map(|((id, score), meta_opt)| {
             let _ = id;
             let chunk_meta = meta_opt?;

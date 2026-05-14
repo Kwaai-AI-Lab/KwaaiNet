@@ -285,6 +285,7 @@ fn run_inference_with_model(
 }
 
 /// Check if llama.cpp backend is available (feature compiled in).
+#[allow(dead_code)]
 pub fn is_available() -> bool {
     cfg!(feature = "llama-cpp")
 }

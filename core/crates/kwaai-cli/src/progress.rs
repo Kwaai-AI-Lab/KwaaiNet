@@ -135,5 +135,6 @@ impl GenBar {
     }
 
     /// No-op — no bar was drawn, nothing to clear.
+    #[allow(dead_code)]
     pub fn finish(&self) {}
 }

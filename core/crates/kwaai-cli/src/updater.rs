@@ -389,6 +389,7 @@ async fn nvidia_smi_async() -> bool {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 async fn nvidia_smi_async() -> bool {
     false
 }

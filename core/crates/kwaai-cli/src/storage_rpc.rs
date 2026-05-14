@@ -135,6 +135,7 @@ pub struct DeleteVectorsPayload {
 
 /// Build a unary handler that dispatches storage RPC requests to the local
 /// `StorageDb`. Register it with `P2PClient::add_unary_handler`.
+#[allow(clippy::type_complexity)]
 pub fn make_storage_rpc_handler(
     db: StorageDb,
     capacity_gb: f64,
@@ -514,6 +515,7 @@ pub async fn rpc_list_tenants(client: &P2PClient, peer_id: &PeerId) -> Result<Ve
 
 // ── HTTP-based client (for local Eve — bypasses P2P dial-to-self) ─────────────
 
+#[allow(dead_code)]
 #[derive(serde::Serialize)]
 struct HttpCreateTenantReq<'a> {
     peer_id: &'a str,
@@ -560,6 +562,7 @@ struct HttpDeleteResp {
     deleted: usize,
 }
 
+#[allow(dead_code)]
 pub async fn http_create_tenant(
     http: &reqwest::Client,
     base_url: &str,

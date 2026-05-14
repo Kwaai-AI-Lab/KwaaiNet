@@ -273,8 +273,8 @@ async fn peers_list() -> Result<()> {
             let id_str = parsed_id
                 .map(|p| p.to_base58())
                 .unwrap_or_else(|| format!("0x{}", hex::encode(&p.id)));
-            let is_bootstrap = parsed_id.map_or(false, |pid| bootstraps.contains(&pid));
-            let is_trusted_relay = parsed_id.map_or(false, |pid| trusted_relays.contains(&pid));
+            let is_bootstrap = parsed_id.is_some_and(|pid| bootstraps.contains(&pid));
+            let is_trusted_relay = parsed_id.is_some_and(|pid| trusted_relays.contains(&pid));
 
             // Classify by the primary (first) addr. p2pd returns one PeerInfo
             // per connection; multiple PeerInfos for the same peer ID indicate
@@ -391,7 +391,7 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
                     match Multiaddr::try_from(a.clone()) {
                         Ok(m) => {
                             let kind = if is_relayed(&m) { "relay" } else { "direct" };
-                            let with_dest = m.with(libp2p::multiaddr::Protocol::P2p(target.into()));
+                            let with_dest = m.with(libp2p::multiaddr::Protocol::P2p(target));
                             println!("    [{:>6}] {}", kind, with_dest);
                         }
                         Err(_) => {
@@ -585,9 +585,7 @@ async fn resolve_peer(
         .or_else(|| parsed.first())
         .expect("parsed is non-empty");
 
-    let with_dest = pick
-        .clone()
-        .with(libp2p::multiaddr::Protocol::P2p(target.into()));
+    let with_dest = pick.clone().with(libp2p::multiaddr::Protocol::P2p(target));
     Ok((with_dest.to_string(), target))
 }
 
@@ -622,7 +620,7 @@ async fn peers_send(
         }
     };
 
-    let Some(mut client) = connect_p2pd().await? else {
+    let Some(client) = connect_p2pd().await? else {
         return Ok(());
     };
 

@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn no_rebalance_when_alone() {
         let our_peer = fake_peer(1);
-        let chain = vec![make_entry(our_peer.clone(), 0, 8)];
+        let chain = vec![make_entry(our_peer, 0, 8)];
         let result = check_rebalance(&chain, &our_peer, 0, 8, 32, 8, 2);
         assert_eq!(result, None, "Should not rebalance when alone");
     }
@@ -167,9 +167,9 @@ mod tests {
         // our range 0-8, covered by B and C as well
         // remaining blocks 8-32 also covered by B and C
         let chain = vec![
-            make_entry(our_peer.clone(), 0, 8),
-            make_entry(peer_b.clone(), 0, 32),
-            make_entry(peer_c.clone(), 0, 32),
+            make_entry(our_peer, 0, 8),
+            make_entry(peer_b, 0, 32),
+            make_entry(peer_c, 0, 32),
         ];
         // Our range (0-8) has min_coverage >= 2 (B and C each cover it).
         // No block has coverage == 0 (B and C cover everything).
@@ -186,9 +186,9 @@ mod tests {
         // B and C both cover blocks 0-8 (so our range has 2× other coverage).
         // Blocks 8-32 are uncovered — gap starts at 8.
         let chain = vec![
-            make_entry(our_peer.clone(), 0, 8),
-            make_entry(peer_b.clone(), 0, 8),
-            make_entry(peer_c.clone(), 0, 8),
+            make_entry(our_peer, 0, 8),
+            make_entry(peer_b, 0, 8),
+            make_entry(peer_c, 0, 8),
         ];
         let result = check_rebalance(&chain, &our_peer, 0, 8, 32, 8, 2);
         assert_eq!(result, Some((8, 16)), "Should move to fill gap at 8");
@@ -200,10 +200,7 @@ mod tests {
         let our_peer = fake_peer(1);
         let peer_b = fake_peer(2);
         // B covers 8-32 only. Our range 0-8 has zero other coverage.
-        let chain = vec![
-            make_entry(our_peer.clone(), 0, 8),
-            make_entry(peer_b.clone(), 8, 32),
-        ];
+        let chain = vec![make_entry(our_peer, 0, 8), make_entry(peer_b, 8, 32)];
         let result = check_rebalance(&chain, &our_peer, 0, 8, 32, 8, 2);
         assert_eq!(result, None, "Only coverage of our range — must not move");
     }
@@ -216,11 +213,11 @@ mod tests {
         let peer_c = fake_peer(3);
         // Peers B and C both cover 0-8 and 16-24; gaps at 8-16 and 24-32.
         let chain = vec![
-            make_entry(our_peer.clone(), 0, 8),
-            make_entry(peer_b.clone(), 0, 8),
-            make_entry(peer_b.clone(), 16, 24),
-            make_entry(peer_c.clone(), 0, 8),
-            make_entry(peer_c.clone(), 16, 24),
+            make_entry(our_peer, 0, 8),
+            make_entry(peer_b, 0, 8),
+            make_entry(peer_b, 16, 24),
+            make_entry(peer_c, 0, 8),
+            make_entry(peer_c, 16, 24),
         ];
         let result = check_rebalance(&chain, &our_peer, 0, 8, 32, 8, 2);
         // Lowest gap is 8 (not 24).
@@ -242,7 +239,7 @@ mod tests {
     fn gap_from_chain_finds_genuine_gap() {
         let our_peer = fake_peer(1);
         let peer_b = fake_peer(2);
-        let chain = vec![make_entry(peer_b.clone(), 0, 16)];
+        let chain = vec![make_entry(peer_b, 0, 16)];
         let result = pick_gap_from_chain(&chain, &our_peer, 32, 8);
         assert_eq!(result, (16, 24), "Should pick the first uncovered block");
     }
@@ -257,9 +254,9 @@ mod tests {
         // Coverage: [0,8)=2, [8,16)=1, [16,32)=2.
         // Least-covered 8-block window is [8,16) with sum=8.
         let chain = vec![
-            make_entry(peer_b.clone(), 0, 32),
-            make_entry(peer_c.clone(), 0, 8),
-            make_entry(peer_c.clone(), 16, 32),
+            make_entry(peer_b, 0, 32),
+            make_entry(peer_c, 0, 8),
+            make_entry(peer_c, 16, 32),
         ];
         let result = pick_gap_from_chain(&chain, &our_peer, 32, 8);
         assert_eq!(result, (8, 16), "Should join least-covered window");
@@ -272,7 +269,7 @@ mod tests {
         // Our peer (stale) covers [0,32); no other peers.
         // Without self-exclusion the network looks fully covered.
         // With self-exclusion coverage is all zeros → picks (0, 8).
-        let chain = vec![make_entry(our_peer.clone(), 0, 32)];
+        let chain = vec![make_entry(our_peer, 0, 32)];
         let result = pick_gap_from_chain(&chain, &our_peer, 32, 8);
         assert_eq!(
             result,
