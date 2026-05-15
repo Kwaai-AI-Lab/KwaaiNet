@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../settings.dart';
 import 'paths.dart';
-import 'settings.dart';
 
 void _log(String msg) {
   stderr.writeln('[daemon-controller] $msg');

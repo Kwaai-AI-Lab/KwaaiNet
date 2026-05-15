@@ -1,0 +1,947 @@
+import 'dart:async';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+
+import '../../daemon/daemon_controller.dart';
+import '../../daemon/status_watcher.dart';
+import '../../settings.dart';
+import '../../window/window_focus.dart';
+import '../theme/kwaai_theme.dart';
+import '../theme/theme_controller.dart';
+import '../theme/theme_variants.dart';
+import '../widgets/app_shell.dart';
+import '../widgets/branded_title.dart';
+import '../widgets/kwaai_heading.dart';
+import '../widgets/kwaai_text_field.dart';
+
+/// Fill color for unselected/secondary controls — segmented-button segments
+/// and secondary buttons (e.g. Stop daemon).
+const Color kUnselectedFill = Color(0xFFEFEFEF);
+
+/// Fill color for *selected* controls when the app window is not focused —
+/// the accent tint desaturates to gray, matching native macOS behaviour.
+const Color kSelectedUnfocusedFill = Color(0xFFD4D4D4);
+
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({
+    super.key,
+    required this.daemon,
+    required this.settings,
+    required this.statusStream,
+    required this.onSettingsChanged,
+  });
+
+  final DaemonController daemon;
+  final Settings settings;
+  final Stream<NodeStatus> statusStream;
+  final VoidCallback onSettingsChanged;
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+/// Transient daemon lifecycle phase, tracked UI-side. The daemon's
+/// [NodeStatus] only reports running/stopped — "starting"/"stopping" is the
+/// gap between issuing a command and the watcher confirming the new state.
+enum _Transition { none, starting, stopping }
+
+class _SettingsPageState extends State<SettingsPage> {
+  NodeStatus _status = NodeStatus.stopped();
+  String? _lastError;
+  int _selectedTab = 0;
+  _Transition _transition = _Transition.none;
+  StreamSubscription<NodeStatus>? _statusSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _statusSub = widget.statusStream.listen((s) {
+      if (!mounted) return;
+      setState(() {
+        _status = s;
+        // Clear the transition once the daemon reaches the expected state.
+        if (_transition == _Transition.starting && s.running) {
+          _transition = _Transition.none;
+        } else if (_transition == _Transition.stopping && !s.running) {
+          _transition = _Transition.none;
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _statusSub?.cancel();
+    super.dispose();
+  }
+
+  bool get _busy => _transition != _Transition.none;
+
+  Future<void> _start() async {
+    setState(() {
+      _lastError = null;
+      _transition = _Transition.starting;
+    });
+    final r = await widget.daemon.start();
+    if (!r.ok && mounted) {
+      setState(() {
+        _lastError = r.error ?? 'start failed';
+        _transition = _Transition.none;
+      });
+    }
+  }
+
+  Future<void> _stop() async {
+    setState(() {
+      _lastError = null;
+      _transition = _Transition.stopping;
+    });
+    final ok = await widget.daemon.stop();
+    if (!ok && mounted) {
+      setState(() {
+        _lastError = 'stop failed';
+        _transition = _Transition.none;
+      });
+    }
+  }
+
+  Widget _buildStatusTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: _StatusHeader(status: _status, transition: _transition),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    FilledButton.icon(
+                      // Disabled while running or mid-transition.
+                      onPressed: (_status.running || _busy) ? null : _start,
+                      // Primary action — accent fill, matching the selected
+                      // segment in the mode picker. Desaturates to gray when
+                      // the window is unfocused.
+                      style: FilledButton.styleFrom(
+                        backgroundColor: WindowFocusScope.of(context)
+                            ? context.kwaai.accentPrimary
+                            : kSelectedUnfocusedFill,
+                        foregroundColor: WindowFocusScope.of(context)
+                            ? Colors.white
+                            : Theme.of(context).colorScheme.onSurface,
+                      ),
+                      icon: const Icon(Icons.play_arrow),
+                      label: const Text('Start service'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      // Disabled while stopped or mid-transition.
+                      onPressed: (!_status.running || _busy) ? null : _stop,
+                      // Destructive action — red fill.
+                      style: FilledButton.styleFrom(
+                        backgroundColor: context.kwaai.buttonDestructive,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.stop),
+                      label: const Text('Stop service'),
+                    ),
+                  ],
+                ),
+                if (_lastError != null) ...[
+                  const SizedBox(height: 12),
+                  Card(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        _lastError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 24),
+                const KwaaiHeading('KwaaiNet binary location'),
+                const SizedBox(height: 8),
+                _DaemonSourcePicker(
+                  daemon: widget.daemon,
+                  settings: widget.settings,
+                  onChanged: () {
+                    setState(() {});
+                    widget.onSettingsChanged();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppShell(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          // Two layouts only: a side rail (icon + label) on wider/desktop
+          // viewports, and a bottom nav bar on narrow/mobile-sized ones.
+          final bottomNav = width < 600;
+
+          final settingsContent = Column(
+            children: [
+              _SettingsTopBar(
+                onClose: () => Navigator.of(context).pop(),
+                clearTrafficLights: bottomNav,
+              ),
+              Expanded(
+                child: IndexedStack(
+                  index: _selectedTab,
+                  children: [_buildStatusTab(), const _AppearanceTab()],
+                ),
+              ),
+            ],
+          );
+
+          if (bottomNav) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: ShellCard(
+                    gutter: const EdgeInsets.fromLTRB(
+                      kShellGutter,
+                      kShellGutter,
+                      kShellGutter,
+                      0,
+                    ),
+                    // Top-left/-right touch the window edge → rounded;
+                    // the bottom (against the nav bar) stays sharp.
+                    borderRadius: shellRadius(topLeft: true, topRight: true),
+                    // No content inset here — the top bar clears the traffic
+                    // lights itself (via clearTrafficLights), matching
+                    // MainPage. The side-rail layout insets the *nav* card
+                    // instead, since its top bar lives in the other card.
+                    child: settingsContent,
+                  ),
+                ),
+                ShellCard(
+                  gutter: const EdgeInsets.all(kShellGutter),
+                  borderRadius: shellRadius(
+                    bottomLeft: true,
+                    bottomRight: true,
+                  ),
+                  child: _SettingsNav(
+                    axis: Axis.horizontal,
+                    extended: true,
+                    selectedIndex: _selectedTab,
+                    onSelect: (i) => setState(() => _selectedTab = i),
+                  ),
+                ),
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ShellCard(
+                gutter: const EdgeInsets.all(kShellGutter),
+                // Left edge touches the window → rounded; right edge faces
+                // the content card → sharp.
+                borderRadius: shellRadius(topLeft: true, bottomLeft: true),
+                contentPadding: const EdgeInsets.only(
+                  top: kMacOSTitlebarHeight,
+                ),
+                child: _SettingsNav(
+                  axis: Axis.vertical,
+                  extended: true,
+                  selectedIndex: _selectedTab,
+                  onSelect: (i) => setState(() => _selectedTab = i),
+                ),
+              ),
+              Expanded(
+                child: ShellCard(
+                  // Left gutter is half the full margin — splits the gap
+                  // between the nav card and the content card.
+                  gutter: const EdgeInsets.fromLTRB(
+                    kShellGutter,
+                    kShellGutter,
+                    kShellGutter,
+                    kShellGutter,
+                  ),
+                  // Right edge touches the window → rounded; left edge
+                  // faces the nav card → sharp.
+                  borderRadius: shellRadius(topRight: true, bottomRight: true),
+                  child: settingsContent,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _SettingsNavEntry {
+  const _SettingsNavEntry(this.icon, this.selectedIcon, this.label);
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+}
+
+const _settingsNavEntries = <_SettingsNavEntry>[
+  _SettingsNavEntry(
+    Icons.monitor_heart_outlined,
+    Icons.monitor_heart,
+    'Status',
+  ),
+  _SettingsNavEntry(Icons.palette_outlined, Icons.palette, 'Appearance'),
+];
+
+class _SettingsNav extends StatelessWidget {
+  const _SettingsNav({
+    required this.axis,
+    required this.extended,
+    required this.selectedIndex,
+    required this.onSelect,
+  });
+
+  final Axis axis;
+  final bool extended;
+  final int selectedIndex;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    // Bottom nav (horizontal) uses fully-rounded pill buttons; the side
+    // rail uses the card-concentric small radius.
+    final pill = axis == Axis.horizontal;
+    final items = [
+      for (var i = 0; i < _settingsNavEntries.length; i++)
+        _SettingsNavItem(
+          entry: _settingsNavEntries[i],
+          selected: i == selectedIndex,
+          extended: extended,
+          pill: pill,
+          onTap: () => onSelect(i),
+        ),
+    ];
+
+    if (axis == Axis.horizontal) {
+      return Padding(
+        padding: const EdgeInsets.all(kShellInset),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            for (final item in items)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: item,
+              ),
+          ],
+        ),
+      );
+    }
+
+    return SizedBox(
+      width: extended ? 172 : 64,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 8),
+          for (final item in items)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: kShellInset,
+                vertical: 2,
+              ),
+              child: item,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsNavItem extends StatelessWidget {
+  const _SettingsNavItem({
+    required this.entry,
+    required this.selected,
+    required this.extended,
+    required this.onTap,
+    this.pill = false,
+  });
+
+  final _SettingsNavEntry entry;
+  final bool selected;
+  final bool extended;
+
+  /// When true, render as a fully-rounded pill (bottom nav bar) rather than
+  /// the small card-concentric radius (side rail).
+  final bool pill;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = context.kwaai.accentPrimary;
+    final fg = selected ? accent : Theme.of(context).colorScheme.onSurface;
+    final icon = Icon(
+      selected ? entry.selectedIcon : entry.icon,
+      size: 20,
+      color: fg,
+    );
+
+    final radius = pill
+        ? BorderRadius.circular(999)
+        : BorderRadius.circular(concentricRadius(kShellRadius, kShellInset));
+    return Material(
+      color: selected ? accent.withValues(alpha: 0.12) : Colors.transparent,
+      borderRadius: radius,
+      child: InkWell(
+        borderRadius: radius,
+        onTap: onTap,
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: extended ? 12 : 0,
+            vertical: 8,
+          ),
+          child: extended
+              ? Row(
+                  children: [
+                    icon,
+                    const SizedBox(width: 12),
+                    Text(
+                      entry.label,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: fg,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                )
+              : Center(child: icon),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsTopBar extends StatelessWidget {
+  const _SettingsTopBar({
+    required this.onClose,
+    this.clearTrafficLights = false,
+  });
+
+  final VoidCallback onClose;
+
+  /// When this bar is the top-left card (bottom-nav layout), the native
+  /// traffic lights overlap it — inset the brand to clear them, matching
+  /// MainPage's top bar.
+  final bool clearTrafficLights;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      child: Stack(
+        children: [
+          Padding(
+            padding: EdgeInsets.only(
+              left: clearTrafficLights ? 80 : 16,
+              right: 16,
+              // Match MainPage's _MainTopBar exactly so the brand doesn't
+              // shift between pages.
+              top: 9,
+            ),
+            child: const Align(
+              alignment: Alignment.topLeft,
+              child: BrandedTitle(),
+            ),
+          ),
+          Align(
+            alignment: Alignment.topCenter,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: Text(
+                'Settings',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Align(
+              alignment: Alignment.topRight,
+              child: IconButton(
+                tooltip: 'Close',
+                icon: const Icon(Icons.close),
+                onPressed: onClose,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusHeader extends StatelessWidget {
+  const _StatusHeader({required this.status, required this.transition});
+  final NodeStatus status;
+  final _Transition transition;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    // While transitioning, the orange indicator + "Starting"/"Stopping"
+    // override the daemon's reported running/stopped state.
+    final Color color;
+    final List<String> bits;
+    switch (transition) {
+      case _Transition.starting:
+        color = context.kwaai.statusTransitioning;
+        bits = ['Starting…'];
+      case _Transition.stopping:
+        color = context.kwaai.statusTransitioning;
+        bits = ['Stopping…'];
+      case _Transition.none:
+        color = status.running
+            ? context.kwaai.statusRunning
+            : context.kwaai.statusStopped;
+        bits = <String>[
+          status.running ? 'Running' : 'Stopped',
+          if (status.running && status.pid != null) 'pid ${status.pid}',
+          if (status.uptimeSecs != null)
+            'up ${_fmtDuration(status.uptimeSecs!)}',
+          if (status.memoryMb != null)
+            '${status.memoryMb!.toStringAsFixed(0)} MB',
+          if (status.cpuPercent != null)
+            '${status.cpuPercent!.toStringAsFixed(1)}% CPU',
+        ];
+    }
+
+    return Row(
+      children: [
+        Icon(Icons.circle, color: color, size: 14),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            bits.join('  •  '),
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        if (status.source == 'pid' && status.running)
+          Tooltip(
+            message:
+                'Status from PID probe only — full stats appear once daemon writes kwaainet.status',
+            child: Icon(
+              Icons.info_outline,
+              size: 16,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _fmtDuration(int secs) {
+    final h = secs ~/ 3600;
+    final m = (secs % 3600) ~/ 60;
+    final s = secs % 60;
+    if (h > 0) return '${h}h ${m}m';
+    if (m > 0) return '${m}m ${s}s';
+    return '${s}s';
+  }
+}
+
+class _DaemonSourcePicker extends StatefulWidget {
+  const _DaemonSourcePicker({
+    required this.daemon,
+    required this.settings,
+    required this.onChanged,
+  });
+  final DaemonController daemon;
+  final Settings settings;
+  final VoidCallback onChanged;
+
+  @override
+  State<_DaemonSourcePicker> createState() => _DaemonSourcePickerState();
+}
+
+class _DaemonSourcePickerState extends State<_DaemonSourcePicker> {
+  late final TextEditingController _pathController = TextEditingController(
+    text: widget.settings.customPath ?? '',
+  );
+
+  @override
+  void dispose() {
+    _pathController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _set(DaemonMode m) async {
+    await widget.settings.setMode(m);
+    widget.onChanged();
+  }
+
+  Future<void> _commitCustomPath(String path) async {
+    await widget.settings.setCustomPath(path.isEmpty ? null : path);
+    widget.onChanged();
+  }
+
+  Future<void> _browseForPath() async {
+    try {
+      final res = await FilePicker.platform.pickFiles();
+      if (res == null || res.files.isEmpty) return;
+      final path = res.files.single.path;
+      if (path == null) return;
+      _pathController.text = path;
+      await _commitCustomPath(path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('File picker failed: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mode = widget.settings.mode;
+    final systemBinaryFound = widget.daemon.findSystemBinary() != null;
+    return RadioGroup<DaemonMode>(
+      groupValue: mode,
+      onChanged: (m) {
+        if (m == null) return;
+        _set(m);
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _RadioRow(
+            value: DaemonMode.builtIn,
+            label: 'Use built-in (dev: core/target/debug/kwaainet)',
+          ),
+          // "Use system" is only selectable when kwaainet is on PATH.
+          _RadioRow(
+            value: DaemonMode.system,
+            label: 'Use system',
+            enabled: systemBinaryFound,
+          ),
+          _PathRow(child: _SystemPathResult(daemon: widget.daemon)),
+          const _RadioRow(value: DaemonMode.custom, label: 'Use other…'),
+          if (mode == DaemonMode.custom)
+            _PathRow(
+              child: KwaaiTextField(
+                controller: _pathController,
+                hintText: '/path/to/kwaainet',
+                onSubmitted: _commitCustomPath,
+                onEditingComplete: () =>
+                    _commitCustomPath(_pathController.text),
+                suffixIcon: IconButton(
+                  tooltip: 'Browse…',
+                  icon: const Icon(Icons.folder_open),
+                  onPressed: _browseForPath,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact radio row — radio control with its label pulled right up against
+/// it, the whole row tappable. Must sit inside a `RadioGroup<DaemonMode>`.
+/// When [enabled] is false the row is greyed out and not selectable.
+class _RadioRow extends StatelessWidget {
+  const _RadioRow({
+    required this.value,
+    required this.label,
+    this.enabled = true,
+  });
+
+  final DaemonMode value;
+  final String label;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final group = RadioGroup.maybeOf<DaemonMode>(context);
+    final disabledColor = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: 0.38);
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: enabled ? () => group?.onChanged(value) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            Radio<DaemonMode>(
+              value: value,
+              enabled: enabled,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: enabled ? null : disabledColor,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PathRow extends StatelessWidget {
+  const _PathRow({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // Left inset matches where a _RadioRow's label starts: the compact
+    // Radio (~40px) + the 4px gap after it.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(44, 0, 16, 12),
+      child: Align(alignment: Alignment.centerLeft, child: child),
+    );
+  }
+}
+
+class _SystemPathResult extends StatelessWidget {
+  const _SystemPathResult({required this.daemon});
+  final DaemonController daemon;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = daemon.findSystemBinary();
+    if (path == null) {
+      return Text(
+        'No kwaainet binary found',
+        style: Theme.of(
+          context,
+        ).textTheme.bodyMedium?.copyWith(color: context.kwaai.error),
+      );
+    }
+    return SelectableText.rich(
+      TextSpan(
+        style: Theme.of(context).textTheme.bodyMedium,
+        children: [
+          const TextSpan(text: 'Binary found at: '),
+          TextSpan(
+            text: path,
+            style: const TextStyle(fontFamily: 'monospace'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AppearanceTab extends StatelessWidget {
+  const _AppearanceTab();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = ThemeScope.of(context);
+    final state = theme.state;
+    final brightness = MediaQuery.platformBrightnessOf(context);
+    final activeBrightness = state.effectiveBrightness(brightness);
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const KwaaiHeading('Mode'),
+          const SizedBox(height: 8),
+          _ModePicker(current: state.mode, onChanged: theme.setMode),
+          const SizedBox(height: 24),
+          const KwaaiHeading('Light theme'),
+          const SizedBox(height: 8),
+          _VariantPicker(
+            brightness: Brightness.light,
+            current: state.lightVariant,
+            isActive: activeBrightness == Brightness.light,
+            onChanged: theme.setLightVariant,
+          ),
+          const SizedBox(height: 24),
+          const KwaaiHeading('Dark theme'),
+          const SizedBox(height: 8),
+          _VariantPicker(
+            brightness: Brightness.dark,
+            current: state.darkVariant,
+            isActive: activeBrightness == Brightness.dark,
+            onChanged: theme.setDarkVariant,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModePicker extends StatelessWidget {
+  const _ModePicker({required this.current, required this.onChanged});
+  final AppThemeMode current;
+  final ValueChanged<AppThemeMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = context.kwaai.accentPrimary;
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final focused = WindowFocusScope.of(context);
+    // Selected fill desaturates to gray when the window is unfocused.
+    final selectedFill = focused ? accent : kSelectedUnfocusedFill;
+    final selectedFg = focused ? Colors.white : onSurface;
+    // Unselected segments mirror a disabled FilledButton (onSurface @ 12%
+    // fill) — but with lighter, still-legible text rather than the 38% a
+    // real disabled button uses. Theme-aware: flips for light/dark.
+    final unselectedFill = onSurface.withValues(alpha: 0.12);
+    final unselectedFg = onSurface.withValues(alpha: 0.6);
+
+    return SegmentedButton<AppThemeMode>(
+      style: ButtonStyle(
+        // Selected segment fills with the theme accent; unselected uses the
+        // disabled-button fill. No border on any segment.
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? selectedFill
+              : unselectedFill,
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) =>
+              states.contains(WidgetState.selected) ? selectedFg : unselectedFg,
+        ),
+        side: const WidgetStatePropertyAll(BorderSide.none),
+      ),
+      showSelectedIcon: false,
+      segments: const [
+        ButtonSegment(
+          value: AppThemeMode.auto,
+          label: Text('Auto'),
+          icon: Icon(Icons.brightness_auto),
+        ),
+        ButtonSegment(
+          value: AppThemeMode.light,
+          label: Text('Light'),
+          icon: Icon(Icons.light_mode),
+        ),
+        ButtonSegment(
+          value: AppThemeMode.dark,
+          label: Text('Dark'),
+          icon: Icon(Icons.dark_mode),
+        ),
+      ],
+      selected: {current},
+      onSelectionChanged: (s) => onChanged(s.first),
+    );
+  }
+}
+
+class _VariantPicker extends StatelessWidget {
+  const _VariantPicker({
+    required this.brightness,
+    required this.current,
+    required this.isActive,
+    required this.onChanged,
+  });
+  final Brightness brightness;
+  final ThemeVariantKey current;
+  final bool isActive;
+  final ValueChanged<ThemeVariantKey> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: ThemeVariantKey.values
+              .map(
+                (v) => _ThemeVariantDot(
+                  color: v.swatch(brightness),
+                  label: v.displayName,
+                  isSelected: v == current,
+                  onTap: () => onChanged(v),
+                ),
+              )
+              .toList(),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          isActive
+              ? '${current.displayName} — ${current.description} (active)'
+              : '${current.displayName} — ${current.description}',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ThemeVariantDot extends StatelessWidget {
+  const _ThemeVariantDot({
+    required this.color,
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final Color color;
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final outline = Theme.of(context).colorScheme.outline;
+    final selectedColor = Theme.of(context).colorScheme.onSurface;
+    return Tooltip(
+      message: label,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isSelected
+                  ? selectedColor
+                  : outline.withValues(alpha: 0.3),
+              width: isSelected ? 2.5 : 1,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

@@ -4,8 +4,8 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'dart:io';
 
-import 'daemon_controller.dart';
-import 'status_watcher.dart';
+import '../daemon/daemon_controller.dart';
+import '../daemon/status_watcher.dart';
 
 enum TrayState { running, stopped, error }
 
@@ -79,8 +79,8 @@ class TrayController with TrayListener {
         items: [
           MenuItem(label: _statusText, disabled: true),
           MenuItem.separator(),
-          MenuItem(key: 'start', label: 'Start daemon', disabled: running),
-          MenuItem(key: 'stop', label: 'Stop daemon', disabled: !running),
+          MenuItem(key: 'start', label: 'Start service', disabled: running),
+          MenuItem(key: 'stop', label: 'Stop service', disabled: !running),
           MenuItem.separator(),
           MenuItem(key: 'show', label: 'Open kwaainet-gui…'),
           MenuItem.separator(),

@@ -10,14 +10,14 @@ class BrandedTitle extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Image.asset('assets/kwaaiai-logo.png', height: 24),
-        const SizedBox(width: 8),
-        Text('Kwaai AI', style: Theme.of(context).textTheme.titleMedium),
+        Image.asset('assets/kwaaiai.png', height: 18),
+        const SizedBox(width: 6),
+        Text('Kwaai AI', style: Theme.of(context).textTheme.titleSmall),
         if (subtitle != null) ...[
           const SizedBox(width: 8),
           Text(
             '— $subtitle',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),

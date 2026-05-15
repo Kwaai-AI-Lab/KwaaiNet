@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:kwaainet_gui/src/status_watcher.dart';
+import 'package:kwaainet_gui/src/daemon/status_watcher.dart';
 
 void main() {
   test('NodeStatus parses daemon JSON', () {
