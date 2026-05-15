@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../daemon/daemon_state.dart';
 import '../daemon/status_watcher.dart';
+import '../window/dock_icon.dart';
 
 enum TrayState { running, stopped, starting, stopping, error }
 
@@ -187,10 +188,10 @@ class TrayController with TrayListener {
         await _container.read(daemonTransitionProvider.notifier).stop();
         break;
       case 'show':
-        // The window may be fully hidden (via hide-to-tray). show() alone
-        // isn't always enough on macOS — also re-show the dock icon and
-        // bring the app to front via setSkipTaskbar(false).
+        // The window may be hidden to tray and the Dock icon may be hidden
+        // too (activation policy = .accessory). Restore both.
         try {
+          await DockIcon.setVisible(true);
           await windowManager.setSkipTaskbar(false);
           await windowManager.show();
           await windowManager.focus();

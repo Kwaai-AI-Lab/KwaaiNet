@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:window_manager/window_manager.dart';
 
 import '../settings.dart';
+import 'dock_icon.dart';
 
 void _log(String msg) {
   stderr.writeln('[window-close] $msg');
@@ -28,8 +29,11 @@ class WindowCloseHandler with WindowListener {
   @override
   void onWindowClose() async {
     if (_settings.keepInTrayOnClose) {
-      _log('keepInTrayOnClose=true → hiding window, app stays in tray');
+      _log('keepInTrayOnClose=true → hiding window + Dock icon');
       await windowManager.hide();
+      // Also hide the Dock icon and Cmd-Tab entry. The tray icon alone
+      // signals the app is running.
+      await DockIcon.setVisible(false);
     } else {
       _log('keepInTrayOnClose=false → quitting');
       await windowManager.setPreventClose(false);

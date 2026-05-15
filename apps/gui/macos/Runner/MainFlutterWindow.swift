@@ -14,6 +14,14 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
+    // Install the lifecycle channel (setDockIconVisible) before Dart's
+    // first call — installing it later would race with WindowCloseHandler.
+    if let delegate = NSApp.delegate as? AppDelegate {
+      delegate.installLifecycleChannel(
+        messenger: flutterViewController.engine.binaryMessenger
+      )
+    }
+
     super.awakeFromNib()
   }
 }

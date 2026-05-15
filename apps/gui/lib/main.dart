@@ -15,6 +15,7 @@ import 'src/ui/pages/main_page.dart';
 import 'src/ui/theme/theme_controller.dart';
 import 'src/ui/theme/theme_variants.dart';
 import 'src/window/close_handler.dart';
+import 'src/window/dock_icon.dart';
 import 'src/window/window_focus.dart';
 
 Future<void> main() async {
@@ -57,6 +58,9 @@ Future<void> main() async {
   }
   final windowFocus = WindowFocusNotifier()..attach();
   await WindowCloseHandler(settings).attach();
+  // Listen for Dock-icon re-clicks / Finder reopens while the app is
+  // hidden — brings the window + Dock icon back.
+  installReopenHandler();
 
   runApp(
     UncontrolledProviderScope(
