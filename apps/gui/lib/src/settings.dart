@@ -20,6 +20,7 @@ class Settings {
   static const _modeKey = 'daemon.mode';
   static const _pathKey = 'daemon.customPath';
   static const _keepInTrayKey = 'window.keepInTrayOnClose';
+  static const _startOnStartupKey = 'daemon.startOnStartup';
 
   final SharedPreferences _prefs;
 
@@ -35,6 +36,10 @@ class Settings {
   /// Defaults to true (Slack/Discord/Docker Desktop convention).
   bool get keepInTrayOnClose => _prefs.getBool(_keepInTrayKey) ?? true;
 
+  /// When true, the app starts the kwaainet service at boot if it's not
+  /// already running. Defaults to true.
+  bool get startServiceOnStartup => _prefs.getBool(_startOnStartupKey) ?? true;
+
   Future<void> setMode(DaemonMode m) async {
     await _prefs.setString(_modeKey, _serialize(m));
   }
@@ -49,5 +54,9 @@ class Settings {
 
   Future<void> setKeepInTrayOnClose(bool v) async {
     await _prefs.setBool(_keepInTrayKey, v);
+  }
+
+  Future<void> setStartServiceOnStartup(bool v) async {
+    await _prefs.setBool(_startOnStartupKey, v);
   }
 }

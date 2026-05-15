@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -62,6 +63,16 @@ Future<void> main() async {
   // hidden — brings the window + Dock icon back.
   installReopenHandler();
 
+  // Auto-start the service at boot if the user has it enabled and the
+  // daemon isn't already running. Goes through the same transition
+  // provider as the buttons/tray, so the main UI immediately shows
+  // "Starting…" and the overlay engages until the watcher confirms.
+  if (settings.startServiceOnStartup && !daemon.isAlive()) {
+    // Fire-and-forget — start() awaits the controller call but we don't
+    // want to block the app from coming up while the daemon spins up.
+    unawaited(container.read(daemonTransitionProvider.notifier).start());
+  }
+
   runApp(
     UncontrolledProviderScope(
       container: container,
@@ -123,12 +134,7 @@ class KwaainetGuiApp extends StatelessWidget {
               theme: lightTheme,
               darkTheme: darkTheme,
               themeMode: themeMode,
-              home: MainPage(
-                daemon: daemon,
-                settings: settings,
-                statusStream: watcher.stream,
-                tray: tray,
-              ),
+              home: MainPage(daemon: daemon, settings: settings, tray: tray),
             );
           },
         ),

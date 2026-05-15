@@ -86,7 +86,7 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           appBarForeground: _hex('#2e2333'),
           navRailBackground: _hex('#e8ddec'),
           divider: _hex('#cdb9d5'),
-          cardBackground: _hex('#f4eef6'),
+          cardBackground: _hex('#F5F3F6'),
           inputBackground: _hex('#ffffff'),
           accentPrimary: _hex('#9b7ebd'),
           statusRunning: _hex('#34c759'),

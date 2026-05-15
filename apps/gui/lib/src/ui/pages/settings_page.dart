@@ -140,6 +140,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   },
                 ),
                 const SizedBox(height: 24),
+                const KwaaiHeading('Service'),
+                const SizedBox(height: 4),
+                _StartOnStartupToggle(
+                  settings: widget.settings,
+                  onChanged: () {
+                    setState(() {});
+                    widget.onSettingsChanged();
+                  },
+                ),
+                const SizedBox(height: 24),
                 const KwaaiHeading('Window'),
                 const SizedBox(height: 4),
                 _KeepInTrayToggle(
@@ -539,6 +549,46 @@ class _StatusHeader extends ConsumerWidget {
     if (h > 0) return '${h}h ${m}m';
     if (m > 0) return '${m}m ${s}s';
     return '${s}s';
+  }
+}
+
+/// Toggle for the "start the service automatically at app launch"
+/// preference. Reads / writes [Settings.startServiceOnStartup].
+class _StartOnStartupToggle extends StatefulWidget {
+  const _StartOnStartupToggle({
+    required this.settings,
+    required this.onChanged,
+  });
+  final Settings settings;
+  final VoidCallback onChanged;
+
+  @override
+  State<_StartOnStartupToggle> createState() => _StartOnStartupToggleState();
+}
+
+class _StartOnStartupToggleState extends State<_StartOnStartupToggle> {
+  late bool _value = widget.settings.startServiceOnStartup;
+
+  Future<void> _set(bool v) async {
+    setState(() => _value = v);
+    await widget.settings.setStartServiceOnStartup(v);
+    widget.onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      title: Text(
+        'Start service on startup',
+        style: Theme.of(context).textTheme.bodyMedium,
+      ),
+      value: _value,
+      onChanged: _set,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      contentPadding: EdgeInsets.zero,
+      activeThumbColor: context.kwaai.accentPrimary,
+    );
   }
 }
 
