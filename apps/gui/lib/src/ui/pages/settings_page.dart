@@ -571,17 +571,10 @@ class _StartOnStartupToggleState extends State<_StartOnStartupToggle> {
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
-      title: Text(
-        'Start service on startup',
-        style: Theme.of(context).textTheme.bodyMedium,
-      ),
+    return _SwitchRow(
+      label: 'Start service on startup',
       value: _value,
       onChanged: _set,
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      contentPadding: EdgeInsets.zero,
-      activeThumbColor: context.kwaai.accentPrimary,
     );
   }
 }
@@ -615,17 +608,57 @@ class _KeepInTrayToggleState extends State<_KeepInTrayToggle> {
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
-      title: Text(
-        'Keep running in tray when window is closed',
-        style: Theme.of(context).textTheme.bodyMedium,
-      ),
+    return _SwitchRow(
+      label: 'Keep running in tray when window is closed',
       value: _value,
       onChanged: _set,
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      contentPadding: EdgeInsets.zero,
-      activeThumbColor: context.kwaai.accentPrimary,
+    );
+  }
+}
+
+/// Compact switch row — label on the left, scaled-down Switch on the right,
+/// the whole row tappable. Mirrors `_RadioRow`'s visual rhythm so radios
+/// and switches read as siblings.
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => onChanged(!value),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+            ),
+            const SizedBox(width: 6),
+            // Match the *rendered* size of _RadioRow's scaled radio (~32px).
+            // Material's base Switch (~48px) needs a smaller scale than the
+            // radio (~40px) to land at the same vertical height.
+            Transform.scale(
+              scale: 0.67,
+              child: Switch(
+                value: value,
+                onChanged: onChanged,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                activeThumbColor: Colors.white,
+                activeTrackColor: context.kwaai.accentPrimary,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -706,21 +739,28 @@ class _DaemonSourcePickerState extends State<_DaemonSourcePicker> {
           ),
           _PathRow(child: _SystemPathResult(daemon: widget.daemon)),
           const _RadioRow(value: DaemonMode.custom, label: 'Use other…'),
-          if (mode == DaemonMode.custom)
-            _PathRow(
-              child: KwaaiTextField(
-                controller: _pathController,
-                hintText: '/path/to/kwaainet',
-                onSubmitted: _commitCustomPath,
-                onEditingComplete: () =>
-                    _commitCustomPath(_pathController.text),
-                suffixIcon: IconButton(
-                  tooltip: 'Browse…',
-                  icon: const Icon(Icons.folder_open),
-                  onPressed: _browseForPath,
-                ),
-              ),
+          // Always rendered, disabled until "Use other…" is selected. The
+          // disabled state greys both the field and the browse button.
+          _PathRow(
+            child: Builder(
+              builder: (context) {
+                final isCustom = mode == DaemonMode.custom;
+                return KwaaiTextField(
+                  controller: _pathController,
+                  hintText: '/path/to/kwaainet',
+                  enabled: isCustom,
+                  onSubmitted: _commitCustomPath,
+                  onEditingComplete: () =>
+                      _commitCustomPath(_pathController.text),
+                  suffixIcon: IconButton(
+                    tooltip: 'Browse…',
+                    icon: const Icon(Icons.folder_open),
+                    onPressed: isCustom ? _browseForPath : null,
+                  ),
+                );
+              },
             ),
+          ),
         ],
       ),
     );
@@ -754,13 +794,19 @@ class _RadioRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
           children: [
-            Radio<DaemonMode>(
-              value: value,
-              enabled: enabled,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
+            // Shrink the Material Radio visually. Radio has no size prop,
+            // so scale the rendered painter; the hit-testing inside the
+            // InkWell keeps the row tap-friendly.
+            Transform.scale(
+              scale: 0.8,
+              child: Radio<DaemonMode>(
+                value: value,
+                enabled: enabled,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: 6),
             Flexible(
               child: Text(
                 label,
@@ -783,9 +829,9 @@ class _PathRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Left inset matches where a _RadioRow's label starts: the compact
-    // Radio (~40px) + the 4px gap after it.
+    // Radio's layout box (~32px) + the 6px SizedBox after it.
     return Padding(
-      padding: const EdgeInsets.fromLTRB(44, 0, 16, 12),
+      padding: const EdgeInsets.fromLTRB(38, 0, 16, 12),
       child: Align(alignment: Alignment.centerLeft, child: child),
     );
   }

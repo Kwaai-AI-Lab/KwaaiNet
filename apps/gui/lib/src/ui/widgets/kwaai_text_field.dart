@@ -99,14 +99,25 @@ class _KwaaiTextFieldState extends State<KwaaiTextField> {
           ),
           isDense: true,
           filled: true,
-          // Same fill in every state — no Material focus/hover tint shift.
-          fillColor: context.kwaai.inputBackground,
+          // Same fill across enabled / focused / hover states (no Material
+          // focus tint shift). Disabled state gets a slightly darker fill
+          // so it reads as inactive.
+          fillColor: widget.enabled
+              ? context.kwaai.inputBackground
+              : Color.alphaBlend(
+                  Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: 0.06),
+                  context.kwaai.inputBackground,
+                ),
           hoverColor: Colors.transparent,
           // Tight, macOS-like field height. With the 1.0 line height above,
           // this padding is the field's only vertical breathing room.
+          // Inside-the-border padding gives the text some breathing room
+          // matching the radio rows' visual rhythm.
           contentPadding: const EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 6,
+            horizontal: 10,
+            vertical: 7,
           ),
           border: restingBorder,
           enabledBorder: restingBorder,
