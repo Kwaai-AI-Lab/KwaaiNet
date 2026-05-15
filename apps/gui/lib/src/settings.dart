@@ -19,6 +19,7 @@ class Settings {
 
   static const _modeKey = 'daemon.mode';
   static const _pathKey = 'daemon.customPath';
+  static const _keepInTrayKey = 'window.keepInTrayOnClose';
 
   final SharedPreferences _prefs;
 
@@ -28,6 +29,11 @@ class Settings {
 
   DaemonMode get mode => _parse(_prefs.getString(_modeKey));
   String? get customPath => _prefs.getString(_pathKey);
+
+  /// When true, closing the window hides it to the menu-bar tray and the
+  /// app keeps running. When false, closing the window quits the app.
+  /// Defaults to true (Slack/Discord/Docker Desktop convention).
+  bool get keepInTrayOnClose => _prefs.getBool(_keepInTrayKey) ?? true;
 
   Future<void> setMode(DaemonMode m) async {
     await _prefs.setString(_modeKey, _serialize(m));
@@ -39,5 +45,9 @@ class Settings {
     } else {
       await _prefs.setString(_pathKey, p);
     }
+  }
+
+  Future<void> setKeepInTrayOnClose(bool v) async {
+    await _prefs.setBool(_keepInTrayKey, v);
   }
 }

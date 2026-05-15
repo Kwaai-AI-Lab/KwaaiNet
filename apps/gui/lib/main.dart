@@ -2,16 +2,19 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:macos_window_utils/macos_window_utils.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'src/daemon/daemon_controller.dart';
+import 'src/daemon/daemon_state.dart';
 import 'src/daemon/status_watcher.dart';
 import 'src/settings.dart';
 import 'src/tray/tray.dart';
 import 'src/ui/pages/main_page.dart';
 import 'src/ui/theme/theme_controller.dart';
 import 'src/ui/theme/theme_variants.dart';
+import 'src/window/close_handler.dart';
 import 'src/window/window_focus.dart';
 
 Future<void> main() async {
@@ -35,18 +38,37 @@ Future<void> main() async {
   final theme = await ThemeController.load();
   final daemon = DaemonController(settings);
   final watcher = StatusWatcher(daemon: daemon)..start();
-  final tray = TrayController(daemon: daemon);
-  await tray.init();
-  watcher.stream.listen(tray.updateFromStatus);
+
+  // Riverpod container — created here so the tray (non-widget) can read /
+  // invoke provider actions, and shared with the widget tree via
+  // UncontrolledProviderScope.
+  final container = ProviderContainer(
+    overrides: [
+      daemonControllerProvider.overrideWithValue(daemon),
+      statusWatcherProvider.overrideWithValue(watcher),
+    ],
+  );
+
+  final tray = TrayController(container: container);
+  // Only install the menu-bar icon when the user opts in. The toggle in
+  // Settings → Status flips it at runtime via tray.setEnabled().
+  if (settings.keepInTrayOnClose) {
+    await tray.init();
+  }
   final windowFocus = WindowFocusNotifier()..attach();
+  await WindowCloseHandler(settings).attach();
 
   runApp(
-    KwaainetGuiApp(
-      daemon: daemon,
-      settings: settings,
-      watcher: watcher,
-      theme: theme,
-      windowFocus: windowFocus,
+    UncontrolledProviderScope(
+      container: container,
+      child: KwaainetGuiApp(
+        daemon: daemon,
+        settings: settings,
+        watcher: watcher,
+        theme: theme,
+        windowFocus: windowFocus,
+        tray: tray,
+      ),
     ),
   );
 }
@@ -59,6 +81,7 @@ class KwaainetGuiApp extends StatelessWidget {
     required this.watcher,
     required this.theme,
     required this.windowFocus,
+    required this.tray,
   });
 
   final DaemonController daemon;
@@ -66,6 +89,7 @@ class KwaainetGuiApp extends StatelessWidget {
   final StatusWatcher watcher;
   final ThemeController theme;
   final WindowFocusNotifier windowFocus;
+  final TrayController tray;
 
   @override
   Widget build(BuildContext context) {
@@ -99,6 +123,7 @@ class KwaainetGuiApp extends StatelessWidget {
                 daemon: daemon,
                 settings: settings,
                 statusStream: watcher.stream,
+                tray: tray,
               ),
             );
           },

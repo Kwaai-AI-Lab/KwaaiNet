@@ -1,11 +1,12 @@
-import 'dart:async';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../daemon/daemon_controller.dart';
+import '../../daemon/daemon_state.dart';
 import '../../daemon/status_watcher.dart';
 import '../../settings.dart';
+import '../../tray/tray.dart';
 import '../../window/window_focus.dart';
 import '../theme/kwaai_theme.dart';
 import '../theme/theme_controller.dart';
@@ -23,88 +24,30 @@ const Color kUnselectedFill = Color(0xFFEFEFEF);
 /// the accent tint desaturates to gray, matching native macOS behaviour.
 const Color kSelectedUnfocusedFill = Color(0xFFD4D4D4);
 
-class SettingsPage extends StatefulWidget {
+class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({
     super.key,
     required this.daemon,
     required this.settings,
-    required this.statusStream,
+    required this.tray,
     required this.onSettingsChanged,
   });
 
   final DaemonController daemon;
   final Settings settings;
-  final Stream<NodeStatus> statusStream;
+  final TrayController tray;
   final VoidCallback onSettingsChanged;
 
   @override
-  State<SettingsPage> createState() => _SettingsPageState();
+  ConsumerState<SettingsPage> createState() => _SettingsPageState();
 }
 
-/// Transient daemon lifecycle phase, tracked UI-side. The daemon's
-/// [NodeStatus] only reports running/stopped — "starting"/"stopping" is the
-/// gap between issuing a command and the watcher confirming the new state.
-enum _Transition { none, starting, stopping }
-
-class _SettingsPageState extends State<SettingsPage> {
-  NodeStatus _status = NodeStatus.stopped();
-  String? _lastError;
+class _SettingsPageState extends ConsumerState<SettingsPage> {
   int _selectedTab = 0;
-  _Transition _transition = _Transition.none;
-  StreamSubscription<NodeStatus>? _statusSub;
 
-  @override
-  void initState() {
-    super.initState();
-    _statusSub = widget.statusStream.listen((s) {
-      if (!mounted) return;
-      setState(() {
-        _status = s;
-        // Clear the transition once the daemon reaches the expected state.
-        if (_transition == _Transition.starting && s.running) {
-          _transition = _Transition.none;
-        } else if (_transition == _Transition.stopping && !s.running) {
-          _transition = _Transition.none;
-        }
-      });
-    });
-  }
+  Future<void> _start() => ref.read(daemonTransitionProvider.notifier).start();
 
-  @override
-  void dispose() {
-    _statusSub?.cancel();
-    super.dispose();
-  }
-
-  bool get _busy => _transition != _Transition.none;
-
-  Future<void> _start() async {
-    setState(() {
-      _lastError = null;
-      _transition = _Transition.starting;
-    });
-    final r = await widget.daemon.start();
-    if (!r.ok && mounted) {
-      setState(() {
-        _lastError = r.error ?? 'start failed';
-        _transition = _Transition.none;
-      });
-    }
-  }
-
-  Future<void> _stop() async {
-    setState(() {
-      _lastError = null;
-      _transition = _Transition.stopping;
-    });
-    final ok = await widget.daemon.stop();
-    if (!ok && mounted) {
-      setState(() {
-        _lastError = 'stop failed';
-        _transition = _Transition.none;
-      });
-    }
-  }
+  Future<void> _stop() => ref.read(daemonTransitionProvider.notifier).stop();
 
   Widget _buildStatusTab() {
     return Column(
@@ -112,7 +55,7 @@ class _SettingsPageState extends State<SettingsPage> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: _StatusHeader(status: _status, transition: _transition),
+          child: const _StatusHeader(),
         ),
         Expanded(
           child: SingleChildScrollView(
@@ -120,60 +63,88 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    FilledButton.icon(
-                      // Disabled while running or mid-transition.
-                      onPressed: (_status.running || _busy) ? null : _start,
-                      // Primary action — accent fill, matching the selected
-                      // segment in the mode picker. Desaturates to gray when
-                      // the window is unfocused.
-                      style: FilledButton.styleFrom(
-                        backgroundColor: WindowFocusScope.of(context)
-                            ? context.kwaai.accentPrimary
-                            : kSelectedUnfocusedFill,
-                        foregroundColor: WindowFocusScope.of(context)
-                            ? Colors.white
-                            : Theme.of(context).colorScheme.onSurface,
-                      ),
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('Start service'),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.icon(
-                      // Disabled while stopped or mid-transition.
-                      onPressed: (!_status.running || _busy) ? null : _stop,
-                      // Destructive action — red fill.
-                      style: FilledButton.styleFrom(
-                        backgroundColor: context.kwaai.buttonDestructive,
-                        foregroundColor: Colors.white,
-                      ),
-                      icon: const Icon(Icons.stop),
-                      label: const Text('Stop service'),
-                    ),
-                  ],
+                Consumer(
+                  builder: (context, ref, _) {
+                    final status = ref.watch(daemonStatusProvider).valueOrNull;
+                    final running = status?.running ?? false;
+                    final busy =
+                        ref.watch(daemonTransitionProvider) !=
+                        DaemonTransition.none;
+                    return Row(
+                      children: [
+                        FilledButton.icon(
+                          // Disabled while running or mid-transition.
+                          onPressed: (running || busy) ? null : _start,
+                          // Primary action — accent fill, matching the
+                          // selected segment in the mode picker. Desaturates
+                          // to gray when the window is unfocused.
+                          style: FilledButton.styleFrom(
+                            backgroundColor: WindowFocusScope.of(context)
+                                ? context.kwaai.accentPrimary
+                                : kSelectedUnfocusedFill,
+                            foregroundColor: WindowFocusScope.of(context)
+                                ? Colors.white
+                                : Theme.of(context).colorScheme.onSurface,
+                          ),
+                          icon: const Icon(Icons.play_arrow),
+                          label: const Text('Start service'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          // Disabled while stopped or mid-transition.
+                          onPressed: (!running || busy) ? null : _stop,
+                          // Destructive action — red fill.
+                          style: FilledButton.styleFrom(
+                            backgroundColor: context.kwaai.buttonDestructive,
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.stop),
+                          label: const Text('Stop service'),
+                        ),
+                      ],
+                    );
+                  },
                 ),
-                if (_lastError != null) ...[
-                  const SizedBox(height: 12),
-                  Card(
-                    color: Theme.of(context).colorScheme.errorContainer,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(
-                        _lastError!,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.onErrorContainer,
+                Consumer(
+                  builder: (context, ref, _) {
+                    final err = ref.watch(daemonErrorProvider);
+                    if (err == null) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Card(
+                        color: Theme.of(context).colorScheme.errorContainer,
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(
+                            err,
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onErrorContainer,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                ],
+                    );
+                  },
+                ),
                 const SizedBox(height: 24),
                 const KwaaiHeading('KwaaiNet binary location'),
                 const SizedBox(height: 8),
                 _DaemonSourcePicker(
                   daemon: widget.daemon,
                   settings: widget.settings,
+                  onChanged: () {
+                    setState(() {});
+                    widget.onSettingsChanged();
+                  },
+                ),
+                const SizedBox(height: 24),
+                const KwaaiHeading('Window'),
+                const SizedBox(height: 4),
+                _KeepInTrayToggle(
+                  settings: widget.settings,
+                  tray: widget.tray,
                   onChanged: () {
                     setState(() {});
                     widget.onSettingsChanged();
@@ -500,27 +471,28 @@ class _SettingsTopBar extends StatelessWidget {
   }
 }
 
-class _StatusHeader extends StatelessWidget {
-  const _StatusHeader({required this.status, required this.transition});
-  final NodeStatus status;
-  final _Transition transition;
+class _StatusHeader extends ConsumerWidget {
+  const _StatusHeader();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final cs = Theme.of(context).colorScheme;
+    final transition = ref.watch(daemonTransitionProvider);
+    final status =
+        ref.watch(daemonStatusProvider).valueOrNull ?? NodeStatus.stopped();
 
     // While transitioning, the orange indicator + "Starting"/"Stopping"
     // override the daemon's reported running/stopped state.
     final Color color;
     final List<String> bits;
     switch (transition) {
-      case _Transition.starting:
+      case DaemonTransition.starting:
         color = context.kwaai.statusTransitioning;
         bits = ['Starting…'];
-      case _Transition.stopping:
+      case DaemonTransition.stopping:
         color = context.kwaai.statusTransitioning;
         bits = ['Stopping…'];
-      case _Transition.none:
+      case DaemonTransition.none:
         color = status.running
             ? context.kwaai.statusRunning
             : context.kwaai.statusStopped;
@@ -567,6 +539,50 @@ class _StatusHeader extends StatelessWidget {
     if (h > 0) return '${h}h ${m}m';
     if (m > 0) return '${m}m ${s}s';
     return '${s}s';
+  }
+}
+
+/// Toggle for the "keep running in the menu bar when the window is closed"
+/// preference. Reads / writes [Settings.keepInTrayOnClose].
+class _KeepInTrayToggle extends StatefulWidget {
+  const _KeepInTrayToggle({
+    required this.settings,
+    required this.tray,
+    required this.onChanged,
+  });
+  final Settings settings;
+  final TrayController tray;
+  final VoidCallback onChanged;
+
+  @override
+  State<_KeepInTrayToggle> createState() => _KeepInTrayToggleState();
+}
+
+class _KeepInTrayToggleState extends State<_KeepInTrayToggle> {
+  late bool _value = widget.settings.keepInTrayOnClose;
+
+  Future<void> _set(bool v) async {
+    setState(() => _value = v);
+    await widget.settings.setKeepInTrayOnClose(v);
+    // Install / remove the menu-bar icon to match. Off ⇒ no tray.
+    await widget.tray.setEnabled(v);
+    widget.onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      title: Text(
+        'Keep running in tray when window is closed',
+        style: Theme.of(context).textTheme.bodyMedium,
+      ),
+      value: _value,
+      onChanged: _set,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      contentPadding: EdgeInsets.zero,
+      activeThumbColor: context.kwaai.accentPrimary,
+    );
   }
 }
 

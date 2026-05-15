@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../daemon/daemon_controller.dart';
 import '../../daemon/status_watcher.dart';
 import '../../settings.dart';
+import '../../tray/tray.dart';
 import '../theme/kwaai_theme.dart';
 import '../widgets/app_shell.dart';
 import '../widgets/branded_title.dart';
@@ -14,11 +15,13 @@ class MainPage extends StatelessWidget {
     required this.daemon,
     required this.settings,
     required this.statusStream,
+    required this.tray,
   });
 
   final DaemonController daemon;
   final Settings settings;
   final Stream<NodeStatus> statusStream;
+  final TrayController tray;
 
   void _openSettings(BuildContext context) {
     Navigator.of(context).push(
@@ -26,7 +29,7 @@ class MainPage extends StatelessWidget {
         pageBuilder: (_, _, _) => SettingsPage(
           daemon: daemon,
           settings: settings,
-          statusStream: statusStream,
+          tray: tray,
           onSettingsChanged: () {},
         ),
         transitionDuration: Duration.zero,

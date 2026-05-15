@@ -38,6 +38,7 @@ dependencies:
   path_provider: ^2.1.5
   shared_preferences: ^2.5.3
   file_picker: ^10.3.3
+  flutter_riverpod: ^2.6.1
 
 dev_dependencies:
   flutter_test:
@@ -59,10 +60,9 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/tray_running.png
-    - assets/tray_stopped.png
-    - assets/tray_error.png
     - assets/kwaaiai.png
+    - assets/tray_kwaai_logo.png
+    - assets/tray_kwaai_logo@2x.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
