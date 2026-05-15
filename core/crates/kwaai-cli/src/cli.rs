@@ -1155,9 +1155,10 @@ pub enum RagAction {
         #[arg(long, short = 'k', default_value = "20")]
         top_k: usize,
 
-        /// Shard API base URL
-        #[arg(long, default_value = "http://localhost:8080")]
-        inference_url: String,
+        /// Inference API base URL (defaults to inference_url in ~/.kwaainet/config.yaml,
+        /// or http://localhost:11434 if not configured)
+        #[arg(long)]
+        inference_url: Option<String>,
 
         /// Knowledge base name, or "all" to query all KBs (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]

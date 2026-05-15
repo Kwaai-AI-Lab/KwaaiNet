@@ -948,7 +948,7 @@ fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bo
 #[allow(clippy::too_many_arguments)]
 async fn cmd_chat(
     top_k: usize,
-    inference_url: String,
+    inference_url: Option<String>,
     kb: String,
     understand: bool,
     model: String,
@@ -963,6 +963,7 @@ async fn cmd_chat(
     #[cfg(feature = "storage")]
     {
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+        let inference_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
 
         let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;

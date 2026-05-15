@@ -393,7 +393,7 @@ fn default_embed_dim() -> usize {
 }
 
 fn default_inference_url() -> String {
-    "http://localhost:8080".to_string()
+    "http://localhost:11434".to_string()
 }
 
 fn default_top_k() -> usize {
