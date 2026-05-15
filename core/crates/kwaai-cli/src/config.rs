@@ -66,6 +66,13 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
+    /// Inference API base URL used by RAG chat/query when no per-KB value is set.
+    /// Point this at a remote kwaainet node (port 8080) or Ollama instance (port 11434)
+    /// to offload LLM calls while keeping retrieval local.
+    /// Example: kwaainet config set inference_url http://192.168.1.10:11434
+    #[serde(default = "default_inference_url", skip_serializing_if = "is_default_inference_url")]
+    pub inference_url: String,
+
     #[serde(default)]
     pub public_name: Option<String>,
 
@@ -396,6 +403,10 @@ fn default_inference_url() -> String {
     "http://localhost:11434".to_string()
 }
 
+fn is_default_inference_url(s: &str) -> bool {
+    s == default_inference_url()
+}
+
 fn default_top_k() -> usize {
     5
 }
@@ -564,6 +575,7 @@ impl Default for KwaaiNetConfig {
             port: default_port(),
             use_gpu: true,
             log_level: default_log_level(),
+            inference_url: default_inference_url(),
             public_name: Some(format!(
                 "{}-{}-{}",
                 std::env::var("USER").unwrap_or_else(|_| "anonymous".to_string()),
@@ -810,6 +822,7 @@ impl KwaaiNetConfig {
                     anyhow::anyhow!("rebalance_min_redundancy must be a positive integer")
                 })?
             }
+            "inference_url" => self.inference_url = value.to_string(),
             "contribute.storage" => self.contribute.storage = parse_bool(value)?,
             "contribute.shards" => self.contribute.shards = parse_bool(value)?,
             "contribute.auto_update" => self.contribute.auto_update = parse_bool(value)?,

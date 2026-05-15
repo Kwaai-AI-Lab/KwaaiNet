@@ -572,11 +572,12 @@ async fn main() -> Result<()> {
                         );
                     } else {
                         print_box_header("⚙️  KwaaiNet Configuration");
-                        println!("  🤖 model:        {}", cfg.model);
-                        println!("  🧱 blocks:       {}", cfg.blocks);
-                        println!("  🔌 port:         {}", cfg.port);
-                        println!("  🖥️  use_gpu:      {}", cfg.use_gpu);
-                        println!("  📋 log_level:    {}", cfg.log_level);
+                        println!("  🤖 model:          {}", cfg.model);
+                        println!("  🧱 blocks:         {}", cfg.blocks);
+                        println!("  🔌 port:           {}", cfg.port);
+                        println!("  🖥️  use_gpu:        {}", cfg.use_gpu);
+                        println!("  📋 log_level:      {}", cfg.log_level);
+                        println!("  🌐 inference_url:  {}", cfg.inference_url);
                         if let Some(ref n) = cfg.public_name {
                             println!("  📋 public_name:  {}", n);
                         }

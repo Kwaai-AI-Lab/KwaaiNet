@@ -963,7 +963,16 @@ async fn cmd_chat(
     #[cfg(feature = "storage")]
     {
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
-        let inference_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+        let inference_url = inference_url
+            .or_else(|| {
+                // Prefer the global kwaainet config when the user has pointed it
+                // at a non-localhost host (i.e. a remote inference node).
+                let global = crate::config::KwaaiNetConfig::load_or_create().ok()?;
+                let url = &global.inference_url;
+                let is_remote = !url.contains("localhost") && !url.contains("127.0.0.1");
+                is_remote.then(|| url.clone())
+            })
+            .unwrap_or_else(|| rag_cfg.inference_url.clone());
 
         let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
