@@ -439,18 +439,23 @@ class _SettingsTopBar extends StatelessWidget {
       height: 52,
       child: Stack(
         children: [
-          Padding(
-            padding: EdgeInsets.only(
-              left: clearTrafficLights ? 80 : 16,
-              right: 16,
-              // Match MainPage's _MainTopBar exactly so the brand doesn't
-              // shift between pages.
-              top: 9,
+          // Back arrow. clearTrafficLights pushes it right of the macOS
+          // window controls in bottom-nav layout.
+          Positioned(
+            top: 2,
+            left: clearTrafficLights ? 72 : 8,
+            child: IconButton(
+              tooltip: 'Back',
+              icon: const Icon(Icons.arrow_back),
+              onPressed: onClose,
             ),
-            child: const Align(
-              alignment: Alignment.topLeft,
-              child: BrandedTitle(),
-            ),
+          ),
+          // Brand sits to the right of the back arrow. Same top inset as
+          // MainPage's brand so it doesn't drift between pages.
+          Positioned(
+            top: 11,
+            left: clearTrafficLights ? 116 : 52,
+            child: const BrandedTitle(),
           ),
           Align(
             alignment: Alignment.topCenter,
@@ -461,17 +466,6 @@ class _SettingsTopBar extends StatelessWidget {
                 style: Theme.of(
                   context,
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Align(
-              alignment: Alignment.topRight,
-              child: IconButton(
-                tooltip: 'Close',
-                icon: const Icon(Icons.close),
-                onPressed: onClose,
               ),
             ),
           ),

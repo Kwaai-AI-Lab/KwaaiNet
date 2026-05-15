@@ -79,7 +79,7 @@ class _MainTopBar extends StatelessWidget {
           // overlap the top-left of this card. Top-aligned so the brand
           // lines up with the traffic lights rather than the bar's centre.
           const Padding(
-            padding: EdgeInsets.only(left: 80, right: 16, top: 9),
+            padding: EdgeInsets.only(left: 80, right: 16, top: 11),
             child: Align(alignment: Alignment.topLeft, child: BrandedTitle()),
           ),
           Padding(
