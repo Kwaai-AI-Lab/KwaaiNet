@@ -6,7 +6,6 @@ import '../../daemon/config_file.dart';
 import '../../daemon/daemon_controller.dart';
 import '../../daemon/daemon_state.dart';
 import '../../daemon/features_state.dart';
-import '../../daemon/status_watcher.dart';
 import '../../settings.dart';
 import '../../tray/tray.dart';
 import '../../window/window_focus.dart';
@@ -86,32 +85,50 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const _StatusHeader(),
-                const SizedBox(height: 12),
-                Consumer(
-                  builder: (context, ref, _) {
-                    final status = ref.watch(daemonStatusProvider).valueOrNull;
-                    final running = status?.running ?? false;
-                    final busy =
-                        ref.watch(daemonTransitionProvider) !=
-                        DaemonTransition.none;
-                    return Row(
-                      children: [
-                        KwaaiButton(
-                          label: 'Start service',
-                          icon: Icons.play_arrow,
-                          onPressed: (running || busy) ? null : _start,
-                        ),
-                        const SizedBox(width: 8),
-                        KwaaiButton(
-                          label: 'Stop service',
-                          icon: Icons.stop,
-                          variant: KwaaiButtonVariant.destructive,
-                          onPressed: (!running || busy) ? null : _stop,
-                        ),
-                      ],
-                    );
-                  },
+                _StatusHeader(
+                  // Start/Stop ride inline with the status row when the
+                  // app owns the daemon lifecycle. In external mode the
+                  // buttons are hidden but their slot stays Visibility-
+                  // reserved so toggling the mode doesn't reflow the
+                  // status card's height.
+                  trailing: Visibility(
+                    visible: widget.settings.mode != DaemonMode.external,
+                    maintainSize: true,
+                    maintainAnimation: true,
+                    maintainState: true,
+                    child: Consumer(
+                      builder: (context, ref, _) {
+                        final status =
+                            ref.watch(daemonStatusProvider).valueOrNull;
+                        final busy =
+                            ref.watch(daemonTransitionProvider) !=
+                            DaemonTransition.none;
+                        final unknown = !busy && status == null;
+                        final running = status?.running ?? false;
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            KwaaiButton(
+                              label: 'Start',
+                              icon: Icons.play_arrow,
+                              onPressed: (unknown || running || busy)
+                                  ? null
+                                  : _start,
+                            ),
+                            const SizedBox(width: 8),
+                            KwaaiButton(
+                              label: 'Stop',
+                              icon: Icons.stop,
+                              variant: KwaaiButtonVariant.destructive,
+                              onPressed: (unknown || !running || busy)
+                                  ? null
+                                  : _stop,
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -133,6 +150,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     // previous "not found" / spawn error no longer
                     // applies. They can re-trigger by clicking Start.
                     ref.read(daemonErrorProvider.notifier).clear();
+                    // If a daemon is already running, the binary swap
+                    // doesn't take effect until the user restarts —
+                    // surface the prompt so they know. The bar
+                    // self-clears when the service is stopped.
+                    final running = ref
+                            .read(daemonStatusProvider)
+                            .valueOrNull
+                            ?.running ??
+                        false;
+                    if (running) {
+                      ref.read(restartNeededProvider.notifier).mark();
+                    }
                   },
                 ),
               ],
@@ -145,13 +174,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               children: [
                 const KwaaiHeading('Service'),
                 const SizedBox(height: 4),
-                _StartOnStartupToggle(
-                  settings: widget.settings,
-                  onChanged: () {
-                    setState(() {});
-                    widget.onSettingsChanged();
-                  },
-                ),
+                if (widget.settings.mode != DaemonMode.external)
+                  _StartOnStartupToggle(
+                    settings: widget.settings,
+                    onChanged: () {
+                      setState(() {});
+                      widget.onSettingsChanged();
+                    },
+                  ),
                 _KeepInTrayToggle(
                   settings: widget.settings,
                   tray: widget.tray,
@@ -494,40 +524,90 @@ class _SettingsTopBar extends StatelessWidget {
 }
 
 class _StatusHeader extends ConsumerWidget {
-  const _StatusHeader();
+  const _StatusHeader({this.trailing});
+
+  /// Optional trailing widget rendered on the right of the status row.
+  /// Used by the Status tab to inline Start/Stop next to the indicator.
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final cs = Theme.of(context).colorScheme;
     final transition = ref.watch(daemonTransitionProvider);
-    final status =
-        ref.watch(daemonStatusProvider).valueOrNull ?? NodeStatus.stopped();
+    // Distinguish "we haven't yet learned the daemon state" from
+    // "we know it's stopped" — the former should render in a muted
+    // unknown state, not as a confident "Stopped" that flickers to
+    // "Running" the moment the first probe lands.
+    final statusAsync = ref.watch(daemonStatusProvider);
+    final status = statusAsync.valueOrNull;
+    final unknown = transition == DaemonTransition.none && status == null;
 
-    // While transitioning, the orange indicator + "Starting"/"Stopping"
-    // override the daemon's reported running/stopped state.
     final Color color;
-    final List<String> bits;
-    switch (transition) {
-      case DaemonTransition.starting:
-        color = context.kwaai.statusTransitioning;
-        bits = ['Starting…'];
-      case DaemonTransition.stopping:
-        color = context.kwaai.statusTransitioning;
-        bits = ['Stopping…'];
-      case DaemonTransition.none:
-        color = status.running
-            ? context.kwaai.statusRunning
-            : context.kwaai.statusStopped;
-        bits = <String>[
-          status.running ? 'Running' : 'Stopped',
-          if (status.running && status.pid != null) 'pid ${status.pid}',
-          if (status.uptimeSecs != null)
-            'up ${_fmtDuration(status.uptimeSecs!)}',
-          if (status.memoryMb != null)
-            '${status.memoryMb!.toStringAsFixed(0)} MB',
-          if (status.cpuPercent != null)
-            '${status.cpuPercent!.toStringAsFixed(1)}% CPU',
-        ];
+    final textColor = unknown ? cs.onSurfaceVariant : cs.onSurface;
+    final List<Widget> bitWidgets = [];
+
+    Widget bitText(String s) => Text(
+      s,
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+        color: textColor,
+      ),
+    );
+
+    if (unknown) {
+      color = cs.onSurfaceVariant.withValues(alpha: 0.4);
+      bitWidgets.add(bitText('Checking…'));
+    } else {
+      switch (transition) {
+        case DaemonTransition.starting:
+          color = context.kwaai.statusTransitioning;
+          bitWidgets.add(bitText('Starting…'));
+        case DaemonTransition.stopping:
+          color = context.kwaai.statusTransitioning;
+          bitWidgets.add(bitText('Stopping…'));
+        case DaemonTransition.none:
+          color = status!.running
+              ? context.kwaai.statusRunning
+              : context.kwaai.statusStopped;
+
+          void sep() => bitWidgets.add(bitText('  •  '));
+
+          bitWidgets.add(bitText(status.running ? 'Running' : 'Stopped'));
+          if (status.running && status.pid != null) {
+            sep();
+            bitWidgets.add(bitText('pid ${status.pid}'));
+            // Info icon sits immediately after the pid bit, before
+            // the next separator — quick visual cue that the stats
+            // below come from a PID-only probe.
+            if (status.source == 'pid') {
+              bitWidgets.add(const SizedBox(width: 4));
+              bitWidgets.add(Tooltip(
+                message:
+                    'Status from PID probe only — full stats appear once daemon writes kwaainet.status',
+                child: Icon(
+                  Icons.info_outline,
+                  size: 16,
+                  color: cs.onSurfaceVariant,
+                ),
+              ));
+            }
+          }
+          if (status.uptimeSecs != null) {
+            sep();
+            bitWidgets.add(bitText('up ${_fmtDuration(status.uptimeSecs!)}'));
+          }
+          if (status.memoryMb != null) {
+            sep();
+            bitWidgets.add(
+              bitText('${status.memoryMb!.toStringAsFixed(0)} MB'),
+            );
+          }
+          if (status.cpuPercent != null) {
+            sep();
+            bitWidgets.add(
+              bitText('${status.cpuPercent!.toStringAsFixed(1)}% CPU'),
+            );
+          }
+      }
     }
 
     return Row(
@@ -535,21 +615,15 @@ class _StatusHeader extends ConsumerWidget {
         Icon(Icons.circle, color: color, size: 14),
         const SizedBox(width: 8),
         Expanded(
-          child: Text(
-            bits.join('  •  '),
-            style: Theme.of(context).textTheme.bodyMedium,
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: bitWidgets,
           ),
         ),
-        if (status.source == 'pid' && status.running)
-          Tooltip(
-            message:
-                'Status from PID probe only — full stats appear once daemon writes kwaainet.status',
-            child: Icon(
-              Icons.info_outline,
-              size: 16,
-              color: cs.onSurfaceVariant,
-            ),
-          ),
+        if (trailing != null) ...[
+          const SizedBox(width: 12),
+          trailing!,
+        ],
       ],
     );
   }
@@ -788,7 +862,31 @@ class _DaemonSourcePickerState extends State<_DaemonSourcePicker> {
               },
             ),
           ),
+          const _RadioRow(
+            value: DaemonMode.external,
+            label: 'Service managed externally',
+          ),
+          const _PathRow(child: _ExternalModeHelp()),
         ],
+      ),
+    );
+  }
+}
+
+/// Helper text shown under the "Service managed externally" radio. Kept
+/// muted and short — clarifies the trade-off (the app won't try to spawn
+/// or terminate the daemon; it just observes the gRPC channel).
+class _ExternalModeHelp extends StatelessWidget {
+  const _ExternalModeHelp();
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      'The app will not start or stop the service. Run kwaainet '
+      'yourself (launchd, systemd, Docker, or `kwaainet start` in a '
+      'terminal); the GUI only observes the gRPC channel.',
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );
   }

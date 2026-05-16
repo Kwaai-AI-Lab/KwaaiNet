@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../chat/chat_state.dart';
+import '../../chat/kwaai_rpc_client.dart';
 import '../../daemon/daemon_controller.dart';
 import '../../daemon/daemon_state.dart';
 import '../../settings.dart';
@@ -100,9 +101,11 @@ class _MainTopBar extends StatelessWidget {
   }
 }
 
-/// The chat surface. When the service is running it shows the chat (today
-/// a placeholder); otherwise it shows the status message in the same spot,
-/// no scrim/overlay — the chat just isn't there yet.
+/// The chat surface. Gated on whether we have a live gRPC connection
+/// to the daemon — not whether the daemon's PID is alive. The two
+/// can diverge (the daemon may be starting up, restarting, or have
+/// its socket gone stale), and what actually matters for the chat
+/// UI is whether a Chat call would succeed right now.
 class _ChatBody extends ConsumerWidget {
   const _ChatBody({required this.onOpenSettings});
 
@@ -110,15 +113,20 @@ class _ChatBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final transition = ref.watch(daemonTransitionProvider);
-    final status = ref.watch(daemonStatusProvider).valueOrNull;
-    final running = status?.running ?? false;
-
-    if (running && transition == DaemonTransition.none) {
+    // The chat surface only renders when the daemon is actually
+    // reachable via gRPC — but the *status copy* below reflects the
+    // daemon lifecycle (starting / running / stopping / stopped), so
+    // the user gets useful detail rather than a generic "connecting".
+    final conn = ref.watch(kwaaiRpcConnectionProvider).valueOrNull
+        ?? RpcConnection.connecting;
+    if (conn == RpcConnection.connected) {
       return const _ChatTranscript();
     }
 
     final ext = context.kwaai;
+    final transition = ref.watch(daemonTransitionProvider);
+    final status = ref.watch(daemonStatusProvider).valueOrNull;
+
     final Color spinnerColor;
     final String headline;
     final bool spinner;
@@ -135,10 +143,32 @@ class _ChatBody extends ConsumerWidget {
         spinner = true;
         showStoppedSub = false;
       case DaemonTransition.none:
-        spinnerColor = ext.statusStopped;
-        headline = 'Service is stopped';
-        spinner = false;
-        showStoppedSub = true;
+        if (status == null) {
+          // Haven't received the first status reading yet — distinguish
+          // this muted "Checking…" from a confident "Service is stopped"
+          // that would flicker the moment the probe lands.
+          spinnerColor = Theme.of(context)
+              .colorScheme
+              .onSurfaceVariant
+              .withValues(alpha: 0.4);
+          headline = 'Checking service…';
+          spinner = true;
+          showStoppedSub = false;
+        } else if (status.running) {
+          // PID is alive but the RPC channel isn't ready yet — either
+          // the daemon is mid-init (DHT bootstrap / inference setup
+          // before the gRPC listener binds) or the socket was just
+          // recreated and we're about to reconnect.
+          spinnerColor = ext.statusTransitioning;
+          headline = 'Connecting to service…';
+          spinner = true;
+          showStoppedSub = false;
+        } else {
+          spinnerColor = ext.statusStopped;
+          headline = 'Service is stopped';
+          spinner = false;
+          showStoppedSub = true;
+        }
     }
 
     final mutedStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -185,7 +215,7 @@ class _ChatBody extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  const TextSpan(text: ' to start the service.'),
+                  const TextSpan(text: ' to start or configure the service.'),
                 ],
               ),
             ),
@@ -227,12 +257,9 @@ class _ChatInputBarState extends ConsumerState<_ChatInputBar> {
 
   @override
   Widget build(BuildContext context) {
-    final transition = ref.watch(daemonTransitionProvider);
-    final status = ref.watch(daemonStatusProvider).valueOrNull;
+    final conn = ref.watch(kwaaiRpcConnectionProvider).valueOrNull;
     final streaming = ref.watch(chatStreamingProvider);
-    final canSend = (status?.running ?? false) &&
-        transition == DaemonTransition.none &&
-        !streaming;
+    final canSend = conn == RpcConnection.connected && !streaming;
 
     return SafeArea(
       top: false,
