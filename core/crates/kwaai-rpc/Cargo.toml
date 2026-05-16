@@ -1,0 +1,16 @@
+[package]
+name = "kwaai-rpc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository = "https://github.com/Kwaai-AI-Lab/KwaaiNet"
+description = "gRPC IPC surface for the kwaainet daemon (used by GUI/CLI clients)"
+
+[dependencies]
+# tonic 0.11 pairs with prost 0.12 — must match the rest of the workspace.
+tonic = "0.11"
+prost = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.11"

@@ -1,0 +1,71 @@
+// kwaai-rpc — gRPC surface for the long-running `kwaainet start` daemon.
+//
+// This service is hosted in-process by the kwaainet (kwaai-cli) binary and
+// is the integration point for the Flutter GUI and any future CLI
+// subcommands that want structured (non-stdout) access to the daemon.
+//
+// Wire compatibility: only ever append new fields and use explicit field
+// numbers. Don't renumber existing fields or repurpose tags.
+
+syntax = "proto3";
+
+package kwaai.v1;
+
+// KwaaiNet exposes the high-level node operations a client might want to
+// drive. For now it's just chat; expect node status / DHT queries / model
+// management to land here later, each as their own rpc method.
+service KwaaiNet {
+    // Bidirectional streaming chat.
+    //
+    // The client opens a Chat stream and sends one or more ChatMessages.
+    // Today the server treats the FIRST ChatMessage as the prompt and
+    // ignores subsequent messages (single-turn). Multi-turn is a TODO —
+    // we picked bidi from the start so we don't have to break the proto
+    // when we add it (the client just keeps sending; the server learns to
+    // accumulate).
+    //
+    // The server responds with a stream of ChatTokens, one per generated
+    // text piece, ending with a single ChatToken that has done=true.
+    rpc Chat(stream ChatMessage) returns (stream ChatToken);
+}
+
+// A single message in a chat conversation. Modelled loosely after the
+// OpenAI chat API so existing client code maps over cleanly.
+message ChatMessage {
+    // The text payload of the message.
+    string content = 1;
+
+    // Conventional roles: "user", "assistant", "system". Free-form so we
+    // can add roles later without a proto change.
+    string role = 2;
+
+    // Optional client-supplied conversation ID. Lets the daemon associate
+    // multiple Chat streams with the same logical conversation when we
+    // add multi-turn support. Ignored today.
+    optional string conversation_id = 3;
+
+    // Reserved tag range for future sampling parameters, tool calls,
+    // attachments, etc. Bump field numbers above 16 when adding.
+    // 4-15 reserved for high-frequency message metadata.
+    // 16+ reserved for sampling/tool/attachment payloads.
+}
+
+// One streamed output chunk. The server SHOULD send each generated token
+// (or token-piece) as its own ChatToken; the client is responsible for
+// concatenating `text`.
+message ChatToken {
+    // The next text piece to append. Empty when done=true.
+    string text = 1;
+
+    // True on the final message in the stream. After done=true the server
+    // closes the response stream.
+    bool done = 2;
+
+    // Optional reason the stream ended. Conventional values: "stop"
+    // (EOS / natural completion), "length" (hit max_tokens), "error",
+    // "cancelled". Only set on the final (done=true) message.
+    optional string finish_reason = 3;
+
+    // 4-15 reserved for per-token metadata (logprobs, timing).
+    // 16+ reserved for richer payloads (tool calls, citations).
+}

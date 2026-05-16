@@ -53,6 +53,15 @@ prost = { workspace = true }
 rmp-serde = { workspace = true }
 unsigned-varint = { workspace = true }
 
+# gRPC IPC surface — used by `kwaainet start` to host the in-process
+# KwaaiNet service that the GUI / future CLI subcommands talk to.
+tonic = { workspace = true }
+kwaai-rpc = { workspace = true }
+async-stream = "0.3"
+# tokio-stream wraps UnixListener / mpsc::Receiver into the Stream impl
+# that tonic's serve_with_incoming_shutdown / ReceiverStream expect.
+tokio-stream = { version = "0.1", features = ["net"] }
+
 # Not yet in workspace.dependencies
 sha1 = "0.10"
 hex = "0.4"

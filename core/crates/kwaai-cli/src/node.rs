@@ -808,6 +808,15 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("   Map     : https://map.kwaai.ai");
 
     // -----------------------------------------------------------------------
+    // gRPC IPC surface — bind the in-process KwaaiNet service so the GUI
+    // (and future CLI subcommands) can drive chat/inference over a structured
+    // RPC channel. Binds Unix socket + TCP loopback on POSIX, TCP only
+    // elsewhere. Failure here is non-fatal: the p2p node must keep running
+    // even if the IPC surface didn't come up.
+    // -----------------------------------------------------------------------
+    let _grpc_handle = crate::grpc_server::spawn(config.clone());
+
+    // -----------------------------------------------------------------------
     // Event loop: handle incoming RPC + periodic re-announce
     // -----------------------------------------------------------------------
     // Shadow config with a local mutable copy so the event loop can update
