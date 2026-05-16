@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../chat/chat_state.dart';
 import '../../daemon/daemon_controller.dart';
 import '../../daemon/daemon_state.dart';
 import '../../settings.dart';
@@ -114,14 +115,7 @@ class _ChatBody extends ConsumerWidget {
     final running = status?.running ?? false;
 
     if (running && transition == DaemonTransition.none) {
-      return Center(
-        child: Text(
-          'Chat here',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-        ),
-      );
+      return const _ChatTranscript();
     }
 
     final ext = context.kwaai;
@@ -202,24 +196,53 @@ class _ChatBody extends ConsumerWidget {
   }
 }
 
-/// Chat input. Enabled only when the service is up. While stopped /
-/// starting / stopping it stays visible but inert.
-class _ChatInputBar extends ConsumerWidget {
+/// Chat input. Enabled only when the service is up AND there's no
+/// in-flight stream. While stopped / starting / stopping it stays
+/// visible but inert.
+class _ChatInputBar extends ConsumerStatefulWidget {
   const _ChatInputBar();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ChatInputBar> createState() => _ChatInputBarState();
+}
+
+class _ChatInputBarState extends ConsumerState<_ChatInputBar> {
+  final _controller = TextEditingController();
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    _controller.clear();
+    ref.read(chatTranscriptProvider.notifier).send(text);
+    _focusNode.requestFocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final transition = ref.watch(daemonTransitionProvider);
     final status = ref.watch(daemonStatusProvider).valueOrNull;
-    final enabled =
-        (status?.running ?? false) && transition == DaemonTransition.none;
+    final streaming = ref.watch(chatStreamingProvider);
+    final canSend = (status?.running ?? false) &&
+        transition == DaemonTransition.none &&
+        !streaming;
 
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         child: TextField(
-          enabled: enabled,
+          controller: _controller,
+          focusNode: _focusNode,
+          enabled: canSend,
+          onSubmitted: (_) => canSend ? _send() : null,
           decoration: InputDecoration(
             hintText: 'Message kwaainet…',
             filled: true,
@@ -235,13 +258,97 @@ class _ChatInputBar extends ConsumerWidget {
             suffixIcon: IconButton(
               icon: const Icon(Icons.arrow_forward),
               tooltip: 'Send',
-              // Always null today (no chat logic yet); when send wiring
-              // lands it should also respect `enabled`.
-              onPressed: null,
+              onPressed: canSend ? _send : null,
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Scrolling transcript of chat messages. Auto-scrolls to the bottom
+/// on every rebuild so streaming tokens stay in view.
+class _ChatTranscript extends ConsumerStatefulWidget {
+  const _ChatTranscript();
+
+  @override
+  ConsumerState<_ChatTranscript> createState() => _ChatTranscriptState();
+}
+
+class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 120),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final messages = ref.watch(chatTranscriptProvider);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+
+    if (messages.isEmpty) {
+      return Center(
+        child: Text(
+          'Send a message to start.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      itemCount: messages.length,
+      itemBuilder: (context, i) {
+        final msg = messages[i];
+        final isUser = msg.role == 'user';
+        final accent = context.kwaai.accentPrimary;
+        final scheme = Theme.of(context).colorScheme;
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            mainAxisAlignment:
+                isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            children: [
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isUser
+                        ? accent.withValues(alpha: 0.12)
+                        : context.kwaai.elevatedSurface,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    msg.text.isEmpty && msg.streaming ? '…' : msg.text,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
