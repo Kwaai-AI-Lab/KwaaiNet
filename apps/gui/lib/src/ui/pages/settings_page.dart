@@ -222,6 +222,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     const _ContributeTab(),
                     const _NetworkTab(),
                     const _AppearanceTab(),
+                    _DeveloperTab(settings: widget.settings),
                   ],
                 ),
               ),
@@ -336,6 +337,11 @@ const _settingsNavEntries = <_SettingsNavEntry>[
   ),
   _SettingsNavEntry(Icons.lan_outlined, Icons.lan, 'Network'),
   _SettingsNavEntry(Icons.palette_outlined, Icons.palette, 'Appearance'),
+  _SettingsNavEntry(
+    Icons.bug_report_outlined,
+    Icons.bug_report,
+    'Developer',
+  ),
 ];
 
 class _SettingsNav extends StatelessWidget {
@@ -1794,6 +1800,57 @@ class _BareApplyBar extends StatelessWidget {
       child: Align(
         alignment: Alignment.centerRight,
         child: KwaaiButton(label: 'Apply', onPressed: onApply),
+      ),
+    );
+  }
+}
+
+/// Developer tab — gates the optional "Local chat" tab on the main
+/// window. When enabled, the main page grows a tab bar; the second
+/// tab drives `kwaainet generate` directly (single-node local
+/// inference, bypasses the shard mesh).
+class _DeveloperTab extends ConsumerWidget {
+  const _DeveloperTab({required this.settings});
+
+  final Settings settings;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final enabled = ref.watch(localChatEnabledProvider);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _FeatureCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const KwaaiHeading('Local chat'),
+                const SizedBox(height: 4),
+                _SwitchRow(
+                  label: 'Enable local chat tab on main window',
+                  value: enabled,
+                  onChanged: (v) async {
+                    await settings.setLocalChatEnabled(v);
+                    ref.read(localChatEnabledProvider.notifier).state = v;
+                  },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Adds a second tab driven by `kwaainet generate` — '
+                  'single-node local inference using the daemon\'s '
+                  'in-process model, bypassing the shard mesh. Useful '
+                  'for verifying the local InferenceEngine without '
+                  'depending on peer availability.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

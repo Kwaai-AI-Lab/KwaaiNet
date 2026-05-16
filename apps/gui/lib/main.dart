@@ -49,6 +49,12 @@ Future<void> main() async {
     overrides: [
       daemonControllerProvider.overrideWithValue(daemon),
       statusWatcherProvider.overrideWithValue(watcher),
+      // Seed the localChatEnabled provider from the durable setting so
+      // the main page's tab bar reflects the user's last choice on
+      // first paint.
+      localChatEnabledProvider.overrideWith(
+        (_) => settings.localChatEnabled,
+      ),
     ],
   );
 

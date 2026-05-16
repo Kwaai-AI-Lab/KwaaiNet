@@ -7,12 +7,13 @@ import '../../daemon/daemon_controller.dart';
 import '../../daemon/daemon_state.dart';
 import '../../settings.dart';
 import '../../tray/tray.dart';
+import '../../window/window_focus.dart';
 import '../theme/kwaai_theme.dart';
 import '../widgets/app_shell.dart';
 import '../widgets/branded_title.dart';
 import 'settings_page.dart';
 
-class MainPage extends StatelessWidget {
+class MainPage extends ConsumerStatefulWidget {
   const MainPage({
     super.key,
     required this.daemon,
@@ -24,13 +25,35 @@ class MainPage extends StatelessWidget {
   final Settings settings;
   final TrayController tray;
 
-  void _openSettings(BuildContext context) {
+  @override
+  ConsumerState<MainPage> createState() => _MainPageState();
+}
+
+class _MainPageState extends ConsumerState<MainPage> {
+  /// Index into the currently-visible tab list (`_visibleTabs(...)`).
+  /// Reset to 0 when the visible tab list shrinks so we never point
+  /// past the end.
+  int _selectedTab = 0;
+
+  /// Tabs that are visible based on current settings. The first entry
+  /// is always the main chat (shard_run). Additional entries appear
+  /// when developer/etc. toggles are on.
+  List<_TabSpec> _visibleTabs(WidgetRef ref) {
+    final localChatOn = ref.watch(localChatEnabledProvider);
+    return [
+      const _TabSpec(label: 'Chat', path: ChatPath.shardRun),
+      if (localChatOn)
+        const _TabSpec(label: 'Local chat', path: ChatPath.generateLocal),
+    ];
+  }
+
+  void _openSettings() {
     Navigator.of(context).push(
       PageRouteBuilder(
         pageBuilder: (_, _, _) => SettingsPage(
-          daemon: daemon,
-          settings: settings,
-          tray: tray,
+          daemon: widget.daemon,
+          settings: widget.settings,
+          tray: widget.tray,
           onSettingsChanged: () {},
         ),
         transitionDuration: Duration.zero,
@@ -41,6 +64,11 @@ class MainPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tabs = _visibleTabs(ref);
+    // Clamp selection in case the user just turned off the tab they
+    // were on (e.g. disabled Local chat from Settings).
+    if (_selectedTab >= tabs.length) _selectedTab = 0;
+
     return AppShell(
       child: ShellCard(
         // Single card — every corner touches the window edge.
@@ -52,13 +80,24 @@ class MainPage extends StatelessWidget {
         ),
         child: Column(
           children: [
-            _MainTopBar(onOpenSettings: () => _openSettings(context)),
-            // Chat area swaps content based on whether the service is up;
-            // the input bar stays visible but is disabled when it isn't.
-            Expanded(
-              child: _ChatBody(onOpenSettings: () => _openSettings(context)),
+            // Top bar carries the tab strip inline when more than one
+            // tab is visible — single-tab mode collapses back to a
+            // plain brand + settings icon header.
+            _MainTopBar(
+              onOpenSettings: _openSettings,
+              tabs: tabs.length > 1 ? tabs : const [],
+              selectedTab: _selectedTab,
+              onSelectTab: (i) => setState(() => _selectedTab = i),
             ),
-            const _ChatInputBar(),
+            Expanded(
+              child: IndexedStack(
+                index: _selectedTab,
+                children: [
+                  for (final t in tabs)
+                    _ChatTab(path: t.path, onOpenSettings: _openSettings),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -66,33 +105,138 @@ class MainPage extends StatelessWidget {
   }
 }
 
-class _MainTopBar extends StatelessWidget {
-  const _MainTopBar({required this.onOpenSettings});
+/// Per-tab metadata: display label + which gRPC operation drives the
+/// chat surface.
+class _TabSpec {
+  const _TabSpec({required this.label, required this.path});
+  final String label;
+  final ChatPath path;
+}
 
+/// The contents of one tab — body + input — driven by a [ChatPath].
+class _ChatTab extends StatelessWidget {
+  const _ChatTab({required this.path, required this.onOpenSettings});
+
+  final ChatPath path;
   final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Expanded(child: _ChatBody(path: path, onOpenSettings: onOpenSettings)),
+        _ChatInputBar(path: path),
+      ],
+    );
+  }
+}
+
+/// SegmentedButton-based tab selector. Same visual primitive as the
+/// Mode picker on Settings → Appearance, so the two read as siblings.
+class _MainTabSegmented extends StatelessWidget {
+  const _MainTabSegmented({
+    required this.tabs,
+    required this.selectedIndex,
+    required this.onSelect,
+  });
+
+  final List<_TabSpec> tabs;
+  final int selectedIndex;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = context.kwaai.accentPrimary;
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final focused = WindowFocusScope.of(context);
+    final selectedFill = focused ? accent : kSelectedUnfocusedFill;
+    final selectedFg = focused ? Colors.white : onSurface;
+    final unselectedFill = onSurface.withValues(alpha: 0.12);
+    final unselectedFg = onSurface.withValues(alpha: 0.6);
+
+    return SegmentedButton<int>(
+      style: ButtonStyle(
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? selectedFill
+              : unselectedFill,
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? selectedFg
+              : unselectedFg,
+        ),
+        side: const WidgetStatePropertyAll(BorderSide.none),
+        visualDensity: VisualDensity.compact,
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        ),
+      ),
+      showSelectedIcon: false,
+      segments: [
+        for (var i = 0; i < tabs.length; i++)
+          ButtonSegment(value: i, label: Text(tabs[i].label)),
+      ],
+      selected: {selectedIndex},
+      onSelectionChanged: (s) => onSelect(s.first),
+    );
+  }
+}
+
+class _MainTopBar extends StatelessWidget {
+  const _MainTopBar({
+    required this.onOpenSettings,
+    this.tabs = const [],
+    this.selectedTab = 0,
+    this.onSelectTab,
+  });
+
+  final VoidCallback onOpenSettings;
+
+  /// Visible tabs. When empty, the bar collapses to just the brand
+  /// and the settings icon (single-chat mode).
+  final List<_TabSpec> tabs;
+  final int selectedTab;
+  final ValueChanged<int>? onSelectTab;
+
+  @override
+  Widget build(BuildContext context) {
+    // Top-align everything in the 52px bar so the brand lines up with
+    // the macOS traffic lights (which sit ~top: 11). The segmented
+    // button is taller than the brand text, so its top inset is
+    // smaller — picked empirically to land the button label's text
+    // baseline on the brand title's baseline.
+    const brandTop = 11.0;
+    const tabTop = 4.0;
     return SizedBox(
       height: 52,
-      child: Stack(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Left padding clears the native macOS traffic lights, which
-          // overlap the top-left of this card. Top-aligned so the brand
-          // lines up with the traffic lights rather than the bar's centre.
+          // Left inset clears the native macOS traffic lights.
+          const SizedBox(width: 80),
           const Padding(
-            padding: EdgeInsets.only(left: 80, right: 16, top: 11),
-            child: Align(alignment: Alignment.topLeft, child: BrandedTitle()),
+            padding: EdgeInsets.only(top: brandTop),
+            child: BrandedTitle(),
           ),
+          if (tabs.isNotEmpty) ...[
+            const SizedBox(width: 24),
+            Padding(
+              padding: const EdgeInsets.only(top: tabTop),
+              child: _MainTabSegmented(
+                tabs: tabs,
+                selectedIndex: selectedTab,
+                onSelect: (i) => onSelectTab?.call(i),
+              ),
+            ),
+          ],
+          const Spacer(),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Align(
-              alignment: Alignment.topRight,
-              child: IconButton(
-                tooltip: 'Settings',
-                icon: const Icon(Icons.settings),
-                onPressed: onOpenSettings,
-              ),
+            child: IconButton(
+              tooltip: 'Settings',
+              icon: const Icon(Icons.settings),
+              onPressed: onOpenSettings,
             ),
           ),
         ],
@@ -107,8 +251,9 @@ class _MainTopBar extends StatelessWidget {
 /// its socket gone stale), and what actually matters for the chat
 /// UI is whether a Chat call would succeed right now.
 class _ChatBody extends ConsumerWidget {
-  const _ChatBody({required this.onOpenSettings});
+  const _ChatBody({required this.path, required this.onOpenSettings});
 
+  final ChatPath path;
   final VoidCallback onOpenSettings;
 
   @override
@@ -120,7 +265,7 @@ class _ChatBody extends ConsumerWidget {
     final conn = ref.watch(kwaaiRpcConnectionProvider).valueOrNull
         ?? RpcConnection.connecting;
     if (conn == RpcConnection.connected) {
-      return const _ChatTranscript();
+      return _ChatTranscript(path: path);
     }
 
     final ext = context.kwaai;
@@ -230,7 +375,9 @@ class _ChatBody extends ConsumerWidget {
 /// in-flight stream. While stopped / starting / stopping it stays
 /// visible but inert.
 class _ChatInputBar extends ConsumerStatefulWidget {
-  const _ChatInputBar();
+  const _ChatInputBar({required this.path});
+
+  final ChatPath path;
 
   @override
   ConsumerState<_ChatInputBar> createState() => _ChatInputBarState();
@@ -251,14 +398,14 @@ class _ChatInputBarState extends ConsumerState<_ChatInputBar> {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     _controller.clear();
-    ref.read(chatTranscriptProvider.notifier).send(text);
+    ref.read(chatTranscriptProvider(widget.path).notifier).send(text);
     _focusNode.requestFocus();
   }
 
   @override
   Widget build(BuildContext context) {
     final conn = ref.watch(kwaaiRpcConnectionProvider).valueOrNull;
-    final streaming = ref.watch(chatStreamingProvider);
+    final streaming = ref.watch(chatStreamingProvider(widget.path));
     final canSend = conn == RpcConnection.connected && !streaming;
 
     return SafeArea(
@@ -297,7 +444,9 @@ class _ChatInputBarState extends ConsumerState<_ChatInputBar> {
 /// Scrolling transcript of chat messages. Auto-scrolls to the bottom
 /// on every rebuild so streaming tokens stay in view.
 class _ChatTranscript extends ConsumerStatefulWidget {
-  const _ChatTranscript();
+  const _ChatTranscript({required this.path});
+
+  final ChatPath path;
 
   @override
   ConsumerState<_ChatTranscript> createState() => _ChatTranscriptState();
@@ -323,7 +472,7 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
 
   @override
   Widget build(BuildContext context) {
-    final messages = ref.watch(chatTranscriptProvider);
+    final messages = ref.watch(chatTranscriptProvider(widget.path));
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
     if (messages.isEmpty) {
