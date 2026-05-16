@@ -42,16 +42,16 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    await container.read(chatTranscriptProvider.notifier).send('hi');
+    await container.read(chatTranscriptProvider(ChatPath.shardRun).notifier).send('hi');
 
-    final msgs = container.read(chatTranscriptProvider);
+    final msgs = container.read(chatTranscriptProvider(ChatPath.shardRun));
     expect(msgs, hasLength(2));
     expect(msgs[0].role, 'user');
     expect(msgs[0].text, 'hi');
     expect(msgs[1].role, 'assistant');
     expect(msgs[1].text, 'hello there');
     expect(msgs[1].streaming, false);
-    expect(container.read(chatStreamingProvider), false);
+    expect(container.read(chatStreamingProvider(ChatPath.shardRun)), false);
   });
 
   test('streaming is true while tokens are arriving', () async {
@@ -65,21 +65,21 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    final send = container.read(chatTranscriptProvider.notifier).send('hi');
+    final send = container.read(chatTranscriptProvider(ChatPath.shardRun).notifier).send('hi');
     // Yield once so the StreamSubscription is wired up.
     await Future<void>.delayed(Duration.zero);
-    expect(container.read(chatStreamingProvider), true);
+    expect(container.read(chatStreamingProvider(ChatPath.shardRun)), true);
 
     controller.add('a ');
     await Future<void>.delayed(Duration.zero);
-    expect(container.read(chatTranscriptProvider).last.text, 'a ');
+    expect(container.read(chatTranscriptProvider(ChatPath.shardRun)).last.text, 'a ');
 
     controller.add('b');
     await controller.close();
     await send;
 
-    expect(container.read(chatTranscriptProvider).last.text, 'a b');
-    expect(container.read(chatStreamingProvider), false);
+    expect(container.read(chatTranscriptProvider(ChatPath.shardRun)).last.text, 'a b');
+    expect(container.read(chatStreamingProvider(ChatPath.shardRun)), false);
   });
 
   test('empty prompt is a no-op', () async {
@@ -90,8 +90,8 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    await container.read(chatTranscriptProvider.notifier).send('   ');
-    expect(container.read(chatTranscriptProvider), isEmpty);
+    await container.read(chatTranscriptProvider(ChatPath.shardRun).notifier).send('   ');
+    expect(container.read(chatTranscriptProvider(ChatPath.shardRun)), isEmpty);
   });
 
   test('stream error surfaces on assistant message and clears streaming',
@@ -103,8 +103,8 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    await container.read(chatTranscriptProvider.notifier).send('hi');
-    final last = container.read(chatTranscriptProvider).last;
+    await container.read(chatTranscriptProvider(ChatPath.shardRun).notifier).send('hi');
+    final last = container.read(chatTranscriptProvider(ChatPath.shardRun)).last;
     expect(last.role, 'assistant');
     // Tokens that arrived before the error are preserved verbatim;
     // the error lands on the message's `error` field for the UI to

@@ -21,15 +21,27 @@ String _elide(String s, {int maxLen = 240, int headTail = 110}) {
   return '$head … [${flat.length} chars] … $tail';
 }
 
-/// Append-only transcript of messages in the current chat session.
-/// Tokens streamed from the daemon mutate the last (assistant) message
-/// in place — `bump()` triggers UI rebuilds without rebuilding the
-/// whole list.
-class ChatTranscriptNotifier extends Notifier<List<ChatMessage>> {
+/// Which gRPC method drives a given transcript. Each path keeps its
+/// own message history + in-flight subscription, so the main chat
+/// (shard_run) and the Developer tab (generate) don't share state.
+enum ChatPath {
+  /// `kwaainet shard run` — distributed inference across the mesh.
+  shardRun,
+
+  /// `kwaainet generate` — single-node local inference.
+  generateLocal,
+}
+
+/// Append-only transcript of messages for one [ChatPath]. Tokens
+/// streamed from the daemon mutate the last (assistant) message in
+/// place — `_bump()` triggers UI rebuilds without copying the list
+/// per token.
+class ChatTranscriptNotifier extends FamilyNotifier<List<ChatMessage>, ChatPath> {
   StreamSubscription<String>? _sub;
+  ChatPath get _path => arg;
 
   @override
-  List<ChatMessage> build() {
+  List<ChatMessage> build(ChatPath arg) {
     ref.onDispose(() => _sub?.cancel());
     return [];
   }
@@ -39,19 +51,23 @@ class ChatTranscriptNotifier extends Notifier<List<ChatMessage>> {
   Future<void> send(String prompt) async {
     if (prompt.trim().isEmpty) return;
     if (_sub != null) return; // ignore overlapping sends
-    _log('> $prompt');
+    _log('[${_path.name}] > $prompt');
     final user = ChatMessage(role: 'user', text: prompt);
     final assistant = ChatMessage(role: 'assistant', text: '', streaming: true);
     state = [...state, user, assistant];
     final client = ref.read(kwaaiRpcClientProvider);
+    final stream = switch (_path) {
+      ChatPath.shardRun => client.chatStream(prompt),
+      ChatPath.generateLocal => client.generateLocal(prompt),
+    };
     final completer = Completer<void>();
-    _sub = client.chatStream(prompt).listen(
+    _sub = stream.listen(
       (token) {
         assistant.text += token;
         _bump();
       },
       onError: (e, _) {
-        _log('< [error] $e');
+        _log('[${_path.name}] < [error] $e');
         assistant.error = e.toString();
         assistant.streaming = false;
         _bump();
@@ -59,7 +75,7 @@ class ChatTranscriptNotifier extends Notifier<List<ChatMessage>> {
         if (!completer.isCompleted) completer.complete();
       },
       onDone: () {
-        _log('< ${assistant.text}');
+        _log('[${_path.name}] < ${assistant.text}');
         assistant.streaming = false;
         _bump();
         _sub = null;
@@ -85,13 +101,13 @@ class ChatTranscriptNotifier extends Notifier<List<ChatMessage>> {
   void _bump() => state = List.of(state);
 }
 
-final chatTranscriptProvider =
-    NotifierProvider<ChatTranscriptNotifier, List<ChatMessage>>(
-      ChatTranscriptNotifier.new,
-    );
+final chatTranscriptProvider = NotifierProvider.family<
+    ChatTranscriptNotifier, List<ChatMessage>, ChatPath>(
+  ChatTranscriptNotifier.new,
+);
 
-/// True when there's an in-flight assistant stream.
-final chatStreamingProvider = Provider<bool>((ref) {
-  final msgs = ref.watch(chatTranscriptProvider);
+/// True when there's an in-flight assistant stream on the given path.
+final chatStreamingProvider = Provider.family<bool, ChatPath>((ref, path) {
+  final msgs = ref.watch(chatTranscriptProvider(path));
   return msgs.isNotEmpty && msgs.last.streaming;
 });

@@ -5,8 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:grpc/grpc.dart';
 
 import '../daemon/paths.dart';
-import 'generated/kwaai.pb.dart' as pb;
 import 'generated/kwaai.pbgrpc.dart' as pbgrpc;
+import 'session_client.dart';
 
 void _log(String msg) {
   stderr.writeln('[rpc] $msg');
@@ -49,6 +49,7 @@ class KwaaiRpcClient {
 
   ClientChannel? _channel;
   pbgrpc.KwaaiNetClient? _stub;
+  SessionClient? _session;
 
   /// Human-readable transport descriptor for the currently-open channel,
   /// remembered so close/error logs can name what we just lost.
@@ -106,12 +107,12 @@ class KwaaiRpcClient {
   Future<void> _probe() async {
     if (!_probingEnabled) return;
     // If we already have a stub and the underlying connection is
-    // happy, skip — the state-changed subscription will tell us
-    // about disconnects.
+    // happy, skip — connection state changes only happen on
+    // teardown or via the probe itself.
     if (_stub != null && _lastState == RpcConnection.connected) return;
     try {
-      final stub = _client(); // (re)opens channel if needed
-      await stub.ping(pb.PingRequest()).timeout(const Duration(seconds: 2));
+      final session = _sessionOrInit();
+      await session.ping().timeout(const Duration(seconds: 2));
       _publish(RpcConnection.connected);
     } catch (_) {
       _publish(RpcConnection.disconnected);
@@ -144,11 +145,22 @@ class KwaaiRpcClient {
     // on routine HTTP/2 housekeeping (idle timeouts, keep-alives) and
     // overriding our probe's "connected" verdict with those flickers
     // produces a connecting/disconnected loop in the UI even when
-    // Pings are succeeding. The periodic Ping probe is the only
+    // pings are succeeding. The periodic ping probe is the only
     // source of truth.
     final stub = pbgrpc.KwaaiNetClient(channel);
     _stub = stub;
     return stub;
+  }
+
+  /// Lazily build (or reuse) the [SessionClient] backed by the current
+  /// stub. The session owns one bidi rpc; every operation (ping, chat,
+  /// status, …) multiplexes through it.
+  SessionClient _sessionOrInit() {
+    final existing = _session;
+    if (existing != null) return existing;
+    final s = SessionClient(_client());
+    _session = s;
+    return s;
   }
 
   ClientChannel _openChannel() {
@@ -182,28 +194,32 @@ class KwaaiRpcClient {
   // Chat
   // ---------------------------------------------------------------------
 
-  /// Open a bidi Chat with [prompt] as the only client message. Yields
-  /// every non-empty token text from the daemon as it arrives. Completes
-  /// when the daemon sends `done=true` (or the stream errors).
+  /// Default chat path. Maps to `kwaainet shard run <prompt>` — runs
+  /// inference distributed across the discovered block-server mesh.
+  /// Yields each token's text as it arrives; completes when the daemon
+  /// emits Done. Stream errors on operation-level failures (e.g.
+  /// SessionOpError) or on session/channel teardown.
   Stream<String> chatStream(String prompt) async* {
-    final stub = _client();
-    final request = pb.ChatMessage()
-      ..content = prompt
-      ..role = 'user';
-    // The server currently treats the FIRST inbound message as the
-    // prompt and ignores the rest (see kwaai-cli/src/grpc_server.rs).
-    // Wrapping a single message in a one-shot stream matches that
-    // contract while staying compatible with the bidi rpc shape — we
-    // can add multi-turn later without changing the proto.
-    final outbound = Stream<pb.ChatMessage>.value(request);
+    final session = _sessionOrInit();
     try {
-      await for (final token in stub.chat(outbound)) {
-        if (token.text.isNotEmpty) yield token.text;
-        if (token.done) break;
-      }
+      yield* session.shardRun(prompt);
     } catch (e) {
-      // Treat a channel error as a signal the daemon went away; drop
-      // the cached stub so the next call reconnects from scratch.
+      // A session-level failure (channel drop, server hang-up) means
+      // the cached session + channel are useless; flush them so the
+      // next call reopens.
+      await _resetChannel();
+      rethrow;
+    }
+  }
+
+  /// Single-node local inference. Maps to `kwaainet generate <prompt>`
+  /// — used by the Developer tab for direct fallback / dev runs
+  /// against the local InferenceEngine.
+  Stream<String> generateLocal(String prompt) async* {
+    final session = _sessionOrInit();
+    try {
+      yield* session.generate(prompt);
+    } catch (e) {
       await _resetChannel();
       rethrow;
     }
@@ -212,9 +228,14 @@ class KwaaiRpcClient {
   Future<void> _resetChannel({bool silent = false}) async {
     final ch = _channel;
     final path = _connectionPath;
+    final s = _session;
     _channel = null;
     _stub = null;
+    _session = null;
     _connectionPath = null;
+    if (s != null) {
+      await s.close();
+    }
     if (ch != null) {
       if (!silent) _log('connection closed (${path ?? "unknown"})');
       try {

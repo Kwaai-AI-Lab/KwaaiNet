@@ -20,9 +20,6 @@ import 'kwaai.pb.dart' as $0;
 
 export 'kwaai.pb.dart';
 
-/// KwaaiNet exposes the high-level node operations a client might want to
-/// drive. For now it's just chat; expect node status / DHT queries / model
-/// management to land here later, each as their own rpc method.
 @$pb.GrpcServiceName('kwaai.v1.KwaaiNet')
 class KwaaiNetClient extends $grpc.Client {
   /// The hostname for this service.
@@ -35,17 +32,33 @@ class KwaaiNetClient extends $grpc.Client {
 
   KwaaiNetClient(super.channel, {super.options, super.interceptors});
 
-  /// Bidirectional streaming chat.
+  /// Multiplexed bidi session. The client opens Session once per
+  /// connection and sends a stream of ClientFrames; the server emits a
+  /// stream of ServerFrames in response. Each frame carries a client-
+  /// assigned `id` correlating requests with their responses, so many
+  /// long-running operations (generate, shard_run, status) can
+  /// interleave on a single channel without needing one rpc per
+  /// operation type.
   ///
-  /// The client opens a Chat stream and sends one or more ChatMessages.
-  /// Today the server treats the FIRST ChatMessage as the prompt and
-  /// ignores subsequent messages (single-turn). Multi-turn is a TODO —
-  /// we picked bidi from the start so we don't have to break the proto
-  /// when we add it (the client just keeps sending; the server learns to
-  /// accumulate).
+  /// The first frame on a new id opens a logical operation. Subsequent
+  /// frames with that id either continue input to it (future multi-turn)
+  /// or cancel it (a `Cancel` body). The server emits zero or more reply
+  /// frames for the id, terminating with a `Done` or `Error` body —
+  /// both signal the operation is finished and the id may be reused.
   ///
-  /// The server responds with a stream of ChatTokens, one per generated
-  /// text piece, ending with a single ChatToken that has done=true.
+  /// This is the canonical surface; the legacy Chat / Ping rpcs below
+  /// remain for a deprecation cycle.
+  $grpc.ResponseStream<$0.ServerFrame> session(
+    $async.Stream<$0.ClientFrame> request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createStreamingCall(_$session, request, options: options);
+  }
+
+  /// -----------------------------------------------------------------
+  /// Legacy rpcs (pre-Session). Kept until all callers migrate. Don't
+  /// add new functionality here — use Session.
+  /// -----------------------------------------------------------------
   $grpc.ResponseStream<$0.ChatToken> chat(
     $async.Stream<$0.ChatMessage> request, {
     $grpc.CallOptions? options,
@@ -53,9 +66,6 @@ class KwaaiNetClient extends $grpc.Client {
     return $createStreamingCall(_$chat, request, options: options);
   }
 
-  /// Cheap liveness check. The GUI calls this periodically to verify
-  /// the gRPC channel is reachable without triggering the inference
-  /// path. Handler returns immediately and has no side effects.
   $grpc.ResponseFuture<$0.PingReply> ping(
     $0.PingRequest request, {
     $grpc.CallOptions? options,
@@ -65,6 +75,10 @@ class KwaaiNetClient extends $grpc.Client {
 
   // method descriptors
 
+  static final _$session = $grpc.ClientMethod<$0.ClientFrame, $0.ServerFrame>(
+      '/kwaai.v1.KwaaiNet/Session',
+      ($0.ClientFrame value) => value.writeToBuffer(),
+      $0.ServerFrame.fromBuffer);
   static final _$chat = $grpc.ClientMethod<$0.ChatMessage, $0.ChatToken>(
       '/kwaai.v1.KwaaiNet/Chat',
       ($0.ChatMessage value) => value.writeToBuffer(),
@@ -80,6 +94,13 @@ abstract class KwaaiNetServiceBase extends $grpc.Service {
   $core.String get $name => 'kwaai.v1.KwaaiNet';
 
   KwaaiNetServiceBase() {
+    $addMethod($grpc.ServiceMethod<$0.ClientFrame, $0.ServerFrame>(
+        'Session',
+        session,
+        true,
+        true,
+        ($core.List<$core.int> value) => $0.ClientFrame.fromBuffer(value),
+        ($0.ServerFrame value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.ChatMessage, $0.ChatToken>(
         'Chat',
         chat,
@@ -95,6 +116,9 @@ abstract class KwaaiNetServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) => $0.PingRequest.fromBuffer(value),
         ($0.PingReply value) => value.writeToBuffer()));
   }
+
+  $async.Stream<$0.ServerFrame> session(
+      $grpc.ServiceCall call, $async.Stream<$0.ClientFrame> request);
 
   $async.Stream<$0.ChatToken> chat(
       $grpc.ServiceCall call, $async.Stream<$0.ChatMessage> request);
