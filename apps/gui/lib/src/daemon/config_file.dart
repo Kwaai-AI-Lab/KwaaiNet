@@ -17,6 +17,12 @@ class ConfigSnapshot {
     required this.shardingEnabled,
     required this.storageEnabled,
     required this.storageCapacityGb,
+    required this.port,
+    required this.publicIp,
+    required this.initialPeers,
+    required this.forcePrivate,
+    required this.healthEnabled,
+    required this.healthEndpoint,
   });
 
   /// Top-level `model` — the HuggingFace model id this node serves.
@@ -34,17 +40,51 @@ class ConfigSnapshot {
   /// Null when the storage section hasn't been initialised yet.
   final double? storageCapacityGb;
 
+  /// `port` — TCP port the libp2p listener binds. Null = key absent /
+  /// daemon picks one.
+  final int? port;
+
+  /// `public_ip` — externally-reachable IP this node announces. Empty
+  /// string means auto-detect (NAT-PMP / observed address).
+  final String publicIp;
+
+  /// `initial_peers` — list of multiaddrs used to bootstrap the DHT.
+  final List<String> initialPeers;
+
+  /// `force_private` — when true, the daemon assumes its reachability
+  /// is "Private" and skips AutoNAT probing. Forces relayed connections
+  /// (no hole-punching attempts on incoming dials).
+  final bool forcePrivate;
+
+  /// `health_monitoring.enabled`.
+  final bool healthEnabled;
+
+  /// `health_monitoring.api_endpoint`.
+  final String healthEndpoint;
+
   ConfigSnapshot copyWith({
     String? model,
     bool? shardingEnabled,
     bool? storageEnabled,
     double? storageCapacityGb,
+    int? port,
+    String? publicIp,
+    List<String>? initialPeers,
+    bool? forcePrivate,
+    bool? healthEnabled,
+    String? healthEndpoint,
   }) {
     return ConfigSnapshot(
       model: model ?? this.model,
       shardingEnabled: shardingEnabled ?? this.shardingEnabled,
       storageEnabled: storageEnabled ?? this.storageEnabled,
       storageCapacityGb: storageCapacityGb ?? this.storageCapacityGb,
+      port: port ?? this.port,
+      publicIp: publicIp ?? this.publicIp,
+      initialPeers: initialPeers ?? this.initialPeers,
+      forcePrivate: forcePrivate ?? this.forcePrivate,
+      healthEnabled: healthEnabled ?? this.healthEnabled,
+      healthEndpoint: healthEndpoint ?? this.healthEndpoint,
     );
   }
 }
@@ -55,30 +95,33 @@ class ConfigFile {
   /// Path to ~/.kwaainet/config.yaml.
   static String get path => KwaainetPaths.configFile;
 
+  static const ConfigSnapshot _defaults = ConfigSnapshot(
+    model: '',
+    shardingEnabled: true,
+    storageEnabled: true,
+    storageCapacityGb: null,
+    port: null,
+    publicIp: '',
+    initialPeers: [],
+    forcePrivate: false,
+    healthEnabled: true,
+    healthEndpoint: '',
+  );
+
   /// Load the current config, falling back to sensible defaults if the file
   /// is missing or fields are unset.
   static Future<ConfigSnapshot> load() async {
     final f = File(path);
     if (!f.existsSync()) {
       _log('config.yaml missing — returning defaults');
-      return const ConfigSnapshot(
-        model: '',
-        shardingEnabled: true,
-        storageEnabled: true,
-        storageCapacityGb: null,
-      );
+      return _defaults;
     }
     try {
       final raw = f.readAsStringSync();
       final doc = loadYaml(raw);
       if (doc is! YamlMap) {
         _log('config.yaml is not a map — returning defaults');
-        return const ConfigSnapshot(
-          model: '',
-          shardingEnabled: true,
-          storageEnabled: true,
-          storageCapacityGb: null,
-        );
+        return _defaults;
       }
       final model = (doc['model'] as String?) ?? '';
       final contribute = doc['contribute'];
@@ -92,20 +135,35 @@ class ConfigFile {
       final storageCapacityGb = storage is YamlMap
           ? (storage['capacity_gb'] as num?)?.toDouble()
           : null;
+      final port = (doc['port'] as num?)?.toInt();
+      final publicIp = (doc['public_ip'] as String?) ?? '';
+      final rawPeers = doc['initial_peers'];
+      final initialPeers = rawPeers is YamlList
+          ? rawPeers.map((e) => e.toString()).toList()
+          : <String>[];
+      final forcePrivate = (doc['force_private'] as bool?) ?? false;
+      final health = doc['health_monitoring'];
+      final healthEnabled = health is YamlMap
+          ? (health['enabled'] as bool? ?? true)
+          : true;
+      final healthEndpoint = health is YamlMap
+          ? (health['api_endpoint'] as String? ?? '')
+          : '';
       return ConfigSnapshot(
         model: model,
         shardingEnabled: shardingEnabled,
         storageEnabled: storageEnabled,
         storageCapacityGb: storageCapacityGb,
+        port: port,
+        publicIp: publicIp,
+        initialPeers: initialPeers,
+        forcePrivate: forcePrivate,
+        healthEnabled: healthEnabled,
+        healthEndpoint: healthEndpoint,
       );
     } catch (e) {
       _log('failed to parse config.yaml: $e — returning defaults');
-      return const ConfigSnapshot(
-        model: '',
-        shardingEnabled: true,
-        storageEnabled: true,
-        storageCapacityGb: null,
-      );
+      return _defaults;
     }
   }
 
@@ -127,6 +185,20 @@ class ConfigFile {
     if (updated.storageCapacityGb != null) {
       _setScalar(editor, ['storage', 'capacity_gb'], updated.storageCapacityGb);
     }
+    _setScalar(editor, ['port'], updated.port);
+    _setScalar(editor, ['public_ip'], updated.publicIp);
+    _setScalar(editor, ['initial_peers'], updated.initialPeers);
+    _setScalar(editor, ['force_private'], updated.forcePrivate);
+    _setScalar(
+      editor,
+      ['health_monitoring', 'enabled'],
+      updated.healthEnabled,
+    );
+    _setScalar(
+      editor,
+      ['health_monitoring', 'api_endpoint'],
+      updated.healthEndpoint,
+    );
 
     f.writeAsStringSync(editor.toString());
     _log('wrote ${f.path}');

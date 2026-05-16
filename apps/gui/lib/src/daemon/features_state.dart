@@ -16,9 +16,35 @@ class FeaturesDraftNotifier extends Notifier<ConfigSnapshot?> {
   @override
   ConfigSnapshot? build() => null;
 
-  /// Seed the draft from the on-disk values if it hasn't been started.
+  /// Seed the draft from the on-disk values if it hasn't been started,
+  /// or if the prior draft was constructed against a different schema
+  /// (e.g. across a hot-reload that added new ConfigSnapshot fields —
+  /// without this, reads of the new fields throw a non-null assertion).
   void seed(ConfigSnapshot loaded) {
-    state ??= loaded;
+    final s = state;
+    if (s == null || !_hasAllFields(s)) {
+      state = loaded;
+    }
+  }
+
+  /// Defensive: touch every field to surface any null-from-stale-shape
+  /// errors here, so we can re-seed instead of crashing during build.
+  bool _hasAllFields(ConfigSnapshot s) {
+    try {
+      s.model;
+      s.shardingEnabled;
+      s.storageEnabled;
+      s.storageCapacityGb;
+      s.port;
+      s.publicIp;
+      s.initialPeers;
+      s.forcePrivate;
+      s.healthEnabled;
+      s.healthEndpoint;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   void setModel(String v) {
@@ -42,12 +68,67 @@ class FeaturesDraftNotifier extends Notifier<ConfigSnapshot?> {
   void setStorageCapacityGb(double? v) {
     final s = state;
     if (s == null) return;
+    // copyWith treats null as "leave unchanged", so we have to rebuild
+    // the snapshot to clear a previously-set capacity.
     state = ConfigSnapshot(
       model: s.model,
       shardingEnabled: s.shardingEnabled,
       storageEnabled: s.storageEnabled,
       storageCapacityGb: v,
+      port: s.port,
+      publicIp: s.publicIp,
+      initialPeers: s.initialPeers,
+      forcePrivate: s.forcePrivate,
+      healthEnabled: s.healthEnabled,
+      healthEndpoint: s.healthEndpoint,
     );
+  }
+
+  void setPort(int? v) {
+    final s = state;
+    if (s == null) return;
+    state = ConfigSnapshot(
+      model: s.model,
+      shardingEnabled: s.shardingEnabled,
+      storageEnabled: s.storageEnabled,
+      storageCapacityGb: s.storageCapacityGb,
+      port: v,
+      publicIp: s.publicIp,
+      initialPeers: s.initialPeers,
+      forcePrivate: s.forcePrivate,
+      healthEnabled: s.healthEnabled,
+      healthEndpoint: s.healthEndpoint,
+    );
+  }
+
+  void setPublicIp(String v) {
+    final s = state;
+    if (s == null) return;
+    state = s.copyWith(publicIp: v);
+  }
+
+  void setInitialPeers(List<String> v) {
+    final s = state;
+    if (s == null) return;
+    state = s.copyWith(initialPeers: v);
+  }
+
+  void setForcePrivate(bool v) {
+    final s = state;
+    if (s == null) return;
+    state = s.copyWith(forcePrivate: v);
+  }
+
+  void setHealthEnabled(bool v) {
+    final s = state;
+    if (s == null) return;
+    state = s.copyWith(healthEnabled: v);
+  }
+
+  void setHealthEndpoint(String v) {
+    final s = state;
+    if (s == null) return;
+    state = s.copyWith(healthEndpoint: v);
   }
 
   /// True when the draft differs from the on-disk snapshot.
@@ -57,7 +138,21 @@ class FeaturesDraftNotifier extends Notifier<ConfigSnapshot?> {
     return s.model != onDisk.model ||
         s.shardingEnabled != onDisk.shardingEnabled ||
         s.storageEnabled != onDisk.storageEnabled ||
-        s.storageCapacityGb != onDisk.storageCapacityGb;
+        s.storageCapacityGb != onDisk.storageCapacityGb ||
+        s.port != onDisk.port ||
+        s.publicIp != onDisk.publicIp ||
+        !_listsEqual(s.initialPeers, onDisk.initialPeers) ||
+        s.forcePrivate != onDisk.forcePrivate ||
+        s.healthEnabled != onDisk.healthEnabled ||
+        s.healthEndpoint != onDisk.healthEndpoint;
+  }
+
+  static bool _listsEqual(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// Persist the draft to config.yaml. Returns the snapshot that was

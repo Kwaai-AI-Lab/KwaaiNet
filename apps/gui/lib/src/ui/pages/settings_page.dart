@@ -167,7 +167,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   index: _selectedTab,
                   children: [
                     _buildStatusTab(),
-                    const _FeaturesTab(),
+                    const _ContributeTab(),
+                    const _NetworkTab(),
                     const _AppearanceTab(),
                   ],
                 ),
@@ -276,7 +277,12 @@ const _settingsNavEntries = <_SettingsNavEntry>[
     Icons.monitor_heart,
     'Status',
   ),
-  _SettingsNavEntry(Icons.tune_outlined, Icons.tune, 'Features'),
+  _SettingsNavEntry(
+    Icons.volunteer_activism_outlined,
+    Icons.volunteer_activism,
+    'Contribute',
+  ),
+  _SettingsNavEntry(Icons.lan_outlined, Icons.lan, 'Network'),
   _SettingsNavEntry(Icons.palette_outlined, Icons.palette, 'Appearance'),
 ];
 
@@ -891,8 +897,8 @@ const List<String> _knownModels = [
 /// arbitrary HuggingFace model id.
 const String _otherModelSentinel = '__other__';
 
-class _FeaturesTab extends ConsumerWidget {
-  const _FeaturesTab();
+class _ContributeTab extends ConsumerWidget {
+  const _ContributeTab();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -941,10 +947,340 @@ class _FeaturesTab extends ConsumerWidget {
     );
   }
 
-  Future<void> _apply(WidgetRef ref) async {
-    await ref.read(featuresDraftProvider.notifier).apply();
-    ref.read(restartNeededProvider.notifier).mark();
-    ref.invalidate(featuresProvider);
+  Future<void> _apply(WidgetRef ref) => _applyDraft(ref);
+}
+
+/// Persist the draft to config.yaml + flag restart-needed + refresh the
+/// on-disk snapshot provider. Shared by the Contribute and Network tabs.
+Future<void> _applyDraft(WidgetRef ref) async {
+  await ref.read(featuresDraftProvider.notifier).apply();
+  ref.read(restartNeededProvider.notifier).mark();
+  ref.invalidate(featuresProvider);
+}
+
+class _NetworkTab extends ConsumerWidget {
+  const _NetworkTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final loaded = ref.watch(featuresProvider);
+    return loaded.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text('Failed to load config: $e'),
+      ),
+      data: (snapshot) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ref.read(featuresDraftProvider.notifier).seed(snapshot);
+        });
+        final draft = ref.watch(featuresDraftProvider) ?? snapshot;
+        final dirty = draft.port != snapshot.port ||
+            draft.publicIp != snapshot.publicIp ||
+            !_peersEqual(draft.initialPeers, snapshot.initialPeers) ||
+            draft.forcePrivate != snapshot.forcePrivate ||
+            draft.healthEnabled != snapshot.healthEnabled ||
+            draft.healthEndpoint != snapshot.healthEndpoint;
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _FeatureCard(child: _NetworkBindSection(draft: draft)),
+              const SizedBox(height: 12),
+              _FeatureCard(child: _InitialPeersSection(draft: draft)),
+              const SizedBox(height: 12),
+              _FeatureCard(child: _AlwaysPrivateSection(draft: draft)),
+              const SizedBox(height: 12),
+              _FeatureCard(child: _HealthMonitoringSection(draft: draft)),
+              const SizedBox(height: 16),
+              Align(
+                alignment: Alignment.centerRight,
+                child: KwaaiButton(
+                  label: 'Apply',
+                  onPressed: dirty ? () => _applyDraft(ref) : null,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  static bool _peersEqual(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+}
+
+class _AlwaysPrivateSection extends ConsumerWidget {
+  const _AlwaysPrivateSection({required this.draft});
+  final ConfigSnapshot draft;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final notifier = ref.read(featuresDraftProvider.notifier);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const KwaaiHeading('Always private'),
+        const SizedBox(height: 4),
+        _SwitchRow(
+          label: 'Force private reachability (disable AutoNAT)',
+          value: draft.forcePrivate,
+          onChanged: notifier.setForcePrivate,
+        ),
+      ],
+    );
+  }
+}
+
+class _NetworkBindSection extends ConsumerStatefulWidget {
+  const _NetworkBindSection({required this.draft});
+  final ConfigSnapshot draft;
+
+  @override
+  ConsumerState<_NetworkBindSection> createState() =>
+      _NetworkBindSectionState();
+}
+
+class _NetworkBindSectionState extends ConsumerState<_NetworkBindSection> {
+  late final TextEditingController _portController = TextEditingController(
+    text: widget.draft.port?.toString() ?? '',
+  );
+  late final TextEditingController _ipController = TextEditingController(
+    text: widget.draft.publicIp,
+  );
+
+  @override
+  void dispose() {
+    _portController.dispose();
+    _ipController.dispose();
+    super.dispose();
+  }
+
+  void _commitPort(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) {
+      ref.read(featuresDraftProvider.notifier).setPort(null);
+      return;
+    }
+    final parsed = int.tryParse(trimmed);
+    ref.read(featuresDraftProvider.notifier).setPort(parsed);
+  }
+
+  void _commitIp(String raw) {
+    ref.read(featuresDraftProvider.notifier).setPublicIp(raw.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final labelStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const KwaaiHeading('Network'),
+        const SizedBox(height: 4),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Public IP on the left, Port on the right — IP first matches
+            // how users typically read network identity (address, then
+            // service port).
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Public IP', style: labelStyle),
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: 220,
+                  child: KwaaiTextField(
+                    controller: _ipController,
+                    hintText: '(auto)',
+                    onSubmitted: _commitIp,
+                    onEditingComplete: () => _commitIp(_ipController.text),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Port', style: labelStyle),
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: 110,
+                  child: KwaaiTextField(
+                    controller: _portController,
+                    hintText: '(none)',
+                    onSubmitted: _commitPort,
+                    onEditingComplete: () => _commitPort(_portController.text),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _InitialPeersSection extends ConsumerStatefulWidget {
+  const _InitialPeersSection({required this.draft});
+  final ConfigSnapshot draft;
+
+  @override
+  ConsumerState<_InitialPeersSection> createState() =>
+      _InitialPeersSectionState();
+}
+
+class _InitialPeersSectionState extends ConsumerState<_InitialPeersSection> {
+  late final List<TextEditingController> _controllers = [
+    for (final p in widget.draft.initialPeers) TextEditingController(text: p),
+  ];
+
+  @override
+  void dispose() {
+    for (final c in _controllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  void _commit() {
+    final list = _controllers
+        .map((c) => c.text.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    ref.read(featuresDraftProvider.notifier).setInitialPeers(list);
+  }
+
+  void _addRow() {
+    setState(() => _controllers.add(TextEditingController()));
+  }
+
+  void _removeRow(int i) {
+    setState(() {
+      _controllers.removeAt(i).dispose();
+    });
+    _commit();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const KwaaiHeading('Initial peers'),
+        const SizedBox(height: 4),
+        Text(
+          'Multiaddrs used to bootstrap the DHT.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
+        for (var i = 0; i < _controllers.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: KwaaiTextField(
+              controller: _controllers[i],
+              hintText: '/dns/host/tcp/8000/p2p/Qm…',
+              onSubmitted: (_) => _commit(),
+              onEditingComplete: _commit,
+              trailing: IconButton(
+                tooltip: 'Remove',
+                icon: const Icon(Icons.remove_circle_outline, size: 18),
+                onPressed: () => _removeRow(i),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+          ),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: KwaaiButton(
+            label: 'Add peer',
+            icon: Icons.add,
+            variant: KwaaiButtonVariant.secondary,
+            onPressed: _addRow,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HealthMonitoringSection extends ConsumerStatefulWidget {
+  const _HealthMonitoringSection({required this.draft});
+  final ConfigSnapshot draft;
+
+  @override
+  ConsumerState<_HealthMonitoringSection> createState() =>
+      _HealthMonitoringSectionState();
+}
+
+class _HealthMonitoringSectionState
+    extends ConsumerState<_HealthMonitoringSection> {
+  late final TextEditingController _endpointController =
+      TextEditingController(text: widget.draft.healthEndpoint);
+
+  @override
+  void dispose() {
+    _endpointController.dispose();
+    super.dispose();
+  }
+
+  void _commitEndpoint(String raw) {
+    ref.read(featuresDraftProvider.notifier).setHealthEndpoint(raw.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final notifier = ref.read(featuresDraftProvider.notifier);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const KwaaiHeading('Health monitoring'),
+        const SizedBox(height: 4),
+        _SwitchRow(
+          label: 'Report status to the network map',
+          value: widget.draft.healthEnabled,
+          onChanged: notifier.setHealthEnabled,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Endpoint',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: 360,
+            child: KwaaiTextField(
+              controller: _endpointController,
+              enabled: widget.draft.healthEnabled,
+              hintText: 'https://map.example.com/api/v1/state',
+              onSubmitted: _commitEndpoint,
+              onEditingComplete: () =>
+                  _commitEndpoint(_endpointController.text),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
