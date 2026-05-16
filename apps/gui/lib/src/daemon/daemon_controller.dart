@@ -106,7 +106,20 @@ class DaemonController {
 
     try {
       _log('spawning: ${res.path} start --daemon');
-      final p = await Process.start(res.path, ['start', '--daemon']);
+      // Suppress the daemon's in-process auto-updater. The GUI will own
+      // notifying the user about new versions (forthcoming) — without
+      // this the daemon silently swaps its own binary for the latest
+      // upstream release ~5 minutes into a session and exits to
+      // restart, which loses any locally-built feature work (e.g. a
+      // newly-added rpc crate not yet in any release). See the
+      // KWAAINET_NO_AUTO_UPDATE guard in kwaainet's node.rs.
+      final env = Map<String, String>.from(Platform.environment)
+        ..['KWAAINET_NO_AUTO_UPDATE'] = '1';
+      final p = await Process.start(
+        res.path,
+        ['start', '--daemon'],
+        environment: env,
+      );
       _log('spawned pid ${p.pid} (piped — stdout/stderr will appear below)');
 
       p.stdout
