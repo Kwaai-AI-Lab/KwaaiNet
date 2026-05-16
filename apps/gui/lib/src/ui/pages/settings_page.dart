@@ -25,6 +25,13 @@ import '../widgets/kwaai_text_field.dart';
 /// and secondary buttons (e.g. Stop daemon).
 const Color kUnselectedFill = Color(0xFFEFEFEF);
 
+/// Index of the currently-selected settings tab. The pinned bottom bar
+/// uses this together with the loaded snapshot and draft to decide
+/// whether Apply should be enabled — keeping the dirty computation in
+/// one place avoids per-tab post-frame publishes racing across the
+/// IndexedStack (which builds every tab even when offscreen).
+final _activeTabProvider = StateProvider<int>((_) => 0);
+
 /// Fill color for *selected* controls when the app window is not focused —
 /// the accent tint desaturates to gray, matching native macOS behaviour.
 const Color kSelectedUnfocusedFill = Color(0xFFD4D4D4);
@@ -53,6 +60,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _start() => ref.read(daemonTransitionProvider.notifier).start();
 
   Future<void> _stop() => ref.read(daemonTransitionProvider.notifier).stop();
+
+  void _onSelectTab(int i) {
+    setState(() => _selectedTab = i);
+    ref.read(_activeTabProvider.notifier).state = i;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Seed the active-tab provider so _RestartNeededBar can compute
+    // dirty against the right tab on first paint.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(_activeTabProvider.notifier).state = _selectedTab;
+    });
+  }
 
   Widget _buildStatusTab() {
     return SingleChildScrollView(
@@ -213,7 +235,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     axis: Axis.horizontal,
                     extended: true,
                     selectedIndex: _selectedTab,
-                    onSelect: (i) => setState(() => _selectedTab = i),
+                    onSelect: _onSelectTab,
                   ),
                 ),
               ],
@@ -235,7 +257,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   axis: Axis.vertical,
                   extended: true,
                   selectedIndex: _selectedTab,
-                  onSelect: (i) => setState(() => _selectedTab = i),
+                  onSelect: _onSelectTab,
                 ),
               ),
               Expanded(
@@ -917,37 +939,16 @@ class _ContributeTab extends ConsumerWidget {
           ref.read(featuresDraftProvider.notifier).seed(snapshot);
         });
         final draft = ref.watch(featuresDraftProvider) ?? snapshot;
-        final dirty = draft.model != snapshot.model ||
-            draft.shardingEnabled != snapshot.shardingEnabled ||
-            draft.storageEnabled != snapshot.storageEnabled ||
-            draft.storageCapacityGb != snapshot.storageCapacityGb;
-
-        return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _FeatureCard(child: _ShardingSection(draft: draft)),
-              const SizedBox(height: 12),
-              _FeatureCard(child: _StorageSection(draft: draft)),
-              const SizedBox(height: 16),
-              // One Apply for both sections. Disabled when the draft
-              // matches what's on disk.
-              Align(
-                alignment: Alignment.centerRight,
-                child: KwaaiButton(
-                  label: 'Apply',
-                  onPressed: dirty ? () => _apply(ref) : null,
-                ),
-              ),
-            ],
-          ),
+        return _DraftTabLayout(
+          sections: [
+            _FeatureCard(child: _ShardingSection(draft: draft)),
+            const SizedBox(height: 12),
+            _FeatureCard(child: _StorageSection(draft: draft)),
+          ],
         );
       },
     );
   }
-
-  Future<void> _apply(WidgetRef ref) => _applyDraft(ref);
 }
 
 /// Persist the draft to config.yaml + flag restart-needed + refresh the
@@ -956,6 +957,27 @@ Future<void> _applyDraft(WidgetRef ref) async {
   await ref.read(featuresDraftProvider.notifier).apply();
   ref.read(restartNeededProvider.notifier).mark();
   ref.invalidate(featuresProvider);
+}
+
+/// Standard layout for a draft-backed settings tab: just a scrolling
+/// list of section cards. The Apply button is rendered by the
+/// page-level [_RestartNeededBar] so it shares the pinned bottom bar
+/// with status messages.
+class _DraftTabLayout extends StatelessWidget {
+  const _DraftTabLayout({required this.sections});
+
+  final List<Widget> sections;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: sections,
+      ),
+    );
+  }
 }
 
 class _NetworkTab extends ConsumerWidget {
@@ -975,46 +997,52 @@ class _NetworkTab extends ConsumerWidget {
           ref.read(featuresDraftProvider.notifier).seed(snapshot);
         });
         final draft = ref.watch(featuresDraftProvider) ?? snapshot;
-        final dirty = draft.port != snapshot.port ||
-            draft.publicIp != snapshot.publicIp ||
-            !_peersEqual(draft.initialPeers, snapshot.initialPeers) ||
-            draft.forcePrivate != snapshot.forcePrivate ||
-            draft.healthEnabled != snapshot.healthEnabled ||
-            draft.healthEndpoint != snapshot.healthEndpoint;
-
-        return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _FeatureCard(child: _NetworkBindSection(draft: draft)),
-              const SizedBox(height: 12),
-              _FeatureCard(child: _InitialPeersSection(draft: draft)),
-              const SizedBox(height: 12),
-              _FeatureCard(child: _AlwaysPrivateSection(draft: draft)),
-              const SizedBox(height: 12),
-              _FeatureCard(child: _HealthMonitoringSection(draft: draft)),
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerRight,
-                child: KwaaiButton(
-                  label: 'Apply',
-                  onPressed: dirty ? () => _applyDraft(ref) : null,
-                ),
-              ),
-            ],
-          ),
+        return _DraftTabLayout(
+          sections: [
+            _FeatureCard(child: _NetworkBindSection(draft: draft)),
+            const SizedBox(height: 12),
+            _FeatureCard(child: _InitialPeersSection(draft: draft)),
+            const SizedBox(height: 12),
+            _FeatureCard(child: _AlwaysPrivateSection(draft: draft)),
+            const SizedBox(height: 12),
+            _FeatureCard(child: _HealthMonitoringSection(draft: draft)),
+          ],
         );
       },
     );
   }
 
-  static bool _peersEqual(List<String> a, List<String> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
+}
+
+/// Equality check for the initial-peers list. Used by both the Network
+/// tab's dirty calc and `featuresDraftProvider.isDirty`.
+bool _peersEqual(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// Per-tab dirty check. Only the fields that the given tab actually
+/// edits count — so unsaved edits on Network don't show Apply when the
+/// user is on Contribute (and vice versa).
+bool _tabDirty(int tab, ConfigSnapshot draft, ConfigSnapshot snapshot) {
+  switch (tab) {
+    case 1: // Contribute
+      return draft.model != snapshot.model ||
+          draft.shardingEnabled != snapshot.shardingEnabled ||
+          draft.storageEnabled != snapshot.storageEnabled ||
+          draft.storageCapacityGb != snapshot.storageCapacityGb;
+    case 2: // Network
+      return draft.port != snapshot.port ||
+          draft.publicIp != snapshot.publicIp ||
+          !_peersEqual(draft.initialPeers, snapshot.initialPeers) ||
+          draft.forcePrivate != snapshot.forcePrivate ||
+          draft.healthEnabled != snapshot.healthEnabled ||
+          draft.healthEndpoint != snapshot.healthEndpoint;
+    default:
+      return false;
   }
 }
 
@@ -1104,6 +1132,7 @@ class _NetworkBindSectionState extends ConsumerState<_NetworkBindSection> {
                   child: KwaaiTextField(
                     controller: _ipController,
                     hintText: '(auto)',
+                    onChanged: _commitIp,
                     onSubmitted: _commitIp,
                     onEditingComplete: () => _commitIp(_ipController.text),
                   ),
@@ -1121,6 +1150,7 @@ class _NetworkBindSectionState extends ConsumerState<_NetworkBindSection> {
                   child: KwaaiTextField(
                     controller: _portController,
                     hintText: '(none)',
+                    onChanged: _commitPort,
                     onSubmitted: _commitPort,
                     onEditingComplete: () => _commitPort(_portController.text),
                   ),
@@ -1195,6 +1225,7 @@ class _InitialPeersSectionState extends ConsumerState<_InitialPeersSection> {
             child: KwaaiTextField(
               controller: _controllers[i],
               hintText: '/dns/host/tcp/8000/p2p/Qm…',
+              onChanged: (_) => _commit(),
               onSubmitted: (_) => _commit(),
               onEditingComplete: _commit,
               trailing: IconButton(
@@ -1273,6 +1304,7 @@ class _HealthMonitoringSectionState
               controller: _endpointController,
               enabled: widget.draft.healthEnabled,
               hintText: 'https://map.example.com/api/v1/state',
+              onChanged: _commitEndpoint,
               onSubmitted: _commitEndpoint,
               onEditingComplete: () =>
                   _commitEndpoint(_endpointController.text),
@@ -1473,6 +1505,7 @@ class _ModelPickerState extends State<_ModelPicker> {
             controller: _otherController,
             enabled: widget.enabled,
             hintText: 'e.g. some-org/some-model',
+            onChanged: widget.onChanged,
             onSubmitted: widget.onChanged,
             onEditingComplete: () => widget.onChanged(_otherController.text),
           ),
@@ -1523,6 +1556,7 @@ class _CapacityFieldState extends State<_CapacityField> {
       controller: _controller,
       enabled: widget.enabled,
       hintText: 'e.g. 10',
+      onChanged: _commit,
       onSubmitted: _commit,
       onEditingComplete: () => _commit(_controller.text),
     );
@@ -1550,41 +1584,74 @@ class _RestartNeededBar extends ConsumerWidget {
       bottomRight: const Radius.circular(kShellOuterRadius),
     );
 
+    // Compose the bottom bar by priority. Apply (the active tab has
+    // unsaved edits) is the most common case, so it sits at the bottom
+    // even when no error/restart message is present. When there *is* a
+    // status, Apply moves into the bar's trailing action slot, so the
+    // user only ever sees one pinned bar.
     final err = ref.watch(daemonErrorProvider);
+    final needsRestart = ref.watch(restartNeededProvider);
+    final running = ref.watch(daemonStatusProvider).valueOrNull?.running
+        ?? false;
+    final transition = ref.watch(daemonTransitionProvider);
+    final busy = transition != DaemonTransition.none;
+
+    // Compute dirty here against the currently-active tab + the latest
+    // snapshot + draft. Doing it in the bar (rather than having tabs
+    // publish via a provider) avoids the IndexedStack race where every
+    // tab's post-frame callback would fight to set the dirty bit.
+    final activeTab = ref.watch(_activeTabProvider);
+    final snapshot = ref.watch(featuresProvider).valueOrNull;
+    final draft = ref.watch(featuresDraftProvider);
+    final dirty =
+        snapshot != null && draft != null && _tabDirty(activeTab, draft, snapshot);
+
+    if (needsRestart && !running) {
+      // Restart prompt only makes sense when the service is running —
+      // clear it silently otherwise.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ref.read(restartNeededProvider.notifier).clear();
+      });
+    }
+
+    final applyAction = dirty
+        ? KwaaiButton(
+            label: 'Apply',
+            onPressed: () => _applyDraft(ref),
+          )
+        : null;
+
+    // Priority: error → restart-needed (if running) → bare apply.
     if (err != null) {
       return KwaaiStatusBar(
         severity: KwaaiStatusSeverity.error,
         message: err,
+        action: applyAction,
         onDismiss: () => ref.read(daemonErrorProvider.notifier).clear(),
         bottomRadius: bottomRadius,
       );
     }
-
-    final needsRestart = ref.watch(restartNeededProvider);
-    if (!needsRestart) return const SizedBox.shrink();
-    // No restart prompt when the service is stopped — the new config
-    // will be picked up the next time the user starts it. Also clear the
-    // flag so it doesn't reappear once they start the service again.
-    final running = ref.watch(daemonStatusProvider).valueOrNull?.running
-        ?? false;
-    if (!running) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        ref.read(restartNeededProvider.notifier).clear();
-      });
-      return const SizedBox.shrink();
+    if (needsRestart && running) {
+      return KwaaiStatusBar(
+        severity: KwaaiStatusSeverity.info,
+        message: 'Restart the service to apply your changes.',
+        action: applyAction ??
+            KwaaiButton(
+              label: 'Restart service',
+              onPressed: busy ? null : () => _restart(ref),
+            ),
+        bottomRadius: bottomRadius,
+      );
     }
-
-    final transition = ref.watch(daemonTransitionProvider);
-    final busy = transition != DaemonTransition.none;
-    return KwaaiStatusBar(
-      severity: KwaaiStatusSeverity.info,
-      message: 'Restart the service to apply your changes.',
-      action: KwaaiButton(
-        label: 'Restart service',
-        onPressed: busy ? null : () => _restart(ref),
-      ),
-      bottomRadius: bottomRadius,
-    );
+    if (dirty) {
+      // No status — render a neutral bar so Apply stays pinned at the
+      // bottom of the settings shell whatever tab the user is on.
+      return _BareApplyBar(
+        onApply: () => _applyDraft(ref),
+        bottomRadius: bottomRadius,
+      );
+    }
+    return const SizedBox.shrink();
   }
 
   /// Stop the daemon, then start it. The transition provider clears its
@@ -1603,6 +1670,34 @@ class _RestartNeededBar extends ConsumerWidget {
     }
     await transition.start();
     ref.read(restartNeededProvider.notifier).clear();
+  }
+}
+
+/// Pinned-bottom bar that only renders an Apply button, used when the
+/// active draft is dirty but there's no status message to share the bar
+/// with. Matches [KwaaiStatusBar]'s height/divider/corner shape so the
+/// page's bottom edge looks consistent whichever variant is showing.
+class _BareApplyBar extends StatelessWidget {
+  const _BareApplyBar({required this.onApply, required this.bottomRadius});
+
+  final VoidCallback onApply;
+  final BorderRadius bottomRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: context.kwaai.elevatedSurface,
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+        borderRadius: bottomRadius,
+      ),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: KwaaiButton(label: 'Apply', onPressed: onApply),
+      ),
+    );
   }
 }
 

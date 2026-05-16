@@ -11,6 +11,7 @@ class KwaaiTextField extends StatefulWidget {
     super.key,
     required this.controller,
     this.hintText,
+    this.onChanged,
     this.onSubmitted,
     this.onEditingComplete,
     this.trailing,
@@ -19,6 +20,12 @@ class KwaaiTextField extends StatefulWidget {
 
   final TextEditingController controller;
   final String? hintText;
+
+  /// Fires on every keystroke. Wire this when callers need the draft
+  /// model to update as the user types (e.g. so an Apply button can
+  /// enable immediately on the first character changed).
+  final ValueChanged<String>? onChanged;
+
   final ValueChanged<String>? onSubmitted;
   final VoidCallback? onEditingComplete;
 
@@ -92,6 +99,7 @@ class _KwaaiTextFieldState extends State<KwaaiTextField> {
         focusNode: _focusNode,
         enabled: widget.enabled,
         style: Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.0),
+        onChanged: widget.onChanged,
         onSubmitted: widget.onSubmitted,
         onEditingComplete: widget.onEditingComplete,
         decoration: InputDecoration(
