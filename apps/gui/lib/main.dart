@@ -67,7 +67,7 @@ Future<void> main() async {
   // daemon isn't already running. Goes through the same transition
   // provider as the buttons/tray, so the main UI immediately shows
   // "Starting…" and the overlay engages until the watcher confirms.
-  if (settings.startServiceOnStartup && !daemon.isAlive()) {
+  if (settings.startServiceOnStartup && !(await daemon.isAlive())) {
     // Fire-and-forget — start() awaits the controller call but we don't
     // want to block the app from coming up while the daemon spins up.
     unawaited(container.read(daemonTransitionProvider.notifier).start());

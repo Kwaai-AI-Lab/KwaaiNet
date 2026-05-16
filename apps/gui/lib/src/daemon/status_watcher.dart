@@ -90,9 +90,9 @@ class StatusWatcher {
     await _controller.close();
   }
 
-  void _poll() {
+  Future<void> _poll() async {
     final pid = daemon.readPid();
-    final alive = pid != null && daemon.isAlive();
+    final alive = pid != null && await daemon.isAlive();
 
     if (!alive) {
       if (_lastRunning) {

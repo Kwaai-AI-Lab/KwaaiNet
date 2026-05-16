@@ -71,24 +71,24 @@ class DaemonController {
     return int.tryParse(f.readAsStringSync().trim());
   }
 
-  bool isAlive() {
+  Future<bool> isAlive() async {
     final pid = readPid();
     if (pid == null) return false;
     return _processExists(pid);
   }
 
-  bool _processExists(int pid) {
+  Future<bool> _processExists(int pid) async {
     if (Platform.isWindows) {
-      final r = Process.runSync('tasklist', ['/FI', 'PID eq $pid', '/NH']);
+      final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/NH']);
       return r.stdout.toString().contains('$pid');
     }
-    final r = Process.runSync('kill', ['-0', '$pid']);
+    final r = await Process.run('kill', ['-0', '$pid']);
     return r.exitCode == 0;
   }
 
   Future<DaemonStartResult> start() async {
     _log('start() invoked');
-    if (isAlive()) {
+    if (await isAlive()) {
       final pid = readPid()!;
       _log('daemon already running (pid $pid) — attaching');
       return DaemonStartResult.alreadyRunning(pid);

@@ -15,11 +15,24 @@ class AppDelegate: FlutterAppDelegate {
     return true
   }
 
-  /// Dock-icon click / Finder re-launch while the app is hidden. Tell Dart
-  /// to show its window — the close handler had set the activation policy
-  /// to .accessory which hid the Dock icon; restoring it goes back to
-  /// .regular and brings the window to front.
+  /// Dock-icon click / Finder re-launch while the app is hidden. Do the
+  /// window-front work natively so the user gets an immediate response
+  /// even if the Dart isolate is busy (post-sleep wake, GC, etc.) —
+  /// previously this round-tripped through Dart, which let AppKit decide
+  /// the app was unresponsive and swap the Dock menu's Quit for Force
+  /// Quit. Dart is still notified afterward so any in-Dart "window
+  /// visible" state stays in sync.
   override func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    NSApp.setActivationPolicy(.regular)
+    NSApp.unhide(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    for window in sender.windows {
+      if window.isMiniaturized {
+        window.deminiaturize(nil)
+      }
+      window.setIsVisible(true)
+      window.makeKeyAndOrderFront(nil)
+    }
     lifecycleChannel?.invokeMethod("reopenWindow", arguments: nil)
     return true
   }
