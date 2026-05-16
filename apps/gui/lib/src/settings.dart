@@ -1,10 +1,11 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum DaemonMode { builtIn, system, custom }
+enum DaemonMode { builtIn, system, custom, external }
 
 DaemonMode _parse(String? s) => switch (s) {
   'system' => DaemonMode.system,
   'custom' => DaemonMode.custom,
+  'external' => DaemonMode.external,
   _ => DaemonMode.builtIn,
 };
 
@@ -12,6 +13,7 @@ String _serialize(DaemonMode m) => switch (m) {
   DaemonMode.builtIn => 'builtin',
   DaemonMode.system => 'system',
   DaemonMode.custom => 'custom',
+  DaemonMode.external => 'external',
 };
 
 class Settings {

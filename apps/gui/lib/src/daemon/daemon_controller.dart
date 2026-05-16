@@ -47,6 +47,16 @@ class DaemonController {
           exists: p.isNotEmpty && File(p).existsSync(),
           source: 'custom path',
         );
+      case DaemonMode.external:
+        // The app neither launches nor manages the binary in this mode —
+        // some external supervisor (launchd, systemd, Docker, manual
+        // shell) runs it. resolveBinary() is still called by the
+        // settings UI for display, so return a stable descriptor.
+        return DaemonResolution(
+          path: '',
+          exists: false,
+          source: 'externally managed',
+        );
     }
   }
 
@@ -88,6 +98,12 @@ class DaemonController {
 
   Future<DaemonStartResult> start() async {
     _log('start() invoked');
+    if (_settings.mode == DaemonMode.external) {
+      _log('external mode — refusing to spawn (managed by user)');
+      return DaemonStartResult.error(
+        'Service is managed externally — the app will not start it.',
+      );
+    }
     if (await isAlive()) {
       final pid = readPid()!;
       _log('daemon already running (pid $pid) — attaching');
@@ -143,6 +159,10 @@ class DaemonController {
 
   Future<bool> stop() async {
     _log('stop() invoked');
+    if (_settings.mode == DaemonMode.external) {
+      _log('external mode — refusing to stop (managed by user)');
+      return false;
+    }
     final pid = readPid();
     if (pid == null) {
       _log('no pid file — nothing to stop');
