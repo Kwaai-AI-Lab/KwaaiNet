@@ -37,9 +37,14 @@ use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
 use kwaai_rpc::v1::{
-    kwaai_net_server::{KwaaiNet, KwaaiNetServer},
-    ChatMessage, ChatToken, PingReply, PingRequest,
+    client_frame, error::Code as ErrorCode, kwaai_net_server::{KwaaiNet, KwaaiNetServer},
+    server_frame, Cancel, ChatMessage, ChatToken, ClientFrame, Done,
+    Error as RpcError, GenerateRequest, PingReply, PingRequest, ServerFrame,
+    ShardRunRequest, StatusReply, StatusRequest,
 };
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use crate::config::KwaaiNetConfig;
 
@@ -76,6 +81,9 @@ struct InferenceState {
 pub struct KwaaiNetService {
     config: Arc<KwaaiNetConfig>,
     inference: Arc<Mutex<Option<Arc<Mutex<InferenceState>>>>>,
+    /// Captured at service construction so StatusReply.uptime_secs can
+    /// report a process-level uptime without a separate clock.
+    started_at: Instant,
 }
 
 impl KwaaiNetService {
@@ -83,6 +91,7 @@ impl KwaaiNetService {
         Self {
             config: Arc::new(config),
             inference: Arc::new(Mutex::new(None)),
+            started_at: Instant::now(),
         }
     }
 
@@ -152,6 +161,144 @@ fn build_inference_state(cfg: &KwaaiNetConfig) -> Result<InferenceState> {
 #[tonic::async_trait]
 impl KwaaiNet for KwaaiNetService {
     type ChatStream = tokio_stream::wrappers::ReceiverStream<Result<ChatToken, Status>>;
+    type SessionStream = tokio_stream::wrappers::ReceiverStream<Result<ServerFrame, Status>>;
+
+    async fn session(
+        &self,
+        request: Request<Streaming<ClientFrame>>,
+    ) -> Result<Response<Self::SessionStream>, Status> {
+        let mut inbound = request.into_inner();
+
+        // ServerFrame fan-in. Every per-operation task emits into this
+        // channel; ordering between operations is the natural emit order.
+        let (out_tx, out_rx) =
+            mpsc::channel::<Result<ServerFrame, Status>>(128);
+
+        // Per-id cancellation registry. ClientFrame::Cancel { target_id }
+        // looks up the oneshot here and fires it.
+        let cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Clone the bits each per-frame task captures.
+        let cfg = self.config.clone();
+        let inference_slot = self.inference.clone();
+        let started_at = self.started_at;
+
+        tokio::spawn(async move {
+            loop {
+                let frame = match inbound.message().await {
+                    Ok(Some(f)) => f,
+                    Ok(None) => {
+                        info!("Session: client closed inbound stream");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("Session: inbound recv error: {e}");
+                        break;
+                    }
+                };
+
+                let id = frame.id;
+                let body = match frame.body {
+                    Some(b) => b,
+                    None => {
+                        let _ = out_tx
+                            .send(Ok(error_frame(
+                                id,
+                                ErrorCode::InvalidArgument,
+                                "ClientFrame missing body",
+                            )))
+                            .await;
+                        continue;
+                    }
+                };
+
+                match body {
+                    client_frame::Body::Ping(_) => {
+                        let _ = out_tx
+                            .send(Ok(ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::Pong(PingReply {
+                                    server_time: now_rfc3339(),
+                                })),
+                            }))
+                            .await;
+                        let _ = out_tx.send(Ok(done_frame(id))).await;
+                    }
+
+                    client_frame::Body::Status(_) => {
+                        let reply = StatusReply {
+                            server_time: now_rfc3339(),
+                            model: cfg.model.clone(),
+                            shard_ready: shard_ready_path_exists(),
+                            peer_count: 0, // TODO: thread through DHT routing-table size
+                            uptime_secs: started_at.elapsed().as_secs(),
+                        };
+                        let _ = out_tx
+                            .send(Ok(ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::Status(reply)),
+                            }))
+                            .await;
+                        let _ = out_tx.send(Ok(done_frame(id))).await;
+                    }
+
+                    client_frame::Body::Generate(req) => {
+                        spawn_session_generate(
+                            id,
+                            req,
+                            cfg.clone(),
+                            inference_slot.clone(),
+                            out_tx.clone(),
+                            cancels.clone(),
+                        )
+                        .await;
+                    }
+
+                    client_frame::Body::ShardRun(req) => {
+                        // TODO(shard): wire the distributed-inference
+                        // dispatcher (shard_cmd / block_rpc) into here.
+                        // Until that lands, surface a clear unimpl so
+                        // callers know to fall back to local Generate.
+                        let _ = out_tx
+                            .send(Ok(error_frame(
+                                id,
+                                ErrorCode::Unimplemented,
+                                &format!(
+                                    "shard_run not yet wired; requested model={}",
+                                    req.model.unwrap_or_else(|| cfg.model.clone())
+                                ),
+                            )))
+                            .await;
+                    }
+
+                    client_frame::Body::Cancel(Cancel { target_id }) => {
+                        let removed =
+                            cancels.lock().await.remove(&target_id);
+                        if let Some(tx) = removed {
+                            let _ = tx.send(());
+                            // Acknowledge the cancel frame itself with Done.
+                            let _ = out_tx.send(Ok(done_frame(id))).await;
+                        } else {
+                            let _ = out_tx
+                                .send(Ok(error_frame(
+                                    id,
+                                    ErrorCode::NotFound,
+                                    &format!(
+                                        "no in-flight operation with id {target_id}"
+                                    ),
+                                )))
+                                .await;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(out_rx),
+        ))
+    }
 
     async fn chat(
         &self,
@@ -214,6 +361,169 @@ impl KwaaiNet for KwaaiNetService {
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         Ok(Response::new(PingReply { server_time }))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Session helpers
+// ---------------------------------------------------------------------------
+
+fn now_rfc3339() -> String {
+    chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now())
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn done_frame(id: u64) -> ServerFrame {
+    ServerFrame {
+        id,
+        body: Some(server_frame::Body::Done(Done {})),
+    }
+}
+
+fn error_frame(id: u64, code: ErrorCode, msg: &str) -> ServerFrame {
+    ServerFrame {
+        id,
+        body: Some(server_frame::Body::Error(RpcError {
+            code: code as i32,
+            message: msg.to_string(),
+        })),
+    }
+}
+
+/// Best-effort check that this node's local shard server is ready to
+/// serve its assigned block range. Reads the `~/.kwaainet/run/shard.ready`
+/// touchfile the shard server writes when it's bound + warm.
+fn shard_ready_path_exists() -> bool {
+    let p = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".kwaainet")
+        .join("run")
+        .join("shard.ready");
+    p.exists()
+}
+
+/// Per-id counter used to give worker tasks a unique log span. Reused
+/// across all Session streams; rolls over after 2^64 chats, which is
+/// fine.
+static SESSION_TASK_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Drive a local-inference `generate` within a Session. Spawns a
+/// blocking worker that emits ServerFrame::Token chunks into `out_tx`,
+/// terminated with Done or Error.
+async fn spawn_session_generate(
+    id: u64,
+    req: GenerateRequest,
+    cfg: Arc<KwaaiNetConfig>,
+    inference_slot: Arc<Mutex<Option<Arc<Mutex<InferenceState>>>>>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    // Register a cancel channel before we kick off work, so a Cancel
+    // arriving immediately after this frame is honoured.
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    let seq = SESSION_TASK_SEQ.fetch_add(1, Ordering::Relaxed);
+    let inference = match get_or_init_inference(&cfg, &inference_slot).await {
+        Ok(i) => i,
+        Err(e) => {
+            error!(seq, id, "Session chat: inference init failed: {e:#}");
+            let _ = out_tx
+                .send(Ok(error_frame(
+                    id,
+                    ErrorCode::Internal,
+                    &format!("inference init failed: {e}"),
+                )))
+                .await;
+            cancels.lock().await.remove(&id);
+            return;
+        }
+    };
+
+    let prompt = build_prompt(&ChatMessage {
+        content: req.content,
+        role: req.role,
+        conversation_id: req.conversation_id,
+    });
+
+    // Token channel from the blocking worker → this task's forwarder.
+    let (tok_tx, mut tok_rx) =
+        mpsc::channel::<Result<ChatToken, Status>>(64);
+    spawn_inference(inference, prompt, tok_tx);
+
+    let cancels_for_cleanup = cancels.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    // Cancel arrived from the Session dispatcher. Drop
+                    // the receiver; the inference worker will see the
+                    // channel close and stop on its next yield.
+                    let _ = out_tx
+                        .send(Ok(error_frame(
+                            id,
+                            ErrorCode::Cancelled,
+                            "cancelled by client",
+                        )))
+                        .await;
+                    break;
+                }
+                msg = tok_rx.recv() => {
+                    match msg {
+                        Some(Ok(tok)) => {
+                            let is_done = tok.done;
+                            let _ = out_tx
+                                .send(Ok(ServerFrame {
+                                    id,
+                                    body: Some(server_frame::Body::Token(tok)),
+                                }))
+                                .await;
+                            if is_done {
+                                let _ = out_tx.send(Ok(done_frame(id))).await;
+                                break;
+                            }
+                        }
+                        Some(Err(status)) => {
+                            let _ = out_tx
+                                .send(Ok(error_frame(
+                                    id,
+                                    ErrorCode::Internal,
+                                    &status.message().to_string(),
+                                )))
+                                .await;
+                            break;
+                        }
+                        None => {
+                            // Worker dropped its sender without a done
+                            // marker — treat as a clean completion to
+                            // avoid leaking a half-open operation.
+                            let _ = out_tx.send(Ok(done_frame(id))).await;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+/// Free-function variant of `KwaaiNetService::get_or_init_inference` so
+/// session worker tasks can call it without holding a `&self` borrow.
+async fn get_or_init_inference(
+    cfg: &Arc<KwaaiNetConfig>,
+    slot: &Arc<Mutex<Option<Arc<Mutex<InferenceState>>>>>,
+) -> Result<Arc<Mutex<InferenceState>>> {
+    let mut guard = slot.lock().await;
+    if let Some(existing) = guard.as_ref() {
+        return Ok(existing.clone());
+    }
+    let cfg = cfg.clone();
+    let state = tokio::task::spawn_blocking(move || build_inference_state(&cfg))
+        .await
+        .context("inference init task panicked")??;
+    let arc = Arc::new(Mutex::new(state));
+    *guard = Some(arc.clone());
+    Ok(arc)
 }
 
 /// Build the model-specific chat prompt from the first inbound message.
