@@ -2017,6 +2017,18 @@ fn jitter_secs(base: u64, spread: u64) -> u64 {
 /// Returns `true` when an update was installed and the caller should break
 /// the event loop to let the daemon exit.
 async fn maybe_auto_update() -> bool {
+    // Developer escape hatch: a long-running local debug daemon shouldn't
+    // get silently replaced by the upstream release binary (which won't
+    // contain whatever in-flight feature work is being tested). Setting
+    // KWAAINET_NO_AUTO_UPDATE=1 disables every code path that would
+    // download or install an update from inside the running node.
+    if std::env::var("KWAAINET_NO_AUTO_UPDATE")
+        .map(|v| !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
     let checker = crate::updater::UpdateChecker::new();
     let update = match checker.check(false).await {
         Ok(Some(u)) => u,
