@@ -10,6 +10,8 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
     required this.navRailBackground,
     required this.divider,
     required this.cardBackground,
+    required this.elevatedSurface,
+    required this.menuBackground,
     required this.inputBackground,
     required this.accentPrimary,
     required this.statusRunning,
@@ -25,6 +27,18 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
   final Color navRailBackground;
   final Color divider;
   final Color cardBackground;
+
+  /// Surface sitting one step "above" [cardBackground] — used for sectional
+  /// cards inside a content area (e.g. each feature section in Settings). In
+  /// dark mode this is slightly lighter than the card; in light mode it's
+  /// slightly darker so it still reads as a distinct surface.
+  final Color elevatedSurface;
+
+  /// Surface for popover-style menus (dropdown popups, context menus). Reads
+  /// brighter than [elevatedSurface] — closer to the way macOS NSMenu lifts
+  /// off the background.
+  final Color menuBackground;
+
   final Color inputBackground;
   final Color accentPrimary;
   final Color statusRunning;
@@ -46,6 +60,8 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
     Color? navRailBackground,
     Color? divider,
     Color? cardBackground,
+    Color? elevatedSurface,
+    Color? menuBackground,
     Color? inputBackground,
     Color? accentPrimary,
     Color? statusRunning,
@@ -61,6 +77,8 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
       navRailBackground: navRailBackground ?? this.navRailBackground,
       divider: divider ?? this.divider,
       cardBackground: cardBackground ?? this.cardBackground,
+      elevatedSurface: elevatedSurface ?? this.elevatedSurface,
+      menuBackground: menuBackground ?? this.menuBackground,
       inputBackground: inputBackground ?? this.inputBackground,
       accentPrimary: accentPrimary ?? this.accentPrimary,
       statusRunning: statusRunning ?? this.statusRunning,
@@ -97,6 +115,12 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
       )!,
       divider: Color.lerp(divider, other.divider, t)!,
       cardBackground: Color.lerp(cardBackground, other.cardBackground, t)!,
+      elevatedSurface: Color.lerp(
+        elevatedSurface,
+        other.elevatedSurface,
+        t,
+      )!,
+      menuBackground: Color.lerp(menuBackground, other.menuBackground, t)!,
       inputBackground: Color.lerp(inputBackground, other.inputBackground, t)!,
       accentPrimary: Color.lerp(accentPrimary, other.accentPrimary, t)!,
       statusRunning: Color.lerp(statusRunning, other.statusRunning, t)!,

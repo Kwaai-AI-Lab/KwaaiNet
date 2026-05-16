@@ -51,6 +51,10 @@ class KwaaiCard extends StatelessWidget {
               ]
             : const [],
       ),
+      // Clip children to the card's rounded corners so things pinned to
+      // the bottom (e.g. KwaaiStatusBar) can't paint into the curved
+      // corners with a sharp fill.
+      clipBehavior: Clip.antiAlias,
       padding: padding,
       child: child,
     );

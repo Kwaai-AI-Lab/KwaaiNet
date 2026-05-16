@@ -13,7 +13,7 @@ class KwaaiTextField extends StatefulWidget {
     this.hintText,
     this.onSubmitted,
     this.onEditingComplete,
-    this.suffixIcon,
+    this.trailing,
     this.enabled = true,
   });
 
@@ -21,7 +21,14 @@ class KwaaiTextField extends StatefulWidget {
   final String? hintText;
   final ValueChanged<String>? onSubmitted;
   final VoidCallback? onEditingComplete;
-  final Widget? suffixIcon;
+
+  /// Optional control rendered immediately to the right of the input box
+  /// (e.g. a Browse… button). Lives in its own layout cell, not inside
+  /// the InputDecorator — that keeps the input's own height/centering
+  /// invariant to whatever the trailing widget is, and the trailing
+  /// widget's hover/tap target behaves naturally at any text scale.
+  final Widget? trailing;
+
   final bool enabled;
 
   @override
@@ -71,12 +78,11 @@ class _KwaaiTextFieldState extends State<KwaaiTextField> {
       borderSide: BorderSide(color: accent, width: 2),
     );
 
-    return AnimatedContainer(
+    final field = AnimatedContainer(
       duration: const Duration(milliseconds: 120),
       curve: Curves.easeOut,
       decoration: BoxDecoration(
         borderRadius: radius,
-        // Subtle focus glow — soft, low-spread, not a fat halo.
         boxShadow: _focused
             ? [BoxShadow(color: accent.withValues(alpha: 0.25), blurRadius: 3)]
             : const [],
@@ -85,8 +91,6 @@ class _KwaaiTextFieldState extends State<KwaaiTextField> {
         controller: widget.controller,
         focusNode: _focusNode,
         enabled: widget.enabled,
-        // Tight line height so the field height is driven by the text cap
-        // height + contentPadding, not Material's tall default line box.
         style: Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.0),
         onSubmitted: widget.onSubmitted,
         onEditingComplete: widget.onEditingComplete,
@@ -99,9 +103,6 @@ class _KwaaiTextFieldState extends State<KwaaiTextField> {
           ),
           isDense: true,
           filled: true,
-          // Same fill across enabled / focused / hover states (no Material
-          // focus tint shift). Disabled state gets a slightly darker fill
-          // so it reads as inactive.
           fillColor: widget.enabled
               ? context.kwaai.inputBackground
               : Color.alphaBlend(
@@ -111,27 +112,31 @@ class _KwaaiTextFieldState extends State<KwaaiTextField> {
                   context.kwaai.inputBackground,
                 ),
           hoverColor: Colors.transparent,
-          // Tight, macOS-like field height. With the 1.0 line height above,
-          // this padding is the field's only vertical breathing room.
-          // Inside-the-border padding gives the text some breathing room
-          // matching the radio rows' visual rhythm.
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 10,
-            vertical: 7,
+            vertical: 9,
           ),
           border: restingBorder,
           enabledBorder: restingBorder,
           disabledBorder: restingBorder,
           focusedBorder: focusedBorder,
-          suffixIcon: widget.suffixIcon,
-          // Keep a suffix IconButton from forcing the 48px Material tap
-          // target, which would make the field tall again.
-          suffixIconConstraints: const BoxConstraints(
-            minWidth: 30,
-            minHeight: 30,
-          ),
         ),
       ),
+    );
+
+    if (widget.trailing == null) return field;
+
+    // Trailing widget (Browse…, clear, etc.) lives in a sibling cell so
+    // it gets its own clean layout and hover behaviour — InputDecorator's
+    // suffix slot anchors to the text baseline, which made centering an
+    // IconButton brittle across text scales.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(child: field),
+        const SizedBox(width: 2),
+        widget.trailing!,
+      ],
     );
   }
 }

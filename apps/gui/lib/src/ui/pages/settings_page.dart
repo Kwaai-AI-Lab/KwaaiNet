@@ -18,6 +18,7 @@ import '../widgets/branded_title.dart';
 import '../widgets/kwaai_button.dart';
 import '../widgets/kwaai_dropdown.dart';
 import '../widgets/kwaai_heading.dart';
+import '../widgets/kwaai_status_bar.dart';
 import '../widgets/kwaai_text_field.dart';
 
 /// Fill color for unselected/secondary controls — segmented-button segments
@@ -54,19 +55,17 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _stop() => ref.read(daemonTransitionProvider.notifier).stop();
 
   Widget _buildStatusTab() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: const _StatusHeader(),
-        ),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _FeatureCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const _StatusHeader(),
+                const SizedBox(height: 12),
                 Consumer(
                   builder: (context, ref, _) {
                     final status = ref.watch(daemonStatusProvider).valueOrNull;
@@ -92,30 +91,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     );
                   },
                 ),
-                Consumer(
-                  builder: (context, ref, _) {
-                    final err = ref.watch(daemonErrorProvider);
-                    if (err == null) return const SizedBox.shrink();
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Card(
-                        color: Theme.of(context).colorScheme.errorContainer,
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Text(
-                            err,
-                            style: TextStyle(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onErrorContainer,
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _FeatureCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 const KwaaiHeading('KwaaiNet binary location'),
                 const SizedBox(height: 8),
                 _DaemonSourcePicker(
@@ -124,9 +107,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   onChanged: () {
                     setState(() {});
                     widget.onSettingsChanged();
+                    // The user changed the binary source — assume the
+                    // previous "not found" / spawn error no longer
+                    // applies. They can re-trigger by clicking Start.
+                    ref.read(daemonErrorProvider.notifier).clear();
                   },
                 ),
-                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _FeatureCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 const KwaaiHeading('Service'),
                 const SizedBox(height: 4),
                 _StartOnStartupToggle(
@@ -136,9 +130,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     widget.onSettingsChanged();
                   },
                 ),
-                const SizedBox(height: 24),
-                const KwaaiHeading('Window'),
-                const SizedBox(height: 4),
                 _KeepInTrayToggle(
                   settings: widget.settings,
                   tray: widget.tray,
@@ -150,8 +141,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               ],
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -257,7 +248,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     kShellGutter,
                   ),
                   // Right edge touches the window → rounded; left edge
-                  // faces the nav card → sharp.
+                  // faces the nav card → sharp (kShellInnerRadius). The
+                  // asymmetric corners visually echo the nav/content
+                  // split.
                   borderRadius: shellRadius(topRight: true, bottomRight: true),
                   child: settingsContent,
                 ),
@@ -629,6 +622,10 @@ class _SwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final focused = WindowFocusScope.of(context);
+    final activeFill = focused
+        ? context.kwaai.accentPrimary
+        : kSelectedUnfocusedFill;
     return InkWell(
       borderRadius: BorderRadius.circular(6),
       onTap: () => onChanged(!value),
@@ -640,17 +637,21 @@ class _SwitchRow extends StatelessWidget {
               child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
             ),
             const SizedBox(width: 6),
-            // Match the *rendered* size of _RadioRow's scaled radio (~32px).
-            // Material's base Switch (~48px) needs a smaller scale than the
-            // radio (~40px) to land at the same vertical height.
-            Transform.scale(
-              scale: 0.67,
-              child: Switch(
-                value: value,
-                onChanged: onChanged,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                activeThumbColor: Colors.white,
-                activeTrackColor: context.kwaai.accentPrimary,
+            // Wrap the scaled Switch in a SizedBox so it occupies the
+            // shrunken layout height — matching the radio rows' ~32px
+            // height so consecutive switch rows pack at the same
+            // vertical rhythm as radio rows.
+            SizedBox(
+              height: 32,
+              child: Transform.scale(
+                scale: 0.67,
+                child: Switch(
+                  value: value,
+                  onChanged: onChanged,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  activeThumbColor: Colors.white,
+                  activeTrackColor: activeFill,
+                ),
               ),
             ),
           ],
@@ -749,10 +750,11 @@ class _DaemonSourcePickerState extends State<_DaemonSourcePicker> {
                   onSubmitted: _commitCustomPath,
                   onEditingComplete: () =>
                       _commitCustomPath(_pathController.text),
-                  suffixIcon: IconButton(
+                  trailing: IconButton(
                     tooltip: 'Browse…',
-                    icon: const Icon(Icons.folder_open),
+                    icon: const Icon(Icons.folder_open, size: 18),
                     onPressed: isCustom ? _browseForPath : null,
+                    visualDensity: VisualDensity.compact,
                   ),
                 );
               },
@@ -793,7 +795,9 @@ class _RadioRow extends StatelessWidget {
           children: [
             // Shrink the Material Radio visually. Radio has no size prop,
             // so scale the rendered painter; the hit-testing inside the
-            // InkWell keeps the row tap-friendly.
+            // InkWell keeps the row tap-friendly. Fill desaturates to
+            // gray when the app window is unfocused, matching buttons +
+            // toggles.
             Transform.scale(
               scale: 0.8,
               child: Radio<DaemonMode>(
@@ -801,6 +805,12 @@ class _RadioRow extends StatelessWidget {
                 enabled: enabled,
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.compact,
+                fillColor: WidgetStateProperty.resolveWith((states) {
+                  if (!states.contains(WidgetState.selected)) return null;
+                  return WindowFocusScope.of(context)
+                      ? context.kwaai.accentPrimary
+                      : kSelectedUnfocusedFill;
+                }),
               ),
             ),
             const SizedBox(width: 6),
@@ -911,10 +921,10 @@ class _FeaturesTab extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _ShardingSection(draft: draft),
-              const SizedBox(height: 24),
-              _StorageSection(draft: draft),
-              const SizedBox(height: 24),
+              _FeatureCard(child: _ShardingSection(draft: draft)),
+              const SizedBox(height: 12),
+              _FeatureCard(child: _StorageSection(draft: draft)),
+              const SizedBox(height: 16),
               // One Apply for both sections. Disabled when the draft
               // matches what's on disk.
               Align(
@@ -935,6 +945,26 @@ class _FeaturesTab extends ConsumerWidget {
     await ref.read(featuresDraftProvider.notifier).apply();
     ref.read(restartNeededProvider.notifier).mark();
     ref.invalidate(featuresProvider);
+  }
+}
+
+/// Sectional card used to group related feature controls. Uses the
+/// theme's [KwaaiThemeExtension.elevatedSurface] so it reads as one step
+/// above the content card it sits in.
+class _FeatureCard extends StatelessWidget {
+  const _FeatureCard({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.kwaai.elevatedSurface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      child: child,
+    );
   }
 }
 
@@ -965,10 +995,16 @@ class _ShardingSection extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 4),
-        _ModelPicker(
-          current: draft.model,
-          enabled: draft.shardingEnabled,
-          onChanged: notifier.setModel,
+        // Align prevents the parent Column(stretch) from forcing the
+        // picker to fill the section card; the picker's own children
+        // (dropdown + optional Other field) self-size.
+        Align(
+          alignment: Alignment.centerLeft,
+          child: _ModelPicker(
+            current: draft.model,
+            enabled: draft.shardingEnabled,
+            onChanged: notifier.setModel,
+          ),
         ),
       ],
     );
@@ -1002,10 +1038,19 @@ class _StorageSection extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 4),
-        _CapacityField(
-          initial: draft.storageCapacityGb,
-          enabled: draft.storageEnabled,
-          onChanged: notifier.setStorageCapacityGb,
+        // Align prevents the parent Column's stretch from forcing the
+        // field to fill the section width — without it the ConstrainedBox
+        // gets tight horizontal constraints and the maxWidth is ignored.
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: 110,
+            child: _CapacityField(
+              initial: draft.storageCapacityGb,
+              enabled: draft.storageEnabled,
+              onChanged: notifier.setStorageCapacityGb,
+            ),
+          ),
         ),
       ],
     );
@@ -1062,33 +1107,40 @@ class _ModelPickerState extends State<_ModelPicker> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        KwaaiDropdown<String>(
-          value: _dropdownValue,
-          enabled: widget.enabled,
-          hintText: 'Select a model…',
-          items: [
-            for (final m in _knownModels)
-              KwaaiDropdownItem(value: m, label: m),
-            const KwaaiDropdownItem(
-              value: _otherModelSentinel,
-              label: 'Other…',
-            ),
-          ],
-          onChanged: _onDropdownChanged,
+    final dropdown = KwaaiDropdown<String>(
+      value: _dropdownValue,
+      enabled: widget.enabled,
+      hintText: 'Select a model…',
+      items: [
+        for (final m in _knownModels)
+          KwaaiDropdownItem(value: m, label: m),
+        const KwaaiDropdownItem(
+          value: _otherModelSentinel,
+          label: 'Other…',
         ),
-        if (_isOther) ...[
-          const SizedBox(height: 6),
-          KwaaiTextField(
+      ],
+      onChanged: _onDropdownChanged,
+    );
+
+    if (!_isOther) return dropdown;
+
+    // When "Other…" is selected, render the free-form input to the right
+    // of the dropdown rather than below it.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        dropdown,
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 220,
+          child: KwaaiTextField(
             controller: _otherController,
             enabled: widget.enabled,
             hintText: 'e.g. some-org/some-model',
             onSubmitted: widget.onChanged,
             onEditingComplete: () => widget.onChanged(_otherController.text),
           ),
-        ],
+        ),
       ],
     );
   }
@@ -1143,42 +1195,59 @@ class _CapacityFieldState extends State<_CapacityField> {
 
 /// Pinned bar at the bottom of the Settings shell card. Visible only when
 /// the user has applied feature changes that need a service restart.
+/// Bottom status bar of the Settings card. Shows either a daemon error
+/// (red) or a restart-needed prompt (orange) — error takes priority.
+/// Empty when neither applies. Replaces the old `_RestartNeededBar` and
+/// the in-card error Card, so the user always sees these in the same
+/// spot regardless of which Settings tab they're on.
 class _RestartNeededBar extends ConsumerWidget {
   const _RestartNeededBar();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Bottom radii match the settings content card (bottom-left small
+    // because the nav card sits to the left, bottom-right outer because
+    // it touches the window). Top corners stay sharp — the bar meets
+    // the card content above it with a flat top edge + divider line.
+    final bottomRadius = BorderRadius.only(
+      bottomLeft: const Radius.circular(kShellInnerRadius),
+      bottomRight: const Radius.circular(kShellOuterRadius),
+    );
+
+    final err = ref.watch(daemonErrorProvider);
+    if (err != null) {
+      return KwaaiStatusBar(
+        severity: KwaaiStatusSeverity.error,
+        message: err,
+        onDismiss: () => ref.read(daemonErrorProvider.notifier).clear(),
+        bottomRadius: bottomRadius,
+      );
+    }
+
     final needsRestart = ref.watch(restartNeededProvider);
     if (!needsRestart) return const SizedBox.shrink();
+    // No restart prompt when the service is stopped — the new config
+    // will be picked up the next time the user starts it. Also clear the
+    // flag so it doesn't reappear once they start the service again.
+    final running = ref.watch(daemonStatusProvider).valueOrNull?.running
+        ?? false;
+    if (!running) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ref.read(restartNeededProvider.notifier).clear();
+      });
+      return const SizedBox.shrink();
+    }
 
-    final ext = context.kwaai;
     final transition = ref.watch(daemonTransitionProvider);
     final busy = transition != DaemonTransition.none;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: ext.statusTransitioning.withValues(alpha: 0.12),
-        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+    return KwaaiStatusBar(
+      severity: KwaaiStatusSeverity.info,
+      message: 'Restart the service to apply your changes.',
+      action: KwaaiButton(
+        label: 'Restart service',
+        onPressed: busy ? null : () => _restart(ref),
       ),
-      child: Row(
-        children: [
-          Icon(Icons.info_outline, size: 16, color: ext.statusTransitioning),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Restart the service to apply your changes.',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-          const SizedBox(width: 8),
-          KwaaiButton(
-            label: 'Restart service',
-            onPressed: busy ? null : () => _restart(ref),
-          ),
-        ],
-      ),
+      bottomRadius: bottomRadius,
     );
   }
 

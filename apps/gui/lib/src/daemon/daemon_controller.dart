@@ -97,8 +97,9 @@ class DaemonController {
     _log('resolved daemon: ${res.path} (${res.source}, exists=${res.exists})');
     if (!res.exists) {
       _log('ABORT: binary not found');
+      final where = res.path.isEmpty ? '(none)' : res.path;
       return DaemonStartResult.error(
-        'Daemon binary not found at: ${res.path} (${res.source})',
+        'Daemon binary not found at $where (${res.source})',
       );
     }
     Directory(KwaainetPaths.runDir).createSync(recursive: true);
