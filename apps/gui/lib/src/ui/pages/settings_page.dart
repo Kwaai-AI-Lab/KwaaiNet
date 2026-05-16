@@ -2,8 +2,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../daemon/config_file.dart';
 import '../../daemon/daemon_controller.dart';
 import '../../daemon/daemon_state.dart';
+import '../../daemon/features_state.dart';
 import '../../daemon/status_watcher.dart';
 import '../../settings.dart';
 import '../../tray/tray.dart';
@@ -13,6 +15,8 @@ import '../theme/theme_controller.dart';
 import '../theme/theme_variants.dart';
 import '../widgets/app_shell.dart';
 import '../widgets/branded_title.dart';
+import '../widgets/kwaai_button.dart';
+import '../widgets/kwaai_dropdown.dart';
 import '../widgets/kwaai_heading.dart';
 import '../widgets/kwaai_text_field.dart';
 
@@ -72,34 +76,17 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                         DaemonTransition.none;
                     return Row(
                       children: [
-                        FilledButton.icon(
-                          // Disabled while running or mid-transition.
+                        KwaaiButton(
+                          label: 'Start service',
+                          icon: Icons.play_arrow,
                           onPressed: (running || busy) ? null : _start,
-                          // Primary action — accent fill, matching the
-                          // selected segment in the mode picker. Desaturates
-                          // to gray when the window is unfocused.
-                          style: FilledButton.styleFrom(
-                            backgroundColor: WindowFocusScope.of(context)
-                                ? context.kwaai.accentPrimary
-                                : kSelectedUnfocusedFill,
-                            foregroundColor: WindowFocusScope.of(context)
-                                ? Colors.white
-                                : Theme.of(context).colorScheme.onSurface,
-                          ),
-                          icon: const Icon(Icons.play_arrow),
-                          label: const Text('Start service'),
                         ),
                         const SizedBox(width: 8),
-                        FilledButton.icon(
-                          // Disabled while stopped or mid-transition.
+                        KwaaiButton(
+                          label: 'Stop service',
+                          icon: Icons.stop,
+                          variant: KwaaiButtonVariant.destructive,
                           onPressed: (!running || busy) ? null : _stop,
-                          // Destructive action — red fill.
-                          style: FilledButton.styleFrom(
-                            backgroundColor: context.kwaai.buttonDestructive,
-                            foregroundColor: Colors.white,
-                          ),
-                          icon: const Icon(Icons.stop),
-                          label: const Text('Stop service'),
                         ),
                       ],
                     );
@@ -187,9 +174,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               Expanded(
                 child: IndexedStack(
                   index: _selectedTab,
-                  children: [_buildStatusTab(), const _AppearanceTab()],
+                  children: [
+                    _buildStatusTab(),
+                    const _FeaturesTab(),
+                    const _AppearanceTab(),
+                  ],
                 ),
               ),
+              // Pinned to the bottom of the Settings card: surfaces when
+              // the user has applied feature changes that need a daemon
+              // restart. Persistent across the Status / Features /
+              // Appearance tabs.
+              const _RestartNeededBar(),
             ],
           );
 
@@ -287,6 +283,7 @@ const _settingsNavEntries = <_SettingsNavEntry>[
     Icons.monitor_heart,
     'Status',
   ),
+  _SettingsNavEntry(Icons.tune_outlined, Icons.tune, 'Features'),
   _SettingsNavEntry(Icons.palette_outlined, Icons.palette, 'Appearance'),
 ];
 
@@ -864,6 +861,343 @@ class _SystemPathResult extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Curated list of HuggingFace model IDs the GUI offers via the Features
+/// dropdown. The daemon doesn't expose a catalog API yet, so this is a
+/// hand-maintained list — swap to a runtime fetch when one lands.
+const List<String> _knownModels = [
+  'unsloth/Llama-3.1-8B-Instruct',
+  'unsloth/Llama-3-8B',
+  'unsloth/Llama-3.2-3B-Instruct',
+  'mistralai/Mistral-7B-Instruct-v0.3',
+  'Qwen/Qwen2.5-7B-Instruct',
+  'microsoft/Phi-3-mini-4k-instruct',
+];
+
+/// Sentinel value used by the Model dropdown to represent "Other…" — when
+/// chosen, a free-form text field appears for the user to type an
+/// arbitrary HuggingFace model id.
+const String _otherModelSentinel = '__other__';
+
+class _FeaturesTab extends ConsumerWidget {
+  const _FeaturesTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final loaded = ref.watch(featuresProvider);
+    return loaded.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text('Failed to load config: $e'),
+      ),
+      data: (snapshot) {
+        // Seed the draft on first render after the load. Doing it here
+        // (instead of in build) is safe because the draft is a Notifier
+        // whose seed() is idempotent.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ref.read(featuresDraftProvider.notifier).seed(snapshot);
+        });
+        final draft = ref.watch(featuresDraftProvider) ?? snapshot;
+        final dirty = draft.model != snapshot.model ||
+            draft.shardingEnabled != snapshot.shardingEnabled ||
+            draft.storageEnabled != snapshot.storageEnabled ||
+            draft.storageCapacityGb != snapshot.storageCapacityGb;
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _ShardingSection(draft: draft),
+              const SizedBox(height: 24),
+              _StorageSection(draft: draft),
+              const SizedBox(height: 24),
+              // One Apply for both sections. Disabled when the draft
+              // matches what's on disk.
+              Align(
+                alignment: Alignment.centerRight,
+                child: KwaaiButton(
+                  label: 'Apply',
+                  onPressed: dirty ? () => _apply(ref) : null,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _apply(WidgetRef ref) async {
+    await ref.read(featuresDraftProvider.notifier).apply();
+    ref.read(restartNeededProvider.notifier).mark();
+    ref.invalidate(featuresProvider);
+  }
+}
+
+/// "Sharding" section: enable toggle + model dropdown.
+class _ShardingSection extends ConsumerWidget {
+  const _ShardingSection({required this.draft});
+
+  final ConfigSnapshot draft;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final notifier = ref.read(featuresDraftProvider.notifier);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const KwaaiHeading('Sharding'),
+        const SizedBox(height: 4),
+        _SwitchRow(
+          label: 'Serve transformer shards to the network',
+          value: draft.shardingEnabled,
+          onChanged: notifier.setShardingEnabled,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Model',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        _ModelPicker(
+          current: draft.model,
+          enabled: draft.shardingEnabled,
+          onChanged: notifier.setModel,
+        ),
+      ],
+    );
+  }
+}
+
+/// "Storage" section: enable toggle + capacity_gb field.
+class _StorageSection extends ConsumerWidget {
+  const _StorageSection({required this.draft});
+
+  final ConfigSnapshot draft;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final notifier = ref.read(featuresDraftProvider.notifier);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const KwaaiHeading('Storage'),
+        const SizedBox(height: 4),
+        _SwitchRow(
+          label: 'Offer vector storage to the network',
+          value: draft.storageEnabled,
+          onChanged: notifier.setStorageEnabled,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Capacity (GB)',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        _CapacityField(
+          initial: draft.storageCapacityGb,
+          enabled: draft.storageEnabled,
+          onChanged: notifier.setStorageCapacityGb,
+        ),
+      ],
+    );
+  }
+}
+
+/// Dropdown of curated HF models with an "Other…" escape hatch that
+/// reveals a [KwaaiTextField] for arbitrary IDs.
+class _ModelPicker extends StatefulWidget {
+  const _ModelPicker({
+    required this.current,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String current;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  @override
+  State<_ModelPicker> createState() => _ModelPickerState();
+}
+
+class _ModelPickerState extends State<_ModelPicker> {
+  late final TextEditingController _otherController = TextEditingController(
+    text: _isKnown(widget.current) ? '' : widget.current,
+  );
+  late bool _isOther = !_isKnown(widget.current) && widget.current.isNotEmpty;
+
+  static bool _isKnown(String v) => _knownModels.contains(v);
+
+  @override
+  void dispose() {
+    _otherController.dispose();
+    super.dispose();
+  }
+
+  String? get _dropdownValue {
+    if (_isOther) return _otherModelSentinel;
+    if (_knownModels.contains(widget.current)) return widget.current;
+    return null;
+  }
+
+  void _onDropdownChanged(String? v) {
+    if (v == null) return;
+    if (v == _otherModelSentinel) {
+      setState(() => _isOther = true);
+      // Don't push a value yet — wait for the user to type in the field.
+      return;
+    }
+    setState(() => _isOther = false);
+    widget.onChanged(v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        KwaaiDropdown<String>(
+          value: _dropdownValue,
+          enabled: widget.enabled,
+          hintText: 'Select a model…',
+          items: [
+            for (final m in _knownModels)
+              KwaaiDropdownItem(value: m, label: m),
+            const KwaaiDropdownItem(
+              value: _otherModelSentinel,
+              label: 'Other…',
+            ),
+          ],
+          onChanged: _onDropdownChanged,
+        ),
+        if (_isOther) ...[
+          const SizedBox(height: 6),
+          KwaaiTextField(
+            controller: _otherController,
+            enabled: widget.enabled,
+            hintText: 'e.g. some-org/some-model',
+            onSubmitted: widget.onChanged,
+            onEditingComplete: () => widget.onChanged(_otherController.text),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _CapacityField extends StatefulWidget {
+  const _CapacityField({
+    required this.initial,
+    required this.enabled,
+    required this.onChanged,
+  });
+  final double? initial;
+  final bool enabled;
+  final ValueChanged<double?> onChanged;
+
+  @override
+  State<_CapacityField> createState() => _CapacityFieldState();
+}
+
+class _CapacityFieldState extends State<_CapacityField> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial?.toString() ?? '',
+  );
+
+  void _commit(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) {
+      widget.onChanged(null);
+      return;
+    }
+    final parsed = double.tryParse(trimmed);
+    widget.onChanged(parsed);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return KwaaiTextField(
+      controller: _controller,
+      enabled: widget.enabled,
+      hintText: 'e.g. 10',
+      onSubmitted: _commit,
+      onEditingComplete: () => _commit(_controller.text),
+    );
+  }
+}
+
+/// Pinned bar at the bottom of the Settings shell card. Visible only when
+/// the user has applied feature changes that need a service restart.
+class _RestartNeededBar extends ConsumerWidget {
+  const _RestartNeededBar();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final needsRestart = ref.watch(restartNeededProvider);
+    if (!needsRestart) return const SizedBox.shrink();
+
+    final ext = context.kwaai;
+    final transition = ref.watch(daemonTransitionProvider);
+    final busy = transition != DaemonTransition.none;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: ext.statusTransitioning.withValues(alpha: 0.12),
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, size: 16, color: ext.statusTransitioning),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Restart the service to apply your changes.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+          const SizedBox(width: 8),
+          KwaaiButton(
+            label: 'Restart service',
+            onPressed: busy ? null : () => _restart(ref),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Stop the daemon, then start it. The transition provider clears its
+  /// state when the watcher confirms each step, so the chat-area overlay
+  /// and tray menu reflect Stopping… → Starting… → Running automatically.
+  Future<void> _restart(WidgetRef ref) async {
+    final transition = ref.read(daemonTransitionProvider.notifier);
+    // If currently running, stop first. If already stopped, skip ahead.
+    final status = ref.read(daemonStatusProvider).valueOrNull;
+    if (status?.running ?? false) {
+      await transition.stop();
+      // Wait for the stopping transition to clear before kicking start.
+      while (ref.read(daemonTransitionProvider) == DaemonTransition.stopping) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    await transition.start();
+    ref.read(restartNeededProvider.notifier).clear();
   }
 }
 
