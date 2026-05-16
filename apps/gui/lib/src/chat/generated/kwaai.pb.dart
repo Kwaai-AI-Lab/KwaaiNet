@@ -16,6 +16,104 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+/// Liveness probe input. No fields today; reserved range 1-15 left for
+/// future probe metadata (client version, capability flags) without
+/// breaking older callers.
+class PingRequest extends $pb.GeneratedMessage {
+  factory PingRequest() => create();
+
+  PingRequest._();
+
+  factory PingRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PingRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PingRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'kwaai.v1'),
+      createEmptyInstance: create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PingRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PingRequest copyWith(void Function(PingRequest) updates) =>
+      super.copyWith((message) => updates(message as PingRequest))
+          as PingRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PingRequest create() => PingRequest._();
+  @$core.override
+  PingRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static PingRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PingRequest>(create);
+  static PingRequest? _defaultInstance;
+}
+
+/// Liveness probe response. server_time confirms a non-empty round-trip
+/// payload and lets the client surface clock skew if it ever cares.
+class PingReply extends $pb.GeneratedMessage {
+  factory PingReply({
+    $core.String? serverTime,
+  }) {
+    final result = create();
+    if (serverTime != null) result.serverTime = serverTime;
+    return result;
+  }
+
+  PingReply._();
+
+  factory PingReply.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PingReply.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PingReply',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'kwaai.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'serverTime')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PingReply clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PingReply copyWith(void Function(PingReply) updates) =>
+      super.copyWith((message) => updates(message as PingReply)) as PingReply;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PingReply create() => PingReply._();
+  @$core.override
+  PingReply createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static PingReply getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<PingReply>(create);
+  static PingReply? _defaultInstance;
+
+  /// Wall-clock time on the daemon when the ping was handled, formatted
+  /// as RFC 3339.
+  @$pb.TagNumber(1)
+  $core.String get serverTime => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set serverTime($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasServerTime() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearServerTime() => $_clearField(1);
+}
+
 /// A single message in a chat conversation. Modelled loosely after the
 /// OpenAI chat API so existing client code maps over cleanly.
 class ChatMessage extends $pb.GeneratedMessage {

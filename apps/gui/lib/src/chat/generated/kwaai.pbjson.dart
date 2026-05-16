@@ -15,6 +15,27 @@ import 'dart:convert' as $convert;
 import 'dart:core' as $core;
 import 'dart:typed_data' as $typed_data;
 
+@$core.Deprecated('Use pingRequestDescriptor instead')
+const PingRequest$json = {
+  '1': 'PingRequest',
+};
+
+/// Descriptor for `PingRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List pingRequestDescriptor =
+    $convert.base64Decode('CgtQaW5nUmVxdWVzdA==');
+
+@$core.Deprecated('Use pingReplyDescriptor instead')
+const PingReply$json = {
+  '1': 'PingReply',
+  '2': [
+    {'1': 'server_time', '3': 1, '4': 1, '5': 9, '10': 'serverTime'},
+  ],
+};
+
+/// Descriptor for `PingReply`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List pingReplyDescriptor = $convert.base64Decode(
+    'CglQaW5nUmVwbHkSHwoLc2VydmVyX3RpbWUYASABKAlSCnNlcnZlclRpbWU=');
+
 @$core.Deprecated('Use chatMessageDescriptor instead')
 const ChatMessage$json = {
   '1': 'ChatMessage',

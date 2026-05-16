@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:macos_window_utils/macos_window_utils.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'src/chat/kwaai_rpc_client.dart';
 import 'src/daemon/daemon_controller.dart';
 import 'src/daemon/daemon_state.dart';
 import 'src/daemon/status_watcher.dart';
@@ -49,6 +50,29 @@ Future<void> main() async {
       daemonControllerProvider.overrideWithValue(daemon),
       statusWatcherProvider.overrideWithValue(watcher),
     ],
+  );
+
+  // Gate the gRPC client's connection probe on the daemon status.
+  // No point sending Ping every 3 s when we already know the daemon
+  // isn't running — that just floods the logs with connect-refused.
+  // Flip back on as soon as the daemon comes up.
+  //
+  // IMPORTANT: only act on a confirmed running/not-running reading,
+  // never on AsyncValue.loading (which flickers between status polls).
+  // Edge-trigger via lastKnown so flapping doesn't tear down and
+  // rebuild the channel on every poll.
+  bool? lastKnownRunning;
+  container.listen<AsyncValue<NodeStatus>>(
+    daemonStatusProvider,
+    (_, next) {
+      final v = next.valueOrNull;
+      if (v == null) return; // not a confirmed reading yet — leave probe as-is
+      final running = v.running;
+      if (running == lastKnownRunning) return;
+      lastKnownRunning = running;
+      container.read(kwaaiRpcClientProvider).setProbingEnabled(running);
+    },
+    fireImmediately: true,
   );
 
   final tray = TrayController(container: container);

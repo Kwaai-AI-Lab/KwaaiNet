@@ -53,12 +53,26 @@ class KwaaiNetClient extends $grpc.Client {
     return $createStreamingCall(_$chat, request, options: options);
   }
 
+  /// Cheap liveness check. The GUI calls this periodically to verify
+  /// the gRPC channel is reachable without triggering the inference
+  /// path. Handler returns immediately and has no side effects.
+  $grpc.ResponseFuture<$0.PingReply> ping(
+    $0.PingRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$ping, request, options: options);
+  }
+
   // method descriptors
 
   static final _$chat = $grpc.ClientMethod<$0.ChatMessage, $0.ChatToken>(
       '/kwaai.v1.KwaaiNet/Chat',
       ($0.ChatMessage value) => value.writeToBuffer(),
       $0.ChatToken.fromBuffer);
+  static final _$ping = $grpc.ClientMethod<$0.PingRequest, $0.PingReply>(
+      '/kwaai.v1.KwaaiNet/Ping',
+      ($0.PingRequest value) => value.writeToBuffer(),
+      $0.PingReply.fromBuffer);
 }
 
 @$pb.GrpcServiceName('kwaai.v1.KwaaiNet')
@@ -73,8 +87,23 @@ abstract class KwaaiNetServiceBase extends $grpc.Service {
         true,
         ($core.List<$core.int> value) => $0.ChatMessage.fromBuffer(value),
         ($0.ChatToken value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.PingRequest, $0.PingReply>(
+        'Ping',
+        ping_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.PingRequest.fromBuffer(value),
+        ($0.PingReply value) => value.writeToBuffer()));
   }
 
   $async.Stream<$0.ChatToken> chat(
       $grpc.ServiceCall call, $async.Stream<$0.ChatMessage> request);
+
+  $async.Future<$0.PingReply> ping_Pre(
+      $grpc.ServiceCall $call, $async.Future<$0.PingRequest> $request) async {
+    return ping($call, await $request);
+  }
+
+  $async.Future<$0.PingReply> ping(
+      $grpc.ServiceCall call, $0.PingRequest request);
 }
