@@ -487,3 +487,259 @@ impl Drop for GrpcServerHandle {
         self.shutdown();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// These live inline (not in `tests/grpc_server_lifecycle.rs`) because
+// `kwaai-cli` is a binary-only crate — there is no `lib.rs`, so an
+// integration test file under `tests/` cannot reach `crate::grpc_server`.
+// Adding a `lib.rs` would require re-exporting half the cli surface
+// (`config`, `hf`, `ollama`, `llama_local`, plus their transitive deps),
+// which is the opposite of "minimal pub changes". Keeping the tests inline
+// gives us the same coverage at zero visibility cost.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::KwaaiNetConfig;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// All tests in this module mutate process-wide env (`HOME`,
+    /// `KWAAINET_HOME`) AND bind the same hardcoded loopback port
+    /// (`DEFAULT_GRPC_TCP_PORT`). Cargo runs tests in a single binary on
+    /// multiple threads by default; this mutex forces our tests onto a
+    /// single-file conga line so they don't trample each other's env or
+    /// race for the port.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Sets `HOME` and `KWAAINET_HOME` to the given dir for the duration
+    /// of a test. Returned `EnvGuard` restores the previous values on
+    /// drop so a panic mid-test doesn't leak a fake HOME into the next.
+    struct EnvGuard {
+        prev_home: Option<std::ffi::OsString>,
+        prev_kwaainet_home: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(dir: &std::path::Path) -> Self {
+            let prev_home = std::env::var_os("HOME");
+            let prev_kwaainet_home = std::env::var_os("KWAAINET_HOME");
+            std::env::set_var("HOME", dir);
+            std::env::set_var("KWAAINET_HOME", dir);
+            Self {
+                prev_home,
+                prev_kwaainet_home,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prev_home.take() {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match self.prev_kwaainet_home.take() {
+                Some(v) => std::env::set_var("KWAAINET_HOME", v),
+                None => std::env::remove_var("KWAAINET_HOME"),
+            }
+        }
+    }
+
+    /// Poll an async predicate until it succeeds or `timeout` elapses.
+    /// Returns true on success, false on timeout. Used for "wait until the
+    /// listener is up" / "wait until the listener is down" without a fixed
+    /// sleep that's either flaky-short or slow-long.
+    async fn wait_for<F, Fut>(timeout: Duration, mut probe: F) -> bool
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if probe().await {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// True iff a fresh TCP connect to the gRPC loopback port succeeds.
+    async fn tcp_accepting() -> bool {
+        tokio::net::TcpStream::connect(("127.0.0.1", DEFAULT_GRPC_TCP_PORT))
+            .await
+            .is_ok()
+    }
+
+    /// True iff a fresh TCP connect to the gRPC loopback port is refused
+    /// quickly (used to assert the listener is gone after shutdown).
+    async fn tcp_refused() -> bool {
+        // ConnectionRefused is the happy-path answer; any other Err (e.g.
+        // network unreachable) we also treat as "not accepting". We bound
+        // the dial with a short timeout so a slow stack can't lie to us.
+        match tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::net::TcpStream::connect(("127.0.0.1", DEFAULT_GRPC_TCP_PORT)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => false,        // still accepting
+            Ok(Err(_)) => true,        // refused / unreachable
+            Err(_) => false,           // timed out = something is listening but not answering yet
+        }
+    }
+
+    /// Server lifecycle smoke test.
+    ///
+    /// Spawns the gRPC server against a throwaway HOME, asserts both the
+    /// TCP listener and (on POSIX) the Unix socket come up cleanly with
+    /// the right filesystem permissions, then drops the handle and
+    /// asserts the TCP listener goes away. We deliberately do NOT drive
+    /// a Chat request — `get_or_init_inference` would try to load a
+    /// real model, which is platform-specific and slow.
+    #[tokio::test]
+    async fn server_binds_and_shuts_down_cleanly() {
+        let _serial = TEST_LOCK.lock().expect("test lock not poisoned");
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let config = KwaaiNetConfig::default();
+        let handle = spawn(config);
+
+        // The server task is spawned on tokio; give it up to ~2 s to wire
+        // up the TCP listener. In practice this happens in <50 ms locally.
+        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
+        assert!(
+            up,
+            "gRPC TCP listener never came up on 127.0.0.1:{}",
+            DEFAULT_GRPC_TCP_PORT
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let sock_path = unix_socket_path();
+            // The Unix bind happens on a separate task; wait briefly for the
+            // socket file to materialise rather than racing it.
+            let socket_path_for_probe = sock_path.clone();
+            let sock_present = wait_for(Duration::from_secs(2), || {
+                let p = socket_path_for_probe.clone();
+                async move { tokio::fs::metadata(&p).await.is_ok() }
+            })
+            .await;
+            assert!(
+                sock_present,
+                "Unix socket {} never appeared",
+                sock_path.display()
+            );
+
+            let meta = std::fs::metadata(&sock_path).expect("stat unix socket");
+            // mask off file-type bits; we only care about the permission bits.
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "Unix socket {} must be mode 0o600 (got {:#o})",
+                sock_path.display(),
+                mode
+            );
+        }
+
+        // Drop triggers GrpcServerHandle::shutdown -> oneshot send ->
+        // tonic's serve_with_shutdown returns -> listener is closed.
+        drop(handle);
+
+        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        assert!(
+            down,
+            "TCP listener on 127.0.0.1:{} did not close within 2s of dropping the handle",
+            DEFAULT_GRPC_TCP_PORT
+        );
+
+        #[cfg(unix)]
+        {
+            // The Unix serve task removes the socket file on graceful
+            // shutdown (see serve_unix). Allow it a moment to run.
+            let sock_path = unix_socket_path();
+            let socket_path_for_probe = sock_path.clone();
+            let gone = wait_for(Duration::from_secs(2), || {
+                let p = socket_path_for_probe.clone();
+                async move { tokio::fs::metadata(&p).await.is_err() }
+            })
+            .await;
+            assert!(
+                gone,
+                "Unix socket {} not removed after shutdown",
+                sock_path.display()
+            );
+        }
+    }
+
+    /// Chat handler "client closed before sending a prompt" path.
+    ///
+    /// We can't construct `tonic::Streaming<ChatMessage>` from outside
+    /// tonic (the constructors are crate-private), so we drive the
+    /// handler via a real loopback gRPC client. The client opens a Chat
+    /// stream and immediately closes the send half by dropping the
+    /// inbound channel — the server's `in_stream.message().await` then
+    /// returns `Ok(None)` and the handler must surface
+    /// `Status::invalid_argument`. Crucially, the inference engine is
+    /// never touched on this path: we lock down the cheap, model-free
+    /// branch without needing a GGUF on disk.
+    #[tokio::test]
+    async fn chat_returns_invalid_argument_on_empty_inbound_stream() {
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let _serial = TEST_LOCK.lock().expect("test lock not poisoned");
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let handle = spawn(KwaaiNetConfig::default());
+
+        // Make sure the server is accepting before we dial.
+        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
+        assert!(up, "gRPC TCP listener never came up");
+
+        let endpoint = format!("http://127.0.0.1:{DEFAULT_GRPC_TCP_PORT}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("connect to loopback gRPC server");
+
+        let mut client = KwaaiNetClient::new(channel);
+
+        // Build an outbound stream that produces zero messages — the
+        // moment the client gives this to chat(), the server sees an
+        // immediately-closed inbound stream.
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChatMessage>(1);
+        drop(tx); // close send side -> empty stream.
+        let outbound = ReceiverStream::new(rx);
+
+        let result = client.chat(outbound).await;
+        let err = result.expect_err(
+            "chat() should reject an immediately-closed inbound stream with Status::invalid_argument",
+        );
+        assert_eq!(
+            err.code(),
+            tonic::Code::InvalidArgument,
+            "expected InvalidArgument, got {:?} ({})",
+            err.code(),
+            err.message()
+        );
+
+        drop(handle);
+        // Wait for the listener to actually go away before the next test
+        // tries to bind the same port.
+        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        assert!(down, "TCP listener did not close after handle drop");
+    }
+}

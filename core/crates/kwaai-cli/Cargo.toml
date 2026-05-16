@@ -102,6 +102,12 @@ kwaai-inference = { workspace = true, features = ["metal"] }
 [package.metadata.dist]
 features = ["storage"]
 
+# Test-only deps. tempfile gives the gRPC server lifecycle tests a private
+# HOME/KWAAINET_HOME so they don't touch the developer's real
+# `~/.kwaainet/run/kwaai.sock`.
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["storage", "rag"]
 cuda = ["kwaai-inference/flash-attn"]
