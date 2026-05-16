@@ -38,7 +38,7 @@ use tracing::{error, info, warn};
 
 use kwaai_rpc::v1::{
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
-    ChatMessage, ChatToken,
+    ChatMessage, ChatToken, PingReply, PingRequest,
 };
 
 use crate::config::KwaaiNetConfig;
@@ -198,6 +198,21 @@ impl KwaaiNet for KwaaiNetService {
         spawn_inference(inference, prompt, tx);
 
         Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+
+    /// Liveness probe. Returns the current daemon wall-clock time.
+    /// Deliberately trivial — no inference, no DHT, no locks taken.
+    async fn ping(
+        &self,
+        _request: Request<PingRequest>,
+    ) -> Result<Response<PingReply>, Status> {
+        let now = std::time::SystemTime::now();
+        // Format as RFC 3339 via chrono for a stable, parse-friendly
+        // representation. Falls back to the unix timestamp if the
+        // SystemTime is somehow pre-epoch.
+        let server_time = chrono::DateTime::<chrono::Utc>::from(now)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        Ok(Response::new(PingReply { server_time }))
     }
 }
 

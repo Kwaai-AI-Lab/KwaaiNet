@@ -27,6 +27,25 @@ service KwaaiNet {
     // The server responds with a stream of ChatTokens, one per generated
     // text piece, ending with a single ChatToken that has done=true.
     rpc Chat(stream ChatMessage) returns (stream ChatToken);
+
+    // Cheap liveness check. The GUI calls this periodically to verify
+    // the gRPC channel is reachable without triggering the inference
+    // path. Handler returns immediately and has no side effects.
+    rpc Ping(PingRequest) returns (PingReply);
+}
+
+// Liveness probe input. No fields today; reserved range 1-15 left for
+// future probe metadata (client version, capability flags) without
+// breaking older callers.
+message PingRequest {
+}
+
+// Liveness probe response. server_time confirms a non-empty round-trip
+// payload and lets the client surface clock skew if it ever cares.
+message PingReply {
+    // Wall-clock time on the daemon when the ping was handled, formatted
+    // as RFC 3339.
+    string server_time = 1;
 }
 
 // A single message in a chat conversation. Modelled loosely after the
