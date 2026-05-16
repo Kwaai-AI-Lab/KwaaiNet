@@ -1,9 +1,25 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'chat_message.dart';
 import 'kwaai_rpc_client.dart';
+
+void _log(String msg) {
+  stderr.writeln('[chat] ${_elide(msg)}');
+}
+
+/// Keep log lines readable: long chat bodies get the middle elided so
+/// you see the leading prompt and the tail of the response without
+/// burying the console. Threshold sized for one-screen visibility.
+String _elide(String s, {int maxLen = 240, int headTail = 110}) {
+  final flat = s.replaceAll('\n', ' ');
+  if (flat.length <= maxLen) return flat;
+  final head = flat.substring(0, headTail);
+  final tail = flat.substring(flat.length - headTail);
+  return '$head … [${flat.length} chars] … $tail';
+}
 
 /// Append-only transcript of messages in the current chat session.
 /// Tokens streamed from the daemon mutate the last (assistant) message
@@ -23,6 +39,7 @@ class ChatTranscriptNotifier extends Notifier<List<ChatMessage>> {
   Future<void> send(String prompt) async {
     if (prompt.trim().isEmpty) return;
     if (_sub != null) return; // ignore overlapping sends
+    _log('> $prompt');
     final user = ChatMessage(role: 'user', text: prompt);
     final assistant = ChatMessage(role: 'assistant', text: '', streaming: true);
     state = [...state, user, assistant];
@@ -34,14 +51,15 @@ class ChatTranscriptNotifier extends Notifier<List<ChatMessage>> {
         _bump();
       },
       onError: (e, _) {
-        assistant.text +=
-            assistant.text.isEmpty ? '⚠️ $e' : '\n\n⚠️ stream error: $e';
+        _log('< [error] $e');
+        assistant.error = e.toString();
         assistant.streaming = false;
         _bump();
         _sub = null;
         if (!completer.isCompleted) completer.complete();
       },
       onDone: () {
+        _log('< ${assistant.text}');
         assistant.streaming = false;
         _bump();
         _sub = null;

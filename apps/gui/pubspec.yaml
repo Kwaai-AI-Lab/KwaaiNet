@@ -67,6 +67,7 @@ flutter:
     - assets/kwaaiai.png
     - assets/tray_kwaai_logo.png
     - assets/tray_kwaai_logo@2x.png
+    - assets/kwaaiai-walk-anim.gif
 
   # To add assets to your application, add an assets section, like this:
   # assets:

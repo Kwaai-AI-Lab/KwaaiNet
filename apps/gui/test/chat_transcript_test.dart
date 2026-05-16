@@ -94,7 +94,7 @@ void main() {
     expect(container.read(chatTranscriptProvider), isEmpty);
   });
 
-  test('stream error surfaces in assistant text and clears streaming',
+  test('stream error surfaces on assistant message and clears streaming',
       () async {
     final container = ProviderContainer(
       overrides: [
@@ -106,8 +106,11 @@ void main() {
     await container.read(chatTranscriptProvider.notifier).send('hi');
     final last = container.read(chatTranscriptProvider).last;
     expect(last.role, 'assistant');
-    expect(last.text, contains('first '));
-    expect(last.text, contains('boom'));
+    // Tokens that arrived before the error are preserved verbatim;
+    // the error lands on the message's `error` field for the UI to
+    // render in its distinct red badge.
+    expect(last.text, 'first ');
+    expect(last.error, contains('boom'));
     expect(last.streaming, false);
   });
 }

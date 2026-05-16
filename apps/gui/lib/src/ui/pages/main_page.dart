@@ -326,29 +326,101 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
                 isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
             children: [
               Flexible(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: isUser
-                        ? accent.withValues(alpha: 0.12)
-                        : context.kwaai.elevatedSurface,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Text(
-                    msg.text.isEmpty && msg.streaming ? '…' : msg.text,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: scheme.onSurface,
-                    ),
-                  ),
+                child: Column(
+                  crossAxisAlignment: isUser
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start,
+                  children: [
+                    if (msg.text.isEmpty && msg.streaming)
+                      // No tokens yet — show the animated Kwaai walk
+                      // so the user can see we're actively waiting on
+                      // the daemon. Replaced by the bubble below as
+                      // soon as the first token arrives.
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Image.asset(
+                          'assets/kwaaiai-walk-anim.gif',
+                          width: 32,
+                          height: 32,
+                        ),
+                      )
+                    else if (msg.text.isNotEmpty)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isUser
+                              ? accent.withValues(alpha: 0.12)
+                              : context.kwaai.elevatedSurface,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: SelectableText(
+                          msg.text,
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: scheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    if (msg.error != null)
+                      _ChatErrorBadge(
+                        error: msg.error!,
+                        // Pad above only when there's a bubble (or the
+                        // thinking indicator) above; a pure error
+                        // message hugs the top of the row.
+                        topPad: msg.text.isNotEmpty ? 6 : 0,
+                      ),
+                  ],
                 ),
               ),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// Compact error badge rendered below (or instead of) an assistant
+/// bubble when its stream failed. Red icon + message in the theme's
+/// destructive color so it reads as distinct from normal model output.
+class _ChatErrorBadge extends StatelessWidget {
+  const _ChatErrorBadge({required this.error, required this.topPad});
+
+  final String error;
+  final double topPad;
+
+  @override
+  Widget build(BuildContext context) {
+    final dest = context.kwaai.buttonDestructive;
+    return Padding(
+      padding: EdgeInsets.only(top: topPad),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: dest.withValues(alpha: 0.10),
+          border: Border.all(color: dest.withValues(alpha: 0.35)),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline, size: 16, color: dest),
+            const SizedBox(width: 8),
+            Flexible(
+              child: SelectableText(
+                error,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: dest,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

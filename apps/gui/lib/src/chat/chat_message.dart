@@ -6,6 +6,7 @@ class ChatMessage {
     required this.role,
     required this.text,
     this.streaming = false,
+    this.error,
   });
 
   /// 'user' or 'assistant'. Free-form string so the future server-side
@@ -20,4 +21,8 @@ class ChatMessage {
   /// True while tokens are still arriving. Cleared once the stream
   /// completes (success, error, or cancel).
   bool streaming;
+
+  /// If the stream errored, this is the gRPC / transport message. UI
+  /// renders an error-styled badge instead of (or alongside) [text].
+  String? error;
 }

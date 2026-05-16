@@ -28,6 +28,9 @@ class KwaaiRpcClient {
 
   ClientChannel? _channel;
   pbgrpc.KwaaiNetClient? _stub;
+  /// Human-readable transport descriptor for the currently-open channel,
+  /// remembered so close/error logs can name what we just lost.
+  String? _connectionPath;
 
   pbgrpc.KwaaiNetClient _client() {
     final existing = _stub;
@@ -44,7 +47,8 @@ class KwaaiRpcClient {
     if (Platform.isMacOS || Platform.isLinux) {
       final sockPath = unixSocketPath;
       if (File(sockPath).existsSync()) {
-        _log('connecting via Unix socket: $sockPath');
+        _connectionPath = 'unix://$sockPath';
+        _log('connected via Unix socket: $sockPath');
         return ClientChannel(
           InternetAddress(sockPath, type: InternetAddressType.unix),
           port: 0,
@@ -55,7 +59,8 @@ class KwaaiRpcClient {
       }
       _log('Unix socket not found, falling back to TCP');
     }
-    _log('connecting via TCP: 127.0.0.1:$kDefaultGrpcPort');
+    _connectionPath = 'tcp://127.0.0.1:$kDefaultGrpcPort';
+    _log('connected via TCP: 127.0.0.1:$kDefaultGrpcPort');
     return ClientChannel(
       '127.0.0.1',
       port: kDefaultGrpcPort,
@@ -94,9 +99,12 @@ class KwaaiRpcClient {
 
   Future<void> _resetChannel() async {
     final ch = _channel;
+    final path = _connectionPath;
     _channel = null;
     _stub = null;
+    _connectionPath = null;
     if (ch != null) {
+      _log('connection closed (${path ?? "unknown"})');
       try {
         await ch.shutdown();
       } catch (_) {}
