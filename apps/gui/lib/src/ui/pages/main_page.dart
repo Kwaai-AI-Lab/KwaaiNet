@@ -565,10 +565,22 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
                               : context.kwaai.elevatedSurface,
                           borderRadius: BorderRadius.circular(14),
                         ),
-                        child: SelectableText(
-                          msg.text,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(color: scheme.onSurface),
+                        child: SelectableText.rich(
+                          TextSpan(
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(color: scheme.onSurface),
+                            children: [
+                              TextSpan(text: msg.text),
+                              if (!isUser && msg.streaming)
+                                WidgetSpan(
+                                  alignment: PlaceholderAlignment.baseline,
+                                  baseline: TextBaseline.alphabetic,
+                                  child: _StreamingDots(
+                                    color: scheme.onSurface,
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     if (msg.error != null)
@@ -727,6 +739,70 @@ class _ChatErrorBadgeState extends State<_ChatErrorBadge> {
               ],
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Inline "…" animation appended to a streaming assistant bubble.
+/// Each dot fades in on its own 1/3 of the cycle so the user can see
+/// the stream is still alive even when the model pauses between tokens.
+class _StreamingDots extends StatefulWidget {
+  const _StreamingDots({required this.color});
+
+  final Color color;
+
+  @override
+  State<_StreamingDots> createState() => _StreamingDotsState();
+}
+
+class _StreamingDotsState extends State<_StreamingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value;
+        return Padding(
+          padding: const EdgeInsets.only(left: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [_dot(t, 0.0), _dot(t, 1 / 3), _dot(t, 2 / 3)],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _dot(double t, double phase) {
+    // Triangle wave offset by `phase`: ramps 0→1 over the first half
+    // of each dot's slot, then back to 0. Keeps min opacity above zero
+    // so the dots remain visible (just dim) at their trough.
+    final local = ((t - phase) % 1.0 + 1.0) % 1.0;
+    final ramp = local < 0.5 ? local * 2 : (1 - local) * 2;
+    final opacity = 0.25 + 0.75 * ramp;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 1),
+      child: Container(
+        width: 4,
+        height: 4,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: widget.color.withValues(alpha: opacity),
         ),
       ),
     );
