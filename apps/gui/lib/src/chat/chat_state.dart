@@ -37,7 +37,8 @@ enum ChatPath {
 /// streamed from the daemon mutate the last (assistant) message in
 /// place — `_bump()` triggers UI rebuilds without copying the list
 /// per token.
-class ChatTranscriptNotifier extends FamilyNotifier<List<ChatMessage>, ChatPath> {
+class ChatTranscriptNotifier
+    extends FamilyNotifier<List<ChatMessage>, ChatPath> {
   StreamSubscription<String>? _sub;
   ChatPath get _path => arg;
 
@@ -102,15 +103,27 @@ class ChatTranscriptNotifier extends FamilyNotifier<List<ChatMessage>, ChatPath>
     }
   }
 
+  /// Drop the transcript and abort any in-flight stream. Backs the
+  /// composer's "new chat" affordance — the next [send] starts a
+  /// fresh conversation from the daemon's perspective too, since we
+  /// don't replay history.
+  void newChat() {
+    _sub?.cancel();
+    _sub = null;
+    state = [];
+  }
+
   /// Trigger a rebuild without changing the list reference — copying
   /// the list is cheap and only happens on each token tick.
   void _bump() => state = List.of(state);
 }
 
-final chatTranscriptProvider = NotifierProvider.family<
-    ChatTranscriptNotifier, List<ChatMessage>, ChatPath>(
-  ChatTranscriptNotifier.new,
-);
+final chatTranscriptProvider =
+    NotifierProvider.family<
+      ChatTranscriptNotifier,
+      List<ChatMessage>,
+      ChatPath
+    >(ChatTranscriptNotifier.new);
 
 /// True when there's an in-flight assistant stream on the given path.
 final chatStreamingProvider = Provider.family<bool, ChatPath>((ref, path) {

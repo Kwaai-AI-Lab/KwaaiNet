@@ -12,6 +12,7 @@ import '../../window/window_focus.dart';
 import '../theme/kwaai_theme.dart';
 import '../widgets/app_shell.dart';
 import '../widgets/branded_title.dart';
+import '../widgets/kwaai_chat_composer.dart';
 import 'settings_page.dart';
 
 class MainPage extends ConsumerStatefulWidget {
@@ -125,7 +126,9 @@ class _ChatTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Expanded(child: _ChatBody(path: path, onOpenSettings: onOpenSettings)),
+        Expanded(
+          child: _ChatBody(path: path, onOpenSettings: onOpenSettings),
+        ),
         _ChatInputBar(path: path),
       ],
     );
@@ -163,9 +166,8 @@ class _MainTabSegmented extends StatelessWidget {
               : unselectedFill,
         ),
         foregroundColor: WidgetStateProperty.resolveWith(
-          (states) => states.contains(WidgetState.selected)
-              ? selectedFg
-              : unselectedFg,
+          (states) =>
+              states.contains(WidgetState.selected) ? selectedFg : unselectedFg,
         ),
         side: const WidgetStatePropertyAll(BorderSide.none),
         visualDensity: VisualDensity.compact,
@@ -263,8 +265,9 @@ class _ChatBody extends ConsumerWidget {
     // reachable via gRPC — but the *status copy* below reflects the
     // daemon lifecycle (starting / running / stopping / stopped), so
     // the user gets useful detail rather than a generic "connecting".
-    final conn = ref.watch(kwaaiRpcConnectionProvider).valueOrNull
-        ?? RpcConnection.connecting;
+    final conn =
+        ref.watch(kwaaiRpcConnectionProvider).valueOrNull ??
+        RpcConnection.connecting;
     if (conn == RpcConnection.connected) {
       return _ChatTranscript(path: path);
     }
@@ -293,10 +296,9 @@ class _ChatBody extends ConsumerWidget {
           // Haven't received the first status reading yet — distinguish
           // this muted "Checking…" from a confident "Service is stopped"
           // that would flicker the moment the probe lands.
-          spinnerColor = Theme.of(context)
-              .colorScheme
-              .onSurfaceVariant
-              .withValues(alpha: 0.4);
+          spinnerColor = Theme.of(
+            context,
+          ).colorScheme.onSurfaceVariant.withValues(alpha: 0.4);
           headline = 'Checking service…';
           spinner = true;
           showStoppedSub = false;
@@ -388,6 +390,12 @@ class _ChatInputBarState extends ConsumerState<_ChatInputBar> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
 
+  /// True once we've handed focus to the input. Used to gate the
+  /// auto-focus to a single shot — without this the field would yank
+  /// focus back from the user any time `canSend` rebuilds (e.g. they
+  /// click somewhere else mid-stream).
+  bool _autofocused = false;
+
   @override
   void dispose() {
     _controller.dispose();
@@ -403,39 +411,62 @@ class _ChatInputBarState extends ConsumerState<_ChatInputBar> {
     _focusNode.requestFocus();
   }
 
+  void _newChat() {
+    _controller.clear();
+    ref.read(chatTranscriptProvider(widget.path).notifier).newChat();
+    _focusNode.requestFocus();
+  }
+
   @override
   Widget build(BuildContext context) {
     final conn = ref.watch(kwaaiRpcConnectionProvider).valueOrNull;
     final streaming = ref.watch(chatStreamingProvider(widget.path));
     final canSend = conn == RpcConnection.connected && !streaming;
+    final hasTranscript = ref
+        .watch(chatTranscriptProvider(widget.path))
+        .isNotEmpty;
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+
+    // First time the input becomes usable, claim focus so the user
+    // can start typing without clicking. Single-shot — doesn't yank
+    // focus back if they navigate away mid-session.
+    if (canSend && !_autofocused) {
+      _autofocused = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focusNode.requestFocus();
+      });
+    }
 
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-        child: TextField(
-          controller: _controller,
-          focusNode: _focusNode,
-          enabled: canSend,
-          onSubmitted: (_) => canSend ? _send() : null,
-          decoration: InputDecoration(
-            hintText: 'Message kwaainet…',
-            filled: true,
-            fillColor: context.kwaai.inputBackground,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 12,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // New Chat sits outside the composer pill so it reads as a
+            // distinct workspace action, not part of the input. Bottom-
+            // aligned with the Send button when the composer expands.
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: IconButton(
+                tooltip: 'New chat',
+                icon: const Icon(Icons.add_comment_outlined),
+                onPressed: hasTranscript ? _newChat : () {},
+                color: onSurface.withValues(alpha: hasTranscript ? 0.85 : 0.45),
+              ),
             ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(24),
-              borderSide: BorderSide.none,
+            const SizedBox(width: 6),
+            Expanded(
+              child: KwaaiChatComposer(
+                controller: _controller,
+                focusNode: _focusNode,
+                enabled: canSend,
+                onSend: canSend ? _send : null,
+                hintText: 'Message kwaainet…',
+              ),
             ),
-            suffixIcon: IconButton(
-              icon: const Icon(Icons.arrow_forward),
-              tooltip: 'Send',
-              onPressed: canSend ? _send : null,
-            ),
-          ),
+          ],
         ),
       ),
     );
@@ -499,8 +530,9 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Row(
-            mainAxisAlignment:
-                isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            mainAxisAlignment: isUser
+                ? MainAxisAlignment.end
+                : MainAxisAlignment.start,
             children: [
               Flexible(
                 child: Column(
@@ -535,10 +567,8 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
                         ),
                         child: SelectableText(
                           msg.text,
-                          style:
-                              Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: scheme.onSurface,
-                          ),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: scheme.onSurface),
                         ),
                       ),
                     if (msg.error != null)
@@ -590,20 +620,17 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
       );
     case 7: // NO_PEERS_FOR_MODEL
       return (
-        headline:
-            'No peers are serving this model on the network yet.',
+        headline: 'No peers are serving this model on the network yet.',
         details: err.message,
       );
     case 8: // INSUFFICIENT_COVERAGE
       return (
-        headline:
-            'Not enough peers — some model blocks aren\'t being served.',
+        headline: 'Not enough peers — some model blocks aren\'t being served.',
         details: err.message,
       );
     case 9: // ALL_CANDIDATES_FAILED
       return (
-        headline:
-            'Not enough peers available for distributed inference.',
+        headline: 'Not enough peers available for distributed inference.',
         details: err.message,
       );
     case 10: // MODEL_LOAD_FAILED
@@ -658,9 +685,9 @@ class _ChatErrorBadgeState extends State<_ChatErrorBadge> {
                 Flexible(
                   child: SelectableText(
                     headline,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: dest,
-                    ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: dest),
                   ),
                 ),
               ],
