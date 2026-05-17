@@ -59,6 +59,18 @@ class KwaaiRpcClient {
   RpcConnection _lastState = RpcConnection.connecting;
   bool _probingEnabled = true;
 
+  /// True while a probe is in flight. Serialises probes so a periodic
+  /// tick can't fire a second `session.ping()` while the previous one
+  /// is still inside its 2s timeout — that overlap can wedge
+  /// grpc-dart's channel state machine when the daemon goes away.
+  bool _probeInFlight = false;
+
+  /// Resolves when a channel-shutdown sequence (begun by
+  /// [_resetChannel] or [setProbingEnabled(false)]) finishes.
+  /// `_probe` awaits this before reopening so we never have an old
+  /// channel mid-shutdown while a new one is being dialed.
+  Future<void>? _pendingReset;
+
   final _stateController = StreamController<RpcConnection>.broadcast();
 
   /// Broadcasts the *current* high-level connection state. Late
@@ -97,29 +109,52 @@ class KwaaiRpcClient {
       scheduleMicrotask(_probe);
     } else {
       // Drop any cached channel so we don't sit on a closed socket; the
-      // next enabled probe will open a fresh one.
+      // next enabled probe will open a fresh one. Track the in-flight
+      // shutdown so a concurrent probe waits for it instead of racing.
       _publish(RpcConnection.disconnected);
-      // ignore: discarded_futures
-      _resetChannel(silent: true);
+      // No channel to tear down? Don't even create a future — bare
+      // setProbingEnabled(false) at startup (before any probe has
+      // opened anything) would otherwise stash a future whose only
+      // wait point is grpc-dart's shutdown of a never-opened channel,
+      // which can stall and deadlock every subsequent probe behind it.
+      if (_channel != null) {
+        _pendingReset = _resetChannel(silent: true);
+      }
     }
   }
 
   Future<void> _probe() async {
     if (!_probingEnabled) return;
+    if (_probeInFlight) return; // a previous probe is still running
     // If we already have a stub and the underlying connection is
     // happy, skip — connection state changes only happen on
     // teardown or via the probe itself.
     if (_stub != null && _lastState == RpcConnection.connected) return;
+    _probeInFlight = true;
     try {
-      final session = _sessionOrInit();
+      // Wait for any in-flight channel teardown to complete before
+      // opening a new one — overlapping shutdown + dial wedges
+      // grpc-dart's connection state machine. Bounded: a stuck
+      // shutdown must never permanently block the probe loop, so
+      // we cap the wait and proceed regardless.
+      final pending = _pendingReset;
+      if (pending != null) {
+        await pending
+            .timeout(const Duration(seconds: 1), onTimeout: () {});
+        _pendingReset = null;
+      }
+      final session = await _sessionOrInit();
       await session.ping().timeout(const Duration(seconds: 2));
       _publish(RpcConnection.connected);
     } catch (_) {
       _publish(RpcConnection.disconnected);
       // Drop the dead channel so the next probe tries a fresh
       // _openChannel — important when the daemon was restarted and
-      // the unix socket inode changed.
-      await _resetChannel(silent: true);
+      // the unix socket inode changed. Track the shutdown so the
+      // *next* probe waits for it.
+      _pendingReset = _resetChannel(silent: true);
+    } finally {
+      _probeInFlight = false;
     }
   }
 
@@ -134,11 +169,11 @@ class KwaaiRpcClient {
   // Channel management
   // ---------------------------------------------------------------------
 
-  pbgrpc.KwaaiNetClient _client() {
+  Future<pbgrpc.KwaaiNetClient> _client() async {
     final existing = _stub;
     if (existing != null) return existing;
 
-    final channel = _openChannel();
+    final channel = await _openChannel();
     _channel = channel;
     // Intentionally NOT subscribing to channel.onConnectionStateChanged
     // here: the channel transitions through connecting/transientFailure
@@ -155,18 +190,21 @@ class KwaaiRpcClient {
   /// Lazily build (or reuse) the [SessionClient] backed by the current
   /// stub. The session owns one bidi rpc; every operation (ping, chat,
   /// status, …) multiplexes through it.
-  SessionClient _sessionOrInit() {
+  Future<SessionClient> _sessionOrInit() async {
     final existing = _session;
     if (existing != null) return existing;
-    final s = SessionClient(_client());
+    final s = SessionClient(await _client());
     _session = s;
     return s;
   }
 
-  ClientChannel _openChannel() {
+  Future<ClientChannel> _openChannel() async {
     if (Platform.isMacOS || Platform.isLinux) {
       final sockPath = unixSocketPath;
-      if (File(sockPath).existsSync()) {
+      // Async exists() — moves the stat off the synchronous critical
+      // path so the UI isolate doesn't pay even microseconds of FS
+      // latency per probe tick.
+      if (await File(sockPath).exists()) {
         _connectionPath = 'unix://$sockPath';
         _log('opening Unix socket: $sockPath');
         return ClientChannel(
@@ -200,7 +238,7 @@ class KwaaiRpcClient {
   /// emits Done. Stream errors on operation-level failures (e.g.
   /// SessionOpError) or on session/channel teardown.
   Stream<String> chatStream(String prompt) async* {
-    final session = _sessionOrInit();
+    final session = await _sessionOrInit();
     try {
       yield* session.shardRun(prompt);
     } catch (e) {
@@ -216,7 +254,7 @@ class KwaaiRpcClient {
   /// — used by the Developer tab for direct fallback / dev runs
   /// against the local InferenceEngine.
   Stream<String> generateLocal(String prompt) async* {
-    final session = _sessionOrInit();
+    final session = await _sessionOrInit();
     try {
       yield* session.generate(prompt);
     } catch (e) {
