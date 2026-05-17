@@ -41,7 +41,19 @@ try {
     winget install --id Git.Git -e --source winget
 }
 
-# 2. Rust toolchain
+# 2. protoc (Protocol Buffers compiler)
+# Used at build time by both kwaai-p2p-daemon and kwaai-rpc. Each crate's
+# build.rs has a download-on-miss fallback, but a system protoc is faster
+# and works in offline environments where the fallback can't reach github.
+try {
+    $protocVersion = protoc --version 2>$null
+    Write-Host "[OK] protoc found: $protocVersion" -ForegroundColor Green
+} catch {
+    Write-Host "[=>] Installing protoc..." -ForegroundColor Yellow
+    winget install --id protobuf -e --source winget
+}
+
+# 3. Rust toolchain
 try {
     $cargoVersion = cargo --version 2>$null
     Write-Host "[OK] Rust found: $cargoVersion" -ForegroundColor Green
@@ -72,7 +84,7 @@ try {
     Write-Host "[OK] Rust installed: $(cargo --version)" -ForegroundColor Green
 }
 
-# 3. Go toolchain
+# 4. Go toolchain
 try {
     $goVersion = go version 2>$null
     Write-Host "[OK] Go found: $goVersion" -ForegroundColor Green
