@@ -2203,18 +2203,34 @@ pub async fn forward_through_chain(
         // All nodes whose range covers `pos`.
         // Primary sort: widest coverage first (largest end_block).
         // Secondary sort: highest local trust score first.
+        // Tertiary sort: prefer self when we can dispatch locally — avoids
+        // routing through libp2p when our own shard serve already has the
+        // block range loaded, which is the cheapest possible hop. Gated on
+        // `local_port.is_some()` so we don't pick self and then fail the
+        // dispatch with "shard serve is not running on this machine".
         // Skip peers that already failed with protocol errors in this session.
         let mut candidates: Vec<&BlockServerEntry> = chain
             .iter()
             .filter(|e| e.start_block <= pos && e.end_block > pos)
             .filter(|e| !failed_peers.contains(&e.peer_id))
             .collect();
+        let self_dispatchable = local_port.is_some();
         candidates.sort_by(|a, b| {
-            b.end_block.cmp(&a.end_block).then_with(|| {
-                b.trust_score
-                    .partial_cmp(&a.trust_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            b.end_block
+                .cmp(&a.end_block)
+                .then_with(|| {
+                    b.trust_score
+                        .partial_cmp(&a.trust_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    if !self_dispatchable {
+                        return std::cmp::Ordering::Equal;
+                    }
+                    let a_self = our_peer_id == Some(&a.peer_id);
+                    let b_self = our_peer_id == Some(&b.peer_id);
+                    b_self.cmp(&a_self)
+                })
         });
 
         if candidates.is_empty() {
