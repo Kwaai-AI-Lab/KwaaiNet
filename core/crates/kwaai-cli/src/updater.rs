@@ -143,8 +143,9 @@ impl UpdateChecker {
                 anyhow::bail!("Installer exited with {}", status);
             }
 
-            // macOS Gatekeeper quarantines binaries downloaded from the internet.
-            // Strip the quarantine xattr so the new binary isn't SIGKILL'd on first run.
+            // macOS 26+ kills unsigned binaries even after quarantine removal.
+            // Strip the quarantine xattr then apply an ad-hoc signature so
+            // Gatekeeper accepts the new binary before we try to spawn it.
             #[cfg(target_os = "macos")]
             {
                 let install_dir = dirs::home_dir()
@@ -155,6 +156,10 @@ impl UpdateChecker {
                     if path.exists() {
                         let _ = std::process::Command::new("xattr")
                             .args(["-d", "com.apple.quarantine"])
+                            .arg(&path)
+                            .output();
+                        let _ = std::process::Command::new("codesign")
+                            .args(["-s", "-", "--force"])
                             .arg(&path)
                             .output();
                     }
