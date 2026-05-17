@@ -132,6 +132,30 @@ message Error {
         CANCELLED = 4;
         INTERNAL = 5;
         UNIMPLEMENTED = 6;
+
+        // Inference-specific failure classes. Promoted out of INTERNAL
+        // so clients can render a friendly message without grepping
+        // the human-readable `message` field.
+
+        // The DHT had no peers serving this model at all. Often
+        // transient at startup before discovery completes; sometimes
+        // permanent if the model isn't being served by anyone on the
+        // network.
+        NO_PEERS_FOR_MODEL = 7;
+
+        // Peers exist but they don't collectively cover every block
+        // of the model — the dispatcher can't build a full chain.
+        INSUFFICIENT_COVERAGE = 8;
+
+        // A chain was built but every candidate for at least one
+        // position failed mid-inference (most peers don't actually
+        // have a working inference handler).
+        ALL_CANDIDATES_FAILED = 9;
+
+        // The local InferenceEngine couldn't load the requested
+        // model (HF download error, Ollama blob missing, OOM, etc.).
+        // Only emitted by the `generate` path, not `shard_run`.
+        MODEL_LOAD_FAILED = 10;
     }
     Code code = 1;
     string message = 2;

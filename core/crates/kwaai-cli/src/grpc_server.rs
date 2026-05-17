@@ -256,20 +256,13 @@ impl KwaaiNet for KwaaiNetService {
                     }
 
                     client_frame::Body::ShardRun(req) => {
-                        // TODO(shard): wire the distributed-inference
-                        // dispatcher (shard_cmd / block_rpc) into here.
-                        // Until that lands, surface a clear unimpl so
-                        // callers know to fall back to local Generate.
-                        let _ = out_tx
-                            .send(Ok(error_frame(
-                                id,
-                                ErrorCode::Unimplemented,
-                                &format!(
-                                    "shard_run not yet wired; requested model={}",
-                                    req.model.unwrap_or_else(|| cfg.model.clone())
-                                ),
-                            )))
-                            .await;
+                        spawn_session_shard_run(
+                            id,
+                            req,
+                            out_tx.clone(),
+                            cancels.clone(),
+                        )
+                        .await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
@@ -389,6 +382,47 @@ fn error_frame(id: u64, code: ErrorCode, msg: &str) -> ServerFrame {
     }
 }
 
+/// Classify a `shard_run` failure into a specific [`ErrorCode`]. The
+/// dispatcher in [`crate::shard_cmd`] returns anyhow errors with
+/// descriptive `bail!` messages; pattern-match the strings here so
+/// the wire surface uses precise codes (clients shouldn't have to
+/// grep the human message). Falls back to `Internal` for genuinely
+/// unknown failures.
+fn classify_shard_error(msg: &str) -> ErrorCode {
+    // 30s-wait timeout exhausted without any peer announcing the model.
+    if msg.contains("no peers serving model") {
+        return ErrorCode::NoPeersForModel;
+    }
+    // Chain build couldn't find a server covering some block.
+    if msg.contains("No server covers block") {
+        return ErrorCode::InsufficientCoverage;
+    }
+    // Chain built, all candidates for a given position failed during
+    // inference forwards (most commonly: peer's inference handler
+    // unregistered, so /kwaai/inference/1.0.0 protocol negotiation
+    // fails for every candidate).
+    if msg.contains("candidate(s) for block") {
+        return ErrorCode::AllCandidatesFailed;
+    }
+    ErrorCode::Internal
+}
+
+/// Classify a local `generate` failure. The biggest category is model
+/// load (HF resolve / Ollama blob miss / SafeTensors-vs-GGUF format
+/// mismatch). The wrapper context strings in
+/// [`build_inference_state`] make these easy to spot.
+fn classify_generate_error(msg: &str) -> ErrorCode {
+    if msg.contains("resolving HF snapshot")
+        || msg.contains("resolving Ollama blob")
+        || msg.contains("loading SafeTensors snapshot")
+        || msg.contains("loading GGUF blob")
+        || msg.contains("InferenceEngine::new")
+    {
+        return ErrorCode::ModelLoadFailed;
+    }
+    ErrorCode::Internal
+}
+
 /// Best-effort check that this node's local shard server is ready to
 /// serve its assigned block range. Reads the `~/.kwaainet/run/shard.ready`
 /// touchfile the shard server writes when it's bound + warm.
@@ -427,11 +461,12 @@ async fn spawn_session_generate(
         Ok(i) => i,
         Err(e) => {
             error!(seq, id, "Session chat: inference init failed: {e:#}");
+            let msg = format!("inference init failed: {e:#}");
             let _ = out_tx
                 .send(Ok(error_frame(
                     id,
-                    ErrorCode::Internal,
-                    &format!("inference init failed: {e}"),
+                    classify_generate_error(&msg),
+                    &msg,
                 )))
                 .await;
             cancels.lock().await.remove(&id);
@@ -483,11 +518,12 @@ async fn spawn_session_generate(
                             }
                         }
                         Some(Err(status)) => {
+                            let msg = status.message().to_string();
                             let _ = out_tx
                                 .send(Ok(error_frame(
                                     id,
-                                    ErrorCode::Internal,
-                                    &status.message().to_string(),
+                                    classify_generate_error(&msg),
+                                    &msg,
                                 )))
                                 .await;
                             break;
@@ -503,6 +539,113 @@ async fn spawn_session_generate(
                 }
             }
         }
+        cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+/// Drive a distributed `shard run` within a Session. Pipes events from
+/// `shard_cmd::run_streaming` onto the Session output channel.
+///
+/// Unlike `spawn_session_generate`, this never touches `InferenceState` —
+/// distributed inference runs across peer block-servers, not the local
+/// engine — so we don't take the inference slot mutex.
+async fn spawn_session_shard_run(
+    id: u64,
+    req: ShardRunRequest,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    // Register the cancel channel up-front so a Cancel arriving immediately
+    // after this frame still finds an entry to fire.
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    let opts = crate::shard_cmd::ShardRunOptions {
+        prompt: req.content,
+        model: req.model,
+        // Today the proto carries neither max_tokens nor a circuit id; we
+        // fall through to run_streaming's defaults. Both fields are reserved
+        // tag-space so they can be added without a breaking change.
+        max_tokens: None,
+        circuit_id: None,
+    };
+
+    let cancels_for_cleanup = cancels.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt as _;
+
+        let mut stream = Box::pin(crate::shard_cmd::run_streaming(opts));
+
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    // Cancel arrived from the Session dispatcher. Drop the
+                    // stream; the inference worker will see its sender
+                    // close and stop on its next yield.
+                    let _ = out_tx
+                        .send(Ok(error_frame(
+                            id,
+                            ErrorCode::Cancelled,
+                            "cancelled by client",
+                        )))
+                        .await;
+                    break;
+                }
+                ev = stream.next() => {
+                    match ev {
+                        Some(crate::shard_cmd::ShardRunEvent::Token(piece)) => {
+                            let frame = ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::Token(ChatToken {
+                                    text: piece,
+                                    done: false,
+                                    finish_reason: None,
+                                })),
+                            };
+                            if out_tx.send(Ok(frame)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(crate::shard_cmd::ShardRunEvent::Done) => {
+                            // Emit a final done=true token so multi-token
+                            // clients can flush their UI state, then the
+                            // structural Done terminator for the op id.
+                            let _ = out_tx
+                                .send(Ok(ServerFrame {
+                                    id,
+                                    body: Some(server_frame::Body::Token(ChatToken {
+                                        text: String::new(),
+                                        done: true,
+                                        finish_reason: Some("stop".to_string()),
+                                    })),
+                                }))
+                                .await;
+                            let _ = out_tx.send(Ok(done_frame(id))).await;
+                            break;
+                        }
+                        Some(crate::shard_cmd::ShardRunEvent::Error(e)) => {
+                            let msg = format!("{e:#}");
+                            let _ = out_tx
+                                .send(Ok(error_frame(
+                                    id,
+                                    classify_shard_error(&msg),
+                                    &msg,
+                                )))
+                                .await;
+                            break;
+                        }
+                        None => {
+                            // Stream ended without a terminal event — treat
+                            // as a clean Done so callers don't see a half-
+                            // open operation.
+                            let _ = out_tx.send(Ok(done_frame(id))).await;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         cancels_for_cleanup.lock().await.remove(&id);
     });
 }
