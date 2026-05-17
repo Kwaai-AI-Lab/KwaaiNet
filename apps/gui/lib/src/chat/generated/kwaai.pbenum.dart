@@ -30,6 +30,30 @@ class Error_Code extends $pb.ProtobufEnum {
   static const Error_Code UNIMPLEMENTED =
       Error_Code._(6, _omitEnumNames ? '' : 'UNIMPLEMENTED');
 
+  /// The DHT had no peers serving this model at all. Often
+  /// transient at startup before discovery completes; sometimes
+  /// permanent if the model isn't being served by anyone on the
+  /// network.
+  static const Error_Code NO_PEERS_FOR_MODEL =
+      Error_Code._(7, _omitEnumNames ? '' : 'NO_PEERS_FOR_MODEL');
+
+  /// Peers exist but they don't collectively cover every block
+  /// of the model — the dispatcher can't build a full chain.
+  static const Error_Code INSUFFICIENT_COVERAGE =
+      Error_Code._(8, _omitEnumNames ? '' : 'INSUFFICIENT_COVERAGE');
+
+  /// A chain was built but every candidate for at least one
+  /// position failed mid-inference (most peers don't actually
+  /// have a working inference handler).
+  static const Error_Code ALL_CANDIDATES_FAILED =
+      Error_Code._(9, _omitEnumNames ? '' : 'ALL_CANDIDATES_FAILED');
+
+  /// The local InferenceEngine couldn't load the requested
+  /// model (HF download error, Ollama blob missing, OOM, etc.).
+  /// Only emitted by the `generate` path, not `shard_run`.
+  static const Error_Code MODEL_LOAD_FAILED =
+      Error_Code._(10, _omitEnumNames ? '' : 'MODEL_LOAD_FAILED');
+
   static const $core.List<Error_Code> values = <Error_Code>[
     UNKNOWN,
     INVALID_ARGUMENT,
@@ -38,10 +62,14 @@ class Error_Code extends $pb.ProtobufEnum {
     CANCELLED,
     INTERNAL,
     UNIMPLEMENTED,
+    NO_PEERS_FOR_MODEL,
+    INSUFFICIENT_COVERAGE,
+    ALL_CANDIDATES_FAILED,
+    MODEL_LOAD_FAILED,
   ];
 
   static final $core.List<Error_Code?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 6);
+      $pb.ProtobufEnum.$_initByValueList(values, 10);
   static Error_Code? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

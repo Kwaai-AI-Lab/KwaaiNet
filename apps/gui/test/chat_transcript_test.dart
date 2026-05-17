@@ -110,7 +110,7 @@ void main() {
     // the error lands on the message's `error` field for the UI to
     // render in its distinct red badge.
     expect(last.text, 'first ');
-    expect(last.error, contains('boom'));
+    expect(last.error?.message, contains('boom'));
     expect(last.streaming, false);
   });
 }

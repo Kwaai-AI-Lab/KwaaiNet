@@ -22,7 +22,17 @@ class ChatMessage {
   /// completes (success, error, or cancel).
   bool streaming;
 
-  /// If the stream errored, this is the gRPC / transport message. UI
-  /// renders an error-styled badge instead of (or alongside) [text].
-  String? error;
+  /// Structured error if the stream failed. The UI renders a friendly
+  /// headline from [ChatError.code] with [ChatError.message] available
+  /// as expandable details.
+  ChatError? error;
+}
+
+/// Structured failure pulled off a SessionOpError so the UI can render
+/// a friendly message from the code without grepping the underlying
+/// daemon string. `code` is `Error_Code.value` from the proto enum.
+class ChatError {
+  ChatError({required this.code, required this.message});
+  final int code;
+  final String message;
 }

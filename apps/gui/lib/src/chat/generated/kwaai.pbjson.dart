@@ -192,15 +192,21 @@ const Error_Code$json = {
     {'1': 'CANCELLED', '2': 4},
     {'1': 'INTERNAL', '2': 5},
     {'1': 'UNIMPLEMENTED', '2': 6},
+    {'1': 'NO_PEERS_FOR_MODEL', '2': 7},
+    {'1': 'INSUFFICIENT_COVERAGE', '2': 8},
+    {'1': 'ALL_CANDIDATES_FAILED', '2': 9},
+    {'1': 'MODEL_LOAD_FAILED', '2': 10},
   ],
 };
 
 /// Descriptor for `Error`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List errorDescriptor = $convert.base64Decode(
     'CgVFcnJvchIoCgRjb2RlGAEgASgOMhQua3dhYWkudjEuRXJyb3IuQ29kZVIEY29kZRIYCgdtZX'
-    'NzYWdlGAIgASgJUgdtZXNzYWdlInkKBENvZGUSCwoHVU5LTk9XThAAEhQKEElOVkFMSURfQVJH'
-    'VU1FTlQQARINCglOT1RfRk9VTkQQAhIPCgtVTkFWQUlMQUJMRRADEg0KCUNBTkNFTExFRBAEEg'
-    'wKCElOVEVSTkFMEAUSEQoNVU5JTVBMRU1FTlRFRBAG');
+    'NzYWdlGAIgASgJUgdtZXNzYWdlIt4BCgRDb2RlEgsKB1VOS05PV04QABIUChBJTlZBTElEX0FS'
+    'R1VNRU5UEAESDQoJTk9UX0ZPVU5EEAISDwoLVU5BVkFJTEFCTEUQAxINCglDQU5DRUxMRUQQBB'
+    'IMCghJTlRFUk5BTBAFEhEKDVVOSU1QTEVNRU5URUQQBhIWChJOT19QRUVSU19GT1JfTU9ERUwQ'
+    'BxIZChVJTlNVRkZJQ0lFTlRfQ09WRVJBR0UQCBIZChVBTExfQ0FORElEQVRFU19GQUlMRUQQCR'
+    'IVChFNT0RFTF9MT0FEX0ZBSUxFRBAK');
 
 @$core.Deprecated('Use pingRequestDescriptor instead')
 const PingRequest$json = {

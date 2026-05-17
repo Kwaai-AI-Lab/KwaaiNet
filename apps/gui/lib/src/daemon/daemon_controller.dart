@@ -100,9 +100,9 @@ class DaemonController {
     _log('start() invoked');
     if (_settings.mode == DaemonMode.external) {
       _log('external mode — refusing to spawn (managed by user)');
-      return DaemonStartResult.error(
-        'Service is managed externally — the app will not start it.',
-      );
+      // Not an error — the GUI shows a dedicated "managed externally"
+      // note in the status card instead of the bottom error bar.
+      return DaemonStartResult.externalNoop();
     }
     if (await isAlive()) {
       final pid = readPid()!;
@@ -193,5 +193,14 @@ class DaemonStartResult {
   factory DaemonStartResult.error(String message) =>
       DaemonStartResult._('error', error: message);
 
-  bool get ok => kind == 'spawned' || kind == 'alreadyRunning';
+  /// "We deliberately did nothing because lifecycle isn't ours."
+  /// Used in [DaemonMode.external] so the transition notifier doesn't
+  /// publish a red error bar.
+  factory DaemonStartResult.externalNoop() =>
+      DaemonStartResult._('externalNoop');
+
+  bool get ok =>
+      kind == 'spawned' ||
+      kind == 'alreadyRunning' ||
+      kind == 'externalNoop';
 }

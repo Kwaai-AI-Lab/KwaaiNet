@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'chat_message.dart';
 import 'kwaai_rpc_client.dart';
+import 'session_client.dart';
 
 void _log(String msg) {
   stderr.writeln('[chat] ${_elide(msg)}');
@@ -68,7 +69,12 @@ class ChatTranscriptNotifier extends FamilyNotifier<List<ChatMessage>, ChatPath>
       },
       onError: (e, _) {
         _log('[${_path.name}] < [error] $e');
-        assistant.error = e.toString();
+        // Preserve the structured (code, message) when it's a
+        // SessionOpError; fall back to a 0/UNKNOWN with the toString
+        // for any other thrown type (transport hiccups, asserts, etc).
+        assistant.error = e is SessionOpError
+            ? ChatError(code: e.code, message: e.message)
+            : ChatError(code: 0, message: e.toString());
         assistant.streaming = false;
         _bump();
         _sub = null;
