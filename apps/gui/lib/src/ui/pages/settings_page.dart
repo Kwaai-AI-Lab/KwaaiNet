@@ -89,12 +89,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   // The trailing slot's contents swap based on
                   // lifecycle mode — Start/Stop when the app owns the
                   // daemon, an info chip when it's externally managed.
-                  // Buttons and chip are sized to the same row height
-                  // so the status card never reflows vertically when
-                  // the binary-location radio is changed.
-                  trailing: widget.settings.mode == DaemonMode.external
-                      ? const _ExternallyManagedNote()
-                      : Consumer(
+                  // Both are wrapped in a fixed-height Center so the
+                  // status header row's vertical extent is constant —
+                  // toggling the binary-location radio never reflows
+                  // the card.
+                  trailing: SizedBox(
+                    height: 36,
+                    child: Center(
+                      child: widget.settings.mode == DaemonMode.external
+                          ? const _ExternallyManagedNote()
+                          : Consumer(
                           builder: (context, ref, _) {
                             final status = ref
                                 .watch(daemonStatusProvider)
@@ -127,6 +131,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             );
                           },
                         ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -172,14 +178,17 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               children: [
                 const KwaaiHeading('Service'),
                 const SizedBox(height: 4),
-                if (widget.settings.mode != DaemonMode.external)
-                  _StartOnStartupToggle(
-                    settings: widget.settings,
-                    onChanged: () {
-                      setState(() {});
-                      widget.onSettingsChanged();
-                    },
-                  ),
+                _StartOnStartupToggle(
+                  settings: widget.settings,
+                  // External mode: the app doesn't own lifecycle, so
+                  // auto-starting on launch is meaningless. Grey out
+                  // for symmetry with _KeepInTrayToggle.
+                  enabled: widget.settings.mode != DaemonMode.external,
+                  onChanged: () {
+                    setState(() {});
+                    widget.onSettingsChanged();
+                  },
+                ),
                 _KeepInTrayToggle(
                   settings: widget.settings,
                   tray: widget.tray,
@@ -652,9 +661,14 @@ class _StartOnStartupToggle extends StatefulWidget {
   const _StartOnStartupToggle({
     required this.settings,
     required this.onChanged,
+    this.enabled = true,
   });
   final Settings settings;
   final VoidCallback onChanged;
+
+  /// When false, rendered greyed-out and inert. Used in external
+  /// daemon mode where the app doesn't own the lifecycle.
+  final bool enabled;
 
   @override
   State<_StartOnStartupToggle> createState() => _StartOnStartupToggleState();
@@ -675,6 +689,7 @@ class _StartOnStartupToggleState extends State<_StartOnStartupToggle> {
       label: 'Start service on startup',
       value: _value,
       onChanged: _set,
+      enabled: widget.enabled,
     );
   }
 }
