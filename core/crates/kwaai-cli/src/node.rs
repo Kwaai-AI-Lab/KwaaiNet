@@ -2029,7 +2029,7 @@ async fn maybe_auto_update() -> bool {
     // KWAAINET_NO_AUTO_UPDATE=1 disables every code path that would
     // download or install an update from inside the running node.
     if std::env::var("KWAAINET_NO_AUTO_UPDATE")
-        .map(|v| !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
+        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
     {
         return false;

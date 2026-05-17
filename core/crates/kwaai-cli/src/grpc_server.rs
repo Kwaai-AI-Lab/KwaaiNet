@@ -40,7 +40,7 @@ use kwaai_rpc::v1::{
     client_frame, error::Code as ErrorCode, kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, Cancel, ChatMessage, ChatToken, ClientFrame, Done,
     Error as RpcError, GenerateRequest, PingReply, PingRequest, ServerFrame,
-    ShardRunRequest, StatusReply, StatusRequest,
+    ShardRunRequest, StatusReply,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -971,16 +971,18 @@ impl Drop for GrpcServerHandle {
 mod tests {
     use super::*;
     use crate::config::KwaaiNetConfig;
-    use std::sync::Mutex;
+    use std::sync::LazyLock;
     use std::time::{Duration, Instant};
+    use tokio::sync::Mutex as AsyncMutex;
 
     /// All tests in this module mutate process-wide env (`HOME`,
     /// `KWAAINET_HOME`) AND bind the same hardcoded loopback port
     /// (`DEFAULT_GRPC_TCP_PORT`). Cargo runs tests in a single binary on
     /// multiple threads by default; this mutex forces our tests onto a
     /// single-file conga line so they don't trample each other's env or
-    /// race for the port.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// race for the port. Async-aware so the guard is safe to hold across
+    /// the .await calls that span each test's body.
+    static TEST_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
     /// Sets `HOME` and `KWAAINET_HOME` to the given dir for the duration
     /// of a test. Returned `EnvGuard` restores the previous values on
@@ -1072,7 +1074,7 @@ mod tests {
     /// real model, which is platform-specific and slow.
     #[tokio::test]
     async fn server_binds_and_shuts_down_cleanly() {
-        let _serial = TEST_LOCK.lock().expect("test lock not poisoned");
+        let _serial = TEST_LOCK.lock().await;
 
         let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
         let _env = EnvGuard::set(tmp.path());
@@ -1165,7 +1167,7 @@ mod tests {
         use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
         use tokio_stream::wrappers::ReceiverStream;
 
-        let _serial = TEST_LOCK.lock().expect("test lock not poisoned");
+        let _serial = TEST_LOCK.lock().await;
 
         let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
         let _env = EnvGuard::set(tmp.path());
