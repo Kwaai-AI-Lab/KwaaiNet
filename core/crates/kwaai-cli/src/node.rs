@@ -295,6 +295,21 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("KwaaiNet node starting (PID {})", std::process::id());
 
     // -----------------------------------------------------------------------
+    // gRPC IPC surface — bind FIRST, before any of the p2p / DHT /
+    // inference init. This is a UI/management surface for kwaainet, so
+    // the GUI (and `kwaainet` CLI subcommands) need to be able to dial
+    // in immediately at startup to observe progress, not after the
+    // 30-90 s p2p bootstrap completes.
+    //
+    // Ops that depend on p2p state (shard_run, distributed status)
+    // will simply return UNAVAILABLE / NO_PEERS_FOR_MODEL until the
+    // node is fully up; ops that don't (ping, status, generate) work
+    // straight away. Failure here is non-fatal: the p2p node must
+    // keep running even if the IPC surface didn't come up. The
+    // handle's Drop signals graceful shutdown when run_node returns.
+    let _grpc_handle = crate::grpc_server::spawn(config.clone());
+
+    // -----------------------------------------------------------------------
     // Persistent identity — load or generate the keypair so the PeerId is
     // stable across restarts. Credentials are bound to this DID.
     // `config.identity_key` (CLI: `--identity-key`) overrides the default
@@ -806,15 +821,6 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         config.effective_end_block()
     );
     info!("   Map     : https://map.kwaai.ai");
-
-    // -----------------------------------------------------------------------
-    // gRPC IPC surface — bind the in-process KwaaiNet service so the GUI
-    // (and future CLI subcommands) can drive chat/inference over a structured
-    // RPC channel. Binds Unix socket + TCP loopback on POSIX, TCP only
-    // elsewhere. Failure here is non-fatal: the p2p node must keep running
-    // even if the IPC surface didn't come up.
-    // -----------------------------------------------------------------------
-    let _grpc_handle = crate::grpc_server::spawn(config.clone());
 
     // -----------------------------------------------------------------------
     // Event loop: handle incoming RPC + periodic re-announce
