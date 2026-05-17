@@ -1,6 +1,8 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../daemon/config_file.dart';
 import '../../daemon/daemon_controller.dart';
@@ -99,38 +101,38 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       child: widget.settings.mode == DaemonMode.external
                           ? const _ExternallyManagedNote()
                           : Consumer(
-                          builder: (context, ref, _) {
-                            final status = ref
-                                .watch(daemonStatusProvider)
-                                .valueOrNull;
-                            final busy =
-                                ref.watch(daemonTransitionProvider) !=
-                                DaemonTransition.none;
-                            final unknown = !busy && status == null;
-                            final running = status?.running ?? false;
-                            return Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                KwaaiButton(
-                                  label: 'Start',
-                                  icon: Icons.play_arrow,
-                                  onPressed: (unknown || running || busy)
-                                      ? null
-                                      : _start,
-                                ),
-                                const SizedBox(width: 8),
-                                KwaaiButton(
-                                  label: 'Stop',
-                                  icon: Icons.stop,
-                                  variant: KwaaiButtonVariant.destructive,
-                                  onPressed: (unknown || !running || busy)
-                                      ? null
-                                      : _stop,
-                                ),
-                              ],
-                            );
-                          },
-                        ),
+                              builder: (context, ref, _) {
+                                final status = ref
+                                    .watch(daemonStatusProvider)
+                                    .valueOrNull;
+                                final busy =
+                                    ref.watch(daemonTransitionProvider) !=
+                                    DaemonTransition.none;
+                                final unknown = !busy && status == null;
+                                final running = status?.running ?? false;
+                                return Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    KwaaiButton(
+                                      label: 'Start',
+                                      icon: Icons.play_arrow,
+                                      onPressed: (unknown || running || busy)
+                                          ? null
+                                          : _start,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    KwaaiButton(
+                                      label: 'Stop',
+                                      icon: Icons.stop,
+                                      variant: KwaaiButtonVariant.destructive,
+                                      onPressed: (unknown || !running || busy)
+                                          ? null
+                                          : _stop,
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
                     ),
                   ),
                 ),
@@ -158,10 +160,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     // doesn't take effect until the user restarts —
                     // surface the prompt so they know. The bar
                     // self-clears when the service is stopped.
-                    final running = ref
-                            .read(daemonStatusProvider)
-                            .valueOrNull
-                            ?.running ??
+                    final running =
+                        ref.read(daemonStatusProvider).valueOrNull?.running ??
                         false;
                     if (running) {
                       ref.read(restartNeededProvider.notifier).mark();
@@ -234,6 +234,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     const _NetworkTab(),
                     const _AppearanceTab(),
                     _DeveloperTab(settings: widget.settings),
+                    const _AboutTab(),
                   ],
                 ),
               ),
@@ -348,11 +349,8 @@ const _settingsNavEntries = <_SettingsNavEntry>[
   ),
   _SettingsNavEntry(Icons.lan_outlined, Icons.lan, 'Network'),
   _SettingsNavEntry(Icons.palette_outlined, Icons.palette, 'Appearance'),
-  _SettingsNavEntry(
-    Icons.bug_report_outlined,
-    Icons.bug_report,
-    'Developer',
-  ),
+  _SettingsNavEntry(Icons.bug_report_outlined, Icons.bug_report, 'Developer'),
+  _SettingsNavEntry(Icons.info_outline, Icons.info, 'About'),
 ];
 
 class _SettingsNav extends StatelessWidget {
@@ -565,9 +563,7 @@ class _StatusHeader extends ConsumerWidget {
 
     Widget bitText(String s) => Text(
       s,
-      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-        color: textColor,
-      ),
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: textColor),
     );
 
     if (unknown) {
@@ -597,15 +593,17 @@ class _StatusHeader extends ConsumerWidget {
             // below come from a PID-only probe.
             if (status.source == 'pid') {
               bitWidgets.add(const SizedBox(width: 4));
-              bitWidgets.add(Tooltip(
-                message:
-                    'Status from PID probe only — full stats appear once daemon writes kwaainet.status',
-                child: Icon(
-                  Icons.info_outline,
-                  size: 16,
-                  color: cs.onSurfaceVariant,
+              bitWidgets.add(
+                Tooltip(
+                  message:
+                      'Status from PID probe only — full stats appear once daemon writes kwaainet.status',
+                  child: Icon(
+                    Icons.info_outline,
+                    size: 16,
+                    color: cs.onSurfaceVariant,
+                  ),
                 ),
-              ));
+              );
             }
           }
           if (status.uptimeSecs != null) {
@@ -637,10 +635,7 @@ class _StatusHeader extends ConsumerWidget {
             children: bitWidgets,
           ),
         ),
-        if (trailing != null) ...[
-          const SizedBox(width: 12),
-          trailing!,
-        ],
+        if (trailing != null) ...[const SizedBox(width: 12), trailing!],
       ],
     );
   }
@@ -778,9 +773,9 @@ class _SwitchRow extends StatelessWidget {
             Expanded(
               child: Text(
                 label,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: labelColor,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(color: labelColor),
               ),
             ),
             const SizedBox(width: 6),
@@ -962,9 +957,7 @@ class _ExternallyManagedNote extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             'Service managed externally',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: info,
-            ),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: info),
           ),
         ],
       ),
@@ -1189,7 +1182,6 @@ class _NetworkTab extends ConsumerWidget {
       },
     );
   }
-
 }
 
 /// Equality check for the initial-peers list. Used by both the Network
@@ -1440,8 +1432,9 @@ class _HealthMonitoringSection extends ConsumerStatefulWidget {
 
 class _HealthMonitoringSectionState
     extends ConsumerState<_HealthMonitoringSection> {
-  late final TextEditingController _endpointController =
-      TextEditingController(text: widget.draft.healthEndpoint);
+  late final TextEditingController _endpointController = TextEditingController(
+    text: widget.draft.healthEndpoint,
+  );
 
   @override
   void dispose() {
@@ -1658,12 +1651,8 @@ class _ModelPickerState extends State<_ModelPicker> {
       enabled: widget.enabled,
       hintText: 'Select a model…',
       items: [
-        for (final m in _knownModels)
-          KwaaiDropdownItem(value: m, label: m),
-        const KwaaiDropdownItem(
-          value: _otherModelSentinel,
-          label: 'Other…',
-        ),
+        for (final m in _knownModels) KwaaiDropdownItem(value: m, label: m),
+        const KwaaiDropdownItem(value: _otherModelSentinel, label: 'Other…'),
       ],
       onChanged: _onDropdownChanged,
     );
@@ -1769,8 +1758,8 @@ class _RestartNeededBar extends ConsumerWidget {
     // user only ever sees one pinned bar.
     final err = ref.watch(daemonErrorProvider);
     final needsRestart = ref.watch(restartNeededProvider);
-    final running = ref.watch(daemonStatusProvider).valueOrNull?.running
-        ?? false;
+    final running =
+        ref.watch(daemonStatusProvider).valueOrNull?.running ?? false;
     final transition = ref.watch(daemonTransitionProvider);
     final busy = transition != DaemonTransition.none;
 
@@ -1782,7 +1771,9 @@ class _RestartNeededBar extends ConsumerWidget {
     final snapshot = ref.watch(featuresProvider).valueOrNull;
     final draft = ref.watch(featuresDraftProvider);
     final dirty =
-        snapshot != null && draft != null && _tabDirty(activeTab, draft, snapshot);
+        snapshot != null &&
+        draft != null &&
+        _tabDirty(activeTab, draft, snapshot);
 
     if (needsRestart && !running) {
       // Restart prompt only makes sense when the service is running —
@@ -1793,10 +1784,7 @@ class _RestartNeededBar extends ConsumerWidget {
     }
 
     final applyAction = dirty
-        ? KwaaiButton(
-            label: 'Apply',
-            onPressed: () => _applyDraft(ref),
-          )
+        ? KwaaiButton(label: 'Apply', onPressed: () => _applyDraft(ref))
         : null;
 
     // Priority: error → restart-needed (if running) → bare apply.
@@ -1813,7 +1801,8 @@ class _RestartNeededBar extends ConsumerWidget {
       return KwaaiStatusBar(
         severity: KwaaiStatusSeverity.info,
         message: 'Restart the service to apply your changes.',
-        action: applyAction ??
+        action:
+            applyAction ??
             KwaaiButton(
               label: 'Restart service',
               onPressed: busy ? null : () => _restart(ref),
@@ -2109,6 +2098,84 @@ class _ThemeVariantDot extends StatelessWidget {
               width: isSelected ? 2.5 : 1,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// About — logo, version, and a link to the project website. Read-only
+/// page, no draft / Apply plumbing.
+class _AboutTab extends StatelessWidget {
+  const _AboutTab();
+
+  static const _siteUrl = 'https://kwaai.ai';
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    final accent = context.kwaai.accentPrimary;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 24),
+            Image.asset('assets/kwaaiai.png', height: 240),
+            const SizedBox(height: 16),
+            Text(
+              'Kwaai AI',
+              style: textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            FutureBuilder<PackageInfo>(
+              future: PackageInfo.fromPlatform(),
+              builder: (context, snap) {
+                final String text;
+                if (snap.hasError) {
+                  text = 'Version unavailable (${snap.error})';
+                } else if (snap.hasData) {
+                  final v = snap.data!;
+                  text = v.buildNumber.isNotEmpty
+                      ? 'Version ${v.version} (${v.buildNumber})'
+                      : 'Version ${v.version}';
+                } else {
+                  text = 'Version …';
+                }
+                return Text(
+                  text,
+                  style: textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 24),
+            InkWell(
+              onTap: () => launchUrl(
+                Uri.parse(_siteUrl),
+                mode: LaunchMode.externalApplication,
+              ),
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Text(
+                  _siteUrl,
+                  style: textTheme.bodyMedium?.copyWith(
+                    color: accent,
+                    decoration: TextDecoration.underline,
+                    decorationColor: accent,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+          ],
         ),
       ),
     );
