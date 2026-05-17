@@ -19,7 +19,7 @@ default-members = ["crates/kwaai-cli"]
 # Root package for examples
 [package]
 name = "kwaai-core"
-version = "0.4.66"
+version = "0.4.67"
 edition = "2021"
 publish = false
 
@@ -125,7 +125,7 @@ name = "query_dht_state"
 path = "examples/query_dht_state.rs"
 
 [workspace.package]
-version = "0.4.66"
+version = "0.4.67"
 
 edition = "2021"
 authors = ["Kwaai AI Lab <dev@kwaai.ai>"]
@@ -145,6 +145,8 @@ kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.4.2" }
 kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.4.2" }
 kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.1.4" }
 kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.4.2" }
+kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.1.0" }
+kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.4.67" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }

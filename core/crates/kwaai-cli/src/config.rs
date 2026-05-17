@@ -70,7 +70,10 @@ pub struct KwaaiNetConfig {
     /// Point this at a remote kwaainet node (port 8080) or Ollama instance (port 11434)
     /// to offload LLM calls while keeping retrieval local.
     /// Example: kwaainet config set inference_url http://192.168.1.10:11434
-    #[serde(default = "default_inference_url", skip_serializing_if = "is_default_inference_url")]
+    #[serde(
+        default = "default_inference_url",
+        skip_serializing_if = "is_default_inference_url"
+    )]
     pub inference_url: String,
 
     #[serde(default)]
