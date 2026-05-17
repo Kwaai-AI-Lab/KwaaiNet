@@ -19,6 +19,10 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
     required this.statusTransitioning,
     required this.buttonDestructive,
     required this.error,
+    required this.semanticInfo,
+    required this.semanticWarning,
+    required this.semanticSuccess,
+    required this.semanticError,
   });
 
   final Color scaffoldBackground;
@@ -52,6 +56,18 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
 
   final Color error;
 
+  /// Semantic palette — the meaning of the color is the message, not
+  /// just decoration. Use these for any chip / badge / icon whose job
+  /// is to communicate "info / warning / success / error" to the user.
+  /// Each is tuned per theme variant for legibility, but the *meaning*
+  /// is constant across themes. Don't substitute `accentPrimary` for
+  /// info — accent shifts with the theme and won't read as blue
+  /// (informational) in non-blue themes.
+  final Color semanticInfo;
+  final Color semanticWarning;
+  final Color semanticSuccess;
+  final Color semanticError;
+
   @override
   KwaaiThemeExtension copyWith({
     Color? scaffoldBackground,
@@ -69,6 +85,10 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
     Color? statusTransitioning,
     Color? buttonDestructive,
     Color? error,
+    Color? semanticInfo,
+    Color? semanticWarning,
+    Color? semanticSuccess,
+    Color? semanticError,
   }) {
     return KwaaiThemeExtension(
       scaffoldBackground: scaffoldBackground ?? this.scaffoldBackground,
@@ -86,6 +106,10 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
       statusTransitioning: statusTransitioning ?? this.statusTransitioning,
       buttonDestructive: buttonDestructive ?? this.buttonDestructive,
       error: error ?? this.error,
+      semanticInfo: semanticInfo ?? this.semanticInfo,
+      semanticWarning: semanticWarning ?? this.semanticWarning,
+      semanticSuccess: semanticSuccess ?? this.semanticSuccess,
+      semanticError: semanticError ?? this.semanticError,
     );
   }
 
@@ -136,6 +160,10 @@ class KwaaiThemeExtension extends ThemeExtension<KwaaiThemeExtension> {
         t,
       )!,
       error: Color.lerp(error, other.error, t)!,
+      semanticInfo: Color.lerp(semanticInfo, other.semanticInfo, t)!,
+      semanticWarning: Color.lerp(semanticWarning, other.semanticWarning, t)!,
+      semanticSuccess: Color.lerp(semanticSuccess, other.semanticSuccess, t)!,
+      semanticError: Color.lerp(semanticError, other.semanticError, t)!,
     );
   }
 }

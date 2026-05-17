@@ -63,6 +63,11 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#ff9500'),
           buttonDestructive: _hex('#ff3b30'),
           error: _hex('#ff3b30'),
+          // Apple HIG-aligned semantic palette.
+          semanticInfo: _hex('#007aff'),
+          semanticWarning: _hex('#ff9500'),
+          semanticSuccess: _hex('#34c759'),
+          semanticError: _hex('#ff3b30'),
         ),
         Brightness.dark: KwaaiThemeExtension(
           scaffoldBackground: _hex('#1e1e1e'),
@@ -80,6 +85,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#ff9f0a'),
           buttonDestructive: _hex('#ff453a'),
           error: _hex('#ff453a'),
+          semanticInfo: _hex('#0a84ff'),
+          semanticWarning: _hex('#ff9f0a'),
+          semanticSuccess: _hex('#30d158'),
+          semanticError: _hex('#ff453a'),
         ),
       },
       // ─── Kwaai: soft lilac brand palette (#DED0E3) ───────────────
@@ -100,6 +109,12 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#e8930c'),
           buttonDestructive: _hex('#d6336c'),
           error: _hex('#d6336c'),
+          // Semantic palette stays informational across themes — info
+          // is always blue, not the lilac accent.
+          semanticInfo: _hex('#2563eb'),
+          semanticWarning: _hex('#e8930c'),
+          semanticSuccess: _hex('#16a34a'),
+          semanticError: _hex('#d6336c'),
         ),
         Brightness.dark: KwaaiThemeExtension(
           scaffoldBackground: _hex('#1e1a21'),
@@ -117,6 +132,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#f0a830'),
           buttonDestructive: _hex('#f06595'),
           error: _hex('#f06595'),
+          semanticInfo: _hex('#60a5fa'),
+          semanticWarning: _hex('#f0a830'),
+          semanticSuccess: _hex('#4ade80'),
+          semanticError: _hex('#f06595'),
         ),
       },
       // ─── Ocean ───────────────────────────────────────────────────
@@ -137,6 +156,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#d97706'),
           buttonDestructive: _hex('#dc2626'),
           error: _hex('#dc2626'),
+          semanticInfo: _hex('#0284c7'),
+          semanticWarning: _hex('#d97706'),
+          semanticSuccess: _hex('#0d9488'),
+          semanticError: _hex('#dc2626'),
         ),
         Brightness.dark: KwaaiThemeExtension(
           scaffoldBackground: _hex('#0d1b2a'),
@@ -154,6 +177,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#fbbf24'),
           buttonDestructive: _hex('#f87171'),
           error: _hex('#f87171'),
+          semanticInfo: _hex('#38bdf8'),
+          semanticWarning: _hex('#fbbf24'),
+          semanticSuccess: _hex('#5eead4'),
+          semanticError: _hex('#f87171'),
         ),
       },
       // ─── Forest ──────────────────────────────────────────────────
@@ -174,6 +201,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#d97706'),
           buttonDestructive: _hex('#dc2626'),
           error: _hex('#dc2626'),
+          semanticInfo: _hex('#2563eb'),
+          semanticWarning: _hex('#d97706'),
+          semanticSuccess: _hex('#16a34a'),
+          semanticError: _hex('#dc2626'),
         ),
         Brightness.dark: KwaaiThemeExtension(
           scaffoldBackground: _hex('#052e16'),
@@ -191,6 +222,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#fbbf24'),
           buttonDestructive: _hex('#f87171'),
           error: _hex('#f87171'),
+          semanticInfo: _hex('#60a5fa'),
+          semanticWarning: _hex('#fbbf24'),
+          semanticSuccess: _hex('#86efac'),
+          semanticError: _hex('#f87171'),
         ),
       },
       // ─── Sunset ──────────────────────────────────────────────────
@@ -211,6 +246,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#ca8a04'),
           buttonDestructive: _hex('#b91c1c'),
           error: _hex('#b91c1c'),
+          semanticInfo: _hex('#2563eb'),
+          semanticWarning: _hex('#ca8a04'),
+          semanticSuccess: _hex('#16a34a'),
+          semanticError: _hex('#b91c1c'),
         ),
         Brightness.dark: KwaaiThemeExtension(
           scaffoldBackground: _hex('#1c0a02'),
@@ -228,6 +267,10 @@ final Map<ThemeVariantKey, Map<Brightness, KwaaiThemeExtension>> kwaaiVariants =
           statusTransitioning: _hex('#fbbf24'),
           buttonDestructive: _hex('#f87171'),
           error: _hex('#f87171'),
+          semanticInfo: _hex('#60a5fa'),
+          semanticWarning: _hex('#fbbf24'),
+          semanticSuccess: _hex('#86efac'),
+          semanticError: _hex('#f87171'),
         ),
       },
     };

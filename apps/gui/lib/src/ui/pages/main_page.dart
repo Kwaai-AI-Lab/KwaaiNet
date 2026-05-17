@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../chat/chat_message.dart';
 import '../../chat/chat_state.dart';
 import '../../chat/kwaai_rpc_client.dart';
 import '../../daemon/daemon_controller.dart';
@@ -562,17 +563,82 @@ class _ChatTranscriptState extends ConsumerState<_ChatTranscript> {
 /// Compact error badge rendered below (or instead of) an assistant
 /// bubble when its stream failed. Red icon + message in the theme's
 /// destructive color so it reads as distinct from normal model output.
-class _ChatErrorBadge extends StatelessWidget {
+/// Friendly rendering of a [ChatError]. Switches on the structured
+/// proto code rather than grepping the message — daemon strings are
+/// fair game for the "show details" disclosure but never drive the
+/// headline.
+({String headline, String? details}) _friendlyChatError(ChatError err) {
+  // Mirror kwaai.v1.Error.Code values. Kept inline here (rather than
+  // importing the generated enum) so the dispatcher is readable at a
+  // glance and so adding a new code only requires one switch arm.
+  switch (err.code) {
+    case 1: // INVALID_ARGUMENT
+      return (headline: 'Invalid request.', details: err.message);
+    case 2: // NOT_FOUND
+      return (headline: 'Not found.', details: err.message);
+    case 3: // UNAVAILABLE
+      return (
+        headline: 'Lost connection to the service.',
+        details: err.message,
+      );
+    case 4: // CANCELLED
+      return (headline: 'Cancelled.', details: null);
+    case 6: // UNIMPLEMENTED
+      return (
+        headline: 'The daemon doesn\'t support this operation yet.',
+        details: err.message,
+      );
+    case 7: // NO_PEERS_FOR_MODEL
+      return (
+        headline:
+            'No peers are serving this model on the network yet.',
+        details: err.message,
+      );
+    case 8: // INSUFFICIENT_COVERAGE
+      return (
+        headline:
+            'Not enough peers — some model blocks aren\'t being served.',
+        details: err.message,
+      );
+    case 9: // ALL_CANDIDATES_FAILED
+      return (
+        headline:
+            'Not enough peers available for distributed inference.',
+        details: err.message,
+      );
+    case 10: // MODEL_LOAD_FAILED
+      return (
+        headline: 'The daemon couldn\'t load the configured model.',
+        details: err.message,
+      );
+    case 5: // INTERNAL
+    case 0: // UNKNOWN
+    default:
+      // Default: surface the raw error verbatim — caller likely
+      // needs the detail to debug.
+      return (headline: err.message, details: null);
+  }
+}
+
+class _ChatErrorBadge extends StatefulWidget {
   const _ChatErrorBadge({required this.error, required this.topPad});
 
-  final String error;
+  final ChatError error;
   final double topPad;
+
+  @override
+  State<_ChatErrorBadge> createState() => _ChatErrorBadgeState();
+}
+
+class _ChatErrorBadgeState extends State<_ChatErrorBadge> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final dest = context.kwaai.buttonDestructive;
+    final (:headline, :details) = _friendlyChatError(widget.error);
     return Padding(
-      padding: EdgeInsets.only(top: topPad),
+      padding: EdgeInsets.only(top: widget.topPad),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
@@ -580,20 +646,59 @@ class _ChatErrorBadge extends StatelessWidget {
           border: Border.all(color: dest.withValues(alpha: 0.35)),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.error_outline, size: 16, color: dest),
-            const SizedBox(width: 8),
-            Flexible(
-              child: SelectableText(
-                error,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: dest,
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.error_outline, size: 16, color: dest),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: SelectableText(
+                    headline,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: dest,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (details != null) ...[
+              const SizedBox(height: 4),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  child: Padding(
+                    // Align text under the icon-then-gap.
+                    padding: const EdgeInsets.only(left: 24),
+                    child: Text(
+                      _expanded ? 'Hide details' : 'Show details',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: dest.withValues(alpha: 0.7),
+                        decoration: TextDecoration.underline,
+                        decorationColor: dest.withValues(alpha: 0.4),
+                      ),
+                    ),
+                  ),
                 ),
               ),
-            ),
+              if (_expanded) ...[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.only(left: 24),
+                  child: SelectableText(
+                    details,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: dest.withValues(alpha: 0.85),
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ],
         ),
       ),

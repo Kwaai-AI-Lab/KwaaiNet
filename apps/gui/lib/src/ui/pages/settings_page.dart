@@ -86,49 +86,47 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _StatusHeader(
-                  // Start/Stop ride inline with the status row when the
-                  // app owns the daemon lifecycle. In external mode the
-                  // buttons are hidden but their slot stays Visibility-
-                  // reserved so toggling the mode doesn't reflow the
-                  // status card's height.
-                  trailing: Visibility(
-                    visible: widget.settings.mode != DaemonMode.external,
-                    maintainSize: true,
-                    maintainAnimation: true,
-                    maintainState: true,
-                    child: Consumer(
-                      builder: (context, ref, _) {
-                        final status =
-                            ref.watch(daemonStatusProvider).valueOrNull;
-                        final busy =
-                            ref.watch(daemonTransitionProvider) !=
-                            DaemonTransition.none;
-                        final unknown = !busy && status == null;
-                        final running = status?.running ?? false;
-                        return Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            KwaaiButton(
-                              label: 'Start',
-                              icon: Icons.play_arrow,
-                              onPressed: (unknown || running || busy)
-                                  ? null
-                                  : _start,
-                            ),
-                            const SizedBox(width: 8),
-                            KwaaiButton(
-                              label: 'Stop',
-                              icon: Icons.stop,
-                              variant: KwaaiButtonVariant.destructive,
-                              onPressed: (unknown || !running || busy)
-                                  ? null
-                                  : _stop,
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
+                  // The trailing slot's contents swap based on
+                  // lifecycle mode — Start/Stop when the app owns the
+                  // daemon, an info chip when it's externally managed.
+                  // Buttons and chip are sized to the same row height
+                  // so the status card never reflows vertically when
+                  // the binary-location radio is changed.
+                  trailing: widget.settings.mode == DaemonMode.external
+                      ? const _ExternallyManagedNote()
+                      : Consumer(
+                          builder: (context, ref, _) {
+                            final status = ref
+                                .watch(daemonStatusProvider)
+                                .valueOrNull;
+                            final busy =
+                                ref.watch(daemonTransitionProvider) !=
+                                DaemonTransition.none;
+                            final unknown = !busy && status == null;
+                            final running = status?.running ?? false;
+                            return Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                KwaaiButton(
+                                  label: 'Start',
+                                  icon: Icons.play_arrow,
+                                  onPressed: (unknown || running || busy)
+                                      ? null
+                                      : _start,
+                                ),
+                                const SizedBox(width: 8),
+                                KwaaiButton(
+                                  label: 'Stop',
+                                  icon: Icons.stop,
+                                  variant: KwaaiButtonVariant.destructive,
+                                  onPressed: (unknown || !running || busy)
+                                      ? null
+                                      : _stop,
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                 ),
               ],
             ),
@@ -185,6 +183,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 _KeepInTrayToggle(
                   settings: widget.settings,
                   tray: widget.tray,
+                  // Keep-in-tray is about preserving the GUI-managed
+                  // daemon across window close; meaningless in external
+                  // mode where the user owns the daemon's lifecycle.
+                  enabled: widget.settings.mode != DaemonMode.external,
                   onChanged: () {
                     setState(() {});
                     widget.onSettingsChanged();
@@ -684,10 +686,16 @@ class _KeepInTrayToggle extends StatefulWidget {
     required this.settings,
     required this.tray,
     required this.onChanged,
+    this.enabled = true,
   });
   final Settings settings;
   final TrayController tray;
   final VoidCallback onChanged;
+
+  /// When false, the toggle is rendered greyed-out and inert. Used
+  /// when the daemon is externally managed — keep-in-tray only makes
+  /// sense when the GUI owns the daemon's lifecycle.
+  final bool enabled;
 
   @override
   State<_KeepInTrayToggle> createState() => _KeepInTrayToggleState();
@@ -710,6 +718,7 @@ class _KeepInTrayToggleState extends State<_KeepInTrayToggle> {
       label: 'Keep running in tray when window is closed',
       value: _value,
       onChanged: _set,
+      enabled: widget.enabled,
     );
   }
 }
@@ -722,27 +731,42 @@ class _SwitchRow extends StatelessWidget {
     required this.label,
     required this.value,
     required this.onChanged,
+    this.enabled = true,
   });
 
   final String label;
   final bool value;
   final ValueChanged<bool> onChanged;
 
+  /// When false, the switch + tap target go inert and the label is
+  /// muted. Used by toggles whose meaning depends on another setting
+  /// (e.g. keep-in-tray makes no sense when the daemon is external).
+  final bool enabled;
+
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final focused = WindowFocusScope.of(context);
     final activeFill = focused
         ? context.kwaai.accentPrimary
         : kSelectedUnfocusedFill;
+    final labelColor = enabled
+        ? cs.onSurface
+        : cs.onSurface.withValues(alpha: 0.38);
     return InkWell(
       borderRadius: BorderRadius.circular(6),
-      onTap: () => onChanged(!value),
+      onTap: enabled ? () => onChanged(!value) : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
           children: [
             Expanded(
-              child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: labelColor,
+                ),
+              ),
             ),
             const SizedBox(width: 6),
             // Wrap the scaled Switch in a SizedBox so it occupies the
@@ -755,7 +779,7 @@ class _SwitchRow extends StatelessWidget {
                 scale: 0.67,
                 child: Switch(
                   value: value,
-                  onChanged: onChanged,
+                  onChanged: enabled ? onChanged : null,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   activeThumbColor: Colors.white,
                   activeTrackColor: activeFill,
@@ -893,6 +917,41 @@ class _ExternalModeHelp extends StatelessWidget {
       'terminal); the GUI only observes the gRPC channel.',
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+}
+
+/// Compact blue info chip shown in the status header's trailing slot
+/// (where Start/Stop live in other modes) when the daemon is
+/// externally managed. Uses [KwaaiThemeExtension.semanticInfo] so the
+/// chip reads as informational (blue) across all theme variants —
+/// independent of whatever the accent color happens to be.
+class _ExternallyManagedNote extends StatelessWidget {
+  const _ExternallyManagedNote();
+
+  @override
+  Widget build(BuildContext context) {
+    final info = context.kwaai.semanticInfo;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: info.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: info.withValues(alpha: 0.30)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.info_outline, size: 14, color: info),
+          const SizedBox(width: 6),
+          Text(
+            'Service managed externally',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: info,
+            ),
+          ),
+        ],
       ),
     );
   }
