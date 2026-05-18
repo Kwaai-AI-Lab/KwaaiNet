@@ -685,6 +685,8 @@ jobs:
             kwaai-p2p-daemon \
             kwaai-distributed \
             kwaai-wasm \
+            kwaai-storage \
+            kwaai-rag \
             kwaainet; do
             echo "=== publishing ${crate} ==="
             out=$(cargo publish -p "${crate}" 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 15; } || {
