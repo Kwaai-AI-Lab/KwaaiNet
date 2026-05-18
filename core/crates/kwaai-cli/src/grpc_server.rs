@@ -37,10 +37,11 @@ use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
 use kwaai_rpc::v1::{
-    client_frame, error::Code as ErrorCode, kwaai_net_server::{KwaaiNet, KwaaiNetServer},
-    server_frame, Cancel, ChatMessage, ChatToken, ClientFrame, Done,
-    Error as RpcError, GenerateRequest, PingReply, PingRequest, ServerFrame,
-    ShardRunRequest, StatusReply,
+    client_frame,
+    error::Code as ErrorCode,
+    kwaai_net_server::{KwaaiNet, KwaaiNetServer},
+    server_frame, Cancel, ChatMessage, ChatToken, ClientFrame, Done, Error as RpcError,
+    GenerateRequest, PingReply, PingRequest, ServerFrame, ShardRunRequest, StatusReply,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -171,8 +172,7 @@ impl KwaaiNet for KwaaiNetService {
 
         // ServerFrame fan-in. Every per-operation task emits into this
         // channel; ordering between operations is the natural emit order.
-        let (out_tx, out_rx) =
-            mpsc::channel::<Result<ServerFrame, Status>>(128);
+        let (out_tx, out_rx) = mpsc::channel::<Result<ServerFrame, Status>>(128);
 
         // Per-id cancellation registry. ClientFrame::Cancel { target_id }
         // looks up the oneshot here and fires it.
@@ -256,18 +256,11 @@ impl KwaaiNet for KwaaiNetService {
                     }
 
                     client_frame::Body::ShardRun(req) => {
-                        spawn_session_shard_run(
-                            id,
-                            req,
-                            out_tx.clone(),
-                            cancels.clone(),
-                        )
-                        .await;
+                        spawn_session_shard_run(id, req, out_tx.clone(), cancels.clone()).await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
-                        let removed =
-                            cancels.lock().await.remove(&target_id);
+                        let removed = cancels.lock().await.remove(&target_id);
                         if let Some(tx) = removed {
                             let _ = tx.send(());
                             // Acknowledge the cancel frame itself with Done.
@@ -277,9 +270,7 @@ impl KwaaiNet for KwaaiNetService {
                                 .send(Ok(error_frame(
                                     id,
                                     ErrorCode::NotFound,
-                                    &format!(
-                                        "no in-flight operation with id {target_id}"
-                                    ),
+                                    &format!("no in-flight operation with id {target_id}"),
                                 )))
                                 .await;
                         }
@@ -288,9 +279,9 @@ impl KwaaiNet for KwaaiNetService {
             }
         });
 
-        Ok(Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(out_rx),
-        ))
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            out_rx,
+        )))
     }
 
     async fn chat(
@@ -306,7 +297,9 @@ impl KwaaiNet for KwaaiNetService {
             .message()
             .await
             .map_err(|e| Status::internal(format!("recv first chat msg: {e}")))?
-            .ok_or_else(|| Status::invalid_argument("client closed Chat stream before sending a prompt"))?;
+            .ok_or_else(|| {
+                Status::invalid_argument("client closed Chat stream before sending a prompt")
+            })?;
 
         let prompt = build_prompt(&first);
 
@@ -337,15 +330,14 @@ impl KwaaiNet for KwaaiNetService {
 
         spawn_inference(inference, prompt, tx);
 
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
     }
 
     /// Liveness probe. Returns the current daemon wall-clock time.
     /// Deliberately trivial — no inference, no DHT, no locks taken.
-    async fn ping(
-        &self,
-        _request: Request<PingRequest>,
-    ) -> Result<Response<PingReply>, Status> {
+    async fn ping(&self, _request: Request<PingRequest>) -> Result<Response<PingReply>, Status> {
         let now = std::time::SystemTime::now();
         // Format as RFC 3339 via chrono for a stable, parse-friendly
         // representation. Falls back to the unix timestamp if the
@@ -463,11 +455,7 @@ async fn spawn_session_generate(
             error!(seq, id, "Session chat: inference init failed: {e:#}");
             let msg = format!("inference init failed: {e:#}");
             let _ = out_tx
-                .send(Ok(error_frame(
-                    id,
-                    classify_generate_error(&msg),
-                    &msg,
-                )))
+                .send(Ok(error_frame(id, classify_generate_error(&msg), &msg)))
                 .await;
             cancels.lock().await.remove(&id);
             return;
@@ -481,8 +469,7 @@ async fn spawn_session_generate(
     });
 
     // Token channel from the blocking worker → this task's forwarder.
-    let (tok_tx, mut tok_rx) =
-        mpsc::channel::<Result<ChatToken, Status>>(64);
+    let (tok_tx, mut tok_rx) = mpsc::channel::<Result<ChatToken, Status>>(64);
     spawn_inference(inference, prompt, tok_tx);
 
     let cancels_for_cleanup = cancels.clone();
@@ -760,9 +747,7 @@ fn spawn_inference(
             }
             Err(e) => {
                 error!("Chat: generation failed: {e}");
-                let _ = tx.blocking_send(Err(Status::internal(format!(
-                    "inference failed: {e}"
-                ))));
+                let _ = tx.blocking_send(Err(Status::internal(format!("inference failed: {e}"))));
             }
         }
     });
@@ -846,8 +831,9 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
     let service = KwaaiNetServer::new(svc_state);
 
     // TCP: every platform.
-    let tcp_addr: std::net::SocketAddr =
-        format!("127.0.0.1:{DEFAULT_GRPC_TCP_PORT}").parse().expect("valid loopback addr");
+    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{DEFAULT_GRPC_TCP_PORT}")
+        .parse()
+        .expect("valid loopback addr");
     let tcp_service = service.clone();
     tokio::spawn(async move {
         info!("gRPC: binding TCP at {tcp_addr}");
@@ -1058,9 +1044,9 @@ mod tests {
         )
         .await
         {
-            Ok(Ok(_)) => false,        // still accepting
-            Ok(Err(_)) => true,        // refused / unreachable
-            Err(_) => false,           // timed out = something is listening but not answering yet
+            Ok(Ok(_)) => false, // still accepting
+            Ok(Err(_)) => true, // refused / unreachable
+            Err(_) => false,    // timed out = something is listening but not answering yet
         }
     }
 
@@ -1114,7 +1100,8 @@ mod tests {
             // mask off file-type bits; we only care about the permission bits.
             let mode = meta.permissions().mode() & 0o777;
             assert_eq!(
-                mode, 0o600,
+                mode,
+                0o600,
                 "Unix socket {} must be mode 0o600 (got {:#o})",
                 sock_path.display(),
                 mode

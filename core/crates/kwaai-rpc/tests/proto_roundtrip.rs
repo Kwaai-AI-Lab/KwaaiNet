@@ -34,13 +34,19 @@ fn chat_message_roundtrip_all_fields_set() {
     assert!(!bytes.is_empty(), "encoded ChatMessage must not be empty");
 
     let decoded = ChatMessage::decode(bytes.as_slice()).expect("decode ChatMessage");
-    assert_eq!(decoded.content, original.content, "content survives round-trip");
+    assert_eq!(
+        decoded.content, original.content,
+        "content survives round-trip"
+    );
     assert_eq!(decoded.role, original.role, "role survives round-trip");
     assert_eq!(
         decoded.conversation_id, original.conversation_id,
         "optional conversation_id (tag 3) survives as Some(..)"
     );
-    assert_eq!(decoded, original, "full ChatMessage equality after round-trip");
+    assert_eq!(
+        decoded, original,
+        "full ChatMessage equality after round-trip"
+    );
 }
 
 /// `ChatMessage` with `conversation_id = None`. Guards the absent-vs-empty
@@ -56,7 +62,10 @@ fn chat_message_roundtrip_optional_unset() {
 
     let bytes = original.encode_to_vec();
     let decoded = ChatMessage::decode(bytes.as_slice()).expect("decode ChatMessage");
-    assert_eq!(decoded.conversation_id, None, "absent optional stays absent");
+    assert_eq!(
+        decoded.conversation_id, None,
+        "absent optional stays absent"
+    );
     assert_eq!(decoded, original);
 }
 
