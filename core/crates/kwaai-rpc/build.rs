@@ -129,6 +129,6 @@ fn main() {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile(&[proto], &[proto_dir])
+        .compile_protos(&[proto], &[proto_dir])
         .expect("compile kwaai.proto");
 }
