@@ -180,27 +180,35 @@ class DaemonController {
   }
 }
 
+enum DaemonStartKind {
+  /// A new daemon process was spawned and its PID written to the state file.
+  spawned,
+
+  /// A daemon was already running; we reused its PID without spawning.
+  alreadyRunning,
+
+  /// Lifecycle isn't ours — see [DaemonMode.external]. The transition
+  /// notifier treats this as success so it doesn't publish a red error bar.
+  externalNoop,
+
+  /// Spawn failed. The accompanying [DaemonStartResult.error] explains why.
+  error,
+}
+
 class DaemonStartResult {
   DaemonStartResult._(this.kind, {this.pid, this.error});
-  final String kind;
+  final DaemonStartKind kind;
   final int? pid;
   final String? error;
 
   factory DaemonStartResult.spawned(int pid) =>
-      DaemonStartResult._('spawned', pid: pid);
+      DaemonStartResult._(DaemonStartKind.spawned, pid: pid);
   factory DaemonStartResult.alreadyRunning(int pid) =>
-      DaemonStartResult._('alreadyRunning', pid: pid);
+      DaemonStartResult._(DaemonStartKind.alreadyRunning, pid: pid);
   factory DaemonStartResult.error(String message) =>
-      DaemonStartResult._('error', error: message);
-
-  /// "We deliberately did nothing because lifecycle isn't ours."
-  /// Used in [DaemonMode.external] so the transition notifier doesn't
-  /// publish a red error bar.
+      DaemonStartResult._(DaemonStartKind.error, error: message);
   factory DaemonStartResult.externalNoop() =>
-      DaemonStartResult._('externalNoop');
+      DaemonStartResult._(DaemonStartKind.externalNoop);
 
-  bool get ok =>
-      kind == 'spawned' ||
-      kind == 'alreadyRunning' ||
-      kind == 'externalNoop';
+  bool get ok => kind != DaemonStartKind.error;
 }
