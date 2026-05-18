@@ -69,6 +69,12 @@ class ChatTranscriptNotifier
         _bump();
       },
       onError: (e, _) {
+        // Log any tokens that streamed in before the error too — without
+        // this you can't tell from the log whether the daemon produced
+        // a partial response or failed before emitting anything.
+        if (assistant.text.isNotEmpty) {
+          _log('[${_path.name}] < (partial) ${assistant.text}');
+        }
         _log('[${_path.name}] < [error] $e');
         // Preserve the structured (code, message) when it's a
         // SessionOpError; fall back to a 0/UNKNOWN with the toString
