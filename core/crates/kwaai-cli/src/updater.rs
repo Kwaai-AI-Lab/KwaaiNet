@@ -126,6 +126,16 @@ impl UpdateChecker {
     pub async fn install_update(&self, version: &str) -> Result<()> {
         #[cfg(unix)]
         {
+            // On Linux, check for an NVIDIA GPU before deciding what to install.
+            // If one is present we must use the CUDA-enabled binary — silently
+            // installing the CPU build would break GPU inference.
+            #[cfg(not(target_os = "macos"))]
+            {
+                if nvidia_smi_async().await {
+                    return self.install_cuda_linux(version).await;
+                }
+            }
+
             let url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh";
             let tmp = std::env::temp_dir().join("kwaainet-installer.sh");
             self.download_to(url, &tmp).await?;
@@ -367,6 +377,91 @@ impl UpdateChecker {
         Ok(())
     }
 
+    /// Download the CUDA-enabled Linux binary for `version` and install it in-place.
+    ///
+    /// Bails with a clear error if the CUDA archive isn't published yet for this
+    /// release rather than silently falling back to the CPU build.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn install_cuda_linux(&self, version: &str) -> Result<()> {
+        let cuda_url = format!(
+            "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-unknown-linux-gnu-cuda.tar.xz"
+        );
+
+        // HEAD check — don't download if the archive isn't there yet.
+        let client = reqwest::Client::builder()
+            .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let cuda_available = client
+            .head(&cuda_url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+
+        if !cuda_available {
+            anyhow::bail!(
+                "NVIDIA GPU detected but the CUDA build for v{version} isn't published yet.\n\
+                 Update skipped — your current GPU-enabled binary is unchanged.\n\
+                 Try again in a few minutes or watch: \
+                 https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/tag/v{version}"
+            );
+        }
+
+        print!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        let archive = std::env::temp_dir().join("kwaainet-cuda-update.tar.xz");
+        self.download_to(&cuda_url, &archive).await?;
+        println!(" done.");
+
+        let install_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cargo/bin")))
+            .context("Cannot determine install directory")?;
+
+        // Extract archive into a temp directory, then copy every file into
+        // install_dir (binary + bundled CUDA .so runtime libs).
+        let tmp = std::env::temp_dir().join("kwaainet-cuda-extract");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp)?;
+
+        let status = std::process::Command::new("tar")
+            .args(["-xJf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&tmp)
+            .status()
+            .context("Failed to extract CUDA archive (is tar installed?)")?;
+
+        let _ = std::fs::remove_file(&archive);
+        if !status.success() {
+            anyhow::bail!("tar exited with {status}");
+        }
+
+        // Archive layout: kwaainet-x86_64-unknown-linux-gnu-cuda/<files>
+        let subdir = tmp.join("kwaainet-x86_64-unknown-linux-gnu-cuda");
+        use std::os::unix::fs::PermissionsExt;
+        for entry in std::fs::read_dir(&subdir)
+            .with_context(|| format!("Reading extracted archive at {}", subdir.display()))?
+        {
+            let entry = entry?;
+            let name = entry.file_name();
+            let dest = install_dir.join(&name);
+            std::fs::copy(entry.path(), &dest)
+                .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
+            let name_str = name.to_string_lossy();
+            if name_str == "kwaainet" || name_str == "p2pd" {
+                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        println!("  CUDA binary installed to {}.", install_dir.display());
+        Ok(())
+    }
+
     async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
         let client = reqwest::Client::builder()
             .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
@@ -381,8 +476,7 @@ impl UpdateChecker {
 
 /// Query nvidia-smi asynchronously with a 4-second timeout.
 /// Returns true if nvidia-smi exits successfully within the time limit.
-/// Avoids blocking the async runtime during NVML cold-start on Windows.
-#[cfg(windows)]
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 async fn nvidia_smi_async() -> bool {
     use tokio::process::Command;
     let result = tokio::time::timeout(
@@ -402,7 +496,7 @@ async fn nvidia_smi_async() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
 #[allow(dead_code)]
 async fn nvidia_smi_async() -> bool {
     false
