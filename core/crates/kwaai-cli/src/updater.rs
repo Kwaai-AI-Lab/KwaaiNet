@@ -303,8 +303,8 @@ impl UpdateChecker {
                     "{kill_header}\
                      powershell -ExecutionPolicy Bypass -File \"{ps1_str}\" >> \"{log_path}\" 2>&1\r\n\
                      del /f \"{ps1_str}\"\r\n\
-                     del /f \"%~f0\"\r\n\
-                     {respawn}"
+                     {respawn}\
+                     del /f \"%~f0\"\r\n"
                 )
             } else {
                 // Full path: use the cargo-dist PS1 installer (handles first-time
@@ -318,8 +318,8 @@ impl UpdateChecker {
                     "{kill_header}\
                      powershell -ExecutionPolicy Bypass -File \"{ps_path}\" >> \"{log_path}\" 2>&1\r\n\
                      del /f \"{ps_path}\"\r\n\
-                     del /f \"%~f0\"\r\n\
-                     {respawn}"
+                     {respawn}\
+                     del /f \"%~f0\"\r\n"
                 )
             };
 
