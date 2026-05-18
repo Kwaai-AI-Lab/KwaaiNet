@@ -1,0 +1,243 @@
+// kwaai-rpc — gRPC surface for the long-running `kwaainet start` daemon.
+//
+// This service is hosted in-process by the kwaainet (kwaai-cli) binary and
+// is the integration point for the Flutter GUI and any future CLI
+// subcommands that want structured (non-stdout) access to the daemon.
+//
+// Wire compatibility: only ever append new fields and use explicit field
+// numbers. Don't renumber existing fields or repurpose tags.
+
+syntax = "proto3";
+
+package kwaai.v1;
+
+service KwaaiNet {
+    // Multiplexed bidi session. The client opens Session once per
+    // connection and sends a stream of ClientFrames; the server emits a
+    // stream of ServerFrames in response. Each frame carries a client-
+    // assigned `id` correlating requests with their responses, so many
+    // long-running operations (generate, shard_run, status) can
+    // interleave on a single channel without needing one rpc per
+    // operation type.
+    //
+    // The first frame on a new id opens a logical operation. Subsequent
+    // frames with that id either continue input to it (future multi-turn)
+    // or cancel it (a `Cancel` body). The server emits zero or more reply
+    // frames for the id, terminating with a `Done` or `Error` body —
+    // both signal the operation is finished and the id may be reused.
+    //
+    // This is the canonical surface; the legacy Chat / Ping rpcs below
+    // remain for a deprecation cycle.
+    rpc Session(stream ClientFrame) returns (stream ServerFrame);
+
+    // -----------------------------------------------------------------
+    // Legacy rpcs (pre-Session). Kept until all callers migrate. Don't
+    // add new functionality here — use Session.
+    // -----------------------------------------------------------------
+    rpc Chat(stream ChatMessage) returns (stream ChatToken);
+    rpc Ping(PingRequest) returns (PingReply);
+}
+
+// =====================================================================
+// Session envelope types
+// =====================================================================
+
+// Frame sent from client → server on the Session stream. The `body`
+// oneof selects which operation type this frame drives. Operation
+// names match the CLI subcommand they correspond to, dot-to-camelcase:
+//
+//   ping              ←  (no CLI equivalent; gRPC-only liveness probe)
+//   generate          ←  `kwaainet generate <PROMPT>`
+//   shardRun          ←  `kwaainet shard run <PROMPT>`
+//   status            ←  `kwaainet status`
+//   cancel            ←  (no CLI equivalent; aborts an in-flight op)
+//
+// New operations are added as siblings here; preserving the flat shape
+// keeps the dispatch trivial on both sides.
+message ClientFrame {
+    // Operation correlation id. Pick any non-zero value unused by an
+    // active operation on this Session. Reuse after Done/Error.
+    uint64 id = 1;
+
+    oneof body {
+        PingRequest ping = 10;
+
+        // Single-node inference using the local InferenceEngine. The
+        // node must have the model loaded locally — most useful for
+        // dev / fallback when the shard mesh isn't ready.
+        GenerateRequest generate = 11;
+
+        // Distributed inference across the shard mesh. Routes blocks
+        // to peer nodes via the existing block_rpc layer. This is the
+        // default chat path for the GUI.
+        ShardRunRequest shard_run = 12;
+
+        // Snapshot of node status (uptime, peers, model state). One
+        // ServerFrame.status reply, then Done.
+        StatusRequest status = 13;
+
+        // Cancel an in-flight operation by id.
+        Cancel cancel = 14;
+    }
+}
+
+// Frame sent from server → client on the Session stream. The `id`
+// matches the originating ClientFrame.id, so the client can dispatch
+// frames to whichever caller is awaiting them.
+message ServerFrame {
+    uint64 id = 1;
+
+    oneof body {
+        PingReply pong = 10;
+
+        // Mid-stream token from generate / shard_run. Multiple tokens
+        // arrive for one id before the operation ends.
+        ChatToken token = 11;
+
+        // Operation completed cleanly. Always the last frame for a
+        // given id on success. After Done the id is free to reuse.
+        Done done = 12;
+
+        // Operation failed. Mutually exclusive with Done; same
+        // semantics (operation is over, id is free).
+        Error error = 13;
+
+        // Reply to a StatusRequest.
+        StatusReply status = 14;
+    }
+}
+
+// Sent from client → server to abort an in-flight operation by id.
+message Cancel {
+    // The operation id (not the Cancel frame's own id) to abort. The
+    // server emits an Error{code=CANCELLED} for `target_id` and the
+    // operation winds down.
+    uint64 target_id = 1;
+}
+
+// Generic terminator for a successful operation. Reserved tag range
+// 1-15 left for future per-op summary data.
+message Done {
+}
+
+// Generic operation-level failure. Distinct from grpc transport errors
+// (which surface as the rpc's own Status) — these are application-level
+// failures inside an otherwise-healthy Session.
+message Error {
+    enum Code {
+        UNKNOWN = 0;
+        INVALID_ARGUMENT = 1;
+        NOT_FOUND = 2;
+        UNAVAILABLE = 3;
+        CANCELLED = 4;
+        INTERNAL = 5;
+        UNIMPLEMENTED = 6;
+
+        // Inference-specific failure classes. Promoted out of INTERNAL
+        // so clients can render a friendly message without grepping
+        // the human-readable `message` field.
+
+        // The DHT had no peers serving this model at all. Often
+        // transient at startup before discovery completes; sometimes
+        // permanent if the model isn't being served by anyone on the
+        // network.
+        NO_PEERS_FOR_MODEL = 7;
+
+        // Peers exist but they don't collectively cover every block
+        // of the model — the dispatcher can't build a full chain.
+        INSUFFICIENT_COVERAGE = 8;
+
+        // A chain was built but every candidate for at least one
+        // position failed mid-inference (most peers don't actually
+        // have a working inference handler).
+        ALL_CANDIDATES_FAILED = 9;
+
+        // The local InferenceEngine couldn't load the requested
+        // model (HF download error, Ollama blob missing, OOM, etc.).
+        // Only emitted by the `generate` path, not `shard_run`.
+        MODEL_LOAD_FAILED = 10;
+    }
+    Code code = 1;
+    string message = 2;
+}
+
+// =====================================================================
+// Request / reply bodies referenced by ClientFrame / ServerFrame
+// =====================================================================
+
+message PingRequest {
+}
+
+message PingReply {
+    // Wall-clock time on the daemon, RFC 3339.
+    string server_time = 1;
+}
+
+// `kwaainet generate <PROMPT>` — single-node local inference.
+message GenerateRequest {
+    // Conventional roles: "user", "assistant", "system". Free-form.
+    string role = 1;
+    string content = 2;
+
+    // Optional client-supplied conversation id for future multi-turn.
+    // Ignored today.
+    optional string conversation_id = 3;
+
+    // 4-15 reserved for high-frequency metadata.
+    // 16+ reserved for sampling/tool/attachment payloads.
+}
+
+// `kwaainet shard run <PROMPT>` — distributed inference across the mesh.
+message ShardRunRequest {
+    string role = 1;
+    string content = 2;
+
+    // Optional model override. Defaults to the daemon's configured
+    // model when empty.
+    optional string model = 3;
+
+    optional string conversation_id = 4;
+
+    // 5-15 reserved for high-frequency metadata.
+    // 16+ reserved for sampling controls / routing hints.
+}
+
+// `kwaainet status` — daemon-side state snapshot.
+message StatusRequest {
+}
+
+message StatusReply {
+    // Daemon wall-clock time, RFC 3339 — same format as PingReply.
+    string server_time = 1;
+
+    // The model this node is configured to serve.
+    string model = 2;
+
+    // True when the local shard server (the one this node contributes
+    // to the mesh) is up and serving its block range.
+    bool shard_ready = 3;
+
+    // Number of peers currently in the routing table (best-effort
+    // snapshot from kwaai-p2p-daemon).
+    uint32 peer_count = 4;
+
+    // Daemon process uptime in seconds.
+    uint64 uptime_secs = 5;
+}
+
+// =====================================================================
+// Legacy types (used by Chat / Ping rpcs above; superseded by the
+// Session bodies). Kept stable for back-compat with existing clients.
+// =====================================================================
+
+message ChatMessage {
+    string content = 1;
+    string role = 2;
+    optional string conversation_id = 3;
+}
+
+message ChatToken {
+    string text = 1;
+    bool done = 2;
+    optional string finish_reason = 3;
+}

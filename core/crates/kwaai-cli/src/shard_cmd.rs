@@ -1339,6 +1339,315 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     Ok(())
 }
 
+// ── streaming API ─────────────────────────────────────────────────────────────
+//
+// `run_streaming` is the non-printing twin of [`cmd_shard_run`]. It drives the
+// same end-to-end distributed-inference path (connect p2pd → DHT discovery →
+// chain pinning → tokenize → per-token forward loop) but yields events on a
+// stream instead of writing to stdout. The in-process gRPC server uses this
+// to power the GUI's `Session::ShardRun` operation without re-implementing the
+// dispatch logic.
+//
+// The CLI `cmd_shard_run` deliberately remains a separate path so its existing
+// stdout decoration (box headers, spinners, per-hop stats, etc.) is unchanged
+// and verifiable byte-for-byte. The shared substrate is the existing pub
+// helpers — `discover_chain`, `build_pinned_path`, `forward_through_chain`,
+// `sample_token`, `f16_bytes_to_tensor`, `token_ids_to_bytes`,
+// `BpeTokenizer::from_file` — so the only duplication is the ~50-line outer
+// loop driver, which differs between the two consumers anyway.
+
+/// Options for [`run_streaming`].
+pub struct ShardRunOptions {
+    /// User prompt to format and run inference against.
+    pub prompt: String,
+    /// HF model id override. `None` means use `config.model`.
+    pub model: Option<String>,
+    /// Generation cap. `None` means the same default as `cmd_shard_run`
+    /// uses today (200).
+    pub max_tokens: Option<usize>,
+    /// Pre-formed circuit id to use instead of fresh DHT discovery.
+    pub circuit_id: Option<String>,
+}
+
+/// Events emitted by [`run_streaming`]. Every successful generation ends with
+/// `Done`; every failure ends with `Error`. No other terminal markers.
+pub enum ShardRunEvent {
+    /// A decoded text piece for the next generated token. Multiple `Token`s
+    /// arrive before the terminator.
+    Token(String),
+    /// Generation finished cleanly (EOS hit or `max_tokens` reached).
+    Done,
+    /// Unrecoverable error mid-generation. No further events follow.
+    Error(anyhow::Error),
+}
+
+/// Drive distributed inference end-to-end and yield [`ShardRunEvent`]s as
+/// tokens are produced. The final event is always `Done` or `Error`.
+///
+/// Behaviour notes vs [`cmd_shard_run`]:
+///
+/// - No stdout writes from this function. Side effects from helpers
+///   (notably `print_warning` inside `forward_through_chain` on transient
+///   peer errors) are unchanged — they're acceptable in the daemon context
+///   today and out of scope for this refactor.
+/// - The local node is honoured as a hop when it appears in the discovered
+///   chain — `forward_through_chain` already calls into the local TCP bypass
+///   server for `our_peer_id`, just like the CLI path.
+/// - On an empty chain (no peers serving the model) we poll every 2 s for up
+///   to 30 s before yielding
+///   `Error(anyhow!("no peers serving model …"))`.
+/// - Opens its own `P2PClient` via `daemon_socket()` — matches the CLI and
+///   avoids contending with `run_node`'s ownership of the daemon's primary
+///   client. p2pd accepts concurrent IPC connections, so this is fine.
+pub fn run_streaming(opts: ShardRunOptions) -> impl futures::Stream<Item = ShardRunEvent> {
+    // We run the actual generation on a dedicated task and pipe events back
+    // through an mpsc channel. This avoids the awkwardness of `?`-across-
+    // `yield` inside `async_stream::stream!` and means the worker can use
+    // ordinary Result propagation. The stream! body just forwards.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ShardRunEvent>(64);
+
+    tokio::spawn(async move {
+        let result = run_streaming_inner(opts, tx.clone()).await;
+        match result {
+            Ok(()) => {
+                let _ = tx.send(ShardRunEvent::Done).await;
+            }
+            Err(e) => {
+                let _ = tx.send(ShardRunEvent::Error(e)).await;
+            }
+        }
+    });
+
+    async_stream::stream! {
+        while let Some(ev) = rx.recv().await {
+            yield ev;
+        }
+    }
+}
+
+/// Worker that does all the I/O for `run_streaming` and sends each generated
+/// piece into `tx` as a `ShardRunEvent::Token`. The terminator (`Done` or
+/// `Error`) is emitted by the caller in `run_streaming` based on the
+/// `Result` returned from here, so the worker never sends `Done`/`Error`
+/// itself.
+async fn run_streaming_inner(
+    opts: ShardRunOptions,
+    tx: tokio::sync::mpsc::Sender<ShardRunEvent>,
+) -> Result<()> {
+    let cfg = KwaaiNetConfig::load_or_create()?;
+    let model_ref = opts.model.as_deref().unwrap_or(&cfg.model).to_string();
+    let dht_prefix = if opts.model.is_some() && opts.model.as_deref() != Some(&cfg.model) {
+        let base = model_ref.split('/').next_back().unwrap_or(&model_ref);
+        base.replace('.', "-")
+    } else {
+        cfg.effective_dht_prefix()
+    };
+    let total_blocks = cfg.model_total_blocks() as usize;
+
+    // Default max_tokens matches the CLI's clap default (see ShardRunArgs).
+    let max_tokens = opts.max_tokens.unwrap_or(200);
+    // Sampling defaults also mirror ShardRunArgs.
+    let temperature: f32 = 1.0;
+    let top_k: usize = 0;
+    let top_p: f32 = 1.0;
+
+    // p2pd connection — separate client from `run_node`'s; concurrent
+    // IPC connections are supported by p2pd.
+    let mut client = P2PClient::connect(&daemon_socket())
+        .await
+        .context("connecting to p2pd (is `kwaainet start` running?)")?;
+
+    let peer_id_hex = client.identify().await.context("identify peer")?;
+    let our_peer_id =
+        PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
+
+    // ── Resolve chain (circuit or fresh DHT discovery + 30 s wait) ──
+    let chain: Vec<BlockServerEntry> = if let Some(ref cid) = opts.circuit_id {
+        let mut circuit = load_circuit_by_id(cid)?;
+        circuit.last_used_epoch = now_epoch();
+        let mut all = load_circuits();
+        if let Some(c) = all.iter_mut().find(|c| c.id == circuit.id) {
+            c.last_used_epoch = circuit.last_used_epoch;
+        }
+        let _ = save_circuits(&all);
+        circuit.chain.iter().filter_map(|e| e.to_entry()).collect()
+    } else {
+        let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
+            NetworkConfig::with_petals_bootstrap().bootstrap_peers
+        } else {
+            cfg.initial_peers.clone()
+        };
+
+        // Poll DHT up to 30 s for peers serving this model.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut chain = discover_chain(
+            &mut client,
+            &our_peer_id,
+            &dht_prefix,
+            total_blocks,
+            &bootstrap_peers,
+        )
+        .await;
+        while chain.is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            chain = discover_chain(
+                &mut client,
+                &our_peer_id,
+                &dht_prefix,
+                total_blocks,
+                &bootstrap_peers,
+            )
+            .await;
+        }
+        if chain.is_empty() {
+            bail!("no peers serving model {dht_prefix} (waited 30s)");
+        }
+        chain
+    };
+
+    // Enrich with reputation scores if enabled (mirrors cmd_shard_run).
+    let (chain, reputation) = if cfg.reputation.enabled {
+        let store = ReputationStore::load();
+        let mut enriched = chain;
+        for entry in &mut enriched {
+            let peer_b58 = entry.peer_id.to_base58();
+            entry.trust_score = Some(store.score(&peer_b58).score);
+        }
+        (enriched, Some(Arc::new(std::sync::Mutex::new(store))))
+    } else {
+        (chain, None)
+    };
+
+    // ── Tokenize / format prompt (matches cmd_shard_run exactly) ──
+    let model_dir = hf::resolve_snapshot(&model_ref)?;
+    let tokenizer_path = model_dir.join("tokenizer.json");
+    let tokenizer = kwaai_inference::tokenizer::BpeTokenizer::from_file(&tokenizer_path)
+        .context("Failed to load tokenizer")?;
+    use kwaai_inference::tokenizer::Tokenizer as _;
+
+    let formatted_prompt = if tokenizer.token_to_id("<|start_header_id|>").is_some() {
+        format!(
+            "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+            opts.prompt
+        )
+    } else if tokenizer.token_to_id("<|im_start|>").is_some() {
+        format!(
+            "<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
+            opts.prompt
+        )
+    } else {
+        opts.prompt.clone()
+    };
+
+    let mut token_ids: Vec<u32> = tokenizer
+        .encode(&formatted_prompt)
+        .context("Failed to encode prompt")?;
+    if let Some(bos) = tokenizer.bos_token_id() {
+        token_ids.insert(0, bos);
+    }
+    let eos_id = tokenizer.eos_token_id().unwrap_or(2);
+    let session_id: u64 = rand_session_id();
+
+    // Best-effort dial of every server in the chain (matches CLI).
+    for entry in &chain {
+        let _ = client
+            .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
+            .await;
+    }
+
+    // Pin the path for this session.
+    let mut failed_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
+    let mut pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+
+    let mut generated_ids: Vec<u32> = Vec::new();
+    let mut seq_pos: usize = 0;
+    let mut current_ids = token_ids.clone();
+
+    loop {
+        let (shape, data) = token_ids_to_bytes(&current_ids);
+        let request = InferenceRequest {
+            session_id,
+            seq_pos: seq_pos as u32,
+            payload_type: PayloadType::TokenIds,
+            shape,
+            data,
+        };
+
+        let logits_bytes = match forward_through_chain(
+            &mut client,
+            &pinned_path,
+            total_blocks,
+            session_id,
+            seq_pos as u32,
+            request,
+            Some(&our_peer_id),
+            &mut failed_peers,
+            None,
+            reputation.clone(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                // Rebuild path on transient failure and retry once,
+                // matching cmd_shard_run's recovery behaviour.
+                pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+                let (shape2, data2) = token_ids_to_bytes(&current_ids);
+                let retry_req = InferenceRequest {
+                    session_id,
+                    seq_pos: seq_pos as u32,
+                    payload_type: PayloadType::TokenIds,
+                    shape: shape2,
+                    data: data2,
+                };
+                forward_through_chain(
+                    &mut client,
+                    &pinned_path,
+                    total_blocks,
+                    session_id,
+                    seq_pos as u32,
+                    retry_req,
+                    Some(&our_peer_id),
+                    &mut failed_peers,
+                    None,
+                    reputation.clone(),
+                )
+                .await?
+            }
+        };
+
+        let logits_shape = &logits_bytes.shape;
+        let device = candle_core::Device::Cpu;
+        let logits_tensor = f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device)
+            .context("decode logits tensor")?;
+        let last_logits = if logits_shape.len() == 3 && logits_shape[1] > 1 {
+            use candle_core::IndexOp as _;
+            let seq_len = logits_shape[1] as usize;
+            logits_tensor.i((0, seq_len - 1, ..))?
+        } else {
+            logits_tensor.flatten_all()?
+        };
+        let next_id = sample_token(&last_logits, temperature, top_k, top_p)? as u32;
+
+        if let Ok(piece) = tokenizer.decode(&[next_id]) {
+            // If the consumer has dropped, stop generating — they're gone.
+            if tx.send(ShardRunEvent::Token(piece)).await.is_err() {
+                return Ok(());
+            }
+        }
+
+        generated_ids.push(next_id);
+        seq_pos += current_ids.len();
+
+        if next_id == eos_id || generated_ids.len() >= max_tokens {
+            break;
+        }
+        current_ids = vec![next_id];
+    }
+
+    Ok(())
+}
+
 // ── status ────────────────────────────────────────────────────────────────────
 
 pub async fn cmd_shard_status() -> Result<()> {

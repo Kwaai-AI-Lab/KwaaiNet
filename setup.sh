@@ -66,7 +66,24 @@ else
     echo "✅ unzip found"
 fi
 
-# 4. Rust toolchain
+# 4. protoc (Protocol Buffers compiler)
+# Used at build time by both kwaai-p2p-daemon and kwaai-rpc. Each crate's
+# build.rs has a download-on-miss fallback, but a system protoc is faster
+# (no per-clean-build download) and works in offline / sandboxed
+# environments where the fallback can't reach github.com.
+if ! command -v protoc &> /dev/null; then
+    echo "📦 Installing protoc..."
+    if [ "$OS" = "linux" ]; then
+        sudo apt install -y protobuf-compiler
+    else
+        brew install protobuf
+    fi
+    echo "✅ protoc installed: $(protoc --version)"
+else
+    echo "✅ protoc found: $(protoc --version)"
+fi
+
+# 5. Rust toolchain
 if ! command -v cargo &> /dev/null; then
     echo "📦 Installing Rust toolchain..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -90,7 +107,7 @@ else
     fi
 fi
 
-# 5. Go toolchain
+# 6. Go toolchain
 GO_ACTION=""
 if ! command -v go &> /dev/null; then
     GO_ACTION="install"
@@ -157,7 +174,7 @@ if [ -n "$GO_ACTION" ]; then
     fi
 fi
 
-# 6. NVIDIA CUDA toolkit (Linux only, when GPU is detected)
+# 7. NVIDIA CUDA toolkit (Linux only, when GPU is detected)
 CARGO_FEATURES=""
 if [ "$OS" = "linux" ] && command -v nvidia-smi &> /dev/null; then
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)

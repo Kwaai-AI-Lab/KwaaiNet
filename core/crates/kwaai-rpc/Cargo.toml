@@ -1,0 +1,23 @@
+[package]
+name = "kwaai-rpc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository = "https://github.com/Kwaai-AI-Lab/KwaaiNet"
+description = "gRPC IPC surface for the kwaainet daemon (used by GUI/CLI clients)"
+
+[dependencies]
+# tonic 0.12 + prost 0.13 — pinned independently of the rest of the
+# workspace (which still uses prost 0.12) because tonic 0.11 brought in
+# axum 0.6 alongside the workspace's axum 0.7, bloating the binary with
+# two axum versions. tonic 0.12 depends on axum 0.7, eliminating the
+# duplicate; its tonic-build sibling requires prost 0.13 for codegen.
+# Downstream consumers go through this crate's re-exports, so they don't
+# see the prost version skew. (kwaai-p2p-daemon is already on prost 0.13
+# for the same reason — generated-code crates have their own prost line.)
+tonic = "0.12"
+prost = "0.13"
+
+[build-dependencies]
+tonic-build = "0.12"

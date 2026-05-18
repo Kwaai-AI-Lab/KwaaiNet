@@ -295,6 +295,21 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("KwaaiNet node starting (PID {})", std::process::id());
 
     // -----------------------------------------------------------------------
+    // gRPC IPC surface — bind FIRST, before any of the p2p / DHT /
+    // inference init. This is a UI/management surface for kwaainet, so
+    // the GUI (and `kwaainet` CLI subcommands) need to be able to dial
+    // in immediately at startup to observe progress, not after the
+    // 30-90 s p2p bootstrap completes.
+    //
+    // Ops that depend on p2p state (shard_run, distributed status)
+    // will simply return UNAVAILABLE / NO_PEERS_FOR_MODEL until the
+    // node is fully up; ops that don't (ping, status, generate) work
+    // straight away. Failure here is non-fatal: the p2p node must
+    // keep running even if the IPC surface didn't come up. The
+    // handle's Drop signals graceful shutdown when run_node returns.
+    let _grpc_handle = crate::grpc_server::spawn(config.clone());
+
+    // -----------------------------------------------------------------------
     // Persistent identity — load or generate the keypair so the PeerId is
     // stable across restarts. Credentials are bound to this DID.
     // `config.identity_key` (CLI: `--identity-key`) overrides the default
@@ -2008,6 +2023,18 @@ fn jitter_secs(base: u64, spread: u64) -> u64 {
 /// Returns `true` when an update was installed and the caller should break
 /// the event loop to let the daemon exit.
 async fn maybe_auto_update() -> bool {
+    // Developer escape hatch: a long-running local debug daemon shouldn't
+    // get silently replaced by the upstream release binary (which won't
+    // contain whatever in-flight feature work is being tested). Setting
+    // KWAAINET_NO_AUTO_UPDATE=1 disables every code path that would
+    // download or install an update from inside the running node.
+    if std::env::var("KWAAINET_NO_AUTO_UPDATE")
+        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
     let checker = crate::updater::UpdateChecker::new();
     let update = match checker.check(false).await {
         Ok(Some(u)) => u,

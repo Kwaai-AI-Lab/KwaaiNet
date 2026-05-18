@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod daemon;
 mod display;
+mod grpc_server;
 mod health;
 mod hf;
 mod identity;
