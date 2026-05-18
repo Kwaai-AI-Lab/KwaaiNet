@@ -1,4 +1,4 @@
-# kwaainet_gui
+# KwaaiNet GUI
 
 Flutter desktop GUI for KwaaiNet. Runs on macOS, Linux, and Windows. Talks
 to the `kwaainet` daemon over gRPC and ships with a menu-bar tray, a chat
