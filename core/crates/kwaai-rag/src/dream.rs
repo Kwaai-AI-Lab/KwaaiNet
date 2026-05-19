@@ -360,7 +360,10 @@ pub async fn run_dream_cycle(
     let urls = Arc::new(inference_urls.to_vec());
     let url_counter = Arc::new(AtomicUsize::new(0));
     let sem = Arc::new(Semaphore::new(cfg.workers.max(1)));
-    let (tx, mut rx) = mpsc::channel::<Result<EntityCompletion>>(cfg.workers.max(1) * 4);
+    // Channel capacity = total work items so tasks never block on send before the
+    // receiver loop starts (bounded smaller capacity → deadlock when channel fills
+    // while the spawning loop still holds all semaphore permits).
+    let (tx, mut rx) = mpsc::channel::<Result<EntityCompletion>>(total.max(1));
     let model_str = model.to_string();
 
     for item in work_items {
