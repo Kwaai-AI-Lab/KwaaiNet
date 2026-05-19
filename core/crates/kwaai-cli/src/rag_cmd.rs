@@ -2233,7 +2233,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         report.entity_count,
                         report.relation_count,
                     );
-                    println!("  Unknown type: {} entities need reclassification", report.unknown_count);
+                    println!(
+                        "  Unknown type: {} entities need reclassification",
+                        report.unknown_count
+                    );
                     println!();
 
                     // Schema type distribution
@@ -2247,8 +2250,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                     // Worst-scoring entities table
                     println!("  Lowest-scoring entities (top {}):", top);
-                    println!("  {:<32} {:<22} {:>5}  {:>7}  {:>8}  {:>8}",
-                        "Name", "Schema type", "Type%", "Summary%", "Relatio%", "Overall%");
+                    println!(
+                        "  {:<32} {:<22} {:>5}  {:>7}  {:>8}  {:>8}",
+                        "Name", "Schema type", "Type%", "Summary%", "Relatio%", "Overall%"
+                    );
                     println!("  {}", "-".repeat(90));
                     for s in report.entity_scores.iter().take(top) {
                         let schema = s.schema_type.as_deref().unwrap_or("Unknown");
@@ -2277,7 +2282,6 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
     }
 }
 
-
 // ── dream ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
@@ -2287,7 +2291,9 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
     #[cfg(feature = "storage")]
     {
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
-        let report_path = rag_cfg.data_dir().join(format!("dream-report-{tenant_id}.json"));
+        let report_path = rag_cfg
+            .data_dir()
+            .join(format!("dream-report-{tenant_id}.json"));
 
         match action {
             DreamAction::Run {
@@ -2307,10 +2313,7 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     .filter(|s| !s.is_empty())
                     .collect();
                 if urls.is_empty() {
-                    urls.push(
-                        inference_url
-                            .unwrap_or_else(|| rag_cfg.inference_url.clone()),
-                    );
+                    urls.push(inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone()));
                 }
                 let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)
@@ -2326,7 +2329,10 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                 print_box_header(&format!("Dream RAG ({})", kb));
                 println!("  Inference: {}", urls.join(", "));
                 println!("  Workers:   {workers}  |  Max completions: {max_completions}");
-                println!("  Threshold: {threshold:.0}%  |  Dedup: {dedup_threshold:.2}");
+                println!(
+                    "  Threshold: {:.0}%  |  Dedup: {dedup_threshold:.2}",
+                    threshold * 100.0
+                );
                 println!();
 
                 let report = kwaai_rag::dream::run_dream_cycle(
@@ -2361,8 +2367,14 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     (report.score_after - report.score_before) * 100.0,
                 );
                 println!("  Type completions:     {}", report.entities_type_completed);
-                println!("  Summary completions:  {}", report.entities_summary_completed);
-                println!("  Relations added:      {}", report.entities_relations_added);
+                println!(
+                    "  Summary completions:  {}",
+                    report.entities_summary_completed
+                );
+                println!(
+                    "  Relations added:      {}",
+                    report.entities_relations_added
+                );
                 println!("  Entities merged:      {}", report.entities_merged);
                 println!("  Entities pruned:      {}", report.entities_pruned);
                 if !report.cycle_errors.is_empty() {
@@ -2393,12 +2405,21 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                         (report.score_after - report.score_before) * 100.0,
                     );
                     println!("  Type completions:     {}", report.entities_type_completed);
-                    println!("  Summary completions:  {}", report.entities_summary_completed);
-                    println!("  Relations added:      {}", report.entities_relations_added);
+                    println!(
+                        "  Summary completions:  {}",
+                        report.entities_summary_completed
+                    );
+                    println!(
+                        "  Relations added:      {}",
+                        report.entities_relations_added
+                    );
                     println!("  Entities merged:      {}", report.entities_merged);
                     println!("  Entities pruned:      {}", report.entities_pruned);
                     if !report.cycle_errors.is_empty() {
-                        print_warning(&format!("{} errors during last cycle", report.cycle_errors.len()));
+                        print_warning(&format!(
+                            "{} errors during last cycle",
+                            report.cycle_errors.len()
+                        ));
                     }
                 }
             }

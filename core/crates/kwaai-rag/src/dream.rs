@@ -11,17 +11,17 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::sync::{mpsc, Semaphore};
 use uuid::Uuid;
 
 use crate::embedder::EmbedClient;
 use crate::graph::{GraphStore, RELATION_TYPES};
 use crate::meta_store::MetaStore;
-use crate::scorer::{score_graph, score_entity};
+use crate::scorer::{score_entity, score_graph};
 
 // ── Config & report ───────────────────────────────────────────────────────────
 
@@ -76,8 +76,8 @@ pub struct DreamReport {
 pub struct EntityCompletion {
     pub entity_id: i64,
     pub schema_type: Option<String>,
-    pub description: Option<String>,          // None = no improvement
-    pub relations: Vec<(String, String)>,     // (relation_type, target_name)
+    pub description: Option<String>,      // None = no improvement
+    pub relations: Vec<(String, String)>, // (relation_type, target_name)
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,11 +102,20 @@ static VALID_SCHEMA_TYPES: OnceLock<Vec<&'static str>> = OnceLock::new();
 fn valid_schema_types() -> &'static [&'static str] {
     VALID_SCHEMA_TYPES.get_or_init(|| {
         vec![
-            "schema:Person", "schema:Organization", "schema:Place",
-            "schema:Event", "schema:Product", "schema:CreativeWork",
-            "schema:SoftwareApplication", "schema:DefinedTerm",
-            "schema:HowTo", "schema:Role", "schema:QuantitativeValue",
-            "schema:Statement", "schema:Date", "schema:Thing",
+            "schema:Person",
+            "schema:Organization",
+            "schema:Place",
+            "schema:Event",
+            "schema:Product",
+            "schema:CreativeWork",
+            "schema:SoftwareApplication",
+            "schema:DefinedTerm",
+            "schema:HowTo",
+            "schema:Role",
+            "schema:QuantitativeValue",
+            "schema:Statement",
+            "schema:Date",
+            "schema:Thing",
         ]
     })
 }
@@ -147,14 +156,24 @@ pub async fn complete_entity(
            returning the same text"
     );
 
-    let url = format!("{}/v1/chat/completions", inference_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        inference_url.trim_end_matches('/')
+    );
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return EntityCompletion { entity_id: eid, schema_type: None, description: None, relations: vec![] },
+        Err(_) => {
+            return EntityCompletion {
+                entity_id: eid,
+                schema_type: None,
+                description: None,
+                relations: vec![],
+            }
+        }
     };
 
     let body = serde_json::json!({
@@ -167,20 +186,36 @@ pub async fn complete_entity(
     let resp = match tokio::time::timeout(
         std::time::Duration::from_secs(30),
         client.post(&url).json(&body).send(),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(r)) if r.status().is_success() => r,
-        _ => return EntityCompletion { entity_id: eid, schema_type: None, description: None, relations: vec![] },
+        _ => {
+            return EntityCompletion {
+                entity_id: eid,
+                schema_type: None,
+                description: None,
+                relations: vec![],
+            }
+        }
     };
 
-    let v: serde_json::Value = match tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        resp.json(),
-    ).await {
-        Ok(Ok(v)) => v,
-        _ => return EntityCompletion { entity_id: eid, schema_type: None, description: None, relations: vec![] },
-    };
+    let v: serde_json::Value =
+        match tokio::time::timeout(std::time::Duration::from_secs(120), resp.json()).await {
+            Ok(Ok(v)) => v,
+            _ => {
+                return EntityCompletion {
+                    entity_id: eid,
+                    schema_type: None,
+                    description: None,
+                    relations: vec![],
+                }
+            }
+        };
 
-    let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("{}");
+    let content = v["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("{}");
     let cleaned = content
         .trim()
         .trim_start_matches("```json")
@@ -190,7 +225,14 @@ pub async fn complete_entity(
 
     let payload: CompletionPayload = match serde_json::from_str(cleaned) {
         Ok(p) => p,
-        Err(_) => return EntityCompletion { entity_id: eid, schema_type: None, description: None, relations: vec![] },
+        Err(_) => {
+            return EntityCompletion {
+                entity_id: eid,
+                schema_type: None,
+                description: None,
+                relations: vec![],
+            }
+        }
     };
 
     // Validate schema_type against known list.
@@ -208,17 +250,23 @@ pub async fn complete_entity(
     };
 
     // Filter relations: type must be valid, target must be non-empty.
-    let relations: Vec<(String, String)> = payload.relations
+    let relations: Vec<(String, String)> = payload
+        .relations
         .into_iter()
         .filter(|r| {
             !r.target.is_empty()
-            && !r.relation_type.is_empty()
-            && RELATION_TYPES.contains(&r.relation_type.as_str())
+                && !r.relation_type.is_empty()
+                && RELATION_TYPES.contains(&r.relation_type.as_str())
         })
         .map(|r| (r.relation_type, r.target))
         .collect();
 
-    EntityCompletion { entity_id: eid, schema_type, description, relations }
+    EntityCompletion {
+        entity_id: eid,
+        schema_type,
+        description,
+        relations,
+    }
 }
 
 // ── Dream cycle ───────────────────────────────────────────────────────────────
@@ -231,6 +279,7 @@ struct WorkItem {
     chunk_text: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_dream_cycle(
     data_dir: &Path,
     tenant_id: Uuid,
@@ -266,7 +315,9 @@ pub async fn run_dream_cycle(
         let budget = cfg.max_completions_per_cycle;
 
         // Priority order: Unknown type first, then thin summary, then missing relations.
-        let mut candidates: Vec<_> = health.entity_scores.iter()
+        let mut candidates: Vec<_> = health
+            .entity_scores
+            .iter()
             .filter(|s| s.overall < cfg.completeness_threshold)
             .collect();
         candidates.sort_by(|a, b| a.overall.partial_cmp(&b.overall).unwrap());
@@ -331,7 +382,8 @@ pub async fn run_dream_cycle(
                 &item.chunk_text,
                 url,
                 &model,
-            ).await;
+            )
+            .await;
             let _ = tx.send(Ok(result)).await;
         });
     }
@@ -359,7 +411,11 @@ pub async fn run_dream_cycle(
 
             // Type completion
             if let Some(ref st) = completion.schema_type {
-                if store.get_entity(eid).and_then(|n| n.schema_type.as_ref()).is_none() {
+                if store
+                    .get_entity(eid)
+                    .and_then(|n| n.schema_type.as_ref())
+                    .is_none()
+                {
                     if let Err(e) = store.set_schema_type(eid, st) {
                         cycle_errors.push(format!("set_schema_type {eid}: {e}"));
                     } else {
@@ -377,7 +433,10 @@ pub async fn run_dream_cycle(
                             let updated = crate::graph::EntityNode {
                                 description: new_desc.clone(),
                                 embedding: embs.into_iter().next().unwrap(),
-                                schema_type: completion.schema_type.clone().or(node.schema_type.clone()),
+                                schema_type: completion
+                                    .schema_type
+                                    .clone()
+                                    .or(node.schema_type.clone()),
                                 ..node
                             };
                             if let Err(e) = store.upsert_entity(updated) {
@@ -408,10 +467,13 @@ pub async fn run_dream_cycle(
         }
 
         // ── Step 6: Auto-merge near-duplicates ────────────────────────────────
-        if let Some(ref cb) = progress { cb(0, 0, "deduplicating"); }
+        if let Some(ref cb) = progress {
+            cb(0, 0, "deduplicating");
+        }
         let exact = store.find_dedup_candidates_exact();
         let fuzzy = store.find_dedup_candidates(cfg.dedup_threshold);
-        let merge_pairs: Vec<(i64, i64)> = exact.into_iter()
+        let merge_pairs: Vec<(i64, i64)> = exact
+            .into_iter()
             .chain(fuzzy.into_iter().map(|(a, b, _)| (a, b)))
             .collect();
 
@@ -426,8 +488,11 @@ pub async fn run_dream_cycle(
         }
 
         // ── Step 7: Prune zombies ─────────────────────────────────────────────
-        if let Some(ref cb) = progress { cb(0, 0, "pruning"); }
-        let zombie_ids: Vec<i64> = store.all_entities()
+        if let Some(ref cb) = progress {
+            cb(0, 0, "pruning");
+        }
+        let zombie_ids: Vec<i64> = store
+            .all_entities()
             .filter(|n| {
                 n.mention_count <= 1
                     && store.neighbors_of(n.id).is_empty()

@@ -17,22 +17,22 @@ use std::collections::HashMap;
 /// "Unknown" maps to None — entity must be reclassified by the dream loop.
 pub fn schema_type_for(entity_type: &str) -> Option<&'static str> {
     match entity_type {
-        "Person"       => Some("schema:Person"),
+        "Person" => Some("schema:Person"),
         "Organization" => Some("schema:Organization"),
-        "Location"     => Some("schema:Place"),
-        "Event"        => Some("schema:Event"),
-        "Product"      => Some("schema:Product"),
-        "Document"     => Some("schema:CreativeWork"),
-        "Technology"   => Some("schema:SoftwareApplication"),
-        "Concept"      => Some("schema:DefinedTerm"),
-        "Method"       => Some("schema:HowTo"),
-        "Claim"        => Some("schema:Statement"),
-        "Role"         => Some("schema:Role"),
-        "Quantity"     => Some("schema:QuantitativeValue"),
-        "Date"         => Some("schema:Date"),
+        "Location" => Some("schema:Place"),
+        "Event" => Some("schema:Event"),
+        "Product" => Some("schema:Product"),
+        "Document" => Some("schema:CreativeWork"),
+        "Technology" => Some("schema:SoftwareApplication"),
+        "Concept" => Some("schema:DefinedTerm"),
+        "Method" => Some("schema:HowTo"),
+        "Claim" => Some("schema:Statement"),
+        "Role" => Some("schema:Role"),
+        "Quantity" => Some("schema:QuantitativeValue"),
+        "Date" => Some("schema:Date"),
         // Vague types — valid but uninformative
-        "Topic"        => Some("schema:Thing"),
-        _              => None, // Unknown + anything unrecognised
+        "Topic" => Some("schema:Thing"),
+        _ => None, // Unknown + anything unrecognised
     }
 }
 
@@ -42,39 +42,36 @@ pub fn schema_type_for(entity_type: &str) -> Option<&'static str> {
 pub fn expected_relation_groups(schema_type: &str) -> &'static [&'static [&'static str]] {
     match schema_type {
         "schema:Person" => &[
-            &["parent_of", "child_of", "spouse_of", "sibling_of",
-              "half_sibling_of", "grandparent_of", "grandchild_of",
-              "uncle_of", "aunt_of", "niece_of", "nephew_of", "cousin_of",
-              "foster_parent_of", "foster_child_of"],
+            &[
+                "parent_of",
+                "child_of",
+                "spouse_of",
+                "sibling_of",
+                "half_sibling_of",
+                "grandparent_of",
+                "grandchild_of",
+                "uncle_of",
+                "aunt_of",
+                "niece_of",
+                "nephew_of",
+                "cousin_of",
+                "foster_parent_of",
+                "foster_child_of",
+            ],
             &["works_at", "belongs_to", "founded", "manages"],
             &["located_in", "associated_with"],
         ],
-        "schema:Organization" => &[
-            &["located_in"],
-            &["founded", "part_of", "contains"],
-        ],
-        "schema:Place" => &[
-            &["located_in", "contains", "part_of"],
-        ],
+        "schema:Organization" => &[&["located_in"], &["founded", "part_of", "contains"]],
+        "schema:Place" => &[&["located_in", "contains", "part_of"]],
         "schema:Event" => &[
             &["occurred_on", "started", "ended"],
             &["located_in", "associated_with", "related_to"],
         ],
-        "schema:Product" => &[
-            &["instance_of", "associated_with", "related_to"],
-        ],
-        "schema:CreativeWork" => &[
-            &["described_in", "cites", "related_to", "defined_by"],
-        ],
-        "schema:SoftwareApplication" => &[
-            &["implements", "instance_of", "associated_with"],
-        ],
-        "schema:DefinedTerm" => &[
-            &["defined_by", "subtype_of", "related_to"],
-        ],
-        "schema:HowTo" => &[
-            &["related_to", "implements", "associated_with"],
-        ],
+        "schema:Product" => &[&["instance_of", "associated_with", "related_to"]],
+        "schema:CreativeWork" => &[&["described_in", "cites", "related_to", "defined_by"]],
+        "schema:SoftwareApplication" => &[&["implements", "instance_of", "associated_with"]],
+        "schema:DefinedTerm" => &[&["defined_by", "subtype_of", "related_to"]],
+        "schema:HowTo" => &[&["related_to", "implements", "associated_with"]],
         _ => &[], // schema:Thing, schema:Role, schema:Statement, schema:QuantitativeValue, schema:Date
     }
 }
@@ -125,8 +122,8 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
 
     // Pillar 1: type
     let type_score: f32 = match resolved {
-        None => 0.0,                          // Unknown — must be completed
-        Some("schema:Thing") => 0.4,          // vague but valid
+        None => 0.0,                 // Unknown — must be completed
+        Some("schema:Thing") => 0.4, // vague but valid
         Some(_) => 1.0,
     };
 
@@ -140,8 +137,15 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
         0.6
     } else {
         // count sentence-ending punctuation as a proxy for sentence count
-        let sentences = desc.chars().filter(|c| matches!(c, '.' | '?' | '!')).count();
-        if sentences >= 2 { 1.0 } else { 0.8 }
+        let sentences = desc
+            .chars()
+            .filter(|c| matches!(c, '.' | '?' | '!'))
+            .count();
+        if sentences >= 2 {
+            1.0
+        } else {
+            0.8
+        }
     };
 
     // Pillar 3: relationships
@@ -155,11 +159,16 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
             if groups.is_empty() {
                 0.5
             } else {
-                let matched = groups.iter().filter(|group| {
-                    group.iter().any(|expected| {
-                        neighbor_relation_types.iter().any(|r| r.as_str() == *expected)
+                let matched = groups
+                    .iter()
+                    .filter(|group| {
+                        group.iter().any(|expected| {
+                            neighbor_relation_types
+                                .iter()
+                                .any(|r| r.as_str() == *expected)
+                        })
                     })
-                }).count();
+                    .count();
                 matched as f32 / groups.len() as f32
             }
         }
@@ -208,24 +217,39 @@ pub fn score_graph(store: &GraphStore) -> GraphHealthReport {
 
     let mut by_schema_type: HashMap<String, usize> = HashMap::new();
     for s in &entity_scores {
-        let key = s.schema_type.clone().unwrap_or_else(|| "Unknown".to_string());
+        let key = s
+            .schema_type
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
         *by_schema_type.entry(key).or_default() += 1;
     }
 
     let mut top_issues: Vec<String> = Vec::new();
     for s in entity_scores.iter().take(10) {
         if s.type_score == 0.0 {
-            top_issues.push(format!("'{}' — type Unknown, needs reclassification", s.name));
+            top_issues.push(format!(
+                "'{}' — type Unknown, needs reclassification",
+                s.name
+            ));
         } else if s.summary_score < 0.3 {
-            top_issues.push(format!("'{}' [{}] — missing or very thin description", s.name, s.entity_type));
+            top_issues.push(format!(
+                "'{}' [{}] — missing or very thin description",
+                s.name, s.entity_type
+            ));
         } else if s.relation_score < 0.34 {
-            top_issues.push(format!("'{}' [{}] — no expected relations found", s.name, s.entity_type));
+            top_issues.push(format!(
+                "'{}' [{}] — no expected relations found",
+                s.name, s.entity_type
+            ));
         } else {
             top_issues.push(format!(
                 "'{}' [{}] — overall {:.0}% (type={:.0}% summary={:.0}% relations={:.0}%)",
-                s.name, s.entity_type,
-                s.overall * 100.0, s.type_score * 100.0,
-                s.summary_score * 100.0, s.relation_score * 100.0
+                s.name,
+                s.entity_type,
+                s.overall * 100.0,
+                s.type_score * 100.0,
+                s.summary_score * 100.0,
+                s.relation_score * 100.0
             ));
         }
     }
