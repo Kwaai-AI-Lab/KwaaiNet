@@ -275,8 +275,9 @@ struct WorkItem {
     entity_id: i64,
     name: String,
     entity_type: String,
+    schema_type: Option<String>,
     description: String,
-    chunk_text: String,
+    evidence_text: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -323,25 +324,41 @@ pub async fn run_dream_cycle(
         candidates.sort_by(|a, b| a.overall.partial_cmp(&b.overall).unwrap());
 
         for score in candidates.iter().take(budget) {
-            let chunk_ids = store.chunks_for_entity(score.entity_id);
-            if chunk_ids.is_empty() {
-                continue; // zombie — handled in prune step
-            }
-            // Pick the first available chunk text.
-            let chunk_text = match meta.get_chunks(&chunk_ids[..1])? {
-                ref v if v.is_empty() || v[0].is_none() => continue,
-                v => v[0].as_ref().unwrap().text.clone(),
-            };
             let node = match store.get_entity(score.entity_id) {
                 Some(n) => n,
                 None => continue,
             };
+
+            // Use evidence field (all known chunks) when populated; fall back to index lookup.
+            let chunk_ids: Vec<i64> = if !node.evidence.is_empty() {
+                node.evidence.clone()
+            } else {
+                store.chunks_for_entity(score.entity_id).to_vec()
+            };
+            if chunk_ids.is_empty() {
+                continue; // zombie — handled in prune step
+            }
+
+            // Fetch up to 20 chunks and concatenate for richer evidence.
+            let fetch_limit = chunk_ids.len().min(20);
+            let chunks = meta.get_chunks(&chunk_ids[..fetch_limit])?;
+            let evidence_text: String = chunks
+                .iter()
+                .flatten()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            if evidence_text.is_empty() {
+                continue;
+            }
+
             items.push(WorkItem {
                 entity_id: score.entity_id,
                 name: node.name.clone(),
                 entity_type: node.entity_type.clone(),
+                schema_type: node.schema_type.clone(),
                 description: node.description.clone(),
-                chunk_text,
+                evidence_text,
             });
         }
         items
@@ -377,12 +394,16 @@ pub async fn run_dream_cycle(
             let _permit = permit;
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len().max(1);
             let url = &urls[idx % urls.len()];
-            let result = complete_entity(
+            let kind = crate::dream_tasks::task_for_schema_type(
+                item.schema_type.as_deref(),
+            );
+            let result = crate::dream_tasks::run_task(
+                kind,
                 item.entity_id,
                 &item.name,
                 &item.entity_type,
                 &item.description,
-                &item.chunk_text,
+                &item.evidence_text,
                 url,
                 &model,
             )
@@ -479,9 +500,23 @@ pub async fn run_dream_cycle(
         }
         let exact = store.find_dedup_candidates_exact();
         let fuzzy = store.find_dedup_candidates(cfg.dedup_threshold);
+        // Tier 3: structural name patterns — auto-merge honorific and subset only;
+        // fuzzy (edit-distance) candidates are shown in `graph dedup` for human review.
+        // Tier 4 (neighbour containment) is display-only in `graph dedup` — too noisy
+        // for unattended auto-merge in memoir-style texts where co-occurrence is high.
+        let name_struct = store.find_dedup_candidates_name_structure();
+        // Only auto-merge "honorific" candidates from tier 3.
+        // "subset" and "fuzzy" require human review in `graph dedup` because subset
+        // matches like "Cape Town" → "University of Cape Town" can destroy real entities.
         let merge_pairs: Vec<(i64, i64)> = exact
             .into_iter()
             .chain(fuzzy.into_iter().map(|(a, b, _)| (a, b)))
+            .chain(
+                name_struct
+                    .into_iter()
+                    .filter(|(_, _, reason)| *reason == "honorific")
+                    .map(|(a, b, _)| (a, b)),
+            )
             .collect();
 
         for (alias_id, canonical_id) in &merge_pairs {

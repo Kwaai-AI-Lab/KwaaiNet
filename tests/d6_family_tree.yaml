@@ -14,6 +14,12 @@ persons:
       - "J. Gool"
       - "Joosub Gool"
       - "Joosub Maulvi Hamid Gool"
+      - "Grandpa"
+      - "grandfather"
+      - "my grandpa"
+      - "my grandfather"
+      - "Grandpa Gool"
+      - "Gool"
     description: >
       Patriarch of the Gool family; Gujarat-born merchant who migrated to South Africa in 1884
       and built a 13-room mansion at 7 Buitencingle Street, Cape Town. Had two wives: Bibi
@@ -80,6 +86,12 @@ persons:
       - "AH Gool"
       - "Abdul Hamid (BG)"
       - "Abdul Hamid"
+      - "B.G."
+      - "B.G. Gool"
+      - "BG"
+      - "Cheops"
+      - "Dr. Gool"
+      - "Dr Gool"
     description: >
       Son of J.M.H. Gool and Wahida, born 1886. Prominent physician and mentor to the family.
       Known by the nicknames BG and Cheops. Married Zainunnisa (Cissie) Gool, daughter of
@@ -185,6 +197,7 @@ persons:
       - "Yousuf (Joe) Rassool"
       - "Yusuf Rassool"
       - "Y.S. Rassool"
+      - "Joe"
       - "I"
       - "narrator"
       - "author"
@@ -229,6 +242,33 @@ persons:
     description: >
       Fostered by J.M.H. Gool and Wahida; son of Barrabhai. A talented athlete who died young
       of consumption.
+
+  # ─── Hassen Mall (friend of the narrator) ──────────────────────────────────
+
+  - canonical: "Hassen Mall"
+    aliases:
+      - "Hassen"
+    description: >
+      Close friend and associate of Yousuf Rassool; originally from Natal/Durban. Known for his
+      leadership qualities, confident style, and cricketing skills. Active in the Unity Movement
+      and NEUM. Brother of Muddy and Ebrahim.
+
+  # ─── Mohandas Karamchand Gandhi (historical figure) ────────────────────────
+
+  - canonical: "Mohandas Karamchand Gandhi"
+    aliases:
+      - "MK Gandhi"
+      - "M.K. Gandhi"
+      - "M_ Gandhi"
+      - "M. Gandhi"
+      - "Gandhiji"
+      - "hatma Gandhi"
+      - "Mahatma Gandhi"
+      - "Gandhi"
+    description: >
+      Indian independence activist and political leader. Worked in South Africa in the early
+      20th century advocating for Indian rights. An honoured guest at Buitencingle in those days;
+      corresponded with and was connected to the Gool family.
 
   # ─── I.B. Tabata (Jane's husband) ──────────────────────────────────────────
 
@@ -310,7 +350,7 @@ relations:
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Hamid Ally",   type: "foster_parent_of" }
   - { from: "Wahida Gool",                   to: "Hamid Ally",   type: "foster_parent_of" }
 
-  # ─── Half-siblings (share JMH Gool as father, different mothers) ───────────
+  # ─── Half-siblings (share JMH Gool as father, different mothers) ────────────
   - { from: "Ayesha Rassool",     to: "Abdul Hamid Gool", type: "half_sibling_of" }
   - { from: "Ayesha Rassool",     to: "Goolam Gool",      type: "half_sibling_of" }
   - { from: "Ayesha Rassool",     to: "Jane Gool-Tabata", type: "half_sibling_of" }

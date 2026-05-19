@@ -2122,6 +2122,170 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     }
                 }
 
+                // ── Tier 3: structural name patterns ──────────────────────
+                let name_struct = store.find_dedup_candidates_name_structure();
+                if name_struct.is_empty() {
+                    println!("  Tier 3  no structural name duplicates");
+                } else {
+                    println!(
+                        "  Tier 3  {} structural name candidate(s):",
+                        name_struct.len()
+                    );
+                    if dry_run {
+                        println!();
+                        for (alias_id, canonical_id, reason) in &name_struct {
+                            let a = store.get_entity(*alias_id);
+                            let b = store.get_entity(*canonical_id);
+                            if let (Some(a), Some(b)) = (a, b) {
+                                println!(
+                                    "        \"{}\"  →  \"{}\"  [{}]",
+                                    a.name, b.name, reason
+                                );
+                            }
+                        }
+                    } else if auto {
+                        for (alias_id, canonical_id, reason) in &name_struct {
+                            if store.get_entity(*alias_id).is_none() {
+                                continue;
+                            }
+                            let aname = store
+                                .get_entity(*alias_id)
+                                .map(|n| n.name.clone())
+                                .unwrap_or_default();
+                            let cname = store
+                                .get_entity(*canonical_id)
+                                .map(|n| n.name.clone())
+                                .unwrap_or_default();
+                            store.merge_entity_into(*alias_id, *canonical_id)?;
+                            println!("    merged '{}' → '{}'  [{}]", aname, cname, reason);
+                            total_merged += 1;
+                            need_rebuild = true;
+                        }
+                    } else {
+                        println!("  [y=merge, n=skip, q=quit]\n");
+                        let mut quit = false;
+                        for (alias_id, canonical_id, reason) in &name_struct {
+                            if quit || store.get_entity(*alias_id).is_none() {
+                                continue;
+                            }
+                            let a = match store.get_entity(*alias_id).cloned() {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            let b = match store.get_entity(*canonical_id).cloned() {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            println!(
+                                "  \"{}\"  →  \"{}\"  [{}]",
+                                a.name, b.name, reason
+                            );
+                            loop {
+                                use std::io::Write;
+                                print!("  Merge? [y/n/q] ");
+                                std::io::stdout().flush()?;
+                                let mut line = String::new();
+                                std::io::stdin().read_line(&mut line)?;
+                                match line.trim() {
+                                    "y" | "Y" => {
+                                        store.merge_entity_into(*alias_id, *canonical_id)?;
+                                        println!("    ✓ merged\n");
+                                        total_merged += 1;
+                                        need_rebuild = true;
+                                        break;
+                                    }
+                                    "q" | "Q" => {
+                                        quit = true;
+                                        break;
+                                    }
+                                    _ => {
+                                        println!("    skipped\n");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                println!();
+
+                // ── Tier 4: neighbour containment (review only) ───────────
+                // Alias must have ≤ 15 neighbours and ≥ 60% of them covered by
+                // the canonical's neighbour set.  Never auto-merged — too noisy
+                // in memoir-style texts; always shown for human review.
+                let containment_cands =
+                    store.find_dedup_candidates_neighbor_containment(0.60, 3);
+                if containment_cands.is_empty() {
+                    println!("  Tier 4  no neighbour-containment candidates");
+                } else {
+                    println!(
+                        "  Tier 4  {} containment candidate(s) (review only):",
+                        containment_cands.len()
+                    );
+                    println!();
+                    if dry_run || auto {
+                        for (alias_id, canonical_id, score) in &containment_cands {
+                            let a = store.get_entity(*alias_id);
+                            let b = store.get_entity(*canonical_id);
+                            if let (Some(a), Some(b)) = (a, b) {
+                                println!(
+                                    "        \"{}\"  →  \"{}\"  (containment: {:.0}%)",
+                                    a.name,
+                                    b.name,
+                                    score * 100.0
+                                );
+                            }
+                        }
+                    } else {
+                        println!("  [y=merge, n=skip, q=quit]\n");
+                        let mut quit = false;
+                        for (alias_id, canonical_id, score) in &containment_cands {
+                            if quit || store.get_entity(*alias_id).is_none() {
+                                continue;
+                            }
+                            let a = match store.get_entity(*alias_id).cloned() {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            let b = match store.get_entity(*canonical_id).cloned() {
+                                Some(e) => e,
+                                None => continue,
+                            };
+                            println!(
+                                "  \"{}\"  →  \"{}\"  (containment: {:.0}%)",
+                                a.name,
+                                b.name,
+                                score * 100.0
+                            );
+                            loop {
+                                use std::io::Write;
+                                print!("  Merge? [y/n/q] ");
+                                std::io::stdout().flush()?;
+                                let mut line = String::new();
+                                std::io::stdin().read_line(&mut line)?;
+                                match line.trim() {
+                                    "y" | "Y" => {
+                                        store.merge_entity_into(*alias_id, *canonical_id)?;
+                                        println!("    ✓ merged\n");
+                                        total_merged += 1;
+                                        need_rebuild = true;
+                                        break;
+                                    }
+                                    "q" | "Q" => {
+                                        quit = true;
+                                        break;
+                                    }
+                                    _ => {
+                                        println!("    skipped\n");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                println!();
+
                 if need_rebuild {
                     store.rebuild_in_memory()?;
                 }

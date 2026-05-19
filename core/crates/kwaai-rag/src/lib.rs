@@ -3,6 +3,7 @@ pub mod cache;
 pub mod chunker;
 pub mod document;
 pub mod dream;
+pub mod dream_tasks;
 pub mod embedder;
 pub mod family;
 pub mod graph;

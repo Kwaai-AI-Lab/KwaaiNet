@@ -185,6 +185,51 @@ pub fn normalize_name(s: &str) -> String {
         .to_lowercase()
 }
 
+/// Canonical ordered pair — always (smaller, larger) — for dedup seen-sets.
+#[inline]
+fn ord_pair(a: i64, b: i64) -> (i64, i64) {
+    if a < b { (a, b) } else { (b, a) }
+}
+
+const HONORIFICS: &[&str] = &[
+    "dr", "mr", "mrs", "ms", "miss", "prof", "professor", "rev", "reverend", "sir",
+    "haji", "hajj", "maulvi", "maulana", "imam", "sheikh", "shaykh",
+    "auntie", "aunt", "uncle", "oom", "tannie", "oupa", "my",
+];
+
+/// Normalize then strip all leading and trailing honorific tokens.
+fn stripped_key(name: &str) -> String {
+    let norm = normalize_name(name);
+    norm.split_whitespace()
+        .filter(|w| !HONORIFICS.contains(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Levenshtein edit distance (character-level).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (la, lb) = (a.len(), b.len());
+    if la == 0 {
+        return lb;
+    }
+    if lb == 0 {
+        return la;
+    }
+    let mut prev: Vec<usize> = (0..=lb).collect();
+    let mut curr = vec![0usize; lb + 1];
+    for i in 0..la {
+        curr[0] = i + 1;
+        for j in 0..lb {
+            let cost = if a[i] == b[j] { 0 } else { 1 };
+            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[lb]
+}
+
 // ── GraphStore ────────────────────────────────────────────────────────────────
 
 pub struct GraphStore {
@@ -898,6 +943,332 @@ impl GraphStore {
 
         candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         candidates
+    }
+
+    /// Tier 3: Structural name-pattern dedup.
+    ///
+    /// Catches duplicates that embedding similarity misses because the names live in
+    /// different semantic regions (role words, honorifics, partial names, OCR noise).
+    ///
+    /// Returns `(alias_id, canonical_id, reason)` where `reason` is one of:
+    /// - `"honorific"` — same name after stripping titles (Dr., Haji, Auntie, …)
+    /// - `"subset"` — one name's words are a strict subset of the other's AND they
+    ///   share ≥ 2 distinct graph neighbours
+    /// - `"fuzzy"` — full-name edit distance ≤ 2 within a shared-token bucket
+    ///
+    /// Canonical is the entity with the longer name; tie-broken by mention_count.
+    pub fn find_dedup_candidates_name_structure(&self) -> Vec<(i64, i64, &'static str)> {
+        let mut seen: HashSet<(i64, i64)> = HashSet::new();
+        let mut out: Vec<(i64, i64, &'static str)> = Vec::new();
+
+        // ── A: honorific-stripped exact match ────────────────────────────────
+        {
+            let mut key_map: HashMap<String, Vec<i64>> = HashMap::new();
+            for (&id, node) in &self.nodes {
+                let key = stripped_key(&node.name);
+                if !key.is_empty() {
+                    key_map.entry(key).or_default().push(id);
+                }
+            }
+            for ids in key_map.values() {
+                if ids.len() < 2 {
+                    continue;
+                }
+                let &canonical = ids
+                    .iter()
+                    .max_by_key(|&&id| {
+                        self.nodes
+                            .get(&id)
+                            .map(|n| (n.mention_count, n.name.len()))
+                            .unwrap_or((0, 0))
+                    })
+                    .unwrap();
+                for &alias in ids.iter().filter(|&&id| id != canonical) {
+                    let na = match self.nodes.get(&alias) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    let nc = match self.nodes.get(&canonical) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if normalize_name(&na.name) == normalize_name(&nc.name) {
+                        continue; // Tier 1 handles exact matches
+                    }
+                    let key = ord_pair(alias, canonical);
+                    if seen.insert(key) {
+                        out.push((alias, canonical, "honorific"));
+                    }
+                }
+            }
+        }
+
+        // ── B: subset-name with ≥ 2 shared neighbours ────────────────────────
+        {
+            // word (≥ 4 chars) → entity ids that have it in their name
+            let mut word_ids: HashMap<String, Vec<i64>> = HashMap::new();
+            for (&id, node) in &self.nodes {
+                for w in normalize_name(&node.name).split_whitespace() {
+                    if w.len() >= 4 {
+                        word_ids.entry(w.to_string()).or_default().push(id);
+                    }
+                }
+            }
+
+            // entity → set of neighbour ids (undirected)
+            let nbr_sets: HashMap<i64, HashSet<i64>> = self
+                .adj
+                .iter()
+                .map(|(&id, edges)| {
+                    (id, edges.iter().map(|(nbr, _, _)| *nbr).collect::<HashSet<_>>())
+                })
+                .collect();
+
+            for (&id, node) in &self.nodes {
+                let my_words: Vec<String> = normalize_name(&node.name)
+                    .split_whitespace()
+                    .filter(|w| w.len() >= 4)
+                    .map(|w| w.to_string())
+                    .collect();
+                if my_words.is_empty() {
+                    continue;
+                }
+
+                // Intersect candidate sets across all my significant words
+                let mut universe: Option<HashSet<i64>> = None;
+                for w in &my_words {
+                    let set: HashSet<i64> = word_ids
+                        .get(w.as_str())
+                        .map(|v| v.iter().copied().collect())
+                        .unwrap_or_default();
+                    universe = Some(match universe {
+                        None => set,
+                        Some(prev) => prev.intersection(&set).copied().collect(),
+                    });
+                }
+                let universe = match universe {
+                    Some(u) if !u.is_empty() => u,
+                    _ => continue,
+                };
+
+                let my_all_word_count = normalize_name(&node.name).split_whitespace().count();
+                let my_nbrs = nbr_sets.get(&id).cloned().unwrap_or_default();
+
+                for other_id in universe {
+                    if other_id == id {
+                        continue;
+                    }
+                    let other = match self.nodes.get(&other_id) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    let other_word_count =
+                        normalize_name(&other.name).split_whitespace().count();
+                    // Only treat `id` as the subset (other must have strictly more words)
+                    if other_word_count <= my_all_word_count {
+                        continue;
+                    }
+                    if normalize_name(&node.name) == normalize_name(&other.name) {
+                        continue;
+                    }
+                    // Require ≥ 2 shared neighbours as an identity signal
+                    let other_nbrs = nbr_sets.get(&other_id).cloned().unwrap_or_default();
+                    if my_nbrs.intersection(&other_nbrs).count() < 2 {
+                        continue;
+                    }
+                    let key = ord_pair(id, other_id);
+                    if seen.insert(key) {
+                        out.push((id, other_id, "subset"));
+                    }
+                }
+            }
+        }
+
+        // ── C: edit-distance ≤ 2 within shared-token bucket ─────────────────
+        {
+            let mut token_ids: HashMap<String, Vec<i64>> = HashMap::new();
+            for (&id, node) in &self.nodes {
+                for w in normalize_name(&node.name).split_whitespace() {
+                    if w.len() >= 4 {
+                        token_ids.entry(w.to_string()).or_default().push(id);
+                    }
+                }
+            }
+            let mut bucket_seen: HashSet<(i64, i64)> = HashSet::new();
+            for ids in token_ids.values() {
+                for i in 0..ids.len() {
+                    for j in (i + 1)..ids.len() {
+                        let (a, b) = (ids[i], ids[j]);
+                        let key = ord_pair(a, b);
+                        if !bucket_seen.insert(key) || seen.contains(&key) {
+                            continue;
+                        }
+                        let (na, nb) = match (self.nodes.get(&a), self.nodes.get(&b)) {
+                            (Some(x), Some(y)) => (x, y),
+                            _ => continue,
+                        };
+                        let norm_a = normalize_name(&na.name);
+                        let norm_b = normalize_name(&nb.name);
+                        if norm_a == norm_b {
+                            continue;
+                        }
+                        // Skip pairs whose lengths differ too much to have distance ≤ 2
+                        let la = norm_a.chars().count();
+                        let lb = norm_b.chars().count();
+                        if la.abs_diff(lb) > 2 {
+                            continue;
+                        }
+                        if edit_distance(&norm_a, &norm_b) <= 2 {
+                            let (alias, canonical) = if na.name.len() > nb.name.len()
+                                || (na.name.len() == nb.name.len()
+                                    && na.mention_count >= nb.mention_count)
+                            {
+                                (b, a)
+                            } else {
+                                (a, b)
+                            };
+                            let key2 = ord_pair(alias, canonical);
+                            if seen.insert(key2) {
+                                out.push((alias, canonical, "fuzzy"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Tier 4: Role-pronoun neighbour-containment dedup.
+    ///
+    /// Targets entities whose name is a **role or pronoun description** ("Grandpa",
+    /// "my uncle", "the Head", "grandmother") rather than a proper name.  Such
+    /// entities often refer to a known person elsewhere in the graph.  We confirm the
+    /// match by requiring that ≥ `min_containment` of the alias's neighbours also
+    /// appear in the canonical's neighbour set (with ≥ `min_shared` absolute overlap).
+    ///
+    /// Role detection: the alias name must consist entirely of words from the
+    /// honorific/role vocabulary (HONORIFICS + common relational words).  This
+    /// excludes proper names, initials, and mixed names like "Uncle Ben Kies".
+    ///
+    /// Returns `(alias_id, canonical_id, containment)` sorted by containment desc.
+    pub fn find_dedup_candidates_neighbor_containment(
+        &self,
+        min_containment: f32,
+        min_shared: usize,
+    ) -> Vec<(i64, i64, f32)> {
+        // Standalone role words: meaningful on their own as a person reference.
+        // Honorifics (dr, mr, etc.) are excluded — they only make sense before a name.
+        const STANDALONE_ROLES: &[&str] = &[
+            "grandpa", "grandma", "grandfather", "grandmother", "granddad",
+            "dad", "father", "mom", "mother", "mum",
+            "cousin", "brother", "sister", "nephew", "niece",
+            "narrator", "author", "writer",
+            "head", "chief",
+            "she", "he", "they",
+        ];
+        // All words allowed in a role-entity name (role + connective filler).
+        const ROLE_WORDS: &[&str] = &[
+            "dr", "mr", "mrs", "ms", "miss", "prof", "professor", "rev", "reverend", "sir",
+            "haji", "hajj", "maulvi", "maulana", "imam", "sheikh", "shaykh",
+            "auntie", "aunt", "uncle", "oom", "tannie", "oupa",
+            "grandpa", "grandma", "grandfather", "grandmother", "granddad",
+            "dad", "father", "mom", "mother", "mum",
+            "cousin", "brother", "sister", "nephew", "niece",
+            "the", "a", "our", "her", "his", "my",
+            "narrator", "author", "writer",
+            "head", "chief", "senior",
+            "she", "he", "they", "it",
+        ];
+
+        // Build neighbour sets, excluding hyper-popular hubs (> 25 connecting
+        // entities) — they carry no identity signal in a memoir.
+        const MAX_HUB: usize = 25;
+        let mut nbr_to_entities: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (&id, edges) in &self.adj {
+            for &(nbr, _, _) in edges {
+                nbr_to_entities.entry(nbr).or_default().push(id);
+            }
+        }
+        let nbr_sets: HashMap<i64, HashSet<i64>> = self
+            .adj
+            .iter()
+            .map(|(&id, edges)| {
+                let set: HashSet<i64> = edges
+                    .iter()
+                    .filter(|(nbr, _, _)| {
+                        nbr_to_entities
+                            .get(nbr)
+                            .map(|v| v.len() <= MAX_HUB)
+                            .unwrap_or(true)
+                    })
+                    .map(|(nbr, _, _)| *nbr)
+                    .collect();
+                (id, set)
+            })
+            .collect();
+
+        let mut out: Vec<(i64, i64, f32)> = Vec::new();
+        let ids: Vec<i64> = self.nodes.keys().copied().collect();
+
+        for &a in &ids {
+            let na = match self.nodes.get(&a) {
+                Some(n) => n,
+                None => continue,
+            };
+            let norm_a = normalize_name(&na.name);
+            let words_a: Vec<&str> = norm_a.split_whitespace().collect();
+            // Gate 1: every token must be a role word (no proper-name tokens).
+            if words_a.is_empty() || !words_a.iter().all(|w| ROLE_WORDS.contains(w)) {
+                continue;
+            }
+            // Gate 2: at least one token must be a standalone role (not just an honorific).
+            if !words_a.iter().any(|w| STANDALONE_ROLES.contains(w)) {
+                continue;
+            }
+
+            let nbrs_a = match nbr_sets.get(&a) {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+
+            for &b in &ids {
+                if b == a {
+                    continue;
+                }
+                let nb = match self.nodes.get(&b) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let nbrs_b = match nbr_sets.get(&b) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                if nbrs_b.len() <= nbrs_a.len() {
+                    continue; // b must be the larger entity
+                }
+                let shared = nbrs_a.intersection(nbrs_b).count();
+                if shared < min_shared {
+                    continue;
+                }
+                let containment = shared as f32 / nbrs_a.len() as f32;
+                if containment < min_containment {
+                    continue;
+                }
+                if normalize_name(&na.name) == normalize_name(&nb.name) {
+                    continue;
+                }
+                if let (Some(sa), Some(sb)) = (&na.schema_type, &nb.schema_type) {
+                    if sa != sb {
+                        continue;
+                    }
+                }
+                out.push((a, b, containment));
+            }
+        }
+        out.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        out
     }
 
     /// Fully reload in-memory state from the database.
