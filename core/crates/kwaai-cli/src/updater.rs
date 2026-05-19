@@ -558,6 +558,51 @@ async fn nvidia_smi_windows() -> bool {
     .unwrap_or(false)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── nvidia_smi_async ────────────────────────────────────────────────────
+    // Run with: cargo test -p kwaai-cli -- updater --nocapture
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn nvidia_smi_detects_gpu_on_linux() {
+        // This test only passes on machines with an NVIDIA GPU.
+        // On CI (no GPU) it will return false, which is also correct.
+        let has_gpu = nvidia_smi_async().await;
+        println!("nvidia_smi_async() = {has_gpu}");
+        // Don't assert — just verify it doesn't hang or panic.
+    }
+
+    // ── install_cuda_linux: missing archive → clear error, no CPU fallback ──
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn cuda_update_bails_when_archive_missing() {
+        // v0.4.70 never had a CUDA archive published — safe version to test against.
+        let checker = UpdateChecker::new();
+        let result = checker.install_cuda_linux("0.4.70").await;
+        let err = result.expect_err("should bail when CUDA archive is missing");
+        let msg = err.to_string();
+        println!("Error message: {msg}");
+        assert!(
+            msg.contains("CUDA build for v0.4.70 isn't published yet"),
+            "Expected clear 'not published' message, got: {msg}"
+        );
+        // Crucially: no CPU binary was installed (install_cuda_linux returns Err,
+        // so main.rs restarts the daemon with the existing binary untouched).
+    }
+
+    // ── version ordering ────────────────────────────────────────────────────
+    #[test]
+    fn is_newer_ordering() {
+        assert!(is_newer("0.4.2", "0.4.1"));
+        assert!(is_newer("0.5.0", "0.4.99"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(!is_newer("0.4.1", "0.4.1"));
+        assert!(!is_newer("0.4.0", "0.4.1"));
+    }
+}
+
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {

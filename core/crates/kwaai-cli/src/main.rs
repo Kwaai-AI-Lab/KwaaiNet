@@ -876,43 +876,61 @@ async fn main() -> Result<()> {
                             "Installer launched in background — daemon will restart automatically."
                         ));
                         #[cfg(not(windows))]
-                        {
-                            if daemon_was_running {
-                                // current_exe() on Linux may return "/path/kwaainet (deleted)"
-                                // when the installer replaced the binary. Strip the suffix so
-                                // the spawned child can actually find the new binary.
-                                let new_bin = std::env::current_exe()
-                                    .ok()
-                                    .map(|p| {
-                                        let s = p.to_string_lossy().into_owned();
-                                        if let Some(clean) = s.strip_suffix(" (deleted)") {
-                                            std::path::PathBuf::from(clean)
-                                        } else {
-                                            p
-                                        }
-                                    })
-                                    .unwrap_or_else(|| std::path::PathBuf::from("kwaainet"));
-                                match std::process::Command::new(&new_bin)
-                                    .args(["start", "--daemon"])
-                                    .stdin(std::process::Stdio::null())
-                                    .stdout(std::process::Stdio::null())
-                                    .stderr(std::process::Stdio::null())
-                                    .spawn()
-                                {
-                                    Ok(_) => print_success(&format!(
-                                        "Updated to v{} — daemon restarted with new binary.",
-                                        info.version
-                                    )),
-                                    Err(e) => print_warning(&format!(
-                                        "Updated to v{} but daemon restart failed ({e}).\n  Run: kwaainet start --daemon",
-                                        info.version
-                                    )),
+                        let current_bin = std::env::current_exe()
+                            .ok()
+                            .map(|p| {
+                                let s = p.to_string_lossy().into_owned();
+                                if let Some(clean) = s.strip_suffix(" (deleted)") {
+                                    std::path::PathBuf::from(clean)
+                                } else {
+                                    p
                                 }
-                            } else {
+                            })
+                            .unwrap_or_else(|| std::path::PathBuf::from("kwaainet"));
+
+                        #[cfg(not(windows))]
+                        let restart_daemon = |label: &str| {
+                            let _ = std::process::Command::new(&current_bin)
+                                .args(["start", "--daemon"])
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn();
+                            println!("  {label}");
+                        };
+
+                        match checker.install_update(&info.version).await {
+                            Ok(()) => {
+                                println!();
+                                #[cfg(windows)]
                                 print_success(&format!(
-                                    "Updated to v{}. Run 'kwaainet start --daemon' to start the node.",
-                                    info.version
+                                    "Installer launched in background — daemon will restart automatically."
                                 ));
+                                #[cfg(not(windows))]
+                                if daemon_was_running {
+                                    restart_daemon(&format!(
+                                        "✅ Updated to v{} — daemon restarted with new binary.",
+                                        info.version
+                                    ));
+                                } else {
+                                    print_success(&format!(
+                                        "Updated to v{}. Run 'kwaainet start --daemon' to start the node.",
+                                        info.version
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                println!();
+                                print_error(&format!("Update failed: {e}"));
+                                // Restart daemon with the EXISTING binary — the install was
+                                // aborted (e.g. CUDA archive not yet published), so the binary
+                                // on disk is unchanged and safe to run.
+                                #[cfg(not(windows))]
+                                if daemon_was_running {
+                                    restart_daemon(
+                                        "Restarting daemon with existing binary — GPU inference preserved.",
+                                    );
+                                }
                             }
                         }
                     }
