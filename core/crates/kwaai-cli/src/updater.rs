@@ -156,16 +156,26 @@ impl UpdateChecker {
                         .unwrap_or_default()
                 });
 
-            // Check if CUDA is already present on this system.
-            // We check five signals in order — the first hit short-circuits:
-            //   1. %CUDA_PATH% env var (set by the CUDA toolkit installer)
-            //   2. %CUDA_HOME% env var (common alternative)
-            //   3. Standard install dir exists (reliable even when env vars aren't
-            //      propagated, e.g. when kwaainet is run from Git Bash)
-            //   4. nvidia-smi.exe on PATH (capped at 4 s — NVML init is slow on Windows)
-            //   5. cublas*.dll in the kwaainet install dir (bundled by previous update)
-            print!("  Detecting GPU…");
+            // Determine whether the CUDA *runtime* is already present so we can
+            // take the fast exe-only swap path (which preserves existing DLLs)
+            // instead of the full installer.
+            //
+            // nvidia-smi only proves the *driver* is installed, NOT the CUDA
+            // runtime (cublas, cudart, …).  A machine with just the GPU driver
+            // and no toolkit would get a CUDA binary it can't run.  We therefore
+            // check only signals that confirm the runtime DLLs are available:
+            //   1. %CUDA_PATH% env var — set by the CUDA toolkit installer
+            //   2. %CUDA_HOME% env var — common alternative
+            //   3. Standard toolkit install dir exists — catches shells (e.g.
+            //      Git Bash) that don't propagate Windows system env vars
+            //   4. cublas*.dll already in the kwaainet install dir — bundled by
+            //      a previous full CUDA update
+            //
+            // nvidia-smi is checked separately *after* this block and is only
+            // used to annotate the reason string, not to gate the path choice.
+            print!("  Detecting CUDA runtime…");
             let _ = std::io::Write::flush(&mut std::io::stdout());
+            let gpu_present = nvidia_smi_async().await;
             let cuda_installed = if std::env::var_os("CUDA_PATH").is_some() {
                 println!(" CUDA_PATH set");
                 true
@@ -176,9 +186,6 @@ impl UpdateChecker {
                 .exists()
             {
                 println!(" CUDA toolkit dir found");
-                true
-            } else if nvidia_smi_async().await {
-                println!(" nvidia-smi found");
                 true
             } else if std::fs::read_dir(&install_dir)
                 .ok()
@@ -193,7 +200,11 @@ impl UpdateChecker {
                 println!(" cublas DLLs found");
                 true
             } else {
-                println!(" no GPU/CUDA detected");
+                if gpu_present {
+                    println!(" GPU detected but no CUDA runtime — using CPU installer");
+                } else {
+                    println!(" no GPU/CUDA detected");
+                }
                 false
             };
 
@@ -301,12 +312,10 @@ impl UpdateChecker {
                 .exists()
                 {
                     "CUDA toolkit dir found"
-                } else if which_nvidia_smi() {
-                    "nvidia-smi found on PATH"
                 } else {
                     "cublas DLLs in install dir"
                 };
-                println!("  CUDA detected ({reason}) — downloading CUDA binary (~30 MB, DLLs preserved).");
+                println!("  CUDA runtime detected ({reason}) — downloading CUDA binary (~30 MB, DLLs preserved).");
             }
 
             std::fs::write(&bat, &bat_content).context("Failed to write updater batch script")?;
@@ -466,7 +475,11 @@ impl UpdateChecker {
             .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
-        let bytes = client.get(url).send().await?.bytes().await?;
+        let resp = client.get(url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("Download failed (HTTP {}): {}", resp.status(), url);
+        }
+        let bytes = resp.bytes().await?;
         std::fs::write(path, &bytes)
             .with_context(|| format!("Failed to write installer to {}", path.display()))?;
         Ok(())
