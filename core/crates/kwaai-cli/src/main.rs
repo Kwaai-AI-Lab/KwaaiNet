@@ -848,6 +848,25 @@ async fn main() -> Result<()> {
                             }
                             running
                         };
+                        #[cfg(not(windows))]
+                        if let Err(e) = checker.install_update(&info.version).await {
+                            // Install failed — restart the daemon we stopped so the
+                            // node stays reachable even though the update didn't land.
+                            if daemon_was_running {
+                                let _ = std::process::Command::new(
+                                    std::env::current_exe().unwrap_or_else(|_| "kwaainet".into()),
+                                )
+                                .args(["start", "--daemon"])
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn();
+                            }
+                            print_error(&format!("Update failed: {e}"));
+                            print_separator();
+                            return Ok(());
+                        }
+                        #[cfg(windows)]
                         checker.install_update(&info.version).await?;
                         println!();
                         #[cfg(windows)]

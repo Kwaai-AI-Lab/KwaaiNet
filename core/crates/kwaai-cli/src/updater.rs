@@ -126,47 +126,14 @@ impl UpdateChecker {
     pub async fn install_update(&self, version: &str) -> Result<()> {
         #[cfg(unix)]
         {
-            let url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh";
-            let tmp = std::env::temp_dir().join("kwaainet-installer.sh");
-            self.download_to(url, &tmp).await?;
-
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-
-            let status = std::process::Command::new("sh")
-                .arg(&tmp)
-                .status()
-                .context("Failed to launch installer")?;
-
-            let _ = std::fs::remove_file(&tmp);
-            if !status.success() {
-                anyhow::bail!("Installer exited with {}", status);
+            // On Linux, prefer the CUDA-enabled binary for NVIDIA GPU machines.
+            // Falls back to the CPU installer when the CUDA archive isn't published yet.
+            #[cfg(not(target_os = "macos"))]
+            if nvidia_smi_async().await {
+                return self.install_cuda_linux(version).await;
             }
 
-            // macOS 26+ kills unsigned binaries even after quarantine removal.
-            // Strip the quarantine xattr then apply an ad-hoc signature so
-            // Gatekeeper accepts the new binary before we try to spawn it.
-            #[cfg(target_os = "macos")]
-            {
-                let install_dir = dirs::home_dir()
-                    .map(|h| h.join(".cargo/bin"))
-                    .unwrap_or_default();
-                for bin in &["kwaainet", "p2pd"] {
-                    let path = install_dir.join(bin);
-                    if path.exists() {
-                        let _ = std::process::Command::new("xattr")
-                            .args(["-d", "com.apple.quarantine"])
-                            .arg(&path)
-                            .output();
-                        let _ = std::process::Command::new("codesign")
-                            .args(["-s", "-", "--force"])
-                            .arg(&path)
-                            .output();
-                    }
-                }
-            }
-
-            let _ = version; // used on Windows only
+            self.install_cpu_linux(version).await?;
         }
 
         #[cfg(windows)]
@@ -367,6 +334,133 @@ impl UpdateChecker {
         Ok(())
     }
 
+    /// Run the cargo-dist shell installer (CPU build, all non-GPU Unix paths).
+    #[cfg(unix)]
+    async fn install_cpu_linux(&self, version: &str) -> Result<()> {
+        let url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh";
+        let tmp = std::env::temp_dir().join("kwaainet-installer.sh");
+        self.download_to(url, &tmp).await?;
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+
+        let status = std::process::Command::new("sh")
+            .arg(&tmp)
+            .status()
+            .context("Failed to launch installer")?;
+
+        let _ = std::fs::remove_file(&tmp);
+        if !status.success() {
+            anyhow::bail!("Installer exited with {}", status);
+        }
+
+        // macOS 26+ kills unsigned binaries even after quarantine removal.
+        #[cfg(target_os = "macos")]
+        {
+            let install_dir = dirs::home_dir()
+                .map(|h| h.join(".cargo/bin"))
+                .unwrap_or_default();
+            for bin in &["kwaainet", "p2pd"] {
+                let path = install_dir.join(bin);
+                if path.exists() {
+                    let _ = std::process::Command::new("xattr")
+                        .args(["-d", "com.apple.quarantine"])
+                        .arg(&path)
+                        .output();
+                    let _ = std::process::Command::new("codesign")
+                        .args(["-s", "-", "--force"])
+                        .arg(&path)
+                        .output();
+                }
+            }
+        }
+
+        let _ = version;
+        Ok(())
+    }
+
+    /// Download and install the CUDA-enabled Linux binary directly.
+    /// When the CUDA archive isn't published yet (async CI, ~90 min after release),
+    /// falls back to the CPU installer with a clear warning rather than blocking.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn install_cuda_linux(&self, version: &str) -> Result<()> {
+        let cuda_url = format!(
+            "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-unknown-linux-gnu-cuda.tar.xz"
+        );
+
+        let client = reqwest::Client::builder()
+            .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let cuda_available = client
+            .head(&cuda_url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+
+        if !cuda_available {
+            println!();
+            println!(
+                "  ⚠  CUDA build for v{version} isn't published yet (CI takes ~90 min after release)."
+            );
+            println!(
+                "  Installing CPU build now — run `kwaainet update` again in ~1 hour for the GPU-optimised binary."
+            );
+            println!();
+            return self.install_cpu_linux(version).await;
+        }
+
+        print!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        let archive = std::env::temp_dir().join("kwaainet-cuda-update.tar.xz");
+        self.download_to(&cuda_url, &archive).await?;
+        println!(" done.");
+
+        let install_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cargo/bin")))
+            .context("Cannot determine install directory")?;
+
+        let tmp = std::env::temp_dir().join("kwaainet-cuda-extract");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp)?;
+
+        let status = std::process::Command::new("tar")
+            .args(["-xJf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&tmp)
+            .status()
+            .context("Failed to extract CUDA archive (is tar installed?)")?;
+
+        let _ = std::fs::remove_file(&archive);
+        if !status.success() {
+            anyhow::bail!("tar exited with {status}");
+        }
+
+        let subdir = tmp.join("kwaainet-x86_64-unknown-linux-gnu-cuda");
+        use std::os::unix::fs::PermissionsExt;
+        for entry in std::fs::read_dir(&subdir)
+            .with_context(|| format!("Reading extracted archive at {}", subdir.display()))?
+        {
+            let entry = entry?;
+            let name = entry.file_name();
+            let dest = install_dir.join(&name);
+            std::fs::copy(entry.path(), &dest)
+                .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
+            let name_str = name.to_string_lossy();
+            if name_str == "kwaainet" || name_str == "p2pd" {
+                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        println!("  CUDA binary installed to {}.", install_dir.display());
+        Ok(())
+    }
+
     async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
         let client = reqwest::Client::builder()
             .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
@@ -381,8 +475,7 @@ impl UpdateChecker {
 
 /// Query nvidia-smi asynchronously with a 4-second timeout.
 /// Returns true if nvidia-smi exits successfully within the time limit.
-/// Avoids blocking the async runtime during NVML cold-start on Windows.
-#[cfg(windows)]
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 async fn nvidia_smi_async() -> bool {
     use tokio::process::Command;
     let result = tokio::time::timeout(
@@ -402,7 +495,7 @@ async fn nvidia_smi_async() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
 #[allow(dead_code)]
 async fn nvidia_smi_async() -> bool {
     false
