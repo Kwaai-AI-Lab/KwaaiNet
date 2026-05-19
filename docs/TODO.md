@@ -1,5 +1,9 @@
 # TODO
 
+## Build
+
+- [ ] **Release build takes ~1.5 hours** — `[profile.release]` in `core/Cargo.toml` uses `lto = true` (fat LTO) + `codegen-units = 1`. Switch to `lto = "thin"`: thin LTO is parallel (5–10× faster link) with <5% runtime impact for this workload (I/O-bound: network, Ollama calls, redb). The `[profile.ci]` profile is already fast (`lto = false`, `codegen-units = 16`) and is unaffected.
+
 ## Housekeeping
 
 - [ ] **Finish moving `~/Source` to `/Volumes/WD2`** — rsync copy already done and verified (checksums match, file counts match). Step remaining: `rm -rf ~/Source` then `ln -s /Volumes/WD2/Source ~/Source`. WD2 must be mounted before deleting the original. Frees ~49 GB on internal SSD.
@@ -449,6 +453,14 @@ primary destruction, with data-loss window bounded to the backup interval.
 - [ ] **`crates/kwaai-rag/src/reasoning.rs`** — `ReasoningStrategy` enum: `Naive`, `GraphExpanded`, `ChainOfThought`, `Agentic { max_steps }`. Graph-augmented retrieval: top-K dense chunks → expand entity neighborhood (1–2 hops) → add neighborhood chunks to context.
 
 - [ ] **`--strategy` flag on `kwaainet rag serve`** — `--strategy graph` enables GraphRAG; `--strategy cot` enables chain-of-thought prompting.
+
+### Phase 4 — Dream RAG: continuous graph refinement (implemented Phase 1+2, see below)
+
+- [ ] **Fix alias embedding gap** — `graph alias-scan --auto` merges abbreviation entities (e.g. TLSA, NEUM) into their canonical full-name nodes. After merge, the entity embedding is `"{canonical name}: description"` with no abbreviation in the vector, so queries containing "TLSA" miss the merged entity in graph search. M19 eval confirmed regression (54.3% vs 56.9% baseline). Fix: after `merge_entity_into()`, embed using `"{name} ({alias1}, {alias2}): description"` so abbreviation queries still resolve to the canonical node. Files: `kwaai-rag/src/graph.rs` (`merge_entity_into`), `kwaai-cli/src/rag_cmd.rs` (`cmd_alias_scan`).
+
+- [ ] **Dream RAG quality gate** — add `kwaainet rag dream eval` subcommand that snapshots graph health score before a dream cycle and rolls back (restores from snapshot) if overall health drops >5% after the cycle. Prevents bad LLM completions from degrading the graph. Files: `kwaai-rag/src/dream.rs` (snapshot/restore), `kwaai-cli/src/cli.rs` + `rag_cmd.rs` (`dream eval` dispatch).
+
+- [ ] **Dream RAG embed-model evaluation** — `kwaainet rag dream embed-eval` runs a before/after eval sweep comparing the current embed model against an alternative (e.g. mxbai-embed-large vs nomic-embed-text), re-embeds a sampled subset, measures retrieval quality delta, and adopts the new model with `--adopt` if it wins. Files: `kwaai-rag/src/dream.rs` or new `embed_eval.rs`.
 
 ---
 
