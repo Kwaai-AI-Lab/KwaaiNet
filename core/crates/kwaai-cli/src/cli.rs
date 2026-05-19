@@ -1222,6 +1222,50 @@ pub enum RagAction {
         kb: String,
     },
 
+    /// Destroy and fully rebuild a knowledge base in one command.
+    /// Runs: destroy → init → ingest → graph build → seed → alias-scan → reembed → dedup → score
+    Rebuild {
+        /// Path to the document to ingest (PDF, txt, md)
+        file: std::path::PathBuf,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+
+        /// Ollama embedding model
+        #[arg(long, default_value = "nomic-embed-text")]
+        embed_model: String,
+
+        /// Comma-separated Ollama base URLs for graph build round-robin dispatch.
+        /// Example: --inference-urls "http://metro-linux:11434,http://metro-win:11434"
+        #[arg(long, default_value = "http://localhost:11434", value_name = "URLS")]
+        inference_urls: String,
+
+        /// LLM model name for entity extraction (e.g. "llama3.2:3b")
+        #[arg(long, default_value = "llama3.2:3b", value_name = "MODEL")]
+        model: String,
+
+        /// Number of parallel extraction workers
+        #[arg(long, default_value = "4", value_name = "N")]
+        workers: usize,
+
+        /// YAML seed file for canonical entities (see tests/d6_family_tree.yaml)
+        #[arg(long, value_name = "FILE")]
+        seed_file: Option<std::path::PathBuf>,
+
+        /// Chunking strategy: "paragraph" (semantic, recommended) or "character" (sliding-window)
+        #[arg(long, default_value = "paragraph", value_name = "STRATEGY")]
+        chunk_strategy: String,
+
+        /// YAML file mapping doc-name substrings to metadata prefixes prepended to each chunk
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_meta: Option<std::path::PathBuf>,
+
+        /// Skip the destroy confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
     /// Serve an OpenAI-compatible RAG API (port 9090 by default)
     Serve {
         /// HTTP port to listen on
@@ -1530,9 +1574,15 @@ pub enum GraphAction {
         #[arg(long, default_value = "0.85", value_name = "FLOAT")]
         threshold: f32,
 
-        /// Auto-merge all candidates above 0.92 without interactive review
+        /// Auto-merge all candidates above 0.97 without interactive review
         #[arg(long)]
         auto: bool,
+
+        /// Override the auto-merge similarity cutoff (default: 0.97).
+        /// Set to 1.01 in pipeline/rebuild mode to run only Tier 1 + structural
+        /// dedup without any Tier 2 embedding-similarity auto-merges.
+        #[arg(long, value_name = "FLOAT")]
+        auto_threshold: Option<f32>,
 
         /// Print candidates without merging anything
         #[arg(long)]

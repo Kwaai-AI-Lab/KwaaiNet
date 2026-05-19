@@ -135,6 +135,33 @@ pub async fn run(args: RagArgs) -> Result<()> {
 
         RagAction::Destroy { yes, kb } => cmd_destroy(yes, kb).await,
 
+        RagAction::Rebuild {
+            file,
+            kb,
+            embed_model,
+            inference_urls,
+            model,
+            workers,
+            seed_file,
+            chunk_strategy,
+            doc_meta,
+            yes,
+        } => {
+            cmd_rebuild(
+                file,
+                kb,
+                embed_model,
+                inference_urls,
+                model,
+                workers,
+                seed_file,
+                chunk_strategy,
+                doc_meta,
+                yes,
+            )
+            .await
+        }
+
         RagAction::Serve {
             port,
             inference_url,
@@ -1375,6 +1402,137 @@ fn truncate(s: &str, max: usize) -> &str {
 
 // ── destroy ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
+async fn cmd_rebuild(
+    file: std::path::PathBuf,
+    kb: String,
+    embed_model: String,
+    inference_urls: String,
+    model: String,
+    workers: usize,
+    seed_file: Option<std::path::PathBuf>,
+    chunk_strategy: String,
+    doc_meta: Option<std::path::PathBuf>,
+    yes: bool,
+) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        use crate::cli::GraphAction;
+
+        print_box_header(&format!("RAG Rebuild ({})", kb));
+        println!("  File:            {}", file.display());
+        println!("  Embed model:     {embed_model}");
+        println!("  Inference URLs:  {inference_urls}");
+        println!("  Extract model:   {model}");
+        println!("  Workers:         {workers}");
+        if let Some(ref sf) = seed_file {
+            println!("  Seed file:       {}", sf.display());
+        }
+        println!("  Chunk strategy:  {chunk_strategy}");
+        println!();
+
+        // ── Step 1: Destroy ───────────────────────────────────────────────
+        println!("  ▶ Step 1/8  destroy");
+        cmd_destroy(yes, kb.clone()).await?;
+
+        // ── Step 2: Init ──────────────────────────────────────────────────
+        println!();
+        println!("  ▶ Step 2/8  init");
+        cmd_init(kb.clone(), embed_model, None, false).await?;
+
+        // ── Step 3: Ingest ────────────────────────────────────────────────
+        println!();
+        println!("  ▶ Step 3/8  ingest");
+        cmd_ingest(
+            file,
+            None,
+            800,
+            200,
+            20,
+            false,
+            None,
+            "default".to_string(),
+            chunk_strategy,
+            "truncated".to_string(),
+            doc_meta,
+            kb.clone(),
+        )
+        .await?;
+
+        // ── Step 4: Graph build ───────────────────────────────────────────
+        println!();
+        println!("  ▶ Step 4/8  graph build");
+        cmd_graph(
+            GraphAction::Build {
+                inference_url: None,
+                model,
+                limit: None,
+                docs: None,
+                workers,
+                inference_urls: Some(inference_urls),
+            },
+            kb.clone(),
+        )
+        .await?;
+
+        // ── Step 5: Seed ──────────────────────────────────────────────────
+        if let Some(seed_path) = seed_file {
+            println!();
+            println!("  ▶ Step 5/8  graph seed");
+            cmd_graph(
+                GraphAction::Seed { file: seed_path, kb: kb.clone() },
+                kb.clone(),
+            )
+            .await?;
+        } else {
+            println!("  ─ Step 5/8  graph seed  (skipped — no --seed-file)");
+        }
+
+        // ── Step 6: Alias scan ────────────────────────────────────────────
+        println!();
+        println!("  ▶ Step 6/8  graph alias-scan");
+        cmd_graph(
+            GraphAction::AliasScan { auto: true, dry_run: false, min_hits: 1 },
+            kb.clone(),
+        )
+        .await?;
+
+        // ── Step 7: Reembed ───────────────────────────────────────────────
+        println!();
+        println!("  ▶ Step 7/8  graph reembed");
+        cmd_graph(GraphAction::Reembed { embed_url: None }, kb.clone()).await?;
+
+        // ── Step 8: Dedup ─────────────────────────────────────────────────
+        // auto_threshold=1.01 disables Tier 2 embedding-similarity auto-merges:
+        // nomic-embed-text returns sim=1.000 for categorically similar but distinct
+        // entities (e.g. "Nelson Eddy" → "Nelson Mandela"). Tiers 1 (exact name)
+        // and 3 (structural/honorific/fuzzy) are still applied automatically.
+        // Run `kwaainet rag graph dedup --kb <KB>` interactively after rebuild
+        // to review the 0.85–1.0 Tier 2 candidates.
+        println!();
+        println!("  ▶ Step 8/8  graph dedup (Tier 1 + structural; Tier 2 deferred for review)");
+        cmd_graph(
+            GraphAction::Dedup {
+                threshold: 0.85,
+                auto: true,
+                auto_threshold: Some(1.01),
+                dry_run: false,
+            },
+            kb.clone(),
+        )
+        .await?;
+
+        // ── Final: Score ──────────────────────────────────────────────────
+        println!();
+        cmd_graph(GraphAction::Score { top: 20, json: false }, kb.clone()).await?;
+
+        Ok(())
+    }
+}
+
 async fn cmd_destroy(yes: bool, kb: String) -> Result<()> {
     let cfg = KwaaiNetConfig::load_or_create()?;
     let rag = cfg
@@ -1933,6 +2091,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
             GraphAction::Dedup {
                 threshold,
                 auto,
+                auto_threshold,
                 dry_run,
             } => {
                 print_box_header(&format!("Graph Dedup ({})", kb));
@@ -2017,7 +2176,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             }
                         }
                     } else if auto {
-                        let auto_threshold = 0.97f32;
+                        let auto_threshold = auto_threshold.unwrap_or(0.97f32);
                         println!("  Auto-merging pairs with sim ≥ {auto_threshold:.2}…\n");
                         let mut tier2 = 0;
                         for (alias_id, canonical_id, sim) in &candidates {
