@@ -891,10 +891,24 @@ impl GraphStore {
     /// Sorted by similarity descending. Exact-name matches are excluded (Tier 1 handles those).
     /// Canonical = longer name; tie-break by higher mention_count.
     pub fn find_dedup_candidates(&self, threshold: f32) -> Vec<(i64, i64, f32)> {
-        let stop: &[&str] = &[
-            "the", "and", "of", "in", "a", "an", "for", "at", "by", "to", "dr", "mr", "mrs", "ms",
-            "prof", "sir",
+        const DEDUP_STOP: &[&str] = &[
+            // articles / prepositions
+            "the", "and", "of", "in", "a", "an", "for", "at", "by", "to",
+            // honorifics
+            "dr", "mr", "mrs", "ms", "prof", "sir",
+            // geographic generics
+            "north", "south", "east", "west", "new", "old", "cape", "great",
+            "lower", "upper", "central",
+            // institutional generics (the main false-match offenders)
+            "union", "street", "road", "avenue", "lane",
+            "school", "institute", "college", "university",
+            "club", "party", "movement", "committee",
+            "association", "council", "congress", "league",
+            "society", "church", "hall", "high", "primary", "secondary",
+            // common auxiliaries / pronouns
+            "its", "was", "his", "her",
         ];
+        let stop = DEDUP_STOP;
 
         let mut token_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
         for (&id, node) in &self.nodes {

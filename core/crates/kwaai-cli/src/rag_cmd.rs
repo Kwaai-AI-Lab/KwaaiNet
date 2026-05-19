@@ -2017,7 +2017,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             }
                         }
                     } else if auto {
-                        let auto_threshold = 0.92f32;
+                        let auto_threshold = 0.97f32;
                         println!("  Auto-merging pairs with sim ≥ {auto_threshold:.2}…\n");
                         let mut tier2 = 0;
                         for (alias_id, canonical_id, sim) in &candidates {
