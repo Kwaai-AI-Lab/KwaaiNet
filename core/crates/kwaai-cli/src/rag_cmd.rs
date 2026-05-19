@@ -19,7 +19,7 @@ use kwaai_rag::{
     retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
 };
 
-use crate::cli::{CacheAction, GraphAction, RagAction, RagArgs};
+use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs};
 use crate::config::{KwaaiNetConfig, RagConfig};
 use crate::display::*;
 
@@ -182,6 +182,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
         RagAction::Graph { action, kb } => cmd_graph(action, kb).await,
 
         RagAction::Cache { action, kb } => cmd_cache(action, kb).await,
+
+        RagAction::Dream { action, kb } => cmd_dream(action, kb).await,
 
         RagAction::Export { output_dir, kb } => cmd_export(output_dir, kb).await,
 
@@ -2275,6 +2277,135 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
     }
 }
 
+
+// ── dream ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+        let report_path = rag_cfg.data_dir().join(format!("dream-report-{tenant_id}.json"));
+
+        match action {
+            DreamAction::Run {
+                inference_url,
+                inference_urls,
+                model,
+                threshold,
+                dedup_threshold,
+                max_completions,
+                workers,
+            } => {
+                let mut urls: Vec<String> = inference_urls
+                    .as_deref()
+                    .unwrap_or("")
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if urls.is_empty() {
+                    urls.push(
+                        inference_url
+                            .unwrap_or_else(|| rag_cfg.inference_url.clone()),
+                    );
+                }
+                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening meta store")?;
+                let cfg = kwaai_rag::dream::DreamConfig {
+                    completeness_threshold: threshold,
+                    dedup_threshold,
+                    max_completions_per_cycle: max_completions,
+                    workers,
+                    ..Default::default()
+                };
+
+                print_box_header(&format!("Dream RAG ({})", kb));
+                println!("  Inference: {}", urls.join(", "));
+                println!("  Workers:   {workers}  |  Max completions: {max_completions}");
+                println!("  Threshold: {threshold:.0}%  |  Dedup: {dedup_threshold:.2}");
+                println!();
+
+                let report = kwaai_rag::dream::run_dream_cycle(
+                    &rag_cfg.data_dir(),
+                    tenant_id,
+                    &meta,
+                    &embed,
+                    &cfg,
+                    &urls,
+                    &model,
+                    Some(|done: usize, total: usize, phase: &str| {
+                        if total > 0 {
+                            print!("\r  {phase}: {done}/{total}   ");
+                            let _ = std::io::Write::flush(&mut std::io::stdout());
+                        } else {
+                            print!("\r  {phase}…   ");
+                            let _ = std::io::Write::flush(&mut std::io::stdout());
+                        }
+                    }),
+                )
+                .await?;
+
+                println!();
+                print_success(&format!(
+                    "Dream cycle complete in {:.1}s",
+                    report.duration_secs
+                ));
+                println!(
+                    "  Score:     {:.1}%  →  {:.1}%  ({:+.1}%)",
+                    report.score_before * 100.0,
+                    report.score_after * 100.0,
+                    (report.score_after - report.score_before) * 100.0,
+                );
+                println!("  Type completions:     {}", report.entities_type_completed);
+                println!("  Summary completions:  {}", report.entities_summary_completed);
+                println!("  Relations added:      {}", report.entities_relations_added);
+                println!("  Entities merged:      {}", report.entities_merged);
+                println!("  Entities pruned:      {}", report.entities_pruned);
+                if !report.cycle_errors.is_empty() {
+                    println!();
+                    print_warning(&format!("{} non-fatal errors:", report.cycle_errors.len()));
+                    for e in report.cycle_errors.iter().take(5) {
+                        print_warning(&format!("  {e}"));
+                    }
+                }
+
+                std::fs::write(&report_path, serde_json::to_string_pretty(&report)?)?;
+                println!("\n  Report saved: {}", report_path.display());
+            }
+
+            DreamAction::Status => {
+                if !report_path.exists() {
+                    print_warning("No dream report found. Run `kwaainet rag dream run` first.");
+                } else {
+                    let raw = std::fs::read_to_string(&report_path)?;
+                    let report: kwaai_rag::dream::DreamReport = serde_json::from_str(&raw)?;
+                    print_box_header(&format!("Last Dream Report ({})", kb));
+                    println!("  Timestamp: {}", report.timestamp);
+                    println!("  Duration:  {:.1}s", report.duration_secs);
+                    println!(
+                        "  Score:     {:.1}%  →  {:.1}%  ({:+.1}%)",
+                        report.score_before * 100.0,
+                        report.score_after * 100.0,
+                        (report.score_after - report.score_before) * 100.0,
+                    );
+                    println!("  Type completions:     {}", report.entities_type_completed);
+                    println!("  Summary completions:  {}", report.entities_summary_completed);
+                    println!("  Relations added:      {}", report.entities_relations_added);
+                    println!("  Entities merged:      {}", report.entities_merged);
+                    println!("  Entities pruned:      {}", report.entities_pruned);
+                    if !report.cycle_errors.is_empty() {
+                        print_warning(&format!("{} errors during last cycle", report.cycle_errors.len()));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 // ── cache ─────────────────────────────────────────────────────────────────────
 

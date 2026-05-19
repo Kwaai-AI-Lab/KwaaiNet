@@ -1407,6 +1407,53 @@ pub enum RagAction {
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
     },
+
+    /// Autonomous knowledge graph completion (Dream RAG)
+    Dream {
+        #[command(subcommand)]
+        action: DreamAction,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, global = true, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DreamAction {
+    /// Run one dream cycle immediately (foreground, shows progress)
+    Run {
+        /// Inference URL (defaults to config inference_url)
+        #[arg(long, value_name = "URL")]
+        inference_url: Option<String>,
+
+        /// Comma-separated additional inference URLs for parallel completion
+        #[arg(long, value_name = "URLS")]
+        inference_urls: Option<String>,
+
+        /// Model name for completion calls
+        #[arg(long, default_value = "default", value_name = "MODEL")]
+        model: String,
+
+        /// Only complete entities with overall score below this threshold [default: 0.6]
+        #[arg(long, default_value = "0.6", value_name = "FLOAT")]
+        threshold: f32,
+
+        /// Embedding similarity for auto-merge [default: 0.92]
+        #[arg(long, default_value = "0.92", value_name = "FLOAT")]
+        dedup_threshold: f32,
+
+        /// Maximum LLM completion calls this cycle [default: 50]
+        #[arg(long, default_value = "50", value_name = "N")]
+        max_completions: usize,
+
+        /// Concurrent completion workers [default: 4]
+        #[arg(long, default_value = "4", value_name = "N")]
+        workers: usize,
+    },
+
+    /// Show the last dream cycle report
+    Status,
 }
 
 #[derive(Subcommand)]

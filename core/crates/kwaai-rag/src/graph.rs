@@ -809,6 +809,45 @@ impl GraphStore {
 
     /// Fully reload in-memory state from the database.
     /// Call once after a batch of `merge_entity_into` calls.
+    /// Delete an entity from the persistent store and in-memory index.
+    /// Relations that referenced this entity become stale — call `rebuild_in_memory()` after a
+    /// batch of deletes.
+    pub fn delete_entity(&mut self, entity_id: i64) -> Result<()> {
+        let key = entity_id.to_le_bytes();
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            t.remove(key.as_ref())?;
+        }
+        wtxn.commit()?;
+        self.nodes.remove(&entity_id);
+        self.entity_to_chunks.remove(&entity_id);
+        Ok(())
+    }
+
+    /// Write a resolved schema.org type back to a stored entity without changing its entity_id.
+    pub fn set_schema_type(&mut self, entity_id: i64, schema_type: &str) -> Result<()> {
+        let node = match self.nodes.get_mut(&entity_id) {
+            Some(n) => n,
+            None => return Ok(()),
+        };
+        node.schema_type = Some(schema_type.to_string());
+        let key = entity_id.to_le_bytes();
+        let val = serde_json::to_vec(node)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            t.insert(key.as_ref(), val.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Expose chunk→entity mapping for cross-link discovery in the dream loop.
+    pub fn all_chunk_entity_pairs(&self) -> impl Iterator<Item = (i64, &Vec<i64>)> {
+        self.chunk_to_entities.iter().map(|(&k, v)| (k, v))
+    }
+
     pub fn rebuild_in_memory(&mut self) -> Result<()> {
         self.nodes.clear();
         self.adj.clear();

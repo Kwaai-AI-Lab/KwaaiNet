@@ -14,5 +14,6 @@ pub mod prompt;
 pub mod query_understanding;
 pub mod reranker;
 pub mod retriever;
+pub mod dream;
 pub mod scorer;
 pub mod wiki;
