@@ -9,8 +9,8 @@
 ## Progress Chart
 
 ```
-60% ┤                                                                       ████ 56.9% ← new best
-    │
+60% ┤                                                                       ████ 56.9% ← keyword best
+    │                                                                            ████ 56.0% M18
 55% ┤                                                                  ████ 51.7%
     │                                                             ████ 50.0%
 50% ┤                                                        ████ 49.1%
@@ -25,11 +25,11 @@
 25% ┤24.6%
     │
     └───────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter
-                                                           +judge         k=20   k=20
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream
+                                                           +judge         k=20   k=20  cycle1
 ```
 
-**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** ← tied best (new keyword record)
+**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18)
 
 ---
 
@@ -57,6 +57,7 @@
 | 15 | v0.4.56 | graph dedup + `graph reembed`, mode=graph, k=5 | llama3.1:8b | **35.3%** (41/116) | — | Post-dedup checkpoint; q1–q10 at 29.8% vs 24.6% original baseline. Dedup+reembed confirmed positive. |
 | 16 | v0.4.56 | **mode=auto, k=20** | llama3.1:8b | **51.7%** (60/116) | 1.55/2 | k=20 sweet spot confirmed. q04 dedication first-ever 4/4. Rerank hurts (−3.4pp). Judge trails iterative. |
 | 17 | v0.4.56 | **mode=iterative, k=20** | llama3.1:8b | **56.9%** (66/116) | **1.80/2** ⬆ | New best on BOTH metrics. q04 4/4 ✓, q05 J.M.H. Gool 6/8 ↑ (alias fix working). 16×2/2, 4×1/2, 0×0/2. |
+| 18 | v0.4.72 | same + Dream RAG cycle 1 (7 types, 4 summaries) | llama3.1:8b | **56.0%** (65/116) | 1.70/2 | Within variance of M17. Insufficient dream cycles to move needle — 100-completion run stalled, only 20 completions applied. Gains: q11, q12 kw, q16 kw, q17 full. Losses: q04, q05 (sampling variance). |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -93,6 +94,12 @@
 **Net keyword gains (M14→M17):** q04 (+4), q05 (+4), q06 (+2), q14 (+2), q09/q07/q16/q18 (+1 each)  
 **Net keyword losses:** q12 (−3, but judge=2/2 — model answers correctly with different words), q01/q10/q19 (−1 each — within variance)  
 **Judge changes:** q04 ⬆, q06 ⬆, q14 ⬆ gained; q03, q08, q11 ⬇ lost — net zero, same 1.80/2
+
+**M18 summary (iterative k=20, Dream RAG cycle 1):** 15×2/2, 4×1/2, 1×0/2 → 56.0% kw / 1.70/2 judge — within M17 variance  
+**Net keyword gains (M17→M18):** q09 (+1), q11 (+1), q12 (+4), q16 (+2), q17 (+1)  
+**Net keyword losses:** q04 (−4), q05 (−4), q08 (−1), q10 (−1), q14 (−1) — sampling variance, not structural regression  
+**Judge changes:** q03 ⬆ recovered; q04 ⬇, q05 ⬇, q10 ⬇, q15 ⬇ — q04/q05 are high-variance questions  
+**Conclusion:** Dream RAG showed no measurable impact after 1 cycle (only 20 completions, graph health 59.5→59.6%). Need sustained cycles.
 
 ---
 
@@ -160,7 +167,7 @@ With k=30 chunks at ~300 chars each, 8192 chars only showed ~16/30 chunks. Raisi
 
 | Priority | Approach | Expected gain |
 |----------|----------|---------------|
-| High | Run full eval (M18) after Dream RAG cycles accumulate — confirm graph quality improvement translates to retrieval gain | Diagnostic |
+| High | Run sustained dream cycles (target graph health >70%) then run M19 eval — confirm graph quality lifts retrieval | Diagnostic |
 | High | Investigate q13 (All Africa Convention) — right chapter retrieved but model hedges, stuck at 1/2 | +1pp judge |
 | Medium | Investigate q03/q08/q11 judge regressions from M14 — were they sampling flukes? | Stability |
 | Medium | Dream RAG Phase 3: quality gate — snapshot + rollback if score drops >5% after a cycle | Stability |
