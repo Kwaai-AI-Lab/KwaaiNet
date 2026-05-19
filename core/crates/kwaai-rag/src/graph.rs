@@ -614,6 +614,11 @@ impl GraphStore {
             .get(&alias_id)
             .map(|n| n.aliases.clone())
             .unwrap_or_default();
+        let alias_description = self
+            .nodes
+            .get(&alias_id)
+            .map(|n| n.description.clone())
+            .unwrap_or_default();
 
         // ── 1. Collect relations involving alias_id ─────────────────────────
         let mut to_rewrite: Vec<RelationRecord> = vec![];
@@ -678,13 +683,57 @@ impl GraphStore {
             wtxn.commit()?;
         }
 
-        // ── 3. Delete alias entity + boost canonical mention_count ──────────
+        // ── 3. Delete alias entity + boost canonical mention_count + transfer chunk refs ──
         {
             let wtxn = self.db.begin_write()?;
             {
                 let mut et = wtxn.open_table(ENTITIES_TABLE)?;
-                et.remove(&alias_id.to_le_bytes()[..])?;
+                let mut ec_tbl = wtxn.open_table(ENTITY_CHUNK_TABLE)?;
+                let mut ce_tbl = wtxn.open_table(CHUNK_ENTITY_TABLE)?;
 
+                // Transfer chunk references: alias → canonical
+                let alias_chunk_ids: Vec<i64> = {
+                    let ek = alias_id.to_le_bytes();
+                    match ec_tbl.get(ek.as_ref())? {
+                        Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
+                        None => vec![],
+                    }
+                };
+                if !alias_chunk_ids.is_empty() {
+                    // Extend canonical's chunk list
+                    let canonical_ek = canonical_id.to_le_bytes();
+                    let mut canonical_cids: Vec<i64> = match ec_tbl.get(canonical_ek.as_ref())? {
+                        Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
+                        None => vec![],
+                    };
+                    for &cid in &alias_chunk_ids {
+                        if !canonical_cids.contains(&cid) {
+                            canonical_cids.push(cid);
+                        }
+                    }
+                    ec_tbl.insert(
+                        canonical_ek.as_ref(),
+                        serde_json::to_vec(&canonical_cids)?.as_slice(),
+                    )?;
+                    // Replace alias_id with canonical_id in each chunk's entity list
+                    for &cid in &alias_chunk_ids {
+                        let ck = cid.to_le_bytes();
+                        let mut eids: Vec<i64> = match ce_tbl.get(ck.as_ref())? {
+                            Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
+                            None => vec![],
+                        };
+                        eids.retain(|&id| id != alias_id);
+                        if !eids.contains(&canonical_id) {
+                            eids.push(canonical_id);
+                        }
+                        ce_tbl.insert(ck.as_ref(), serde_json::to_vec(&eids)?.as_slice())?;
+                    }
+                }
+                // Remove alias from entity-chunk index
+                ec_tbl.remove(&alias_id.to_le_bytes()[..])?;
+
+                // Remove alias entity and update canonical
+                et.remove(&alias_id.to_le_bytes()[..])?;
                 if let Some(canonical) = self.nodes.get(&canonical_id).cloned() {
                     let mut new_aliases = canonical.aliases.clone();
                     if let Some(ref aname) = alias_name {
@@ -697,9 +746,15 @@ impl GraphStore {
                             new_aliases.push(a.clone());
                         }
                     }
+                    let merged_description = if alias_description.len() > canonical.description.len() {
+                        alias_description.clone()
+                    } else {
+                        canonical.description.clone()
+                    };
                     let updated = EntityNode {
                         mention_count: canonical.mention_count + alias_mention_count,
                         aliases: new_aliases,
+                        description: merged_description,
                         ..canonical
                     };
                     et.insert(
@@ -715,6 +770,23 @@ impl GraphStore {
         self.nodes.remove(&alias_id);
         if let Some(node) = self.nodes.get_mut(&canonical_id) {
             node.mention_count += alias_mention_count;
+            if alias_description.len() > node.description.len() {
+                node.description = alias_description;
+            }
+        }
+        // Transfer chunk refs in-memory so callers don't see stale state before rebuild_in_memory()
+        let alias_mem_chunks = self.entity_to_chunks.remove(&alias_id).unwrap_or_default();
+        for cid in alias_mem_chunks {
+            if let Some(eids) = self.chunk_to_entities.get_mut(&cid) {
+                eids.retain(|&id| id != alias_id);
+                if !eids.contains(&canonical_id) {
+                    eids.push(canonical_id);
+                }
+            }
+            let ec = self.entity_to_chunks.entry(canonical_id).or_default();
+            if !ec.contains(&cid) {
+                ec.push(cid);
+            }
         }
         // Leave adj stale — caller should call rebuild_in_memory() after a batch.
 
