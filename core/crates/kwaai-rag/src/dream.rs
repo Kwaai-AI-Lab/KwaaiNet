@@ -284,7 +284,6 @@ struct WorkItem {
 pub async fn run_dream_cycle(
     data_dir: &Path,
     tenant_id: Uuid,
-    meta: &MetaStore,
     embed: &EmbedClient,
     cfg: &DreamConfig,
     inference_urls: &[String],
@@ -308,6 +307,10 @@ pub async fn run_dream_cycle(
 
     // ── Step 1: Score, collect work items ────────────────────────────────────
     let work_items = {
+        // Open MetaStore inside this block so it is dropped before the LLM
+        // fan-out — prevents "Database already open" errors if another command
+        // (e.g. alias-scan) runs concurrently against the same KB.
+        let meta = MetaStore::open(data_dir, tenant_id).context("open meta store for scoring")?;
         let store = GraphStore::open(data_dir, tenant_id).context("open graph for scoring")?;
         report.score_before = score_graph(&store).overall;
 

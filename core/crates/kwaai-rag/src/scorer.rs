@@ -149,6 +149,9 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
     };
 
     // Pillar 3: relationships
+    // Peripheral entities (mention_count ≤ 2) are only expected to satisfy
+    // 1 relation group instead of all groups; they're supporting cast and the
+    // source text rarely gives enough context for full biographical data.
     let relation_score: f32 = match resolved {
         None | Some("schema:Thing") => {
             // No expectations defined — neutral, not penalised
@@ -169,7 +172,14 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
                         })
                     })
                     .count();
-                matched as f32 / groups.len() as f32
+                // Scale expectations down for peripheral entities so one
+                // matched group is enough for a full score.
+                let effective_required = if node.mention_count <= 2 {
+                    1usize.min(groups.len())
+                } else {
+                    groups.len()
+                };
+                (matched as f32 / effective_required as f32).min(1.0)
             }
         }
     };

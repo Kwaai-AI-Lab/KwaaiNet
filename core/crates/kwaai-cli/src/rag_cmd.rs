@@ -3061,8 +3061,6 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                 };
 
                 let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
-                let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)
-                    .context("opening meta store")?;
                 let cfg = kwaai_rag::dream::DreamConfig {
                     completeness_threshold: threshold,
                     dedup_threshold,
@@ -3083,7 +3081,6 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                 let report = kwaai_rag::dream::run_dream_cycle(
                     &rag_cfg.data_dir(),
                     tenant_id,
-                    &meta,
                     &embed,
                     &cfg,
                     &urls,
