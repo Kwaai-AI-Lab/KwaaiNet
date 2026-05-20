@@ -311,9 +311,8 @@ pub async fn run_dream_cycle(
         // (e.g. alias-scan) runs concurrently against the same KB.
         let meta = MetaStore::open(data_dir, tenant_id).context("open meta store for scoring")?;
         let store = GraphStore::open(data_dir, tenant_id).context("open graph for scoring")?;
-        report.score_before = score_graph(&store).overall;
-
         let health = score_graph(&store);
+        report.score_before = health.overall;
         let mut items: Vec<WorkItem> = Vec::new();
         let budget = cfg.max_completions_per_cycle;
 
