@@ -217,14 +217,6 @@ pub async fn run(args: RagArgs) -> Result<()> {
 
         RagAction::Dream { action, kb } => cmd_dream(action, kb).await,
 
-        RagAction::Export { output_dir, kb } => cmd_export(output_dir, kb).await,
-
-        RagAction::Import {
-            input_dir,
-            since,
-            kb,
-        } => cmd_import(input_dir, since, kb).await,
-
         RagAction::Eval {
             questions,
             kb,
@@ -2583,7 +2575,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     store.node_count(),
                     store.relation_count()
                 );
-                println!("\n  Tip: run `rag export` to view the updated graph in Obsidian.");
+                println!("\n  Tip: run `rag graph export` to view the updated graph in Obsidian.");
             }
 
             GraphAction::SeedFromJson { file, emit_yaml } => {
@@ -2647,7 +2639,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     store.node_count(),
                     store.relation_count()
                 );
-                println!("\n  Tip: run `rag export` to view the updated graph in Obsidian.");
+                println!("\n  Tip: run `rag graph export` to view the updated graph in Obsidian.");
             }
 
             GraphAction::AliasScan {
@@ -2752,6 +2744,14 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         }
                     }
                 }
+            }
+
+            GraphAction::Export { output_dir } => {
+                return cmd_export(output_dir, kb).await;
+            }
+
+            GraphAction::Import { input_dir, since } => {
+                return cmd_import(input_dir, since, kb).await;
             }
         }
         Ok(())
@@ -3478,6 +3478,29 @@ async fn cmd_eval(
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
 
+        // Resolve p2p:// URLs to local HTTP proxies (same pattern as dream/graph build).
+        let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
+        let inference_url = if inference_url.starts_with("p2p://") {
+            use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+            let sock = std::env::var("KWAAINET_SOCKET")
+                .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+            #[cfg(unix)]
+            let addr = format!("/unix/{sock}");
+            #[cfg(not(unix))]
+            let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+            let p2p = std::sync::Arc::new(
+                P2PClient::connect(&addr)
+                    .await
+                    .context("connecting to p2pd for p2p:// URL resolution")?,
+            );
+            let (resolved, handles) =
+                crate::ollama_proxy::resolve_inference_urls(&[inference_url], &p2p).await?;
+            _proxy_handles = handles;
+            resolved.into_iter().next().unwrap_or_default()
+        } else {
+            inference_url
+        };
+
         let retrieve_cfg = RetrieveConfig {
             top_k,
             min_score: 0.0,
@@ -3944,7 +3967,7 @@ async fn cmd_export(output_dir: std::path::PathBuf, kb: String) -> Result<()> {
             output_dir.display()
         );
         println!(
-            "  After curation run:  kwaainet rag import --input-dir {} --kb {}",
+            "  After curation run:  kwaainet rag graph import --input-dir {} --kb {}",
             output_dir.display(),
             kb
         );

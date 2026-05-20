@@ -80,7 +80,8 @@ pub fn export_vault(graph: &GraphStore, out_dir: &Path, kb_name: &str) -> Result
         .collect();
 
     // Track every path we write so we can clean up stale files from previous exports
-    let mut written_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    let mut written_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
 
     for node in graph.all_entities() {
         let path = entity_path(out_dir, &node.entity_type, &node.name);
@@ -509,7 +510,9 @@ fn collect_md_files(
     keep: &std::collections::HashSet<std::path::PathBuf>,
     stats: &mut ExportStats,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {

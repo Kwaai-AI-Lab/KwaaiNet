@@ -1434,32 +1434,6 @@ pub enum RagAction {
         output: Option<std::path::PathBuf>,
     },
 
-    /// Export the knowledge graph to an Obsidian vault
-    Export {
-        /// Output directory for the vault (created if absent)
-        #[arg(long, value_name = "DIR")]
-        output_dir: std::path::PathBuf,
-
-        /// Knowledge base name (default: "default")
-        #[arg(long, default_value = "default", value_name = "NAME")]
-        kb: String,
-    },
-
-    /// Import curated edits from an Obsidian vault back into the knowledge graph
-    Import {
-        /// Path to the Obsidian vault directory (must contain `entities/`)
-        #[arg(long, value_name = "DIR")]
-        input_dir: std::path::PathBuf,
-
-        /// Only process files modified after this Unix timestamp (default: 0 = all files)
-        #[arg(long, default_value = "0", value_name = "SECS")]
-        since: u64,
-
-        /// Knowledge base name (default: "default")
-        #[arg(long, default_value = "default", value_name = "NAME")]
-        kb: String,
-    },
-
     /// Autonomous knowledge graph completion (Dream RAG)
     Dream {
         #[command(subcommand)]
@@ -1682,6 +1656,24 @@ pub enum GraphAction {
     ///   5. Log (warn) spouse_of pairs where both entities have the same inferred gender
     ///      so they can be reviewed.
     Sanitize,
+
+    /// Export the knowledge graph to an Obsidian vault
+    Export {
+        /// Output directory for the vault (created if absent)
+        #[arg(long, value_name = "DIR")]
+        output_dir: std::path::PathBuf,
+    },
+
+    /// Import curated edits from an Obsidian vault back into the knowledge graph
+    Import {
+        /// Path to the Obsidian vault directory (must contain `entities/`)
+        #[arg(long, value_name = "DIR")]
+        input_dir: std::path::PathBuf,
+
+        /// Only process files modified after this Unix timestamp (default: 0 = all files)
+        #[arg(long, default_value = "0", value_name = "SECS")]
+        since: u64,
+    },
 }
 
 #[derive(Subcommand)]

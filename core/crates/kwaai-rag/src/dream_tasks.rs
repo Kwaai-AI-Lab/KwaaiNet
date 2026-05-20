@@ -75,22 +75,80 @@ pub async fn run_task(
 ) -> EntityCompletion {
     match kind {
         DreamTaskKind::Biography => {
-            run_biography_task(eid, name, current_description, evidence_text, url, model, mention_count, chunk_count, document_titles).await
+            run_biography_task(
+                eid,
+                name,
+                current_description,
+                evidence_text,
+                url,
+                model,
+                mention_count,
+                chunk_count,
+                document_titles,
+            )
+            .await
         }
         DreamTaskKind::Geography => {
-            run_geography_task(eid, name, current_description, evidence_text, url, model, document_titles).await
+            run_geography_task(
+                eid,
+                name,
+                current_description,
+                evidence_text,
+                url,
+                model,
+                document_titles,
+            )
+            .await
         }
         DreamTaskKind::OrgProfile => {
-            run_org_task(eid, name, current_description, evidence_text, url, model, mention_count, chunk_count, document_titles).await
+            run_org_task(
+                eid,
+                name,
+                current_description,
+                evidence_text,
+                url,
+                model,
+                mention_count,
+                chunk_count,
+                document_titles,
+            )
+            .await
         }
         DreamTaskKind::EventProfile => {
-            run_event_task(eid, name, current_description, evidence_text, url, model, document_titles).await
+            run_event_task(
+                eid,
+                name,
+                current_description,
+                evidence_text,
+                url,
+                model,
+                document_titles,
+            )
+            .await
         }
         DreamTaskKind::ConceptDef => {
-            run_concept_task(eid, name, current_description, evidence_text, url, model, document_titles).await
+            run_concept_task(
+                eid,
+                name,
+                current_description,
+                evidence_text,
+                url,
+                model,
+                document_titles,
+            )
+            .await
         }
         DreamTaskKind::WorkProfile => {
-            run_work_task(eid, name, current_description, evidence_text, url, model, document_titles).await
+            run_work_task(
+                eid,
+                name,
+                current_description,
+                evidence_text,
+                url,
+                model,
+                document_titles,
+            )
+            .await
         }
         DreamTaskKind::General => {
             crate::dream::complete_entity(

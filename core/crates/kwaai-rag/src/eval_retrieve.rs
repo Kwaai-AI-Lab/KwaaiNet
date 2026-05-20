@@ -229,7 +229,9 @@ where
         };
 
         // ── Chunk-space ──
-        let chunk_results = chunk_search_fn(emb.clone(), TOP_K).await.unwrap_or_default();
+        let chunk_results = chunk_search_fn(emb.clone(), TOP_K)
+            .await
+            .unwrap_or_default();
         let c_rank = chunk_results
             .iter()
             .enumerate()
@@ -238,9 +240,15 @@ where
             .unwrap_or(0);
 
         let c_rr = if c_rank > 0 { 1.0 / c_rank as f32 } else { 0.0 };
-        if c_rank == 1 { c_hits_1 += 1; }
-        if c_rank > 0 && c_rank <= 5 { c_hits_5 += 1; }
-        if c_rank > 0 && c_rank <= 10 { c_hits_10 += 1; }
+        if c_rank == 1 {
+            c_hits_1 += 1;
+        }
+        if c_rank > 0 && c_rank <= 5 {
+            c_hits_5 += 1;
+        }
+        if c_rank > 0 && c_rank <= 10 {
+            c_hits_10 += 1;
+        }
         c_rr_sum += c_rr;
 
         // ── Entity-space (primary signal for the paper) ──
@@ -253,10 +261,18 @@ where
             .unwrap_or(0);
 
         let e_rr = if e_rank > 0 { 1.0 / e_rank as f32 } else { 0.0 };
-        if e_rank == 1 { e_hits_1 += 1; }
-        if e_rank > 0 && e_rank <= 3 { e_hits_3 += 1; }
-        if e_rank > 0 && e_rank <= 5 { e_hits_5 += 1; }
-        if e_rank > 0 && e_rank <= 10 { e_hits_10 += 1; }
+        if e_rank == 1 {
+            e_hits_1 += 1;
+        }
+        if e_rank > 0 && e_rank <= 3 {
+            e_hits_3 += 1;
+        }
+        if e_rank > 0 && e_rank <= 5 {
+            e_hits_5 += 1;
+        }
+        if e_rank > 0 && e_rank <= 10 {
+            e_hits_10 += 1;
+        }
         e_rr_sum += e_rr;
 
         if verbose {

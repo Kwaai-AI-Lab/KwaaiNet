@@ -59,8 +59,8 @@ pub struct NbPayload {
 ///
 /// Strips markdown code fences if the user pasted from a chat UI.
 pub fn load_nb_json(path: &std::path::Path) -> Result<NbPayload> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     // Strip markdown code fences if the user pasted from a chat UI
     let cleaned = text
         .trim()
@@ -210,9 +210,7 @@ fn write_entity(out: &mut String, e: &NbEntity) {
         // Even without a description, append birth/death years as the description
         match (e.birth_year, e.death_year) {
             (Some(b), Some(d_yr)) => {
-                out.push_str(&format!(
-                    "    description: >\n      b. {b}, d. {d_yr}\n"
-                ));
+                out.push_str(&format!("    description: >\n      b. {b}, d. {d_yr}\n"));
             }
             (Some(b), None) => {
                 out.push_str(&format!("    description: >\n      b. {b}\n"));
@@ -240,12 +238,7 @@ pub fn to_family_tree(payload: &NbPayload) -> crate::family::FamilyTree {
         .entities
         .iter()
         .map(|e| {
-            let mut desc = e
-                .description
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let mut desc = e.description.as_deref().unwrap_or("").trim().to_string();
             // Append birth/death years to description if available
             match (e.birth_year, e.death_year) {
                 (Some(b), Some(d)) => desc.push_str(&format!(" (b. {b}, d. {d})")),
