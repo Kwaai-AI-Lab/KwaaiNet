@@ -492,7 +492,10 @@ pub async fn run_dream_cycle(
 
             // Relation completion — only add if both endpoints exist in graph
             for (rel_type, target_name) in &completion.relations {
-                let dst_id = match store.find_by_name(target_name) {
+                let dst_id = match store
+                    .find_by_name(target_name)
+                    .or_else(|| store.find_by_name_normalized(target_name))
+                {
                     Some(n) => n.id,
                     None => continue, // reject hallucinated targets
                 };

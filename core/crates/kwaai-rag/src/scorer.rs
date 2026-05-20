@@ -66,7 +66,10 @@ pub fn expected_relation_groups(schema_type: &str) -> &'static [&'static [&'stat
             &["works_at", "belongs_to", "founded", "manages"],
             &["located_in", "associated_with"],
         ],
-        "schema:Organization" => &[&["located_in"], &["founded", "part_of", "contains"]],
+        "schema:Organization" => &[
+            &["located_in", "associated_with", "belongs_to"],
+            &["founded", "part_of", "contains"],
+        ],
         "schema:Place" => &[&["located_in", "contains", "part_of"]],
         "schema:Event" => &[
             &["occurred_on", "started", "ended"],

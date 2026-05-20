@@ -256,13 +256,15 @@ pub async fn run_biography_task(
     // For very thin evidence (short passing mention), allow the LLM to use
     // widely-known facts to fill in basic biographical context (nationality,
     // primary role, major association).  Private individuals should stay text-only.
-    let thin = text.len() < 300;
+    let thin = text.len() < 600;
     let knowledge_rule = if thin {
         "If this is a well-known public figure (politician, general, author, etc.) you may \
          supplement sparse text with widely-known facts. For private individuals, use only \
          what the text provides."
     } else {
-        "Only include relations that are explicitly stated in the text. Do not invent facts."
+        "Include relations clearly supported by the text — explicit statements AND strong \
+         contextual associations (e.g. a person living in a city, working for an organisation, \
+         opposing a movement) that are clearly evidenced in the text. Do not invent facts."
     };
 
     let prompt = format!(
@@ -344,7 +346,7 @@ pub async fn run_org_task(
     model: &str,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
-    let thin = text.len() < 300;
+    let thin = text.len() < 600;
     let knowledge_rule = if thin {
         "If this is a well-known public organisation (government body, political party, \
          major institution) you may supplement sparse text with widely-known facts about \
@@ -368,6 +370,7 @@ pub async fn run_org_task(
              {{\"type\":\"belongs_to\",\"target\":\"<federation or body it belongs to>\"}}\
            ]}}\n\n\
          Rules:\n\
+         - description MUST be at least 2 full sentences and at least 150 characters\n\
          - Omit any relation whose target is empty or vague\n\
          - {knowledge_rule}"
     );
