@@ -164,6 +164,32 @@ persons:
       - "Doolie"
       - "Doolie Rassool"
 
+  - canonical: "Fazil Rassool"
+    aliases:
+      - "Fazil"
+
+  - canonical: "Zain Rassool"
+    aliases:
+      - "Zain"
+
+  - canonical: "Rasheda Rassool"
+    aliases:
+      - "Rasheda"
+
+  - canonical: "Berina Rassool"
+    aliases:
+      - "Berina"
+
+  - canonical: "Yasmin Rassool"
+    aliases:
+      - "Yasmin"
+      - "Jessie"
+      - "Jessie Rassool"
+
+  - canonical: "Nasim Rassool"
+    aliases:
+      - "Nasim"
+
   # ─── Fostered relatives (the Ally/Noor line) ───────────────────────────────
 
   - canonical: "Gadija Noor"
@@ -266,8 +292,26 @@ relations:
   - { from: "Peter Alexander Rassool", to: "Yousuf Rassool", type: "parent_of" }
   - { from: "Ayesha Rassool",          to: "Abdul Rassool",  type: "parent_of" }
   - { from: "Peter Alexander Rassool", to: "Abdul Rassool",  type: "parent_of" }
-  - { from: "Yousuf Rassool",          to: "Abdul Rassool",  type: "sibling_of" }
-  - { from: "Yousuf Rassool",          to: "Nazima Rassool", type: "spouse_of" }
+  - { from: "Ayesha Rassool",          to: "Fazil Rassool",   type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Fazil Rassool",   type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Zain Rassool",    type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Zain Rassool",    type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Rasheda Rassool", type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Rasheda Rassool", type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Berina Rassool",  type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Berina Rassool",  type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Yasmin Rassool",  type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Yasmin Rassool",  type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Nasim Rassool",   type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Nasim Rassool",   type: "parent_of" }
+  - { from: "Yousuf Rassool",          to: "Abdul Rassool",   type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Fazil Rassool",   type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Zain Rassool",    type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Rasheda Rassool", type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Berina Rassool",  type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Yasmin Rassool",  type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Nasim Rassool",   type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Nazima Rassool",  type: "spouse_of" }
 
   # ─── Children of Abdul Hamid + Cissie ──────────────────────────────────────
   - { from: "Abdul Hamid Gool", to: "Shaheen Gool", type: "parent_of" }

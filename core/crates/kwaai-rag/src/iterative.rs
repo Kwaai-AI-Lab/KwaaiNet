@@ -315,7 +315,7 @@ where
 
     // ── Final: inject entity descriptions, boost by term coverage, dedup, select top-k ─────
 
-    inject_entity_descriptions(&seed_hits, graph, &mut pool);
+    inject_entity_descriptions(query, &seed_hits, graph, &mut pool);
 
     for chunk in &mut pool {
         let text = chunk.chunk_meta.text.to_lowercase();
