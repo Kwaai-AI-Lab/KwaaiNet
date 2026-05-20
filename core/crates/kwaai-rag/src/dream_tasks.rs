@@ -220,27 +220,38 @@ pub async fn run_biography_task(
     model: &str,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
+
+    // For very thin evidence (short passing mention), allow the LLM to use
+    // widely-known facts to fill in basic biographical context (nationality,
+    // primary role, major association).  Private individuals should stay text-only.
+    let thin = text.len() < 300;
+    let knowledge_rule = if thin {
+        "If this is a well-known public figure (politician, general, author, etc.) you may \
+         supplement sparse text with widely-known facts. For private individuals, use only \
+         what the text provides."
+    } else {
+        "Only include relations that are explicitly stated in the text. Do not invent facts."
+    };
+
     let prompt = format!(
         "You are building a biography for a person named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
          Source text (all passages mentioning this person):\n---\n{text}\n---\n\n\
-         Extract only what is clearly stated in the text. Do not invent facts.\n\n\
          JSON schema:\n\
-         {{\"description\":\"<2-3 sentence biography derived from the text>\",\
+         {{\"description\":\"<2-3 sentence biography>\",\
            \"relations\":[\
-             {{\"type\":\"located_in\",\"target\":\"<birth place or home city>\"}},\
+             {{\"type\":\"located_in\",\"target\":\"<birth place, home city, or country>\"}},\
              {{\"type\":\"spouse_of\",\"target\":\"<spouse name>\"}},\
              {{\"type\":\"child_of\",\"target\":\"<parent name>\"}},\
              {{\"type\":\"parent_of\",\"target\":\"<child name>\"}},\
              {{\"type\":\"sibling_of\",\"target\":\"<sibling name>\"}},\
-             {{\"type\":\"belongs_to\",\"target\":\"<organisation name>\"}},\
-             {{\"type\":\"works_at\",\"target\":\"<employer or institution>\"}},\
-             {{\"type\":\"associated_with\",\"target\":\"<key person or movement>\"}}\
+             {{\"type\":\"belongs_to\",\"target\":\"<organisation, political party, or group>\"}},\
+             {{\"type\":\"works_at\",\"target\":\"<employer, military branch, or institution>\"}},\
+             {{\"type\":\"associated_with\",\"target\":\"<key person, event, or movement>\"}}\
            ]}}\n\n\
          Rules:\n\
-         - Only include a relation if the target entity is explicitly named in the text\n\
-         - Omit relations where target is empty, vague, or not in the text\n\
-         - description must be derived from the text, not invented"
+         - Omit any relation whose target is empty or vague\n\
+         - {knowledge_rule}"
     );
 
     match call_llm(&prompt, url, model).await {
