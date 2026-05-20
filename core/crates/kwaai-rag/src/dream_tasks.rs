@@ -269,6 +269,14 @@ pub async fn run_geography_task(
     model: &str,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
+    let thin = text.len() < 300;
+    let knowledge_rule = if thin {
+        "If this is a well-known city, country, region, or landmark you may supplement \
+         sparse text with widely-known geographic facts (country, continent, key feature). \
+         For obscure or fictional places, use only what the text provides."
+    } else {
+        "Only include relations where the target is explicitly named in the text."
+    };
     let prompt = format!(
         "You are describing a place named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -280,7 +288,9 @@ pub async fn run_geography_task(
              {{\"type\":\"part_of\",\"target\":\"<larger area or district>\"}},\
              {{\"type\":\"contains\",\"target\":\"<named sub-area or landmark>\"}}\
            ]}}\n\n\
-         Only include relations where the target is explicitly named in the text."
+         Rules:\n\
+         - Omit any relation whose target is empty or vague\n\
+         - {knowledge_rule}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -298,6 +308,15 @@ pub async fn run_org_task(
     model: &str,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
+    let thin = text.len() < 300;
+    let knowledge_rule = if thin {
+        "If this is a well-known public organisation (government body, political party, \
+         major institution) you may supplement sparse text with widely-known facts about \
+         its purpose and location. For obscure or private organisations, use only what the \
+         text provides."
+    } else {
+        "Only include relations where the target is explicitly named in the text."
+    };
     let prompt = format!(
         "You are profiling an organisation named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -305,13 +324,16 @@ pub async fn run_org_task(
          JSON schema:\n\
          {{\"description\":\"<2-3 sentence profile of this organisation>\",\
            \"relations\":[\
-             {{\"type\":\"associated_with\",\"target\":\"<founder name>\"}},\
+             {{\"type\":\"associated_with\",\"target\":\"<key person associated with it>\"}},\
+             {{\"type\":\"founded\",\"target\":\"<entity or institution this organisation founded>\"}},\
              {{\"type\":\"located_in\",\"target\":\"<headquarters location>\"}},\
              {{\"type\":\"part_of\",\"target\":\"<parent organisation>\"}},\
-             {{\"type\":\"manages\",\"target\":\"<programme or subsidiary>\"}},\
+             {{\"type\":\"contains\",\"target\":\"<named subsidiary or branch>\"}},\
              {{\"type\":\"belongs_to\",\"target\":\"<federation or body it belongs to>\"}}\
            ]}}\n\n\
-         Only include relations where the target is explicitly named in the text."
+         Rules:\n\
+         - Omit any relation whose target is empty or vague\n\
+         - {knowledge_rule}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -359,6 +381,14 @@ pub async fn run_concept_task(
     model: &str,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
+    let thin = text.len() < 400;
+    let knowledge_rule = if thin {
+        "If this is a well-known historical, legal, or social concept you may supplement \
+         sparse text with widely-known facts about its meaning or origin. \
+         For obscure or highly context-specific terms, use only what the text provides."
+    } else {
+        "Only include relations where the target is explicitly named in the text."
+    };
     let prompt = format!(
         "You are describing the historical or social concept \"{name}\" as used in source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -370,7 +400,9 @@ pub async fn run_concept_task(
              {{\"type\":\"defined_by\",\"target\":\"<organisation or document that defines it>\"}},\
              {{\"type\":\"subtype_of\",\"target\":\"<broader concept>\"}}\
            ]}}\n\n\
-         Only include relations where the target is explicitly named in the text."
+         Rules:\n\
+         - Omit any relation whose target is empty or vague\n\
+         - {knowledge_rule}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -397,6 +429,8 @@ pub async fn run_work_task(
            \"relations\":[\
              {{\"type\":\"associated_with\",\"target\":\"<person or organisation associated with it>\"}},\
              {{\"type\":\"related_to\",\"target\":\"<related item or event>\"}},\
+             {{\"type\":\"described_in\",\"target\":\"<document or source that describes it>\"}},\
+             {{\"type\":\"cites\",\"target\":\"<another work or entity it references>\"}},\
              {{\"type\":\"located_in\",\"target\":\"<place where it is found or used>\"}}\
            ]}}\n\n\
          Only include relations where the target is explicitly named in the text."

@@ -32,6 +32,11 @@ pub fn schema_type_for(entity_type: &str) -> Option<&'static str> {
         "Date" => Some("schema:Date"),
         // Vague types — valid but uninformative
         "Topic" => Some("schema:Thing"),
+        // Additional types not in original extractor but appearing in D6
+        "Group" => Some("schema:Organization"),
+        "Language" => Some("schema:DefinedTerm"),
+        "Family" => Some("schema:Organization"),
+        "Publication" => Some("schema:CreativeWork"),
         _ => None, // Unknown + anything unrecognised
     }
 }
