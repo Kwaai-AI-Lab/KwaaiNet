@@ -1,5 +1,7 @@
 use sha2::{Digest, Sha256};
 
+use crate::doc_schema::{match_section, DocSchema};
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ChunkStrategy {
     #[default]
@@ -50,6 +52,12 @@ pub struct Chunk {
     pub doc_name: String,
     pub chunk_index: u32,
     pub page_num: Option<u32>,
+    /// Section heading that was active when this chunk was produced (from DocSchema).
+    pub section_name: Option<String>,
+    /// When true, this chunk should be skipped during graph/entity extraction.
+    pub skip_extraction: bool,
+    /// Narrator note from DocSchema — injected into extraction prompts for this chunk.
+    pub section_note: Option<String>,
 }
 
 /// Deterministic stable chunk ID.
@@ -63,10 +71,19 @@ pub fn chunk_id(doc_name: &str, chunk_index: u32) -> i64 {
 }
 
 /// Split text into chunks using the configured strategy.
-pub fn split_text(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> {
+///
+/// If `schema` is provided, paragraph-level headings are matched against the
+/// schema sections to tag each chunk with `section_name`, `skip_extraction`,
+/// and `section_note`. Has no effect on the Character strategy.
+pub fn split_text(
+    text: &str,
+    doc_name: &str,
+    cfg: &ChunkConfig,
+    schema: Option<&DocSchema>,
+) -> Vec<Chunk> {
     match cfg.strategy {
         ChunkStrategy::Character => split_character(text, doc_name, cfg),
-        ChunkStrategy::Paragraph => split_paragraph(text, doc_name, cfg),
+        ChunkStrategy::Paragraph => split_paragraph(text, doc_name, cfg, schema),
     }
 }
 
@@ -101,6 +118,9 @@ fn split_character(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
                 doc_name: doc_name.to_string(),
                 chunk_index: index,
                 page_num: None,
+                section_name: None,
+                skip_extraction: false,
+                section_note: None,
             });
             index += 1;
         }
@@ -112,13 +132,60 @@ fn split_character(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
 
 // ── Paragraph strategy ────────────────────────────────────────────────────────
 
-fn split_paragraph(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> {
-    let units = collect_units(text, cfg);
+fn split_paragraph(
+    text: &str,
+    doc_name: &str,
+    cfg: &ChunkConfig,
+    schema: Option<&DocSchema>,
+) -> Vec<Chunk> {
+    let units = collect_units_with_headings(text, cfg);
     if units.is_empty() {
         return vec![];
     }
 
-    let chunk_texts = pack_chunks(&units, cfg);
+    // Resolve section metadata for each unit.  A heading-only unit updates
+    // the current section state; content units inherit it.
+    let mut cur_section_name: Option<String> = None;
+    let mut cur_skip = false;
+    let mut cur_note: Option<String> = None;
+
+    // (text, section_name, skip, note) for content units only
+    let mut content_units: Vec<(String, Option<String>, bool, Option<String>)> = Vec::new();
+
+    for (is_heading, unit_text) in &units {
+        if *is_heading {
+            if let Some(schema) = schema {
+                if let Some(sec) = match_section(unit_text, schema) {
+                    cur_section_name = Some(unit_text.clone());
+                    cur_skip = sec.skip;
+                    cur_note = sec.narrator_note.clone();
+                } else {
+                    // Named heading but not in schema — keep previous section context,
+                    // update section name so dream evidence shows chapter titles.
+                    cur_section_name = Some(unit_text.clone());
+                }
+            } else {
+                cur_section_name = Some(unit_text.clone());
+            }
+            // Heading lines are never emitted as retrieval chunks.
+        } else {
+            content_units.push((
+                unit_text.clone(),
+                cur_section_name.clone(),
+                cur_skip,
+                cur_note.clone(),
+            ));
+        }
+    }
+
+    let plain_texts: Vec<String> = content_units.iter().map(|(t, _, _, _)| t.clone()).collect();
+    let chunk_texts = pack_chunks(&plain_texts, cfg);
+
+    // pack_chunks may merge adjacent units; we need a mapping from chunk index back
+    // to the source unit's section metadata.  Use the first unit that contributed
+    // to each chunk (conservative — headings rarely straddle pack boundaries).
+    let chunk_meta = assign_chunk_meta(&plain_texts, &chunk_texts, &content_units);
+
     let surr_half = cfg.chunk_size / 4;
     let mut result = Vec::new();
     let mut index = 0u32;
@@ -131,7 +198,6 @@ fn split_paragraph(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
         let mut surrounding = String::new();
         match cfg.surr_mode {
             SurrMode::Full => {
-                // Complete adjacent chunks — no truncation.
                 if i > 0 {
                     surrounding.push_str(&chunk_texts[i - 1]);
                     surrounding.push(' ');
@@ -143,7 +209,6 @@ fn split_paragraph(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
                 }
             }
             SurrMode::Truncated => {
-                // ±(chunk_size/4) chars from adjacent chunks.
                 if i > 0 {
                     let prev: Vec<char> = chunk_texts[i - 1].chars().collect();
                     let tail_start = prev.len().saturating_sub(surr_half);
@@ -160,6 +225,8 @@ fn split_paragraph(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
             }
         }
 
+        let (sec_name, skip, note) = chunk_meta.get(i).cloned().unwrap_or((None, false, None));
+
         result.push(Chunk {
             id: chunk_id(doc_name, index),
             text: text_str.clone(),
@@ -167,18 +234,59 @@ fn split_paragraph(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
             doc_name: doc_name.to_string(),
             chunk_index: index,
             page_num: None,
+            section_name: sec_name,
+            skip_extraction: skip,
+            section_note: note,
         });
         index += 1;
     }
     result
 }
 
-/// Collect atomic units from text: paragraphs split on `\n\n`, with oversized
-/// paragraphs further split at sentence boundaries and then characters.
-/// Short paragraphs (< min_chunk_len) are merged into their neighbour.
-fn collect_units(text: &str, cfg: &ChunkConfig) -> Vec<String> {
-    let mut units: Vec<String> = Vec::new();
+/// Assign section metadata to each packed chunk by finding which source unit
+/// contributed the most characters to that chunk.
+fn assign_chunk_meta(
+    units: &[String],
+    chunks: &[String],
+    meta: &[(String, Option<String>, bool, Option<String>)],
+) -> Vec<(Option<String>, bool, Option<String>)> {
+    // For each chunk, find the first source unit whose text appears in it.
+    chunks
+        .iter()
+        .map(|chunk_text| {
+            for (idx, unit_text) in units.iter().enumerate() {
+                if chunk_text.contains(unit_text.as_str())
+                    || unit_text.contains(chunk_text.as_str())
+                {
+                    let (_, sn, sk, note) = &meta[idx];
+                    return (sn.clone(), *sk, note.clone());
+                }
+            }
+            // Fallback: no match found — use neutral defaults.
+            (None, false, None)
+        })
+        .collect()
+}
+
+/// Returns `(is_heading, text)` pairs for all paragraphs.
+/// A paragraph is treated as a heading if it is a single line ≤ 120 chars.
+/// Heading entries update section state but are never emitted as retrieval chunks.
+fn collect_units_with_headings(text: &str, cfg: &ChunkConfig) -> Vec<(bool, String)> {
+    let mut result: Vec<(bool, String)> = Vec::new();
     let mut acc = String::new();
+
+    let flush = |acc: &mut String, result: &mut Vec<(bool, String)>, cfg: &ChunkConfig| {
+        if acc.is_empty() {
+            return;
+        }
+        if acc.chars().count() >= cfg.min_chunk_len {
+            result.push((false, std::mem::take(acc)));
+        } else if let Some((_, last)) = result.last_mut() {
+            last.push('\n');
+            last.push_str(acc);
+            acc.clear();
+        }
+    };
 
     for para in text.split("\n\n") {
         let para = para.trim();
@@ -186,40 +294,41 @@ fn collect_units(text: &str, cfg: &ChunkConfig) -> Vec<String> {
             continue;
         }
 
-        if para.chars().count() <= cfg.chunk_size {
+        // A heading is a single line, short (≤80 chars), and does not end with
+        // sentence-terminating punctuation (.  !  ?).  This avoids treating short
+        // content sentences as section boundaries.
+        let trimmed_para = para.trim_end();
+        let is_heading = para.lines().count() == 1
+            && para.chars().count() <= 80
+            && !trimmed_para.ends_with('.')
+            && !trimmed_para.ends_with('!')
+            && !trimmed_para.ends_with('?');
+
+        if is_heading {
+            flush(&mut acc, &mut result, cfg);
+            result.push((true, para.to_string()));
+        } else if para.chars().count() <= cfg.chunk_size {
             if para.chars().count() < cfg.min_chunk_len {
                 if !acc.is_empty() {
                     acc.push('\n');
                 }
                 acc.push_str(para);
             } else {
-                flush_acc(&mut acc, &mut units, cfg);
-                units.push(para.to_string());
+                flush(&mut acc, &mut result, cfg);
+                result.push((false, para.to_string()));
             }
         } else {
-            flush_acc(&mut acc, &mut units, cfg);
-            split_sentences(para, cfg, &mut units);
+            flush(&mut acc, &mut result, cfg);
+            let mut out: Vec<String> = Vec::new();
+            split_sentences(para, cfg, &mut out);
+            for s in out {
+                result.push((false, s));
+            }
         }
     }
 
-    flush_acc(&mut acc, &mut units, cfg);
-    units
-}
-
-fn flush_acc(acc: &mut String, units: &mut Vec<String>, cfg: &ChunkConfig) {
-    if acc.is_empty() {
-        return;
-    }
-    if acc.chars().count() >= cfg.min_chunk_len {
-        units.push(std::mem::take(acc));
-    } else if let Some(last) = units.last_mut() {
-        last.push('\n');
-        last.push_str(acc);
-        acc.clear();
-    } else {
-        // Nothing to merge into — keep until there is something
-        // (will be re-visited on the next paragraph)
-    }
+    flush(&mut acc, &mut result, cfg);
+    result
 }
 
 /// Split text at sentence boundaries (`.`, `!`, `?` followed by whitespace + letter).
@@ -339,7 +448,7 @@ mod tests {
             min_chunk_len: 5,
             ..Default::default()
         };
-        let chunks = split_text("Hello world foo bar baz", "test.txt", &cfg);
+        let chunks = split_text("Hello world foo bar baz", "test.txt", &cfg, None);
         assert!(!chunks.is_empty());
         assert!(chunks[0].text.chars().count() <= 10);
     }
@@ -354,7 +463,7 @@ mod tests {
             strategy: ChunkStrategy::Paragraph,
             ..Default::default()
         };
-        let chunks = split_text(text, "test.txt", &cfg);
+        let chunks = split_text(text, "test.txt", &cfg, None);
         // All three short paragraphs fit in one 200-char chunk.
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].text.contains("First paragraph"));
@@ -373,7 +482,7 @@ mod tests {
             strategy: ChunkStrategy::Paragraph,
             ..Default::default()
         };
-        let chunks = split_text(&text, "test.txt", &cfg);
+        let chunks = split_text(&text, "test.txt", &cfg, None);
         assert!(!chunks.is_empty());
         // Chunks should not cut mid-paragraph if they fit
         for chunk in &chunks {
@@ -391,7 +500,7 @@ mod tests {
             strategy: ChunkStrategy::Paragraph,
             ..Default::default()
         };
-        let chunks = split_text(text, "test.txt", &cfg);
+        let chunks = split_text(text, "test.txt", &cfg, None);
         // Middle chunks should have surrounding that's longer than just the text
         if chunks.len() > 1 {
             let middle = &chunks[1];

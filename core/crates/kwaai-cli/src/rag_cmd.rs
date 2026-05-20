@@ -55,6 +55,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             chunk_strategy,
             surr_mode,
             doc_meta,
+            doc_schema,
             kb,
         } => {
             cmd_ingest(
@@ -69,6 +70,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 chunk_strategy,
                 surr_mode,
                 doc_meta,
+                doc_schema,
                 kb,
             )
             .await
@@ -146,6 +148,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             seed_file,
             chunk_strategy,
             doc_meta,
+            doc_schema,
             yes,
         } => {
             cmd_rebuild(
@@ -158,6 +161,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 seed_file,
                 chunk_strategy,
                 doc_meta,
+                doc_schema,
                 yes,
             )
             .await
@@ -483,6 +487,7 @@ async fn cmd_ingest(
     chunk_strategy: String,
     surr_mode: String,
     doc_meta_path: Option<std::path::PathBuf>,
+    doc_schema_path: Option<std::path::PathBuf>,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -527,6 +532,23 @@ async fn cmd_ingest(
         if let Some(path) = doc_meta_path {
             cfg.doc_meta = load_doc_meta(&path)?;
             print_info(&format!("Doc-meta loaded: {} entries", cfg.doc_meta.len()));
+        }
+
+        if let Some(path) = doc_schema_path {
+            let schema = kwaai_rag::doc_schema::load_doc_schema(&path)?;
+            let skip_count = schema.sections.iter().filter(|s| s.skip).count();
+            let note_count = schema
+                .sections
+                .iter()
+                .filter(|s| s.narrator_note.is_some())
+                .count();
+            print_info(&format!(
+                "Doc-schema loaded: {} sections ({} skip, {} with narrator note)",
+                schema.sections.len(),
+                skip_count,
+                note_count
+            ));
+            cfg.doc_schema = Some(schema);
         }
 
         if extract_entities {
@@ -1421,6 +1443,7 @@ async fn cmd_rebuild(
     seed_file: Option<std::path::PathBuf>,
     chunk_strategy: String,
     doc_meta: Option<std::path::PathBuf>,
+    doc_schema: Option<std::path::PathBuf>,
     yes: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -1466,6 +1489,7 @@ async fn cmd_rebuild(
             chunk_strategy,
             "truncated".to_string(),
             doc_meta,
+            doc_schema,
             kb.clone(),
         )
         .await?;
@@ -2085,6 +2109,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         text: cm.text.clone(),
                         surrounding: cm.surrounding.clone(),
                         page_num: cm.page_num,
+                        section_name: cm.section_name.clone(),
+                        skip_extraction: cm.skip_extraction,
+                        section_note: cm.section_note.clone(),
                     })
                     .collect();
                 let ids: Vec<i64> = all_chunks.iter().map(|(id, _)| *id).collect();
@@ -3332,9 +3359,11 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                 } else {
                     println!("  Graph score:   {:.1}%", report.graph_score * 100.0);
                     println!("  Queries run:   {}", report.query_count);
-                    println!("  Content queries (description-based): {:.0}%  Name queries: {:.0}%",
+                    println!(
+                        "  Content queries (description-based): {:.0}%  Name queries: {:.0}%",
                         report.content_query_fraction * 100.0,
-                        (1.0 - report.content_query_fraction) * 100.0);
+                        (1.0 - report.content_query_fraction) * 100.0
+                    );
                     println!();
                     println!("  Entity-space retrieval (primary — query → entity embeddings):");
                     println!("    Recall@1:  {:.1}%", report.entity_recall_at_1 * 100.0);
@@ -3908,9 +3937,7 @@ async fn cmd_export(output_dir: std::path::PathBuf, kb: String) -> Result<()> {
         };
         print_success(&format!(
             "Vault written — {} entity files, {} relation links{}",
-            stats.entities,
-            stats.relations,
-            stale_msg
+            stats.entities, stats.relations, stale_msg
         ));
         println!(
             "  Open {} in Obsidian and enable Graph View (Ctrl/Cmd+G).",

@@ -1,0 +1,21 @@
+document_title: "District Six - Lest We Forget"
+default_narrator: "Yousuf (Joe) Rassool"
+
+sections:
+  - pattern: "Editor's Note"
+    skip: false
+    narrator_note: >
+      IMPORTANT: This section is the Editor's Note — it was written by the EDITOR,
+      not by the memoir author Yousuf (Joe) Rassool. The pronoun "I" in this section
+      refers to the editor. Do NOT attribute first-person statements in this section
+      to Yousuf Rassool. If the editor mentions a person by name, extract that person
+      normally, but do not create relations from "I" to Yousuf Rassool.
+
+  - pattern: "INDEX"
+    skip: true
+
+  - pattern: "APPENDIX"
+    skip: true
+
+  - pattern: "ENDNOTES"
+    skip: true

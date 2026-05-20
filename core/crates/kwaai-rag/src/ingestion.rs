@@ -8,6 +8,7 @@ use anyhow::Result;
 use tracing::{debug, info, warn};
 
 use crate::chunker::{split_text, Chunk, ChunkConfig};
+use crate::doc_schema::DocSchema;
 use crate::embedder::EmbedClient;
 use crate::graph::{
     entity_id, extract_from_text, EntityNode, ExtractedEntity, ExtractedRelation, GraphStore,
@@ -51,6 +52,8 @@ pub struct IngestConfig {
     /// The matched prefix is prepended to each chunk's text before embedding and storage.
     /// Loaded from a YAML file via --doc-meta on rag ingest/sync.
     pub doc_meta: HashMap<String, String>,
+    /// Optional document schema — controls section tagging, skip flags, and narrator overrides.
+    pub doc_schema: Option<DocSchema>,
 }
 
 impl IngestConfig {
@@ -61,6 +64,7 @@ impl IngestConfig {
             upload_batch_size: 64,
             graph: None,
             doc_meta: HashMap::new(),
+            doc_schema: None,
         }
     }
 }
@@ -82,7 +86,7 @@ pub async fn ingest_text(
     upload_fn: impl Fn(Vec<(i64, Vec<f32>)>) -> Pin<Box<dyn Future<Output = Result<usize>> + Send>>,
     progress: Option<impl Fn(usize, usize)>,
 ) -> Result<IngestionResult> {
-    let raw_chunks = split_text(text, doc_name, &cfg.chunk_cfg);
+    let raw_chunks = split_text(text, doc_name, &cfg.chunk_cfg, cfg.doc_schema.as_ref());
     let chunks = apply_doc_meta(raw_chunks, doc_name, &cfg.doc_meta);
     let total = chunks.len();
     info!(doc = doc_name, chunks = total, "ingesting document");
@@ -120,6 +124,9 @@ pub async fn ingest_text(
                 surrounding: c.surrounding.clone(),
                 page_num: c.page_num,
                 ingested_at: ingested_at.clone(),
+                section_name: c.section_name.clone(),
+                skip_extraction: c.skip_extraction,
+                section_note: c.section_note.clone(),
             });
             ids.push(c.id);
         }
@@ -252,9 +259,18 @@ pub async fn extract_and_store_entities_pub(
 
     // Spawn one extraction task per chunk; semaphore caps concurrency.
     for (chunk, &chunk_id) in chunks.iter().zip(chunk_ids.iter()) {
+        if chunk.skip_extraction {
+            debug!(
+                chunk_id,
+                section = ?chunk.section_name,
+                "skipping extraction for flagged section"
+            );
+            continue;
+        }
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
         let tx = tx.clone();
         let text = chunk.text.clone();
+        let section_note = chunk.section_note.clone();
         let urls = urls.clone();
         let url_counter = url_counter.clone();
         let model = model.clone();
@@ -265,21 +281,22 @@ pub async fn extract_and_store_entities_pub(
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len();
             let url = &urls[idx];
 
-            let (entities, relations) = match extract_from_text(&text, url, &model).await {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!("entity extraction error for chunk {chunk_id}: {e}");
-                    let _ = tx
-                        .send(ChunkResult {
-                            chunk_id,
-                            entities: vec![],
-                            relations: vec![],
-                            embeddings: vec![],
-                        })
-                        .await;
-                    return;
-                }
-            };
+            let (entities, relations) =
+                match extract_from_text(&text, section_note.as_deref(), url, &model).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!("entity extraction error for chunk {chunk_id}: {e}");
+                        let _ = tx
+                            .send(ChunkResult {
+                                chunk_id,
+                                entities: vec![],
+                                relations: vec![],
+                                embeddings: vec![],
+                            })
+                            .await;
+                        return;
+                    }
+                };
 
             let embeddings = if entities.is_empty() {
                 vec![]
@@ -328,8 +345,17 @@ async fn extract_and_store_entities(
     graph_cfg: &GraphIngestConfig,
 ) {
     for (chunk, &chunk_id) in chunks.iter().zip(chunk_ids.iter()) {
+        if chunk.skip_extraction {
+            debug!(
+                chunk_id,
+                section = ?chunk.section_name,
+                "skipping extraction for flagged section"
+            );
+            continue;
+        }
         let (entities, relations) = match extract_from_text(
             &chunk.text,
+            chunk.section_note.as_deref(),
             &graph_cfg.inference_url,
             &graph_cfg.model,
         )

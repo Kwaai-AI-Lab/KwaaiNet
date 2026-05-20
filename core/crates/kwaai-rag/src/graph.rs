@@ -102,9 +102,20 @@ pub const RELATION_TYPES: &[&str] = &[
 
 /// Familial relation types — only valid between two Person entities.
 pub const FAMILIAL_RELS: &[&str] = &[
-    "parent_of", "child_of", "spouse_of", "sibling_of", "half_sibling_of",
-    "grandparent_of", "grandchild_of", "uncle_of", "aunt_of",
-    "niece_of", "nephew_of", "cousin_of", "foster_parent_of", "foster_child_of",
+    "parent_of",
+    "child_of",
+    "spouse_of",
+    "sibling_of",
+    "half_sibling_of",
+    "grandparent_of",
+    "grandchild_of",
+    "uncle_of",
+    "aunt_of",
+    "niece_of",
+    "nephew_of",
+    "cousin_of",
+    "foster_parent_of",
+    "foster_child_of",
 ];
 
 /// Asymmetric familial relation → its logical inverse.
@@ -112,15 +123,15 @@ pub const FAMILIAL_RELS: &[&str] = &[
 /// Symmetric relations (spouse_of, sibling_of, cousin_of, half_sibling_of) are not listed —
 /// they are stored in both directions by the caller.
 const FAMILIAL_INVERSE: &[(&str, &str)] = &[
-    ("parent_of",       "child_of"),
-    ("child_of",        "parent_of"),
-    ("grandparent_of",  "grandchild_of"),
-    ("grandchild_of",   "grandparent_of"),
-    ("uncle_of",        "nephew_of"),   // approximate — gender of nephew/niece unknown here
-    ("aunt_of",         "niece_of"),
-    ("nephew_of",       "uncle_of"),
-    ("niece_of",        "aunt_of"),
-    ("foster_parent_of","foster_child_of"),
+    ("parent_of", "child_of"),
+    ("child_of", "parent_of"),
+    ("grandparent_of", "grandchild_of"),
+    ("grandchild_of", "grandparent_of"),
+    ("uncle_of", "nephew_of"), // approximate — gender of nephew/niece unknown here
+    ("aunt_of", "niece_of"),
+    ("nephew_of", "uncle_of"),
+    ("niece_of", "aunt_of"),
+    ("foster_parent_of", "foster_child_of"),
     ("foster_child_of", "foster_parent_of"),
 ];
 
@@ -218,13 +229,38 @@ pub fn normalize_name(s: &str) -> String {
 /// Canonical ordered pair — always (smaller, larger) — for dedup seen-sets.
 #[inline]
 fn ord_pair(a: i64, b: i64) -> (i64, i64) {
-    if a < b { (a, b) } else { (b, a) }
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 const HONORIFICS: &[&str] = &[
-    "dr", "mr", "mrs", "ms", "miss", "prof", "professor", "rev", "reverend", "sir",
-    "haji", "hajj", "maulvi", "maulana", "imam", "sheikh", "shaykh",
-    "auntie", "aunt", "uncle", "oom", "tannie", "oupa", "my",
+    "dr",
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "prof",
+    "professor",
+    "rev",
+    "reverend",
+    "sir",
+    "haji",
+    "hajj",
+    "maulvi",
+    "maulana",
+    "imam",
+    "sheikh",
+    "shaykh",
+    "auntie",
+    "aunt",
+    "uncle",
+    "oom",
+    "tannie",
+    "oupa",
+    "my",
 ];
 
 /// Normalize then strip all leading and trailing honorific tokens.
@@ -512,8 +548,20 @@ impl GraphStore {
         }
         wtxn.commit()?;
 
-        update_adj(&mut self.adj, src_id, dst_id, relation_type, merged.strength);
-        update_adj(&mut self.adj, dst_id, src_id, relation_type, merged.strength);
+        update_adj(
+            &mut self.adj,
+            src_id,
+            dst_id,
+            relation_type,
+            merged.strength,
+        );
+        update_adj(
+            &mut self.adj,
+            dst_id,
+            src_id,
+            relation_type,
+            merged.strength,
+        );
         Ok(())
     }
 
@@ -901,11 +949,12 @@ impl GraphStore {
                             new_aliases.push(a.clone());
                         }
                     }
-                    let merged_description = if alias_description.len() > canonical.description.len() {
-                        alias_description.clone()
-                    } else {
-                        canonical.description.clone()
-                    };
+                    let merged_description =
+                        if alias_description.len() > canonical.description.len() {
+                            alias_description.clone()
+                        } else {
+                            canonical.description.clone()
+                        };
                     let updated = EntityNode {
                         mention_count: canonical.mention_count + alias_mention_count,
                         aliases: new_aliases,
@@ -1086,22 +1135,18 @@ impl GraphStore {
 
         let mut strength_updates: Vec<(Vec<u8>, RelationRecord)> = Vec::new();
         for mut rel in all_rels_fresh {
-            let src_chunks: std::collections::HashSet<i64> = self
-                .chunks_for_entity(rel.src_id)
-                .iter()
-                .copied()
-                .collect();
-            let dst_chunks: std::collections::HashSet<i64> = self
-                .chunks_for_entity(rel.dst_id)
-                .iter()
-                .copied()
-                .collect();
+            let src_chunks: std::collections::HashSet<i64> =
+                self.chunks_for_entity(rel.src_id).iter().copied().collect();
+            let dst_chunks: std::collections::HashSet<i64> =
+                self.chunks_for_entity(rel.dst_id).iter().copied().collect();
             let shared: usize = src_chunks.intersection(&dst_chunks).count();
             let new_strength = if shared > 0 {
                 (shared as f32 / 10.0).min(1.0)
             } else {
                 // No shared chunks (e.g. dream-added relation) — use evidence_chunk_ids count
-                (rel.evidence_chunk_ids.len() as f32 / 10.0).min(1.0).max(0.1)
+                (rel.evidence_chunk_ids.len() as f32 / 10.0)
+                    .min(1.0)
+                    .max(0.1)
             };
             if (new_strength - rel.strength).abs() > 0.001 {
                 rel.strength = new_strength;
@@ -1162,7 +1207,8 @@ impl GraphStore {
         let mut suspect_keys: Vec<Vec<u8>> = Vec::new();
 
         // Collect unique pairs (avoid double-counting A↔B and B↔A)
-        let mut seen_pairs: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        let mut seen_pairs: std::collections::HashSet<(i64, i64)> =
+            std::collections::HashSet::new();
         for rel in &spouse_rels {
             let pair = if rel.src_id < rel.dst_id {
                 (rel.src_id, rel.dst_id)
@@ -1174,12 +1220,26 @@ impl GraphStore {
             }
             seen_pairs.insert(pair);
 
-            let ga = self.nodes.get(&rel.src_id).and_then(|n| n.gender.as_deref());
-            let gb = self.nodes.get(&rel.dst_id).and_then(|n| n.gender.as_deref());
+            let ga = self
+                .nodes
+                .get(&rel.src_id)
+                .and_then(|n| n.gender.as_deref());
+            let gb = self
+                .nodes
+                .get(&rel.dst_id)
+                .and_then(|n| n.gender.as_deref());
             if let (Some(ga), Some(gb)) = (ga, gb) {
                 if ga == gb {
-                    let na = self.nodes.get(&rel.src_id).map(|n| n.name.as_str()).unwrap_or("?");
-                    let nb = self.nodes.get(&rel.dst_id).map(|n| n.name.as_str()).unwrap_or("?");
+                    let na = self
+                        .nodes
+                        .get(&rel.src_id)
+                        .map(|n| n.name.as_str())
+                        .unwrap_or("?");
+                    let nb = self
+                        .nodes
+                        .get(&rel.dst_id)
+                        .map(|n| n.name.as_str())
+                        .unwrap_or("?");
                     tracing::warn!(
                         "removing suspect spouse_of: {} ({}) ↔ {} ({}) — same gender (likely hallucination)",
                         na, ga, nb, gb
@@ -1202,7 +1262,9 @@ impl GraphStore {
                     .iter()?
                     .filter_map(|r| r.ok())
                     .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
-                    .filter(|r| r.relation_type == "sibling_of" || r.relation_type == "half_sibling_of")
+                    .filter(|r| {
+                        r.relation_type == "sibling_of" || r.relation_type == "half_sibling_of"
+                    })
                     .collect()
             };
             let sibling_pairs: std::collections::HashSet<(i64, i64)> = all_sibling_rels
@@ -1262,31 +1324,49 @@ impl GraphStore {
             if parent_set.contains(&(b, a)) && a < b {
                 // Both A parent_of B and B parent_of A — paradox.
                 // Determine which is the child by checking descriptions.
-                let a_desc = self.nodes.get(&a).map(|n| n.description.to_lowercase()).unwrap_or_default();
-                let b_name_lc = self.nodes.get(&b).map(|n| n.name.to_lowercase()).unwrap_or_default();
-                let b_desc = self.nodes.get(&b).map(|n| n.description.to_lowercase()).unwrap_or_default();
-                let a_name_lc = self.nodes.get(&a).map(|n| n.name.to_lowercase()).unwrap_or_default();
+                let a_desc = self
+                    .nodes
+                    .get(&a)
+                    .map(|n| n.description.to_lowercase())
+                    .unwrap_or_default();
+                let b_name_lc = self
+                    .nodes
+                    .get(&b)
+                    .map(|n| n.name.to_lowercase())
+                    .unwrap_or_default();
+                let b_desc = self
+                    .nodes
+                    .get(&b)
+                    .map(|n| n.description.to_lowercase())
+                    .unwrap_or_default();
+                let a_name_lc = self
+                    .nodes
+                    .get(&a)
+                    .map(|n| n.name.to_lowercase())
+                    .unwrap_or_default();
 
                 // Does A's description say it is a child of B?
-                let a_is_child = ["son of", "daughter of", "child of", "born to"]
-                    .iter()
-                    .any(|&cue| {
-                        a_desc.contains(cue)
-                            && (a_desc.contains(&b_name_lc)
-                                || b_name_lc.split_whitespace().any(|tok| {
-                                    tok.len() >= 4 && a_desc.contains(tok)
-                                }))
-                    });
+                let a_is_child =
+                    ["son of", "daughter of", "child of", "born to"]
+                        .iter()
+                        .any(|&cue| {
+                            a_desc.contains(cue)
+                                && (a_desc.contains(&b_name_lc)
+                                    || b_name_lc
+                                        .split_whitespace()
+                                        .any(|tok| tok.len() >= 4 && a_desc.contains(tok)))
+                        });
                 // Does B's description say it is a child of A?
-                let b_is_child = ["son of", "daughter of", "child of", "born to"]
-                    .iter()
-                    .any(|&cue| {
-                        b_desc.contains(cue)
-                            && (b_desc.contains(&a_name_lc)
-                                || a_name_lc.split_whitespace().any(|tok| {
-                                    tok.len() >= 4 && b_desc.contains(tok)
-                                }))
-                    });
+                let b_is_child =
+                    ["son of", "daughter of", "child of", "born to"]
+                        .iter()
+                        .any(|&cue| {
+                            b_desc.contains(cue)
+                                && (b_desc.contains(&a_name_lc)
+                                    || a_name_lc
+                                        .split_whitespace()
+                                        .any(|tok| tok.len() >= 4 && b_desc.contains(tok)))
+                        });
 
                 let (wrong_src, wrong_dst) = match (a_is_child, b_is_child) {
                     (true, false) => (a, b), // A is the child → A parent_of B is wrong
@@ -1295,12 +1375,24 @@ impl GraphStore {
                         // Ambiguous — keep the edge from the higher-mention entity (main subject)
                         let mc_a = self.nodes.get(&a).map(|n| n.mention_count).unwrap_or(0);
                         let mc_b = self.nodes.get(&b).map(|n| n.mention_count).unwrap_or(0);
-                        if mc_a >= mc_b { (b, a) } else { (a, b) }
+                        if mc_a >= mc_b {
+                            (b, a)
+                        } else {
+                            (a, b)
+                        }
                     }
                 };
 
-                let na = self.nodes.get(&wrong_src).map(|n| n.name.as_str()).unwrap_or("?");
-                let nb = self.nodes.get(&wrong_dst).map(|n| n.name.as_str()).unwrap_or("?");
+                let na = self
+                    .nodes
+                    .get(&wrong_src)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
+                let nb = self
+                    .nodes
+                    .get(&wrong_dst)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
                 tracing::warn!(
                     "parent_of paradox: removing bogus '{na}' parent_of '{nb}' \
                      (description indicates direction is reversed)"
@@ -1364,20 +1456,64 @@ impl GraphStore {
     pub fn find_dedup_candidates(&self, threshold: f32) -> Vec<(i64, i64, f32)> {
         const DEDUP_STOP: &[&str] = &[
             // articles / prepositions
-            "the", "and", "of", "in", "a", "an", "for", "at", "by", "to",
+            "the",
+            "and",
+            "of",
+            "in",
+            "a",
+            "an",
+            "for",
+            "at",
+            "by",
+            "to",
             // honorifics
-            "dr", "mr", "mrs", "ms", "prof", "sir",
+            "dr",
+            "mr",
+            "mrs",
+            "ms",
+            "prof",
+            "sir",
             // geographic generics
-            "north", "south", "east", "west", "new", "old", "cape", "great",
-            "lower", "upper", "central",
+            "north",
+            "south",
+            "east",
+            "west",
+            "new",
+            "old",
+            "cape",
+            "great",
+            "lower",
+            "upper",
+            "central",
             // institutional generics (the main false-match offenders)
-            "union", "street", "road", "avenue", "lane",
-            "school", "institute", "college", "university",
-            "club", "party", "movement", "committee",
-            "association", "council", "congress", "league",
-            "society", "church", "hall", "high", "primary", "secondary",
+            "union",
+            "street",
+            "road",
+            "avenue",
+            "lane",
+            "school",
+            "institute",
+            "college",
+            "university",
+            "club",
+            "party",
+            "movement",
+            "committee",
+            "association",
+            "council",
+            "congress",
+            "league",
+            "society",
+            "church",
+            "hall",
+            "high",
+            "primary",
+            "secondary",
             // common auxiliaries / pronouns
-            "its", "was", "his", "her",
+            "its",
+            "was",
+            "his",
+            "her",
         ];
         let stop = DEDUP_STOP;
 
@@ -1505,7 +1641,10 @@ impl GraphStore {
                 .adj
                 .iter()
                 .map(|(&id, edges)| {
-                    (id, edges.iter().map(|(nbr, _, _)| *nbr).collect::<HashSet<_>>())
+                    (
+                        id,
+                        edges.iter().map(|(nbr, _, _)| *nbr).collect::<HashSet<_>>(),
+                    )
                 })
                 .collect();
 
@@ -1547,8 +1686,7 @@ impl GraphStore {
                         Some(n) => n,
                         None => continue,
                     };
-                    let other_word_count =
-                        normalize_name(&other.name).split_whitespace().count();
+                    let other_word_count = normalize_name(&other.name).split_whitespace().count();
                     // Only treat `id` as the subset (other must have strictly more words)
                     if other_word_count <= my_all_word_count {
                         continue;
@@ -1646,25 +1784,86 @@ impl GraphStore {
         // Standalone role words: meaningful on their own as a person reference.
         // Honorifics (dr, mr, etc.) are excluded — they only make sense before a name.
         const STANDALONE_ROLES: &[&str] = &[
-            "grandpa", "grandma", "grandfather", "grandmother", "granddad",
-            "dad", "father", "mom", "mother", "mum",
-            "cousin", "brother", "sister", "nephew", "niece",
-            "narrator", "author", "writer",
-            "head", "chief",
-            "she", "he", "they",
+            "grandpa",
+            "grandma",
+            "grandfather",
+            "grandmother",
+            "granddad",
+            "dad",
+            "father",
+            "mom",
+            "mother",
+            "mum",
+            "cousin",
+            "brother",
+            "sister",
+            "nephew",
+            "niece",
+            "narrator",
+            "author",
+            "writer",
+            "head",
+            "chief",
+            "she",
+            "he",
+            "they",
         ];
         // All words allowed in a role-entity name (role + connective filler).
         const ROLE_WORDS: &[&str] = &[
-            "dr", "mr", "mrs", "ms", "miss", "prof", "professor", "rev", "reverend", "sir",
-            "haji", "hajj", "maulvi", "maulana", "imam", "sheikh", "shaykh",
-            "auntie", "aunt", "uncle", "oom", "tannie", "oupa",
-            "grandpa", "grandma", "grandfather", "grandmother", "granddad",
-            "dad", "father", "mom", "mother", "mum",
-            "cousin", "brother", "sister", "nephew", "niece",
-            "the", "a", "our", "her", "his", "my",
-            "narrator", "author", "writer",
-            "head", "chief", "senior",
-            "she", "he", "they", "it",
+            "dr",
+            "mr",
+            "mrs",
+            "ms",
+            "miss",
+            "prof",
+            "professor",
+            "rev",
+            "reverend",
+            "sir",
+            "haji",
+            "hajj",
+            "maulvi",
+            "maulana",
+            "imam",
+            "sheikh",
+            "shaykh",
+            "auntie",
+            "aunt",
+            "uncle",
+            "oom",
+            "tannie",
+            "oupa",
+            "grandpa",
+            "grandma",
+            "grandfather",
+            "grandmother",
+            "granddad",
+            "dad",
+            "father",
+            "mom",
+            "mother",
+            "mum",
+            "cousin",
+            "brother",
+            "sister",
+            "nephew",
+            "niece",
+            "the",
+            "a",
+            "our",
+            "her",
+            "his",
+            "my",
+            "narrator",
+            "author",
+            "writer",
+            "head",
+            "chief",
+            "senior",
+            "she",
+            "he",
+            "they",
+            "it",
         ];
 
         // Build neighbour sets, excluding hyper-popular hubs (> 25 connecting
@@ -1808,9 +2007,15 @@ impl GraphStore {
 
     /// Retrieve the stored document titles. Returns an empty vec if none are stored.
     pub fn get_document_titles(&self) -> Vec<String> {
-        let Ok(rtxn) = self.db.begin_read() else { return vec![] };
-        let Ok(table) = rtxn.open_table(METADATA_TABLE) else { return vec![] };
-        let Ok(Some(v)) = table.get("document_titles") else { return vec![] };
+        let Ok(rtxn) = self.db.begin_read() else {
+            return vec![];
+        };
+        let Ok(table) = rtxn.open_table(METADATA_TABLE) else {
+            return vec![];
+        };
+        let Ok(Some(v)) = table.get("document_titles") else {
+            return vec![];
+        };
         serde_json::from_str(v.value()).unwrap_or_default()
     }
 
@@ -1906,14 +2111,20 @@ impl GraphStore {
 /// ingestion can continue without hard errors.
 pub async fn extract_from_text(
     text: &str,
+    section_note: Option<&str>,
     inference_url: &str,
     model: &str,
 ) -> Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)> {
     let entity_list = ENTITY_TYPES.join(", ");
     let relation_list = RELATION_TYPES.join(", ");
 
+    let section_context = section_note
+        .map(|note| format!("DOCUMENT CONTEXT: {note}\n\n"))
+        .unwrap_or_default();
+
     let prompt = format!(
-        "You are a precise knowledge extraction engine.\n\
+        "{section_context}\
+         You are a precise knowledge extraction engine.\n\
          Extract named entities and relationships from the text below.\n\
          Return ONLY valid JSON matching this schema (no markdown, no explanation):\n\
          {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\"}},...],\

@@ -1,6 +1,7 @@
 pub mod bm25;
 pub mod cache;
 pub mod chunker;
+pub mod doc_schema;
 pub mod document;
 pub mod dream;
 pub mod dream_tasks;

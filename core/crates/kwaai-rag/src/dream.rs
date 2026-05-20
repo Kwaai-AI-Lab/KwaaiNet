@@ -354,7 +354,17 @@ pub async fn run_dream_cycle(
             let evidence_text: String = chunks
                 .iter()
                 .flatten()
-                .map(|c| c.text.as_str())
+                .map(|c| {
+                    let mut s = String::new();
+                    if let Some(ref sec) = c.section_name {
+                        s.push_str(&format!("[Section: {sec}]\n"));
+                    }
+                    if let Some(ref note) = c.section_note {
+                        s.push_str(&format!("[Note: {note}]\n"));
+                    }
+                    s.push_str(&c.text);
+                    s
+                })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
             if evidence_text.is_empty() {
@@ -520,7 +530,9 @@ pub async fn run_dream_cycle(
                 let mut upsert_ok = false;
                 for &cid in chunks_to_use {
                     match store.upsert_relation(eid, dst_id, rel_type, cid) {
-                        Ok(()) => { upsert_ok = true; }
+                        Ok(()) => {
+                            upsert_ok = true;
+                        }
                         Err(e) => {
                             cycle_errors.push(format!("upsert_relation {eid}→{dst_id}: {e}"));
                         }
@@ -607,9 +619,7 @@ pub async fn run_dream_cycle(
         match store.sanitize_relations() {
             Ok((removed, _added, _recomputed, gendered)) => {
                 if removed > 0 || gendered > 0 {
-                    tracing::debug!(
-                        "sanitize: removed={removed} gendered={gendered}"
-                    );
+                    tracing::debug!("sanitize: removed={removed} gendered={gendered}");
                 }
             }
             Err(e) => cycle_errors.push(format!("sanitize_relations: {e}")),

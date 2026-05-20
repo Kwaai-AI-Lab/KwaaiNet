@@ -34,6 +34,15 @@ pub struct ChunkMeta {
     pub surrounding: String,
     pub page_num: Option<u32>,
     pub ingested_at: String,
+    /// Section heading active when this chunk was produced (from DocSchema).
+    #[serde(default)]
+    pub section_name: Option<String>,
+    /// True if this chunk's section is marked skip=true in the DocSchema.
+    #[serde(default)]
+    pub skip_extraction: bool,
+    /// Narrator note for this chunk's section — injected into extraction prompts.
+    #[serde(default)]
+    pub section_note: Option<String>,
 }
 
 pub struct MetaStore {

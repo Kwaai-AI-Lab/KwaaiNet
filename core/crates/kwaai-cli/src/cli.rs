@@ -1093,6 +1093,10 @@ pub enum RagAction {
         #[arg(long, value_name = "YAML_FILE")]
         doc_meta: Option<std::path::PathBuf>,
 
+        /// YAML file describing the document's section structure (skip zones, narrator overrides).
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_schema: Option<std::path::PathBuf>,
+
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
@@ -1260,6 +1264,10 @@ pub enum RagAction {
         /// YAML file mapping doc-name substrings to metadata prefixes prepended to each chunk
         #[arg(long, value_name = "YAML_FILE")]
         doc_meta: Option<std::path::PathBuf>,
+
+        /// YAML file describing the document's section structure (skip zones, narrator overrides).
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_schema: Option<std::path::PathBuf>,
 
         /// Skip the destroy confirmation prompt
         #[arg(long, short = 'y')]
