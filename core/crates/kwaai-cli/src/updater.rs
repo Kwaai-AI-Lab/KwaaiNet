@@ -146,7 +146,6 @@ impl UpdateChecker {
             let log_path = log.to_string_lossy().into_owned();
             let bat = std::env::temp_dir().join("kwaainet-update.bat");
 
-            // Determine the install directory (same dir as the running kwaainet.exe)
             let install_dir = std::env::current_exe()
                 .ok()
                 .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -156,185 +155,74 @@ impl UpdateChecker {
                         .unwrap_or_default()
                 });
 
-            // Determine whether the CUDA *runtime* is already present so we can
-            // take the fast exe-only swap path (which preserves existing DLLs)
-            // instead of the full installer.
-            //
-            // nvidia-smi only proves the *driver* is installed, NOT the CUDA
-            // runtime (cublas, cudart, …).  A machine with just the GPU driver
-            // and no toolkit would get a CUDA binary it can't run.  We therefore
-            // check only signals that confirm the runtime DLLs are available:
-            //   1. %CUDA_PATH% env var — set by the CUDA toolkit installer
-            //   2. %CUDA_HOME% env var — common alternative
-            //   3. Standard toolkit install dir exists — catches shells (e.g.
-            //      Git Bash) that don't propagate Windows system env vars
-            //   4. cublas*.dll already in the kwaainet install dir — bundled by
-            //      a previous full CUDA update
-            //
-            // nvidia-smi is checked separately *after* this block and is only
-            // used to annotate the reason string, not to gate the path choice.
-            print!("  Detecting CUDA runtime…");
+            // Download the standard Windows binary zip directly.
+            // Note: a Windows-specific CUDA build is not produced by CI; the
+            // standard binary is the only artifact available for Windows.
+            let archive_url = format!(
+                "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc.zip"
+            );
+            let zip_path = std::env::temp_dir().join("kwaainet-update.zip");
+            print!("  Downloading v{version} for Windows…");
             let _ = std::io::Write::flush(&mut std::io::stdout());
-            let gpu_present = nvidia_smi_async().await;
-            let cuda_installed = if std::env::var_os("CUDA_PATH").is_some() {
-                println!(" CUDA_PATH set");
-                true
-            } else if std::env::var_os("CUDA_HOME").is_some() {
-                println!(" CUDA_HOME set");
-                true
-            } else if std::path::Path::new(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
-                .exists()
-            {
-                println!(" CUDA toolkit dir found");
-                true
-            } else if std::fs::read_dir(&install_dir)
-                .ok()
-                .map(|dir| {
-                    dir.filter_map(|e| e.ok()).any(|e| {
-                        let name = e.file_name().to_string_lossy().to_lowercase();
-                        name.starts_with("cublas") && name.ends_with(".dll")
-                    })
-                })
-                .unwrap_or(false)
-            {
-                println!(" cublas DLLs found");
-                true
-            } else {
-                if gpu_present {
-                    println!(" GPU detected but no CUDA runtime — using CPU installer");
-                } else {
-                    println!(" no GPU/CUDA detected");
-                }
-                false
-            };
-
-            // For the full (non-CUDA) path we need the PS1 installer on disk before
-            // writing the batch file; download it now while we're still async.
-            let ps1_tmp: Option<PathBuf> = if !cuda_installed {
-                let url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.ps1";
-                let tmp = std::env::temp_dir().join("kwaainet-installer.ps1");
-                self.download_to(url, &tmp).await?;
-                Some(tmp)
-            } else {
-                None
-            };
-
-            // The kill-and-install header is the same regardless of CUDA vs CPU path:
-            // wait for THIS process to exit, then force-kill every remaining
-            // kwaainet.exe (daemon, storage serve, orphaned instances) so the
-            // installer can overwrite the binary without a sharing violation.
-            let kill_header = "\
-                @echo off\r\n\
-                ping -n 3 127.0.0.1 > nul\r\n\
-                taskkill /IM kwaainet.exe /F /T > nul 2>&1\r\n\
-                ping -n 2 127.0.0.1 > nul\r\n";
-
-            // For the CUDA fast path, download the exe-only zip NOW (in-process,
-            // foreground) so the user sees progress. The batch script only needs
-            // to do the exe swap after kwaainet exits — that's near-instant.
-            let cuda_zip_tmp: Option<PathBuf> = if cuda_installed {
-                let archive_url = format!(
-                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda-exes.zip"
-                );
-                let zip_path = std::env::temp_dir().join("kwaainet-cuda-exes-update.zip");
-                print!("  Downloading CUDA binary update (~30 MB)…");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-                self.download_to(&archive_url, &zip_path).await?;
-                println!(" done.");
-                Some(zip_path)
-            } else {
-                None
-            };
+            self.download_to(&archive_url, &zip_path).await?;
+            println!(" done.");
 
             let kwaainet_exe = install_dir.join("kwaainet.exe");
-            let respawn = format!(
-                "ping -n 3 127.0.0.1 > nul\r\n\
-                 start \"\" \"{exe}\" start --daemon\r\n",
-                exe = kwaainet_exe.to_string_lossy()
+            // Escape single quotes in paths for use inside PS1 single-quoted strings.
+            let zip_str = zip_path.to_string_lossy().replace('\'', "''");
+            let dir_str = install_dir.to_string_lossy().replace('\'', "''");
+            let exe_str = kwaainet_exe.to_string_lossy().replace('\'', "''");
+            let log_str = log_path.replace('\'', "''");
+
+            // PS1 script: extract the zip, move executables into the install
+            // directory, then restart the daemon via Start-Process so the restart
+            // runs inside PowerShell rather than through cmd.exe's `start` builtin
+            // (which is unreliable in a DETACHED_PROCESS / no-console context).
+            let ps1 = std::env::temp_dir().join("kwaainet-update.ps1");
+            let ps1_content = format!(
+                "$ErrorActionPreference = 'Stop'\r\n\
+                 $zip     = '{zip_str}'\r\n\
+                 $dest    = '{dir_str}'\r\n\
+                 $tmp     = Join-Path ([System.IO.Path]::GetTempPath()) 'kwaainet-upd-extract'\r\n\
+                 if (Test-Path $tmp) {{ Remove-Item $tmp -Recurse -Force }}\r\n\
+                 Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n\
+                 Get-ChildItem -Path $tmp -Recurse -Include '*.exe','p2pd' | ForEach-Object {{\r\n\
+                   $target = Join-Path $dest $_.Name\r\n\
+                   Move-Item -Path $_.FullName -Destination $target -Force\r\n\
+                   Add-Content -Path '{log_str}' -Value ('Installed ' + $_.Name)\r\n\
+                 }}\r\n\
+                 Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n\
+                 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
+                 Add-Content -Path '{log_str}' -Value 'Swap complete — restarting daemon'\r\n\
+                 Start-Sleep -Seconds 2\r\n\
+                 Start-Process -FilePath '{exe_str}' -ArgumentList 'restart' -WindowStyle Hidden\r\n\
+                 Add-Content -Path '{log_str}' -Value 'Daemon restart triggered'\r\n"
             );
+            std::fs::write(&ps1, &ps1_content).context("Failed to write update script")?;
+            let ps1_str = ps1.to_string_lossy().into_owned();
 
-            let bat_content = if cuda_installed {
-                // Zip is already on disk — write a .ps1 for the swap so paths
-                // are never processed by cmd.exe's character expansion (%, ^, !).
-                let zip_path = cuda_zip_tmp.as_ref().unwrap();
-                let ps1 = std::env::temp_dir().join("kwaainet-cuda-swap.ps1");
-                let ps1_content = format!(
-                    "$zip = @'\r\n{zip}\r\n'@\r\n\
-                     $dest_dir = @'\r\n{dir}\r\n'@\r\n\
-                     $tmp = [System.IO.Path]::GetTempPath() + 'kwaainet-cuda-exes-extract'\r\n\
-                     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
-                     Expand-Archive -Path $zip -DestinationPath $tmp -Force\r\n\
-                     Get-ChildItem $tmp -Recurse -Filter '*.exe' | ForEach-Object {{\r\n\
-                       $dest = Join-Path $dest_dir $_.Name\r\n\
-                       Move-Item $_.FullName $dest -Force\r\n\
-                       Write-Host ('Installed ' + $_.Name)\r\n\
-                     }}\r\n\
-                     Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n\
-                     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
-                     Write-Host 'Update complete. CUDA DLLs preserved.'\r\n",
-                    zip = zip_path.to_string_lossy(),
-                    dir = install_dir.to_string_lossy(),
-                );
-                std::fs::write(&ps1, &ps1_content).context("Failed to write CUDA swap script")?;
-                let ps1_str = ps1.to_string_lossy().into_owned();
-                format!(
-                    "{kill_header}\
-                     powershell -ExecutionPolicy Bypass -File \"{ps1_str}\" >> \"{log_path}\" 2>&1\r\n\
-                     del /f \"{ps1_str}\"\r\n\
-                     {respawn}\
-                     del /f \"%~f0\"\r\n"
-                )
-            } else {
-                // Full path: use the cargo-dist PS1 installer (handles first-time
-                // CUDA detection and DLL installation).
-                let ps_path = ps1_tmp
-                    .as_ref()
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\'', "''");
-                format!(
-                    "{kill_header}\
-                     powershell -ExecutionPolicy Bypass -File \"{ps_path}\" >> \"{log_path}\" 2>&1\r\n\
-                     del /f \"{ps_path}\"\r\n\
-                     {respawn}\
-                     del /f \"%~f0\"\r\n"
-                )
-            };
+            // Batch: wait for this process to exit, kill any remaining kwaainet
+            // instances so the binary is not locked, run the PS1, delete self.
+            let bat_content = format!(
+                "@echo off\r\n\
+                 ping -n 3 127.0.0.1 > nul\r\n\
+                 taskkill /IM kwaainet.exe /F /T > nul 2>&1\r\n\
+                 ping -n 2 127.0.0.1 > nul\r\n\
+                 powershell -ExecutionPolicy Bypass -File \"{ps1_str}\" >> \"{log_path}\" 2>&1\r\n\
+                 del /f \"{ps1_str}\"\r\n\
+                 del /f \"%~f0\"\r\n"
+            );
+            std::fs::write(&bat, &bat_content).context("Failed to write updater batch")?;
 
-            if cuda_installed {
-                let reason = if std::env::var_os("CUDA_PATH").is_some() {
-                    "CUDA_PATH env var set"
-                } else if std::env::var_os("CUDA_HOME").is_some() {
-                    "CUDA_HOME env var set"
-                } else if std::path::Path::new(
-                    r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA",
-                )
-                .exists()
-                {
-                    "CUDA toolkit dir found"
-                } else {
-                    "cublas DLLs in install dir"
-                };
-                println!("  CUDA runtime detected ({reason}) — downloading CUDA binary (~30 MB, DLLs preserved).");
-            }
-
-            std::fs::write(&bat, &bat_content).context("Failed to write updater batch script")?;
-
-            // Launch the batch detached. kwaainet.exe exits after this fn returns,
-            // releasing its file lock so the batch can overwrite the binary.
             std::process::Command::new("cmd")
                 .args(["/c", bat.to_str().unwrap_or("kwaainet-update.bat")])
                 .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
                 .spawn()
-                .context("Failed to spawn updater batch")?;
+                .context("Failed to spawn updater")?;
 
-            if cuda_installed {
-                println!("  Swapping binaries in background (will complete in seconds).");
-            } else {
-                println!("  Installer running in background.");
-            }
+            println!("  Installer running in background.");
             println!("  Log: {}", log_path);
-            println!("  Run  kwaainet start --daemon  once it finishes.");
+            println!("  Daemon will restart automatically.");
         }
 
         #[cfg(not(any(unix, windows)))]
@@ -488,7 +376,7 @@ impl UpdateChecker {
 
 /// Query nvidia-smi asynchronously with a 4-second timeout.
 /// Returns true if nvidia-smi exits successfully within the time limit.
-#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+#[cfg(all(unix, not(target_os = "macos")))]
 async fn nvidia_smi_async() -> bool {
     use tokio::process::Command;
     let result = tokio::time::timeout(
@@ -508,29 +396,9 @@ async fn nvidia_smi_async() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 #[allow(dead_code)]
 async fn nvidia_smi_async() -> bool {
-    false
-}
-
-/// Returns true if `nvidia-smi.exe` is reachable on the current PATH.
-/// Synchronous fallback used only for the post-detection reason string.
-#[cfg(windows)]
-fn which_nvidia_smi() -> bool {
-    std::process::Command::new("nvidia-smi")
-        .arg("--query-gpu=name")
-        .arg("--format=csv,noheader")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(windows))]
-#[allow(dead_code)]
-fn which_nvidia_smi() -> bool {
     false
 }
 
