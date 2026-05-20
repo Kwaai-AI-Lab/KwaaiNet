@@ -1416,6 +1416,137 @@ impl GraphStore {
             removed += paradoxes_fixed * 2;
         }
 
+        // ── Step 8: Remove type-mismatched work/location relations ──────────────
+        // `works_at`, `employed_by`, `staffed_by`, `works_for` must target an
+        // Organization or Place — not a Person.  The LLM commonly emits
+        // `works_at → Person` when the text says "worked alongside <person>".
+        //
+        // `located_in`, `located_at`, `lives_in`, `settled_in`, `went_to` must
+        // target a Place — not a Person or Organization.
+        {
+            const WORK_RELS: &[&str] = &["works_at", "employed_by", "staffed_by", "works_for", "worked_at"];
+            const LOCATION_RELS: &[&str] = &["located_in", "located_at", "lives_in", "settled_in", "went_to", "visited"];
+
+            let all_fresh: Vec<RelationRecord> = {
+                let rtxn = self.db.begin_read()?;
+                let table = rtxn.open_table(RELATIONS_TABLE)?;
+                table
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                    .collect()
+            };
+
+            let mut type_mismatch_keys: Vec<Vec<u8>> = Vec::new();
+            for rel in &all_fresh {
+                let rtype = rel.relation_type.as_str();
+                if WORK_RELS.contains(&rtype) {
+                    let dst_is_person = self
+                        .nodes
+                        .get(&rel.dst_id)
+                        .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                        .unwrap_or(false);
+                    if dst_is_person {
+                        let src = self.nodes.get(&rel.src_id).map(|n| n.name.as_str()).unwrap_or("?");
+                        let dst = self.nodes.get(&rel.dst_id).map(|n| n.name.as_str()).unwrap_or("?");
+                        tracing::warn!(
+                            "type mismatch: removing '{}' {} '{}' — target is a Person, not an Organization",
+                            src, rtype, dst
+                        );
+                        type_mismatch_keys.push(relation_key(rel.src_id, rel.dst_id, rtype));
+                        removed += 1;
+                    }
+                }
+                if LOCATION_RELS.contains(&rtype) {
+                    let dst_type = self
+                        .nodes
+                        .get(&rel.dst_id)
+                        .map(|n| n.entity_type.to_lowercase())
+                        .unwrap_or_default();
+                    // Allow: Place, Event, schema:Place, schema:Event — block Person and Organization
+                    let dst_is_non_place = matches!(
+                        dst_type.as_str(),
+                        "person" | "organization" | "schema:person" | "schema:organization"
+                    );
+                    if dst_is_non_place {
+                        let src = self.nodes.get(&rel.src_id).map(|n| n.name.as_str()).unwrap_or("?");
+                        let dst = self.nodes.get(&rel.dst_id).map(|n| n.name.as_str()).unwrap_or("?");
+                        tracing::warn!(
+                            "type mismatch: removing '{}' {} '{}' — target is {}, not a Place",
+                            src, rtype, dst, dst_type
+                        );
+                        type_mismatch_keys.push(relation_key(rel.src_id, rel.dst_id, rtype));
+                        removed += 1;
+                    }
+                }
+            }
+
+            if !type_mismatch_keys.is_empty() {
+                let wtxn = self.db.begin_write()?;
+                {
+                    let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                    for k in &type_mismatch_keys {
+                        let _ = t.remove(k.as_slice());
+                    }
+                }
+                wtxn.commit()?;
+            }
+        }
+
+        // ── Step 9: Prune honorific stub entities ──────────────────────────────
+        // Entities whose name is a bare honorific/title fragment ("Dr.", "Mr.",
+        // "Mrs.", "Prof.", "Sir", "Lady", "Rev.") with ≤5 chars are extraction
+        // noise — the LLM failed to capture the actual name.  Remove all their
+        // relations and then the entity itself.
+        {
+            const HONORIFICS: &[&str] = &[
+                "dr", "mr", "mrs", "ms", "prof", "sir", "rev", "hon", "lady", "lord",
+            ];
+            let stub_ids: Vec<i64> = self
+                .nodes
+                .values()
+                .filter(|n| {
+                    let trimmed = n.name.trim_end_matches('.').to_lowercase();
+                    HONORIFICS.contains(&trimmed.as_str()) && n.name.len() <= 6
+                })
+                .map(|n| n.id)
+                .collect();
+
+            if !stub_ids.is_empty() {
+                let all_rels_for_stubs: Vec<RelationRecord> = {
+                    let rtxn = self.db.begin_read()?;
+                    let table = rtxn.open_table(RELATIONS_TABLE)?;
+                    table
+                        .iter()?
+                        .filter_map(|r| r.ok())
+                        .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                        .filter(|r| stub_ids.contains(&r.src_id) || stub_ids.contains(&r.dst_id))
+                        .collect()
+                };
+
+                let wtxn = self.db.begin_write()?;
+                {
+                    let mut rt = wtxn.open_table(RELATIONS_TABLE)?;
+                    for r in &all_rels_for_stubs {
+                        let _ = rt.remove(relation_key(r.src_id, r.dst_id, &r.relation_type).as_slice());
+                        removed += 1;
+                    }
+                    let mut et = wtxn.open_table(ENTITIES_TABLE)?;
+                    for &id in &stub_ids {
+                        if let Some(node) = self.nodes.get(&id) {
+                            tracing::warn!("pruning honorific stub entity: '{}'", node.name);
+                        }
+                        et.remove(&id.to_le_bytes()[..])?;
+                    }
+                }
+                wtxn.commit()?;
+
+                for &id in &stub_ids {
+                    self.nodes.remove(&id);
+                }
+            }
+        }
+
         // Rebuild adjacency to reflect all changes
         self.rebuild_in_memory()?;
 
@@ -2206,12 +2337,94 @@ pub async fn extract_from_text(
         .trim();
 
     match serde_json::from_str::<ExtractionPayload>(cleaned) {
-        Ok(p) => Ok((p.entities, p.relations)),
+        Ok(p) => {
+            let entities = p
+                .entities
+                .into_iter()
+                .map(|mut e| {
+                    e.name = clean_entity_name(&e.name);
+                    e
+                })
+                .collect();
+            let relations = p
+                .relations
+                .into_iter()
+                .map(|mut r| {
+                    r.from = clean_entity_name(&r.from);
+                    r.to = clean_entity_name(&r.to);
+                    r
+                })
+                .collect();
+            Ok((entities, relations))
+        }
         Err(e) => {
             tracing::debug!("entity extraction JSON parse failed: {e}; raw: {cleaned:.200}");
             Ok((vec![], vec![]))
         }
     }
+}
+
+/// Fix PDF-extraction underscore artifacts in entity names extracted by the LLM.
+///
+/// PDF text extraction commonly produces:
+///   "Dr_"      instead of "Dr."   (period after title/initial → underscore)
+///   "J_ M_"    instead of "J. M." (initials lose their periods)
+///   "Wooding_s" instead of "Wooding's" (apostrophe-s → underscore-s)
+///
+/// Rules applied in order:
+///   1. `WORD_s` at a word boundary → `WORD's`   (possessive/contraction)
+///   2. `LETTER_` followed by space, end, or another initial pattern → `LETTER.`
+///   3. Remaining lone underscores → stripped
+fn clean_entity_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let chars: Vec<char> = name.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if c == '_' {
+            // Rule 1: `_s` at word boundary → `'s`
+            if i + 1 < n && chars[i + 1] == 's' {
+                let after_s = i + 2;
+                let is_boundary = after_s >= n
+                    || !chars[after_s].is_alphabetic()
+                    || chars[after_s].is_uppercase();
+                if is_boundary {
+                    out.push('\'');
+                    out.push('s');
+                    i += 2;
+                    continue;
+                }
+            }
+            // Rule 2: single letter before `_`, followed by space/end/next initial
+            let prev_is_single_letter = out
+                .chars()
+                .last()
+                .map(|p| p.is_alphabetic())
+                .unwrap_or(false)
+                && out.len() >= 1
+                && {
+                    // check the previous char was preceded by a space or start
+                    let ob: &[u8] = out.as_bytes();
+                    ob.len() == 1
+                        || ob[ob.len() - 2] == b' '
+                        || ob[ob.len() - 2] == b'.'
+                };
+            let next_is_space_or_end = i + 1 >= n || chars[i + 1] == ' ';
+            if prev_is_single_letter && next_is_space_or_end {
+                out.push('.');
+                i += 1;
+                continue;
+            }
+            // Rule 3: strip remaining underscores (don't emit anything)
+            i += 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    // Collapse any double spaces created by stripping
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
