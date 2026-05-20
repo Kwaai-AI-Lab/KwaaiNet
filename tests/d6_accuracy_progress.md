@@ -9,9 +9,11 @@
 ## Progress Chart
 
 ```
-60% ┤                                                                       ████ 56.9% ← keyword best
-    │                                                                            ████ 56.0% M18
-55% ┤                                                                  ████ 51.7%    ████ 54.3% M19      ████ 54.3% M21
+65% ┤
+    │
+60% ┤                                                                       ████ 56.9%                         ████ 58.6% M22 ← keyword best
+    │                                                                            ████ 56.0% M18          ████ 56.0% M23
+55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24
     │                                                             ████ 50.0%              ████ 51.7% M20
 50% ┤                                                        ████ 49.1%
     │                                                   ████ 48.3%
@@ -24,12 +26,12 @@
 30% ┤████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
 25% ┤24.6%
     │
-    └───────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge
-                                                           +judge         k=20   k=20  cycle1 scan   fix
+    └────────────────────────────────────────────────────────────────────────────────────────
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity
+                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject
 ```
 
-**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge)
+**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24)
 
 ---
 
@@ -63,6 +65,7 @@
 | 21 | v0.4.72 | same + merge chunk-transfer fix + description preservation | llama3.1:8b | **54.3%** (63/116) | **1.85/2** ← new judge best | q04 dedication 0/4 0/2 → **4/4 2/2** (persistent failure resolved — intro.docx chunk now reachable via graph). q09/q15 judge recovered. q13 kw +2. 17×2/2, 3×1/2, 0×0/2. |
 | 22 | v0.4.75 | **31 dream cycles** (llama3.1:8b) + sanitize type-mismatch + clean_entity_name + section-aware ingest | llama3.1:8b | **58.6%** (68/116) | — | Graph 51.5% → **78.1%** (plateau). Sanitize removed 92 type-mismatch rels + 3 honorific stubs. PDF underscore artifacts fixed (Dr_ → Dr., J_ M_ → J. M.). Dream plateaus at 78.1% — zero gain cycles 25–31. New keyword best. |
 | 23 | v0.4.75 | same + **doc metadata preamble** (author/subject/year injected into every LLM call) | llama3.1:8b | **56.0%** (65/116) | — | Q1 "Who is the author?" fixed 0/3 → 3/3. Q6/Q9/Q11/Q15/Q16/Q18 all improved. Net +6 keywords from context injection alone. Q7 (author's wife = Nazima Rassool) still 0/3 — entity thin in graph. |
+| 24 | v0.4.75 | same + **entity description injection** (top graph entity prepended as synthetic chunk at score=2.0; relation-aware traversal for author-relative queries) | llama3.1:8b | **52.6%** (61/116) | — | Multiple runs: 50.9%–56.0% (all below M22 baseline of 58.6%). Q7 wife / Q9 grandfather injection fires correctly. Regression: Q16 Gandhi 4/7→1/7 (entity description displaces critical text chunk). Seeded 6 missing Rassool siblings (Fazil, Zain, Rasheda, Berina, Yasmin, Nasim) + Nazima Rassool as wife. Injection not net-positive on current eval set. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -145,6 +148,30 @@ M21 achieves 17×2/2, 3×1/2, 0×0/2. The only previous 1.85/2 score (M12) used 
 
 **Note on existing D6 graph:** The chunk-transfer fix applies to new merges going forward. The D6 graph had 3 alias-scan merges (TLSA, NUSAS, NEF) performed with the old code — those orphaned chunks cannot be retroactively reassigned without knowing the original alias→canonical mapping. The M21 improvement suggests at least one of those merges affected the q04 dedicated chunk path. Future alias-scans on D6 (or a graph rebuild) would fully benefit from the fix.
 
+### M24 Analysis — Entity Injection Experiments
+
+**What was tried:** Injecting the top matched graph entity's description as a synthetic RAG chunk (score=2.0, prepended to pool) so entity biography always reaches the LLM regardless of vector retrieval rank. Extended with relation-aware traversal: when the query anchor is the memoir author (Yousuf Rassool), parse for wife/mother/father/grandfather/sibling keywords and walk the graph's adjacency edges (spouse_of, child_of, sibling_of) to inject the specific relative's description instead.
+
+**Seed additions:** 6 missing Rassool siblings (Fazil, Zain, Rasheda, Berina, Yasmin/Jessie, Nasim) added to d6_family_tree.yaml with parent_of and sibling_of relations. Nazima Rassool (wife) added with spouse_of relation to Yousuf.
+
+**Eval results (multiple runs):**
+
+| Run | Config | Keyword |
+|-----|--------|---------|
+| 1 | injection ≥ 0.80 threshold (15–20 entities/query) | 53.4% |
+| 2 | injection > 0.85, descriptions stripped from seed | 49.1% ⬇ (reembed needed) |
+| 3 | injection > 0.85, after `graph reembed` | 56.0% |
+| 4 | relation-aware injection + siblings | 50.9% |
+| 5 | relation-aware injection + siblings | 52.6% |
+
+**Key regression — Q16 (Gandhi / Gool family):** 4/7 → 1/7 keywords. When Gandhi is the top entity match, his entity description is injected at score=2.0 and displaces a text chunk that contained the actual "Gandhi's connection to Buitencingle and the Gool family" narrative. Entity descriptions are typically shorter and thinner than the source text chunks they replace.
+
+**Key gap — Q5 (J.M.H. Gool):** Name-token matching finds JMH Gool at similarity 0.85 (the fixed fallback value), but embedding search returns other Gool family members first. Our `> 0.85` threshold passes the embedding hit (wrong entity) but misses the name-token hit (correct entity). This requires a threshold or priority redesign.
+
+**Conclusion:** Injection is architecturally correct (entity descriptions should be in the retrieval path) but the current fixed score=2.0 is too aggressive — it always displaces the weakest text chunk regardless of whether the entity description is richer. Tuning to score=1.2 would let high-quality text chunks compete with entity descriptions rather than always lose.
+
+**Net result:** All injection runs below the M22 no-injection baseline (58.6%). High stochastic variance (±8pp per run) makes it impossible to detect gains smaller than ~10pp from a single run. A 3-run average at each config is needed for reliable comparison.
+
 ---
 
 ## Key Insight: Keyword vs Judge Gap
@@ -211,14 +238,15 @@ With k=30 chunks at ~300 chars each, 8192 chars only showed ~16/30 chunks. Raisi
 
 | Priority | Approach | Expected gain |
 |----------|----------|---------------|
-| High | **Q7 (author's wife)** — Nazima Rassool entity is thin; seed her with description + "Professor" role | +3 keywords immediate |
-| High | **Dream plateau broken** — current tasks saturated at 78.1%; need targeted completions for specific thin entities (grandfather, Cissie Gool, Buitencingle, All Africa Convention) | +2–4pp graph |
-| High | **M24 judge eval** — run with `--llm-judge` to measure structural improvement since M21 (last judge was 1.85/2) | Structural signal |
-| Medium | **Q5/Q9 (JMH Gool / grandfather)** — entity description missing: Swat, 1884 arrival, spice merchant, mosque | +6–8 keywords |
-| Medium | **Q12 (Cissie Gool)** — missing Zainunnissa (full name), councillor role | +2–3 keywords |
+| High | **Dream plateau — lower injection score** (entity description at 1.2 vs 2.0 so it competes with rather than displaces text) | Reduce Q16 regression risk |
+| High | **Dream plateau broken** — current tasks saturated at 78.1%; targeted completions for thin entities (JMH Gool, Cissie Gool, Buitencingle, All Africa Convention) | +2–4pp graph |
+| High | **M25 judge eval** — run with `--llm-judge` to measure structural improvement since M21 (last judge was 1.85/2) | Structural signal |
+| Medium | **Q5/Q9 (JMH Gool / grandfather)** — injection gap: name-token match finds entity at 0.85 but embedding hit returns wrong entity first | Fix injection threshold logic |
+| Medium | **Q16 (Gandhi/Gool)** — entity injection regression; investigate whether Gandhi entity description is too thin or misattributed | +3 keywords if fixed |
 | Medium | Dream RAG Phase 3: quality gate — snapshot + rollback if score drops >5% after a cycle | Stability |
 | Low | Dream RAG Phase 4: embed model evaluation (`dream embed-eval`) | Graph quality |
 | Low | Dream RAG Phase 5: gamified curation GUI (Flutter, after PR #56 merge) | UX |
+| Done ✓ | **Entity description injection** — relation-aware traversal for wife/parent/grandparent/sibling queries; 6 Rassool siblings + Nazima seeded (f4bebe5) | M24 (not net-positive) |
 | Done ✓ | **Doc metadata preamble** — author/subject/year in system prompt; Q1 fixed 0/3→3/3 (v0.4.75) | M23 +6 kw |
 | Done ✓ | **Dream RAG 31 cycles** — graph 51.5% → 78.1%; 8b model ~1.8%/cycle; plateau hit at cycle 25 | M22 58.6% kw best |
 | Done ✓ | **Sanitize type-mismatch** — 92 bad relations removed; 3 honorific stubs pruned (v0.4.75) | Graph quality |
