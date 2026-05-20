@@ -1498,6 +1498,26 @@ pub enum DreamAction {
 
     /// Show the last dream cycle report
     Status,
+
+    /// Evaluate retrieval quality: measures recall@k and MRR against entity evidence chunks.
+    /// Used to correlate graph completeness score with downstream RAG quality for the paper.
+    EmbedEval {
+        /// Max number of entity queries to run [default: all entities with evidence]
+        #[arg(long, value_name = "N")]
+        max_queries: Option<usize>,
+
+        /// Save the JSON report to a file
+        #[arg(long, value_name = "PATH")]
+        output: Option<std::path::PathBuf>,
+
+        /// Include per-entity breakdown in JSON output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Print results as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1564,6 +1584,19 @@ pub enum GraphAction {
         kb: String,
     },
 
+    /// Import ground-truth entities and relations from a NotebookLM JSON extraction.
+    /// See tests/notebooklm_extraction_prompt.md for the prompt to use in NotebookLM.
+    /// Low-confidence relations are skipped; all entities are included.
+    SeedFromJson {
+        /// Path to the JSON file output by NotebookLM
+        #[arg(long, value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Also write the converted seed YAML to this path (optional)
+        #[arg(long, value_name = "FILE")]
+        emit_yaml: Option<std::path::PathBuf>,
+    },
+
     /// Detect and merge duplicate entities.
     /// Tier 1 (exact normalized name match) is always auto-merged silently.
     /// Tier 2 (embedding similarity ≥ threshold) is shown for interactive review
@@ -1628,6 +1661,19 @@ pub enum GraphAction {
         #[arg(long, default_value = "1", value_name = "N")]
         min_hits: usize,
     },
+
+    /// Enforce relation integrity rules across the whole knowledge graph:
+    ///   1. Remove familial relations (parent_of, spouse_of, sibling_of, …) where
+    ///      either endpoint is not a Person entity.
+    ///   2. Add missing logical inverses (parent_of ↔ child_of, grandparent_of ↔
+    ///      grandchild_of, etc.) and missing symmetric directions (spouse_of, sibling_of).
+    ///   3. Recompute relation strength from actual shared-evidence-chunk co-occurrence
+    ///      so strength reflects how well-evidenced each relation is in the source text.
+    ///   4. Infer and persist gender ("Male"/"Female") for all Person entities from
+    ///      pronoun cues in their descriptions.
+    ///   5. Log (warn) spouse_of pairs where both entities have the same inferred gender
+    ///      so they can be reviewed.
+    Sanitize,
 }
 
 #[derive(Subcommand)]

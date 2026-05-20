@@ -206,8 +206,18 @@ persons:
       - "the writer"
     description: >
       The author of the memoir. Son of Ayesha (Lallie) Gool and Peter Alexander Rassool.
-      Born and raised in District Six, Cape Town. Eldest child of the family.
-      Also referred to in the text as "I", "the narrator", "the author", or "Y.S. Rassool".
+      Born and raised in District Six, Cape Town. Eldest child of the family; brother of Abdul
+      (Doolie) Rassool. Also referred to in the text as "I", "the narrator", "the author", or
+      "Y.S. Rassool".
+
+  - canonical: "Abdul Rassool"
+    aliases:
+      - "Abdul"
+      - "Doolie"
+      - "Doolie Rassool"
+    description: >
+      Younger brother of Yousuf Rassool (the memoir author). Son of Peter Alexander Rassool and
+      Ayesha (Lallie) Gool. Known by the nickname Doolie. Grew up in District Six, Cape Town.
 
   # ─── Fostered relatives (the Ally/Noor line) ───────────────────────────────
 
@@ -329,9 +339,12 @@ relations:
   # ─── Abdurahman → Cissie ───────────────────────────────────────────────────
   - { from: "Dr. Abdulla Abdurahman", to: "Cissie Gool", type: "parent_of" }
 
-  # ─── Joe Rassool's parents ─────────────────────────────────────────────────
-  - { from: "Ayesha Rassool",         to: "Yousuf Rassool", type: "parent_of" }
+  # ─── Rassool children ─────────────────────────────────────────────────────
+  - { from: "Ayesha Rassool",          to: "Yousuf Rassool", type: "parent_of" }
   - { from: "Peter Alexander Rassool", to: "Yousuf Rassool", type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Abdul Rassool",  type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Abdul Rassool",  type: "parent_of" }
+  - { from: "Yousuf Rassool",          to: "Abdul Rassool",  type: "sibling_of" }
 
   # ─── Children of Abdul Hamid + Cissie ──────────────────────────────────────
   - { from: "Abdul Hamid Gool", to: "Shaheen Gool", type: "parent_of" }

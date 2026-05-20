@@ -27,6 +27,9 @@ const CHUNK_ENTITY_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("
 /// key = entity_id i64 LE (8 bytes) → [chunk_id] JSON array
 const ENTITY_CHUNK_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entity_chunks");
 
+/// key = string → JSON-encoded value (KB-level metadata)
+const METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("metadata");
+
 // ── Ontology constants ────────────────────────────────────────────────────────
 
 /// Supported entity types for LLM extraction prompts.
@@ -97,6 +100,30 @@ pub const RELATION_TYPES: &[&str] = &[
     "caused_by",
 ];
 
+/// Familial relation types — only valid between two Person entities.
+pub const FAMILIAL_RELS: &[&str] = &[
+    "parent_of", "child_of", "spouse_of", "sibling_of", "half_sibling_of",
+    "grandparent_of", "grandchild_of", "uncle_of", "aunt_of",
+    "niece_of", "nephew_of", "cousin_of", "foster_parent_of", "foster_child_of",
+];
+
+/// Asymmetric familial relation → its logical inverse.
+/// When A parent_of B is stored, B child_of A is automatically stored too.
+/// Symmetric relations (spouse_of, sibling_of, cousin_of, half_sibling_of) are not listed —
+/// they are stored in both directions by the caller.
+const FAMILIAL_INVERSE: &[(&str, &str)] = &[
+    ("parent_of",       "child_of"),
+    ("child_of",        "parent_of"),
+    ("grandparent_of",  "grandchild_of"),
+    ("grandchild_of",   "grandparent_of"),
+    ("uncle_of",        "nephew_of"),   // approximate — gender of nephew/niece unknown here
+    ("aunt_of",         "niece_of"),
+    ("nephew_of",       "uncle_of"),
+    ("niece_of",        "aunt_of"),
+    ("foster_parent_of","foster_child_of"),
+    ("foster_child_of", "foster_parent_of"),
+];
+
 // ── Core types ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +147,9 @@ pub struct EntityNode {
     /// Never changes entity_id — that remains hash(name + entity_type).
     #[serde(default)]
     pub schema_type: Option<String>,
+    /// Inferred from pronouns in description: "Male", "Female", or None if unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gender: Option<String>,
     /// All chunk IDs that mention this entity. Populated at load time from the
     /// chunk index — not persisted in the entity record itself. Always current
     /// after rebuild(). Use this in dream tasks instead of a separate lookup.
@@ -258,6 +288,7 @@ impl GraphStore {
             wtxn.open_table(RELATIONS_TABLE)?;
             wtxn.open_table(CHUNK_ENTITY_TABLE)?;
             wtxn.open_table(ENTITY_CHUNK_TABLE)?;
+            wtxn.open_table(METADATA_TABLE)?;
             wtxn.commit()?;
         }
 
@@ -366,6 +397,7 @@ impl GraphStore {
                 first_chunk_id: existing.first_chunk_id,
                 aliases: existing.aliases.clone(),
                 schema_type: existing.schema_type.clone().or(node.schema_type.clone()),
+                gender: existing.gender.clone().or(node.gender.clone()),
                 evidence: existing.evidence.clone(),
             },
             None => node,
@@ -385,6 +417,63 @@ impl GraphStore {
 
     /// Insert or strengthen a directed relation, adding the evidence chunk.
     pub fn upsert_relation(
+        &mut self,
+        src_id: i64,
+        dst_id: i64,
+        relation_type: &str,
+        evidence_chunk_id: i64,
+    ) -> Result<()> {
+        // ── Constraint: located_in / works_at must not target a CreativeWork entity ──
+        // This prevents book/document titles from being incorrectly used as place or
+        // employer targets when the LLM confuses the source document title with a location.
+        if matches!(relation_type, "located_in" | "works_at") {
+            if let Some(dst_node) = self.nodes.get(&dst_id) {
+                if dst_node.schema_type.as_deref() == Some("schema:CreativeWork") {
+                    return Ok(()); // silently drop — destination is a work, not a place/org
+                }
+            }
+        }
+
+        // ── Constraint: familial relations require both endpoints to be Person entities ──
+        if FAMILIAL_RELS.contains(&relation_type) {
+            let src_is_person = self
+                .nodes
+                .get(&src_id)
+                .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                .unwrap_or(false);
+            let dst_is_person = self
+                .nodes
+                .get(&dst_id)
+                .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                .unwrap_or(false);
+            if !src_is_person || !dst_is_person {
+                return Ok(()); // silently skip — non-person familial relations are always errors
+            }
+        }
+
+        self.upsert_relation_unchecked(src_id, dst_id, relation_type, evidence_chunk_id)?;
+
+        // ── Auto-add logical inverse for asymmetric familial relations ──
+        if let Some(&inverse) = FAMILIAL_INVERSE
+            .iter()
+            .find(|(r, _)| *r == relation_type)
+            .map(|(_, inv)| inv)
+        {
+            self.upsert_relation_unchecked(dst_id, src_id, inverse, evidence_chunk_id)?;
+        }
+
+        // ── Symmetric familial relations: store both directions ──
+        if matches!(
+            relation_type,
+            "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
+        ) {
+            self.upsert_relation_unchecked(dst_id, src_id, relation_type, evidence_chunk_id)?;
+        }
+
+        Ok(())
+    }
+
+    fn upsert_relation_unchecked(
         &mut self,
         src_id: i64,
         dst_id: i64,
@@ -423,21 +512,8 @@ impl GraphStore {
         }
         wtxn.commit()?;
 
-        // Update in-memory adjacency (both directions).
-        update_adj(
-            &mut self.adj,
-            src_id,
-            dst_id,
-            relation_type,
-            merged.strength,
-        );
-        update_adj(
-            &mut self.adj,
-            dst_id,
-            src_id,
-            relation_type,
-            merged.strength,
-        );
+        update_adj(&mut self.adj, src_id, dst_id, relation_type, merged.strength);
+        update_adj(&mut self.adj, dst_id, src_id, relation_type, merged.strength);
         Ok(())
     }
 
@@ -597,6 +673,27 @@ impl GraphStore {
 
     pub fn neighbors_of(&self, entity_id: i64) -> Vec<(i64, String, f32)> {
         self.adj.get(&entity_id).cloned().unwrap_or_default()
+    }
+
+    /// Return only the *outgoing* (directed) relations where `entity_id` is the source.
+    /// Unlike `neighbors_of`, this reads the DB directly and never returns backward-traversal
+    /// entries — so `Peter parent_of Yousuf` will appear on Peter's list but NOT on Yousuf's
+    /// (Yousuf's `child_of Peter` DB record appears there instead).
+    /// Used by the Obsidian exporter for semantically-correct directed relation display.
+    pub fn outgoing_relations(&self, entity_id: i64) -> Result<Vec<(i64, String, f32)>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(RELATIONS_TABLE)?;
+        let prefix: Vec<u8> = entity_id.to_le_bytes().to_vec();
+        let mut out = Vec::new();
+        for item in table.iter()? {
+            let (k, v) = item?;
+            if k.value().starts_with(&prefix) {
+                if let Ok(rel) = serde_json::from_slice::<RelationRecord>(v.value()) {
+                    out.push((rel.dst_id, rel.relation_type, rel.strength));
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn node_count(&self) -> usize {
@@ -857,6 +954,380 @@ impl GraphStore {
         // Leave adj stale — caller should call rebuild_in_memory() after a batch.
 
         Ok(n_moved)
+    }
+
+    /// Infer gender from pronouns in the entity's description.
+    /// Returns "Male" for he/his/him, "Female" for she/her/hers, None if ambiguous.
+    pub fn infer_gender(description: &str) -> Option<String> {
+        let text = description.to_lowercase();
+        let male_cues = ["he ", "his ", "him ", " he,", " his,", " him,"];
+        let female_cues = ["she ", "her ", "hers ", " she,", " her,", " hers,"];
+        let m = male_cues.iter().filter(|&&c| text.contains(c)).count();
+        let f = female_cues.iter().filter(|&&c| text.contains(c)).count();
+        match (m, f) {
+            (0, 0) => None,
+            (m, f) if m > f => Some("Male".to_string()),
+            (m, f) if f > m => Some("Female".to_string()),
+            _ => None, // tie → ambiguous
+        }
+    }
+
+    /// Sanitize all relations in the graph:
+    /// 1. Remove familial relations where either endpoint is not a Person entity.
+    /// 2. Add missing logical inverses for asymmetric familial relations.
+    /// 3. Recompute relation strength from actual shared-evidence-chunk count.
+    /// 4. Infer and store gender for all Person entities from their descriptions.
+    /// 5. Flag (log) spouse_of pairs where inferred genders match (non-heteronormative or error).
+    ///
+    /// Returns (removed, added, recomputed, gendered) counts.
+    pub fn sanitize_relations(&mut self) -> Result<(usize, usize, usize, usize)> {
+        let mut removed = 0usize;
+        let mut added = 0usize;
+        let mut recomputed = 0usize;
+        let mut gendered = 0usize;
+
+        // ── Step 1: Collect all current relations from DB ──
+        let all_rels: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .collect()
+        };
+
+        // ── Step 2: Remove type-invalid familial relations ──
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+        let mut to_keep: Vec<RelationRecord> = Vec::new();
+        for rel in &all_rels {
+            if FAMILIAL_RELS.contains(&rel.relation_type.as_str()) {
+                let src_person = self
+                    .nodes
+                    .get(&rel.src_id)
+                    .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                    .unwrap_or(false);
+                let dst_person = self
+                    .nodes
+                    .get(&rel.dst_id)
+                    .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                    .unwrap_or(false);
+                if !src_person || !dst_person {
+                    to_delete.push(relation_key(rel.src_id, rel.dst_id, &rel.relation_type));
+                    removed += 1;
+                    continue;
+                }
+            }
+            to_keep.push(rel.clone());
+        }
+
+        if !to_delete.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for k in &to_delete {
+                    t.remove(k.as_slice())?;
+                }
+            }
+            wtxn.commit()?;
+        }
+
+        // ── Step 3: Add missing inverses for asymmetric familial relations ──
+        // Build a set of existing (src, dst, type) keys for O(1) lookup
+        let existing: std::collections::HashSet<(i64, i64, String)> = to_keep
+            .iter()
+            .map(|r| (r.src_id, r.dst_id, r.relation_type.clone()))
+            .collect();
+
+        for rel in &to_keep {
+            if let Some(&inverse) = FAMILIAL_INVERSE
+                .iter()
+                .find(|(r, _)| *r == rel.relation_type.as_str())
+                .map(|(_, inv)| inv)
+            {
+                if !existing.contains(&(rel.dst_id, rel.src_id, inverse.to_string())) {
+                    // Use each evidence chunk so strength is inherited from the forward relation
+                    for &cid in &rel.evidence_chunk_ids {
+                        self.upsert_relation_unchecked(rel.dst_id, rel.src_id, inverse, cid)?;
+                    }
+                    added += 1;
+                }
+            }
+            // Symmetric: ensure both directions exist
+            if matches!(
+                rel.relation_type.as_str(),
+                "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
+            ) && !existing.contains(&(rel.dst_id, rel.src_id, rel.relation_type.clone()))
+            {
+                for &cid in &rel.evidence_chunk_ids {
+                    self.upsert_relation_unchecked(
+                        rel.dst_id,
+                        rel.src_id,
+                        &rel.relation_type,
+                        cid,
+                    )?;
+                }
+                added += 1;
+            }
+        }
+
+        // ── Step 4: Recompute strength from shared evidence chunks ──
+        // For each relation, strength = min(1.0, shared_chunks / 10.0) where shared_chunks =
+        // number of chunks that mention BOTH the src and dst entity.
+        let all_rels_fresh: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .collect()
+        };
+
+        let mut strength_updates: Vec<(Vec<u8>, RelationRecord)> = Vec::new();
+        for mut rel in all_rels_fresh {
+            let src_chunks: std::collections::HashSet<i64> = self
+                .chunks_for_entity(rel.src_id)
+                .iter()
+                .copied()
+                .collect();
+            let dst_chunks: std::collections::HashSet<i64> = self
+                .chunks_for_entity(rel.dst_id)
+                .iter()
+                .copied()
+                .collect();
+            let shared: usize = src_chunks.intersection(&dst_chunks).count();
+            let new_strength = if shared > 0 {
+                (shared as f32 / 10.0).min(1.0)
+            } else {
+                // No shared chunks (e.g. dream-added relation) — use evidence_chunk_ids count
+                (rel.evidence_chunk_ids.len() as f32 / 10.0).min(1.0).max(0.1)
+            };
+            if (new_strength - rel.strength).abs() > 0.001 {
+                rel.strength = new_strength;
+                let key = relation_key(rel.src_id, rel.dst_id, &rel.relation_type);
+                strength_updates.push((key, rel));
+                recomputed += 1;
+            }
+        }
+
+        if !strength_updates.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for (k, rel) in &strength_updates {
+                    t.insert(k.as_slice(), serde_json::to_vec(rel)?.as_slice())?;
+                }
+            }
+            wtxn.commit()?;
+        }
+
+        // ── Step 5: Infer and store gender for Person entities ──
+        let person_ids: Vec<i64> = self
+            .nodes
+            .values()
+            .filter(|n| n.entity_type.eq_ignore_ascii_case("person"))
+            .map(|n| n.id)
+            .collect();
+
+        for id in person_ids {
+            if let Some(node) = self.nodes.get(&id) {
+                if node.gender.is_some() {
+                    continue; // already set
+                }
+                if let Some(g) = Self::infer_gender(&node.description) {
+                    let mut updated = node.clone();
+                    updated.gender = Some(g);
+                    gendered += 1;
+                    self.upsert_entity(updated)?;
+                }
+            }
+        }
+
+        // ── Step 6: Delete suspect spouse_of pairs (both endpoints same inferred gender) ──
+        // These are virtually always LLM hallucinations — the model confuses "associated with"
+        // or "met" for "married to".  Pairs where gender is unknown on either side are kept.
+        let spouse_rels: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .filter(|r| r.relation_type == "spouse_of")
+                .collect()
+        };
+
+        let mut spouses_purged = 0usize;
+        let mut suspect_keys: Vec<Vec<u8>> = Vec::new();
+
+        // Collect unique pairs (avoid double-counting A↔B and B↔A)
+        let mut seen_pairs: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        for rel in &spouse_rels {
+            let pair = if rel.src_id < rel.dst_id {
+                (rel.src_id, rel.dst_id)
+            } else {
+                (rel.dst_id, rel.src_id)
+            };
+            if seen_pairs.contains(&pair) {
+                continue;
+            }
+            seen_pairs.insert(pair);
+
+            let ga = self.nodes.get(&rel.src_id).and_then(|n| n.gender.as_deref());
+            let gb = self.nodes.get(&rel.dst_id).and_then(|n| n.gender.as_deref());
+            if let (Some(ga), Some(gb)) = (ga, gb) {
+                if ga == gb {
+                    let na = self.nodes.get(&rel.src_id).map(|n| n.name.as_str()).unwrap_or("?");
+                    let nb = self.nodes.get(&rel.dst_id).map(|n| n.name.as_str()).unwrap_or("?");
+                    tracing::warn!(
+                        "removing suspect spouse_of: {} ({}) ↔ {} ({}) — same gender (likely hallucination)",
+                        na, ga, nb, gb
+                    );
+                    suspect_keys.push(relation_key(rel.src_id, rel.dst_id, "spouse_of"));
+                    suspect_keys.push(relation_key(rel.dst_id, rel.src_id, "spouse_of"));
+                    spouses_purged += 1;
+                }
+            }
+        }
+
+        // ── Also supersede half_sibling_of when sibling_of exists for same pair ──
+        // If the seed confirms a full sibling relationship, the dream-added half_sibling_of
+        // is always wrong for that pair.
+        {
+            let all_sibling_rels: Vec<RelationRecord> = {
+                let rtxn = self.db.begin_read()?;
+                let table = rtxn.open_table(RELATIONS_TABLE)?;
+                table
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                    .filter(|r| r.relation_type == "sibling_of" || r.relation_type == "half_sibling_of")
+                    .collect()
+            };
+            let sibling_pairs: std::collections::HashSet<(i64, i64)> = all_sibling_rels
+                .iter()
+                .filter(|r| r.relation_type == "sibling_of")
+                .map(|r| (r.src_id.min(r.dst_id), r.src_id.max(r.dst_id)))
+                .collect();
+            for rel in &all_sibling_rels {
+                if rel.relation_type == "half_sibling_of" {
+                    let pair = (rel.src_id.min(rel.dst_id), rel.src_id.max(rel.dst_id));
+                    if sibling_pairs.contains(&pair) {
+                        suspect_keys.push(relation_key(rel.src_id, rel.dst_id, "half_sibling_of"));
+                        spouses_purged += 1;
+                    }
+                }
+            }
+        }
+
+        if !suspect_keys.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for k in &suspect_keys {
+                    let _ = t.remove(k.as_slice());
+                }
+            }
+            wtxn.commit()?;
+            removed += spouses_purged * 2;
+        }
+
+        // ── Step 7: Remove parent_of paradoxes ──────────────────────────────────
+        // If A parent_of B AND B parent_of A both exist, one must be wrong (a person
+        // cannot be both parent and child of the same person).  Resolve by checking
+        // descriptions for "son of / daughter of / child of <other>"; the entity whose
+        // description names the other as a parent is the child — so its parent_of edge
+        // pointing back at the other is the bogus one.  If descriptions are ambiguous,
+        // keep the edge whose src has the higher mention_count (more-documented entity
+        // is more likely the main subject whose relations were written correctly).
+        let all_parent_rels: Vec<(i64, i64)> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .filter(|r| r.relation_type == "parent_of")
+                .map(|r| (r.src_id, r.dst_id))
+                .collect()
+        };
+
+        let parent_set: std::collections::HashSet<(i64, i64)> =
+            all_parent_rels.iter().cloned().collect();
+        let mut paradox_deletes: Vec<Vec<u8>> = Vec::new();
+        let mut paradoxes_fixed = 0usize;
+
+        for &(a, b) in &all_parent_rels {
+            if parent_set.contains(&(b, a)) && a < b {
+                // Both A parent_of B and B parent_of A — paradox.
+                // Determine which is the child by checking descriptions.
+                let a_desc = self.nodes.get(&a).map(|n| n.description.to_lowercase()).unwrap_or_default();
+                let b_name_lc = self.nodes.get(&b).map(|n| n.name.to_lowercase()).unwrap_or_default();
+                let b_desc = self.nodes.get(&b).map(|n| n.description.to_lowercase()).unwrap_or_default();
+                let a_name_lc = self.nodes.get(&a).map(|n| n.name.to_lowercase()).unwrap_or_default();
+
+                // Does A's description say it is a child of B?
+                let a_is_child = ["son of", "daughter of", "child of", "born to"]
+                    .iter()
+                    .any(|&cue| {
+                        a_desc.contains(cue)
+                            && (a_desc.contains(&b_name_lc)
+                                || b_name_lc.split_whitespace().any(|tok| {
+                                    tok.len() >= 4 && a_desc.contains(tok)
+                                }))
+                    });
+                // Does B's description say it is a child of A?
+                let b_is_child = ["son of", "daughter of", "child of", "born to"]
+                    .iter()
+                    .any(|&cue| {
+                        b_desc.contains(cue)
+                            && (b_desc.contains(&a_name_lc)
+                                || a_name_lc.split_whitespace().any(|tok| {
+                                    tok.len() >= 4 && b_desc.contains(tok)
+                                }))
+                    });
+
+                let (wrong_src, wrong_dst) = match (a_is_child, b_is_child) {
+                    (true, false) => (a, b), // A is the child → A parent_of B is wrong
+                    (false, true) => (b, a), // B is the child → B parent_of A is wrong
+                    _ => {
+                        // Ambiguous — keep the edge from the higher-mention entity (main subject)
+                        let mc_a = self.nodes.get(&a).map(|n| n.mention_count).unwrap_or(0);
+                        let mc_b = self.nodes.get(&b).map(|n| n.mention_count).unwrap_or(0);
+                        if mc_a >= mc_b { (b, a) } else { (a, b) }
+                    }
+                };
+
+                let na = self.nodes.get(&wrong_src).map(|n| n.name.as_str()).unwrap_or("?");
+                let nb = self.nodes.get(&wrong_dst).map(|n| n.name.as_str()).unwrap_or("?");
+                tracing::warn!(
+                    "parent_of paradox: removing bogus '{na}' parent_of '{nb}' \
+                     (description indicates direction is reversed)"
+                );
+                paradox_deletes.push(relation_key(wrong_src, wrong_dst, "parent_of"));
+                // Also remove the bogus child_of in the opposite direction if it was auto-added
+                paradox_deletes.push(relation_key(wrong_dst, wrong_src, "child_of"));
+                paradoxes_fixed += 1;
+            }
+        }
+
+        if !paradox_deletes.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for k in &paradox_deletes {
+                    let _ = t.remove(k.as_slice());
+                }
+            }
+            wtxn.commit()?;
+            removed += paradoxes_fixed * 2;
+        }
+
+        // Rebuild adjacency to reflect all changes
+        self.rebuild_in_memory()?;
+
+        Ok((removed, added, recomputed, gendered))
     }
 
     /// Return (alias_id, canonical_id) pairs where both entities have the same
@@ -1319,6 +1790,28 @@ impl GraphStore {
         }
         wtxn.commit()?;
         Ok(())
+    }
+
+    /// Store the list of source document titles for this KB. Used by dream tasks to
+    /// inject exclusion rules that prevent book/work titles from being used as
+    /// location or organisation targets in the knowledge graph.
+    pub fn set_document_titles(&mut self, titles: &[String]) -> Result<()> {
+        let json = serde_json::to_string(titles)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(METADATA_TABLE)?;
+            t.insert("document_titles", json.as_str())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve the stored document titles. Returns an empty vec if none are stored.
+    pub fn get_document_titles(&self) -> Vec<String> {
+        let Ok(rtxn) = self.db.begin_read() else { return vec![] };
+        let Ok(table) = rtxn.open_table(METADATA_TABLE) else { return vec![] };
+        let Ok(Some(v)) = table.get("document_titles") else { return vec![] };
+        serde_json::from_str(v.value()).unwrap_or_default()
     }
 
     /// Expose chunk→entity mapping for cross-link discovery in the dream loop.

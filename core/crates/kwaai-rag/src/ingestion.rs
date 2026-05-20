@@ -224,6 +224,7 @@ pub async fn extract_and_store_entities_pub(
                     aliases: vec![],
                     schema_type: None,
                     evidence: Vec::new(),
+                    gender: None,
                 };
                 if let Err(e) = graph.upsert_entity(node) {
                     warn!("upsert_entity: {e}");
@@ -387,6 +388,7 @@ async fn extract_and_store_entities(
                 aliases: vec![],
                 schema_type: None,
                 evidence: Vec::new(),
+                gender: None,
             };
             if let Err(e) = graph.upsert_entity(node) {
                 warn!("upsert_entity failed: {e}");

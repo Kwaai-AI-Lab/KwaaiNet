@@ -17,6 +17,7 @@ use kwaai_rag::{
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
     retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
+    seed_json,
 };
 
 use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs};
@@ -508,6 +509,13 @@ async fn cmd_ingest(
 
         let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+
+        // Store document title in graph store for LLM prompt injection
+        {
+            if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+                let _ = g.set_document_titles(&[doc_name.clone()]);
+            }
+        }
 
         let mut cfg = IngestConfig::new(embed);
         cfg.chunk_cfg.chunk_size = chunk_size;
@@ -2551,6 +2559,70 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 println!("\n  Tip: run `rag export` to view the updated graph in Obsidian.");
             }
 
+            GraphAction::SeedFromJson { file, emit_yaml } => {
+                print_box_header(&format!("Graph Seed from JSON ({})", kb));
+
+                let payload = seed_json::load_nb_json(&file)
+                    .with_context(|| format!("loading {}", file.display()))?;
+
+                let (low_ents, low_rels) = seed_json::count_low_confidence(&payload);
+                let total_ents = payload.entities.len();
+                let total_rels = payload.relations.len();
+
+                println!(
+                    "  Loaded {} entities ({} low-confidence), {} relations ({} low-confidence skipped) from {}",
+                    total_ents,
+                    low_ents,
+                    total_rels,
+                    low_rels,
+                    file.display()
+                );
+
+                // Optionally emit the converted YAML
+                if let Some(yaml_path) = &emit_yaml {
+                    let yaml = seed_json::to_seed_yaml(&payload);
+                    std::fs::write(yaml_path, &yaml)
+                        .with_context(|| format!("writing YAML to {}", yaml_path.display()))?;
+                    print_success(&format!("Seed YAML written to {}", yaml_path.display()));
+                }
+
+                // Convert to FamilyTree and seed the graph directly
+                let tree = seed_json::to_family_tree(&payload);
+
+                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+
+                println!(
+                    "  Graph before: {} entities, {} relations\n",
+                    store.node_count(),
+                    store.relation_count()
+                );
+
+                let stats = family::seed_family_tree(&mut store, &tree, &embed, |msg| {
+                    println!("  {msg}");
+                })
+                .await?;
+
+                println!();
+                print_success(&format!(
+                    "Seed complete — {} canonical entities upserted, {} aliases merged \
+                     ({} relations re-pointed), {} relations planted, {} aliases \
+                     not found in graph",
+                    stats.entities_upserted,
+                    stats.aliases_merged,
+                    stats.relations_merged,
+                    stats.relations_upserted,
+                    stats.aliases_not_found,
+                ));
+                println!(
+                    "  Graph after:  {} entities, {} relations",
+                    store.node_count(),
+                    store.relation_count()
+                );
+                println!("\n  Tip: run `rag export` to view the updated graph in Obsidian.");
+            }
+
             GraphAction::AliasScan {
                 auto,
                 dry_run,
@@ -2565,6 +2637,31 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     min_hits,
                 )
                 .await?;
+            }
+
+            GraphAction::Sanitize => {
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store for sanitize")?;
+                if store.node_count() == 0 {
+                    print_warning("Graph is empty — nothing to sanitize.");
+                    return Ok(());
+                }
+                print_box_header(&format!("Graph Sanitize ({})", kb));
+                println!("  Entities: {}", store.node_count());
+                println!("  Relations before: {}", store.relation_count());
+                println!();
+
+                let spinner = crate::progress::Spinner::start("sanitizing…");
+                let (removed, added, recomputed, gendered) = store.sanitize_relations()?;
+                drop(spinner);
+
+                println!("  Familial relations removed (non-Person endpoint): {removed}");
+                println!("  Missing inverse / symmetric relations added:       {added}");
+                println!("  Relation strengths recomputed from evidence:       {recomputed}");
+                println!("  Person entities with gender inferred:              {gendered}");
+                println!();
+                println!("  Relations after: {}", store.relation_count());
+                print_success("Sanitize complete. Run `graph score` to re-evaluate health.");
             }
 
             GraphAction::Score { top, json } => {
@@ -3176,6 +3273,90 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     }
                 }
             }
+
+            DreamAction::EmbedEval {
+                max_queries,
+                output,
+                verbose,
+                json,
+            } => {
+                let graph = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store for eval")?;
+                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let vs = std::sync::Arc::new(open_local_vs(&rag_cfg.data_dir())?);
+
+                if !json {
+                    print_box_header(&format!("Dream RAG — Retrieval Eval ({})", kb));
+                    let n = kwaai_rag::eval_retrieve::generate_eval_queries(
+                        &graph,
+                        max_queries.unwrap_or(usize::MAX),
+                    )
+                    .len();
+                    println!("  Embed model: {}", rag_cfg.embed_model);
+                    println!("  Queries:     {n}");
+                    println!();
+                }
+
+                let spinner = if json {
+                    None
+                } else {
+                    Some(crate::progress::Spinner::start("evaluating…"))
+                };
+
+                let report = kwaai_rag::eval_retrieve::evaluate_retrieval(
+                    &graph,
+                    &embed,
+                    |emb, k| {
+                        let vs = vs.clone();
+                        async move {
+                            let raw = vs.search(tenant_id, &emb, k).await?;
+                            Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                        }
+                    },
+                    max_queries.unwrap_or(usize::MAX),
+                    verbose,
+                    if json {
+                        None
+                    } else {
+                        Some(&|i, total| {
+                            let _ = (i, total); // progress is shown via spinner
+                        })
+                    },
+                )
+                .await?;
+
+                drop(spinner);
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("  Graph score:   {:.1}%", report.graph_score * 100.0);
+                    println!("  Queries run:   {}", report.query_count);
+                    println!("  Content queries (description-based): {:.0}%  Name queries: {:.0}%",
+                        report.content_query_fraction * 100.0,
+                        (1.0 - report.content_query_fraction) * 100.0);
+                    println!();
+                    println!("  Entity-space retrieval (primary — query → entity embeddings):");
+                    println!("    Recall@1:  {:.1}%", report.entity_recall_at_1 * 100.0);
+                    println!("    Recall@3:  {:.1}%", report.entity_recall_at_3 * 100.0);
+                    println!("    Recall@5:  {:.1}%", report.entity_recall_at_5 * 100.0);
+                    println!("    Recall@10: {:.1}%", report.entity_recall_at_10 * 100.0);
+                    println!("    MRR:       {:.3}", report.entity_mrr);
+                    println!();
+                    println!("  Chunk-space retrieval (lower bound — query → raw text chunks):");
+                    println!("    Recall@1:  {:.1}%", report.chunk_recall_at_1 * 100.0);
+                    println!("    Recall@5:  {:.1}%", report.chunk_recall_at_5 * 100.0);
+                    println!("    Recall@10: {:.1}%", report.chunk_recall_at_10 * 100.0);
+                    println!("    MRR:       {:.3}", report.chunk_mrr);
+                }
+
+                if let Some(path) = output {
+                    std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+                    if !json {
+                        print_success(&format!("Report saved: {}", path.display()));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -3720,10 +3901,16 @@ async fn cmd_export(output_dir: std::path::PathBuf, kb: String) -> Result<()> {
 
         let stats = kwaai_rag::obsidian::export_vault(&graph, &output_dir, &kb)?;
 
+        let stale_msg = if stats.stale_removed > 0 {
+            format!(", {} stale files removed", stats.stale_removed)
+        } else {
+            String::new()
+        };
         print_success(&format!(
-            "Vault written — {} entity files, {} relation links",
+            "Vault written — {} entity files, {} relation links{}",
             stats.entities,
-            stats.relations / 2
+            stats.relations,
+            stale_msg
         ));
         println!(
             "  Open {} in Obsidian and enable Graph View (Ctrl/Cmd+G).",

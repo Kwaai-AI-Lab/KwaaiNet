@@ -123,6 +123,7 @@ pub async fn seed_family_tree(
             aliases: merged_aliases,
             schema_type: existing.as_ref().and_then(|e| e.schema_type.clone()),
             evidence: Vec::new(),
+            gender: existing.as_ref().and_then(|e| e.gender.clone()),
         };
 
         graph.upsert_entity(node)?;

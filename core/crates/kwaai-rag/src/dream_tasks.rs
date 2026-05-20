@@ -38,7 +38,28 @@ pub fn task_for_schema_type(schema_type: Option<&str>) -> DreamTaskKind {
     }
 }
 
+/// Build a prompt rule string that instructs the LLM not to use source document
+/// titles as the target of spatial/employment relations. Returns an empty string
+/// when no titles are stored (making the call a no-op in the prompt).
+pub fn doc_exclusion_rule(document_titles: &[String]) -> String {
+    if document_titles.is_empty() {
+        return String::new();
+    }
+    let titles = document_titles
+        .iter()
+        .map(|t| format!("\"{}\"", t))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SOURCE DOCUMENT TITLES: {titles} — these are the titles of the works being analysed. \
+         They are CreativeWork entities. Do NOT use them as the target of located_in, works_at, \
+         part_of, or contains relations. When describing where events took place, use the actual \
+         place name (e.g. 'District Six', not 'District Six - Lest We Forget')."
+    )
+}
+
 /// Dispatch to the right task. General delegates to dream::complete_entity.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_task(
     kind: DreamTaskKind,
     eid: i64,
@@ -48,25 +69,28 @@ pub async fn run_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    mention_count: u32,
+    chunk_count: usize,
+    document_titles: &[String],
 ) -> EntityCompletion {
     match kind {
         DreamTaskKind::Biography => {
-            run_biography_task(eid, name, current_description, evidence_text, url, model).await
+            run_biography_task(eid, name, current_description, evidence_text, url, model, mention_count, chunk_count, document_titles).await
         }
         DreamTaskKind::Geography => {
-            run_geography_task(eid, name, current_description, evidence_text, url, model).await
+            run_geography_task(eid, name, current_description, evidence_text, url, model, document_titles).await
         }
         DreamTaskKind::OrgProfile => {
-            run_org_task(eid, name, current_description, evidence_text, url, model).await
+            run_org_task(eid, name, current_description, evidence_text, url, model, mention_count, chunk_count, document_titles).await
         }
         DreamTaskKind::EventProfile => {
-            run_event_task(eid, name, current_description, evidence_text, url, model).await
+            run_event_task(eid, name, current_description, evidence_text, url, model, document_titles).await
         }
         DreamTaskKind::ConceptDef => {
-            run_concept_task(eid, name, current_description, evidence_text, url, model).await
+            run_concept_task(eid, name, current_description, evidence_text, url, model, document_titles).await
         }
         DreamTaskKind::WorkProfile => {
-            run_work_task(eid, name, current_description, evidence_text, url, model).await
+            run_work_task(eid, name, current_description, evidence_text, url, model, document_titles).await
         }
         DreamTaskKind::General => {
             crate::dream::complete_entity(
@@ -250,6 +274,9 @@ pub async fn run_biography_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    mention_count: u32,
+    chunk_count: usize,
+    document_titles: &[String],
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
 
@@ -265,6 +292,27 @@ pub async fn run_biography_task(
         "Include relations clearly supported by the text — explicit statements AND strong \
          contextual associations (e.g. a person living in a city, working for an organisation, \
          opposing a movement) that are clearly evidenced in the text. Do not invent facts."
+    };
+
+    let is_major = mention_count > 5 || chunk_count > 5;
+    let description_rule = if is_major {
+        format!(
+            "DESCRIPTION: Write a full biographical paragraph of at least 4 sentences and \
+             at least 300 characters. Cover: who they are, their role, key events they were \
+             involved in, and their significance to the D6 community. Do NOT start with '{name}'."
+        )
+    } else {
+        format!(
+            "DESCRIPTION: MUST be at least 2 full sentences and at least 150 characters. \
+             Do NOT start with '{name}'."
+        )
+    };
+
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("\n         - {doc_rule}")
     };
 
     let prompt = format!(
@@ -284,9 +332,12 @@ pub async fn run_biography_task(
              {{\"type\":\"associated_with\",\"target\":\"<key person, event, or movement>\"}}\
            ]}}\n\n\
          Rules:\n\
-         - description MUST be at least 2 full sentences and at least 150 characters\n\
+         - {description_rule}\n\
+         - RELATION DIRECTION: 'parent_of' means the source IS THE PARENT. If {name} is a child of someone, write: that_person parent_of {name}. NEVER write {name} parent_of their own parent.\n\
+         - spouse_of means LEGALLY MARRIED. ONLY include this relation if the text EXPLICITLY states marriage (e.g. 'married', 'wife', 'husband'). Do NOT infer marriage from association, friendship, or working together.\n\
+         - If in doubt about a familial relation, use 'associated_with' instead.\n\
          - Omit any relation whose target is empty or vague\n\
-         - {knowledge_rule}"
+         - {knowledge_rule}{doc_rule_line}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -302,6 +353,7 @@ pub async fn run_geography_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    document_titles: &[String],
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     // Raise threshold: evidence is concatenated chunks so even well-known places
@@ -313,6 +365,12 @@ pub async fn run_geography_task(
          For obscure, fictional, or highly local places, use only what the text provides."
     } else {
         "Use the source text as your primary reference for geographic details."
+    };
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("\n         - {doc_rule}")
     };
     let prompt = format!(
         "You are describing a place named \"{name}\" from source text.\n\
@@ -328,7 +386,7 @@ pub async fn run_geography_task(
          Rules:\n\
          - Write BOTH sentences; description must be at least 150 characters total\n\
          - Omit any relation whose target is empty or vague\n\
-         - {knowledge_rule}"
+         - {knowledge_rule}{doc_rule_line}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -344,6 +402,9 @@ pub async fn run_org_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    mention_count: u32,
+    chunk_count: usize,
+    document_titles: &[String],
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 600;
@@ -355,6 +416,28 @@ pub async fn run_org_task(
     } else {
         "Only include relations where the target is explicitly named in the text."
     };
+
+    let is_major = mention_count > 5 || chunk_count > 5;
+    let description_rule = if is_major {
+        format!(
+            "DESCRIPTION: Write a full organisational profile of at least 4 sentences and \
+             at least 300 characters. Cover: what it is, where it operates, its key activities \
+             or purpose, and its significance in the context of the text. Do NOT start with '{name}'."
+        )
+    } else {
+        format!(
+            "DESCRIPTION: MUST be at least 2 full sentences and at least 150 characters. \
+             Do NOT start with '{name}'."
+        )
+    };
+
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("\n         - {doc_rule}")
+    };
+
     let prompt = format!(
         "You are profiling an organisation named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -370,9 +453,9 @@ pub async fn run_org_task(
              {{\"type\":\"belongs_to\",\"target\":\"<federation or body it belongs to>\"}}\
            ]}}\n\n\
          Rules:\n\
-         - description MUST be at least 2 full sentences and at least 150 characters\n\
+         - {description_rule}\n\
          - Omit any relation whose target is empty or vague\n\
-         - {knowledge_rule}"
+         - {knowledge_rule}{doc_rule_line}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -388,6 +471,7 @@ pub async fn run_event_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    document_titles: &[String],
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 600;
@@ -397,6 +481,12 @@ pub async fn run_event_task(
          location, or broader context. For obscure or local events, use only what the text provides."
     } else {
         "Include relations clearly supported by the text — explicit or strongly implied by context."
+    };
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("\n         - {doc_rule}")
     };
     let prompt = format!(
         "You are describing an event named \"{name}\" from source text.\n\
@@ -413,7 +503,7 @@ pub async fn run_event_task(
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
          - Omit any relation whose target is empty or vague\n\
-         - {knowledge_rule}"
+         - {knowledge_rule}{doc_rule_line}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -429,6 +519,7 @@ pub async fn run_concept_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    document_titles: &[String],
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 400;
@@ -438,6 +529,12 @@ pub async fn run_concept_task(
          For obscure or highly context-specific terms, use only what the text provides."
     } else {
         "Only include relations where the target is explicitly named in the text."
+    };
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("\n         - {doc_rule}")
     };
     let prompt = format!(
         "You are describing the historical or social concept \"{name}\" as used in source text.\n\
@@ -453,7 +550,7 @@ pub async fn run_concept_task(
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
          - Omit any relation whose target is empty or vague\n\
-         - {knowledge_rule}"
+         - {knowledge_rule}{doc_rule_line}"
     );
 
     match call_llm(&prompt, url, model).await {
@@ -469,8 +566,15 @@ pub async fn run_work_task(
     evidence_text: &str,
     url: &str,
     model: &str,
+    document_titles: &[String],
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("\n         - {doc_rule}")
+    };
     let prompt = format!(
         "You are describing \"{name}\" — a creative work, publication, or physical object — from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -486,7 +590,7 @@ pub async fn run_work_task(
            ]}}\n\n\
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
-         - Only include relations where the target is explicitly named in the text."
+         - Only include relations where the target is explicitly named in the text{doc_rule_line}"
     );
 
     match call_llm(&prompt, url, model).await {

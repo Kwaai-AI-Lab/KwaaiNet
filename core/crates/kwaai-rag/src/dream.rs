@@ -282,6 +282,8 @@ struct WorkItem {
     schema_type: Option<String>,
     description: String,
     evidence_text: String,
+    mention_count: u32,
+    chunk_count: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -310,12 +312,13 @@ pub async fn run_dream_cycle(
     };
 
     // ── Step 1: Score, collect work items ────────────────────────────────────
-    let work_items = {
+    let (work_items, document_titles) = {
         // Open MetaStore inside this block so it is dropped before the LLM
         // fan-out — prevents "Database already open" errors if another command
         // (e.g. alias-scan) runs concurrently against the same KB.
         let meta = MetaStore::open(data_dir, tenant_id).context("open meta store for scoring")?;
         let store = GraphStore::open(data_dir, tenant_id).context("open graph for scoring")?;
+        let document_titles = store.get_document_titles();
         let health = score_graph(&store);
         report.score_before = health.overall;
         let mut items: Vec<WorkItem> = Vec::new();
@@ -365,9 +368,11 @@ pub async fn run_dream_cycle(
                 schema_type: node.schema_type.clone(),
                 description: node.description.clone(),
                 evidence_text,
+                mention_count: node.mention_count,
+                chunk_count: chunk_ids.len(),
             });
         }
-        items
+        (items, document_titles)
     }; // GraphStore dropped here
 
     let total = work_items.len();
@@ -388,6 +393,7 @@ pub async fn run_dream_cycle(
     // while the spawning loop still holds all semaphore permits).
     let (tx, mut rx) = mpsc::channel::<Result<EntityCompletion>>(total.max(1));
     let model_str = model.to_string();
+    let document_titles = Arc::new(document_titles);
 
     for item in work_items {
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
@@ -395,6 +401,7 @@ pub async fn run_dream_cycle(
         let urls = urls.clone();
         let url_counter = url_counter.clone();
         let model = model_str.clone();
+        let doc_titles = document_titles.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -417,6 +424,9 @@ pub async fn run_dream_cycle(
                 &item.evidence_text,
                 url,
                 &model,
+                item.mention_count,
+                item.chunk_count,
+                &doc_titles,
             )
             .await;
             let _ = tx.send(Ok(result)).await;
@@ -499,10 +509,24 @@ pub async fn run_dream_cycle(
                     Some(n) => n.id,
                     None => continue, // reject hallucinated targets
                 };
-                let src_chunk = store.chunks_for_entity(eid).first().copied().unwrap_or(0);
-                if let Err(e) = store.upsert_relation(eid, dst_id, rel_type, src_chunk) {
-                    cycle_errors.push(format!("upsert_relation {eid}→{dst_id}: {e}"));
+                // Use ALL evidence chunks so strength reflects how well-evidenced the entity is.
+                // Relations added by dream cycle inherit the entity's text support (not just one chunk).
+                let evidence_chunks: Vec<i64> = store.chunks_for_entity(eid).to_vec();
+                let chunks_to_use: &[i64] = if evidence_chunks.is_empty() {
+                    &[0]
                 } else {
+                    &evidence_chunks
+                };
+                let mut upsert_ok = false;
+                for &cid in chunks_to_use {
+                    match store.upsert_relation(eid, dst_id, rel_type, cid) {
+                        Ok(()) => { upsert_ok = true; }
+                        Err(e) => {
+                            cycle_errors.push(format!("upsert_relation {eid}→{dst_id}: {e}"));
+                        }
+                    }
+                }
+                if upsert_ok {
                     report.entities_relations_added += 1;
                 }
             }
@@ -571,7 +595,27 @@ pub async fn run_dream_cycle(
             store.rebuild_in_memory().ok();
         }
 
-        // ── Step 8: Final score ───────────────────────────────────────────────
+        // ── Step 8: Relation integrity pass ──────────────────────────────────
+        // Runs every cycle to prevent hallucinated relations from accumulating:
+        //   - removes familial relations where either endpoint is not a Person
+        //   - removes same-gender spouse_of pairs (LLM confuses "associated" with "married")
+        //   - adds missing logical inverses (parent_of ↔ child_of)
+        //   - recomputes relation strength from shared-evidence-chunk co-occurrence
+        if let Some(ref cb) = progress {
+            cb(0, 0, "sanitizing relations");
+        }
+        match store.sanitize_relations() {
+            Ok((removed, _added, _recomputed, gendered)) => {
+                if removed > 0 || gendered > 0 {
+                    tracing::debug!(
+                        "sanitize: removed={removed} gendered={gendered}"
+                    );
+                }
+            }
+            Err(e) => cycle_errors.push(format!("sanitize_relations: {e}")),
+        }
+
+        // ── Step 9: Final score ───────────────────────────────────────────────
         report.score_after = score_graph(&store).overall;
     }
 
