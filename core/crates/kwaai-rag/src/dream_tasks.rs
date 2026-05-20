@@ -446,9 +446,9 @@ pub async fn run_concept_task(
          JSON schema:\n\
          {{\"description\":\"<sentence 1: what this concept means or refers to in general terms> <sentence 2: how it is used or significant in the context of the source text>\",\
            \"relations\":[\
-             {{\"type\":\"related_to\",\"target\":\"<related concept, law, or policy>\"}},\
-             {{\"type\":\"defined_by\",\"target\":\"<organisation or document that defines it>\"}},\
-             {{\"type\":\"subtype_of\",\"target\":\"<broader concept>\"}}\
+             {{\"type\":\"related_to\",\"target\":\"<related person, organisation, event, concept, law, or policy>\"}},\
+             {{\"type\":\"defined_by\",\"target\":\"<organisation or document that defines or governs it>\"}},\
+             {{\"type\":\"subtype_of\",\"target\":\"<broader concept or category>\"}}\
            ]}}\n\n\
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
