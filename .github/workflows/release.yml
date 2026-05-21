@@ -447,27 +447,46 @@ jobs:
           tar -cJf "${LABEL}.${{ matrix.ext }}" "${LABEL}"
           sha256sum "${LABEL}.${{ matrix.ext }}" | awk '{print $1}' > "${LABEL}.${{ matrix.ext }}.sha256"
           echo "CUDA archive: $(ls -lh ${LABEL}.${{ matrix.ext }})"
-      - name: Upload CUDA artifact to GitHub Release
-        shell: bash
-        working-directory: core
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Save CUDA archive as Actions artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: cuda-archive-${{ matrix.label }}
+          path: |
+            core/${{ matrix.label }}.${{ matrix.ext }}
+            core/${{ matrix.label }}.${{ matrix.ext }}.sha256
+          retention-days: 3
+
+  # Upload the pre-built CUDA archive to the GitHub Release once it exists.
+  # Depends on both build-cuda-artifacts (archive ready) AND host (release created)
+  # so no polling is needed — the job simply starts after both prerequisites finish.
+  upload-cuda-to-release:
+    needs:
+      - plan
+      - build-cuda-artifacts
+      - host
+    if: ${{ needs.plan.outputs.publishing == 'true' && needs.build-cuda-artifacts.result == 'success' && needs.host.result == 'success' }}
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - label: kwaainet-x86_64-unknown-linux-gnu-cuda
+            ext: tar.xz
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download CUDA archive artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: cuda-archive-${{ matrix.label }}
+          path: cuda-dist/
+      - name: Upload to GitHub Release
         run: |
-          TAG="${{ github.ref_name }}"
-          LABEL="${{ matrix.label }}"
-          EXT="${{ matrix.ext }}"
-          # Poll for release to exist — host takes ~15-20 min; allow 30 min
-          for i in $(seq 1 60); do
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release $TAG found after $i attempts"
-              break
-            fi
-            echo "Waiting for release $TAG ... ($i/60)"
-            sleep 30
-          done
+          TAG="${{ needs.plan.outputs.tag }}"
           gh release upload "$TAG" \
-            "${LABEL}.${EXT}" \
-            "${LABEL}.${EXT}.sha256" \
+            cuda-dist/${{ matrix.label }}.${{ matrix.ext }} \
+            cuda-dist/${{ matrix.label }}.${{ matrix.ext }}.sha256 \
+            --repo "${{ github.repository }}" \
             --clobber
 
   # Build and package all the platform-agnostic(ish) things
