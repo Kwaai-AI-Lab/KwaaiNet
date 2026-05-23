@@ -2495,7 +2495,7 @@ pub async fn extract_from_text(
     });
 
     let send_result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(90),
         client.post(&url).json(&body).send(),
     )
     .await;
@@ -2506,7 +2506,7 @@ pub async fn extract_from_text(
             return Ok((vec![], vec![]));
         }
         Err(_) => {
-            tracing::warn!("entity extraction send timed out after 30s");
+            tracing::warn!("entity extraction send timed out after 90s");
             return Ok((vec![], vec![]));
         }
     };
