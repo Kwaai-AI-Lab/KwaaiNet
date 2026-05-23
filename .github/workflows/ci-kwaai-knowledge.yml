@@ -1,0 +1,35 @@
+name: CI — kwaai-knowledge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-rag/**"
+      - "projects/kwaai-knowledge/**"
+      - "tests/kwaai-knowledge/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-rag/**"
+      - "projects/kwaai-knowledge/**"
+      - "tests/kwaai-knowledge/**"
+
+jobs:
+  ci:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check -p kwaai-rag
+      - name: clippy
+        run: cargo clippy -p kwaai-rag -- -D warnings
+      - name: test
+        run: cargo test -p kwaai-rag

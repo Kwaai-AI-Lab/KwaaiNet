@@ -1,0 +1,196 @@
+[
+  {
+    "cycle": 0,
+    "ts": "2026-05-20T17:10:00",
+    "graph_score": 51.5,
+    "eval_score": null,
+    "note": "baseline after graph build + I\u2192Yousuf merge + seed"
+  },
+  {
+    "cycle": 1,
+    "ts": "2026-05-20T17:12:22",
+    "graph_score": 55.8,
+    "eval_score": null
+  },
+  {
+    "cycle": 2,
+    "ts": "2026-05-20T17:13:04",
+    "graph_score": 57.3,
+    "eval_score": null
+  },
+  {
+    "cycle": 3,
+    "ts": "2026-05-20T17:13:50",
+    "graph_score": 58.4,
+    "eval_score": null
+  },
+  {
+    "cycle": 4,
+    "ts": "2026-05-20T17:22:28",
+    "graph_score": 59.5,
+    "eval_score": 56.9
+  },
+  {
+    "cycle": 5,
+    "ts": "2026-05-20T17:25:04",
+    "graph_score": 60.5,
+    "eval_score": 49.1
+  },
+  {
+    "cycle": 6,
+    "ts": "2026-05-20T17:27:19",
+    "graph_score": 61.7,
+    "eval_score": 51.7
+  },
+  {
+    "cycle": 7,
+    "ts": "2026-05-20T17:29:22",
+    "graph_score": 62.4,
+    "eval_score": 53.4
+  },
+  {
+    "cycle": 8,
+    "ts": "2026-05-20T17:32:20",
+    "graph_score": 63.1,
+    "eval_score": 56.0
+  },
+  {
+    "cycle": 9,
+    "ts": "2026-05-20T17:35:56",
+    "graph_score": 64.6,
+    "eval_score": 53.4,
+    "note": "max-completions=100"
+  },
+  {
+    "cycle": 10,
+    "ts": "2026-05-20T18:08:39.371331",
+    "graph_score": 65.2,
+    "eval_score": null
+  },
+  {
+    "cycle": 11,
+    "ts": "2026-05-20T18:08:43.001561",
+    "graph_score": null,
+    "eval_score": null
+  },
+  {
+    "cycle": 12,
+    "ts": "2026-05-20T18:08:43.268253",
+    "graph_score": null,
+    "eval_score": 0.0
+  },
+  {
+    "cycle": 13,
+    "ts": "2026-05-20T18:13:36.259753",
+    "graph_score": null,
+    "eval_score": null
+  },
+  {
+    "cycle": 14,
+    "ts": "2026-05-20T18:15:33.740054",
+    "graph_score": 69.3,
+    "eval_score": null
+  },
+  {
+    "cycle": 15,
+    "ts": "2026-05-20T18:17:37.788724",
+    "graph_score": 70.9,
+    "eval_score": 52.6
+  },
+  {
+    "cycle": 16,
+    "ts": "2026-05-20T18:22:05.025419",
+    "graph_score": 72.4,
+    "eval_score": null
+  },
+  {
+    "cycle": 17,
+    "ts": "2026-05-20T18:24:08.656693",
+    "graph_score": 73.7,
+    "eval_score": null
+  },
+  {
+    "cycle": 18,
+    "ts": "2026-05-20T18:26:04.747350",
+    "graph_score": 74.7,
+    "eval_score": 58.6
+  },
+  {
+    "cycle": 19,
+    "ts": "2026-05-20T18:31:19.076269",
+    "graph_score": 75.6,
+    "eval_score": null
+  },
+  {
+    "cycle": 20,
+    "ts": "2026-05-20T18:35:08.141024",
+    "graph_score": 76.9,
+    "eval_score": null
+  },
+  {
+    "cycle": 21,
+    "ts": "2026-05-20T18:35:08.256536",
+    "graph_score": null,
+    "eval_score": null
+  },
+  {
+    "cycle": 22,
+    "ts": "2026-05-20T19:02:32.657514",
+    "graph_score": 77.7,
+    "eval_score": null
+  },
+  {
+    "cycle": 23,
+    "ts": "2026-05-20T19:03:53.069993",
+    "graph_score": 77.9,
+    "eval_score": null
+  },
+  {
+    "cycle": 24,
+    "ts": "2026-05-20T19:04:34.039865",
+    "graph_score": 78.0,
+    "eval_score": 58.6
+  },
+  {
+    "cycle": 25,
+    "ts": "2026-05-20T19:07:26.426007",
+    "graph_score": 78.0,
+    "eval_score": null
+  },
+  {
+    "cycle": 26,
+    "ts": "2026-05-20T19:07:49.010639",
+    "graph_score": 78.0,
+    "eval_score": null
+  },
+  {
+    "cycle": 27,
+    "ts": "2026-05-20T19:08:02.812164",
+    "graph_score": 78.1,
+    "eval_score": 49.1
+  },
+  {
+    "cycle": 28,
+    "ts": "2026-05-20T19:10:34.913820",
+    "graph_score": 78.1,
+    "eval_score": null
+  },
+  {
+    "cycle": 29,
+    "ts": "2026-05-20T19:10:42.325640",
+    "graph_score": 78.1,
+    "eval_score": null
+  },
+  {
+    "cycle": 30,
+    "ts": "2026-05-20T19:10:49.919245",
+    "graph_score": 78.1,
+    "eval_score": 56.0
+  },
+  {
+    "cycle": 31,
+    "ts": "2026-05-20T19:13:28.414180",
+    "graph_score": 78.1,
+    "eval_score": null
+  }
+]

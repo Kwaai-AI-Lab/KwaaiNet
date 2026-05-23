@@ -5,7 +5,7 @@
 //!   2. Merge known alias entities into each canonical (re-pointing all their relations).
 //!   3. Upsert ground-truth family relations (parent_of, spouse_of, sibling_of, etc.).
 //!
-//! The YAML format is documented in `tests/d6_family_tree.yaml`.
+//! The YAML format is documented in `tests/kwaai-knowledge/d6_family_tree.yaml`.
 
 use anyhow::Result;
 use serde::Deserialize;

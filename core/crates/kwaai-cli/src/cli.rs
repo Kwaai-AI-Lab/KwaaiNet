@@ -1253,7 +1253,7 @@ pub enum RagAction {
         #[arg(long, default_value = "4", value_name = "N")]
         workers: usize,
 
-        /// YAML seed file for canonical entities (see tests/d6_family_tree.yaml)
+        /// YAML seed file for canonical entities (see tests/kwaai-knowledge/d6_family_tree.yaml)
         #[arg(long, value_name = "FILE")]
         seed_file: Option<std::path::PathBuf>,
 
@@ -1590,7 +1590,7 @@ pub enum GraphAction {
     /// family relations. Aliases declared in the YAML are stored on the canonical entity so
     /// name-token search finds them even after the alias entity is removed.
     Seed {
-        /// Path to the YAML family tree file (see tests/d6_family_tree.yaml for format)
+        /// Path to the YAML family tree file (see tests/kwaai-knowledge/d6_family_tree.yaml for format)
         #[arg(long, value_name = "FILE")]
         file: std::path::PathBuf,
 

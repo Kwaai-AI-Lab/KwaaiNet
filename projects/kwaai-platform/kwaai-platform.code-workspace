@@ -1,0 +1,21 @@
+{
+  "folders": [
+    { "path": "../../core/crates/kwaai-cli", "name": "kwaai-cli (crate)" },
+    { "path": "../../core/crates/map-server", "name": "map-server (crate)" },
+    { "path": "../../core/crates/summit-server", "name": "summit-server (crate)" },
+    { "path": "../../.github/workflows", "name": "CI workflows" },
+    { "path": ".", "name": "project docs" },
+    { "path": "../../tests/kwaai-platform", "name": "tests" }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": ["../../core/Cargo.toml"],
+    "rust-analyzer.cargo.features": "all"
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust-analyzer",
+      "tamasfe.even-better-toml",
+      "github.vscode-github-actions"
+    ]
+  }
+}
