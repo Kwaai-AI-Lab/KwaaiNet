@@ -445,7 +445,7 @@ jobs:
           echo "CUDA libs bundled: $(ls ${LABEL}/*.so* 2>/dev/null | wc -l) files"
           chmod +x "${LABEL}"/*
           tar -cJf "${LABEL}.${{ matrix.ext }}" "${LABEL}"
-          sha256sum "${LABEL}.${{ matrix.ext }}" | awk '{print $1}' > "${LABEL}.${{ matrix.ext }}.sha256"
+          sha256sum "${LABEL}.${{ matrix.ext }}" | awk '{print $1, "*" FILENAME}' FILENAME="${LABEL}.${{ matrix.ext }}" > "${LABEL}.${{ matrix.ext }}.sha256"
           echo "CUDA archive: $(ls -lh ${LABEL}.${{ matrix.ext }})"
       - name: Save CUDA archive as Actions artifact
         uses: actions/upload-artifact@v6

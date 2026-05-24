@@ -346,12 +346,17 @@ impl UpdateChecker {
             let entry = entry?;
             let name = entry.file_name();
             let dest = install_dir.join(&name);
-            std::fs::copy(entry.path(), &dest)
-                .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
+            // Write to a temp file then rename atomically to avoid ETXTBSY
+            // (Linux won't let you overwrite a binary that is currently executing).
+            let tmp_dest = install_dir.join(format!(".{}.tmp", name.to_string_lossy()));
+            std::fs::copy(entry.path(), &tmp_dest)
+                .with_context(|| format!("Installing {} (staging)", name.to_string_lossy()))?;
             let name_str = name.to_string_lossy();
             if name_str == "kwaainet" || name_str == "p2pd" {
-                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+                std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))?;
             }
+            std::fs::rename(&tmp_dest, &dest)
+                .with_context(|| format!("Installing {}", name_str))?;
         }
         let _ = std::fs::remove_dir_all(&tmp);
         println!("  CUDA binary installed to {}.", install_dir.display());
