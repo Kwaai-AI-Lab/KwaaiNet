@@ -15,8 +15,8 @@
 
 set -euo pipefail
 
-METRO_LINUX_PEER="12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd"
-METRO_WIN_PEER="12D3KooWSbrhkjVkyaKaDFzFxSdsbZcYe9wnZRCgQKB7y3WCWqQz"
+METRO_LINUX_PEER="12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs"
+METRO_WIN_PEER="12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE"
 TEST_KB="p2p-relay-test"
 TEST_PDF="/Users/rezarassool/Source/KwaaiNet/docs/LEST WE FORGET -rev25.pdf"
 
