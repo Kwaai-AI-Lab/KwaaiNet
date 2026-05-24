@@ -1944,7 +1944,10 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
         "DHTProtocol.rpc_store" => {
             let (r, vf) =
                 decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::StoreRequest>(&bytes)
-                    .map_err(|e| anyhow::anyhow!("decode StoreRequest: {}", e))?;
+                    .map_err(|e| {
+                        let hex: String = bytes.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+                        anyhow::anyhow!("decode StoreRequest: {} | first {} bytes: [{}]", e, bytes.len().min(64), hex)
+                    })?;
             (DHTRequest::Store(r), vf)
         }
         "DHTProtocol.rpc_find" => {
