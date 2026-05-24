@@ -894,7 +894,7 @@ async fn main() -> Result<()> {
                             }
                             Err(e) => {
                                 println!();
-                                print_error(&format!("Update failed: {e}"));
+                                print_error(&format!("Update failed: {e:#}"));
                                 // Restart daemon with the EXISTING binary — the install was
                                 // aborted (e.g. CUDA archive not yet published), so the binary
                                 // on disk is unchanged and safe to run.

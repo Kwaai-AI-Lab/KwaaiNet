@@ -448,13 +448,18 @@ impl UpdateChecker {
         {
             let entry = entry?;
             let name = entry.file_name();
-            let dest = install_dir.join(&name);
-            std::fs::copy(entry.path(), &dest)
-                .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
             let name_str = name.to_string_lossy();
+            let dest = install_dir.join(&name);
+            // Copy to a temp file then rename atomically. Direct O_TRUNC writes
+            // to a running ELF binary trigger ETXTBSY on Linux — rename() does not.
+            let tmp_dest = install_dir.join(format!("{name_str}.kwupdate_tmp"));
+            std::fs::copy(entry.path(), &tmp_dest)
+                .with_context(|| format!("Installing {name_str} (temp copy)"))?;
             if name_str == "kwaainet" || name_str == "p2pd" {
-                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+                std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))?;
             }
+            std::fs::rename(&tmp_dest, &dest)
+                .with_context(|| format!("Installing {name_str} (rename)"))?;
         }
         let _ = std::fs::remove_dir_all(&tmp);
 
