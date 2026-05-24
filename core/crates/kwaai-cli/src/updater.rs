@@ -297,15 +297,13 @@ impl UpdateChecker {
             .unwrap_or(false);
 
         if !cuda_available {
-            println!();
-            println!(
-                "  ⚠  CUDA build for v{version} isn't published yet (CI takes ~90 min after release)."
+            anyhow::bail!(
+                "NVIDIA GPU detected but the CUDA build for v{version} isn't published yet \
+                 (CI takes ~90 min after release).\n\
+                 Update skipped — your current GPU-enabled binary is unchanged.\n\
+                 Try again in ~1 hour or watch: \
+                 https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/tag/v{version}"
             );
-            println!(
-                "  Installing CPU build now — run `kwaainet update` again in ~1 hour for the GPU-optimised binary."
-            );
-            println!();
-            return self.install_cpu_linux(version).await;
         }
 
         print!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
@@ -418,4 +416,43 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
         )
     };
     parse(latest) > parse(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_newer_ordering() {
+        assert!(is_newer("0.4.2", "0.4.1"));
+        assert!(is_newer("0.5.0", "0.4.99"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(!is_newer("0.4.1", "0.4.1"));
+        assert!(!is_newer("0.4.0", "0.4.1"));
+    }
+
+    /// Verifies that when the CUDA archive isn't published yet, install_cuda_linux
+    /// returns Err (no CPU fallback, no binary is touched).
+    /// Run with: cargo test -p kwaainet -- updater --nocapture
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn cuda_update_bails_when_archive_missing() {
+        // v0.4.70 never had a CUDA archive — safe version to test against.
+        let checker = UpdateChecker::new();
+        let result = checker.install_cuda_linux("0.4.70").await;
+        let err = result.expect_err("should bail when CUDA archive is missing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CUDA build for v0.4.70 isn't published yet"),
+            "Expected 'not published yet' message, got: {msg}"
+        );
+    }
+
+    /// Smoke-test: nvidia_smi_async should not hang or panic regardless of GPU presence.
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn nvidia_smi_does_not_hang() {
+        let _has_gpu = nvidia_smi_async().await;
+        // Pass as long as it returns within the 4-second timeout.
+    }
 }
