@@ -1,0 +1,39 @@
+[package]
+name = "kwaai-network-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Integration and connectivity test suite for kwaai-network"
+
+# Three test tiers, all off by default:
+#   cargo test                              # unit only
+#   KWAAI_INTEGRATION_TESTS=1 cargo test   # + daemon spawn tests
+#   KWAAI_NETWORK_TESTS=1 cargo test       # + live bootstrap tests
+
+[dependencies]
+kwaai-p2p        = { workspace = true }
+kwaai-hivemind-dht = { workspace = true }
+kwaai-p2p-daemon = { workspace = true }
+kwaai-rpc        = { workspace = true }
+tokio     = { workspace = true }
+serde     = { workspace = true }
+serde_json = { workspace = true }
+chrono    = { workspace = true }
+anyhow    = { workspace = true }
+tracing   = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+libp2p    = { workspace = true }
+prost     = { workspace = true }          # 0.12 — for kwaai-hivemind-dht / kwaai-p2p types
+prost013  = { package = "prost", version = "0.13" }  # 0.13 — for kwaai-rpc tonic-generated types
+rmp-serde = { workspace = true }
+hex       = "0.4"
+sha2      = "0.10"
+tempfile  = "3"
+
+[dev-dependencies]
+
+[[bin]]
+name = "metrics-report"
+path = "src/bin/metrics_report.rs"

@@ -3066,6 +3066,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "kwaai-network-tests"
+version = "0.4.76"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "kwaai-hivemind-dht",
+ "kwaai-p2p",
+ "kwaai-p2p-daemon",
+ "kwaai-rpc",
+ "libp2p",
+ "prost 0.12.6",
+ "prost 0.13.5",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kwaai-p2p"
 version = "0.4.76"
 dependencies = [
