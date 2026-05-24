@@ -361,6 +361,7 @@ fn empty(eid: i64) -> EntityCompletion {
 
 // ── Task implementations ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_biography_task(
     eid: i64,
     name: &str,
@@ -434,6 +435,7 @@ pub async fn run_biography_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_geography_task(
     eid: i64,
     name: &str,
@@ -488,6 +490,7 @@ pub async fn run_geography_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_org_task(
     eid: i64,
     name: &str,
@@ -552,6 +555,7 @@ pub async fn run_org_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_event_task(
     eid: i64,
     name: &str,
@@ -601,6 +605,7 @@ pub async fn run_event_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_concept_task(
     eid: i64,
     name: &str,
@@ -649,6 +654,7 @@ pub async fn run_concept_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_work_task(
     eid: i64,
     name: &str,

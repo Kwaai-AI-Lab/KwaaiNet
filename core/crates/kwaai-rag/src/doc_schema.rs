@@ -56,7 +56,11 @@ impl DocSchema {
         } else {
             parts.push(format!("\"{}\"", title));
         }
-        if let Some(year) = self.metadata.get("year").or_else(|| self.metadata.get("datePublished")) {
+        if let Some(year) = self
+            .metadata
+            .get("year")
+            .or_else(|| self.metadata.get("datePublished"))
+        {
             parts.push(format!("({})", year));
         }
         if let Some(isbn) = self.metadata.get("isbn") {
@@ -65,7 +69,11 @@ impl DocSchema {
         if let Some(pub_) = self.metadata.get("publisher") {
             parts.push(format!("Publisher: {}", pub_));
         }
-        if let Some(subj) = self.metadata.get("subject").or_else(|| self.metadata.get("about")) {
+        if let Some(subj) = self
+            .metadata
+            .get("subject")
+            .or_else(|| self.metadata.get("about"))
+        {
             parts.push(format!("Subject: {}", subj));
         }
         Some(parts.join(" "))
@@ -108,15 +116,26 @@ pub fn auto_detect_schema(header_text: &str) -> DocSchema {
         schema.metadata.insert("publisher".to_string(), pub_);
     }
     if let Some(year) = find_copyright_year(header_text) {
-        schema.metadata.entry("copyrightYear".to_string()).or_insert(year.clone());
-        schema.metadata.entry("datePublished".to_string()).or_insert(year.clone());
+        schema
+            .metadata
+            .entry("copyrightYear".to_string())
+            .or_insert(year.clone());
+        schema
+            .metadata
+            .entry("datePublished".to_string())
+            .or_insert(year.clone());
         schema.metadata.entry("year".to_string()).or_insert(year);
     }
     if let Some(holder) = find_copyright_holder(header_text) {
-        schema.metadata.insert("copyrightHolder".to_string(), holder);
+        schema
+            .metadata
+            .insert("copyrightHolder".to_string(), holder);
     }
     if let Some(author) = find_by_author(header_text) {
-        schema.metadata.entry("author".to_string()).or_insert(author);
+        schema
+            .metadata
+            .entry("author".to_string())
+            .or_insert(author);
     }
 
     schema
@@ -136,7 +155,7 @@ pub fn parse_index_seeds(index_text: &str) -> Vec<(String, Option<String>)> {
         if line.is_empty() || line.len() < 3 {
             continue;
         }
-        if line.chars().next().map_or(true, |c| c.is_ascii_digit()) {
+        if line.chars().next().is_none_or(|c| c.is_ascii_digit()) {
             continue;
         }
 
@@ -147,7 +166,10 @@ pub fn parse_index_seeds(index_text: &str) -> Vec<(String, Option<String>)> {
 
         let (name, type_hint) = if let Some((surname, rest)) = split_surname_first(&name_part) {
             // "Surname, Firstname" → "Firstname Surname"
-            (format!("{} {}", rest.trim(), surname.trim()), Some("Person".to_string()))
+            (
+                format!("{} {}", rest.trim(), surname.trim()),
+                Some("Person".to_string()),
+            )
         } else if is_likely_org(&name_part) {
             (name_part, Some("Organization".to_string()))
         } else if is_likely_person(&name_part) {
@@ -169,7 +191,8 @@ pub fn parse_index_seeds(index_text: &str) -> Vec<(String, Option<String>)> {
 fn find_isbn(text: &str) -> Option<String> {
     for line in text.lines() {
         if line.contains("ISBN") {
-            let clean: String = line.chars()
+            let clean: String = line
+                .chars()
                 .filter(|c| c.is_ascii_digit() || *c == 'X')
                 .collect();
             if clean.len() == 13 || clean.len() == 10 {
@@ -204,7 +227,7 @@ fn find_copyright_year(text: &str) -> Option<String> {
                     buf.push(ch);
                     if buf.len() == 4 {
                         let y: u32 = buf.parse().unwrap_or(0);
-                        if y >= 1800 && y <= 2100 {
+                        if (1800..=2100).contains(&y) {
                             return Some(buf);
                         }
                         buf.clear();
@@ -246,7 +269,7 @@ fn find_by_author(text: &str) -> Option<String> {
             let words: Vec<&str> = name.split_whitespace().collect();
             // 2–5 words, first word capitalised
             if (2..=5).contains(&words.len())
-                && words[0].chars().next().map_or(false, |c| c.is_uppercase())
+                && words[0].chars().next().is_some_and(|c| c.is_uppercase())
             {
                 return Some(name.to_string());
             }
@@ -273,7 +296,6 @@ fn strip_page_refs(line: &str) -> String {
                         || c == ','
                         || c == ' '
                         || c == '-'
-                        || c == '–'
                         || c == '\u{2013}'
                 })
             {
@@ -282,7 +304,11 @@ fn strip_page_refs(line: &str) -> String {
             }
         }
     }
-    chars[..best_cut].iter().collect::<String>().trim().to_string()
+    chars[..best_cut]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Detect "Surname, Firstname [Middle]" pattern. Returns (surname, rest).
@@ -292,8 +318,8 @@ fn split_surname_first(name: &str) -> Option<(&str, &str)> {
         let rest = name[pos + 1..].trim();
         let surname_words = surname.split_whitespace().count();
         if surname_words == 1
-            && surname.chars().next().map_or(false, |c| c.is_uppercase())
-            && rest.chars().next().map_or(false, |c| c.is_uppercase())
+            && surname.chars().next().is_some_and(|c| c.is_uppercase())
+            && rest.chars().next().is_some_and(|c| c.is_uppercase())
         {
             return Some((surname, rest));
         }
@@ -309,14 +335,17 @@ fn is_likely_person(name: &str) -> bool {
         return false;
     }
     // All words start with uppercase (title-case name)
-    if !words.iter().all(|w| w.chars().next().map_or(false, |c| c.is_uppercase())) {
+    if !words
+        .iter()
+        .all(|w| w.chars().next().is_some_and(|c| c.is_uppercase()))
+    {
         return false;
     }
     // Exclude place/address words
     const PLACE_WORDS: &[&str] = &[
-        "street", "road", "avenue", "drive", "lane", "place", "square",
-        "district", "city", "cape", "town", "province", "mountain", "river",
-        "hall", "house", "building", "school", "museum", "station",
+        "street", "road", "avenue", "drive", "lane", "place", "square", "district", "city", "cape",
+        "town", "province", "mountain", "river", "hall", "house", "building", "school", "museum",
+        "station",
     ];
     let lower = name.to_lowercase();
     if PLACE_WORDS.iter().any(|w| lower.contains(w)) {
@@ -327,12 +356,31 @@ fn is_likely_person(name: &str) -> bool {
 
 fn is_likely_org(name: &str) -> bool {
     const ORG_KEYWORDS: &[&str] = &[
-        "congress", "committee", "association", "league", "party", "union",
-        "council", "institute", "museum", "school", "university", "college",
-        "company", "corporation", "limited", "ltd", "inc", "foundation",
-        "movement", "government", "ministry", "department", "church", "mosque",
+        "congress",
+        "committee",
+        "association",
+        "league",
+        "party",
+        "union",
+        "council",
+        "institute",
+        "museum",
+        "school",
+        "university",
+        "college",
+        "company",
+        "corporation",
+        "limited",
+        "ltd",
+        "inc",
+        "foundation",
+        "movement",
+        "government",
+        "ministry",
+        "department",
+        "church",
+        "mosque",
     ];
     let lower = name.to_lowercase();
-    ORG_KEYWORDS.iter().any(|k| lower.contains(k))
-        || (name.contains('(') && name.contains(')'))
+    ORG_KEYWORDS.iter().any(|k| lower.contains(k)) || (name.contains('(') && name.contains(')'))
 }

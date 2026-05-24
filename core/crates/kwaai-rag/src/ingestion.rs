@@ -240,11 +240,8 @@ pub async fn extract_and_store_entities_pub(
                     .map(|(k, v)| (k.clone(), FieldValue::new(v.clone(), res.chunk_id)))
                     .collect();
                 let description = {
-                    let from_fields = description_from_fields(
-                        &extracted.name,
-                        &extracted.entity_type,
-                        &fields,
-                    );
+                    let from_fields =
+                        description_from_fields(&extracted.name, &extracted.entity_type, &fields);
                     if from_fields.is_empty() {
                         extracted.description.clone()
                     } else {
@@ -328,22 +325,30 @@ pub async fn extract_and_store_entities_pub(
             let url = &urls[idx];
             let et: Vec<&str> = entity_types_cfg.iter().map(|s| s.as_str()).collect();
 
-            let (mut entities, relations) =
-                match extract_from_text(&text, section_note.as_deref(), url, &model, &et, no_relations).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("entity extraction error for chunk {chunk_id}: {e}");
-                        let _ = tx
-                            .send(ChunkResult {
-                                chunk_id,
-                                entities: vec![],
-                                relations: vec![],
-                                embeddings: vec![],
-                            })
-                            .await;
-                        return;
-                    }
-                };
+            let (mut entities, relations) = match extract_from_text(
+                &text,
+                section_note.as_deref(),
+                url,
+                &model,
+                &et,
+                no_relations,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("entity extraction error for chunk {chunk_id}: {e}");
+                    let _ = tx
+                        .send(ChunkResult {
+                            chunk_id,
+                            entities: vec![],
+                            relations: vec![],
+                            embeddings: vec![],
+                        })
+                        .await;
+                    return;
+                }
+            };
 
             // Drop entities whose type the LLM returned outside the allowed list.
             if !et.is_empty() {
@@ -366,7 +371,11 @@ pub async fn extract_and_store_entities_pub(
                                 .map(|(k, v)| (k.clone(), FieldValue::new(v.clone(), chunk_id)))
                                 .collect();
                             let s = description_from_fields(&e.name, &e.entity_type, &fv_map);
-                            if s.is_empty() { e.description.clone() } else { s }
+                            if s.is_empty() {
+                                e.description.clone()
+                            } else {
+                                s
+                            }
                         };
                         if desc.is_empty() {
                             e.name.clone()
@@ -469,9 +478,17 @@ async fn extract_and_store_entities(
                         .map(|(k, v)| (k.clone(), FieldValue::new(v.clone(), chunk_id)))
                         .collect();
                     let s = description_from_fields(&e.name, &e.entity_type, &fv_map);
-                    if s.is_empty() { e.description.clone() } else { s }
+                    if s.is_empty() {
+                        e.description.clone()
+                    } else {
+                        s
+                    }
                 };
-                if desc.is_empty() { e.name.clone() } else { format!("{}: {}", e.name, desc) }
+                if desc.is_empty() {
+                    e.name.clone()
+                } else {
+                    format!("{}: {}", e.name, desc)
+                }
             })
             .collect();
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();

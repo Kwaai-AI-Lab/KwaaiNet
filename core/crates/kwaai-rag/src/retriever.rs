@@ -233,9 +233,7 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
         return neighbors
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
-            .max_by_key(|(id, _, _)| {
-                graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0)
-            })
+            .max_by_key(|(id, _, _)| graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0))
             .map(|(id, _, _)| *id);
     }
 
@@ -245,9 +243,7 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
         return neighbors
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
-            .min_by_key(|(id, _, _)| {
-                graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0)
-            })
+            .min_by_key(|(id, _, _)| graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0))
             .map(|(id, _, _)| *id);
     }
 
@@ -264,8 +260,11 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
         for parent_id in &parents {
             for (gp_id, rel, _) in graph.neighbors_of(*parent_id) {
                 if rel == "child_of" {
-                    let m = graph.get_entity(gp_id).map(|e| e.mention_count).unwrap_or(0);
-                    if best.map_or(true, |(_, bm)| m > bm) {
+                    let m = graph
+                        .get_entity(gp_id)
+                        .map(|e| e.mention_count)
+                        .unwrap_or(0);
+                    if best.is_none_or(|(_, bm)| m > bm) {
                         best = Some((gp_id, m));
                     }
                 }
@@ -313,7 +312,9 @@ pub(crate) fn inject_entity_descriptions(
         *anchor_id
     };
 
-    let Some(entity) = graph.get_entity(inject_id) else { return };
+    let Some(entity) = graph.get_entity(inject_id) else {
+        return;
+    };
     if entity.description.trim().len() < 20 {
         return;
     }

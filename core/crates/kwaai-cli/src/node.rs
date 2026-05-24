@@ -1911,7 +1911,6 @@ async fn dial_and_wait_for_bootstrap(
 // Incoming RPC stream handler
 // ---------------------------------------------------------------------------
 
-
 async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStorage) -> Result<()> {
     let info = stream::parse_stream_info(tcp)
         .await
@@ -1977,9 +1976,7 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
 ///
 /// Falls back to read_to_end when the varint appears invalid (oversized or
 /// no bytes follow), returning (bytes, varint_framed=false).
-async fn read_rpc_message(
-    tcp: &mut tokio::net::TcpStream,
-) -> Result<(Vec<u8>, bool)> {
+async fn read_rpc_message(tcp: &mut tokio::net::TcpStream) -> Result<(Vec<u8>, bool)> {
     use tokio::io::AsyncReadExt as _;
 
     // Peek at the first byte to decide if this could be a varint prefix.

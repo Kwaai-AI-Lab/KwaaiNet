@@ -276,15 +276,24 @@ pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static s
             ("addressLocality", "city, district or suburb"),
             ("addressRegion", "province or region"),
             ("addressCountry", "country"),
-            ("locationType", "type of place (district, city, country, neighbourhood)"),
+            (
+                "locationType",
+                "type of place (district, city, country, neighbourhood)",
+            ),
             ("historicalNote", "historical significance or period"),
         ],
         "Organization" => &[
             ("foundingDate", "year or period when founded"),
-            ("dissolutionDate", "year or period when dissolved, if applicable"),
+            (
+                "dissolutionDate",
+                "year or period when dissolved, if applicable",
+            ),
             ("location", "city or country of headquarters or main office"),
             ("founder", "founder name"),
-            ("orgType", "type of organization (school, mosque, political party, etc.)"),
+            (
+                "orgType",
+                "type of organization (school, mosque, political party, etc.)",
+            ),
         ],
         _ => &[],
     }
@@ -390,6 +399,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
     let mut prev: Vec<usize> = (0..=lb).collect();
     let mut curr = vec![0usize; lb + 1];
+    #[allow(clippy::needless_range_loop)]
+    // `i` used both as index into `a` and as counter for curr[0]
     for i in 0..la {
         curr[0] = i + 1;
         for j in 0..lb {
@@ -537,11 +548,8 @@ impl GraphStore {
                         .or_insert_with(|| new_fv.clone());
                 }
                 // Recompute description from merged fields, or keep the longer prose description.
-                let computed = description_from_fields(
-                    &existing.name,
-                    &existing.entity_type,
-                    &merged_fields,
-                );
+                let computed =
+                    description_from_fields(&existing.name, &existing.entity_type, &merged_fields);
                 let best_desc = if !computed.is_empty() {
                     computed
                 } else if node.description.len() > existing.description.len() {
@@ -1277,9 +1285,7 @@ impl GraphStore {
                 (shared as f32 / 10.0).min(1.0)
             } else {
                 // No shared chunks (e.g. dream-added relation) — use evidence_chunk_ids count
-                (rel.evidence_chunk_ids.len() as f32 / 10.0)
-                    .min(1.0)
-                    .max(0.1)
+                (rel.evidence_chunk_ids.len() as f32 / 10.0).clamp(0.1, 1.0)
             };
             if (new_strength - rel.strength).abs() > 0.001 {
                 rel.strength = new_strength;
@@ -1557,8 +1563,21 @@ impl GraphStore {
         // `located_in`, `located_at`, `lives_in`, `settled_in`, `went_to` must
         // target a Place — not a Person or Organization.
         {
-            const WORK_RELS: &[&str] = &["works_at", "employed_by", "staffed_by", "works_for", "worked_at"];
-            const LOCATION_RELS: &[&str] = &["located_in", "located_at", "lives_in", "settled_in", "went_to", "visited"];
+            const WORK_RELS: &[&str] = &[
+                "works_at",
+                "employed_by",
+                "staffed_by",
+                "works_for",
+                "worked_at",
+            ];
+            const LOCATION_RELS: &[&str] = &[
+                "located_in",
+                "located_at",
+                "lives_in",
+                "settled_in",
+                "went_to",
+                "visited",
+            ];
 
             let all_fresh: Vec<RelationRecord> = {
                 let rtxn = self.db.begin_read()?;
@@ -1580,8 +1599,16 @@ impl GraphStore {
                         .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
                         .unwrap_or(false);
                     if dst_is_person {
-                        let src = self.nodes.get(&rel.src_id).map(|n| n.name.as_str()).unwrap_or("?");
-                        let dst = self.nodes.get(&rel.dst_id).map(|n| n.name.as_str()).unwrap_or("?");
+                        let src = self
+                            .nodes
+                            .get(&rel.src_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
+                        let dst = self
+                            .nodes
+                            .get(&rel.dst_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
                         tracing::warn!(
                             "type mismatch: removing '{}' {} '{}' — target is a Person, not an Organization",
                             src, rtype, dst
@@ -1602,11 +1629,22 @@ impl GraphStore {
                         "person" | "organization" | "schema:person" | "schema:organization"
                     );
                     if dst_is_non_place {
-                        let src = self.nodes.get(&rel.src_id).map(|n| n.name.as_str()).unwrap_or("?");
-                        let dst = self.nodes.get(&rel.dst_id).map(|n| n.name.as_str()).unwrap_or("?");
+                        let src = self
+                            .nodes
+                            .get(&rel.src_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
+                        let dst = self
+                            .nodes
+                            .get(&rel.dst_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
                         tracing::warn!(
                             "type mismatch: removing '{}' {} '{}' — target is {}, not a Place",
-                            src, rtype, dst, dst_type
+                            src,
+                            rtype,
+                            dst,
+                            dst_type
                         );
                         type_mismatch_keys.push(relation_key(rel.src_id, rel.dst_id, rtype));
                         removed += 1;
@@ -1652,7 +1690,9 @@ impl GraphStore {
                     table
                         .iter()?
                         .filter_map(|r| r.ok())
-                        .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                        .filter_map(|(_, v)| {
+                            serde_json::from_slice::<RelationRecord>(v.value()).ok()
+                        })
                         .filter(|r| stub_ids.contains(&r.src_id) || stub_ids.contains(&r.dst_id))
                         .collect()
                 };
@@ -1661,7 +1701,8 @@ impl GraphStore {
                 {
                     let mut rt = wtxn.open_table(RELATIONS_TABLE)?;
                     for r in &all_rels_for_stubs {
-                        let _ = rt.remove(relation_key(r.src_id, r.dst_id, &r.relation_type).as_slice());
+                        let _ = rt
+                            .remove(relation_key(r.src_id, r.dst_id, &r.relation_type).as_slice());
                         removed += 1;
                     }
                     let mut et = wtxn.open_table(ENTITIES_TABLE)?;
@@ -2608,13 +2649,11 @@ fn clean_entity_name(name: &str) -> String {
                 .last()
                 .map(|p| p.is_alphabetic())
                 .unwrap_or(false)
-                && out.len() >= 1
+                && !out.is_empty()
                 && {
                     // check the previous char was preceded by a space or start
                     let ob: &[u8] = out.as_bytes();
-                    ob.len() == 1
-                        || ob[ob.len() - 2] == b' '
-                        || ob[ob.len() - 2] == b'.'
+                    ob.len() == 1 || ob[ob.len() - 2] == b' ' || ob[ob.len() - 2] == b'.'
                 };
             let next_is_space_or_end = i + 1 >= n || chars[i + 1] == ' ';
             if prev_is_single_letter && next_is_space_or_end {

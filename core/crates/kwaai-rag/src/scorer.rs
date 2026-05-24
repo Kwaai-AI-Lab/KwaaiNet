@@ -164,7 +164,11 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
                 .chars()
                 .filter(|c| matches!(c, '.' | '?' | '!'))
                 .count();
-            if sentences >= 2 { 1.0 } else { 0.8 }
+            if sentences >= 2 {
+                1.0
+            } else {
+                0.8
+            }
         }
     };
 

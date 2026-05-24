@@ -20,9 +20,9 @@ use uuid::Uuid;
 
 use crate::embedder::EmbedClient;
 use crate::graph::{description_from_fields, GraphStore, RELATION_TYPES};
-use std::collections::HashMap;
 use crate::meta_store::MetaStore;
 use crate::scorer::{score_entity, score_graph};
+use std::collections::HashMap;
 
 // ── Config & report ───────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ pub struct DreamReport {
 pub struct EntityCompletion {
     pub entity_id: i64,
     pub schema_type: Option<String>,
-    pub description: Option<String>,      // None = no improvement (legacy / General task)
+    pub description: Option<String>, // None = no improvement (legacy / General task)
     pub relations: Vec<(String, String)>, // (relation_type, target_name)
     /// Structured field updates from task-specific completion; evidence_chunk_ids
     /// are the entity's full evidence set at the time the dream cycle ran.
@@ -345,7 +345,10 @@ pub async fn run_dream_cycle(
         let doc_role_entities: std::collections::HashMap<String, String> = {
             let mut m = std::collections::HashMap::new();
             if let Some(author) = doc_meta.get("author") {
-                m.insert(crate::graph::normalize_name(author), format!("author of this document"));
+                m.insert(
+                    crate::graph::normalize_name(author),
+                    "author of this document".to_string(),
+                );
             }
             m
         };

@@ -304,7 +304,13 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
             })
             .collect();
 
-        let messages = build_chat_messages(&query, &chunks, &history, 8192, state.doc_context.as_deref());
+        let messages = build_chat_messages(
+            &query,
+            &chunks,
+            &history,
+            8192,
+            state.doc_context.as_deref(),
+        );
 
         // Forward to shard API.
         let mut payload = serde_json::json!({

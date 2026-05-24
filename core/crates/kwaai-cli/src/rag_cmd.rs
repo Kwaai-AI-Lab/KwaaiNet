@@ -534,11 +534,17 @@ async fn cmd_ingest(
         }
 
         // Doc schema: load from YAML, or auto-detect from the document header.
-        let loaded_schema: Option<kwaai_rag::doc_schema::DocSchema> = if let Some(path) = doc_schema_path {
+        let loaded_schema: Option<kwaai_rag::doc_schema::DocSchema> = if let Some(path) =
+            doc_schema_path
+        {
             let schema = kwaai_rag::doc_schema::load_doc_schema(&path)?;
             let skip_count = schema.sections.iter().filter(|s| s.skip).count();
             let seed_count = schema.sections.iter().filter(|s| s.index_seeds).count();
-            let note_count = schema.sections.iter().filter(|s| s.narrator_note.is_some()).count();
+            let note_count = schema
+                .sections
+                .iter()
+                .filter(|s| s.narrator_note.is_some())
+                .count();
             print_info(&format!(
                 "Doc-schema loaded: type={} sections={} (skip={}, index_seeds={}, narrator_notes={})",
                 schema.schema_type.as_deref().unwrap_or("untyped"),
@@ -552,7 +558,12 @@ async fn cmd_ingest(
                 print_info(&format!(
                     "Doc-schema auto-detected: type={}, metadata_keys=[{}]",
                     detected.schema_type.as_deref().unwrap_or("unknown"),
-                    detected.metadata.keys().cloned().collect::<Vec<_>>().join(", ")
+                    detected
+                        .metadata
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
                 Some(detected)
             } else {
@@ -671,7 +682,8 @@ async fn cmd_ingest(
         // After ingest: inject entity seeds from index sections.
         if let Some(ref schema) = loaded_schema {
             if schema.has_index_seeds() {
-                let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 inject_index_seeds(&text, schema, &rag_cfg, tenant_id, &embed).await;
             }
         }
@@ -921,7 +933,8 @@ async fn cmd_query(
                     continue;
                 }
             };
-            let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+            let embed =
+                EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
             let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
             let infer_url = inference_url
                 .clone()
@@ -1396,7 +1409,13 @@ async fn cmd_chat(
                 chunks
             };
 
-            let messages = build_chat_messages(&query, &chunks, &history, 24000, doc_context_line.as_deref());
+            let messages = build_chat_messages(
+                &query,
+                &chunks,
+                &history,
+                24000,
+                doc_context_line.as_deref(),
+            );
             let payload = serde_json::json!({
                 "model": model,
                 "messages": messages,
@@ -2242,8 +2261,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                 // Optionally wipe the graph before rebuilding.
                 if reset_graph {
-                    let graph_path =
-                        rag_cfg.data_dir().join(format!("graph-{}.redb", tenant_id));
+                    let graph_path = rag_cfg.data_dir().join(format!("graph-{}.redb", tenant_id));
                     if graph_path.exists() {
                         std::fs::remove_file(&graph_path).with_context(|| {
                             format!("clearing graph at {}", graph_path.display())
@@ -2304,7 +2322,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 }
                 println!("  This may take a while — one LLM call per chunk.\n");
 
-                let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let store = Arc::new(Mutex::new(
                     GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                         .context("opening graph store")?,
@@ -2772,7 +2791,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     file.display()
                 );
 
-                let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
 
@@ -2836,7 +2856,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 // Convert to FamilyTree and seed the graph directly
                 let tree = seed_json::to_family_tree(&payload);
 
-                let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
 
@@ -3442,7 +3463,8 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     (vec![], raw_urls)
                 };
 
-                let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let cfg = kwaai_rag::dream::DreamConfig {
                     completeness_threshold: threshold,
                     dedup_threshold,
@@ -3556,7 +3578,8 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
             } => {
                 let graph = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store for eval")?;
-                let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let vs = std::sync::Arc::new(open_local_vs(&rag_cfg.data_dir())?);
 
                 if !json {
@@ -3921,7 +3944,13 @@ async fn cmd_eval(
                 .collect();
 
             // Generate answer.
-            let messages = build_chat_messages(&q.question, &chunks, &[], 24000, eval_doc_context.as_deref());
+            let messages = build_chat_messages(
+                &q.question,
+                &chunks,
+                &[],
+                24000,
+                eval_doc_context.as_deref(),
+            );
             let payload = serde_json::json!({
                 "model": model,
                 "messages": messages,

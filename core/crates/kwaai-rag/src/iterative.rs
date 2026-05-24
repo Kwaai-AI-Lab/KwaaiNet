@@ -8,7 +8,9 @@ use crate::bm25::{rrf_merge, BM25Index};
 use crate::embedder::EmbedClient;
 use crate::graph::GraphStore;
 use crate::meta_store::MetaStore;
-use crate::retriever::{assemble_results, inject_entity_descriptions, RetrieveConfig, RetrievedChunk};
+use crate::retriever::{
+    assemble_results, inject_entity_descriptions, RetrieveConfig, RetrievedChunk,
+};
 
 const COVERAGE_R2: f32 = 0.70;
 const COVERAGE_R3: f32 = 0.75;

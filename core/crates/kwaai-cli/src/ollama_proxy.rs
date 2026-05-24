@@ -393,9 +393,15 @@ pub async fn resolve_inference_urls(
             // Prefer shard-proxy (no Ollama needed); fall back to ollama-proxy.
             let shard_available = probe_shard_proxy(client, peer_id).await;
             let (proto_name, (port, handle)) = if shard_available {
-                ("shard-proxy", start_local_shard_proxy(client.clone(), peer_id).await?)
+                (
+                    "shard-proxy",
+                    start_local_shard_proxy(client.clone(), peer_id).await?,
+                )
             } else {
-                ("ollama-proxy", start_local_proxy(client.clone(), peer_id).await?)
+                (
+                    "ollama-proxy",
+                    start_local_proxy(client.clone(), peer_id).await?,
+                )
             };
 
             resolved.push(format!("http://127.0.0.1:{port}"));

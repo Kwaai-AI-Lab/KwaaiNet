@@ -425,6 +425,7 @@ fn split_chars(text: &str, cfg: &ChunkConfig, out: &mut Vec<String>) {
 
 /// Pack collected units into chunks up to chunk_size, prepending an overlap
 /// tail from the previous chunk at each boundary.
+#[allow(dead_code)]
 fn pack_chunks(units: &[String], cfg: &ChunkConfig) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
     let mut parts: Vec<String> = Vec::new();

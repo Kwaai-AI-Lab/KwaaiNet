@@ -873,7 +873,10 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
 
     // Advertise our port so the shard-proxy P2P handler can find us.
     let _ = std::fs::create_dir_all(crate::config::run_dir());
-    if let Err(e) = std::fs::write(crate::shard_cmd::shard_api_port_file(), args.port.to_string()) {
+    if let Err(e) = std::fs::write(
+        crate::shard_cmd::shard_api_port_file(),
+        args.port.to_string(),
+    ) {
         tracing::warn!("Could not write shard_api.port: {e}");
     }
 

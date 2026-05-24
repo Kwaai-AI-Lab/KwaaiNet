@@ -62,6 +62,7 @@ fn extract_pdf(path: &Path) -> Result<String> {
 ///   2. `_` preceded by a letter and followed by whitespace, end, or another
 ///      letter-then-underscore pattern (chained initials) → `.`
 ///   3. All other underscores → stripped
+#[allow(dead_code)]
 fn clean_pdf_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
@@ -86,7 +87,11 @@ fn clean_pdf_text(text: &str) -> String {
             }
         }
         // Rule 2: `_` preceded by a letter and followed by whitespace / end → period
-        let prev_is_alpha = out.chars().last().map(|p| p.is_alphabetic()).unwrap_or(false);
+        let prev_is_alpha = out
+            .chars()
+            .last()
+            .map(|p| p.is_alphabetic())
+            .unwrap_or(false);
         let next_is_break = i + 1 >= n
             || chars[i + 1].is_whitespace()
             || chars[i + 1] == '\n'
