@@ -1,0 +1,65 @@
+flowchart TD
+    classDef process fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
+
+    USER["User / Application"]:::external
+    LLM["LLM Inference"]:::external
+
+    %% Data stores
+    VDB[("Vector DB")]:::store
+    GDB[("Graph DB")]:::store
+    BM25S[("BM25 Index")]:::store
+    CACHE[("2.0.C\nQuery Cache\n(query_cache.redb)")]:::store
+
+    %% Process nodes
+    P21(("2.1\nControl\nQuery Harness")):::process
+    P22(("2.2\nUnderstand\nQuery")):::process
+    P22H(("2.2.H\nHyDE\nAugment")):::process
+    P23(("2.3\nBuild Graph\nQuery")):::process
+    P24(("2.4\nBuild Vector\nQuery\n[BM25 + dense + RRF]")):::process
+    P24R(("2.4.R\nRerank")):::process
+    P25(("2.5\nBuild LLM\nPrompt")):::process
+
+    %% Code annotations
+    %% 2.0.C → cache.rs : QueryCache::get() / put()  cosine-sim 0.92, TTL 24h, max 2000
+    %% 2.1   → iterative.rs : retrieve_iterative()  iterative loop R2=0.70 R3=0.75
+    %% 2.2   → query_understanding.rs : decompose_query()
+    %% 2.2.H → hyde.rs : embed_with_hyde_blend()  optional, alpha 0–1
+    %% 2.3   → retriever.rs : retrieve_graph_anchored()
+    %% 2.4   → retriever.rs : retrieve_hybrid() / bm25.rs : BM25Index::search() + rrf_merge(k=60)
+    %% 2.4.R → reranker.rs : rerank_chunks()  LLM listwise, returns ranked index array
+    %% 2.5   → prompt.rs : build_chat_messages()
+
+    USER -->|"natural language query"| CACHE
+    CACHE -->|"cache hit"| P25
+    CACHE -->|"cache miss"| P21
+
+    P21 -->|"query text"| P22
+    P22 -->|"decomposed sub-queries"| P22H
+    P22 -->|"decomposed sub-queries"| P23
+    P22 -->|"query structure"| LLM
+    LLM -->|"decomposition"| P22
+
+    P22H -->|"query text"| LLM
+    LLM -->|"hypothetical answer"| P22H
+    P22H -->|"augmented embedding"| P24
+
+    P23 -->|"entity lookup"| GDB
+    GDB -->|"entity context + BFS paths"| P23
+    P23 -->|"graph anchored chunks"| P24R
+
+    P24 -->|"query embedding"| VDB
+    VDB -->|"dense top-K"| P24
+    P24 -->|"query tokens"| BM25S
+    BM25S -->|"sparse top-K"| P24
+    P24 -->|"RRF merged top-K"| P24R
+
+    P24R -->|"all candidates"| LLM
+    LLM -->|"ranked index array"| P24R
+    P24R -->|"reranked top-K"| P25
+
+    P25 -->|"top-K results"| USER
+    P25 -->|"write-back"| CACHE
+
+    P21 -->|"coverage gap → new sub-query\n(iterative loop)"| P21

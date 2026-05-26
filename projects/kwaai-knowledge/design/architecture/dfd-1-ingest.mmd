@@ -1,0 +1,62 @@
+flowchart TD
+    classDef process fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef stub fill:#f3f4f6,stroke:#9ca3af,color:#6b7280,stroke-dasharray:5 5
+
+    DOC["Document\n(PDF / DOCX / MD / TXT)"]:::external
+    SEED["Structured entity data\n(NotebookLM JSON / Family YAML / Obsidian)"]:::external
+    LLM["LLM Inference"]:::external
+
+    %% Data stores
+    VDB[("Vector DB\n(redb)")]:::store
+    MDB[("Metadata\n(redb)")]:::store
+    GDB[("Graph DB\n(redb)")]:::store
+    BM25[("BM25 Index\n(tantivy/)")]:::store
+
+    %% Process nodes
+    P11(("1.1\nConvert\nto Text")):::process
+    P12(("1.2\nChunk\nText")):::process
+    P13(("1.3\nExtract\nEntity")):::process
+    P14(("1.4\nExtract\nMetadata")):::process
+    P15(("1.5\nEmbed\nVector")):::process
+    P16(("1.6\nExtract\nRelation")):::process
+    P17(("1.7\nRe-embed\nEntities")):::process
+    P18(("1.8\nConstruct\nWorld Model")):::process
+    P19(("1.9\nJeopardy\nTransform\n[NOT IMPL]")):::stub
+    P110(("1.10\nSeed from\nStructured Data")):::process
+
+    %% Code annotations
+    %% 1.1 → document.rs : extract_text()
+    %% 1.2 → chunker.rs : split_text()
+    %% 1.3 → graph.rs : extract_from_text()  [entity path]
+    %% 1.4 → meta_store.rs : put_chunks()
+    %% 1.5 → embedder.rs : embed_batch()
+    %% 1.6 → graph.rs : extract_from_text()  [relation path]
+    %% 1.7 → ingestion.rs / dream_tasks.rs
+    %% 1.8 → graph.rs : upsert_entity() + upsert_relation()
+    %% 1.9 → wiki.rs  (stub, not implemented)
+    %% 1.10 → seed_json.rs / family.rs / obsidian.rs
+
+    DOC -->|"raw file"| P11
+    P11 -->|"plain text"| P12
+    P12 -->|"text chunks"| P13
+    P12 -->|"text chunks"| P14
+    P12 -->|"text chunks"| P15
+    P12 -->|"text chunks"| P19
+    P13 -->|"entity extraction prompt"| LLM
+    LLM -->|"entities"| P13
+    P13 -->|"named entities"| P18
+    P14 -->|"chunk + section metadata"| MDB
+    P15 -->|"chunk text"| VDB
+    P15 -->|"token stream"| BM25
+    P16 -->|"relation extraction prompt"| LLM
+    LLM -->|"relations"| P16
+    P16 -->|"entity relations"| P18
+    P17 -->|"entity names"| VDB
+    P18 -->|"entity nodes"| GDB
+    P18 -->|"relation edges"| GDB
+    P18 -->|"entity names"| P17
+
+    SEED -->|"structured entities"| P110
+    P110 -->|"entity nodes + relations"| GDB

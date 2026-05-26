@@ -1,0 +1,50 @@
+flowchart TD
+    classDef process fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
+
+    LLM["LLM Inference"]:::external
+
+    %% Data stores
+    GDB[("Graph DB\n(redb)")]:::store
+    MDB[("Metadata\n(redb)")]:::store
+    VDB[("Vector DB\n(redb)")]:::store
+
+    %% Process nodes
+    P41(("4.1\nScore\nGraph")):::process
+    P42(("4.2\nSelect\nCandidates")):::process
+    P43(("4.3\nComplete\nEntity")):::process
+    P44(("4.4\nMerge\nDuplicates")):::process
+    P45(("4.5\nPrune\nZombies")):::process
+    P46(("4.6\nSanitize\nRelations")):::process
+
+    %% Code annotations
+    %% 4.1 → scorer.rs : score_graph()  3-pillar: connectivity, completeness, evidence
+    %% 4.2 → dream.rs  entities below completeness_threshold (default 0.5)
+    %% 4.3 → dream_tasks.rs : run_task()  dispatch by schema.org type:
+    %%        Person→Biography, Place→Geography, Org→OrgProfile,
+    %%        Event→EventProfile, DefinedTerm→ConceptDef, CreativeWork→WorkProfile
+    %% 4.4 → graph.rs : merge_entity_into()  cosine similarity ≥ 0.92
+    %% 4.5 → dream.rs  score < 0.3, no chunks, degree 0
+    %% 4.6 → graph.rs : sanitize_relations()  remove invalid, add inverse rels
+    %% Cycle terminates: score plateau OR max_completions reached (default 50)
+
+    GDB -->|"all entities + scores"| P41
+    P41 -->|"scored entity list"| P42
+    P42 -->|"low-score candidates"| P43
+    MDB -->|"evidence chunks"| P43
+    P43 <-->|"completion prompts"| LLM
+    P43 -->|"enriched entity fields"| GDB
+
+    GDB -->|"entity embeddings"| P44
+    VDB -->|"entity embeddings"| P44
+    P44 -->|"merged entity"| GDB
+    P44 -->|"remove duplicate"| GDB
+
+    GDB -->|"low-scoring nodes"| P45
+    P45 -->|"delete zombie"| GDB
+
+    GDB -->|"all relations"| P46
+    P46 -->|"valid + inverse rels"| GDB
+
+    P46 -->|"updated graph"| P41
