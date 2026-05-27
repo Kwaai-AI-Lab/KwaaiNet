@@ -1376,7 +1376,10 @@ async fn main() -> Result<()> {
                     kwaai_inference::DeviceType::require_gpu()
                         .context("--gpu was specified but no GPU is available")?
                 } else {
-                    kwaai_inference::DeviceType::Cpu
+                    // Auto-select best device. flash-attn (compiled into the CUDA
+                    // binary) only runs on CUDA tensors — hardcoding Cpu here causes
+                    // "no cpu support for flash-attn" at the first attention call.
+                    kwaai_inference::DeviceType::detect_best()
                 };
 
                 print_box_header("⚡ KwaaiNet Benchmark");
