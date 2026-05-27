@@ -311,6 +311,13 @@ jobs:
             ext: tar.xz
             bin: kwaainet
             p2pd: p2pd
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            label: kwaainet-x86_64-pc-windows-msvc-cuda
+            container: null
+            ext: zip
+            bin: kwaainet.exe
+            p2pd: p2pd.exe
     name: build-cuda-artifacts (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     continue-on-error: true
@@ -417,6 +424,62 @@ jobs:
             core/target/release/.fingerprint/candle-core-*
           key: cuda-kernels-linux-80-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cuda-kernels-linux-80-
+      - name: Install CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.22
+        with:
+          cuda: '12.6.0'
+          method: network
+      - name: Set OpenSSL paths (Windows CUDA build)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Get-ChildItem "C:\Program Files" -Filter "OpenSSL*" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if ($dir) {
+            echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
+          }
+      - name: Build kwaainet with CUDA (Windows)
+        if: runner.os == 'Windows'
+        working-directory: core
+        env:
+          CUDA_COMPUTE_CAP: "80"
+        shell: pwsh
+        run: |
+          nvcc --version
+          cargo build --release -p kwaainet --features cuda-windows
+      - name: Package CUDA archive (Windows)
+        if: runner.os == 'Windows'
+        working-directory: core
+        shell: pwsh
+        run: |
+          $label = "${{ matrix.label }}"
+          New-Item -ItemType Directory -Path $label -Force | Out-Null
+          Copy-Item "target\release\kwaainet.exe" "$label\"
+          $p2pd = Get-ChildItem "target\release\p2pd.exe" -ErrorAction SilentlyContinue
+          if ($p2pd) { Copy-Item $p2pd.FullName "$label\"; Write-Host "Included p2pd.exe" }
+          # Bundle CUDA 12.6 runtime DLLs so end users don't need the toolkit
+          $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"
+          if (Test-Path $cudaBin) {
+            $dlls = @(
+              "cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll",
+              "cufft64_11.dll", "curand64_10.dll", "cusolver64_11.dll", "cusparse64_12.dll"
+            )
+            foreach ($dll in $dlls) {
+              $src = Join-Path $cudaBin $dll
+              if (Test-Path $src) { Copy-Item $src "$label\"; Write-Host "  Bundled: $dll" }
+            }
+            Get-ChildItem $cudaBin "nvrtc*.dll"          -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$label\"; Write-Host "  Bundled: $($_.Name)" }
+            Get-ChildItem $cudaBin "nvrtc-builtins*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$label\"; Write-Host "  Bundled: $($_.Name)" }
+          } else {
+            Write-Warning "CUDA bin dir not found: $cudaBin"
+          }
+          $dllCount = (Get-ChildItem "$label\*.dll" -ErrorAction SilentlyContinue).Count
+          Write-Host "CUDA DLLs bundled: $dllCount"
+          Compress-Archive -Path "$label\*" -DestinationPath "$label.zip" -Force
+          $hash = (Get-FileHash "$label.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $label.zip" | Set-Content "$label.zip.sha256"
+          Write-Host "CUDA archive: $((Get-Item ""$label.zip"").Length) bytes"
       - name: Build kwaainet with CUDA (Linux)
         if: runner.os == 'Linux'
         working-directory: core

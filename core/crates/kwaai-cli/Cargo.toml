@@ -111,6 +111,8 @@ tempfile = "3"
 [features]
 default = ["storage", "rag"]
 cuda = ["kwaai-inference/flash-attn"]
+# cuda-windows: CUDA without flash-attn (flash-attn requires Linux nvcc and cannot build on Windows)
+cuda-windows = ["kwaai-inference/cuda"]
 llama-cpp = ["llama-cpp-2"]
 storage = ["kwaai-storage", "uuid"]
 rag = ["kwaai-rag", "uuid"]

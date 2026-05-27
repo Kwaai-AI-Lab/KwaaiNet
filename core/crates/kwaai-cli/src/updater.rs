@@ -144,7 +144,6 @@ impl UpdateChecker {
 
             let log = std::env::temp_dir().join("kwaainet-update.log");
             let log_path = log.to_string_lossy().into_owned();
-            let bat = std::env::temp_dir().join("kwaainet-update.bat");
 
             let install_dir = std::env::current_exe()
                 .ok()
@@ -155,14 +154,52 @@ impl UpdateChecker {
                         .unwrap_or_default()
                 });
 
-            // Download the standard Windows binary zip directly.
-            // Note: a Windows-specific CUDA build is not produced by CI; the
-            // standard binary is the only artifact available for Windows.
-            let archive_url = format!(
+            // Prefer the CUDA-enabled zip for NVIDIA GPU machines when it exists.
+            // The CI job `build-cuda-artifacts` publishes
+            // kwaainet-x86_64-pc-windows-msvc-cuda.zip alongside the CPU zip.
+            // If the artifact isn't published yet (or the machine has no GPU) we
+            // fall back to the standard CPU zip without error.
+            let cpu_url = format!(
                 "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc.zip"
             );
+            let archive_url = if nvidia_smi_windows().await {
+                let cuda_url = format!(
+                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda.zip"
+                );
+                let client = reqwest::Client::builder()
+                    .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()?;
+                let available = client
+                    .head(&cuda_url)
+                    .send()
+                    .await
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false);
+                if available {
+                    cuda_url
+                } else {
+                    println!();
+                    println!(
+                        "  ⚠  NVIDIA GPU detected but CUDA build for v{version} isn't published yet."
+                    );
+                    println!(
+                        "  Installing CPU build now — run `kwaainet update` again later for GPU support."
+                    );
+                    println!();
+                    cpu_url
+                }
+            } else {
+                cpu_url
+            };
+
+            let is_cuda = archive_url.contains("-cuda.zip");
             let zip_path = std::env::temp_dir().join("kwaainet-update.zip");
-            print!("  Downloading v{version} for Windows…");
+            if is_cuda {
+                print!("  NVIDIA GPU detected — downloading CUDA build for v{version}…");
+            } else {
+                print!("  Downloading v{version} for Windows…");
+            }
             let _ = std::io::Write::flush(&mut std::io::stdout());
             self.download_to(&archive_url, &zip_path).await?;
             println!(" done.");
@@ -174,19 +211,31 @@ impl UpdateChecker {
             let exe_str = kwaainet_exe.to_string_lossy().replace('\'', "''");
             let log_str = log_path.replace('\'', "''");
 
-            // PS1 script: extract the zip, move executables into the install
-            // directory, then restart the daemon via Start-Process so the restart
-            // runs inside PowerShell rather than through cmd.exe's `start` builtin
-            // (which is unreliable in a DETACHED_PROCESS / no-console context).
+            // CUDA zips include bundled DLLs alongside the executables; include
+            // *.dll in the file glob so they land in the install directory too.
+            let file_include = if is_cuda {
+                "'*.exe','*.dll','p2pd'"
+            } else {
+                "'*.exe','p2pd'"
+            };
+
+            // Single PS1 script handles the full update: waits for kwaainet to
+            // exit, kills kwaainet.exe AND p2pd.exe (both may hold file locks),
+            // extracts the zip, installs binaries, restarts the daemon, and
+            // cleans up.  Spawning powershell.exe directly avoids cmd.exe's
+            // 8.3-path / DETACHED_PROCESS batch-file parsing quirks.
             let ps1 = std::env::temp_dir().join("kwaainet-update.ps1");
             let ps1_content = format!(
-                "$ErrorActionPreference = 'Stop'\r\n\
-                 $zip     = '{zip_str}'\r\n\
-                 $dest    = '{dir_str}'\r\n\
-                 $tmp     = Join-Path ([System.IO.Path]::GetTempPath()) 'kwaainet-upd-extract'\r\n\
+                "Start-Sleep -Seconds 3\r\n\
+                 Get-Process kwaainet,p2pd -ErrorAction SilentlyContinue | Stop-Process -Force\r\n\
+                 Start-Sleep -Seconds 2\r\n\
+                 $ErrorActionPreference = 'Stop'\r\n\
+                 $zip  = '{zip_str}'\r\n\
+                 $dest = '{dir_str}'\r\n\
+                 $tmp  = Join-Path ([System.IO.Path]::GetTempPath()) 'kwaainet-upd-extract'\r\n\
                  if (Test-Path $tmp) {{ Remove-Item $tmp -Recurse -Force }}\r\n\
                  Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n\
-                 Get-ChildItem -Path $tmp -Recurse -Include '*.exe','p2pd' | ForEach-Object {{\r\n\
+                 Get-ChildItem -Path $tmp -Recurse -Include {file_include} | ForEach-Object {{\r\n\
                    $target = Join-Path $dest $_.Name\r\n\
                    Move-Item -Path $_.FullName -Destination $target -Force\r\n\
                    Add-Content -Path '{log_str}' -Value ('Installed ' + $_.Name)\r\n\
@@ -196,27 +245,28 @@ impl UpdateChecker {
                  Add-Content -Path '{log_str}' -Value 'Swap complete — restarting daemon'\r\n\
                  Start-Sleep -Seconds 2\r\n\
                  Start-Process -FilePath '{exe_str}' -ArgumentList 'restart' -WindowStyle Hidden\r\n\
-                 Add-Content -Path '{log_str}' -Value 'Daemon restart triggered'\r\n"
+                 Add-Content -Path '{log_str}' -Value 'Daemon restart triggered'\r\n\
+                 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n"
             );
             std::fs::write(&ps1, &ps1_content).context("Failed to write update script")?;
-            let ps1_str = ps1.to_string_lossy().into_owned();
+            // canonicalize() resolves the real path (long form, no 8.3 short
+            // names) after the file exists.
+            let ps1_real = ps1
+                .canonicalize()
+                .unwrap_or(ps1.clone());
 
-            // Batch: wait for this process to exit, kill any remaining kwaainet
-            // instances so the binary is not locked, run the PS1, delete self.
-            let bat_content = format!(
-                "@echo off\r\n\
-                 ping -n 3 127.0.0.1 > nul\r\n\
-                 taskkill /IM kwaainet.exe /F /T > nul 2>&1\r\n\
-                 ping -n 2 127.0.0.1 > nul\r\n\
-                 powershell -ExecutionPolicy Bypass -File \"{ps1_str}\" >> \"{log_path}\" 2>&1\r\n\
-                 del /f \"{ps1_str}\"\r\n\
-                 del /f \"%~f0\"\r\n"
-            );
-            std::fs::write(&bat, &bat_content).context("Failed to write updater batch")?;
-
-            std::process::Command::new("cmd")
-                .args(["/c", bat.to_str().unwrap_or("kwaainet-update.bat")])
+            std::process::Command::new("powershell")
+                .args([
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    ps1_real.to_str().unwrap_or("kwaainet-update.ps1"),
+                ])
                 .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+                .stderr(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
                 .spawn()
                 .context("Failed to spawn updater")?;
 
@@ -396,10 +446,30 @@ async fn nvidia_smi_async() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(all(unix, not(target_os = "macos"))))]
+#[cfg(not(any(all(unix, not(target_os = "macos")), windows)))]
 #[allow(dead_code)]
 async fn nvidia_smi_async() -> bool {
     false
+}
+
+/// Check for an NVIDIA GPU on Windows by running nvidia-smi with no console
+/// window (CREATE_NO_WINDOW) to avoid a flash on headless / daemon contexts.
+#[cfg(windows)]
+async fn nvidia_smi_windows() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    tokio::task::spawn_blocking(|| {
+        std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=name", "--format=csv,noheader"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).

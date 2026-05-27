@@ -3194,7 +3194,7 @@ dependencies = [
 
 [[package]]
 name = "kwaainet"
-version = "0.4.74"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-stream",
