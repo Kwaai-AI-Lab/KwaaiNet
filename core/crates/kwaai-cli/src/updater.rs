@@ -142,7 +142,24 @@ impl UpdateChecker {
             const DETACHED_PROCESS: u32 = 0x00000008;
             const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-            let log = std::env::temp_dir().join("kwaainet-update.log");
+            // Resolve 8.3 short names (e.g. METRO_~1) in the temp dir.
+            // Expand-Archive -LiteralPath rejects 8.3 paths because .NET's
+            // ZipFile doesn't call GetLongPathName internally.
+            // canonicalize() returns \\?\-prefixed paths on Windows; strip
+            // that prefix so the paths are usable in PS1 single-quoted strings.
+            let canonical_temp = std::env::temp_dir()
+                .canonicalize()
+                .map(|p| {
+                    let s = p.to_string_lossy();
+                    if let Some(rest) = s.strip_prefix("\\\\?\\") {
+                        std::path::PathBuf::from(rest)
+                    } else {
+                        p
+                    }
+                })
+                .unwrap_or_else(|_| std::env::temp_dir());
+
+            let log = canonical_temp.join("kwaainet-update.log");
             let log_path = log.to_string_lossy().into_owned();
 
             let install_dir = std::env::current_exe()
@@ -194,7 +211,7 @@ impl UpdateChecker {
             };
 
             let is_cuda = archive_url.contains("-cuda.zip");
-            let zip_path = std::env::temp_dir().join("kwaainet-update.zip");
+            let zip_path = canonical_temp.join("kwaainet-update.zip");
             if is_cuda {
                 print!("  NVIDIA GPU detected — downloading CUDA build for v{version}…");
             } else {
@@ -225,7 +242,7 @@ impl UpdateChecker {
             // extracts the zip, installs binaries, restarts the daemon, and
             // cleans up.  Spawning powershell.exe directly avoids cmd.exe's
             // 8.3-path / DETACHED_PROCESS batch-file parsing quirks.
-            let ps1 = std::env::temp_dir().join("kwaainet-update.ps1");
+            let ps1 = canonical_temp.join("kwaainet-update.ps1");
             let ps1_content = format!(
                 "Start-Sleep -Seconds 3\r\n\
                  Get-Process kwaainet,p2pd -ErrorAction SilentlyContinue | Stop-Process -Force\r\n\
