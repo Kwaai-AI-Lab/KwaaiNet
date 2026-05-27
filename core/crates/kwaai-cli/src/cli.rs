@@ -1282,6 +1282,12 @@ pub enum RagAction {
         #[arg(long, default_value = "1", value_name = "N")]
         graph_window: usize,
 
+        /// Process only this percentage of chunks for graph build (1–100).
+        /// Useful for quick test cycles — ingest is always full, only graph extraction is sampled.
+        /// Example: --sample 10 processes the first 10% of chunks.
+        #[arg(long, value_name = "PERCENT")]
+        sample_pct: Option<u8>,
+
         /// Skip the destroy confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
@@ -1583,6 +1589,11 @@ pub enum GraphAction {
         /// Wipe the graph before building (entities + relations cleared, chunks preserved).
         #[arg(long)]
         reset_graph: bool,
+
+        /// Process only this percentage of chunks (1–100). Useful for quick test cycles.
+        /// Example: --sample 10 processes the first 10% of chunks.
+        #[arg(long, value_name = "PERCENT")]
+        sample_pct: Option<u8>,
     },
 
     /// Seed the graph from a ground-truth YAML family tree — upserts canonical entities with

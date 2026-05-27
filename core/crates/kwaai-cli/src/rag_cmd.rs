@@ -152,6 +152,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             entity_types,
             no_relations,
             graph_window,
+            sample_pct,
             yes,
         } => {
             cmd_rebuild(
@@ -168,6 +169,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 entity_types,
                 no_relations,
                 graph_window,
+                sample_pct,
                 yes,
             )
             .await
@@ -1640,6 +1642,7 @@ async fn cmd_rebuild(
     entity_types: Option<String>,
     no_relations: bool,
     graph_window: usize,
+    sample_pct: Option<u8>,
     yes: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -1705,6 +1708,7 @@ async fn cmd_rebuild(
                 no_relations,
                 reset_graph: false,
                 graph_window,
+                sample_pct,
             },
             kb.clone(),
         )
@@ -2208,6 +2212,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 no_relations,
                 graph_window,
                 reset_graph,
+                sample_pct,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2291,6 +2296,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if let Some(n) = limit {
                     all_chunks.truncate(n);
                 }
+                if let Some(pct) = sample_pct {
+                    let n = ((all_chunks.len() * pct.min(100) as usize) + 99) / 100;
+                    all_chunks.truncate(n);
+                }
                 let total = all_chunks.len();
 
                 if total == 0 {
@@ -2303,6 +2312,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 print_box_header(&format!("Graph Build ({})", kb));
                 if let Some(ref p) = docs {
                     println!("  Doc filter:        {p}");
+                }
+                if let Some(pct) = sample_pct {
+                    println!("  Sample:            {pct}% of corpus");
                 }
                 println!("  Chunks to process: {total}");
                 if !extra_urls.is_empty() {
@@ -2355,14 +2367,26 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     .collect();
                 let ids: Vec<i64> = all_chunks.iter().map(|(id, _)| *id).collect();
 
+                let build_start = std::time::Instant::now();
                 kwaai_rag::ingestion::extract_and_store_entities_pub(
                     &chunks,
                     &ids,
                     &embed,
                     &graph_cfg,
-                    Some(std::sync::Arc::new(|done: usize, total: usize, entities: usize, relations: usize| {
-                        if done.is_multiple_of(50) || done == total {
-                            println!("  [{done:>4}/{total}]  entities={entities}  relations={relations}");
+                    Some(std::sync::Arc::new(move |done: usize, total: usize, entities: usize, relations: usize| {
+                        let elapsed = build_start.elapsed().as_secs_f64();
+                        let eta_str = if done > 0 && done < total {
+                            let rate = elapsed / done as f64;
+                            let remaining = rate * (total - done) as f64;
+                            format!("  ETA {:.0}s", remaining)
+                        } else {
+                            String::new()
+                        };
+                        eprint!(
+                            "\r  [{done:>4}/{total}]  entities={entities:>4}  rels={relations:>4}  elapsed={elapsed:.0}s{eta_str}    "
+                        );
+                        if done == total {
+                            eprintln!();
                         }
                     })),
                 )
