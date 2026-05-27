@@ -13,7 +13,7 @@
     │
 60% ┤                                                                       ████ 56.9%                         ████ 58.6% M22 ← keyword best
     │                                                                            ████ 56.0% M18          ████ 56.0% M23
-55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24
+55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25
     │                                                             ████ 50.0%              ████ 51.7% M20
 50% ┤                                                        ████ 49.1%
     │                                                   ████ 48.3%
@@ -26,12 +26,12 @@
 30% ┤████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
 25% ┤24.6%
     │
-    └────────────────────────────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity
-                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject
+    └──────────────────────────────────────────────────────────────────────────────────────────────
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER
+                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebuild
 ```
 
-**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24)
+**Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24) / — (M25)
 
 ---
 
@@ -66,6 +66,7 @@
 | 22 | v0.4.75 | **31 dream cycles** (llama3.1:8b) + sanitize type-mismatch + clean_entity_name + section-aware ingest | llama3.1:8b | **58.6%** (68/116) | — | Graph 51.5% → **78.1%** (plateau). Sanitize removed 92 type-mismatch rels + 3 honorific stubs. PDF underscore artifacts fixed (Dr_ → Dr., J_ M_ → J. M.). Dream plateaus at 78.1% — zero gain cycles 25–31. New keyword best. |
 | 23 | v0.4.75 | same + **doc metadata preamble** (author/subject/year injected into every LLM call) | llama3.1:8b | **56.0%** (65/116) | — | Q1 "Who is the author?" fixed 0/3 → 3/3. Q6/Q9/Q11/Q15/Q16/Q18 all improved. Net +6 keywords from context injection alone. Q7 (author's wife = Nazima Rassool) still 0/3 — entity thin in graph. |
 | 24 | v0.4.75 | same + **entity description injection** (top graph entity prepended as synthetic chunk at score=2.0; relation-aware traversal for author-relative queries) | llama3.1:8b | **52.6%** (61/116) | — | Multiple runs: 50.9%–56.0% (all below M22 baseline of 58.6%). Q7 wife / Q9 grandfather injection fires correctly. Regression: Q16 Gandhi 4/7→1/7 (entity description displaces critical text chunk). Seeded 6 missing Rassool siblings (Fazil, Zain, Rasheda, Berina, Yasmin, Nasim) + Nazima Rassool as wife. Injection not net-positive on current eval set. |
+| 25 | v0.4.79 | **Full graph rebuild with NER pre-screening + pronoun resolution** (extract_from_text now receives proper noun candidates + pronoun→entity map; skips LLM when no candidates). iterative k=20, 0 dream cycles. | llama3.1:8b | **55.2%** (64/116) | — | Graph: 2884 raw → 2173 after seed+dedup (2× M22 entity count — NER extracts more). Health 50.2% (no dream). Latency 50s avg (2.2× slower — large graph entity search). Gains: q03 6/6, q04 4/4, q06 5/8 ↑, q09 6/9 ↑, q10 5/7. Losses: q20 0/5 (Alec Bedser entity injected — noisy graph), q12 2/6 (Churchill Smuts entity noise), q16 2/7 (Gandhi mis-attributed as Gool-Rassool scion — LLM hallucination from noisy entity). Without dream cycles this matches M21 (54.3%) — strong baseline for NER. Next: dream cycles to clean graph noise and push toward M22. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -238,34 +239,47 @@ With k=30 chunks at ~300 chars each, 8192 chars only showed ~16/30 chunks. Raisi
 
 | Priority | Approach | Expected gain |
 |----------|----------|---------------|
-| High | **Dream plateau — lower injection score** (entity description at 1.2 vs 2.0 so it competes with rather than displaces text) | Reduce Q16 regression risk |
-| High | **Dream plateau broken** — current tasks saturated at 78.1%; targeted completions for thin entities (JMH Gool, Cissie Gool, Buitencingle, All Africa Convention) | +2–4pp graph |
-| High | **M25 judge eval** — run with `--llm-judge` to measure structural improvement since M21 (last judge was 1.85/2) | Structural signal |
-| Medium | **Q5/Q9 (JMH Gool / grandfather)** — injection gap: name-token match finds entity at 0.85 but embedding hit returns wrong entity first | Fix injection threshold logic |
-| Medium | **Q16 (Gandhi/Gool)** — entity injection regression; investigate whether Gandhi entity description is too thin or misattributed | +3 keywords if fixed |
-| Medium | Dream RAG Phase 3: quality gate — snapshot + rollback if score drops >5% after a cycle | Stability |
-| Low | Dream RAG Phase 4: embed model evaluation (`dream embed-eval`) | Graph quality |
-| Low | Dream RAG Phase 5: gamified curation GUI (Flutter, after PR #56 merge) | UX |
+| High | **Dream cycles on M25 graph** — run 20–30 cycles on NER rebuild to prune noise entities (Alec Bedser, Emperor Hirohito etc.), reclassify 500+ Unknowns, enrich thin descriptions | +3–5pp, match/beat M22 |
+| High | **Graph noise from NER** — 2173 entities vs 1013 in M22; entity search is diluted and injecting off-topic entities. Dream pruning + sanitize will reduce this. Also consider raising dedup auto_threshold slightly. | Latency −30%, q12/q16/q20 fixed |
+| Medium | **M26 judge eval** — run with `--llm-judge` after dream cycles to measure structural improvement | Structural signal |
+| Medium | **Q5 (JMH Gool)** — 2/8 persistent failure; entity graph search returns wrong entity first. Investigate entity embedding for Haji Joosub Maulvi Hamid Gool. | +3–4 kw |
+| Medium | **Q16 (Gandhi/Gool)** — LLM hallucinated Gandhi as "scion of Gool-Rassool family". Gandhi entity description needs grounding from source text. | +2–3 kw |
+| Medium | **Q20 (cricket) — 0/5** — "Alec Bedser" entity injected into cricket question context. Noisy entity from NER; dream pruning should remove or demote. | +3–4 kw |
+| Low | Dream RAG Phase 3: quality gate — snapshot + rollback if score drops >5% after a cycle | Stability |
+| Done ✓ | **NER pre-screening + pronoun resolution** — `extract_from_text()` now receives proper noun candidates + pronoun→entity map; skips LLM when no candidates (v0.4.79) | M25 55.2% baseline |
+| Done ✓ | **graph build progress monitoring** — stderr `\r` in-place updates with ETA; `--sample-pct` for fast test cycles (v0.4.79) | Dev velocity |
 | Done ✓ | **Entity description injection** — relation-aware traversal for wife/parent/grandparent/sibling queries; 6 Rassool siblings + Nazima seeded (f4bebe5) | M24 (not net-positive) |
 | Done ✓ | **Doc metadata preamble** — author/subject/year in system prompt; Q1 fixed 0/3→3/3 (v0.4.75) | M23 +6 kw |
 | Done ✓ | **Dream RAG 31 cycles** — graph 51.5% → 78.1%; 8b model ~1.8%/cycle; plateau hit at cycle 25 | M22 58.6% kw best |
 | Done ✓ | **Sanitize type-mismatch** — 92 bad relations removed; 3 honorific stubs pruned (v0.4.75) | Graph quality |
 | Done ✓ | **clean_entity_name()** — PDF underscore artifacts fixed at LLM parse time (Dr_ → Dr., J_ → J.) | Graph quality |
 | Done ✓ | **Section-aware ingest** — Index/Appendix/Endnotes skipped; Editor's Note narrator override (v0.4.73) | Noise reduction |
-| Done ✓ | **export/import under rag graph** — CLI reorganised (v0.4.75) | UX |
 | Done ✓ | **q04 dedication resolved** — chunk-transfer fix enabled graph to reach intro.docx dedication chunk | 4/4 2/2 ← M21 |
-| Done ✓ | **Merge chunk-transfer + description fix** — `merge_entity_into()` transfers chunk refs, keeps longer desc | Unlocks orphaned chunks |
 | Done ✓ | **Alias embedding fix** — `entity_embed_text()` bakes aliases into embed text (v0.4.72) | M19 regression reversed |
 | Done ✓ | **graph alias-scan** — inline text-scanning abbreviation finder + auto-merge (v0.4.72) | Implemented |
 | Done ✓ | **Dream RAG Phase 1+2**: graph health scorer + autonomous completion cycle (v0.4.72) | Graph quality |
 | Done ✓ | Best config found: **iterative k=20** — 56.9% kw / 1.80/2 judge (new best both metrics) | |
-| Done ✓ | Rerank at k=20: −3.4pp (auto), −8.6pp (iterative) — rerank hurts, do not use | |
 | Done ✓ | `graph dedup --auto` + interactive pass (v0.4.56) | Graph cleaned |
 | Done ✓ | `graph reembed` — entities now embed `"{name}: {description}"` | Abbreviation lookup fixed |
 
 ---
 
-## Graph Health (Dream RAG — v0.4.75, cycle 31)
+## Graph Health
+
+### M25 — NER rebuild (v0.4.79, 0 dream cycles)
+
+| Metric | Value |
+|--------|-------|
+| Entities | 2,173 |
+| Relations | 6,600 |
+| Overall health score | **50.2%** |
+| Raw graph build output | 2,884 entities, 6,013 relations |
+| After seed+dedup | 2,173 entities, 6,600 relations (664 merged) |
+
+**NER pre-screening effect:** 2× entity count vs M22 (2884 vs 1013 raw). NER extracts more candidates per chunk, giving the LLM a focused list — but without dream cycle cleanup the graph contains noisy entities (e.g. "Alec Bedser", "Emperor Hirohito" appearing as entity injections for unrelated questions). Dream cycles are needed to prune noise and reclassify Unknowns.  
+**Next:** Run dream cycles on the M25 graph (target 78%+ health). Each cycle expected to improve eval score by ~1–2pp as noise is pruned and descriptions enriched.
+
+### M22 — Dream RAG plateau (v0.4.75, cycle 31)
 
 | Metric | Value |
 |--------|-------|
