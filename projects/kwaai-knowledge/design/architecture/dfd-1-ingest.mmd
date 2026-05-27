@@ -18,17 +18,36 @@ flowchart TD
     GDB[("Graph DB\n(redb)")]:::store
     BM25[("BM25 Index\n(tantivy/)")]:::store
 
-    %% Process nodes
-    P11(("1.1\nConvert\nto Text")):::process
-    P12(("1.2\nChunk\nText")):::process
-    P13(("1.3\nExtract\nEntity")):::process
-    P14(("1.4\nExtract\nMetadata")):::process
-    P15(("1.5\nEmbed\nVector")):::process
-    P16(("1.6\nExtract\nRelation")):::process
-    P17(("1.7\nRe-embed\nEntities")):::process
-    P18(("1.8\nConstruct\nWorld Model\n[space + time]")):::designed
-    P19(("1.9\nJeopardy\nTransform")):::designed
-    P110(("1.10\nSeed from\nStructured Data")):::process
+    %% ── Pre-processing ──────────────────────────────────────────────────────
+    subgraph PRE["Pre-processing"]
+        direction LR
+        P11(("1.1\nConvert\nto Text")):::process
+        P12(("1.2\nChunk\nText")):::process
+        P11 -->|"plain text"| P12
+    end
+
+    %% ── Round 1 — index (parallel) ─────────────────────────────────────────
+    subgraph R1["Round 1 — index (parallel)"]
+        direction LR
+        P110(("1.10\nSeed from\nStructured Data")):::process
+        P13(("1.3\nExtract\nEntity")):::process
+        P14(("1.4\nExtract\nMetadata")):::process
+        P15(("1.5\nEmbed\nVector")):::process
+    end
+
+    %% ── Round 2 — relations + re-embedding ─────────────────────────────────
+    subgraph R2["Round 2 — relations + re-embedding"]
+        direction LR
+        P16(("1.6\nExtract\nRelation")):::process
+        P17(("1.7\nRe-embed\nEntities")):::process
+    end
+
+    %% ── Round 3 — world model + QA pairs ───────────────────────────────────
+    subgraph R3["Round 3 — world model + QA pairs"]
+        direction LR
+        P18(("1.8\nConstruct\nWorld Model\n[space + time]")):::designed
+        P19(("1.9\nJeopardy\nTransform")):::designed
+    end
 
     %% Code annotations
     %% 1.1  → document.rs : extract_text()
@@ -38,23 +57,19 @@ flowchart TD
     %% 1.5  → embedder.rs : embed_batch()
     %% 1.6  → graph.rs : extract_from_text() [relation path] + upsert_relation()
     %% 1.7  → ingestion.rs / dream_tasks.rs
-    %% 1.8  → [DESIGNED, NOT YET CODED]
-    %%         Maps each entity to space + time:
-    %%         - biographical timeline (events ordered by date)
-    %%         - geographical path (sequence of places visited/mentioned)
-    %%         - interaction sequences (who did what with whom, when/where)
-    %%         Output: Event nodes + Place-path edges added to Graph DB
-    %% 1.9  → [DESIGNED, NOT YET CODED] wiki.rs is a stub
-    %%         Input: entity relation (subject–predicate–object fact) from Graph DB
-    %%         LLM converts fact to a Jeopardy-style question ("What is ___?")
-    %%         Output: question embedding + link to source relation stored in Vector DB
+    %% 1.8  → [DESIGNED, NOT YET CODED] timeline + geo-path + interaction sequences per entity
+    %% 1.9  → [DESIGNED, NOT YET CODED] wiki.rs stub — fact → Jeopardy question vector
     %% 1.10 → seed_json.rs / family.rs / obsidian.rs
 
-    DOC -->|"raw file"| P11
-    P11 -->|"plain text"| P12
+    %% ── Data flows ──────────────────────────────────────────────────────────
+    DOC  -->|"raw file"| P11
+    SEED -->|"structured entities"| P110
+
     P12 -->|"text chunks"| P13
     P12 -->|"text chunks"| P14
     P12 -->|"text chunks"| P15
+
+    P110 -->|"entity nodes + relations"| GDB
 
     P13 -->|"entity extraction prompt"| LLM13
     LLM13 -->|"entities"| P13
@@ -74,17 +89,12 @@ flowchart TD
     GDB -->|"new entity names"| P17
     P17 -->|"entity embeddings"| VDB
 
-    %% 1.8 World Model (designed — not yet coded)
     MDB -->|"evidence chunks"| P18
     P18 -->|"event / place / sequence prompt"| LLM18
     LLM18 -->|"timeline + geo-path events"| P18
     P18 -->|"Event nodes + Place-path edges\n+ interaction sequences"| GDB
 
-    %% 1.9 Jeopardy Transform (designed — not yet coded)
     GDB -->|"entity relation (fact)"| P19
     P19 -->|"fact → question prompt"| LLM19
     LLM19 -->|"Jeopardy question"| P19
     P19 -->|"question vector\n+ link to source fact"| VDB
-
-    SEED -->|"structured entities"| P110
-    P110 -->|"entity nodes + relations"| GDB
