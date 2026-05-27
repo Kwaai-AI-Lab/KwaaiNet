@@ -4,7 +4,10 @@ flowchart TD
     classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
 
     USER["User / Application"]:::external
-    LLM["LLM Inference"]:::external
+
+    LLM22["LLM\n(query\ndecomposition)"]:::external
+    LLM22H["LLM\n(hypothetical\nanswer / HyDE)"]:::external
+    LLM24R["LLM\n(listwise\nreranking)"]:::external
 
     %% Data stores
     VDB[("Vector DB")]:::store
@@ -36,13 +39,13 @@ flowchart TD
     CACHE -->|"cache miss"| P21
 
     P21 -->|"query text"| P22
+    P22 -->|"query structure"| LLM22
+    LLM22 -->|"decomposed sub-queries"| P22
     P22 -->|"decomposed sub-queries"| P22H
     P22 -->|"decomposed sub-queries"| P23
-    P22 -->|"query structure"| LLM
-    LLM -->|"decomposition"| P22
 
-    P22H -->|"query text"| LLM
-    LLM -->|"hypothetical answer"| P22H
+    P22H -->|"query text"| LLM22H
+    LLM22H -->|"hypothetical answer"| P22H
     P22H -->|"augmented embedding"| P24
 
     P23 -->|"entity lookup"| GDB
@@ -55,8 +58,8 @@ flowchart TD
     BM25S -->|"sparse top-K"| P24
     P24 -->|"RRF merged top-K"| P24R
 
-    P24R -->|"all candidates"| LLM
-    LLM -->|"ranked index array"| P24R
+    P24R -->|"all candidates"| LLM24R
+    LLM24R -->|"ranked index array"| P24R
     P24R -->|"reranked top-K"| P25
 
     P25 -->|"top-K results"| USER

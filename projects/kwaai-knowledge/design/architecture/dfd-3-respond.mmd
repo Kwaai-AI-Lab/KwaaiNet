@@ -16,10 +16,11 @@ flowchart TD
 
     QUERY["2 Query"]:::external
     USER["User / Application"]:::external
-    LLM["LLM Inference"]:::external
+    LLM30["LLM\n(generation)"]:::external
 
     P30(("3.0\nRespond\n[TO BE\nDESIGNED]")):::stub
 
     QUERY -->|"top-K chunks + entity context\n+ query structure"| P30
-    P30 <-->|"generation"| LLM
+    P30 -->|"generation prompt"| LLM30
+    LLM30 -->|"generated answer"| P30
     P30 -->|"answer + citations"| USER

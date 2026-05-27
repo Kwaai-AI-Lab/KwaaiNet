@@ -6,7 +6,11 @@ flowchart TD
 
     DOC["Document\n(PDF / DOCX / MD / TXT)"]:::external
     SEED["Structured entity data\n(NotebookLM JSON / Family YAML / Obsidian)"]:::external
-    LLM["LLM Inference"]:::external
+
+    LLM13["LLM\n(entity extraction)"]:::external
+    LLM16["LLM\n(relation extraction)"]:::external
+    LLM18["LLM\n(world model\nconstruction)"]:::external
+    LLM19["LLM\n(fact → question)"]:::external
 
     %% Data stores
     VDB[("Vector DB\n(redb)")]:::store
@@ -52,8 +56,8 @@ flowchart TD
     P12 -->|"text chunks"| P14
     P12 -->|"text chunks"| P15
 
-    P13 -->|"entity extraction prompt"| LLM
-    LLM -->|"entities"| P13
+    P13 -->|"entity extraction prompt"| LLM13
+    LLM13 -->|"entities"| P13
     P13 -->|"entity nodes"| GDB
     P13 -->|"entity nodes"| P18
 
@@ -62,8 +66,8 @@ flowchart TD
     P15 -->|"chunk text"| VDB
     P15 -->|"token stream"| BM25
 
-    P16 -->|"relation extraction prompt"| LLM
-    LLM -->|"relations"| P16
+    P16 -->|"relation extraction prompt"| LLM16
+    LLM16 -->|"relations"| P16
     P16 -->|"relation edges"| GDB
     P16 -->|"entity relations"| P18
 
@@ -72,14 +76,14 @@ flowchart TD
 
     %% 1.8 World Model (designed — not yet coded)
     MDB -->|"evidence chunks"| P18
-    P18 -->|"event / place / sequence prompt"| LLM
-    LLM -->|"timeline + geo-path events"| P18
+    P18 -->|"event / place / sequence prompt"| LLM18
+    LLM18 -->|"timeline + geo-path events"| P18
     P18 -->|"Event nodes + Place-path edges\n+ interaction sequences"| GDB
 
     %% 1.9 Jeopardy Transform (designed — not yet coded)
     GDB -->|"entity relation (fact)"| P19
-    P19 -->|"fact → question prompt"| LLM
-    LLM -->|"Jeopardy question"| P19
+    P19 -->|"fact → question prompt"| LLM19
+    LLM19 -->|"Jeopardy question"| P19
     P19 -->|"question vector\n+ link to source fact"| VDB
 
     SEED -->|"structured entities"| P110

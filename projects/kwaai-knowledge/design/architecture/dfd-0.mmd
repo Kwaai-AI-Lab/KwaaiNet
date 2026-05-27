@@ -5,7 +5,11 @@ flowchart TD
 
     DOC["Document / Structured data"]:::external
     USER["User / Application"]:::external
-    LLM["LLM Inference\n(Ollama / CandelEngine)"]:::external
+
+    LLM1["LLM\n(entity extraction)"]:::external
+    LLM2["LLM\n(decomposition\nHyDE / rerank)"]:::external
+    LLM3["LLM\n(generation)"]:::external
+    LLM4["LLM\n(entity completions)"]:::external
 
     P1(("1\nIngest")):::process
     P2(("2\nQuery")):::process
@@ -16,13 +20,16 @@ flowchart TD
 
     DOC -->|"raw text / PDF / YAML / JSON"| P1
     P1 -->|"chunks + entities + embeddings"| KB
+    P1 <-->|"entity extraction"| LLM1
+
     USER -->|"natural language query"| P2
     KB -->|"ranked chunks + entity context"| P2
+    P2 <-->|"decomposition / HyDE / rerank"| LLM2
+
     P2 -->|"top-K results + query structure"| P3
     P3 -->|"answer"| USER
+    P3 <-->|"generation"| LLM3
+
     KB -->|"entity graph (scored)"| P4
     P4 -->|"enriched entities"| KB
-    P4 <-->|"completions + embeddings"| LLM
-    P3 <-->|"generation"| LLM
-    P2 <-->|"decomposition / HyDE / rerank"| LLM
-    P1 <-->|"entity extraction"| LLM
+    P4 <-->|"completions + embeddings"| LLM4

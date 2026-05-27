@@ -3,7 +3,7 @@ flowchart TD
     classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
     classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-    LLM["LLM Inference"]:::external
+    LLM43["LLM\n(entity completion)"]:::external
 
     %% Data stores
     GDB[("Graph DB\n(redb)")]:::store
@@ -33,7 +33,8 @@ flowchart TD
     P41 -->|"scored entity list"| P42
     P42 -->|"low-score candidates"| P43
     MDB -->|"evidence chunks"| P43
-    P43 <-->|"completion prompts"| LLM
+    P43 -->|"completion prompt"| LLM43
+    LLM43 -->|"enriched fields"| P43
     P43 -->|"enriched entity fields"| GDB
 
     GDB -->|"entity embeddings"| P44
