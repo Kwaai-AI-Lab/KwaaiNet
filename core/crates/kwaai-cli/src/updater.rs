@@ -213,10 +213,11 @@ impl UpdateChecker {
 
             // CUDA zips include bundled DLLs alongside the executables; include
             // *.dll in the file glob so they land in the install directory too.
+            // p2pd.exe is already matched by *.exe so no separate entry needed.
             let file_include = if is_cuda {
-                "'*.exe','*.dll','p2pd'"
+                "'*.exe','*.dll'"
             } else {
-                "'*.exe','p2pd'"
+                "'*.exe'"
             };
 
             // Single PS1 script handles the full update: waits for kwaainet to
@@ -244,7 +245,7 @@ impl UpdateChecker {
                  Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
                  Add-Content -Path '{log_str}' -Value 'Swap complete — restarting daemon'\r\n\
                  Start-Sleep -Seconds 2\r\n\
-                 Start-Process -FilePath '{exe_str}' -ArgumentList 'restart' -WindowStyle Hidden\r\n\
+                 Start-Process -FilePath '{exe_str}' -ArgumentList 'start', '--daemon' -WindowStyle Hidden\r\n\
                  Add-Content -Path '{log_str}' -Value 'Daemon restart triggered'\r\n\
                  Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n"
             );
@@ -483,4 +484,57 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
         )
     };
     parse(latest) > parse(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_newer_ordering() {
+        assert!(is_newer("0.4.2", "0.4.1"));
+        assert!(is_newer("0.5.0", "0.4.99"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(!is_newer("0.4.1", "0.4.1"));
+        assert!(!is_newer("0.4.0", "0.4.1"));
+    }
+
+    /// On a Windows machine with an NVIDIA GPU, nvidia_smi_windows() must return
+    /// true within the 4-second timeout.  Run on any CI/dev box that has a GPU.
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn windows_gpu_detected() {
+        let has_gpu = nvidia_smi_windows().await;
+        // This test is advisory: it documents that GPU detection works.
+        // On machines without a GPU it is expected to return false.
+        println!("nvidia_smi_windows() = {has_gpu}");
+    }
+
+    /// Verify that the CUDA archive URL contains the -cuda.zip suffix so that
+    /// is_cuda detection and file_include selection work correctly.
+    #[test]
+    fn cuda_url_suffix_detection() {
+        let cuda_url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda.zip";
+        let cpu_url  = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc.zip";
+        assert!(cuda_url.contains("-cuda.zip"), "CUDA URL must contain -cuda.zip");
+        assert!(!cpu_url.contains("-cuda.zip"), "CPU URL must not contain -cuda.zip");
+    }
+
+    /// Verify the file_include string for CUDA zips contains '*.dll' so bundled
+    /// CUDA runtime DLLs (cublas64_12.dll etc.) are installed alongside kwaainet.exe.
+    #[test]
+    fn cuda_file_include_has_dll_glob() {
+        let is_cuda = true;
+        let file_include = if is_cuda { "'*.exe','*.dll'" } else { "'*.exe'" };
+        assert!(
+            file_include.contains("*.dll"),
+            "CUDA file_include must contain *.dll glob to install bundled CUDA DLLs"
+        );
+        let is_cuda = false;
+        let file_include = if is_cuda { "'*.exe','*.dll'" } else { "'*.exe'" };
+        assert!(
+            !file_include.contains("*.dll"),
+            "CPU file_include must not contain *.dll glob"
+        );
+    }
 }

@@ -1483,7 +1483,10 @@ async fn cmd_rebuild(
             println!();
             println!("  ▶ Step 5/8  graph seed");
             cmd_graph(
-                GraphAction::Seed { file: seed_path, kb: kb.clone() },
+                GraphAction::Seed {
+                    file: seed_path,
+                    kb: kb.clone(),
+                },
                 kb.clone(),
             )
             .await?;
@@ -1495,7 +1498,11 @@ async fn cmd_rebuild(
         println!();
         println!("  ▶ Step 6/8  graph alias-scan");
         cmd_graph(
-            GraphAction::AliasScan { auto: true, dry_run: false, min_hits: 1 },
+            GraphAction::AliasScan {
+                auto: true,
+                dry_run: false,
+                min_hits: 1,
+            },
             kb.clone(),
         )
         .await?;
@@ -1527,7 +1534,14 @@ async fn cmd_rebuild(
 
         // ── Final: Score ──────────────────────────────────────────────────
         println!();
-        cmd_graph(GraphAction::Score { top: 20, json: false }, kb.clone()).await?;
+        cmd_graph(
+            GraphAction::Score {
+                top: 20,
+                json: false,
+            },
+            kb.clone(),
+        )
+        .await?;
 
         Ok(())
     }
@@ -2296,10 +2310,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             let a = store.get_entity(*alias_id);
                             let b = store.get_entity(*canonical_id);
                             if let (Some(a), Some(b)) = (a, b) {
-                                println!(
-                                    "        \"{}\"  →  \"{}\"  [{}]",
-                                    a.name, b.name, reason
-                                );
+                                println!("        \"{}\"  →  \"{}\"  [{}]", a.name, b.name, reason);
                             }
                         }
                     } else if auto {
@@ -2335,10 +2346,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                 Some(e) => e,
                                 None => continue,
                             };
-                            println!(
-                                "  \"{}\"  →  \"{}\"  [{}]",
-                                a.name, b.name, reason
-                            );
+                            println!("  \"{}\"  →  \"{}\"  [{}]", a.name, b.name, reason);
                             loop {
                                 use std::io::Write;
                                 print!("  Merge? [y/n/q] ");
@@ -2353,13 +2361,16 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                         need_rebuild = true;
                                         break;
                                     }
+                                    "n" | "N" => {
+                                        println!("    skipped\n");
+                                        break;
+                                    }
                                     "q" | "Q" => {
                                         quit = true;
                                         break;
                                     }
                                     _ => {
-                                        println!("    skipped\n");
-                                        break;
+                                        println!("    please enter y, n, or q");
                                     }
                                 }
                             }
@@ -2372,8 +2383,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 // Alias must have ≤ 15 neighbours and ≥ 60% of them covered by
                 // the canonical's neighbour set.  Never auto-merged — too noisy
                 // in memoir-style texts; always shown for human review.
-                let containment_cands =
-                    store.find_dedup_candidates_neighbor_containment(0.60, 3);
+                let containment_cands = store.find_dedup_candidates_neighbor_containment(0.60, 3);
                 if containment_cands.is_empty() {
                     println!("  Tier 4  no neighbour-containment candidates");
                 } else {
@@ -2430,13 +2440,16 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                         need_rebuild = true;
                                         break;
                                     }
+                                    "n" | "N" => {
+                                        println!("    skipped\n");
+                                        break;
+                                    }
                                     "q" | "Q" => {
                                         quit = true;
                                         break;
                                     }
                                     _ => {
-                                        println!("    skipped\n");
-                                        break;
+                                        println!("    please enter y, n, or q");
                                     }
                                 }
                             }
@@ -3031,9 +3044,7 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                         .filter(|s| !s.is_empty())
                         .collect();
                     if v.is_empty() {
-                        v.push(
-                            inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone()),
-                        );
+                        v.push(inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone()));
                     }
                     v
                 };

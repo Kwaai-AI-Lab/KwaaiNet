@@ -18,7 +18,28 @@ Write-Host "Installing kwaainet v$ver to $installDir"
 
 $zip = Join-Path $env:TEMP 'kwaainet-update.zip'
 $tmp = Join-Path $env:TEMP 'kwaainet-upd-extract'
-$url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v$ver/kwaainet-x86_64-pc-windows-msvc.zip"
+
+# Prefer the CUDA-enabled zip on NVIDIA GPU machines.
+$cpuUrl  = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v$ver/kwaainet-x86_64-pc-windows-msvc.zip"
+$cudaUrl = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v$ver/kwaainet-x86_64-pc-windows-msvc-cuda.zip"
+
+$hasGpu = (nvidia-smi --query-gpu=name --format=csv,noheader 2>$null) -ne $null
+$isCuda = $false
+$url    = $cpuUrl
+
+if ($hasGpu) {
+    try {
+        $resp = Invoke-WebRequest -Uri $cudaUrl -Method Head -UseBasicParsing -ErrorAction Stop
+        if ($resp.StatusCode -eq 200) {
+            Write-Host "NVIDIA GPU detected — downloading CUDA build..."
+            $url    = $cudaUrl
+            $isCuda = $true
+        }
+    } catch {
+        Write-Host "NVIDIA GPU detected but CUDA build for v$ver isn't published yet."
+        Write-Host "Installing CPU build — run this script again later for GPU support."
+    }
+}
 
 Write-Host "Downloading..."
 Invoke-WebRequest -Uri $url -OutFile $zip
@@ -27,10 +48,12 @@ if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
 Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
 
 Write-Host "Stopping kwaainet..."
-Stop-Process -Name kwaainet -Force -ErrorAction SilentlyContinue
+Stop-Process -Name kwaainet,p2pd -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
-Get-ChildItem -Path $tmp -Recurse -Include '*.exe', 'p2pd' | ForEach-Object {
+# For CUDA zips include *.dll so bundled CUDA runtime DLLs are installed.
+$include = if ($isCuda) { @('*.exe', '*.dll') } else { @('*.exe') }
+Get-ChildItem -Path $tmp -Recurse -Include $include | ForEach-Object {
     $dest = Join-Path $installDir $_.Name
     Copy-Item -Path $_.FullName -Destination $dest -Force
     Write-Host "  Installed $($_.Name)"
