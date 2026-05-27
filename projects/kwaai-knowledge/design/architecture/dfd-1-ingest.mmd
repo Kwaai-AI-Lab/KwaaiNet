@@ -1,8 +1,8 @@
 flowchart TD
-    classDef process fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef process  fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
-    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
-    classDef stub fill:#f3f4f6,stroke:#9ca3af,color:#6b7280,stroke-dasharray:5 5
+    classDef store    fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef designed fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f,stroke-dasharray:5 5
 
     DOC["Document\n(PDF / DOCX / MD / TXT)"]:::external
     SEED["Structured entity data\n(NotebookLM JSON / Family YAML / Obsidian)"]:::external
@@ -22,20 +22,28 @@ flowchart TD
     P15(("1.5\nEmbed\nVector")):::process
     P16(("1.6\nExtract\nRelation")):::process
     P17(("1.7\nRe-embed\nEntities")):::process
-    P18(("1.8\nConstruct\nWorld Model")):::process
-    P19(("1.9\nJeopardy\nTransform\n[NOT IMPL]")):::stub
+    P18(("1.8\nConstruct\nWorld Model\n[space + time]")):::designed
+    P19(("1.9\nJeopardy\nTransform")):::designed
     P110(("1.10\nSeed from\nStructured Data")):::process
 
     %% Code annotations
-    %% 1.1 → document.rs : extract_text()
-    %% 1.2 → chunker.rs : split_text()
-    %% 1.3 → graph.rs : extract_from_text()  [entity path]
-    %% 1.4 → meta_store.rs : put_chunks()
-    %% 1.5 → embedder.rs : embed_batch()
-    %% 1.6 → graph.rs : extract_from_text()  [relation path]
-    %% 1.7 → ingestion.rs / dream_tasks.rs
-    %% 1.8 → graph.rs : upsert_entity() + upsert_relation()
-    %% 1.9 → wiki.rs  (stub, not implemented)
+    %% 1.1  → document.rs : extract_text()
+    %% 1.2  → chunker.rs : split_text()
+    %% 1.3  → graph.rs : extract_from_text() [entity path] + upsert_entity()
+    %% 1.4  → meta_store.rs : put_chunks()
+    %% 1.5  → embedder.rs : embed_batch()
+    %% 1.6  → graph.rs : extract_from_text() [relation path] + upsert_relation()
+    %% 1.7  → ingestion.rs / dream_tasks.rs
+    %% 1.8  → [DESIGNED, NOT YET CODED]
+    %%         Maps each entity to space + time:
+    %%         - biographical timeline (events ordered by date)
+    %%         - geographical path (sequence of places visited/mentioned)
+    %%         - interaction sequences (who did what with whom, when/where)
+    %%         Output: Event nodes + Place-path edges added to Graph DB
+    %% 1.9  → [DESIGNED, NOT YET CODED] wiki.rs is a stub
+    %%         Input: entity relation (subject–predicate–object fact) from Graph DB
+    %%         LLM converts fact to a Jeopardy-style question ("What is ___?")
+    %%         Output: question embedding + link to source relation stored in Vector DB
     %% 1.10 → seed_json.rs / family.rs / obsidian.rs
 
     DOC -->|"raw file"| P11
@@ -43,20 +51,36 @@ flowchart TD
     P12 -->|"text chunks"| P13
     P12 -->|"text chunks"| P14
     P12 -->|"text chunks"| P15
-    P12 -->|"text chunks"| P19
+
     P13 -->|"entity extraction prompt"| LLM
     LLM -->|"entities"| P13
-    P13 -->|"named entities"| P18
+    P13 -->|"entity nodes"| GDB
+    P13 -->|"entity nodes"| P18
+
     P14 -->|"chunk + section metadata"| MDB
+
     P15 -->|"chunk text"| VDB
     P15 -->|"token stream"| BM25
+
     P16 -->|"relation extraction prompt"| LLM
     LLM -->|"relations"| P16
+    P16 -->|"relation edges"| GDB
     P16 -->|"entity relations"| P18
-    P17 -->|"entity names"| VDB
-    P18 -->|"entity nodes"| GDB
-    P18 -->|"relation edges"| GDB
-    P18 -->|"entity names"| P17
+
+    GDB -->|"new entity names"| P17
+    P17 -->|"entity embeddings"| VDB
+
+    %% 1.8 World Model (designed — not yet coded)
+    MDB -->|"evidence chunks"| P18
+    P18 -->|"event / place / sequence prompt"| LLM
+    LLM -->|"timeline + geo-path events"| P18
+    P18 -->|"Event nodes + Place-path edges\n+ interaction sequences"| GDB
+
+    %% 1.9 Jeopardy Transform (designed — not yet coded)
+    GDB -->|"entity relation (fact)"| P19
+    P19 -->|"fact → question prompt"| LLM
+    LLM -->|"Jeopardy question"| P19
+    P19 -->|"question vector\n+ link to source fact"| VDB
 
     SEED -->|"structured entities"| P110
     P110 -->|"entity nodes + relations"| GDB
