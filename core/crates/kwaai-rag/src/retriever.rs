@@ -3,12 +3,64 @@ use std::future::Future;
 use std::pin::Pin;
 
 use anyhow::Result;
+use tracing::debug;
 
 use crate::bm25::{rrf_merge, BM25Index};
 use crate::embedder::EmbedClient;
 use crate::graph::GraphStore;
 use crate::hyde::{embed_with_hyde, embed_with_hyde_blend};
 use crate::meta_store::{ChunkMeta, MetaStore};
+
+/// Replace entity alias mentions in query with canonical names before embedding.
+///
+/// Builds an alias→canonical map from the graph (sorted longest-alias-first to
+/// prevent partial matches), then does a case-insensitive whole-word substitution.
+/// Only the first match per alias is replaced to prevent cascading rewrites.
+/// The original query is preserved for BM25 (which benefits from matching the
+/// alias form present in the source text).
+///
+/// Example: "Who was J.M.H. Gool?" → "Who was Haji Joosub Maulvi Hamid Gool?"
+pub fn canonicalize_query(query: &str, graph: &GraphStore) -> String {
+    let mut pairs: Vec<(String, String)> = graph
+        .all_entities()
+        .flat_map(|e| {
+            e.aliases
+                .iter()
+                .filter(|a| a.len() >= 3)
+                .map(|a| (a.to_lowercase(), e.name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    // Longest alias first — prevents "Gool" matching before "J.M.H. Gool"
+    pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+    let mut result = query.to_string();
+    let mut result_lower = result.to_lowercase();
+
+    for (alias_lower, canonical) in &pairs {
+        let Some(idx) = result_lower.find(alias_lower.as_str()) else {
+            continue;
+        };
+        // Whole-word boundary check
+        let before_ok = idx == 0
+            || !result_lower
+                .chars()
+                .nth(idx - 1)
+                .is_some_and(|c| c.is_alphanumeric());
+        let end = idx + alias_lower.len();
+        let after_ok = end >= result_lower.len()
+            || !result_lower
+                .chars()
+                .nth(end)
+                .is_some_and(|c| c.is_alphanumeric());
+        if before_ok && after_ok {
+            debug!(alias = alias_lower.as_str(), canonical, "query alias → canonical");
+            result = format!("{}{}{}", &result[..idx], canonical, &result[end..]);
+            result_lower = result.to_lowercase();
+        }
+    }
+    result
+}
 
 #[derive(Debug, Clone)]
 pub struct RetrievedChunk {
@@ -110,13 +162,23 @@ pub async fn retrieve_graph_anchored(
 ) -> Result<Vec<RetrievedChunk>> {
     let candidate_k = cfg.top_k * 4;
 
+    // Substitute entity alias forms with canonical names before embedding so the
+    // query vector clusters near the correctly-normalised entity descriptions.
+    // BM25 still runs against the original query (alias forms match source text better).
+    let canonical_query = canonicalize_query(query, graph);
+    let embed_query = if canonical_query != query {
+        canonical_query.as_str()
+    } else {
+        query
+    };
+
     // Dense embedding — use HyDE (optionally blended) if configured, else plain query embedding.
     let embedding = match (&cfg.hyde_inference_url, &cfg.hyde_model) {
         (Some(url), Some(model)) => match cfg.hyde_alpha {
-            Some(alpha) => embed_with_hyde_blend(query, embed, url, model, alpha).await,
-            None => embed_with_hyde(query, embed, url, model).await,
+            Some(alpha) => embed_with_hyde_blend(embed_query, embed, url, model, alpha).await,
+            None => embed_with_hyde(embed_query, embed, url, model).await,
         },
-        _ => embed.embed_one(query).await?,
+        _ => embed.embed_one(embed_query).await?,
     };
 
     // 1. Find seed entities: embedding similarity + name-token matching.
@@ -193,16 +255,16 @@ pub async fn retrieve_graph_anchored(
     Ok(results)
 }
 
-/// Returns true when `entity_id` is the memoir author (Yousuf Rassool).
+/// Returns true when `entity_id` is the KB narrator / author.
+///
+/// Detection is purely alias-based so it generalises across KBs: any entity
+/// with an alias of "author", "narrator", "the author", etc. qualifies.
+/// Seed files should declare the narrator entity with one of these aliases
+/// (e.g. `aliases: [Author]` in the family-tree YAML).
 fn is_author_entity(entity_id: i64, graph: &GraphStore) -> bool {
     let Some(entity) = graph.get_entity(entity_id) else {
         return false;
     };
-    if entity.name.to_lowercase().contains("yousuf rassool")
-        || entity.name.to_lowercase().contains("yusuf rassool")
-    {
-        return true;
-    }
     entity.aliases.iter().any(|a| {
         matches!(
             a.to_lowercase().as_str(),
@@ -229,21 +291,23 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
 
     // Mother
     if q.contains("mother") || q.contains(" mom") || q.contains("mama") {
-        // child_of edges from Yousuf point to parents; return the most-mentioned one
         return neighbors
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
-            .max_by_key(|(id, _, _)| graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0))
+            .find(|(id, _, _)| {
+                graph.get_entity(*id).and_then(|e| e.gender.clone()).as_deref() == Some("Female")
+            })
             .map(|(id, _, _)| *id);
     }
 
     // Father
     if q.contains("father") || q.contains(" dad") || q.contains("papa") {
-        // Among Yousuf's child_of neighbors, Peter has fewer mentions than Ayesha
         return neighbors
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
-            .min_by_key(|(id, _, _)| graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0))
+            .find(|(id, _, _)| {
+                graph.get_entity(*id).and_then(|e| e.gender.clone()).as_deref() == Some("Male")
+            })
             .map(|(id, _, _)| *id);
     }
 
@@ -254,31 +318,36 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
             .filter(|(_, rel, _)| rel == "child_of")
             .map(|(id, _, _)| *id)
             .collect();
-        // Walk one more child_of hop; pick the grandparent with the most mentions
-        // (JMH Gool has ~40 mentions vs Bibi Gool ~5, so this correctly selects him)
-        let mut best: Option<(i64, u32)> = None;
         for parent_id in &parents {
             for (gp_id, rel, _) in graph.neighbors_of(*parent_id) {
-                if rel == "child_of" {
-                    let m = graph
-                        .get_entity(gp_id)
-                        .map(|e| e.mention_count)
-                        .unwrap_or(0);
-                    if best.is_none_or(|(_, bm)| m > bm) {
-                        best = Some((gp_id, m));
-                    }
+                if rel == "child_of"
+                    && graph.get_entity(gp_id).and_then(|e| e.gender.clone()).as_deref()
+                        == Some("Male")
+                {
+                    return Some(gp_id);
                 }
             }
         }
-        return best.map(|(id, _)| id);
+        return None;
     }
 
     // Siblings
     if q.contains("sibling") || q.contains("brother") || q.contains("sister") {
-        // Return the first sibling — the LLM will mention all from the chunk context
+        let want_gender = if q.contains("sister") {
+            Some("Female")
+        } else if q.contains("brother") {
+            Some("Male")
+        } else {
+            None
+        };
         return neighbors
             .iter()
-            .find(|(_, rel, _)| rel == "sibling_of")
+            .filter(|(_, rel, _)| rel == "sibling_of")
+            .find(|(id, _, _)| {
+                want_gender.map_or(true, |g| {
+                    graph.get_entity(*id).and_then(|e| e.gender.clone()).as_deref() == Some(g)
+                })
+            })
             .map(|(id, _, _)| *id);
     }
 
@@ -372,4 +441,63 @@ pub(crate) fn assemble_results(
     });
     results.truncate(cfg.top_k);
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{EntityNode, GraphStore};
+    use tempfile::tempdir;
+
+    fn make_store_with_alias(name: &str, alias: &str) -> (GraphStore, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let mut store = GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
+        let id = crate::graph::entity_id(name, "Person");
+        store
+            .upsert_entity(EntityNode {
+                id,
+                name: name.to_string(),
+                entity_type: "Person".to_string(),
+                description: String::new(),
+                embedding: vec![],
+                mention_count: 1,
+                first_chunk_id: 0,
+                aliases: vec![alias.to_string()],
+                schema_type: None,
+                evidence: Vec::new(),
+                gender: None,
+                fields: Default::default(),
+            })
+            .unwrap();
+        (store, dir)
+    }
+
+    #[test]
+    fn canonicalize_substitutes_alias() {
+        let (store, _dir) = make_store_with_alias("Canonical Full Name", "CFN");
+        let result = canonicalize_query("Who was CFN?", &store);
+        assert_eq!(result, "Who was Canonical Full Name?");
+    }
+
+    #[test]
+    fn canonicalize_no_match_unchanged() {
+        let (store, _dir) = make_store_with_alias("Canonical Full Name", "CFN");
+        let result = canonicalize_query("Tell me about something else.", &store);
+        assert_eq!(result, "Tell me about something else.");
+    }
+
+    #[test]
+    fn canonicalize_case_insensitive() {
+        let (store, _dir) = make_store_with_alias("Global Standards Body", "GSB");
+        let result = canonicalize_query("What was the gsb?", &store);
+        assert_eq!(result, "What was the Global Standards Body?");
+    }
+
+    #[test]
+    fn canonicalize_word_boundary_only() {
+        let (store, _dir) = make_store_with_alias("Target Entity", "TGT");
+        // "TGT" should not match inside "XTGTX"
+        let result = canonicalize_query("Tell me about XTGTX.", &store);
+        assert_eq!(result, "Tell me about XTGTX.");
+    }
 }
