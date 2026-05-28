@@ -3146,6 +3146,98 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 }
             }
 
+            GraphAction::GhostPrune {
+                with_relations,
+                dry_run,
+            } => {
+                print_box_header(&format!("Ghost Prune ({})", kb));
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening meta store")?;
+
+                // Build a lowercase text corpus from all MetaStore chunks for name-search.
+                let all_chunk_texts: Vec<String> = meta
+                    .all_chunks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(_, m)| m.text.to_lowercase())
+                    .collect();
+
+                // Identify ghost entities: name not found in any source chunk text.
+                // All NER-extracted entities have chunk links (the LLM linked them to a chunk
+                // even when hallucinating), so chunk-link presence is not a useful ghost signal.
+                // The definitive test is whether the name actually appears in any chunk text.
+                let candidates: Vec<(i64, String, usize)> = store
+                    .all_entities()
+                    .map(|e| (e.id, e.name.clone(), store.neighbors_of(e.id).len()))
+                    .collect();
+
+                let mut ghosts: Vec<i64> = Vec::new();
+                let mut skipped_has_relations = 0usize;
+
+                for (eid, name, neighbor_count) in &candidates {
+                    // Names shorter than 4 chars are ambiguous — never prune them.
+                    let name_lower: String = name.to_lowercase();
+                    if name_lower.len() < 4 {
+                        continue;
+                    }
+                    // Keep if name appears in any chunk text.
+                    if all_chunk_texts.iter().any(|t| t.contains(name_lower.as_str())) {
+                        continue;
+                    }
+                    // Ghost candidate: name not found in any source text.
+                    if *neighbor_count > 0 && !with_relations {
+                        skipped_has_relations += 1;
+                        continue;
+                    }
+                    ghosts.push(*eid);
+                }
+
+                let total_entities = candidates.len();
+                println!("  Total entities : {total_entities}");
+                println!("  Ghost candidates: {}", ghosts.len());
+                if skipped_has_relations > 0 {
+                    println!(
+                        "  Skipped (have relations, use --with-relations to include): {skipped_has_relations}"
+                    );
+                }
+
+                if ghosts.is_empty() {
+                    println!("\n  No ghost entities found.\n");
+                    return Ok(());
+                }
+
+                if dry_run {
+                    println!("\n  [dry-run] Would remove {} entities.\n", ghosts.len());
+                    println!("  Re-run without --dry-run to apply.\n");
+                    return Ok(());
+                }
+
+                print!("  Removing {} ghost entities…", ghosts.len());
+                let _ = io::stdout().flush();
+                let mut removed = 0usize;
+                for eid in &ghosts {
+                    if let Err(e) = store.delete_entity(*eid) {
+                        eprintln!("\n  Warning: failed to delete entity {eid}: {e}");
+                    } else {
+                        removed += 1;
+                    }
+                }
+                println!(" done.");
+
+                let remaining = store.all_entities().count();
+                print_success(&format!(
+                    "Removed {removed} ghost entities ({remaining} remaining)."
+                ));
+                if skipped_has_relations > 0 {
+                    println!(
+                        "  Tip: run with --with-relations to also remove {skipped_has_relations} connected ghosts.\n"
+                    );
+                }
+                println!("  Run `rag eval` to measure accuracy impact.\n");
+            }
+
             GraphAction::Export { output_dir } => {
                 return cmd_export(output_dir, kb).await;
             }

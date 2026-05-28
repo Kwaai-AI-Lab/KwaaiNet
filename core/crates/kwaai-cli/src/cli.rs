@@ -1680,6 +1680,23 @@ pub enum GraphAction {
         restore: bool,
     },
 
+    /// Remove entities that have no text evidence: no chunk links in the graph AND name
+    /// not found in any MetaStore chunk.  These are typically dream-hallucinated entities
+    /// that were never mentioned in the source documents.  Safe to run after dream cycles.
+    ///
+    /// By default only removes entities with no relations (isolated ghosts). Use --with-relations
+    /// to also remove connected hallucinations.
+    GhostPrune {
+        /// Also remove ghost entities that have relations (connected hallucinations).
+        /// Without this flag only truly isolated (no relations, no text) entities are removed.
+        #[arg(long)]
+        with_relations: bool,
+
+        /// Dry-run: report how many entities would be pruned without deleting them.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Score every entity across three pillars: type (schema.org), summary, and relationships.
     /// Reports overall graph health and surfaces the worst-scoring entities.
     Score {
