@@ -2143,3 +2143,42 @@ fn d6_fix_key_entity_descriptions() {
     }
     println!("Entity description update complete.");
 }
+
+#[test]
+fn d6_check_cissie_aliases() {
+    use std::path::Path;
+    let data_dir = Path::new("/Users/rezarassool/.kwaainet/rag/D6");
+    let tid = uuid::Uuid::parse_str("dfdf26a4-c00f-4ea7-9317-a187ac215acf").unwrap();
+    let Ok(g) = kwaai_rag::graph::GraphStore::open(data_dir, tid) else {
+        return;
+    };
+    // Find exact Cissie Gool entity
+    if let Some(e) = g.find_by_name("Cissie Gool") {
+        println!(
+            "Cissie Gool id={} aliases={:?} desc_len={}",
+            e.id,
+            e.aliases,
+            e.description.len()
+        );
+        let sentences = e
+            .description
+            .chars()
+            .filter(|c| matches!(c, '.' | '?' | '!'))
+            .count();
+        println!("  sentences={sentences}");
+    }
+    // Count entities with "grandfather" in ANY alias
+    let mut count = 0;
+    for e in g.all_entities() {
+        if e.aliases.iter().any(|a| {
+            a.to_lowercase().contains("grandfather") || a.to_lowercase().contains("grandpa")
+        }) {
+            count += 1;
+            println!(
+                "GRANDPARENT ALIAS: name={:?} aliases={:?}",
+                e.name, e.aliases
+            );
+        }
+    }
+    println!("Total entities with grandfather/grandpa alias: {count}");
+}

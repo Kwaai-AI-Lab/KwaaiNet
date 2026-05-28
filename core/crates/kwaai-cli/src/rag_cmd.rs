@@ -519,7 +519,7 @@ async fn cmd_ingest(
         // Store document title in graph store for LLM prompt injection
         {
             if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                let _ = g.set_document_titles(&[doc_name.clone()]);
+                let _ = g.set_document_titles(std::slice::from_ref(&doc_name));
             }
         }
 
@@ -2297,7 +2297,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     all_chunks.truncate(n);
                 }
                 if let Some(pct) = sample_pct {
-                    let n = ((all_chunks.len() * pct.min(100) as usize) + 99) / 100;
+                    let n = (all_chunks.len() * pct.min(100) as usize).div_ceil(100);
                     all_chunks.truncate(n);
                 }
                 let total = all_chunks.len();
@@ -3094,7 +3094,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                     // Schema type distribution
                     let mut types: Vec<_> = report.by_schema_type.iter().collect();
-                    types.sort_by(|a, b| b.1.cmp(a.1));
+                    types.sort_by_key(|b| std::cmp::Reverse(b.1));
                     println!("  Type distribution:");
                     for (t, n) in &types {
                         println!("    {:<32} {}", t, n);
@@ -3275,10 +3275,12 @@ const PROPER_NOUN_STOP_WORDS: &[&str] = &[
 ];
 
 /// Walk backwards through `words` from the end collecting a proper-noun phrase.
+///
 /// Rules:
 ///   - Capitalised words (ignoring leading/trailing punctuation) are always included.
 ///   - Stop-words are included only when sandwiched between capitalised words.
 ///   - Stop at the first lowercase non-stop-word.
+///
 /// Returns `Some(phrase)` (≥2 words, leading/trailing punctuation stripped) or `None`.
 fn extract_proper_noun_phrase(words: &[&str]) -> Option<String> {
     if words.is_empty() {
@@ -3299,9 +3301,7 @@ fn extract_proper_noun_phrase(words: &[&str]) -> Option<String> {
         let first = alpha.chars().next().unwrap();
         let lower = alpha.to_lowercase();
 
-        if first.is_uppercase() {
-            start -= 1;
-        } else if PROPER_NOUN_STOP_WORDS.contains(&lower.as_str()) && start < n {
+        if first.is_uppercase() || (PROPER_NOUN_STOP_WORDS.contains(&lower.as_str()) && start < n) {
             start -= 1;
         } else {
             break;
@@ -3431,7 +3431,7 @@ fn extract_alias_pairs(text: &str) -> Vec<(String, String)> {
 fn extract_preceding_phrase(text: &str, before_pos: usize) -> Option<String> {
     let before = text[..before_pos].trim_end();
     let frag_start = before
-        .rfind(|c| matches!(c, '.' | '!' | '?' | ':' | ';' | '\n' | '\r'))
+        .rfind(['.', '!', '?', ':', ';', '\n', '\r'])
         .map(|i| i + 1)
         .unwrap_or(0);
     let fragment = before[frag_start..].trim_start();
@@ -3500,7 +3500,7 @@ async fn cmd_alias_scan(
             Some((abbr, full, hits))
         })
         .collect();
-    pairs.sort_by(|a, b| b.2.cmp(&a.2));
+    pairs.sort_by_key(|b| std::cmp::Reverse(b.2));
 
     println!(
         "  Found {} unique abbreviation definitions in source text\n",
