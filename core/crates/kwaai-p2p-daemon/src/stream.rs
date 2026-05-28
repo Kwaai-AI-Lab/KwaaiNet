@@ -132,9 +132,7 @@ pub async fn read_varint_framed(stream: &mut TcpStream) -> Result<Vec<u8>> {
 /// version as the p2pd protobuf types) without causing a version conflict in
 /// kwaai-cli which uses prost 0.12 via the workspace.
 pub fn unwrap_stream_handler_request(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-    use crate::protocol::p2pd::{
-        persistent_connection_request, PersistentConnectionRequest,
-    };
+    use crate::protocol::p2pd::{persistent_connection_request, PersistentConnectionRequest};
     use prost::Message as _;
 
     let outer = PersistentConnectionRequest::decode(bytes)

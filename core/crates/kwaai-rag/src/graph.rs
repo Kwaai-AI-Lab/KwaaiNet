@@ -562,6 +562,12 @@ impl GraphStore {
                 } else {
                     node.embedding.clone()
                 };
+                let mut merged_aliases = existing.aliases.clone();
+                for a in &node.aliases {
+                    if !merged_aliases.contains(a) {
+                        merged_aliases.push(a.clone());
+                    }
+                }
                 EntityNode {
                     id: node.id,
                     name: existing.name.clone(),
@@ -570,7 +576,7 @@ impl GraphStore {
                     embedding: best_emb,
                     mention_count: existing.mention_count + 1,
                     first_chunk_id: existing.first_chunk_id,
-                    aliases: existing.aliases.clone(),
+                    aliases: merged_aliases,
                     schema_type: existing.schema_type.clone().or(node.schema_type.clone()),
                     gender: existing.gender.clone().or(node.gender.clone()),
                     evidence: existing.evidence.clone(),
@@ -2339,6 +2345,26 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Directly replace an entity's prose description without going through the
+    /// upsert merge logic. The entity's embedding is left unchanged (caller must
+    /// re-embed separately if semantic search accuracy matters).
+    pub fn set_description(&mut self, entity_id: i64, description: &str) -> Result<()> {
+        let node = match self.nodes.get_mut(&entity_id) {
+            Some(n) => n,
+            None => return Ok(()),
+        };
+        node.description = description.to_string();
+        let key = entity_id.to_le_bytes();
+        let val = serde_json::to_vec(node)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            t.insert(key.as_ref(), val.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
     /// Store the list of source document titles for this KB. Used by dream tasks to
     /// inject exclusion rules that prevent book/work titles from being used as
     /// location or organisation targets in the knowledge graph.
@@ -2502,6 +2528,7 @@ impl GraphStore {
 /// Extract entities and relations from a chunk of text using the local LLM.
 /// Returns `Ok((entities, relations))` or `Ok(([], []))` on parse failure so
 /// ingestion can continue without hard errors.
+#[allow(clippy::too_many_arguments)]
 pub async fn extract_from_text(
     text: &str,
     candidates: &[String],

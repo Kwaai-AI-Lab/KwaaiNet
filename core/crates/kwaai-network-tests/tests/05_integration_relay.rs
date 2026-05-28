@@ -20,11 +20,7 @@
 //!
 //! Gate: `KWAAI_INTEGRATION_TESTS=1`
 
-use kwaai_network_tests::{
-    harness::RelayHarness,
-    metrics::MetricsRecorder,
-    require_integration,
-};
+use kwaai_network_tests::{harness::RelayHarness, metrics::MetricsRecorder, require_integration};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
@@ -47,9 +43,7 @@ async fn nat_node_acquires_relay_address() {
         "integration",
     );
 
-    let mut harness = RelayHarness::new()
-        .await
-        .expect("relay harness startup");
+    let mut harness = RelayHarness::new().await.expect("relay harness startup");
 
     // Give the NAT node time to negotiate a relay reservation.
     // The force_reachability_private flag means it won't wait for AutoNAT.
@@ -81,22 +75,26 @@ async fn nat_node_acquires_relay_address() {
 #[tokio::test]
 async fn relay_harness_three_distinct_peers() {
     require_integration!();
-    let rec = MetricsRecorder::start(
-        "integration::relay::three_distinct_peers",
-        "integration",
-    );
+    let rec = MetricsRecorder::start("integration::relay::three_distinct_peers", "integration");
 
-    let harness = RelayHarness::new()
-        .await
-        .expect("relay harness startup");
+    let harness = RelayHarness::new().await.expect("relay harness startup");
 
     let relay_id = &harness.relay.peer_id_hex;
     let nat_id = &harness.nat_node.peer_id_hex;
     let obs_id = &harness.observer.peer_id_hex;
 
-    assert_ne!(relay_id, nat_id, "relay and nat_node must be distinct peers");
-    assert_ne!(relay_id, obs_id, "relay and observer must be distinct peers");
-    assert_ne!(nat_id, obs_id, "nat_node and observer must be distinct peers");
+    assert_ne!(
+        relay_id, nat_id,
+        "relay and nat_node must be distinct peers"
+    );
+    assert_ne!(
+        relay_id, obs_id,
+        "relay and observer must be distinct peers"
+    );
+    assert_ne!(
+        nat_id, obs_id,
+        "nat_node and observer must be distinct peers"
+    );
 
     for id in [relay_id, nat_id, obs_id] {
         assert!(!id.is_empty());
@@ -118,9 +116,7 @@ async fn observer_finds_nat_node_via_dht() {
         "integration",
     );
 
-    let mut harness = RelayHarness::new()
-        .await
-        .expect("relay harness startup");
+    let mut harness = RelayHarness::new().await.expect("relay harness startup");
 
     // Give DHT routing tables time to propagate
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -163,9 +159,7 @@ async fn observer_connects_to_nat_node_via_relay_not_direct_tcp() {
         "integration",
     );
 
-    let mut harness = RelayHarness::new()
-        .await
-        .expect("relay harness startup");
+    let mut harness = RelayHarness::new().await.expect("relay harness startup");
 
     // Wait for relay reservation
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -222,9 +216,7 @@ async fn dht_provide_by_nat_node_findable_by_observer() {
         "integration",
     );
 
-    let mut harness = RelayHarness::new()
-        .await
-        .expect("relay harness startup");
+    let mut harness = RelayHarness::new().await.expect("relay harness startup");
 
     // Let DHT bootstrap and relay reservation settle
     tokio::time::sleep(Duration::from_secs(2)).await;

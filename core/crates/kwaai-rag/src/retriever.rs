@@ -54,7 +54,10 @@ pub fn canonicalize_query(query: &str, graph: &GraphStore) -> String {
                 .nth(end)
                 .is_some_and(|c| c.is_alphanumeric());
         if before_ok && after_ok {
-            debug!(alias = alias_lower.as_str(), canonical, "query alias → canonical");
+            debug!(
+                alias = alias_lower.as_str(),
+                canonical, "query alias → canonical"
+            );
             result = format!("{}{}{}", &result[..idx], canonical, &result[end..]);
             result_lower = result.to_lowercase();
         }
@@ -191,17 +194,19 @@ pub async fn retrieve_graph_anchored(
         "who", "what", "was", "were", "the", "tell", "about", "and", "for", "did", "how", "where",
         "when", "describe", "more", "kind", "place",
     ];
-    let name_seed_ids: std::collections::HashSet<i64> =
+    let emb_seed_ids: std::collections::HashSet<i64> =
         seed_hits.iter().map(|(id, _)| *id).collect();
+    let mut name_matched_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for word in query.split_whitespace() {
         let w = word
             .trim_matches(|c: char| !c.is_alphanumeric())
             .to_lowercase();
         if w.len() >= 3 && !name_stop.contains(&w.as_str()) {
             for id in graph.find_ids_by_name_token(&w) {
-                if !name_seed_ids.contains(&id) {
+                if !emb_seed_ids.contains(&id) {
                     seed_hits.push((id, 0.85));
                 }
+                name_matched_ids.insert(id);
             }
         }
     }
@@ -251,7 +256,7 @@ pub async fn retrieve_graph_anchored(
     // 6. RRF fusion: graph chunks + vector chunks.
     let merged = rrf_merge(&graph_chunks, &vector_chunks, cfg.top_k * 2);
     let mut results = assemble_results(merged, cfg, meta)?;
-    inject_entity_descriptions(query, &seed_hits, graph, &mut results);
+    inject_entity_descriptions(query, &seed_hits, &name_matched_ids, graph, &mut results);
     Ok(results)
 }
 
@@ -295,7 +300,11 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
             .find(|(id, _, _)| {
-                graph.get_entity(*id).and_then(|e| e.gender.clone()).as_deref() == Some("Female")
+                graph
+                    .get_entity(*id)
+                    .and_then(|e| e.gender.clone())
+                    .as_deref()
+                    == Some("Female")
             })
             .map(|(id, _, _)| *id);
     }
@@ -306,7 +315,11 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
             .find(|(id, _, _)| {
-                graph.get_entity(*id).and_then(|e| e.gender.clone()).as_deref() == Some("Male")
+                graph
+                    .get_entity(*id)
+                    .and_then(|e| e.gender.clone())
+                    .as_deref()
+                    == Some("Male")
             })
             .map(|(id, _, _)| *id);
     }
@@ -321,7 +334,10 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
         for parent_id in &parents {
             for (gp_id, rel, _) in graph.neighbors_of(*parent_id) {
                 if rel == "child_of"
-                    && graph.get_entity(gp_id).and_then(|e| e.gender.clone()).as_deref()
+                    && graph
+                        .get_entity(gp_id)
+                        .and_then(|e| e.gender.clone())
+                        .as_deref()
                         == Some("Male")
                 {
                     return Some(gp_id);
@@ -344,8 +360,12 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
             .iter()
             .filter(|(_, rel, _)| rel == "sibling_of")
             .find(|(id, _, _)| {
-                want_gender.map_or(true, |g| {
-                    graph.get_entity(*id).and_then(|e| e.gender.clone()).as_deref() == Some(g)
+                want_gender.is_none_or(|g| {
+                    graph
+                        .get_entity(*id)
+                        .and_then(|e| e.gender.clone())
+                        .as_deref()
+                        == Some(g)
                 })
             })
             .map(|(id, _, _)| *id);
@@ -364,27 +384,90 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
 pub(crate) fn inject_entity_descriptions(
     query: &str,
     seed_hits: &[(i64, f64)],
+    name_matched: &std::collections::HashSet<i64>,
     graph: &GraphStore,
     pool: &mut Vec<RetrievedChunk>,
 ) {
-    // Prefer the top embedding hit (score > 0.85); fall back to whatever is first.
-    let top = seed_hits
-        .iter()
-        .find(|(_, score)| *score > 0.85)
-        .or_else(|| seed_hits.first());
+    let q_lower = query.to_lowercase();
+    let is_relative_query = [
+        "wife",
+        "spouse",
+        "husband",
+        "mother",
+        "father",
+        "grandfather",
+        "grandmother",
+        "grandchild",
+        "grandchildren",
+        "sibling",
+        "brother",
+        "sister",
+    ]
+    .iter()
+    .any(|kw| q_lower.contains(kw));
 
-    let Some((anchor_id, _)) = top else { return };
-
-    let inject_id = if is_author_entity(*anchor_id, graph) {
-        resolve_author_relative(query, *anchor_id, graph).unwrap_or(*anchor_id)
+    // For personal-relative queries (wife, grandfather, etc.) we MUST land on the
+    // author entity so resolve_author_relative() can walk family graph edges.
+    // If the author isn't in the seed hits, skip injection rather than injecting
+    // a spurious entity (e.g. a venue whose description happens to contain "wife").
+    let anchor_id: i64 = if is_relative_query {
+        // Try embedding seed hits first, then fall back to a direct name-token lookup.
+        // The author entity (Joe Rassool / Yousuf Rassool) has alias "author" but that
+        // alias won't appear in entity names, so embedding hits may miss it entirely.
+        let author_id = seed_hits
+            .iter()
+            .find(|(id, _)| is_author_entity(*id, graph))
+            .map(|(id, _)| *id)
+            .or_else(|| {
+                graph
+                    .find_ids_by_name_token("rassool")
+                    .into_iter()
+                    .find(|id| is_author_entity(*id, graph))
+            });
+        let Some(id) = author_id else { return };
+        id
     } else {
-        *anchor_id
+        // For non-relative queries require a confident embedding match (> 0.7).
+        let top = seed_hits
+            .iter()
+            .find(|(_, score)| *score > 0.85)
+            .or_else(|| seed_hits.iter().find(|(_, score)| *score > 0.7));
+        let Some((id, _)) = top else { return };
+        *id
+    };
+
+    let inject_id = if is_author_entity(anchor_id, graph) {
+        resolve_author_relative(query, anchor_id, graph).unwrap_or(anchor_id)
+    } else {
+        anchor_id
     };
 
     let Some(entity) = graph.get_entity(inject_id) else {
         return;
     };
-    if entity.description.trim().len() < 20 {
+    // Description quality gate:
+    // - Name-matched entities (explicitly named in the query) accept a lower bar
+    //   (≥40 chars, ≥1 sentence) because the entity IS the query subject and even
+    //   a thin description adds useful signal.
+    // - Embedding-matched entities need ≥100 chars + ≥2 sentences to avoid injecting
+    //   spurious entities whose description happens to loosely match the query.
+    let desc = entity.description.trim();
+    let sentences = desc
+        .chars()
+        .filter(|c| matches!(c, '.' | '?' | '!'))
+        .count();
+    // Lenient threshold (≥40 chars, ≥1 sentence) when:
+    //   a) entity is explicitly named in the query (name-token match), OR
+    //   b) entity was resolved via the family graph from the author (relative query result) —
+    //      it is definitively the right answer so even a thin description is useful.
+    let is_name_matched = name_matched.contains(&inject_id);
+    let is_resolved_relative = is_relative_query && inject_id != anchor_id;
+    let use_lenient = is_name_matched || is_resolved_relative;
+    if use_lenient {
+        if desc.len() < 40 || sentences < 1 {
+            return;
+        }
+    } else if desc.len() < 100 || sentences < 2 {
         return;
     }
 

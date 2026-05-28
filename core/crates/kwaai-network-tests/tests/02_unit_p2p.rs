@@ -3,11 +3,9 @@
 
 use kwaai_network_tests::metrics::MetricsRecorder;
 use kwaai_p2p::{
-    NodeCapabilities, PETALS_BOOTSTRAP_SERVERS,
     config::{NetworkConfig, KWAAI_BOOTSTRAP_SERVERS},
-    hivemind::{
-        ExpertUID, ServerInfo, decode_message, encode_error, encode_message,
-    },
+    hivemind::{decode_message, encode_error, encode_message, ExpertUID, ServerInfo},
+    NodeCapabilities, PETALS_BOOTSTRAP_SERVERS,
 };
 use std::time::Duration;
 
@@ -67,12 +65,18 @@ fn petals_bootstrap_servers_are_well_formed() {
     for addr in PETALS_BOOTSTRAP_SERVERS {
         assert!(addr.starts_with("/ip4/"), "bad multiaddr: {addr}");
         assert!(addr.contains("/tcp/"), "missing tcp component: {addr}");
-        assert!(addr.contains("/p2p/"), "missing p2p/peer_id component: {addr}");
+        assert!(
+            addr.contains("/p2p/"),
+            "missing p2p/peer_id component: {addr}"
+        );
     }
     for addr in KWAAI_BOOTSTRAP_SERVERS {
         assert!(addr.starts_with("/ip4/"), "bad multiaddr: {addr}");
         assert!(addr.contains("/tcp/"), "missing tcp component: {addr}");
-        assert!(addr.contains("/p2p/"), "missing p2p/peer_id component: {addr}");
+        assert!(
+            addr.contains("/p2p/"),
+            "missing p2p/peer_id component: {addr}"
+        );
     }
     rec.metric("petals_count", PETALS_BOOTSTRAP_SERVERS.len());
     rec.metric("kwaai_count", KWAAI_BOOTSTRAP_SERVERS.len());
@@ -163,7 +167,9 @@ fn server_info_to_expert_info() {
 fn framing_encode_decode_message() {
     let mut rec = MetricsRecorder::start("unit::p2p::framing_encode_decode_message", "unit");
     use prost::Message as _;
-    let uid = ExpertUID { uid: "llama3.2:3b.block.0".to_string() };
+    let uid = ExpertUID {
+        uid: "llama3.2:3b.block.0".to_string(),
+    };
 
     let framed = encode_message(&uid);
     let (is_error, payload) = decode_message(&framed).expect("decode should succeed");
@@ -181,14 +187,19 @@ fn framing_encode_decode_error() {
     let framed = encode_error("inference backend unavailable");
     let (is_error, payload) = decode_message(&framed).expect("decode should succeed");
     assert!(is_error);
-    assert_eq!(std::str::from_utf8(payload).unwrap(), "inference backend unavailable");
+    assert_eq!(
+        std::str::from_utf8(payload).unwrap(),
+        "inference backend unavailable"
+    );
     rec.finish(true);
 }
 
 #[test]
 fn framing_length_prefix_matches_body() {
     let rec = MetricsRecorder::start("unit::p2p::framing_length_prefix_matches_body", "unit");
-    let uid = ExpertUID { uid: "test".to_string() };
+    let uid = ExpertUID {
+        uid: "test".to_string(),
+    };
     let framed = encode_message(&uid);
 
     // First 8 bytes declare the body length (marker + protobuf)

@@ -69,13 +69,14 @@ async fn daemon_identify_returns_stable_peer_id() {
         "integration",
     );
 
-    let mut node = TestNode::new_relay_server()
-        .await
-        .expect("node start");
+    let mut node = TestNode::new_relay_server().await.expect("node start");
 
     let id1 = node.client.identify().await.expect("identify 1");
     let id2 = node.client.identify().await.expect("identify 2");
-    assert_eq!(id1, id2, "peer ID must be stable within one daemon lifetime");
+    assert_eq!(
+        id1, id2,
+        "peer ID must be stable within one daemon lifetime"
+    );
     assert_eq!(id1, node.peer_id_hex);
 
     rec.finish(true);
@@ -84,14 +85,9 @@ async fn daemon_identify_returns_stable_peer_id() {
 #[tokio::test]
 async fn daemon_identify_with_addrs_returns_listen_addrs() {
     require_integration!();
-    let mut rec = MetricsRecorder::start(
-        "integration::daemon::identify_with_addrs",
-        "integration",
-    );
+    let mut rec = MetricsRecorder::start("integration::daemon::identify_with_addrs", "integration");
 
-    let mut node = TestNode::new_relay_server()
-        .await
-        .expect("node start");
+    let mut node = TestNode::new_relay_server().await.expect("node start");
 
     let (peer_id, addrs) = node
         .client
@@ -156,9 +152,7 @@ async fn dht_provide_and_find_connected_node() {
         "integration",
     );
 
-    let relay = TestNode::new_relay_server()
-        .await
-        .expect("relay start");
+    let relay = TestNode::new_relay_server().await.expect("relay start");
     let bootstrap = relay.bootstrap_multiaddr().expect("relay p2p addr");
 
     let mut node = TestNode::new_dht_client(&bootstrap)
@@ -177,7 +171,8 @@ async fn dht_provide_and_find_connected_node() {
     let provide_ms = t.elapsed().as_millis() as u64;
 
     let t2 = Instant::now();
-    let result = node.client
+    let result = node
+        .client
         .dht_find_providers(cid.clone(), 1, Some(10))
         .await
         .expect("dht_find_providers");
@@ -196,14 +191,10 @@ async fn dht_provide_and_find_connected_node() {
 #[tokio::test]
 async fn dht_provide_node_a_find_node_b() {
     require_integration!();
-    let mut rec = MetricsRecorder::start(
-        "integration::daemon::dht_provide_a_find_b",
-        "integration",
-    );
+    let mut rec =
+        MetricsRecorder::start("integration::daemon::dht_provide_a_find_b", "integration");
 
-    let relay = TestNode::new_relay_server()
-        .await
-        .expect("relay start");
+    let relay = TestNode::new_relay_server().await.expect("relay start");
     let bootstrap = relay.bootstrap_multiaddr().expect("relay p2p addr");
 
     let mut node_a = TestNode::new_dht_client(&bootstrap)
@@ -251,9 +242,7 @@ async fn dht_get_missing_key_returns_error() {
         "integration",
     );
 
-    let mut node = TestNode::new_relay_server()
-        .await
-        .expect("node start");
+    let mut node = TestNode::new_relay_server().await.expect("node start");
 
     // dht_get_value returns Err when key is not found
     let result = node
@@ -277,9 +266,7 @@ async fn list_peers_after_connect() {
         "integration",
     );
 
-    let relay = TestNode::new_relay_server()
-        .await
-        .expect("relay start");
+    let relay = TestNode::new_relay_server().await.expect("relay start");
     let bootstrap = relay.bootstrap_multiaddr().expect("relay p2p addr");
 
     let mut client = TestNode::new_dht_client(&bootstrap)
@@ -308,9 +295,7 @@ async fn find_peer_returns_known_peer() {
         "integration",
     );
 
-    let relay = TestNode::new_relay_server()
-        .await
-        .expect("relay start");
+    let relay = TestNode::new_relay_server().await.expect("relay start");
     let bootstrap = relay.bootstrap_multiaddr().expect("relay p2p addr");
 
     let mut client = TestNode::new_dht_client(&bootstrap)

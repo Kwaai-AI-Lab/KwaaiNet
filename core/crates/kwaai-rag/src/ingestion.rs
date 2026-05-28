@@ -14,8 +14,8 @@ use crate::graph::{
     description_from_fields, entity_id, extract_from_text, EntityNode, ExtractedEntity,
     ExtractedRelation, FieldValue, GraphStore,
 };
-use crate::ner;
 use crate::meta_store::{ChunkMeta, MetaStore};
+use crate::ner;
 
 /// Optional graph extraction config attached to an ingestion run.
 pub struct GraphIngestConfig {

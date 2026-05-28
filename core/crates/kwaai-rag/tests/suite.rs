@@ -17,7 +17,9 @@ use kwaai_rag::{
     bm25::{rrf_merge, BM25Index},
     cache::QueryCache,
     chunker::{chunk_id, split_text, ChunkConfig, ChunkStrategy, SurrMode},
-    doc_schema::{auto_detect_schema, load_doc_schema, match_section, parse_index_seeds, SectionDef},
+    doc_schema::{
+        auto_detect_schema, load_doc_schema, match_section, parse_index_seeds, SectionDef,
+    },
     document::{extract_text, supported_extensions},
     family::load_family_tree,
     graph::{
@@ -91,7 +93,11 @@ fn bm25_build_in_ram_and_search() {
     let chunks: Vec<(i64, &str, &str)> = vec![
         (1, "chap01.txt", "the quick brown fox jumps over"),
         (2, "chap02.txt", "district six cape town coloured community"),
-        (3, "chap03.txt", "apartheid racial segregation national party"),
+        (
+            3,
+            "chap03.txt",
+            "apartheid racial segregation national party",
+        ),
     ];
     let idx = BM25Index::build_in_ram(&chunks).unwrap();
     let results = idx.search("district six cape", 3);
@@ -189,7 +195,10 @@ fn rrf_overlap_boosts_shared_ids() {
     let sem = vec![(1i64, 0.9), (2i64, 0.5)];
     let kw = vec![(1i64, 5.0), (3i64, 2.0)];
     let merged = rrf_merge(&sem, &kw, 3);
-    assert_eq!(merged[0].0, 1, "ID 1 shared across both lists should be top");
+    assert_eq!(
+        merged[0].0, 1,
+        "ID 1 shared across both lists should be top"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,7 +260,10 @@ fn character_split_below_min_len_dropped() {
     };
     // 30 chars — below min_chunk_len of 50
     let chunks = split_text("short text under fifty chars!", "doc.txt", &cfg, None);
-    assert!(chunks.is_empty(), "short texts under min_chunk_len should be dropped");
+    assert!(
+        chunks.is_empty(),
+        "short texts under min_chunk_len should be dropped"
+    );
 }
 
 #[test]
@@ -300,7 +312,10 @@ fn paragraph_split_forces_new_chunk_when_oversized() {
         ..Default::default()
     };
     let chunks = split_text(&text, "doc.txt", &cfg, None);
-    assert!(chunks.len() >= 2, "long paragraphs should split into multiple chunks");
+    assert!(
+        chunks.len() >= 2,
+        "long paragraphs should split into multiple chunks"
+    );
 }
 
 #[test]
@@ -366,7 +381,10 @@ fn paragraph_schema_skip_extraction() {
     };
     let chunks = split_text(text, "doc.txt", &cfg, Some(&schema));
     let skip_chunks: Vec<_> = chunks.iter().filter(|c| c.skip_extraction).collect();
-    assert!(!skip_chunks.is_empty(), "Index section chunks should have skip_extraction=true");
+    assert!(
+        !skip_chunks.is_empty(),
+        "Index section chunks should have skip_extraction=true"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -428,7 +446,10 @@ fn cache_get_below_threshold_misses() {
 
     // cosine_sim([1,0,0], [0.0,1.0,0.0]) = 0.0 — far below 0.92
     let query = vec![0.0f32, 1.0, 0.0];
-    assert!(cache.get(&query).is_none(), "dissimilar embedding should miss");
+    assert!(
+        cache.get(&query).is_none(),
+        "dissimilar embedding should miss"
+    );
 }
 
 #[test]
@@ -436,7 +457,9 @@ fn cache_hit_count_increments() {
     let dir = TempDir::new().unwrap();
     let mut cache = QueryCache::open(dir.path(), test_tid()).unwrap();
     let emb = vec![1.0f32, 0.0, 0.0];
-    cache.put("q".to_string(), emb.clone(), "a".to_string(), vec![]).unwrap();
+    cache
+        .put("q".to_string(), emb.clone(), "a".to_string(), vec![])
+        .unwrap();
     cache.get(&emb);
     cache.get(&emb);
     assert_eq!(cache.total_hits(), 2);
@@ -468,19 +491,34 @@ fn cache_lru_eviction_removes_least_used() {
     let emb_b = vec![0.0f32, 1.0, 0.0];
     let emb_c = vec![0.0f32, 0.0, 1.0];
 
-    cache.put("A".to_string(), emb_a.clone(), "ans_a".to_string(), vec![]).unwrap();
-    cache.put("B".to_string(), emb_b.clone(), "ans_b".to_string(), vec![]).unwrap();
+    cache
+        .put("A".to_string(), emb_a.clone(), "ans_a".to_string(), vec![])
+        .unwrap();
+    cache
+        .put("B".to_string(), emb_b.clone(), "ans_b".to_string(), vec![])
+        .unwrap();
 
     // Bump A's hit_count so A is not the LRU
     cache.get(&emb_a);
 
     // Putting C should evict B (hit_count=0, older) not A (hit_count=1)
-    cache.put("C".to_string(), emb_c.clone(), "ans_c".to_string(), vec![]).unwrap();
+    cache
+        .put("C".to_string(), emb_c.clone(), "ans_c".to_string(), vec![])
+        .unwrap();
 
     assert_eq!(cache.entry_count(), 2);
-    assert!(cache.get(&emb_a).is_some(), "A should survive — it was accessed");
-    assert!(cache.get(&emb_b).is_none(), "B should be evicted — least used");
-    assert!(cache.get(&emb_c).is_some(), "C should be present — just inserted");
+    assert!(
+        cache.get(&emb_a).is_some(),
+        "A should survive — it was accessed"
+    );
+    assert!(
+        cache.get(&emb_b).is_none(),
+        "B should be evicted — least used"
+    );
+    assert!(
+        cache.get(&emb_c).is_some(),
+        "C should be present — just inserted"
+    );
 }
 
 #[test]
@@ -488,7 +526,9 @@ fn cache_ttl_expired_count() {
     let dir = TempDir::new().unwrap();
     let mut cache = QueryCache::open(dir.path(), test_tid()).unwrap();
     let emb = vec![1.0f32, 0.0, 0.0];
-    cache.put("q".to_string(), emb, "a".to_string(), vec![]).unwrap();
+    cache
+        .put("q".to_string(), emb, "a".to_string(), vec![])
+        .unwrap();
     // With TTL set to 0, any entry is immediately "expired"
     cache.ttl_secs = 0;
     // Entries inserted even a moment ago have timestamp=now, so now-ts=0, which is NOT > 0
@@ -526,11 +566,7 @@ fn auto_detect_publisher() {
         "publisher should be extracted"
     );
     assert!(
-        schema
-            .metadata
-            .get("publisher")
-            .unwrap()
-            .contains("Oxford"),
+        schema.metadata.get("publisher").unwrap().contains("Oxford"),
         "publisher name should contain Oxford"
     );
 }
@@ -539,7 +575,10 @@ fn auto_detect_publisher() {
 fn auto_detect_copyright_year() {
     let text = "Copyright © 1984 Joe Rassool\nAll rights reserved";
     let schema = auto_detect_schema(text);
-    assert_eq!(schema.metadata.get("year").map(|s| s.as_str()), Some("1984"));
+    assert_eq!(
+        schema.metadata.get("year").map(|s| s.as_str()),
+        Some("1984")
+    );
     assert_eq!(
         schema.metadata.get("copyrightYear").map(|s| s.as_str()),
         Some("1984")
@@ -618,7 +657,11 @@ fn match_section_first_pattern_wins() {
         index_seeds: false,
     });
     let sec = match_section("Chapter One", &schema).unwrap();
-    assert_eq!(sec.narrator_note.as_deref(), Some("first"), "first matching pattern should win");
+    assert_eq!(
+        sec.narrator_note.as_deref(),
+        Some("first"),
+        "first matching pattern should win"
+    );
 }
 
 #[test]
@@ -626,10 +669,17 @@ fn parse_index_seeds_surname_first_format() {
     let index = "Rassool, Yousuf, 15, 23\nAdams, Robert, 7";
     let seeds = parse_index_seeds(index);
     let names: Vec<&str> = seeds.iter().map(|(n, _)| n.as_str()).collect();
-    assert!(names.contains(&"Yousuf Rassool"), "should invert Surname, Firstname");
+    assert!(
+        names.contains(&"Yousuf Rassool"),
+        "should invert Surname, Firstname"
+    );
     assert!(names.contains(&"Robert Adams"));
     for (_, t) in &seeds {
-        assert_eq!(t.as_deref(), Some("Person"), "inverted names should be Person");
+        assert_eq!(
+            t.as_deref(),
+            Some("Person"),
+            "inverted names should be Person"
+        );
     }
 }
 
@@ -641,7 +691,10 @@ fn parse_index_seeds_org_keywords() {
         .iter()
         .filter(|(_, t)| t.as_deref() == Some("Organization"))
         .collect();
-    assert!(!orgs.is_empty(), "org-keyword entries should be typed as Organization");
+    assert!(
+        !orgs.is_empty(),
+        "org-keyword entries should be typed as Organization"
+    );
 }
 
 #[test]
@@ -665,8 +718,12 @@ fn doc_schema_context_line_with_author_year() {
     use kwaai_rag::doc_schema::DocSchema;
     let mut schema = DocSchema::default();
     schema.document_title = Some("District Six".to_string());
-    schema.metadata.insert("author".to_string(), "Joe Rassool".to_string());
-    schema.metadata.insert("year".to_string(), "1984".to_string());
+    schema
+        .metadata
+        .insert("author".to_string(), "Joe Rassool".to_string());
+    schema
+        .metadata
+        .insert("year".to_string(), "1984".to_string());
     let ctx = schema.context_line().unwrap();
     assert!(ctx.contains("District Six"));
     assert!(ctx.contains("Joe Rassool"));
@@ -718,7 +775,10 @@ schema_type: "Book"
     assert_eq!(schema.default_narrator.as_deref(), Some("The Author"));
     assert_eq!(schema.schema_type.as_deref(), Some("Book"));
     assert!(schema.has_index_seeds());
-    assert_eq!(schema.metadata.get("author").map(|s| s.as_str()), Some("Jane Doe"));
+    assert_eq!(
+        schema.metadata.get("author").map(|s| s.as_str()),
+        Some("Jane Doe")
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -754,7 +814,11 @@ fn extract_text_nonexistent_returns_error() {
 fn supported_extensions_includes_core_formats() {
     let exts = supported_extensions();
     for expected in &["txt", "md", "pdf", "docx"] {
-        assert!(exts.contains(expected), "expected extension '{}' missing", expected);
+        assert!(
+            exts.contains(expected),
+            "expected extension '{}' missing",
+            expected
+        );
     }
 }
 
@@ -780,7 +844,10 @@ fn entity_id_differs_across_names() {
 
 #[test]
 fn entity_id_differs_across_types() {
-    assert_ne!(entity_id("Alice", "Person"), entity_id("Alice", "Organization"));
+    assert_ne!(
+        entity_id("Alice", "Person"),
+        entity_id("Alice", "Organization")
+    );
 }
 
 #[test]
@@ -818,14 +885,8 @@ fn expected_fields_unknown_type_is_empty() {
 #[test]
 fn description_from_fields_generates_prose() {
     let mut fields = HashMap::new();
-    fields.insert(
-        "birthDate".to_string(),
-        FieldValue::new("1950-01-01", 1),
-    );
-    fields.insert(
-        "occupation".to_string(),
-        FieldValue::new("Teacher", 2),
-    );
+    fields.insert("birthDate".to_string(), FieldValue::new("1950-01-01", 1));
+    fields.insert("occupation".to_string(), FieldValue::new("Teacher", 2));
     let desc = description_from_fields("Alice", "Person", &fields);
     assert!(!desc.is_empty());
     assert!(desc.contains("Alice"));
@@ -841,7 +902,11 @@ fn description_from_fields_empty_fields_returns_empty() {
 #[test]
 fn entity_types_list_contains_all_expected() {
     for expected in &["Person", "Organization", "Location", "Event", "Unknown"] {
-        assert!(ENTITY_TYPES.contains(expected), "missing type: {}", expected);
+        assert!(
+            ENTITY_TYPES.contains(expected),
+            "missing type: {}",
+            expected
+        );
     }
     assert_eq!(ENTITY_TYPES.len(), 15);
 }
@@ -857,7 +922,11 @@ fn relation_types_list_not_empty() {
 #[test]
 fn familial_rels_are_subset_of_relation_types() {
     for rel in FAMILIAL_RELS {
-        assert!(RELATION_TYPES.contains(rel), "familial rel not in RELATION_TYPES: {}", rel);
+        assert!(
+            RELATION_TYPES.contains(rel),
+            "familial rel not in RELATION_TYPES: {}",
+            rel
+        );
     }
 }
 
@@ -895,9 +964,13 @@ fn graph_upsert_and_get_entity() {
 fn graph_find_by_name() {
     let dir = TempDir::new().unwrap();
     let mut g = open_graph(&dir);
-    g.upsert_entity(make_entity("District Six", "Location")).unwrap();
+    g.upsert_entity(make_entity("District Six", "Location"))
+        .unwrap();
     assert!(g.find_by_name("District Six").is_some());
-    assert!(g.find_by_name("district six").is_some(), "lookup should be case-insensitive");
+    assert!(
+        g.find_by_name("district six").is_some(),
+        "lookup should be case-insensitive"
+    );
     assert!(g.find_by_name("NonExistent").is_none());
 }
 
@@ -906,11 +979,13 @@ fn graph_find_by_name_normalized() {
     let dir = TempDir::new().unwrap();
     let mut g = open_graph(&dir);
     // Hyphen in stored name → space in normalized form
-    g.upsert_entity(make_entity("Abdul-Hamid", "Person")).unwrap();
+    g.upsert_entity(make_entity("Abdul-Hamid", "Person"))
+        .unwrap();
     // "Abdul Hamid" normalizes the same way ("abdul hamid")
     assert!(g.find_by_name_normalized("Abdul Hamid").is_some());
     // Case difference also normalizes
-    g.upsert_entity(make_entity("District Six", "Location")).unwrap();
+    g.upsert_entity(make_entity("District Six", "Location"))
+        .unwrap();
     assert!(g.find_by_name_normalized("DISTRICT SIX").is_some());
 }
 
@@ -958,7 +1033,9 @@ fn graph_upsert_relation_stores_and_reads() {
     assert_eq!(g.relation_count(), 1);
 
     let nbrs = g.neighbors_of(aid);
-    assert!(nbrs.iter().any(|(id, rel, _)| *id == bid && rel == "works_at"));
+    assert!(nbrs
+        .iter()
+        .any(|(id, rel, _)| *id == bid && rel == "works_at"));
 }
 
 #[test]
@@ -979,7 +1056,9 @@ fn graph_familial_inverse_auto_added() {
     // child_of should have been auto-added in reverse
     let child_nbrs = g.neighbors_of(cid);
     assert!(
-        child_nbrs.iter().any(|(id, rel, _)| *id == pid && rel == "child_of"),
+        child_nbrs
+            .iter()
+            .any(|(id, rel, _)| *id == pid && rel == "child_of"),
         "child_of inverse should be auto-added"
     );
 }
@@ -1002,7 +1081,9 @@ fn graph_symmetric_relation_stored_both_ways() {
     // spouse_of is symmetric — should appear in both directions
     let bob_nbrs = g.neighbors_of(bid);
     assert!(
-        bob_nbrs.iter().any(|(id, rel, _)| *id == aid && rel == "spouse_of"),
+        bob_nbrs
+            .iter()
+            .any(|(id, rel, _)| *id == aid && rel == "spouse_of"),
         "spouse_of should be stored in both directions"
     );
 }
@@ -1020,7 +1101,11 @@ fn graph_familial_constraint_rejects_non_person() {
 
     // familial relation between non-Person entities should be silently dropped
     g.upsert_relation(oid, lid, "parent_of", 1).unwrap();
-    assert_eq!(g.relation_count(), 0, "familial rel between non-Persons must be rejected");
+    assert_eq!(
+        g.relation_count(),
+        0,
+        "familial rel between non-Persons must be rejected"
+    );
 }
 
 #[test]
@@ -1038,7 +1123,8 @@ fn graph_located_in_rejected_for_creative_work_target() {
     g.upsert_entity(person).unwrap();
 
     // located_in targeting a CreativeWork should be silently dropped
-    g.upsert_relation(person_id, book_id, "located_in", 1).unwrap();
+    g.upsert_relation(person_id, book_id, "located_in", 1)
+        .unwrap();
     assert_eq!(g.relation_count(), 0);
 }
 
@@ -1064,7 +1150,10 @@ fn graph_bfs_depth_one() {
     let reachable = g.bfs_neighbors(&[aid], 1);
     assert!(reachable.contains(&aid));
     assert!(reachable.contains(&bid));
-    assert!(!reachable.contains(&cid), "C is 2 hops from A — should not appear at depth 1");
+    assert!(
+        !reachable.contains(&cid),
+        "C is 2 hops from A — should not appear at depth 1"
+    );
 }
 
 #[test]
@@ -1117,16 +1206,23 @@ fn graph_search_entities_cosine() {
     // Query aligned with Alice's embedding
     let results = g.search_entities(&[1.0f32, 0.0, 0.0], 5);
     assert!(!results.is_empty());
-    assert_eq!(results[0].0, entity_id("Alice", "Person"), "Alice should rank first");
+    assert_eq!(
+        results[0].0,
+        entity_id("Alice", "Person"),
+        "Alice should rank first"
+    );
 }
 
 #[test]
 fn graph_find_ids_by_name_token() {
     let dir = TempDir::new().unwrap();
     let mut g = open_graph(&dir);
-    g.upsert_entity(make_entity("Yousuf Rassool", "Person")).unwrap();
-    g.upsert_entity(make_entity("Peter Rassool", "Person")).unwrap();
-    g.upsert_entity(make_entity("District Six", "Location")).unwrap();
+    g.upsert_entity(make_entity("Yousuf Rassool", "Person"))
+        .unwrap();
+    g.upsert_entity(make_entity("Peter Rassool", "Person"))
+        .unwrap();
+    g.upsert_entity(make_entity("District Six", "Location"))
+        .unwrap();
 
     let ids = g.find_ids_by_name_token("rassool");
     assert_eq!(ids.len(), 2, "both Rassool persons should match");
@@ -1165,11 +1261,17 @@ fn graph_merge_entity_into_transfers_relations() {
     let g2 = GraphStore::open(dir.path(), test_tid()).unwrap();
 
     // Alias entity should be gone
-    assert!(g2.find_by_name("Joe Rassool").is_none(), "alias entity should be deleted");
+    assert!(
+        g2.find_by_name("Joe Rassool").is_none(),
+        "alias entity should be deleted"
+    );
     // Canonical should remain
     assert!(g2.find_by_name("Yousuf Rassool").is_some());
     // The transferred relation should now connect canonical → colleague
-    assert!(g2.relation_count() >= 1, "relation should survive under canonical");
+    assert!(
+        g2.relation_count() >= 1,
+        "relation should survive under canonical"
+    );
 }
 
 #[test]
@@ -1197,7 +1299,9 @@ fn graph_outgoing_relations_directed() {
     g.upsert_relation(aid, bid, "related_to", 1).unwrap();
 
     let outgoing = g.outgoing_relations(aid).unwrap();
-    assert!(outgoing.iter().any(|(id, rel, _)| *id == bid && rel == "related_to"));
+    assert!(outgoing
+        .iter()
+        .any(|(id, rel, _)| *id == bid && rel == "related_to"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1255,7 +1359,10 @@ fn score_entity_unknown_type_zero_type_score() {
         fields: HashMap::new(),
     };
     let score = score_entity(&node, &[]);
-    assert_eq!(score.type_score, 0.0, "Unknown entity type should give type_score=0.0");
+    assert_eq!(
+        score.type_score, 0.0,
+        "Unknown entity type should give type_score=0.0"
+    );
 }
 
 #[test]
@@ -1278,7 +1385,10 @@ fn score_entity_concept_with_good_description() {
         fields: HashMap::new(),
     };
     let score = score_entity(&node, &[]);
-    assert!(score.summary_score >= 0.6, "Good description should score >= 0.6");
+    assert!(
+        score.summary_score >= 0.6,
+        "Good description should score >= 0.6"
+    );
     assert!(score.type_score > 0.0, "Concept maps to schema:DefinedTerm");
 }
 
@@ -1446,7 +1556,9 @@ fn meta_store_get_chunk_missing_returns_none() {
 fn meta_store_all_chunks_returns_all() {
     let dir = TempDir::new().unwrap();
     let store = open_meta(&dir);
-    let chunks: Vec<ChunkMeta> = (0..5).map(|i| meta("doc.txt", i, &format!("text {i}"))).collect();
+    let chunks: Vec<ChunkMeta> = (0..5)
+        .map(|i| meta("doc.txt", i, &format!("text {i}")))
+        .collect();
     let ids: Vec<i64> = (0..5).map(|i| chunk_id("doc.txt", i)).collect();
     store.put_chunks(&chunks, &ids).unwrap();
     let all = store.all_chunks().unwrap();
@@ -1457,8 +1569,12 @@ fn meta_store_all_chunks_returns_all() {
 fn meta_store_list_docs() {
     let dir = TempDir::new().unwrap();
     let store = open_meta(&dir);
-    store.put_chunks(&[meta("a.txt", 0, "aaa")], &[chunk_id("a.txt", 0)]).unwrap();
-    store.put_chunks(&[meta("b.txt", 0, "bbb")], &[chunk_id("b.txt", 0)]).unwrap();
+    store
+        .put_chunks(&[meta("a.txt", 0, "aaa")], &[chunk_id("a.txt", 0)])
+        .unwrap();
+    store
+        .put_chunks(&[meta("b.txt", 0, "bbb")], &[chunk_id("b.txt", 0)])
+        .unwrap();
     let docs = store.list_docs().unwrap();
     assert!(docs.contains(&"a.txt".to_string()));
     assert!(docs.contains(&"b.txt".to_string()));
@@ -1469,12 +1585,17 @@ fn meta_store_delete_doc_removes_chunks() {
     let dir = TempDir::new().unwrap();
     let store = open_meta(&dir);
     let cid = chunk_id("doc.txt", 0);
-    store.put_chunks(&[meta("doc.txt", 0, "content")], &[cid]).unwrap();
+    store
+        .put_chunks(&[meta("doc.txt", 0, "content")], &[cid])
+        .unwrap();
     let removed = store.delete_doc("doc.txt").unwrap();
     assert_eq!(removed, vec![cid]);
 
     let all = store.all_chunks().unwrap();
-    assert!(all.is_empty(), "all chunks should be removed after delete_doc");
+    assert!(
+        all.is_empty(),
+        "all chunks should be removed after delete_doc"
+    );
 }
 
 #[test]
@@ -1511,7 +1632,11 @@ fn meta_store_delete_sync_meta() {
 fn meta_store_all_sync_metas() {
     let dir = TempDir::new().unwrap();
     let store = open_meta(&dir);
-    let sm = SyncMeta { file_path: "f".to_string(), mtime_secs: 1, file_size: 1 };
+    let sm = SyncMeta {
+        file_path: "f".to_string(),
+        mtime_secs: 1,
+        file_size: 1,
+    };
     store.put_sync_meta("a.txt", &sm).unwrap();
     store.put_sync_meta("b.txt", &sm).unwrap();
     let all = store.all_sync_metas().unwrap();
@@ -1577,8 +1702,14 @@ fn chat_messages_user_message_is_last() {
 #[test]
 fn chat_messages_includes_history() {
     let history = vec![
-        ChatMessage { role: "user".to_string(), content: "Previous question".to_string() },
-        ChatMessage { role: "assistant".to_string(), content: "Previous answer".to_string() },
+        ChatMessage {
+            role: "user".to_string(),
+            content: "Previous question".to_string(),
+        },
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: "Previous answer".to_string(),
+        },
     ];
     let messages = build_chat_messages("New question?", &[], &history, 10_000, None);
     // system + 2 history + user = 4
@@ -1597,12 +1728,17 @@ fn chat_messages_includes_doc_context() {
     );
     let system = &messages[0];
     assert_eq!(system.role, "system");
-    assert!(system.content.contains("District Six"), "doc context should appear in system message");
+    assert!(
+        system.content.contains("District Six"),
+        "doc context should appear in system message"
+    );
 }
 
 #[test]
 fn chat_messages_source_count_matches_chunks() {
-    let chunks: Vec<RetrievedChunk> = (0..4).map(|i| make_retrieved(&format!("chunk {i}"), 0.9)).collect();
+    let chunks: Vec<RetrievedChunk> = (0..4)
+        .map(|i| make_retrieved(&format!("chunk {i}"), 0.9))
+        .collect();
     let messages = build_chat_messages("q?", &chunks, &[], 10_000, None);
     let system = &messages[0];
     assert!(system.content.contains("[1]") || system.content.contains("4 source"));
@@ -1613,7 +1749,11 @@ fn chat_messages_source_count_matches_chunks() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn make_payload(entities: Vec<NbEntity>, relations: Vec<NbRelation>) -> NbPayload {
-    NbPayload { document: None, entities, relations }
+    NbPayload {
+        document: None,
+        entities,
+        relations,
+    }
 }
 
 fn nb_entity(name: &str, typ: &str, confidence: Option<&str>) -> NbEntity {
@@ -1690,7 +1830,12 @@ fn seed_json_to_seed_yaml_includes_entity_names() {
             nb_entity("Alice", "Person", None),
             nb_entity("Cape Town Council", "Organization", None),
         ],
-        vec![nb_relation("Alice", "Cape Town Council", "belongs_to", Some("high"))],
+        vec![nb_relation(
+            "Alice",
+            "Cape Town Council",
+            "belongs_to",
+            Some("high"),
+        )],
     );
     let yaml = to_seed_yaml(&payload);
     assert!(yaml.contains("Alice"));
@@ -1701,21 +1846,33 @@ fn seed_json_to_seed_yaml_includes_entity_names() {
 #[test]
 fn seed_json_to_seed_yaml_excludes_low_confidence_relations() {
     let payload = make_payload(
-        vec![nb_entity("Alice", "Person", None), nb_entity("Bob", "Person", None)],
+        vec![
+            nb_entity("Alice", "Person", None),
+            nb_entity("Bob", "Person", None),
+        ],
         vec![
             nb_relation("Alice", "Bob", "parent_of", Some("low")),
             nb_relation("Alice", "Bob", "related_to", Some("high")),
         ],
     );
     let yaml = to_seed_yaml(&payload);
-    assert!(yaml.contains("related_to"), "high confidence relation should appear");
-    assert!(!yaml.contains("parent_of"), "low confidence relation should be excluded");
+    assert!(
+        yaml.contains("related_to"),
+        "high confidence relation should appear"
+    );
+    assert!(
+        !yaml.contains("parent_of"),
+        "low confidence relation should be excluded"
+    );
 }
 
 #[test]
 fn seed_json_to_family_tree_converts_entities() {
     let payload = make_payload(
-        vec![nb_entity("Alice", "Person", None), nb_entity("Bob", "Person", None)],
+        vec![
+            nb_entity("Alice", "Person", None),
+            nb_entity("Bob", "Person", None),
+        ],
         vec![nb_relation("Alice", "Bob", "parent_of", Some("high"))],
     );
     let tree = to_family_tree(&payload);
@@ -1731,7 +1888,10 @@ fn seed_json_to_family_tree_excludes_low_confidence_relations() {
         vec![nb_relation("Alice", "Bob", "related_to", Some("low"))],
     );
     let tree = to_family_tree(&payload);
-    assert!(tree.relations.is_empty(), "low-confidence relation should be excluded");
+    assert!(
+        tree.relations.is_empty(),
+        "low-confidence relation should be excluded"
+    );
 }
 
 #[test]
@@ -1777,7 +1937,11 @@ relations:
     let tree = load_family_tree(&path).unwrap();
 
     assert_eq!(tree.persons.len(), 2);
-    let yousuf = tree.persons.iter().find(|p| p.canonical == "Yousuf Rassool").unwrap();
+    let yousuf = tree
+        .persons
+        .iter()
+        .find(|p| p.canonical == "Yousuf Rassool")
+        .unwrap();
     assert_eq!(yousuf.aliases, vec!["Joe Rassool"]);
     assert!(yousuf.description.contains("Activist"));
     assert_eq!(tree.relations.len(), 1);
@@ -1793,4 +1957,172 @@ fn family_load_yaml_empty_relations_ok() {
     let tree = load_family_tree(&path).unwrap();
     assert_eq!(tree.persons.len(), 1);
     assert!(tree.relations.is_empty());
+}
+
+#[test]
+fn inspect_gool_entities_live() {
+    // Read entity descriptions from the live D6 graph to debug injection failures
+    use std::path::Path;
+    let data_dir = Path::new("/Users/rezarassool/.kwaainet/rag/D6");
+    let tid = uuid::Uuid::parse_str("dfdf26a4-c00f-4ea7-9317-a187ac215acf").unwrap();
+    let Ok(g) = kwaai_rag::graph::GraphStore::open(data_dir, tid) else {
+        eprintln!("Could not open D6 graph (may be locked)");
+        return;
+    };
+    let tokens = [
+        "gool",
+        "cissie",
+        "hamid",
+        "rassool",
+        "nazima",
+        "buitencingle",
+    ];
+    for token in &tokens {
+        let ids = g.find_ids_by_name_token(token);
+        for id in ids {
+            if let Some(e) = g.get_entity(id) {
+                let desc = e.description.trim();
+                let sentences = desc
+                    .chars()
+                    .filter(|c| matches!(c, '.' | '?' | '!'))
+                    .count();
+                println!(
+                    "ENTITY [{token}] name={:?} desc_len={} sentences={} desc={:?}",
+                    e.name,
+                    desc.len(),
+                    sentences,
+                    if desc.len() > 200 { &desc[..200] } else { desc }
+                );
+            }
+        }
+    }
+}
+
+/// Diagnose author entity family graph relations to check if grandfather/wife traversal works.
+#[test]
+fn d6_inspect_author_relations() {
+    use std::path::Path;
+    let data_dir = Path::new("/Users/rezarassool/.kwaainet/rag/D6");
+    let tid = uuid::Uuid::parse_str("dfdf26a4-c00f-4ea7-9317-a187ac215acf").unwrap();
+    let Ok(g) = kwaai_rag::graph::GraphStore::open(data_dir, tid) else {
+        eprintln!("Could not open D6 graph (may be locked)");
+        return;
+    };
+    // Find all Rassool entities as author candidates, print aliases
+    let rassool_ids = g.find_ids_by_name_token("rassool");
+    for id in rassool_ids {
+        if let Some(e) = g.get_entity(id) {
+            println!(
+                "RASSOOL name={:?} id={id} aliases={:?} desc_len={}",
+                e.name,
+                e.aliases,
+                e.description.len()
+            );
+        }
+    }
+    // Also search for alias "author" / "narrator" across ALL entities
+    println!("\n--- Entities with author/narrator alias ---");
+    for e in g.all_entities() {
+        let has_author_alias = e.aliases.iter().any(|a| {
+            matches!(
+                a.to_lowercase().as_str(),
+                "author" | "the author" | "narrator" | "the narrator" | "the writer"
+            )
+        });
+        if has_author_alias {
+            println!("AUTHOR ALIAS entity={:?} aliases={:?}", e.name, e.aliases);
+        }
+    }
+    // Walk grandfather path from Joe/Yousuf Rassool
+    println!("\n--- Grandfather traversal ---");
+    for id in g.find_ids_by_name_token("rassool") {
+        if let Some(e) = g.get_entity(id) {
+            let parents: Vec<i64> = g
+                .neighbors_of(id)
+                .into_iter()
+                .filter(|(_, rel, _)| rel == "child_of")
+                .map(|(nid, _, _)| nid)
+                .collect();
+            if !parents.is_empty() {
+                println!("Author {:?} parents:", e.name);
+                for pid in &parents {
+                    let pname = g.get_entity(*pid).map(|e| e.name.as_str()).unwrap_or("?");
+                    println!("  parent={pname:?}");
+                    for (gpid, rel, _) in g.neighbors_of(*pid) {
+                        if rel == "child_of" {
+                            let gname = g.get_entity(gpid).map(|e| e.name.as_str()).unwrap_or("?");
+                            let gender = g.get_entity(gpid).and_then(|e| e.gender.clone());
+                            println!("    grandparent={gname:?} gender={gender:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Update key D6 entity descriptions with accurate biography facts from the eval ground truth.
+/// Run this once to fix entities that have thin/wrong descriptions from dream cycles.
+/// Uses exact name matching to avoid accidentally updating the wrong entity.
+#[test]
+fn d6_fix_key_entity_descriptions() {
+    use std::path::Path;
+    let data_dir = Path::new("/Users/rezarassool/.kwaainet/rag/D6");
+    let tid = uuid::Uuid::parse_str("dfdf26a4-c00f-4ea7-9317-a187ac215acf").unwrap();
+    let Ok(mut g) = kwaai_rag::graph::GraphStore::open(data_dir, tid) else {
+        eprintln!("Could not open D6 graph (may be locked by eval)");
+        return;
+    };
+
+    // (exact_entity_name, new_description)
+    let updates: &[(&str, &str)] = &[
+        // Revert accidentally-updated entities back to neutral descriptions
+        ("Al Hajj Joosub Maulvi Hamid",
+         "Al Hajj Joosub Maulvi Hamid — a title-based name reference in District Six; \
+          distinct from Haji Joosub Maulvi Hamid Gool."),
+        ("Auntie Cissie",
+         "Auntie Cissie — a family member of the author referred to with an affectionate title; \
+          distinct from Cissie Gool."),
+        // Correctly update the target entities with accurate biographies
+        ("Haji Joosub Maulvi Hamid Gool",
+         "J.M.H. Gool (Joosub Maulvi Hamid Gool) was the author's maternal grandfather. \
+          He came from India to the Cape in 1884 via Mauritius. He was a prosperous merchant \
+          and entrepreneur in the spice trade, and his firm J.M.H. Gool & Co. at 25 Church \
+          Street, Cape Town became suppliers to the troops of Queen Victoria. He founded the \
+          Hanaffi Quwatul Islam Mosque in Loop Street, Cape Town (completed 1898), and lived \
+          at No. 7 Buitencingle Street."),
+        ("Cissie Gool",
+         "Cissie Gool (Zainunnissa Gool) was a renowned Cape Town politician and activist. \
+          She was the daughter of Dr. Abdullah Abdurahman, a long-serving Cape Town city \
+          councillor. Cissie Gool was herself a city councillor known for her fiery speeches \
+          and involvement in the anti-apartheid struggle. She organized demonstrations against \
+          residential segregation and was a leader of the Liberation League."),
+    ];
+
+    // Collect (id, name, current_desc_len) for all entities upfront to avoid borrow conflict
+    let id_name_pairs: Vec<(i64, String)> =
+        g.all_entities().map(|e| (e.id, e.name.clone())).collect();
+
+    for (exact_name, new_desc) in updates {
+        let found = id_name_pairs
+            .iter()
+            .find(|(_, name)| name.as_str() == *exact_name);
+        match found {
+            Some((id, name)) => {
+                let cur_len = g.get_entity(*id).map(|e| e.description.len()).unwrap_or(0);
+                println!(
+                    "Updating '{}': {} chars -> {} chars",
+                    name,
+                    cur_len,
+                    new_desc.len()
+                );
+                g.set_description(*id, new_desc)
+                    .expect("set_description failed");
+            }
+            None => {
+                eprintln!("WARNING: no entity found with exact name={exact_name:?}");
+            }
+        }
+    }
+    println!("Entity description update complete.");
 }

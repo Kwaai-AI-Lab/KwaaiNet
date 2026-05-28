@@ -220,7 +220,10 @@ mod tests {
         registry.register_local(Box::new(LocalExpert::new(1, 64)));
         registry.register_remote(ExpertId::new(2), "peer-x".to_string());
         let list = registry.list_experts();
-        assert_eq!(list, vec![ExpertId::new(1), ExpertId::new(2), ExpertId::new(3)]);
+        assert_eq!(
+            list,
+            vec![ExpertId::new(1), ExpertId::new(2), ExpertId::new(3)]
+        );
     }
 
     #[test]

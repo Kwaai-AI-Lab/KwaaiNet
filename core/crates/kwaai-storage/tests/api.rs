@@ -160,7 +160,9 @@ async fn get_tenant_returns_info_and_stats() {
                 .method("POST")
                 .uri("/api/tenants")
                 .header("content-type", "application/json")
-                .body(json_body(json!({ "peer_id": "dave", "vector_dimension": 4 })))
+                .body(json_body(
+                    json!({ "peer_id": "dave", "vector_dimension": 4 }),
+                ))
                 .unwrap(),
         )
         .await
@@ -262,7 +264,9 @@ async fn upload_and_search_vectors() {
                     .method("POST")
                     .uri("/api/tenants")
                     .header("content-type", "application/json")
-                    .body(json_body(json!({ "peer_id": "frank", "vector_dimension": 4 })))
+                    .body(json_body(
+                        json!({ "peer_id": "frank", "vector_dimension": 4 }),
+                    ))
                     .unwrap(),
             )
             .await
@@ -329,7 +333,9 @@ async fn delete_vectors_removes_them_from_search() {
                     .method("POST")
                     .uri("/api/tenants")
                     .header("content-type", "application/json")
-                    .body(json_body(json!({ "peer_id": "grace", "vector_dimension": 4 })))
+                    .body(json_body(
+                        json!({ "peer_id": "grace", "vector_dimension": 4 }),
+                    ))
                     .unwrap(),
             )
             .await

@@ -33,8 +33,7 @@ fn sha256_multihash(data: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn bootstrap_server_reachable() {
     require_network!();
-    let mut rec =
-        MetricsRecorder::start("network::bootstrap::server_reachable", "network");
+    let mut rec = MetricsRecorder::start("network::bootstrap::server_reachable", "network");
 
     // Start a node that bootstraps from the live KwaaiNet servers
     let t = Instant::now();
@@ -67,11 +66,7 @@ async fn peer_count_after_settling() {
     // Allow DHT routing table to fill
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let peers = node
-        .client
-        .list_peers()
-        .await
-        .expect("list_peers");
+    let peers = node.client.list_peers().await.expect("list_peers");
     let peer_count = peers.len();
     rec.metric("peer_count", peer_count);
     rec.metric("node_peer_id", node.peer_id_hex.as_str());
@@ -206,8 +201,7 @@ async fn relay_address_available_on_live_network() {
 #[tokio::test]
 async fn bootstrap_server_2_reachable() {
     require_network!();
-    let mut rec =
-        MetricsRecorder::start("network::bootstrap::server_2_reachable", "network");
+    let mut rec = MetricsRecorder::start("network::bootstrap::server_2_reachable", "network");
 
     if KWAAI_BOOTSTRAP_SERVERS.len() < 2 {
         rec.metric("skipped", true);

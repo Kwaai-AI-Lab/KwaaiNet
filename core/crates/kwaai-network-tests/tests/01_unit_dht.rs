@@ -4,13 +4,12 @@
 //! They run on every `cargo test -p kwaai-network-tests`.
 
 use kwaai_hivemind_dht::{
-    DHTStorage, DHTValue,
     codec::{DHTRequest, DHTResponse, ProtocolMarker},
     protocol::{
-        FindRequest, FindResult, NodeInfo, PingRequest, RequestAuthInfo,
-        ResultType, StoreRequest,
+        FindRequest, FindResult, NodeInfo, PingRequest, RequestAuthInfo, ResultType, StoreRequest,
     },
-    value::{DHTValueBuilder, get_dht_time},
+    value::{get_dht_time, DHTValueBuilder},
+    DHTStorage, DHTValue,
 };
 use kwaai_network_tests::metrics::MetricsRecorder;
 use libp2p::PeerId;
@@ -42,7 +41,8 @@ fn value_already_expired() {
 
 #[test]
 fn value_serialize_deserialize_roundtrip() {
-    let mut rec = MetricsRecorder::start("unit::dht::value_serialize_deserialize_roundtrip", "unit");
+    let mut rec =
+        MetricsRecorder::start("unit::dht::value_serialize_deserialize_roundtrip", "unit");
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     struct Payload {
         model: String,
@@ -65,7 +65,10 @@ fn deserialize_expired_value_returns_error() {
     let rec = MetricsRecorder::start("unit::dht::deserialize_expired_returns_error", "unit");
     let v = DHTValue::new(vec![0x93, 0x01, 0x02, 0x03], 0.0); // expired
     let result: kwaai_hivemind_dht::Result<Vec<u8>> = v.deserialize();
-    assert!(result.is_err(), "should refuse to deserialize expired value");
+    assert!(
+        result.is_err(),
+        "should refuse to deserialize expired value"
+    );
     rec.finish(true);
 }
 
@@ -113,7 +116,10 @@ fn builder_default_ttl_one_hour() {
     let v = DHTValueBuilder::new(b"data".to_vec()).build();
     // Default TTL is 3600s; remaining should be close to that
     let remaining = v.time_until_expiration();
-    assert!(remaining > 3500.0, "default TTL should be ~3600s, got {remaining}");
+    assert!(
+        remaining > 3500.0,
+        "default TTL should be ~3600s, got {remaining}"
+    );
     rec.finish(true);
 }
 
@@ -322,7 +328,9 @@ fn node_info_peer_id_roundtrip() {
     let rec = MetricsRecorder::start("unit::dht::node_info_peer_id_roundtrip", "unit");
     let original = PeerId::random();
     let ni = NodeInfo::from_peer_id(original);
-    let recovered = ni.to_peer_id().expect("should recover PeerId from NodeInfo");
+    let recovered = ni
+        .to_peer_id()
+        .expect("should recover PeerId from NodeInfo");
     assert_eq!(original, recovered);
     rec.finish(true);
 }
@@ -386,7 +394,11 @@ fn codec_store_roundtrip() {
 fn codec_find_roundtrip() {
     let mut rec = MetricsRecorder::start("unit::dht::codec_find_roundtrip", "unit");
     let node = NodeInfo::from_peer_id(PeerId::random());
-    let keys = vec![b"block.0".to_vec(), b"block.1".to_vec(), b"block.2".to_vec()];
+    let keys = vec![
+        b"block.0".to_vec(),
+        b"block.1".to_vec(),
+        b"block.2".to_vec(),
+    ];
     let req = DHTRequest::Find(FindRequest::new(node, keys.clone()));
 
     let bytes = req.encode().unwrap();
@@ -408,7 +420,12 @@ fn codec_find_response_roundtrip() {
     let node = NodeInfo::from_peer_id(peer);
 
     let results = vec![
-        FindResult::found_regular(b"value_bytes".to_vec(), get_dht_time() + 300.0, vec![], vec![]),
+        FindResult::found_regular(
+            b"value_bytes".to_vec(),
+            get_dht_time() + 300.0,
+            vec![],
+            vec![],
+        ),
         FindResult::not_found(vec![], vec![]),
     ];
     use kwaai_hivemind_dht::protocol::FindResponse;
@@ -438,7 +455,10 @@ fn codec_decode_empty_bytes_returns_error() {
 
 #[test]
 fn codec_decode_invalid_marker_returns_error() {
-    let rec = MetricsRecorder::start("unit::dht::codec_decode_invalid_marker_returns_error", "unit");
+    let rec = MetricsRecorder::start(
+        "unit::dht::codec_decode_invalid_marker_returns_error",
+        "unit",
+    );
     // marker byte 0xFF is not valid
     let result = DHTRequest::decode(&[0xFF, 0x00]);
     assert!(result.is_err());
@@ -458,6 +478,9 @@ fn codec_length_prefix_correct() {
 
     let declared_len = u64::from_be_bytes(bytes[0..8].try_into().unwrap()) as usize;
     let actual_body_len = bytes.len() - 8;
-    assert_eq!(declared_len, actual_body_len, "length prefix must equal body length");
+    assert_eq!(
+        declared_len, actual_body_len,
+        "length prefix must equal body length"
+    );
     rec.finish(true);
 }

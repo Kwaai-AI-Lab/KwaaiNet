@@ -41,7 +41,10 @@ async fn vectors_survive_store_reopen() {
     // Tenant still visible.
     let info = tm2.get(tid).await.unwrap();
     assert!(info.is_some(), "tenant should persist across reopen");
-    assert_eq!(info.unwrap().display_name.as_deref(), Some("Persistence Test"));
+    assert_eq!(
+        info.unwrap().display_name.as_deref(),
+        Some("Persistence Test")
+    );
 
     // Vectors are searchable.
     let r = vs2.search(tid, &unit(4, 0), 1).await.unwrap();
@@ -146,9 +149,12 @@ async fn total_storage_bytes_matches_expected_formula() {
 
     // dim=4: storage_bytes per vector = 4*4 + 24 = 40
     let t = tm.create("p", 100, None, 4).await.unwrap();
-    vs.upload(t.tenant_id, &[(1, unit(4, 0)), (2, unit(4, 1)), (3, unit(4, 2))])
-        .await
-        .unwrap();
+    vs.upload(
+        t.tenant_id,
+        &[(1, unit(4, 0)), (2, unit(4, 1)), (3, unit(4, 2))],
+    )
+    .await
+    .unwrap();
 
     let total = tm.total_storage_bytes().await.unwrap();
     assert_eq!(total, 3 * 40);

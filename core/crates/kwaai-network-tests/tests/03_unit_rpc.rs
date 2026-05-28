@@ -3,10 +3,9 @@
 
 use kwaai_network_tests::metrics::MetricsRecorder;
 use kwaai_rpc::v1::{
-    Cancel, ChatMessage, ChatToken, ClientFrame, Done, GenerateRequest, PingReply, PingRequest,
-    ServerFrame, ShardRunRequest, StatusReply, StatusRequest,
-    client_frame, server_frame,
-    error::Code as ErrorCode,
+    client_frame, error::Code as ErrorCode, server_frame, Cancel, ChatMessage, ChatToken,
+    ClientFrame, Done, GenerateRequest, PingReply, PingRequest, ServerFrame, ShardRunRequest,
+    StatusReply, StatusRequest,
 };
 use prost013::Message as _;
 
@@ -15,13 +14,19 @@ use prost013::Message as _;
 // ============================================================================
 
 fn encode_decode_client_frame(body: client_frame::Body) -> ClientFrame {
-    let frame = ClientFrame { id: 42, body: Some(body) };
+    let frame = ClientFrame {
+        id: 42,
+        body: Some(body),
+    };
     let bytes = frame.encode_to_vec();
     ClientFrame::decode(bytes.as_slice()).unwrap()
 }
 
 fn encode_decode_server_frame(body: server_frame::Body) -> ServerFrame {
-    let frame = ServerFrame { id: 42, body: Some(body) };
+    let frame = ServerFrame {
+        id: 42,
+        body: Some(body),
+    };
     let bytes = frame.encode_to_vec();
     ServerFrame::decode(bytes.as_slice()).unwrap()
 }

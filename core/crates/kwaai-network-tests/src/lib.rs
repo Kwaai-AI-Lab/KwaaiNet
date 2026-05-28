@@ -48,9 +48,7 @@ pub fn network_enabled() -> bool {
 macro_rules! require_integration {
     () => {
         if !$crate::integration_enabled() {
-            eprintln!(
-                "Skipping integration test — set KWAAI_INTEGRATION_TESTS=1 to enable"
-            );
+            eprintln!("Skipping integration test — set KWAAI_INTEGRATION_TESTS=1 to enable");
             return;
         }
     };
@@ -60,9 +58,7 @@ macro_rules! require_integration {
 macro_rules! require_network {
     () => {
         if !$crate::network_enabled() {
-            eprintln!(
-                "Skipping network test — set KWAAI_NETWORK_TESTS=1 to enable"
-            );
+            eprintln!("Skipping network test — set KWAAI_NETWORK_TESTS=1 to enable");
             return;
         }
     };

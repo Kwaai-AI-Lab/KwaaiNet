@@ -13,19 +13,85 @@ const CANDIDATE_CAP: usize = 40;
 /// Uppercase-starting words that are not proper nouns.
 const STOP_WORDS: &[&str] = &[
     // Articles & determiners
-    "The", "A", "An", "This", "That", "These", "Those", "Its", "It",
+    "The",
+    "A",
+    "An",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "Its",
+    "It",
     // Personal pronouns
-    "He", "Him", "His", "She", "Her", "Hers", "They", "Them", "Their", "Theirs",
-    "We", "Our", "You", "Your", "I", "My", "Me",
+    "He",
+    "Him",
+    "His",
+    "She",
+    "Her",
+    "Hers",
+    "They",
+    "Them",
+    "Their",
+    "Theirs",
+    "We",
+    "Our",
+    "You",
+    "Your",
+    "I",
+    "My",
+    "Me",
     // Conjunctions & prepositions
-    "In", "On", "At", "By", "For", "From", "With", "Of", "About", "And", "Or",
-    "But", "If", "As", "So", "Yet", "Nor", "Both", "Also", "To", "Into", "Up",
-    "Between", "Among", "Before", "After", "During", "Through", "Within", "Over",
+    "In",
+    "On",
+    "At",
+    "By",
+    "For",
+    "From",
+    "With",
+    "Of",
+    "About",
+    "And",
+    "Or",
+    "But",
+    "If",
+    "As",
+    "So",
+    "Yet",
+    "Nor",
+    "Both",
+    "Also",
+    "To",
+    "Into",
+    "Up",
+    "Between",
+    "Among",
+    "Before",
+    "After",
+    "During",
+    "Through",
+    "Within",
+    "Over",
     // Days of the week
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
     // Months
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 const MALE_PRONOUNS: &[&str] = &["he", "him", "his", "himself"];
@@ -41,7 +107,7 @@ fn ends_sentence(word: &str) -> bool {
 }
 
 fn is_stop_word(s: &str) -> bool {
-    STOP_WORDS.iter().any(|&sw| sw == s)
+    STOP_WORDS.contains(&s)
 }
 
 /// Extract proper noun candidate phrases from `text`.
@@ -64,9 +130,8 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
         let w = words[i];
         let c = core(w);
 
-        let is_candidate = c.len() > 1
-            && c.starts_with(|ch: char| ch.is_uppercase())
-            && !is_stop_word(c);
+        let is_candidate =
+            c.len() > 1 && c.starts_with(|ch: char| ch.is_uppercase()) && !is_stop_word(c);
 
         if is_candidate {
             let mut parts = vec![c.to_string()];
@@ -76,9 +141,7 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
             // a sentence boundary (the previous word ended with . ! ?).
             while j < n && !ends_sentence(words[j - 1]) {
                 let nc = core(words[j]);
-                if nc.len() > 1
-                    && nc.starts_with(|ch: char| ch.is_uppercase())
-                    && !is_stop_word(nc)
+                if nc.len() > 1 && nc.starts_with(|ch: char| ch.is_uppercase()) && !is_stop_word(nc)
                 {
                     parts.push(nc.to_string());
                     j += 1;
@@ -222,7 +285,10 @@ mod tests {
     fn ner_resolve_pronouns_male() {
         let entities = vec![("Abdullah Gool".to_string(), Some("Male".to_string()))];
         let map = resolve_pronouns("Abdullah arrived. He was tired.", &entities);
-        assert!(map.iter().any(|(p, n)| p == "he" && n == "Abdullah Gool"), "{map:?}");
+        assert!(
+            map.iter().any(|(p, n)| p == "he" && n == "Abdullah Gool"),
+            "{map:?}"
+        );
     }
 
     #[test]
@@ -232,7 +298,10 @@ mod tests {
             ("Zainab".to_string(), Some("Female".to_string())),
         ];
         let map = resolve_pronouns("Zainab left. She took the train.", &entities);
-        assert!(map.iter().any(|(p, n)| p == "she" && n == "Zainab"), "{map:?}");
+        assert!(
+            map.iter().any(|(p, n)| p == "she" && n == "Zainab"),
+            "{map:?}"
+        );
     }
 
     #[test]

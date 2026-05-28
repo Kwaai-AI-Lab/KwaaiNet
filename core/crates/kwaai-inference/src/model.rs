@@ -150,10 +150,7 @@ mod tests {
 
     #[test]
     fn format_from_extension_case_insensitive() {
-        assert_eq!(
-            ModelFormat::from_extension("GGUF"),
-            Some(ModelFormat::Gguf)
-        );
+        assert_eq!(ModelFormat::from_extension("GGUF"), Some(ModelFormat::Gguf));
         assert_eq!(
             ModelFormat::from_extension("SafeTensors"),
             Some(ModelFormat::SafeTensors)

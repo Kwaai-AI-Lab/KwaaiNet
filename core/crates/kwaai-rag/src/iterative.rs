@@ -145,17 +145,19 @@ where
         "who", "what", "was", "were", "the", "tell", "about", "and", "for", "did", "how", "where",
         "when", "describe", "more", "kind", "place",
     ];
-    let name_seed_ids: std::collections::HashSet<i64> =
+    let emb_seed_ids: std::collections::HashSet<i64> =
         seed_hits.iter().map(|(id, _)| *id).collect();
+    let mut name_matched_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for word in query.split_whitespace() {
         let w = word
             .trim_matches(|c: char| !c.is_alphanumeric())
             .to_lowercase();
         if w.len() >= 3 && !name_stop.contains(&w.as_str()) {
             for id in graph.find_ids_by_name_token(&w) {
-                if !name_seed_ids.contains(&id) {
+                if !emb_seed_ids.contains(&id) {
                     seed_hits.push((id, 0.85));
                 }
+                name_matched_ids.insert(id);
             }
         }
     }
@@ -317,7 +319,7 @@ where
 
     // ── Final: inject entity descriptions, boost by term coverage, dedup, select top-k ─────
 
-    inject_entity_descriptions(query, &seed_hits, graph, &mut pool);
+    inject_entity_descriptions(query, &seed_hits, &name_matched_ids, graph, &mut pool);
 
     for chunk in &mut pool {
         let text = chunk.chunk_meta.text.to_lowercase();

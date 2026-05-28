@@ -130,6 +130,7 @@ fn valid_schema_types() -> &'static [&'static str] {
 
 /// Call the LLM to complete one entity: resolve its schema.org type, generate
 /// a substantive description, and surface relations present in the source text.
+#[allow(clippy::too_many_arguments)]
 pub async fn complete_entity(
     eid: i64,
     name: &str,
@@ -412,71 +413,70 @@ pub async fn run_dream_cycle(
             // The fallback path builds evidence_text directly from the stored text
             // to avoid a second get_chunks() lookup (which can miss fallback IDs).
             let name_lower_for_fallback = node.name.to_lowercase();
-            let (chunk_ids, evidence_text): (Vec<i64>, String) =
-                if !node.evidence.is_empty() {
-                    let ids = node.evidence.clone();
-                    let fetch_limit = ids.len().min(20);
-                    let chunks = meta.get_chunks(&ids[..fetch_limit])?;
-                    let text = chunks
-                        .iter()
-                        .flatten()
-                        .map(|c| {
-                            let mut s = String::new();
-                            if let Some(ref sec) = c.section_name {
-                                s.push_str(&format!("[Section: {sec}]\n"));
-                            }
-                            if let Some(ref note) = c.section_note {
-                                s.push_str(&format!("[Note: {note}]\n"));
-                            }
-                            s.push_str(&c.text);
-                            s
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n---\n");
-                    (ids, text)
-                } else if !store.chunks_for_entity(score.entity_id).is_empty() {
-                    let ids = store.chunks_for_entity(score.entity_id).to_vec();
-                    let fetch_limit = ids.len().min(20);
-                    let chunks = meta.get_chunks(&ids[..fetch_limit])?;
-                    let text = chunks
-                        .iter()
-                        .flatten()
-                        .map(|c| {
-                            let mut s = String::new();
-                            if let Some(ref sec) = c.section_name {
-                                s.push_str(&format!("[Section: {sec}]\n"));
-                            }
-                            if let Some(ref note) = c.section_note {
-                                s.push_str(&format!("[Note: {note}]\n"));
-                            }
-                            s.push_str(&c.text);
-                            s
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n---\n");
-                    (ids, text)
-                } else {
-                    // Name-search fallback: find chunks containing the entity name.
-                    // Text is taken directly from the index to avoid a second DB lookup.
-                    if name_lower_for_fallback.len() < 4 {
-                        continue; // too short to search reliably
-                    }
-                    let matches: Vec<&(i64, String, String)> = fallback_chunks
-                        .iter()
-                        .filter(|(_, _, lower)| lower.contains(name_lower_for_fallback.as_str()))
-                        .take(10)
-                        .collect();
-                    if matches.is_empty() {
-                        continue; // zombie — no text evidence anywhere
-                    }
-                    let ids: Vec<i64> = matches.iter().map(|(id, _, _)| *id).collect();
-                    let text = matches
-                        .iter()
-                        .map(|(_, orig, _)| orig.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n---\n");
-                    (ids, text)
-                };
+            let (chunk_ids, evidence_text): (Vec<i64>, String) = if !node.evidence.is_empty() {
+                let ids = node.evidence.clone();
+                let fetch_limit = ids.len().min(20);
+                let chunks = meta.get_chunks(&ids[..fetch_limit])?;
+                let text = chunks
+                    .iter()
+                    .flatten()
+                    .map(|c| {
+                        let mut s = String::new();
+                        if let Some(ref sec) = c.section_name {
+                            s.push_str(&format!("[Section: {sec}]\n"));
+                        }
+                        if let Some(ref note) = c.section_note {
+                            s.push_str(&format!("[Note: {note}]\n"));
+                        }
+                        s.push_str(&c.text);
+                        s
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+                (ids, text)
+            } else if !store.chunks_for_entity(score.entity_id).is_empty() {
+                let ids = store.chunks_for_entity(score.entity_id).to_vec();
+                let fetch_limit = ids.len().min(20);
+                let chunks = meta.get_chunks(&ids[..fetch_limit])?;
+                let text = chunks
+                    .iter()
+                    .flatten()
+                    .map(|c| {
+                        let mut s = String::new();
+                        if let Some(ref sec) = c.section_name {
+                            s.push_str(&format!("[Section: {sec}]\n"));
+                        }
+                        if let Some(ref note) = c.section_note {
+                            s.push_str(&format!("[Note: {note}]\n"));
+                        }
+                        s.push_str(&c.text);
+                        s
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+                (ids, text)
+            } else {
+                // Name-search fallback: find chunks containing the entity name.
+                // Text is taken directly from the index to avoid a second DB lookup.
+                if name_lower_for_fallback.len() < 4 {
+                    continue; // too short to search reliably
+                }
+                let matches: Vec<&(i64, String, String)> = fallback_chunks
+                    .iter()
+                    .filter(|(_, _, lower)| lower.contains(name_lower_for_fallback.as_str()))
+                    .take(10)
+                    .collect();
+                if matches.is_empty() {
+                    continue; // zombie — no text evidence anywhere
+                }
+                let ids: Vec<i64> = matches.iter().map(|(id, _, _)| *id).collect();
+                let text = matches
+                    .iter()
+                    .map(|(_, orig, _)| orig.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+                (ids, text)
+            };
             if chunk_ids.is_empty() || evidence_text.is_empty() {
                 continue;
             }

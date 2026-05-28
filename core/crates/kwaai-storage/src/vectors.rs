@@ -195,10 +195,7 @@ mod tests {
     #[tokio::test]
     async fn upload_unknown_tenant_returns_error() {
         let (_tmp, _tm, vs) = setup().await;
-        assert!(vs
-            .upload(Uuid::new_v4(), &[(1, unit(4, 0))])
-            .await
-            .is_err());
+        assert!(vs.upload(Uuid::new_v4(), &[(1, unit(4, 0))]).await.is_err());
     }
 
     #[tokio::test]
@@ -229,10 +226,7 @@ mod tests {
     #[tokio::test]
     async fn search_unknown_tenant_returns_error() {
         let (_tmp, _tm, vs) = setup().await;
-        assert!(vs
-            .search(Uuid::new_v4(), &unit(4, 0), 5)
-            .await
-            .is_err());
+        assert!(vs.search(Uuid::new_v4(), &unit(4, 0), 5).await.is_err());
     }
 
     #[tokio::test]

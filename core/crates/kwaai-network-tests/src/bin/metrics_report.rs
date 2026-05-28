@@ -5,14 +5,13 @@
 //!   cargo run -p kwaai-network-tests --bin metrics-report -- --tier integration
 //!   cargo run -p kwaai-network-tests --bin metrics-report -- --last 10
 
-use kwaai_network_tests::metrics::{TestRecord, load_records};
+use kwaai_network_tests::metrics::{load_records, TestRecord};
 use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let tier_filter = find_flag(&args, "--tier");
-    let last_n: Option<usize> = find_flag(&args, "--last")
-        .and_then(|s| s.parse().ok());
+    let last_n: Option<usize> = find_flag(&args, "--last").and_then(|s| s.parse().ok());
 
     let mut records = load_records()?;
     if records.is_empty() {
@@ -37,11 +36,19 @@ fn main() -> anyhow::Result<()> {
     test_names.sort();
 
     // Column widths
-    let name_w = test_names.iter().map(|s| s.len()).max().unwrap_or(20).max(40);
+    let name_w = test_names
+        .iter()
+        .map(|s| s.len())
+        .max()
+        .unwrap_or(20)
+        .max(40);
 
     println!();
     println!("KwaaiNet Network Test Metrics");
-    println!("Metrics file: {}", kwaai_network_tests::metrics::metrics_path().display());
+    println!(
+        "Metrics file: {}",
+        kwaai_network_tests::metrics::metrics_path().display()
+    );
     println!();
     println!(
         "{:<name_w$}  {:>5}  {:>6}  {:>9}  {:>8}  {}",
@@ -94,7 +101,9 @@ fn main() -> anyhow::Result<()> {
     for r in &records {
         let e = tier_stats.entry(r.tier.as_str()).or_default();
         e.0 += 1;
-        if r.passed { e.1 += 1; }
+        if r.passed {
+            e.1 += 1;
+        }
     }
     let mut tiers: Vec<&&str> = tier_stats.keys().collect();
     tiers.sort();
@@ -111,9 +120,18 @@ fn main() -> anyhow::Result<()> {
         let runs = &by_test[name];
         if let Some(latest) = runs.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)) {
             for (k, v) in &latest.metrics {
-                if ["peer_count", "put_ms", "get_ms", "find_ms", "bootstrap_ms",
-                    "connect_ms", "cross_get_ms", "success_rate", "vpk_nodes_found"]
-                    .contains(&k.as_str())
+                if [
+                    "peer_count",
+                    "put_ms",
+                    "get_ms",
+                    "find_ms",
+                    "bootstrap_ms",
+                    "connect_ms",
+                    "cross_get_ms",
+                    "success_rate",
+                    "vpk_nodes_found",
+                ]
+                .contains(&k.as_str())
                 {
                     println!("  {name}  {k}={v}");
                 }
@@ -140,12 +158,16 @@ fn compute_trend(runs: &[&TestRecord]) -> &'static str {
     let (earlier, recent) = runs.split_at(half);
 
     let pass_rate = |slice: &[&TestRecord]| -> f64 {
-        if slice.is_empty() { return 0.0; }
+        if slice.is_empty() {
+            return 0.0;
+        }
         slice.iter().filter(|r| r.passed).count() as f64 / slice.len() as f64
     };
 
     let avg_dur = |slice: &[&TestRecord]| -> f64 {
-        if slice.is_empty() { return 0.0; }
+        if slice.is_empty() {
+            return 0.0;
+        }
         slice.iter().map(|r| r.duration_ms as f64).sum::<f64>() / slice.len() as f64
     };
 
