@@ -1662,12 +1662,17 @@ pub enum GraphAction {
     /// the embed text before calling the embedding model.  The original chunk text stored
     /// in the metadata store is NOT modified — only the vector in the vector store changes.
     ///
-    /// Effect: query vectors for entity-specific questions cluster near the tagged chunks,
-    /// improving recall without changing BM25 behaviour (which uses the original text).
+    /// Use --restore to undo: re-embeds the same entity-linked chunks using raw text only,
+    /// restoring them to the same embedding as a fresh ingest.
     ChunkTag {
         /// Embedding server URL (defaults to config embed_url)
         #[arg(long, value_name = "URL")]
         embed_url: Option<String>,
+
+        /// Undo a previous chunk-tag run: re-embed entity-linked chunks without the
+        /// [EntityName] prefix, restoring natural ingest embeddings.
+        #[arg(long)]
+        restore: bool,
     },
 
     /// Score every entity across three pillars: type (schema.org), summary, and relationships.

@@ -2802,8 +2802,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 println!("  Graph entity search now includes name tokens in the embedding.\n");
             }
 
-            GraphAction::ChunkTag { embed_url } => {
-                print_box_header(&format!("Graph Chunk-Tag ({})", kb));
+            GraphAction::ChunkTag { embed_url, restore } => {
+                let mode_label = if restore { "Restore" } else { "Chunk-Tag" };
+                print_box_header(&format!("Graph {} ({})", mode_label, kb));
                 let embed_url_str = embed_url.as_deref().unwrap_or("");
                 let embed = EmbedClient::new(
                     if embed_url_str.is_empty() {
@@ -2833,13 +2834,18 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let ids: Vec<i64> = pairs.iter().map(|(cid, _)| *cid).collect();
                 let metas = meta.get_chunks(&ids).context("reading chunk metadata")?;
 
-                // Build tagged embed texts, skipping chunks not found in MetaStore.
+                // Build embed texts: tagged or raw depending on --restore.
                 let tagged: Vec<(i64, String)> = pairs
                     .iter()
                     .zip(metas.iter())
                     .filter_map(|((cid, entity_name), opt_meta)| {
                         let m = opt_meta.as_ref()?;
-                        Some((*cid, format!("[{entity_name}] {}", m.text)))
+                        let text = if restore {
+                            m.text.clone()
+                        } else {
+                            format!("[{entity_name}] {}", m.text)
+                        };
+                        Some((*cid, text))
                     })
                     .collect();
 
@@ -2848,7 +2854,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if missing > 0 {
                     println!("  Chunks missing from meta store (skipped): {missing}");
                 }
-                println!("  Tagging and re-embedding {found} chunks…\n");
+                let action_verb = if restore { "Restoring" } else { "Tagging" };
+                println!("  {action_verb} and re-embedding {found} chunks…\n");
 
                 // Embed and upload in batches of 32.
                 const BATCH: usize = 32;
@@ -2889,11 +2896,18 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 }
                 eprintln!();
 
-                print_success(&format!(
-                    "Tagged and re-embedded {uploaded_total} chunk vectors."
-                ));
-                println!("  Entity-linked chunks now carry [EntityName] prefix in their vector space.");
-                println!("  Run `rag eval` to measure recall improvement.\n");
+                if restore {
+                    print_success(&format!(
+                        "Restored {uploaded_total} chunk vectors to natural (untagged) embeddings."
+                    ));
+                    println!("  Entity-linked chunks are back to fresh-ingest embedding state.\n");
+                } else {
+                    print_success(&format!(
+                        "Tagged and re-embedded {uploaded_total} chunk vectors."
+                    ));
+                    println!("  Entity-linked chunks now carry [EntityName] prefix in their vector space.");
+                    println!("  Run `rag eval` to measure recall improvement.\n");
+                }
             }
 
             GraphAction::Seed { file, kb: _ } => {

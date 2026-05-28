@@ -12,9 +12,9 @@
 65% ┤
     │
 60% ┤                                                                       ████ 56.9%                         ████ 58.6% M22 ← keyword best
-    │                                                                            ████ 56.0% M18          ████ 56.0% M23
-55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25
-    │                                                             ████ 50.0%              ████ 51.7% M20
+    │                                                                            ████ 56.0% M18          ████ 56.0% M23  ████ 56.0% M27
+55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25/M28
+    │                                                             ████ 50.0%              ████ 51.7% M20          ████ 53.4% M26
 50% ┤                                                        ████ 49.1%
     │                                                   ████ 48.3%
 45% ┤                                         ████ 44.8%
@@ -27,8 +27,8 @@
 25% ┤24.6%
     │
     └──────────────────────────────────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER
-                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebuild
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk
+                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag
 ```
 
 **Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24) / — (M25)
@@ -66,7 +66,10 @@
 | 22 | v0.4.75 | **31 dream cycles** (llama3.1:8b) + sanitize type-mismatch + clean_entity_name + section-aware ingest | llama3.1:8b | **58.6%** (68/116) | — | Graph 51.5% → **78.1%** (plateau). Sanitize removed 92 type-mismatch rels + 3 honorific stubs. PDF underscore artifacts fixed (Dr_ → Dr., J_ M_ → J. M.). Dream plateaus at 78.1% — zero gain cycles 25–31. New keyword best. |
 | 23 | v0.4.75 | same + **doc metadata preamble** (author/subject/year injected into every LLM call) | llama3.1:8b | **56.0%** (65/116) | — | Q1 "Who is the author?" fixed 0/3 → 3/3. Q6/Q9/Q11/Q15/Q16/Q18 all improved. Net +6 keywords from context injection alone. Q7 (author's wife = Nazima Rassool) still 0/3 — entity thin in graph. |
 | 24 | v0.4.75 | same + **entity description injection** (top graph entity prepended as synthetic chunk at score=2.0; relation-aware traversal for author-relative queries) | llama3.1:8b | **52.6%** (61/116) | — | Multiple runs: 50.9%–56.0% (all below M22 baseline of 58.6%). Q7 wife / Q9 grandfather injection fires correctly. Regression: Q16 Gandhi 4/7→1/7 (entity description displaces critical text chunk). Seeded 6 missing Rassool siblings (Fazil, Zain, Rasheda, Berina, Yasmin, Nasim) + Nazima Rassool as wife. Injection not net-positive on current eval set. |
+| 26 | v0.4.79 | same + **5 dream cycles** (llama3.1:8b via metro-linux, 100 completions/cycle) | llama3.1:8b | **53.4%** (62/116) | — | Within ±4pp variance of M25. Cycle 1: 51 type completions + 245 entity merges (big cleanup). Cycles 2–5: types saturated, ~90 summary completions/cycle, 5–14 merges. Health 50.2% → 53.5%, entities 2173 → 1964. Noisy entity injection persists (Emperor Hirohito, Churchill Smuts, Carelse still appearing). Need 20+ more cycles to match M22 cleanup level. |
 | 25 | v0.4.79 | **Full graph rebuild with NER pre-screening + pronoun resolution** (extract_from_text now receives proper noun candidates + pronoun→entity map; skips LLM when no candidates). iterative k=20, 0 dream cycles. | llama3.1:8b | **55.2%** (64/116) | — | Graph: 2884 raw → 2173 after seed+dedup (2× M22 entity count — NER extracts more). Health 50.2% (no dream). Latency 50s avg (2.2× slower — large graph entity search). Gains: q03 6/6, q04 4/4, q06 5/8 ↑, q09 6/9 ↑, q10 5/7. Losses: q20 0/5 (Alec Bedser entity injected — noisy graph), q12 2/6 (Churchill Smuts entity noise), q16 2/7 (Gandhi mis-attributed as Gool-Rassool scion — LLM hallucination from noisy entity). Without dream cycles this matches M21 (54.3%) — strong baseline for NER. Next: dream cycles to clean graph noise and push toward M22. |
+| 27 | v0.4.80 | M25 + **dream cycles 6–10** (metro-linux) + **canonicalize_query** (alias→canonical before embedding; BM25 uses original). Family resolution generalized to gender field. | llama3.1:8b | **56.0%** (65/116) | — | Single run. Dream 6–10: health 56.2%→56.5%, graph 1932 entities. canonicalize_query implemented but no alias substitutions fired (eval queries don't use D6 abbreviation forms). Within variance of M25. |
+| 28 | v0.4.80 | M27 + **chunk-tag** (`rag graph chunk-tag`): 853 entity-linked chunks re-embedded with `[EntityName]` prefix. **Reverted** — avg 53.9% across 2 runs (64+61/116). | llama3.1:8b | ~**53.9%** avg (reverted) | — | Chunk-tag creates embedding mismatch with symmetric encoder (mxbai-embed-large): chunks shifted toward entity space but query not prefixed. Reverted via `chunk-tag --restore`. Command retained for future use with asymmetric encoders or query-side symmetric prefix. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
