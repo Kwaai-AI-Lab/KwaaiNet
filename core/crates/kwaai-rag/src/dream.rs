@@ -357,6 +357,17 @@ pub async fn run_dream_cycle(
         let mut items: Vec<WorkItem> = Vec::new();
         let budget = cfg.max_completions_per_cycle;
 
+        // Build a name-search fallback index: (chunk_id, lowercase_text) for chunks
+        // that have no formal graph link. Used to find evidence for entities that were
+        // extracted but whose chunk→entity link was not recorded (e.g. entities added
+        // by earlier dream cycles, or entities that lost links during dedup merges).
+        let fallback_chunks: Vec<(i64, String)> = meta
+            .all_chunks()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, m)| (id, m.text.to_lowercase()))
+            .collect();
+
         // Priority order: Unknown type first, then thin summary, then missing relations.
         let mut candidates: Vec<_> = health
             .entity_scores
@@ -371,11 +382,25 @@ pub async fn run_dream_cycle(
                 None => continue,
             };
 
-            // Use evidence field (all known chunks) when populated; fall back to index lookup.
+            // Use evidence field (all known chunks) when populated; fall back to index
+            // lookup; then fall back to name-search across all MetaStore chunks.
             let chunk_ids: Vec<i64> = if !node.evidence.is_empty() {
                 node.evidence.clone()
-            } else {
+            } else if !store.chunks_for_entity(score.entity_id).is_empty() {
                 store.chunks_for_entity(score.entity_id).to_vec()
+            } else {
+                // Name-search fallback: find chunks containing the entity name.
+                // Minimum 4 chars to avoid noise from short/ambiguous names.
+                let name_lower = node.name.to_lowercase();
+                if name_lower.len() < 4 {
+                    continue; // too short to search reliably
+                }
+                fallback_chunks
+                    .iter()
+                    .filter(|(_, text)| text.contains(name_lower.as_str()))
+                    .map(|(id, _)| *id)
+                    .take(10)
+                    .collect()
             };
             if chunk_ids.is_empty() {
                 continue; // zombie — handled in prune step
