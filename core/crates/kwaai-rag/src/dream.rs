@@ -40,6 +40,9 @@ pub struct DreamConfig {
     pub max_completions_per_cycle: usize,
     /// Concurrent completion workers.
     pub workers: usize,
+    /// When true, skip relation extraction entirely — only improve schema_type and description.
+    /// Prevents the LLM from inventing spurious family/social relations from co-mentions.
+    pub no_relations: bool,
 }
 
 impl Default for DreamConfig {
@@ -51,6 +54,7 @@ impl Default for DreamConfig {
             prune_threshold: 0.3,
             max_completions_per_cycle: 50,
             workers: 4,
+            no_relations: false,
         }
     }
 }
@@ -134,30 +138,52 @@ pub async fn complete_entity(
     chunk_text: &str,
     inference_url: &str,
     model: &str,
+    no_relations: bool,
 ) -> EntityCompletion {
     let schema_types = valid_schema_types().join(", ");
-    let relation_types = RELATION_TYPES.join(", ");
 
-    let prompt = format!(
-        "You are completing a knowledge graph entity. \
-         Return ONLY valid JSON — no markdown, no explanation.\n\n\
-         Entity name: \"{name}\"\n\
-         Current type: {current_type}\n\
-         Current description: \"{current_description}\"\n\n\
-         Source text:\n---\n{chunk_text}\n---\n\n\
-         JSON schema:\n\
-         {{\"schema_type\":\"<type>\",\
-           \"description\":\"<EXACTLY 2-3 sentences (minimum 150 characters) from the text>\",\
-           \"relations\":[{{\"type\":\"<rel>\",\"target\":\"<entity name>\"}}]}}\n\n\
-         Valid schema_type values: {schema_types}\n\
-         Valid relation types: {relation_types}\n\n\
-         Rules:\n\
-         - schema_type must be one of the listed values; use schema:Thing if unsure\n\
-         - description MUST be at least 2 full sentences and at least 150 characters\n\
-         - description must be derived from the source text, not invented\n\
-         - only include relations clearly stated in the text\n\
-         - only include target entities that appear by name in the text"
-    );
+    let prompt = if no_relations {
+        format!(
+            "You are completing a knowledge graph entity. \
+             Return ONLY valid JSON — no markdown, no explanation.\n\n\
+             Entity name: \"{name}\"\n\
+             Current type: {current_type}\n\
+             Current description: \"{current_description}\"\n\n\
+             Source text:\n---\n{chunk_text}\n---\n\n\
+             JSON schema:\n\
+             {{\"schema_type\":\"<type>\",\
+               \"description\":\"<EXACTLY 2-3 sentences (minimum 150 characters) from the text>\",\
+               \"relations\":[]}}\n\n\
+             Valid schema_type values: {schema_types}\n\n\
+             Rules:\n\
+             - schema_type must be one of the listed values; use schema:Thing if unsure\n\
+             - description MUST be at least 2 full sentences and at least 150 characters\n\
+             - description must be derived from the source text, not invented\n\
+             - relations must be an empty array []"
+        )
+    } else {
+        let relation_types = RELATION_TYPES.join(", ");
+        format!(
+            "You are completing a knowledge graph entity. \
+             Return ONLY valid JSON — no markdown, no explanation.\n\n\
+             Entity name: \"{name}\"\n\
+             Current type: {current_type}\n\
+             Current description: \"{current_description}\"\n\n\
+             Source text:\n---\n{chunk_text}\n---\n\n\
+             JSON schema:\n\
+             {{\"schema_type\":\"<type>\",\
+               \"description\":\"<EXACTLY 2-3 sentences (minimum 150 characters) from the text>\",\
+               \"relations\":[{{\"type\":\"<rel>\",\"target\":\"<entity name>\"}}]}}\n\n\
+             Valid schema_type values: {schema_types}\n\
+             Valid relation types: {relation_types}\n\n\
+             Rules:\n\
+             - schema_type must be one of the listed values; use schema:Thing if unsure\n\
+             - description MUST be at least 2 full sentences and at least 150 characters\n\
+             - description must be derived from the source text, not invented\n\
+             - only include relations clearly stated in the text\n\
+             - only include target entities that appear by name in the text"
+        )
+    };
 
     let url = format!(
         "{}/v1/chat/completions",
@@ -504,6 +530,7 @@ pub async fn run_dream_cycle(
     let document_titles = Arc::new(document_titles);
     let doc_context_arc = Arc::new(doc_context_line);
 
+    let no_rel = cfg.no_relations;
     for item in work_items {
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
         let tx = tx.clone();
@@ -546,6 +573,7 @@ pub async fn run_dream_cycle(
                 item.chunk_count,
                 &doc_titles,
                 &item.evidence_chunk_ids,
+                no_rel,
             )
             .await;
             let _ = tx.send(Ok(result)).await;

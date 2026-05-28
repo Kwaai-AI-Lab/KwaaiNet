@@ -75,6 +75,7 @@ pub async fn run_task(
     chunk_count: usize,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     match kind {
         DreamTaskKind::Biography => {
@@ -89,6 +90,7 @@ pub async fn run_task(
                 chunk_count,
                 document_titles,
                 evidence_chunks,
+                no_relations,
             )
             .await
         }
@@ -102,6 +104,7 @@ pub async fn run_task(
                 model,
                 document_titles,
                 evidence_chunks,
+                no_relations,
             )
             .await
         }
@@ -117,6 +120,7 @@ pub async fn run_task(
                 chunk_count,
                 document_titles,
                 evidence_chunks,
+                no_relations,
             )
             .await
         }
@@ -130,6 +134,7 @@ pub async fn run_task(
                 model,
                 document_titles,
                 evidence_chunks,
+                no_relations,
             )
             .await
         }
@@ -143,6 +148,7 @@ pub async fn run_task(
                 model,
                 document_titles,
                 evidence_chunks,
+                no_relations,
             )
             .await
         }
@@ -156,6 +162,7 @@ pub async fn run_task(
                 model,
                 document_titles,
                 evidence_chunks,
+                no_relations,
             )
             .await
         }
@@ -168,6 +175,7 @@ pub async fn run_task(
                 evidence_text,
                 url,
                 model,
+                no_relations,
             )
             .await
         }
@@ -373,6 +381,7 @@ pub async fn run_biography_task(
     chunk_count: usize,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
 
@@ -394,6 +403,23 @@ pub async fn run_biography_task(
         format!("\n         - {doc_rule}")
     };
 
+    let relations_section = if no_relations {
+        "\"relations\":[]"
+    } else {
+        "\"relations\":[\
+           {\"type\":\"located_in\",\"target\":\"<birth place, home city, or country>\"},\
+           {\"type\":\"belongs_to\",\"target\":\"<organisation, political party, or group>\"},\
+           {\"type\":\"works_at\",\"target\":\"<employer or institution>\"},\
+           {\"type\":\"associated_with\",\"target\":\"<key person, event, or movement>\"}\
+         ]"
+    };
+    let relation_rules = if no_relations {
+        "- relations must be an empty array []"
+    } else {
+        "- Omit relations whose target is empty or vague\n\
+         - Only include relations clearly stated in the text"
+    };
+
     let prompt = format!(
         "You are building a biography for a person named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -405,27 +431,12 @@ pub async fn run_biography_task(
            \"deathDate\":\"date of death if deceased\",\
            \"nationality\":\"nationality or cultural identity\",\
            \"occupation\":\"profession or main occupation\",\
-           \"affiliation\":\"organization they belong or belonged to\",\
-           \"spouse\":\"spouse or partner name\",\
-           \"parent\":\"parent names (comma-separated)\",\
-           \"sibling\":\"sibling names (comma-separated)\",\
-           \"child\":\"child names (comma-separated)\"\
+           \"affiliation\":\"organization they belong or belonged to\"\
          }},\
-         \"relations\":[\
-           {{\"type\":\"located_in\",\"target\":\"<birth place, home city, or country>\"}},\
-           {{\"type\":\"spouse_of\",\"target\":\"<spouse name>\"}},\
-           {{\"type\":\"child_of\",\"target\":\"<parent name>\"}},\
-           {{\"type\":\"parent_of\",\"target\":\"<child name>\"}},\
-           {{\"type\":\"sibling_of\",\"target\":\"<sibling name>\"}},\
-           {{\"type\":\"belongs_to\",\"target\":\"<organisation, political party, or group>\"}},\
-           {{\"type\":\"works_at\",\"target\":\"<employer or institution>\"}},\
-           {{\"type\":\"associated_with\",\"target\":\"<key person, event, or movement>\"}}\
-         ]}}\n\n\
+         {relations_section}}}\n\n\
          Rules:\n\
          - Only include fields whose values are determinable from the text\n\
-         - RELATION DIRECTION: 'parent_of' means the source IS THE PARENT; if {name} is a child, write the parent as source\n\
-         - spouse_of: only if text explicitly states marriage\n\
-         - Omit relations whose target is empty or vague\n\
+         - {relation_rules}\n\
          - {knowledge_rule}{doc_rule_line}"
     );
 
@@ -445,6 +456,7 @@ pub async fn run_geography_task(
     model: &str,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 800;
@@ -461,6 +473,15 @@ pub async fn run_geography_task(
     } else {
         format!("\n         - {doc_rule}")
     };
+    let geo_relations = if no_relations {
+        "\"relations\":[]"
+    } else {
+        "\"relations\":[\
+           {\"type\":\"located_in\",\"target\":\"<city, region, or country>\"},\
+           {\"type\":\"part_of\",\"target\":\"<larger area or district>\"},\
+           {\"type\":\"contains\",\"target\":\"<named sub-area or landmark>\"}\
+         ]"
+    };
     let prompt = format!(
         "You are describing a place named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -473,11 +494,7 @@ pub async fn run_geography_task(
            \"locationType\":\"type of place (district, city, country, neighbourhood, etc.)\",\
            \"historicalNote\":\"historical or cultural significance\"\
          }},\
-         \"relations\":[\
-           {{\"type\":\"located_in\",\"target\":\"<city, region, or country>\"}},\
-           {{\"type\":\"part_of\",\"target\":\"<larger area or district>\"}},\
-           {{\"type\":\"contains\",\"target\":\"<named sub-area or landmark>\"}}\
-         ]}}\n\n\
+         {geo_relations}}}\n\n\
          Rules:\n\
          - Only include fields whose values are determinable from the text\n\
          - Omit any relation whose target is empty or vague\n\
@@ -502,6 +519,7 @@ pub async fn run_org_task(
     chunk_count: usize,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 600;
@@ -523,6 +541,18 @@ pub async fn run_org_task(
         format!("\n         - {doc_rule}")
     };
 
+    let org_relations = if no_relations {
+        "\"relations\":[]"
+    } else {
+        "\"relations\":[\
+           {\"type\":\"associated_with\",\"target\":\"<key person associated with it>\"},\
+           {\"type\":\"founded\",\"target\":\"<entity this organisation founded>\"},\
+           {\"type\":\"located_in\",\"target\":\"<headquarters location>\"},\
+           {\"type\":\"part_of\",\"target\":\"<parent organisation>\"},\
+           {\"type\":\"contains\",\"target\":\"<named subsidiary or branch>\"},\
+           {\"type\":\"belongs_to\",\"target\":\"<federation or body it belongs to>\"}\
+         ]"
+    };
     let prompt = format!(
         "You are profiling an organisation named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
@@ -535,14 +565,7 @@ pub async fn run_org_task(
            \"founder\":\"founder name\",\
            \"orgType\":\"type of organization (school, mosque, political party, government body, etc.)\"\
          }},\
-         \"relations\":[\
-           {{\"type\":\"associated_with\",\"target\":\"<key person associated with it>\"}},\
-           {{\"type\":\"founded\",\"target\":\"<entity this organisation founded>\"}},\
-           {{\"type\":\"located_in\",\"target\":\"<headquarters location>\"}},\
-           {{\"type\":\"part_of\",\"target\":\"<parent organisation>\"}},\
-           {{\"type\":\"contains\",\"target\":\"<named subsidiary or branch>\"}},\
-           {{\"type\":\"belongs_to\",\"target\":\"<federation or body it belongs to>\"}}\
-         ]}}\n\n\
+         {org_relations}}}\n\n\
          Rules:\n\
          - Only include fields whose values are determinable from the text\n\
          - Omit any relation whose target is empty or vague\n\
@@ -565,6 +588,7 @@ pub async fn run_event_task(
     model: &str,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 600;
@@ -581,18 +605,23 @@ pub async fn run_event_task(
     } else {
         format!("\n         - {doc_rule}")
     };
+    let event_relations = if no_relations {
+        "\"relations\":[]"
+    } else {
+        "\"relations\":[\
+           {\"type\":\"located_in\",\"target\":\"<location where event took place>\"},\
+           {\"type\":\"associated_with\",\"target\":\"<key participant or related event>\"},\
+           {\"type\":\"related_to\",\"target\":\"<related organisation or event>\"},\
+           {\"type\":\"occurred_on\",\"target\":\"<date or period>\"}\
+         ]"
+    };
     let prompt = format!(
         "You are describing an event named \"{name}\" from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
          Source text:\n---\n{text}\n---\n\n\
          JSON schema:\n\
          {{\"description\":\"<sentence 1: what happened and when or where this event occurred> <sentence 2: its significance, outcome, or key participants>\",\
-           \"relations\":[\
-             {{\"type\":\"located_in\",\"target\":\"<location where event took place>\"}},\
-             {{\"type\":\"associated_with\",\"target\":\"<key participant or related event>\"}},\
-             {{\"type\":\"related_to\",\"target\":\"<related organisation or event>\"}},\
-             {{\"type\":\"occurred_on\",\"target\":\"<date or period>\"}}\
-           ]}}\n\n\
+           {event_relations}}}\n\n\
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
          - Omit any relation whose target is empty or vague\n\
@@ -615,6 +644,7 @@ pub async fn run_concept_task(
     model: &str,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let thin = text.len() < 400;
@@ -631,17 +661,22 @@ pub async fn run_concept_task(
     } else {
         format!("\n         - {doc_rule}")
     };
+    let concept_relations = if no_relations {
+        "\"relations\":[]"
+    } else {
+        "\"relations\":[\
+           {\"type\":\"related_to\",\"target\":\"<related person, organisation, event, concept, law, or policy>\"},\
+           {\"type\":\"defined_by\",\"target\":\"<organisation or document that defines or governs it>\"},\
+           {\"type\":\"subtype_of\",\"target\":\"<broader concept or category>\"}\
+         ]"
+    };
     let prompt = format!(
         "You are describing the historical or social concept \"{name}\" as used in source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
          Source text:\n---\n{text}\n---\n\n\
          JSON schema:\n\
          {{\"description\":\"<sentence 1: what this concept means or refers to in general terms> <sentence 2: how it is used or significant in the context of the source text>\",\
-           \"relations\":[\
-             {{\"type\":\"related_to\",\"target\":\"<related person, organisation, event, concept, law, or policy>\"}},\
-             {{\"type\":\"defined_by\",\"target\":\"<organisation or document that defines or governs it>\"}},\
-             {{\"type\":\"subtype_of\",\"target\":\"<broader concept or category>\"}}\
-           ]}}\n\n\
+           {concept_relations}}}\n\n\
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
          - Omit any relation whose target is empty or vague\n\
@@ -664,6 +699,7 @@ pub async fn run_work_task(
     model: &str,
     document_titles: &[String],
     evidence_chunks: &[i64],
+    no_relations: bool,
 ) -> EntityCompletion {
     let text = trim_evidence(evidence_text);
     let doc_rule = doc_exclusion_rule(document_titles);
@@ -672,19 +708,24 @@ pub async fn run_work_task(
     } else {
         format!("\n         - {doc_rule}")
     };
+    let work_relations = if no_relations {
+        "\"relations\":[]"
+    } else {
+        "\"relations\":[\
+           {\"type\":\"associated_with\",\"target\":\"<person or organisation associated with it>\"},\
+           {\"type\":\"related_to\",\"target\":\"<related item or event>\"},\
+           {\"type\":\"described_in\",\"target\":\"<document or source that describes it>\"},\
+           {\"type\":\"cites\",\"target\":\"<another work or entity it references>\"},\
+           {\"type\":\"located_in\",\"target\":\"<place where it is found or used>\"}\
+         ]"
+    };
     let prompt = format!(
         "You are describing \"{name}\" — a creative work, publication, or physical object — from source text.\n\
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
          Source text:\n---\n{text}\n---\n\n\
          JSON schema:\n\
          {{\"description\":\"<sentence 1: what this work or object is — its type and creator or origin> <sentence 2: its significance or how it appears in the source text>\",\
-           \"relations\":[\
-             {{\"type\":\"associated_with\",\"target\":\"<person or organisation associated with it>\"}},\
-             {{\"type\":\"related_to\",\"target\":\"<related item or event>\"}},\
-             {{\"type\":\"described_in\",\"target\":\"<document or source that describes it>\"}},\
-             {{\"type\":\"cites\",\"target\":\"<another work or entity it references>\"}},\
-             {{\"type\":\"located_in\",\"target\":\"<place where it is found or used>\"}}\
-           ]}}\n\n\
+           {work_relations}}}\n\n\
          Rules:\n\
          - description MUST be at least 2 full sentences and at least 150 characters\n\
          - Only include relations where the target is explicitly named in the text{doc_rule_line}"

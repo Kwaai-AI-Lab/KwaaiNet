@@ -1500,6 +1500,12 @@ pub enum DreamAction {
         /// Default (0.3) keeps type-only entities (33%); raise to 0.4 to prune them.
         #[arg(long, default_value = "0.3", value_name = "FLOAT")]
         prune_threshold: f32,
+
+        /// Skip relation extraction — only improve schema_type and description.
+        /// Use this on graphs with seeded family relations to prevent the LLM from
+        /// adding spurious parent_of / child_of / spouse_of edges from co-mentions.
+        #[arg(long)]
+        no_relations: bool,
     },
 
     /// Show the last dream cycle report
