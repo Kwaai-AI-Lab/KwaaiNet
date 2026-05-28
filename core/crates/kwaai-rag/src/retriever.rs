@@ -32,7 +32,7 @@ pub fn canonicalize_query(query: &str, graph: &GraphStore) -> String {
         })
         .collect();
     // Longest alias first — prevents "Gool" matching before "J.M.H. Gool"
-    pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    pairs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
     let mut result = query.to_string();
     let mut result_lower = result.to_lowercase();
@@ -324,8 +324,19 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
             .map(|(id, _, _)| *id);
     }
 
-    // Grandfather / grandpa
+    // Grandfather / grandpa — prefer entities with an explicit "grandfather" alias seeded by
+    // the family tree (reliable) over graph-traversal through noisy LLM-extracted edges.
     if q.contains("grandfather") || q.contains("grandpa") || q.contains("grandfath") {
+        // Pass 1: alias-based lookup across all graph entities
+        for e in graph.all_entities() {
+            if e.aliases.iter().any(|a| {
+                let lc = a.to_lowercase();
+                lc == "grandfather" || lc == "my grandfather" || lc == "grandpa" || lc == "my grandpa"
+            }) {
+                return Some(e.id);
+            }
+        }
+        // Pass 2: graph traversal fallback (noisy but best-effort)
         let parents: Vec<i64> = neighbors
             .iter()
             .filter(|(_, rel, _)| rel == "child_of")
@@ -410,7 +421,7 @@ pub(crate) fn inject_entity_descriptions(
     // author entity so resolve_author_relative() can walk family graph edges.
     // If the author isn't in the seed hits, skip injection rather than injecting
     // a spurious entity (e.g. a venue whose description happens to contain "wife").
-    let anchor_id: i64 = if is_relative_query {
+    let (anchor_id, inject_id): (i64, i64) = if is_relative_query {
         // Try embedding seed hits first, then fall back to a direct name-token lookup.
         // The author entity (Joe Rassool / Yousuf Rassool) has alias "author" but that
         // alias won't appear in entity names, so embedding hits may miss it entirely.
@@ -424,42 +435,42 @@ pub(crate) fn inject_entity_descriptions(
                     .into_iter()
                     .find(|id| is_author_entity(*id, graph))
             });
-        let Some(id) = author_id else { return };
-        id
+        let Some(aid) = author_id else { return };
+        let iid = resolve_author_relative(query, aid, graph).unwrap_or(aid);
+        (aid, iid)
     } else {
-        // For non-relative queries require a confident embedding match (> 0.7).
-        let top = seed_hits
+        // For non-relative queries: try candidates in descending score order and pick the
+        // first one whose description passes the quality gate. This avoids skipping injection
+        // entirely when the highest-scoring entity happens to have a thin description.
+        let desc_ok = |id: i64| {
+            let Some(e) = graph.get_entity(id) else { return false };
+            let desc = e.description.trim();
+            let sents = desc.chars().filter(|c| matches!(c, '.' | '?' | '!')).count();
+            if name_matched.contains(&id) {
+                desc.len() >= 40 && sents >= 1
+            } else {
+                desc.len() >= 100 && sents >= 2
+            }
+        };
+        let candidate = seed_hits
             .iter()
-            .find(|(_, score)| *score > 0.85)
-            .or_else(|| seed_hits.iter().find(|(_, score)| *score > 0.7));
-        let Some((id, _)) = top else { return };
-        *id
-    };
-
-    let inject_id = if is_author_entity(anchor_id, graph) {
-        resolve_author_relative(query, anchor_id, graph).unwrap_or(anchor_id)
-    } else {
-        anchor_id
+            .filter(|(_, s)| *s > 0.85)
+            .chain(seed_hits.iter().filter(|(_, s)| *s > 0.7 && *s <= 0.85))
+            .find(|(id, _)| desc_ok(*id));
+        let Some((id, _)) = candidate else { return };
+        (*id, *id)
     };
 
     let Some(entity) = graph.get_entity(inject_id) else {
         return;
     };
-    // Description quality gate:
-    // - Name-matched entities (explicitly named in the query) accept a lower bar
-    //   (≥40 chars, ≥1 sentence) because the entity IS the query subject and even
-    //   a thin description adds useful signal.
-    // - Embedding-matched entities need ≥100 chars + ≥2 sentences to avoid injecting
-    //   spurious entities whose description happens to loosely match the query.
+    // Description quality gate (already evaluated above for non-relative; re-checked here
+    // for relative queries where inject_id may differ from anchor_id).
     let desc = entity.description.trim();
     let sentences = desc
         .chars()
         .filter(|c| matches!(c, '.' | '?' | '!'))
         .count();
-    // Lenient threshold (≥40 chars, ≥1 sentence) when:
-    //   a) entity is explicitly named in the query (name-token match), OR
-    //   b) entity was resolved via the family graph from the author (relative query result) —
-    //      it is definitively the right answer so even a thin description is useful.
     let is_name_matched = name_matched.contains(&inject_id);
     let is_resolved_relative = is_relative_query && inject_id != anchor_id;
     let use_lenient = is_name_matched || is_resolved_relative;
