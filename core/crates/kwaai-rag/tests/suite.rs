@@ -2033,6 +2033,23 @@ fn d6_inspect_author_relations() {
             println!("AUTHOR ALIAS entity={:?} aliases={:?}", e.name, e.aliases);
         }
     }
+    // Check JMH Gool aliases for "grandfather"
+    println!("\n--- JMH Gool aliases ---");
+    for id in g.find_ids_by_name_token("joosub") {
+        if let Some(e) = g.get_entity(id) {
+            if e.name.contains("Gool") {
+                println!("JMH entity name={:?} aliases={:?}", e.name, e.aliases);
+            }
+        }
+    }
+    println!("\n--- Entities with grandfather alias ---");
+    for e in g.all_entities() {
+        if e.aliases.iter().any(|a| {
+            a.to_lowercase().contains("grandfather") || a.to_lowercase().contains("grandpa")
+        }) {
+            println!("GRANDFATHER ALIAS entity={:?}", e.name);
+        }
+    }
     // Walk grandfather path from Joe/Yousuf Rassool
     println!("\n--- Grandfather traversal ---");
     for id in g.find_ids_by_name_token("rassool") {

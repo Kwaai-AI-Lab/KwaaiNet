@@ -331,7 +331,10 @@ fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> O
         for e in graph.all_entities() {
             if e.aliases.iter().any(|a| {
                 let lc = a.to_lowercase();
-                lc == "grandfather" || lc == "my grandfather" || lc == "grandpa" || lc == "my grandpa"
+                lc == "grandfather"
+                    || lc == "my grandfather"
+                    || lc == "grandpa"
+                    || lc == "my grandpa"
             }) {
                 return Some(e.id);
             }
@@ -443,9 +446,14 @@ pub(crate) fn inject_entity_descriptions(
         // first one whose description passes the quality gate. This avoids skipping injection
         // entirely when the highest-scoring entity happens to have a thin description.
         let desc_ok = |id: i64| {
-            let Some(e) = graph.get_entity(id) else { return false };
+            let Some(e) = graph.get_entity(id) else {
+                return false;
+            };
             let desc = e.description.trim();
-            let sents = desc.chars().filter(|c| matches!(c, '.' | '?' | '!')).count();
+            let sents = desc
+                .chars()
+                .filter(|c| matches!(c, '.' | '?' | '!'))
+                .count();
             if name_matched.contains(&id) {
                 desc.len() >= 40 && sents >= 1
             } else {
