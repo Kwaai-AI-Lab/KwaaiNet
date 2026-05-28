@@ -384,7 +384,15 @@ pub async fn resolve_inference_urls(
     let mut handles = Vec::new();
 
     for url in urls {
-        if let Some(peer_str) = url.strip_prefix("p2p://") {
+        if let Some(peer_str) = url.strip_prefix("mux://") {
+            let peer_id: PeerId = peer_str
+                .parse()
+                .with_context(|| format!("invalid PeerId in mux:// URL: {url}"))?;
+            let (port, handle) = crate::inference_mux::start_local_mux_proxy(peer_id).await?;
+            resolved.push(format!("http://127.0.0.1:{port}"));
+            handles.push(handle);
+            info!("inference_proxy: {url} → http://127.0.0.1:{port} (via inference-mux)");
+        } else if let Some(peer_str) = url.strip_prefix("p2p://") {
             let peer_id: PeerId = peer_str
                 .parse()
                 .with_context(|| format!("invalid PeerId in inference URL: {url}"))?;

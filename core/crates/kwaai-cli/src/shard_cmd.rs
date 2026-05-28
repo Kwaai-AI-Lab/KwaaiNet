@@ -329,7 +329,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // background.  Inference requests arriving before loading completes receive
     // a structured "warming up" error response.
     let daemon_addr = daemon_socket();
-    let client = match initial_client {
+    let mut client = match initial_client {
         Some(c) => c,
         None => match P2PClient::connect(&daemon_addr).await {
             Ok(c) => c,
@@ -372,6 +372,12 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             false,
         )
         .await;
+
+    // Inference mux — concurrent multiplexed inference via persistent stream.
+    let _mux_handle = crate::inference_mux::start_inference_mux_server(&mut client)
+        .await
+        .map_err(|e| tracing::warn!("inference-mux server failed to start: {e}"))
+        .ok();
 
     print_box_header("🧩 KwaaiNet Shard Server");
     println!("  Blocks:      [{}, {})", start_block, end_block);

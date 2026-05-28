@@ -11,6 +11,7 @@ mod grpc_server;
 mod health;
 mod hf;
 mod identity;
+mod inference_mux;
 mod llama_local;
 mod map;
 mod monitor;
