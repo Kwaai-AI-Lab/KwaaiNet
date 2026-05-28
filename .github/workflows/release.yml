@@ -439,6 +439,9 @@ jobs:
           if ($dir) {
             echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
           }
+      - name: Set up MSVC developer environment (nvcc needs cl.exe in PATH)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Build kwaainet with CUDA (Windows)
         if: runner.os == 'Windows'
         working-directory: core
