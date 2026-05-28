@@ -35,7 +35,11 @@ impl EmbedClient {
             .or_else(|| std::env::var("OLLAMA_BASE_URL").ok())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("embedder http client"),
             base_url,
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         }

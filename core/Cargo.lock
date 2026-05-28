@@ -2959,7 +2959,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-compression"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "bincode",
  "candle-core",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-core"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "async-trait",
  "bincode",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-distributed"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-hivemind-dht"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-inference"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3066,8 +3066,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "kwaai-network-tests"
+version = "0.4.79"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "kwaai-hivemind-dht",
+ "kwaai-p2p",
+ "kwaai-p2p-daemon",
+ "kwaai-rpc",
+ "libp2p",
+ "prost 0.12.6",
+ "prost 0.13.5",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kwaai-p2p"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3108,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-rag"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3131,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-rpc"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "prost 0.13.5",
  "tonic",
@@ -3146,10 +3170,13 @@ dependencies = [
  "axum",
  "chrono",
  "hnsw_rs",
+ "http-body-util",
  "redb",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tower 0.4.13",
  "tower-http 0.6.10",
  "tracing",
  "uuid",
@@ -3157,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-trust"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3174,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-wasm"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "console_error_panic_hook",
  "futures",
@@ -3194,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "kwaainet"
-version = "0.0.1"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3878,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "map-server"
-version = "0.4.74"
+version = "0.4.79"
 dependencies = [
  "anyhow",
  "axum",

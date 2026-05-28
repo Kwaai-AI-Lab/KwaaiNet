@@ -365,15 +365,13 @@ impl UpdateChecker {
             .unwrap_or(false);
 
         if !cuda_available {
-            println!();
-            println!(
-                "  ⚠  CUDA build for v{version} isn't published yet (CI takes ~90 min after release)."
+            anyhow::bail!(
+                "NVIDIA GPU detected but the CUDA build for v{version} isn't published yet \
+                 (CI takes ~90 min after release).\n\
+                 Update skipped — your current GPU-enabled binary is unchanged.\n\
+                 Try again in ~1 hour or watch: \
+                 https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/tag/v{version}"
             );
-            println!(
-                "  Installing CPU build now — run `kwaainet update` again in ~1 hour for the GPU-optimised binary."
-            );
-            println!();
-            return self.install_cpu_linux(version).await;
         }
 
         print!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
@@ -383,11 +381,44 @@ impl UpdateChecker {
         self.download_to(&cuda_url, &archive).await?;
         println!(" done.");
 
-        let install_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        // Derive install dir from the running binary's path. Strip " (deleted)"
+        // that Linux appends to /proc/self/exe after a previous in-place swap.
+        let exe_path = std::env::current_exe().ok().map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            if let Some(clean) = s.strip_suffix(" (deleted)") {
+                std::path::PathBuf::from(clean)
+            } else {
+                p
+            }
+        });
+        let install_dir_candidate = exe_path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(|d| d.to_path_buf())
             .or_else(|| dirs::home_dir().map(|h| h.join(".cargo/bin")))
             .context("Cannot determine install directory")?;
+
+        // Verify we can actually write there; if not, fall back to ~/.cargo/bin.
+        let install_dir = if std::fs::metadata(&install_dir_candidate)
+            .map(|m| !m.permissions().readonly())
+            .unwrap_or(false)
+        {
+            install_dir_candidate
+        } else {
+            let fallback = dirs::home_dir()
+                .map(|h| h.join(".cargo/bin"))
+                .context("Cannot determine fallback install directory")?;
+            if install_dir_candidate != fallback {
+                println!(
+                    "  ⚠  {} is not writable — installing to {} instead.",
+                    install_dir_candidate.display(),
+                    fallback.display()
+                );
+            }
+            std::fs::create_dir_all(&fallback)?;
+            fallback
+        };
+        debug!("CUDA install dir: {}", install_dir.display());
 
         let tmp = std::env::temp_dir().join("kwaainet-cuda-extract");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -414,12 +445,28 @@ impl UpdateChecker {
             let entry = entry?;
             let name = entry.file_name();
             let dest = install_dir.join(&name);
-            std::fs::copy(entry.path(), &dest)
-                .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
+            // Write to a temp file then rename atomically to avoid ETXTBSY
+            // (Linux won't let you overwrite a binary that is currently executing).
+            let tmp_dest = install_dir.join(format!(".{}.tmp", name.to_string_lossy()));
+            std::fs::copy(entry.path(), &tmp_dest)
+                .with_context(|| format!("Installing {} (staging)", name.to_string_lossy()))?;
             let name_str = name.to_string_lossy();
             if name_str == "kwaainet" || name_str == "p2pd" {
-                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+                std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))?;
             }
+            // Unlink the destination first so rename() succeeds even when `dest`
+            // is the currently-executing binary (some Linux kernels return ETXTBSY
+            // for rename(2) over a running ELF; unlink always succeeds and the old
+            // inode stays alive until the process exits).
+            let _ = std::fs::remove_file(&dest);
+            std::fs::rename(&tmp_dest, &dest).with_context(|| {
+                format!(
+                    "Installing {} ({} -> {})",
+                    name_str,
+                    tmp_dest.display(),
+                    dest.display()
+                )
+            })?;
         }
         let _ = std::fs::remove_dir_all(&tmp);
         println!("  CUDA binary installed to {}.", install_dir.display());
@@ -490,6 +537,7 @@ async fn nvidia_smi_windows() -> bool {
     .unwrap_or(false)
 }
 
+
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
@@ -553,5 +601,29 @@ mod tests {
             !file_include.contains("*.dll"),
             "CPU file_include must not contain *.dll glob"
         );
+    }
+
+    /// Verifies that when the CUDA archive isn't published yet, install_cuda_linux
+    /// returns Err (no CPU fallback, no binary is touched).
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn cuda_update_bails_when_archive_missing() {
+        // v0.4.70 never had a CUDA archive — safe version to test against.
+        let checker = UpdateChecker::new();
+        let result = checker.install_cuda_linux("0.4.70").await;
+        let err = result.expect_err("should bail when CUDA archive is missing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CUDA build for v0.4.70 isn't published yet"),
+            "Expected 'not published yet' message, got: {msg}"
+        );
+    }
+
+    /// Smoke-test: nvidia_smi_async should not hang or panic regardless of GPU presence.
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn nvidia_smi_does_not_hang() {
+        let _has_gpu = nvidia_smi_async().await;
+        // Pass as long as it returns within the 4-second timeout.
     }
 }

@@ -539,6 +539,16 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         )
         .await;
 
+    // Shard proxy — lets remote peers route requests to our local shard API.
+    let shard_proxy_handler = crate::ollama_proxy::make_shard_proxy_handler();
+    let _ = client
+        .add_unary_handler(
+            crate::ollama_proxy::SHARD_PROXY_PROTO,
+            shard_proxy_handler,
+            false,
+        )
+        .await;
+
     // -----------------------------------------------------------------------
     // Step 4: Wait for DHT bootstrap (intelligent polling)
     // -----------------------------------------------------------------------
@@ -1901,32 +1911,6 @@ async fn dial_and_wait_for_bootstrap(
 // Incoming RPC stream handler
 // ---------------------------------------------------------------------------
 
-/// Try to decode `bytes` as a protobuf `T`.  If that fails, try again after
-/// stripping a leading unsigned-varint length prefix (Hivemind Python sends
-/// `encode_uvarint(len) + protobuf_bytes`; our own nodes send raw protobuf).
-/// Returns the decoded message and whether the prefix was present (so the
-/// response can be framed consistently).
-fn decode_with_varint_fallback<T: prost::Message + Default>(bytes: &[u8]) -> Result<(T, bool)> {
-    // Try 1: raw protobuf (our own nodes)
-    if let Ok(msg) = T::decode(bytes) {
-        return Ok((msg, false));
-    }
-    // Try 2: varint-length-prefixed (Hivemind Python compat)
-    if !bytes.is_empty() {
-        if let Ok((len, rest)) = unsigned_varint::decode::usize(bytes) {
-            if rest.len() >= len {
-                if let Ok(msg) = T::decode(&rest[..len]) {
-                    return Ok((msg, true));
-                }
-            }
-        }
-    }
-    // Both failed — return the raw-decode error for the original bytes
-    T::decode(bytes)
-        .map(|m| (m, false))
-        .map_err(|e| anyhow::anyhow!("{}", e))
-}
-
 async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStorage) -> Result<()> {
     let info = stream::parse_stream_info(tcp)
         .await
@@ -1934,60 +1918,106 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
     info!("RPC {}", info.proto);
 
     use prost::Message as _;
-    use tokio::io::AsyncReadExt as _;
-    let mut bytes = Vec::new();
-    tcp.read_to_end(&mut bytes)
-        .await
-        .map_err(|e| anyhow::anyhow!("read request: {}", e))?;
 
-    let (req, varint_framed) = match info.proto.as_str() {
+    // p2pd stream handlers receive a varint-framed PersistentConnectionRequest
+    // wrapper containing the actual DHT payload in callUnary.data.
+    // Unwrapping and re-wrapping uses helpers in kwaai-p2p-daemon to avoid a
+    // prost version conflict (p2pd uses 0.13, workspace uses 0.12).
+    let (outer_bytes, _) = read_rpc_message(tcp).await?;
+    if outer_bytes.is_empty() {
+        return Ok(());
+    }
+
+    let (call_id, dht_data) = stream::unwrap_stream_handler_request(&outer_bytes)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let req = match info.proto.as_str() {
         "DHTProtocol.rpc_store" => {
-            let (r, vf) =
-                decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::StoreRequest>(&bytes)
-                    .map_err(|e| anyhow::anyhow!("decode StoreRequest: {}", e))?;
-            (DHTRequest::Store(r), vf)
+            let r = kwaai_hivemind_dht::protocol::StoreRequest::decode(dht_data.as_slice())
+                .map_err(|e| anyhow::anyhow!("decode StoreRequest: {}", e))?;
+            DHTRequest::Store(r)
         }
         "DHTProtocol.rpc_find" => {
-            let (r, vf) =
-                decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::FindRequest>(&bytes)
-                    .map_err(|e| anyhow::anyhow!("decode FindRequest: {}", e))?;
-            (DHTRequest::Find(r), vf)
+            let r = kwaai_hivemind_dht::protocol::FindRequest::decode(dht_data.as_slice())
+                .map_err(|e| anyhow::anyhow!("decode FindRequest: {}", e))?;
+            DHTRequest::Find(r)
         }
         _ => {
-            let (r, vf) =
-                decode_with_varint_fallback::<kwaai_hivemind_dht::protocol::PingRequest>(&bytes)
-                    .map_err(|e| anyhow::anyhow!("decode PingRequest: {}", e))?;
-            (DHTRequest::Ping(r), vf)
+            let r = kwaai_hivemind_dht::protocol::PingRequest::decode(dht_data.as_slice())
+                .map_err(|e| anyhow::anyhow!("decode PingRequest: {}", e))?;
+            DHTRequest::Ping(r)
         }
     };
 
-    let response_bytes = {
+    let raw_dht_response = {
         let g = storage.read().await;
         let resp = g
             .handle_request(req)
             .map_err(|e| anyhow::anyhow!("handle_request: {}", e))?;
         use kwaai_hivemind_dht::codec::DHTResponse;
-        let raw = match resp {
+        match resp {
             DHTResponse::Store(r) => r.encode_to_vec(),
             DHTResponse::Find(r) => r.encode_to_vec(),
             DHTResponse::Ping(r) => r.encode_to_vec(),
-        };
-        // Mirror the request framing so the caller can parse the response.
-        if varint_framed {
-            let mut buf = unsigned_varint::encode::usize_buffer();
-            let prefix = unsigned_varint::encode::usize(raw.len(), &mut buf);
-            let mut framed = Vec::with_capacity(prefix.len() + raw.len());
-            framed.extend_from_slice(prefix);
-            framed.extend_from_slice(&raw);
-            framed
-        } else {
-            raw
         }
     };
 
-    tcp.write_all(&response_bytes).await?;
+    // Wrap in PersistentConnectionResponse and write back varint-framed.
+    let framed = stream::wrap_stream_handler_response(call_id, raw_dht_response);
+    tcp.write_all(&framed).await?;
     tcp.flush().await?;
     Ok(())
+}
+
+/// Read one RPC message from a p2pd-forwarded stream.
+///
+/// p2pd uses varint-length-prefixed messages: [varint N][N payload bytes].
+/// Returns (payload_bytes, varint_framed=true).
+///
+/// Falls back to read_to_end when the varint appears invalid (oversized or
+/// no bytes follow), returning (bytes, varint_framed=false).
+async fn read_rpc_message(tcp: &mut tokio::net::TcpStream) -> Result<(Vec<u8>, bool)> {
+    use tokio::io::AsyncReadExt as _;
+
+    // Peek at the first byte to decide if this could be a varint prefix.
+    let mut first = [0u8; 1];
+    if tcp.read_exact(&mut first).await.is_err() {
+        return Ok((vec![], false));
+    }
+
+    // Decode the varint length (up to 5 more bytes for a u32 value).
+    let mut varint_buf = vec![first[0]];
+    if first[0] & 0x80 != 0 {
+        for _ in 0..9 {
+            let mut b = [0u8; 1];
+            if tcp.read_exact(&mut b).await.is_err() {
+                break;
+            }
+            varint_buf.push(b[0]);
+            if b[0] & 0x80 == 0 {
+                break;
+            }
+        }
+    }
+
+    if let Ok((len, _)) = unsigned_varint::decode::usize(&varint_buf) {
+        // Sanity cap: reject if larger than 10 MiB (a legitimate store
+        // request from the bootstrap can be ~50 KiB for a full network view).
+        if len <= 10 * 1024 * 1024 {
+            let mut payload = vec![0u8; len];
+            tcp.read_exact(&mut payload)
+                .await
+                .map_err(|e| anyhow::anyhow!("read_exact({} bytes): {}", len, e))?;
+            return Ok((payload, true));
+        }
+    }
+
+    // Varint missing or oversized — collect remaining bytes (raw protobuf).
+    let mut rest = Vec::new();
+    let _ = tcp.read_to_end(&mut rest).await;
+    let mut all = varint_buf;
+    all.extend(rest);
+    Ok((all, false))
 }
 
 // ---------------------------------------------------------------------------

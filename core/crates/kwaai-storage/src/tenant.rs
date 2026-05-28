@@ -244,6 +244,148 @@ impl TenantManager {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::StorageDb;
+    use crate::vectors::VectorStore;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, TenantManager) {
+        let tmp = TempDir::new().unwrap();
+        let db = StorageDb::open(tmp.path()).unwrap();
+        (tmp, TenantManager::new(db))
+    }
+
+    fn setup_with_vectors() -> (TempDir, TenantManager, VectorStore) {
+        let tmp = TempDir::new().unwrap();
+        let db = StorageDb::open(tmp.path()).unwrap();
+        let tm = TenantManager::new(db.clone());
+        let vs = VectorStore::new(db);
+        (tmp, tm, vs)
+    }
+
+    #[tokio::test]
+    async fn create_returns_info_with_correct_fields() {
+        let (_tmp, tm) = setup();
+        let info = tm
+            .create("peer-abc", 512, Some("My Tenant"), 128)
+            .await
+            .unwrap();
+        assert_eq!(info.peer_id, "peer-abc");
+        assert_eq!(info.capacity_limit_mb, 512);
+        assert_eq!(info.display_name.as_deref(), Some("My Tenant"));
+        assert_eq!(info.vector_dimension, 128);
+        assert_eq!(info.status, "Active");
+        assert!(!info.tenant_id.is_nil());
+    }
+
+    #[tokio::test]
+    async fn list_returns_all_active_tenants() {
+        let (_tmp, tm) = setup();
+        tm.create("p1", 100, None, 4).await.unwrap();
+        tm.create("p2", 200, None, 4).await.unwrap();
+        let list = tm.list().await.unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_excludes_deleted_tenants() {
+        let (_tmp, tm) = setup();
+        let t = tm.create("p1", 100, None, 4).await.unwrap();
+        tm.create("p2", 200, None, 4).await.unwrap();
+        tm.delete(t.tenant_id).await.unwrap();
+        let list = tm.list().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].peer_id, "p2");
+    }
+
+    #[tokio::test]
+    async fn get_returns_tenant_by_id() {
+        let (_tmp, tm) = setup();
+        let t = tm.create("peer-x", 100, None, 4).await.unwrap();
+        let found = tm.get(t.tenant_id).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().peer_id, "peer-x");
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_for_unknown_id() {
+        let (_tmp, tm) = setup();
+        assert!(tm.get(Uuid::new_v4()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_after_delete() {
+        let (_tmp, tm) = setup();
+        let t = tm.create("peer", 100, None, 4).await.unwrap();
+        tm.delete(t.tenant_id).await.unwrap();
+        assert!(tm.get(t.tenant_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_unknown_tenant_returns_error() {
+        let (_tmp, tm) = setup();
+        assert!(tm.delete(Uuid::new_v4()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn count_tracks_active_tenants() {
+        let (_tmp, tm) = setup();
+        assert_eq!(tm.count().await.unwrap(), 0);
+        let t = tm.create("p1", 100, None, 4).await.unwrap();
+        assert_eq!(tm.count().await.unwrap(), 1);
+        tm.delete(t.tenant_id).await.unwrap();
+        assert_eq!(tm.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn stats_zero_for_new_tenant() {
+        let (_tmp, tm) = setup();
+        let t = tm.create("p", 100, None, 4).await.unwrap();
+        let s = tm.stats(t.tenant_id).await.unwrap();
+        assert_eq!(s.vector_count, 0);
+        assert_eq!(s.storage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn stats_updates_after_upload() {
+        let (_tmp, tm, vs) = setup_with_vectors();
+        let t = tm.create("p", 100, None, 4).await.unwrap();
+        vs.upload(t.tenant_id, &[(1, vec![1.0, 0.0, 0.0, 0.0])])
+            .await
+            .unwrap();
+        let s = tm.stats(t.tenant_id).await.unwrap();
+        assert_eq!(s.vector_count, 1);
+        // formula: count * (4 * dim + 24) = 1 * (16 + 24) = 40
+        assert_eq!(s.storage_bytes, 40);
+    }
+
+    #[tokio::test]
+    async fn total_vectors_sums_across_tenants() {
+        let (_tmp, tm, vs) = setup_with_vectors();
+        let t1 = tm.create("p1", 100, None, 4).await.unwrap();
+        let t2 = tm.create("p2", 100, None, 4).await.unwrap();
+        vs.upload(t1.tenant_id, &[(1, vec![1.0, 0.0, 0.0, 0.0])])
+            .await
+            .unwrap();
+        vs.upload(
+            t2.tenant_id,
+            &[
+                (1, vec![0.0, 1.0, 0.0, 0.0]),
+                (2, vec![0.0, 0.0, 1.0, 0.0]),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(tm.total_vectors().await.unwrap(), 3);
+    }
+}
+
 fn record_to_info(tenant_id: Uuid, rec: &TenantRecord) -> TenantInfo {
     TenantInfo {
         tenant_id,

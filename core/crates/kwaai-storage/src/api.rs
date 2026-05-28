@@ -25,13 +25,8 @@ struct AppState {
     peer_id: String,
 }
 
-/// Start the storage API server.
-pub async fn run_storage_api(
-    db: StorageDb,
-    bind_addr: &str,
-    capacity_gb: f64,
-    peer_id: String,
-) -> anyhow::Result<()> {
+/// Build the Axum router (useful for testing without binding a port).
+pub fn build_app(db: StorageDb, capacity_gb: f64, peer_id: String) -> Router {
     let state = Arc::new(AppState {
         tenants: TenantManager::new(db.clone()),
         vectors: VectorStore::new(db),
@@ -44,7 +39,7 @@ pub async fn run_storage_api(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    Router::new()
         .route("/api/health", get(health))
         .route("/api/tenants", post(create_tenant))
         .route("/api/tenants", get(list_tenants))
@@ -54,8 +49,17 @@ pub async fn run_storage_api(
         .route("/api/tenants/:id/search", post(search_vectors))
         .route("/api/tenants/:id/vectors", delete(delete_vectors))
         .layer(cors)
-        .with_state(state);
+        .with_state(state)
+}
 
+/// Start the storage API server.
+pub async fn run_storage_api(
+    db: StorageDb,
+    bind_addr: &str,
+    capacity_gb: f64,
+    peer_id: String,
+) -> anyhow::Result<()> {
+    let app = build_app(db, capacity_gb, peer_id);
     tracing::info!("storage API listening on {}", bind_addr);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;

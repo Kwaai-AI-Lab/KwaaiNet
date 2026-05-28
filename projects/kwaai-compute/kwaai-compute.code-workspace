@@ -1,0 +1,20 @@
+{
+  "folders": [
+    { "path": "../../core/crates/kwaai-inference", "name": "kwaai-inference (crate)" },
+    { "path": "../../core/crates/kwaai-compression", "name": "kwaai-compression (crate)" },
+    { "path": "../../core/crates/kwaai-distributed", "name": "kwaai-distributed (crate)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (shard_cmd, block_rpc)" },
+    { "path": ".", "name": "project docs" },
+    { "path": "../../tests/kwaai-compute", "name": "tests" }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": ["../../core/Cargo.toml"],
+    "rust-analyzer.cargo.features": "all"
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust-analyzer",
+      "tamasfe.even-better-toml"
+    ]
+  }
+}

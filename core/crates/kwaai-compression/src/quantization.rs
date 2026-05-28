@@ -159,4 +159,69 @@ mod tests {
             assert!((orig - decomp).abs() < 0.5, "Quantization error too large");
         }
     }
+
+    #[test]
+    fn test_block_size_getter() {
+        let q = BlockwiseQuantizer::new(32);
+        assert_eq!(q.block_size(), 32);
+        let q2 = BlockwiseQuantizer::new(128);
+        assert_eq!(q2.block_size(), 128);
+    }
+
+    #[test]
+    fn test_shape_preserved_after_roundtrip() {
+        let quantizer = BlockwiseQuantizer::new(16);
+        let data: Vec<f32> = (0..48).map(|i| i as f32).collect();
+        let tensor = Tensor::from_vec(data, &[3, 16], &Device::Cpu).unwrap();
+        let compressed = quantizer.compress(&tensor).unwrap();
+        assert_eq!(compressed.shape, vec![3, 16]);
+        let decompressed = quantizer.decompress(&compressed).unwrap();
+        assert_eq!(decompressed.dims(), &[3, 16]);
+    }
+
+    #[test]
+    fn test_multi_block_tensor() {
+        let block_size = 8;
+        let quantizer = BlockwiseQuantizer::new(block_size);
+        // 40 elements → 5 blocks of 8
+        let data: Vec<f32> = (0..40).map(|i| (i as f32 - 20.0) * 0.5).collect();
+        let tensor = Tensor::from_vec(data.clone(), &[40], &Device::Cpu).unwrap();
+        let compressed = quantizer.compress(&tensor).unwrap();
+        // Each block gets one scale entry
+        assert_eq!(compressed.scales.len(), 5);
+        assert_eq!(compressed.data.len(), 40);
+        let recovered: Vec<f32> = quantizer
+            .decompress(&compressed)
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        for (orig, got) in data.iter().zip(recovered.iter()) {
+            assert!((orig - got).abs() < 0.2, "orig={orig} got={got}");
+        }
+    }
+
+    #[test]
+    fn test_all_zeros_tensor() {
+        let quantizer = BlockwiseQuantizer::new(64);
+        let data = vec![0.0f32; 64];
+        let tensor = Tensor::from_vec(data.clone(), &[64], &Device::Cpu).unwrap();
+        let compressed = quantizer.compress(&tensor).unwrap();
+        let recovered: Vec<f32> = quantizer
+            .decompress(&compressed)
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        for v in recovered {
+            assert_eq!(v, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_size_bytes_less_than_original() {
+        let quantizer = BlockwiseQuantizer::new(64);
+        let data: Vec<f32> = (0..256).map(|i| i as f32).collect();
+        let tensor = Tensor::from_vec(data, &[256], &Device::Cpu).unwrap();
+        let compressed = quantizer.compress(&tensor).unwrap();
+        assert!(compressed.size_bytes() < compressed.original_size_bytes());
+    }
 }

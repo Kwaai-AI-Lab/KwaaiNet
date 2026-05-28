@@ -1,0 +1,21 @@
+{
+  "folders": [
+    { "path": "../../core/crates/kwaai-p2p", "name": "kwaai-p2p (crate)" },
+    { "path": "../../core/crates/kwaai-p2p-daemon", "name": "kwaai-p2p-daemon (crate)" },
+    { "path": "../../core/crates/kwaai-hivemind-dht", "name": "kwaai-hivemind-dht (crate)" },
+    { "path": "../../core/crates/kwaai-rpc", "name": "kwaai-rpc (crate)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (node, p2p_cmd)" },
+    { "path": ".", "name": "project docs" },
+    { "path": "../../tests/kwaai-network", "name": "tests" }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": ["../../core/Cargo.toml"],
+    "rust-analyzer.cargo.features": "all"
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust-analyzer",
+      "tamasfe.even-better-toml"
+    ]
+  }
+}

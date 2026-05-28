@@ -40,13 +40,71 @@ fn extract_pdf(path: &Path) -> Result<String> {
     // panics and convert them to errors so a single bad file doesn't crash sync.
     let path_owned = path.to_path_buf();
     match std::panic::catch_unwind(move || pdf_extract::extract_text(&path_owned)) {
-        Ok(Ok(text)) => Ok(text),
+        Ok(Ok(text)) => Ok(clean_pdf_text(&text)),
         Ok(Err(e)) => anyhow::bail!("extracting PDF text from {}: {e}", path.display()),
         Err(_) => anyhow::bail!(
             "extracting PDF text from {}: PDF is malformed (internal parser panic)",
             path.display()
         ),
     }
+}
+
+/// Fix underscore artifacts introduced by pdf-extract's glyph-to-Unicode mapping.
+///
+/// Some PDFs encode periods and apostrophes using glyph IDs that pdf-extract maps
+/// to `_` instead of the intended character:
+///   "Dr_"       → "Dr."    (period after abbreviation)
+///   "J_ M_ H_"  → "J. M. H."  (periods after initials)
+///   "Wooding_s" → "Wooding's"  (apostrophe in possessive)
+///
+/// Rules applied in order per `_`:
+///   1. `_s` at a word boundary → `'s`
+///   2. `_` preceded by a letter and followed by whitespace, end, or another
+///      letter-then-underscore pattern (chained initials) → `.`
+///   3. All other underscores → stripped
+#[allow(dead_code)]
+fn clean_pdf_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if c != '_' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        // Rule 1: `_s` where s is followed by non-alpha or end → apostrophe-s
+        if i + 1 < n && chars[i + 1] == 's' {
+            let after = i + 2;
+            let at_boundary = after >= n || !chars[after].is_alphabetic();
+            if at_boundary {
+                out.push('\'');
+                out.push('s');
+                i += 2;
+                continue;
+            }
+        }
+        // Rule 2: `_` preceded by a letter and followed by whitespace / end → period
+        let prev_is_alpha = out
+            .chars()
+            .last()
+            .map(|p| p.is_alphabetic())
+            .unwrap_or(false);
+        let next_is_break = i + 1 >= n
+            || chars[i + 1].is_whitespace()
+            || chars[i + 1] == '\n'
+            || chars[i + 1] == '\r';
+        if prev_is_alpha && next_is_break {
+            out.push('.');
+            i += 1;
+            continue;
+        }
+        // Rule 3: strip
+        i += 1;
+    }
+    out
 }
 
 #[cfg(not(feature = "pdf"))]

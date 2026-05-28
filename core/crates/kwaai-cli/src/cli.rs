@@ -1093,6 +1093,10 @@ pub enum RagAction {
         #[arg(long, value_name = "YAML_FILE")]
         doc_meta: Option<std::path::PathBuf>,
 
+        /// YAML file describing the document's section structure (skip zones, narrator overrides).
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_schema: Option<std::path::PathBuf>,
+
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
@@ -1249,7 +1253,7 @@ pub enum RagAction {
         #[arg(long, default_value = "4", value_name = "N")]
         workers: usize,
 
-        /// YAML seed file for canonical entities (see tests/d6_family_tree.yaml)
+        /// YAML seed file for canonical entities (see tests/kwaai-knowledge/d6_family_tree.yaml)
         #[arg(long, value_name = "FILE")]
         seed_file: Option<std::path::PathBuf>,
 
@@ -1260,6 +1264,29 @@ pub enum RagAction {
         /// YAML file mapping doc-name substrings to metadata prefixes prepended to each chunk
         #[arg(long, value_name = "YAML_FILE")]
         doc_meta: Option<std::path::PathBuf>,
+
+        /// YAML file describing the document's section structure (skip zones, narrator overrides).
+        #[arg(long, value_name = "YAML_FILE")]
+        doc_schema: Option<std::path::PathBuf>,
+
+        /// Comma-separated entity types to extract (default: all 15).
+        /// Example: --entity-types Person,Place,Organization
+        #[arg(long, value_name = "TYPES")]
+        entity_types: Option<String>,
+
+        /// Skip relation extraction entirely (recommended for 8B models — precision too low).
+        #[arg(long)]
+        no_relations: bool,
+
+        /// Number of adjacent chunks passed as context per extraction call (default: 1).
+        #[arg(long, default_value = "1", value_name = "N")]
+        graph_window: usize,
+
+        /// Process only this percentage of chunks for graph build (1–100).
+        /// Useful for quick test cycles — ingest is always full, only graph extraction is sampled.
+        /// Example: --sample 10 processes the first 10% of chunks.
+        #[arg(long, value_name = "PERCENT")]
+        sample_pct: Option<u8>,
 
         /// Skip the destroy confirmation prompt
         #[arg(long, short = 'y')]
@@ -1426,32 +1453,6 @@ pub enum RagAction {
         output: Option<std::path::PathBuf>,
     },
 
-    /// Export the knowledge graph to an Obsidian vault
-    Export {
-        /// Output directory for the vault (created if absent)
-        #[arg(long, value_name = "DIR")]
-        output_dir: std::path::PathBuf,
-
-        /// Knowledge base name (default: "default")
-        #[arg(long, default_value = "default", value_name = "NAME")]
-        kb: String,
-    },
-
-    /// Import curated edits from an Obsidian vault back into the knowledge graph
-    Import {
-        /// Path to the Obsidian vault directory (must contain `entities/`)
-        #[arg(long, value_name = "DIR")]
-        input_dir: std::path::PathBuf,
-
-        /// Only process files modified after this Unix timestamp (default: 0 = all files)
-        #[arg(long, default_value = "0", value_name = "SECS")]
-        since: u64,
-
-        /// Knowledge base name (default: "default")
-        #[arg(long, default_value = "default", value_name = "NAME")]
-        kb: String,
-    },
-
     /// Autonomous knowledge graph completion (Dream RAG)
     Dream {
         #[command(subcommand)]
@@ -1498,6 +1499,26 @@ pub enum DreamAction {
 
     /// Show the last dream cycle report
     Status,
+
+    /// Evaluate retrieval quality: measures recall@k and MRR against entity evidence chunks.
+    /// Used to correlate graph completeness score with downstream RAG quality for the paper.
+    EmbedEval {
+        /// Max number of entity queries to run [default: all entities with evidence]
+        #[arg(long, value_name = "N")]
+        max_queries: Option<usize>,
+
+        /// Save the JSON report to a file
+        #[arg(long, value_name = "PATH")]
+        output: Option<std::path::PathBuf>,
+
+        /// Include per-entity breakdown in JSON output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Print results as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1548,6 +1569,31 @@ pub enum GraphAction {
         /// Example: --inference-urls "http://node1:11434,http://node2:11434"
         #[arg(long, value_name = "URLS")]
         inference_urls: Option<String>,
+
+        /// Restrict extraction to these entity types (comma-separated).
+        /// Example: --entity-types "Person,Place,Organization"
+        /// Default: all 15 types.
+        #[arg(long, value_name = "TYPES")]
+        entity_types: Option<String>,
+
+        /// Skip relation extraction entirely (entities only).
+        #[arg(long)]
+        no_relations: bool,
+
+        /// Number of adjacent chunks to include as surrounding context per extraction call.
+        /// 0 = current chunk only. 1 = one before + one after (default, +7pp recall).
+        /// Experiments show window=1 is optimal; window=2 adds cost with no recall gain.
+        #[arg(long, default_value = "1", value_name = "N")]
+        graph_window: usize,
+
+        /// Wipe the graph before building (entities + relations cleared, chunks preserved).
+        #[arg(long)]
+        reset_graph: bool,
+
+        /// Process only this percentage of chunks (1–100). Useful for quick test cycles.
+        /// Example: --sample 10 processes the first 10% of chunks.
+        #[arg(long, value_name = "PERCENT")]
+        sample_pct: Option<u8>,
     },
 
     /// Seed the graph from a ground-truth YAML family tree — upserts canonical entities with
@@ -1555,13 +1601,26 @@ pub enum GraphAction {
     /// family relations. Aliases declared in the YAML are stored on the canonical entity so
     /// name-token search finds them even after the alias entity is removed.
     Seed {
-        /// Path to the YAML family tree file (see tests/d6_family_tree.yaml for format)
+        /// Path to the YAML family tree file (see tests/kwaai-knowledge/d6_family_tree.yaml for format)
         #[arg(long, value_name = "FILE")]
         file: std::path::PathBuf,
 
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
+    },
+
+    /// Import ground-truth entities and relations from a NotebookLM JSON extraction.
+    /// See tests/notebooklm_extraction_prompt.md for the prompt to use in NotebookLM.
+    /// Low-confidence relations are skipped; all entities are included.
+    SeedFromJson {
+        /// Path to the JSON file output by NotebookLM
+        #[arg(long, value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Also write the converted seed YAML to this path (optional)
+        #[arg(long, value_name = "FILE")]
+        emit_yaml: Option<std::path::PathBuf>,
     },
 
     /// Detect and merge duplicate entities.
@@ -1627,6 +1686,45 @@ pub enum GraphAction {
         /// Minimum number of chunks a pair must appear in to be considered (default: 1)
         #[arg(long, default_value = "1", value_name = "N")]
         min_hits: usize,
+    },
+
+    /// Enforce relation integrity rules across the whole knowledge graph:
+    ///   1. Remove familial relations (parent_of, spouse_of, sibling_of, …) where
+    ///      either endpoint is not a Person entity.
+    ///   2. Add missing logical inverses (parent_of ↔ child_of, grandparent_of ↔
+    ///      grandchild_of, etc.) and missing symmetric directions (spouse_of, sibling_of).
+    ///   3. Recompute relation strength from actual shared-evidence-chunk co-occurrence
+    ///      so strength reflects how well-evidenced each relation is in the source text.
+    ///   4. Infer and persist gender ("Male"/"Female") for all Person entities from
+    ///      pronoun cues in their descriptions.
+    ///   5. Log (warn) spouse_of pairs where both entities have the same inferred gender
+    ///      so they can be reviewed.
+    Sanitize,
+
+    /// Load a doc-schema YAML and persist its metadata section into the knowledge base.
+    /// Run this after a rebuild if you didn't use --doc-schema during ingest.
+    SetMetadata {
+        /// Path to the doc-schema YAML file
+        #[arg(long, value_name = "FILE")]
+        doc_schema: std::path::PathBuf,
+    },
+
+    /// Export the knowledge graph to an Obsidian vault
+    Export {
+        /// Output directory for the vault (created if absent)
+        #[arg(long, value_name = "DIR")]
+        output_dir: std::path::PathBuf,
+    },
+
+    /// Import curated edits from an Obsidian vault back into the knowledge graph
+    Import {
+        /// Path to the Obsidian vault directory (must contain `entities/`)
+        #[arg(long, value_name = "DIR")]
+        input_dir: std::path::PathBuf,
+
+        /// Only process files modified after this Unix timestamp (default: 0 = all files)
+        #[arg(long, default_value = "0", value_name = "SECS")]
+        since: u64,
     },
 }
 

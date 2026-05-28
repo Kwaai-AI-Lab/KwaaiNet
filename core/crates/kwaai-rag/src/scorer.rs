@@ -7,7 +7,7 @@
 //!
 //! The overall score is the unweighted average of the three pillars (0.0–1.0).
 
-use crate::graph::{EntityNode, GraphStore};
+use crate::graph::{expected_fields, EntityNode, GraphStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -19,7 +19,7 @@ pub fn schema_type_for(entity_type: &str) -> Option<&'static str> {
     match entity_type {
         "Person" => Some("schema:Person"),
         "Organization" => Some("schema:Organization"),
-        "Location" => Some("schema:Place"),
+        "Location" | "Place" => Some("schema:Place"),
         "Event" => Some("schema:Event"),
         "Product" => Some("schema:Product"),
         "Document" => Some("schema:CreativeWork"),
@@ -66,7 +66,10 @@ pub fn expected_relation_groups(schema_type: &str) -> &'static [&'static [&'stat
             &["works_at", "belongs_to", "founded", "manages"],
             &["located_in", "associated_with"],
         ],
-        "schema:Organization" => &[&["located_in"], &["founded", "part_of", "contains"]],
+        "schema:Organization" => &[
+            &["located_in", "associated_with", "belongs_to"],
+            &["founded", "part_of", "contains"],
+        ],
         "schema:Place" => &[&["located_in", "contains", "part_of"]],
         "schema:Event" => &[
             &["occurred_on", "started", "ended"],
@@ -92,7 +95,8 @@ pub struct EntityScore {
 
     /// Pillar 1 — 0.0 (Unknown/no schema type) to 1.0 (specific schema.org type)
     pub type_score: f32,
-    /// Pillar 2 — 0.0 (empty) to 1.0 (≥ 2 sentences and ≥ 150 chars)
+    /// Pillar 2 — 0.0 (no fields) to 1.0 (all expected fields filled).
+    /// Falls back to description-length scoring for entity types without a field schema.
     pub summary_score: f32,
     /// Pillar 3 — fraction of expected relation groups that have ≥ 1 match
     pub relation_score: f32,
@@ -132,24 +136,39 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
         Some(_) => 1.0,
     };
 
-    // Pillar 2: summary
-    let desc = node.description.trim();
-    let summary_score: f32 = if desc.is_empty() {
-        0.0
-    } else if desc.len() < 50 {
-        0.3
-    } else if desc.len() < 150 {
-        0.6
-    } else {
-        // count sentence-ending punctuation as a proxy for sentence count
-        let sentences = desc
-            .chars()
-            .filter(|c| matches!(c, '.' | '?' | '!'))
+    // Pillar 2: field completeness (or description quality for unschematised types)
+    let schema = expected_fields(&node.entity_type);
+    let summary_score: f32 = if !schema.is_empty() {
+        // Field-based scoring: fraction of expected fields that have a non-empty value.
+        let filled = schema
+            .iter()
+            .filter(|(key, _)| {
+                node.fields
+                    .get(*key)
+                    .map(|fv| !fv.value.is_empty())
+                    .unwrap_or(false)
+            })
             .count();
-        if sentences >= 2 {
-            1.0
+        filled as f32 / schema.len() as f32
+    } else {
+        // Legacy description-length scoring for entity types without a field schema.
+        let desc = node.description.trim();
+        if desc.is_empty() {
+            0.0
+        } else if desc.len() < 50 {
+            0.3
+        } else if desc.len() < 150 {
+            0.6
         } else {
-            0.8
+            let sentences = desc
+                .chars()
+                .filter(|c| matches!(c, '.' | '?' | '!'))
+                .count();
+            if sentences >= 2 {
+                1.0
+            } else {
+                0.8
+            }
         }
     };
 
@@ -248,7 +267,7 @@ pub fn score_graph(store: &GraphStore) -> GraphHealthReport {
             ));
         } else if s.summary_score < 0.3 {
             top_issues.push(format!(
-                "'{}' [{}] — missing or very thin description",
+                "'{}' [{}] — missing or incomplete fields",
                 s.name, s.entity_type
             ));
         } else if s.relation_score < 0.34 {

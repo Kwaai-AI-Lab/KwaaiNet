@@ -27,6 +27,9 @@ const CHUNK_ENTITY_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("
 /// key = entity_id i64 LE (8 bytes) → [chunk_id] JSON array
 const ENTITY_CHUNK_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entity_chunks");
 
+/// key = string → JSON-encoded value (KB-level metadata)
+const METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("metadata");
+
 // ── Ontology constants ────────────────────────────────────────────────────────
 
 /// Supported entity types for LLM extraction prompts.
@@ -97,7 +100,71 @@ pub const RELATION_TYPES: &[&str] = &[
     "caused_by",
 ];
 
+/// Familial relation types — only valid between two Person entities.
+pub const FAMILIAL_RELS: &[&str] = &[
+    "parent_of",
+    "child_of",
+    "spouse_of",
+    "sibling_of",
+    "half_sibling_of",
+    "grandparent_of",
+    "grandchild_of",
+    "uncle_of",
+    "aunt_of",
+    "niece_of",
+    "nephew_of",
+    "cousin_of",
+    "foster_parent_of",
+    "foster_child_of",
+];
+
+/// Asymmetric familial relation → its logical inverse.
+/// When A parent_of B is stored, B child_of A is automatically stored too.
+/// Symmetric relations (spouse_of, sibling_of, cousin_of, half_sibling_of) are not listed —
+/// they are stored in both directions by the caller.
+const FAMILIAL_INVERSE: &[(&str, &str)] = &[
+    ("parent_of", "child_of"),
+    ("child_of", "parent_of"),
+    ("grandparent_of", "grandchild_of"),
+    ("grandchild_of", "grandparent_of"),
+    ("uncle_of", "nephew_of"), // approximate — gender of nephew/niece unknown here
+    ("aunt_of", "niece_of"),
+    ("nephew_of", "uncle_of"),
+    ("niece_of", "aunt_of"),
+    ("foster_parent_of", "foster_child_of"),
+    ("foster_child_of", "foster_parent_of"),
+];
+
 // ── Core types ────────────────────────────────────────────────────────────────
+
+/// A single structured metadata field on an entity, with provenance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldValue {
+    pub value: String,
+    /// Chunk IDs whose text provided evidence for this field value.
+    #[serde(default)]
+    pub evidence_chunk_ids: Vec<i64>,
+    /// 0.0–1.0; grows with evidence count: `min(1.0, count / 3.0)`.
+    pub confidence: f32,
+}
+
+impl FieldValue {
+    pub fn new(value: impl Into<String>, chunk_id: i64) -> Self {
+        Self {
+            value: value.into(),
+            evidence_chunk_ids: vec![chunk_id],
+            confidence: 1.0_f32 / 3.0,
+        }
+    }
+
+    /// Add a supporting chunk ID and recompute confidence.
+    pub fn add_evidence(&mut self, chunk_id: i64) {
+        if !self.evidence_chunk_ids.contains(&chunk_id) {
+            self.evidence_chunk_ids.push(chunk_id);
+        }
+        self.confidence = (self.evidence_chunk_ids.len() as f32 / 3.0).min(1.0);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityNode {
@@ -105,7 +172,8 @@ pub struct EntityNode {
     pub id: i64,
     pub name: String,
     pub entity_type: String,
-    /// 1–2 sentence LLM-generated summary.
+    /// Prose summary derived from `fields`; updated whenever fields change.
+    /// Falls back to raw LLM description for entity types without expected fields.
     pub description: String,
     /// Embedding of "{name}: {description}" for similarity search.
     /// Includes the name so abbreviations/acronyms find the right entity.
@@ -120,11 +188,19 @@ pub struct EntityNode {
     /// Never changes entity_id — that remains hash(name + entity_type).
     #[serde(default)]
     pub schema_type: Option<String>,
+    /// Inferred from pronouns in description: "Male", "Female", or None if unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gender: Option<String>,
     /// All chunk IDs that mention this entity. Populated at load time from the
     /// chunk index — not persisted in the entity record itself. Always current
     /// after rebuild(). Use this in dream tasks instead of a separate lookup.
     #[serde(default, skip_serializing)]
     pub evidence: Vec<i64>,
+    /// Structured schema.org-aligned metadata fields with evidence provenance.
+    /// Keys are schema.org property names (e.g. "birthDate", "addressLocality").
+    /// Empty for entity types without a defined field schema.
+    #[serde(default)]
+    pub fields: HashMap<String, FieldValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +219,12 @@ pub struct ExtractedEntity {
     pub name: String,
     #[serde(rename = "type")]
     pub entity_type: String,
+    /// Legacy prose description; used when `fields` is empty (full 15-type extraction).
+    #[serde(default)]
     pub description: String,
+    /// Structured fields returned by the 3-type (no_relations) extraction prompt.
+    #[serde(default)]
+    pub fields: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +253,80 @@ pub fn entity_id(name: &str, entity_type: &str) -> i64 {
     i64::from_le_bytes(d[..8].try_into().unwrap())
 }
 
+// ── Schema field registry ─────────────────────────────────────────────────────
+
+/// Schema.org-aligned metadata fields expected for each entity type.
+/// Returns `(field_key, human_description)` pairs. Empty for types without a
+/// defined structured schema (fall back to prose description).
+pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static str)] {
+    match entity_type {
+        "Person" => &[
+            ("birthDate", "date of birth"),
+            ("birthPlace", "place of birth"),
+            ("deathDate", "date of death (if deceased)"),
+            ("nationality", "nationality or cultural identity"),
+            ("occupation", "profession or main occupation"),
+            ("affiliation", "organization they belong or belonged to"),
+            ("spouse", "spouse or partner name"),
+            ("parent", "parent names"),
+            ("sibling", "sibling names"),
+            ("child", "child names"),
+        ],
+        "Place" | "Location" => &[
+            ("addressLocality", "city, district or suburb"),
+            ("addressRegion", "province or region"),
+            ("addressCountry", "country"),
+            (
+                "locationType",
+                "type of place (district, city, country, neighbourhood)",
+            ),
+            ("historicalNote", "historical significance or period"),
+        ],
+        "Organization" => &[
+            ("foundingDate", "year or period when founded"),
+            (
+                "dissolutionDate",
+                "year or period when dissolved, if applicable",
+            ),
+            ("location", "city or country of headquarters or main office"),
+            ("founder", "founder name"),
+            (
+                "orgType",
+                "type of organization (school, mosque, political party, etc.)",
+            ),
+        ],
+        _ => &[],
+    }
+}
+
+/// Build a prose description from an entity's structured fields.
+/// Produces "Name — key: value; key: value; ..." ordered by `expected_fields`.
+/// Returns empty string when no fields are filled.
+pub fn description_from_fields(
+    name: &str,
+    entity_type: &str,
+    fields: &HashMap<String, FieldValue>,
+) -> String {
+    let schema = expected_fields(entity_type);
+    if schema.is_empty() || fields.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = schema
+        .iter()
+        .filter_map(|(key, _)| {
+            fields
+                .get(*key)
+                .filter(|fv| !fv.value.is_empty())
+                .map(|fv| format!("{}: {}", key, fv.value))
+        })
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("{} — {}", name, parts.join("; "))
+    }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Strip punctuation, collapse whitespace, lowercase — used for fuzzy name matching.
@@ -188,13 +343,38 @@ pub fn normalize_name(s: &str) -> String {
 /// Canonical ordered pair — always (smaller, larger) — for dedup seen-sets.
 #[inline]
 fn ord_pair(a: i64, b: i64) -> (i64, i64) {
-    if a < b { (a, b) } else { (b, a) }
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 const HONORIFICS: &[&str] = &[
-    "dr", "mr", "mrs", "ms", "miss", "prof", "professor", "rev", "reverend", "sir",
-    "haji", "hajj", "maulvi", "maulana", "imam", "sheikh", "shaykh",
-    "auntie", "aunt", "uncle", "oom", "tannie", "oupa", "my",
+    "dr",
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "prof",
+    "professor",
+    "rev",
+    "reverend",
+    "sir",
+    "haji",
+    "hajj",
+    "maulvi",
+    "maulana",
+    "imam",
+    "sheikh",
+    "shaykh",
+    "auntie",
+    "aunt",
+    "uncle",
+    "oom",
+    "tannie",
+    "oupa",
+    "my",
 ];
 
 /// Normalize then strip all leading and trailing honorific tokens.
@@ -219,6 +399,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
     let mut prev: Vec<usize> = (0..=lb).collect();
     let mut curr = vec![0usize; lb + 1];
+    #[allow(clippy::needless_range_loop)]
+    // `i` used both as index into `a` and as counter for curr[0]
     for i in 0..la {
         curr[0] = i + 1;
         for j in 0..lb {
@@ -258,6 +440,7 @@ impl GraphStore {
             wtxn.open_table(RELATIONS_TABLE)?;
             wtxn.open_table(CHUNK_ENTITY_TABLE)?;
             wtxn.open_table(ENTITY_CHUNK_TABLE)?;
+            wtxn.open_table(METADATA_TABLE)?;
             wtxn.commit()?;
         }
 
@@ -348,26 +531,52 @@ impl GraphStore {
     /// Insert or merge an entity. Increments mention_count; keeps longer description.
     pub fn upsert_entity(&mut self, node: EntityNode) -> Result<()> {
         let merged = match self.nodes.get(&node.id) {
-            Some(existing) => EntityNode {
-                id: node.id,
-                name: existing.name.clone(),
-                entity_type: existing.entity_type.clone(),
-                description: if node.description.len() > existing.description.len() {
+            Some(existing) => {
+                // Merge structured fields: existing evidence is preserved; new chunk IDs added.
+                let mut merged_fields = existing.fields.clone();
+                for (key, new_fv) in &node.fields {
+                    merged_fields
+                        .entry(key.clone())
+                        .and_modify(|efv| {
+                            for &cid in &new_fv.evidence_chunk_ids {
+                                efv.add_evidence(cid);
+                            }
+                            if efv.value.is_empty() && !new_fv.value.is_empty() {
+                                efv.value.clone_from(&new_fv.value);
+                            }
+                        })
+                        .or_insert_with(|| new_fv.clone());
+                }
+                // Recompute description from merged fields, or keep the longer prose description.
+                let computed =
+                    description_from_fields(&existing.name, &existing.entity_type, &merged_fields);
+                let best_desc = if !computed.is_empty() {
+                    computed
+                } else if node.description.len() > existing.description.len() {
                     node.description.clone()
                 } else {
                     existing.description.clone()
-                },
-                embedding: if node.description.len() > existing.description.len() {
-                    node.embedding.clone()
-                } else {
+                };
+                let best_emb = if best_desc == existing.description {
                     existing.embedding.clone()
-                },
-                mention_count: existing.mention_count + 1,
-                first_chunk_id: existing.first_chunk_id,
-                aliases: existing.aliases.clone(),
-                schema_type: existing.schema_type.clone().or(node.schema_type.clone()),
-                evidence: existing.evidence.clone(),
-            },
+                } else {
+                    node.embedding.clone()
+                };
+                EntityNode {
+                    id: node.id,
+                    name: existing.name.clone(),
+                    entity_type: existing.entity_type.clone(),
+                    description: best_desc,
+                    embedding: best_emb,
+                    mention_count: existing.mention_count + 1,
+                    first_chunk_id: existing.first_chunk_id,
+                    aliases: existing.aliases.clone(),
+                    schema_type: existing.schema_type.clone().or(node.schema_type.clone()),
+                    gender: existing.gender.clone().or(node.gender.clone()),
+                    evidence: existing.evidence.clone(),
+                    fields: merged_fields,
+                }
+            }
             None => node,
         };
 
@@ -385,6 +594,63 @@ impl GraphStore {
 
     /// Insert or strengthen a directed relation, adding the evidence chunk.
     pub fn upsert_relation(
+        &mut self,
+        src_id: i64,
+        dst_id: i64,
+        relation_type: &str,
+        evidence_chunk_id: i64,
+    ) -> Result<()> {
+        // ── Constraint: located_in / works_at must not target a CreativeWork entity ──
+        // This prevents book/document titles from being incorrectly used as place or
+        // employer targets when the LLM confuses the source document title with a location.
+        if matches!(relation_type, "located_in" | "works_at") {
+            if let Some(dst_node) = self.nodes.get(&dst_id) {
+                if dst_node.schema_type.as_deref() == Some("schema:CreativeWork") {
+                    return Ok(()); // silently drop — destination is a work, not a place/org
+                }
+            }
+        }
+
+        // ── Constraint: familial relations require both endpoints to be Person entities ──
+        if FAMILIAL_RELS.contains(&relation_type) {
+            let src_is_person = self
+                .nodes
+                .get(&src_id)
+                .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                .unwrap_or(false);
+            let dst_is_person = self
+                .nodes
+                .get(&dst_id)
+                .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                .unwrap_or(false);
+            if !src_is_person || !dst_is_person {
+                return Ok(()); // silently skip — non-person familial relations are always errors
+            }
+        }
+
+        self.upsert_relation_unchecked(src_id, dst_id, relation_type, evidence_chunk_id)?;
+
+        // ── Auto-add logical inverse for asymmetric familial relations ──
+        if let Some(&inverse) = FAMILIAL_INVERSE
+            .iter()
+            .find(|(r, _)| *r == relation_type)
+            .map(|(_, inv)| inv)
+        {
+            self.upsert_relation_unchecked(dst_id, src_id, inverse, evidence_chunk_id)?;
+        }
+
+        // ── Symmetric familial relations: store both directions ──
+        if matches!(
+            relation_type,
+            "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
+        ) {
+            self.upsert_relation_unchecked(dst_id, src_id, relation_type, evidence_chunk_id)?;
+        }
+
+        Ok(())
+    }
+
+    fn upsert_relation_unchecked(
         &mut self,
         src_id: i64,
         dst_id: i64,
@@ -423,7 +689,6 @@ impl GraphStore {
         }
         wtxn.commit()?;
 
-        // Update in-memory adjacency (both directions).
         update_adj(
             &mut self.adj,
             src_id,
@@ -597,6 +862,27 @@ impl GraphStore {
 
     pub fn neighbors_of(&self, entity_id: i64) -> Vec<(i64, String, f32)> {
         self.adj.get(&entity_id).cloned().unwrap_or_default()
+    }
+
+    /// Return only the *outgoing* (directed) relations where `entity_id` is the source.
+    /// Unlike `neighbors_of`, this reads the DB directly and never returns backward-traversal
+    /// entries — so `Peter parent_of Yousuf` will appear on Peter's list but NOT on Yousuf's
+    /// (Yousuf's `child_of Peter` DB record appears there instead).
+    /// Used by the Obsidian exporter for semantically-correct directed relation display.
+    pub fn outgoing_relations(&self, entity_id: i64) -> Result<Vec<(i64, String, f32)>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(RELATIONS_TABLE)?;
+        let prefix: Vec<u8> = entity_id.to_le_bytes().to_vec();
+        let mut out = Vec::new();
+        for item in table.iter()? {
+            let (k, v) = item?;
+            if k.value().starts_with(&prefix) {
+                if let Ok(rel) = serde_json::from_slice::<RelationRecord>(v.value()) {
+                    out.push((rel.dst_id, rel.relation_type, rel.strength));
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn node_count(&self) -> usize {
@@ -804,11 +1090,12 @@ impl GraphStore {
                             new_aliases.push(a.clone());
                         }
                     }
-                    let merged_description = if alias_description.len() > canonical.description.len() {
-                        alias_description.clone()
-                    } else {
-                        canonical.description.clone()
-                    };
+                    let merged_description =
+                        if alias_description.len() > canonical.description.len() {
+                            alias_description.clone()
+                        } else {
+                            canonical.description.clone()
+                        };
                     let updated = EntityNode {
                         mention_count: canonical.mention_count + alias_mention_count,
                         aliases: new_aliases,
@@ -859,6 +1146,587 @@ impl GraphStore {
         Ok(n_moved)
     }
 
+    /// Infer gender from pronouns in the entity's description.
+    /// Returns "Male" for he/his/him, "Female" for she/her/hers, None if ambiguous.
+    pub fn infer_gender(description: &str) -> Option<String> {
+        let text = description.to_lowercase();
+        let male_cues = ["he ", "his ", "him ", " he,", " his,", " him,"];
+        let female_cues = ["she ", "her ", "hers ", " she,", " her,", " hers,"];
+        let m = male_cues.iter().filter(|&&c| text.contains(c)).count();
+        let f = female_cues.iter().filter(|&&c| text.contains(c)).count();
+        match (m, f) {
+            (0, 0) => None,
+            (m, f) if m > f => Some("Male".to_string()),
+            (m, f) if f > m => Some("Female".to_string()),
+            _ => None, // tie → ambiguous
+        }
+    }
+
+    /// Sanitize all relations in the graph:
+    /// 1. Remove familial relations where either endpoint is not a Person entity.
+    /// 2. Add missing logical inverses for asymmetric familial relations.
+    /// 3. Recompute relation strength from actual shared-evidence-chunk count.
+    /// 4. Infer and store gender for all Person entities from their descriptions.
+    /// 5. Flag (log) spouse_of pairs where inferred genders match (non-heteronormative or error).
+    ///
+    /// Returns (removed, added, recomputed, gendered) counts.
+    pub fn sanitize_relations(&mut self) -> Result<(usize, usize, usize, usize)> {
+        let mut removed = 0usize;
+        let mut added = 0usize;
+        let mut recomputed = 0usize;
+        let mut gendered = 0usize;
+
+        // ── Step 1: Collect all current relations from DB ──
+        let all_rels: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .collect()
+        };
+
+        // ── Step 2: Remove type-invalid familial relations ──
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+        let mut to_keep: Vec<RelationRecord> = Vec::new();
+        for rel in &all_rels {
+            if FAMILIAL_RELS.contains(&rel.relation_type.as_str()) {
+                let src_person = self
+                    .nodes
+                    .get(&rel.src_id)
+                    .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                    .unwrap_or(false);
+                let dst_person = self
+                    .nodes
+                    .get(&rel.dst_id)
+                    .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                    .unwrap_or(false);
+                if !src_person || !dst_person {
+                    to_delete.push(relation_key(rel.src_id, rel.dst_id, &rel.relation_type));
+                    removed += 1;
+                    continue;
+                }
+            }
+            to_keep.push(rel.clone());
+        }
+
+        if !to_delete.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for k in &to_delete {
+                    t.remove(k.as_slice())?;
+                }
+            }
+            wtxn.commit()?;
+        }
+
+        // ── Step 3: Add missing inverses for asymmetric familial relations ──
+        // Build a set of existing (src, dst, type) keys for O(1) lookup
+        let existing: std::collections::HashSet<(i64, i64, String)> = to_keep
+            .iter()
+            .map(|r| (r.src_id, r.dst_id, r.relation_type.clone()))
+            .collect();
+
+        for rel in &to_keep {
+            if let Some(&inverse) = FAMILIAL_INVERSE
+                .iter()
+                .find(|(r, _)| *r == rel.relation_type.as_str())
+                .map(|(_, inv)| inv)
+            {
+                if !existing.contains(&(rel.dst_id, rel.src_id, inverse.to_string())) {
+                    // Use each evidence chunk so strength is inherited from the forward relation
+                    for &cid in &rel.evidence_chunk_ids {
+                        self.upsert_relation_unchecked(rel.dst_id, rel.src_id, inverse, cid)?;
+                    }
+                    added += 1;
+                }
+            }
+            // Symmetric: ensure both directions exist
+            if matches!(
+                rel.relation_type.as_str(),
+                "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
+            ) && !existing.contains(&(rel.dst_id, rel.src_id, rel.relation_type.clone()))
+            {
+                for &cid in &rel.evidence_chunk_ids {
+                    self.upsert_relation_unchecked(
+                        rel.dst_id,
+                        rel.src_id,
+                        &rel.relation_type,
+                        cid,
+                    )?;
+                }
+                added += 1;
+            }
+        }
+
+        // ── Step 4: Recompute strength from shared evidence chunks ──
+        // For each relation, strength = min(1.0, shared_chunks / 10.0) where shared_chunks =
+        // number of chunks that mention BOTH the src and dst entity.
+        let all_rels_fresh: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .collect()
+        };
+
+        let mut strength_updates: Vec<(Vec<u8>, RelationRecord)> = Vec::new();
+        for mut rel in all_rels_fresh {
+            let src_chunks: std::collections::HashSet<i64> =
+                self.chunks_for_entity(rel.src_id).iter().copied().collect();
+            let dst_chunks: std::collections::HashSet<i64> =
+                self.chunks_for_entity(rel.dst_id).iter().copied().collect();
+            let shared: usize = src_chunks.intersection(&dst_chunks).count();
+            let new_strength = if shared > 0 {
+                (shared as f32 / 10.0).min(1.0)
+            } else {
+                // No shared chunks (e.g. dream-added relation) — use evidence_chunk_ids count
+                (rel.evidence_chunk_ids.len() as f32 / 10.0).clamp(0.1, 1.0)
+            };
+            if (new_strength - rel.strength).abs() > 0.001 {
+                rel.strength = new_strength;
+                let key = relation_key(rel.src_id, rel.dst_id, &rel.relation_type);
+                strength_updates.push((key, rel));
+                recomputed += 1;
+            }
+        }
+
+        if !strength_updates.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for (k, rel) in &strength_updates {
+                    t.insert(k.as_slice(), serde_json::to_vec(rel)?.as_slice())?;
+                }
+            }
+            wtxn.commit()?;
+        }
+
+        // ── Step 5: Infer and store gender for Person entities ──
+        let person_ids: Vec<i64> = self
+            .nodes
+            .values()
+            .filter(|n| n.entity_type.eq_ignore_ascii_case("person"))
+            .map(|n| n.id)
+            .collect();
+
+        for id in person_ids {
+            if let Some(node) = self.nodes.get(&id) {
+                if node.gender.is_some() {
+                    continue; // already set
+                }
+                if let Some(g) = Self::infer_gender(&node.description) {
+                    let mut updated = node.clone();
+                    updated.gender = Some(g);
+                    gendered += 1;
+                    self.upsert_entity(updated)?;
+                }
+            }
+        }
+
+        // ── Step 6: Delete suspect spouse_of pairs (both endpoints same inferred gender) ──
+        // These are virtually always LLM hallucinations — the model confuses "associated with"
+        // or "met" for "married to".  Pairs where gender is unknown on either side are kept.
+        let spouse_rels: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .filter(|r| r.relation_type == "spouse_of")
+                .collect()
+        };
+
+        let mut spouses_purged = 0usize;
+        let mut suspect_keys: Vec<Vec<u8>> = Vec::new();
+
+        // Collect unique pairs (avoid double-counting A↔B and B↔A)
+        let mut seen_pairs: std::collections::HashSet<(i64, i64)> =
+            std::collections::HashSet::new();
+        for rel in &spouse_rels {
+            let pair = if rel.src_id < rel.dst_id {
+                (rel.src_id, rel.dst_id)
+            } else {
+                (rel.dst_id, rel.src_id)
+            };
+            if seen_pairs.contains(&pair) {
+                continue;
+            }
+            seen_pairs.insert(pair);
+
+            let ga = self
+                .nodes
+                .get(&rel.src_id)
+                .and_then(|n| n.gender.as_deref());
+            let gb = self
+                .nodes
+                .get(&rel.dst_id)
+                .and_then(|n| n.gender.as_deref());
+            if let (Some(ga), Some(gb)) = (ga, gb) {
+                if ga == gb {
+                    let na = self
+                        .nodes
+                        .get(&rel.src_id)
+                        .map(|n| n.name.as_str())
+                        .unwrap_or("?");
+                    let nb = self
+                        .nodes
+                        .get(&rel.dst_id)
+                        .map(|n| n.name.as_str())
+                        .unwrap_or("?");
+                    tracing::warn!(
+                        "removing suspect spouse_of: {} ({}) ↔ {} ({}) — same gender (likely hallucination)",
+                        na, ga, nb, gb
+                    );
+                    suspect_keys.push(relation_key(rel.src_id, rel.dst_id, "spouse_of"));
+                    suspect_keys.push(relation_key(rel.dst_id, rel.src_id, "spouse_of"));
+                    spouses_purged += 1;
+                }
+            }
+        }
+
+        // ── Also supersede half_sibling_of when sibling_of exists for same pair ──
+        // If the seed confirms a full sibling relationship, the dream-added half_sibling_of
+        // is always wrong for that pair.
+        {
+            let all_sibling_rels: Vec<RelationRecord> = {
+                let rtxn = self.db.begin_read()?;
+                let table = rtxn.open_table(RELATIONS_TABLE)?;
+                table
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                    .filter(|r| {
+                        r.relation_type == "sibling_of" || r.relation_type == "half_sibling_of"
+                    })
+                    .collect()
+            };
+            let sibling_pairs: std::collections::HashSet<(i64, i64)> = all_sibling_rels
+                .iter()
+                .filter(|r| r.relation_type == "sibling_of")
+                .map(|r| (r.src_id.min(r.dst_id), r.src_id.max(r.dst_id)))
+                .collect();
+            for rel in &all_sibling_rels {
+                if rel.relation_type == "half_sibling_of" {
+                    let pair = (rel.src_id.min(rel.dst_id), rel.src_id.max(rel.dst_id));
+                    if sibling_pairs.contains(&pair) {
+                        suspect_keys.push(relation_key(rel.src_id, rel.dst_id, "half_sibling_of"));
+                        spouses_purged += 1;
+                    }
+                }
+            }
+        }
+
+        if !suspect_keys.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for k in &suspect_keys {
+                    let _ = t.remove(k.as_slice());
+                }
+            }
+            wtxn.commit()?;
+            removed += spouses_purged * 2;
+        }
+
+        // ── Step 7: Remove parent_of paradoxes ──────────────────────────────────
+        // If A parent_of B AND B parent_of A both exist, one must be wrong (a person
+        // cannot be both parent and child of the same person).  Resolve by checking
+        // descriptions for "son of / daughter of / child of <other>"; the entity whose
+        // description names the other as a parent is the child — so its parent_of edge
+        // pointing back at the other is the bogus one.  If descriptions are ambiguous,
+        // keep the edge whose src has the higher mention_count (more-documented entity
+        // is more likely the main subject whose relations were written correctly).
+        let all_parent_rels: Vec<(i64, i64)> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .filter(|r| r.relation_type == "parent_of")
+                .map(|r| (r.src_id, r.dst_id))
+                .collect()
+        };
+
+        let parent_set: std::collections::HashSet<(i64, i64)> =
+            all_parent_rels.iter().cloned().collect();
+        let mut paradox_deletes: Vec<Vec<u8>> = Vec::new();
+        let mut paradoxes_fixed = 0usize;
+
+        for &(a, b) in &all_parent_rels {
+            if parent_set.contains(&(b, a)) && a < b {
+                // Both A parent_of B and B parent_of A — paradox.
+                // Determine which is the child by checking descriptions.
+                let a_desc = self
+                    .nodes
+                    .get(&a)
+                    .map(|n| n.description.to_lowercase())
+                    .unwrap_or_default();
+                let b_name_lc = self
+                    .nodes
+                    .get(&b)
+                    .map(|n| n.name.to_lowercase())
+                    .unwrap_or_default();
+                let b_desc = self
+                    .nodes
+                    .get(&b)
+                    .map(|n| n.description.to_lowercase())
+                    .unwrap_or_default();
+                let a_name_lc = self
+                    .nodes
+                    .get(&a)
+                    .map(|n| n.name.to_lowercase())
+                    .unwrap_or_default();
+
+                // Does A's description say it is a child of B?
+                let a_is_child =
+                    ["son of", "daughter of", "child of", "born to"]
+                        .iter()
+                        .any(|&cue| {
+                            a_desc.contains(cue)
+                                && (a_desc.contains(&b_name_lc)
+                                    || b_name_lc
+                                        .split_whitespace()
+                                        .any(|tok| tok.len() >= 4 && a_desc.contains(tok)))
+                        });
+                // Does B's description say it is a child of A?
+                let b_is_child =
+                    ["son of", "daughter of", "child of", "born to"]
+                        .iter()
+                        .any(|&cue| {
+                            b_desc.contains(cue)
+                                && (b_desc.contains(&a_name_lc)
+                                    || a_name_lc
+                                        .split_whitespace()
+                                        .any(|tok| tok.len() >= 4 && b_desc.contains(tok)))
+                        });
+
+                let (wrong_src, wrong_dst) = match (a_is_child, b_is_child) {
+                    (true, false) => (a, b), // A is the child → A parent_of B is wrong
+                    (false, true) => (b, a), // B is the child → B parent_of A is wrong
+                    _ => {
+                        // Ambiguous — keep the edge from the higher-mention entity (main subject)
+                        let mc_a = self.nodes.get(&a).map(|n| n.mention_count).unwrap_or(0);
+                        let mc_b = self.nodes.get(&b).map(|n| n.mention_count).unwrap_or(0);
+                        if mc_a >= mc_b {
+                            (b, a)
+                        } else {
+                            (a, b)
+                        }
+                    }
+                };
+
+                let na = self
+                    .nodes
+                    .get(&wrong_src)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
+                let nb = self
+                    .nodes
+                    .get(&wrong_dst)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
+                tracing::warn!(
+                    "parent_of paradox: removing bogus '{na}' parent_of '{nb}' \
+                     (description indicates direction is reversed)"
+                );
+                paradox_deletes.push(relation_key(wrong_src, wrong_dst, "parent_of"));
+                // Also remove the bogus child_of in the opposite direction if it was auto-added
+                paradox_deletes.push(relation_key(wrong_dst, wrong_src, "child_of"));
+                paradoxes_fixed += 1;
+            }
+        }
+
+        if !paradox_deletes.is_empty() {
+            let wtxn = self.db.begin_write()?;
+            {
+                let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                for k in &paradox_deletes {
+                    let _ = t.remove(k.as_slice());
+                }
+            }
+            wtxn.commit()?;
+            removed += paradoxes_fixed * 2;
+        }
+
+        // ── Step 8: Remove type-mismatched work/location relations ──────────────
+        // `works_at`, `employed_by`, `staffed_by`, `works_for` must target an
+        // Organization or Place — not a Person.  The LLM commonly emits
+        // `works_at → Person` when the text says "worked alongside <person>".
+        //
+        // `located_in`, `located_at`, `lives_in`, `settled_in`, `went_to` must
+        // target a Place — not a Person or Organization.
+        {
+            const WORK_RELS: &[&str] = &[
+                "works_at",
+                "employed_by",
+                "staffed_by",
+                "works_for",
+                "worked_at",
+            ];
+            const LOCATION_RELS: &[&str] = &[
+                "located_in",
+                "located_at",
+                "lives_in",
+                "settled_in",
+                "went_to",
+                "visited",
+            ];
+
+            let all_fresh: Vec<RelationRecord> = {
+                let rtxn = self.db.begin_read()?;
+                let table = rtxn.open_table(RELATIONS_TABLE)?;
+                table
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                    .collect()
+            };
+
+            let mut type_mismatch_keys: Vec<Vec<u8>> = Vec::new();
+            for rel in &all_fresh {
+                let rtype = rel.relation_type.as_str();
+                if WORK_RELS.contains(&rtype) {
+                    let dst_is_person = self
+                        .nodes
+                        .get(&rel.dst_id)
+                        .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                        .unwrap_or(false);
+                    if dst_is_person {
+                        let src = self
+                            .nodes
+                            .get(&rel.src_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
+                        let dst = self
+                            .nodes
+                            .get(&rel.dst_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
+                        tracing::warn!(
+                            "type mismatch: removing '{}' {} '{}' — target is a Person, not an Organization",
+                            src, rtype, dst
+                        );
+                        type_mismatch_keys.push(relation_key(rel.src_id, rel.dst_id, rtype));
+                        removed += 1;
+                    }
+                }
+                if LOCATION_RELS.contains(&rtype) {
+                    let dst_type = self
+                        .nodes
+                        .get(&rel.dst_id)
+                        .map(|n| n.entity_type.to_lowercase())
+                        .unwrap_or_default();
+                    // Allow: Place, Event, schema:Place, schema:Event — block Person and Organization
+                    let dst_is_non_place = matches!(
+                        dst_type.as_str(),
+                        "person" | "organization" | "schema:person" | "schema:organization"
+                    );
+                    if dst_is_non_place {
+                        let src = self
+                            .nodes
+                            .get(&rel.src_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
+                        let dst = self
+                            .nodes
+                            .get(&rel.dst_id)
+                            .map(|n| n.name.as_str())
+                            .unwrap_or("?");
+                        tracing::warn!(
+                            "type mismatch: removing '{}' {} '{}' — target is {}, not a Place",
+                            src,
+                            rtype,
+                            dst,
+                            dst_type
+                        );
+                        type_mismatch_keys.push(relation_key(rel.src_id, rel.dst_id, rtype));
+                        removed += 1;
+                    }
+                }
+            }
+
+            if !type_mismatch_keys.is_empty() {
+                let wtxn = self.db.begin_write()?;
+                {
+                    let mut t = wtxn.open_table(RELATIONS_TABLE)?;
+                    for k in &type_mismatch_keys {
+                        let _ = t.remove(k.as_slice());
+                    }
+                }
+                wtxn.commit()?;
+            }
+        }
+
+        // ── Step 9: Prune honorific stub entities ──────────────────────────────
+        // Entities whose name is a bare honorific/title fragment ("Dr.", "Mr.",
+        // "Mrs.", "Prof.", "Sir", "Lady", "Rev.") with ≤5 chars are extraction
+        // noise — the LLM failed to capture the actual name.  Remove all their
+        // relations and then the entity itself.
+        {
+            const HONORIFICS: &[&str] = &[
+                "dr", "mr", "mrs", "ms", "prof", "sir", "rev", "hon", "lady", "lord",
+            ];
+            let stub_ids: Vec<i64> = self
+                .nodes
+                .values()
+                .filter(|n| {
+                    let trimmed = n.name.trim_end_matches('.').to_lowercase();
+                    HONORIFICS.contains(&trimmed.as_str()) && n.name.len() <= 6
+                })
+                .map(|n| n.id)
+                .collect();
+
+            if !stub_ids.is_empty() {
+                let all_rels_for_stubs: Vec<RelationRecord> = {
+                    let rtxn = self.db.begin_read()?;
+                    let table = rtxn.open_table(RELATIONS_TABLE)?;
+                    table
+                        .iter()?
+                        .filter_map(|r| r.ok())
+                        .filter_map(|(_, v)| {
+                            serde_json::from_slice::<RelationRecord>(v.value()).ok()
+                        })
+                        .filter(|r| stub_ids.contains(&r.src_id) || stub_ids.contains(&r.dst_id))
+                        .collect()
+                };
+
+                let wtxn = self.db.begin_write()?;
+                {
+                    let mut rt = wtxn.open_table(RELATIONS_TABLE)?;
+                    for r in &all_rels_for_stubs {
+                        let _ = rt
+                            .remove(relation_key(r.src_id, r.dst_id, &r.relation_type).as_slice());
+                        removed += 1;
+                    }
+                    let mut et = wtxn.open_table(ENTITIES_TABLE)?;
+                    for &id in &stub_ids {
+                        if let Some(node) = self.nodes.get(&id) {
+                            tracing::warn!("pruning honorific stub entity: '{}'", node.name);
+                        }
+                        et.remove(&id.to_le_bytes()[..])?;
+                    }
+                }
+                wtxn.commit()?;
+
+                for &id in &stub_ids {
+                    self.nodes.remove(&id);
+                }
+            }
+        }
+
+        // Rebuild adjacency to reflect all changes
+        self.rebuild_in_memory()?;
+
+        Ok((removed, added, recomputed, gendered))
+    }
+
     /// Return (alias_id, canonical_id) pairs where both entities have the same
     /// normalized name. These are unambiguous duplicates — always safe to auto-merge.
     /// Canonical is the entity with the higher mention_count.
@@ -893,20 +1761,64 @@ impl GraphStore {
     pub fn find_dedup_candidates(&self, threshold: f32) -> Vec<(i64, i64, f32)> {
         const DEDUP_STOP: &[&str] = &[
             // articles / prepositions
-            "the", "and", "of", "in", "a", "an", "for", "at", "by", "to",
+            "the",
+            "and",
+            "of",
+            "in",
+            "a",
+            "an",
+            "for",
+            "at",
+            "by",
+            "to",
             // honorifics
-            "dr", "mr", "mrs", "ms", "prof", "sir",
+            "dr",
+            "mr",
+            "mrs",
+            "ms",
+            "prof",
+            "sir",
             // geographic generics
-            "north", "south", "east", "west", "new", "old", "cape", "great",
-            "lower", "upper", "central",
+            "north",
+            "south",
+            "east",
+            "west",
+            "new",
+            "old",
+            "cape",
+            "great",
+            "lower",
+            "upper",
+            "central",
             // institutional generics (the main false-match offenders)
-            "union", "street", "road", "avenue", "lane",
-            "school", "institute", "college", "university",
-            "club", "party", "movement", "committee",
-            "association", "council", "congress", "league",
-            "society", "church", "hall", "high", "primary", "secondary",
+            "union",
+            "street",
+            "road",
+            "avenue",
+            "lane",
+            "school",
+            "institute",
+            "college",
+            "university",
+            "club",
+            "party",
+            "movement",
+            "committee",
+            "association",
+            "council",
+            "congress",
+            "league",
+            "society",
+            "church",
+            "hall",
+            "high",
+            "primary",
+            "secondary",
             // common auxiliaries / pronouns
-            "its", "was", "his", "her",
+            "its",
+            "was",
+            "his",
+            "her",
         ];
         let stop = DEDUP_STOP;
 
@@ -1034,7 +1946,10 @@ impl GraphStore {
                 .adj
                 .iter()
                 .map(|(&id, edges)| {
-                    (id, edges.iter().map(|(nbr, _, _)| *nbr).collect::<HashSet<_>>())
+                    (
+                        id,
+                        edges.iter().map(|(nbr, _, _)| *nbr).collect::<HashSet<_>>(),
+                    )
                 })
                 .collect();
 
@@ -1076,8 +1991,7 @@ impl GraphStore {
                         Some(n) => n,
                         None => continue,
                     };
-                    let other_word_count =
-                        normalize_name(&other.name).split_whitespace().count();
+                    let other_word_count = normalize_name(&other.name).split_whitespace().count();
                     // Only treat `id` as the subset (other must have strictly more words)
                     if other_word_count <= my_all_word_count {
                         continue;
@@ -1175,25 +2089,86 @@ impl GraphStore {
         // Standalone role words: meaningful on their own as a person reference.
         // Honorifics (dr, mr, etc.) are excluded — they only make sense before a name.
         const STANDALONE_ROLES: &[&str] = &[
-            "grandpa", "grandma", "grandfather", "grandmother", "granddad",
-            "dad", "father", "mom", "mother", "mum",
-            "cousin", "brother", "sister", "nephew", "niece",
-            "narrator", "author", "writer",
-            "head", "chief",
-            "she", "he", "they",
+            "grandpa",
+            "grandma",
+            "grandfather",
+            "grandmother",
+            "granddad",
+            "dad",
+            "father",
+            "mom",
+            "mother",
+            "mum",
+            "cousin",
+            "brother",
+            "sister",
+            "nephew",
+            "niece",
+            "narrator",
+            "author",
+            "writer",
+            "head",
+            "chief",
+            "she",
+            "he",
+            "they",
         ];
         // All words allowed in a role-entity name (role + connective filler).
         const ROLE_WORDS: &[&str] = &[
-            "dr", "mr", "mrs", "ms", "miss", "prof", "professor", "rev", "reverend", "sir",
-            "haji", "hajj", "maulvi", "maulana", "imam", "sheikh", "shaykh",
-            "auntie", "aunt", "uncle", "oom", "tannie", "oupa",
-            "grandpa", "grandma", "grandfather", "grandmother", "granddad",
-            "dad", "father", "mom", "mother", "mum",
-            "cousin", "brother", "sister", "nephew", "niece",
-            "the", "a", "our", "her", "his", "my",
-            "narrator", "author", "writer",
-            "head", "chief", "senior",
-            "she", "he", "they", "it",
+            "dr",
+            "mr",
+            "mrs",
+            "ms",
+            "miss",
+            "prof",
+            "professor",
+            "rev",
+            "reverend",
+            "sir",
+            "haji",
+            "hajj",
+            "maulvi",
+            "maulana",
+            "imam",
+            "sheikh",
+            "shaykh",
+            "auntie",
+            "aunt",
+            "uncle",
+            "oom",
+            "tannie",
+            "oupa",
+            "grandpa",
+            "grandma",
+            "grandfather",
+            "grandmother",
+            "granddad",
+            "dad",
+            "father",
+            "mom",
+            "mother",
+            "mum",
+            "cousin",
+            "brother",
+            "sister",
+            "nephew",
+            "niece",
+            "the",
+            "a",
+            "our",
+            "her",
+            "his",
+            "my",
+            "narrator",
+            "author",
+            "writer",
+            "head",
+            "chief",
+            "senior",
+            "she",
+            "he",
+            "they",
+            "it",
         ];
 
         // Build neighbour sets, excluding hyper-popular hubs (> 25 connecting
@@ -1321,6 +2296,63 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Store the list of source document titles for this KB. Used by dream tasks to
+    /// inject exclusion rules that prevent book/work titles from being used as
+    /// location or organisation targets in the knowledge graph.
+    pub fn set_document_titles(&mut self, titles: &[String]) -> Result<()> {
+        let json = serde_json::to_string(titles)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(METADATA_TABLE)?;
+            t.insert("document_titles", json.as_str())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Persist document-level metadata from a DocSchema into the graph store.
+    pub fn set_doc_metadata(
+        &mut self,
+        metadata: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let json = serde_json::to_string(metadata)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(METADATA_TABLE)?;
+            t.insert("doc_metadata", json.as_str())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve persisted document metadata. Returns empty map if none stored.
+    pub fn get_doc_metadata(&self) -> std::collections::HashMap<String, String> {
+        let Ok(rtxn) = self.db.begin_read() else {
+            return Default::default();
+        };
+        let Ok(table) = rtxn.open_table(METADATA_TABLE) else {
+            return Default::default();
+        };
+        let Ok(Some(v)) = table.get("doc_metadata") else {
+            return Default::default();
+        };
+        serde_json::from_str(v.value()).unwrap_or_default()
+    }
+
+    /// Retrieve the stored document titles. Returns an empty vec if none are stored.
+    pub fn get_document_titles(&self) -> Vec<String> {
+        let Ok(rtxn) = self.db.begin_read() else {
+            return vec![];
+        };
+        let Ok(table) = rtxn.open_table(METADATA_TABLE) else {
+            return vec![];
+        };
+        let Ok(Some(v)) = table.get("document_titles") else {
+            return vec![];
+        };
+        serde_json::from_str(v.value()).unwrap_or_default()
+    }
+
     /// Expose chunk→entity mapping for cross-link discovery in the dream loop.
     pub fn all_chunk_entity_pairs(&self) -> impl Iterator<Item = (i64, &Vec<i64>)> {
         self.chunk_to_entities.iter().map(|(&k, v)| (k, v))
@@ -1413,32 +2445,104 @@ impl GraphStore {
 /// ingestion can continue without hard errors.
 pub async fn extract_from_text(
     text: &str,
+    candidates: &[String],
+    pronoun_map: &[(String, String)],
+    section_note: Option<&str>,
     inference_url: &str,
     model: &str,
+    entity_types: &[&str],
+    no_relations: bool,
 ) -> Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)> {
-    let entity_list = ENTITY_TYPES.join(", ");
-    let relation_list = RELATION_TYPES.join(", ");
+    // Skip the LLM entirely when the local pre-screener found no proper nouns.
+    // Avoids inference cost on boilerplate, numeric, or table-heavy chunks.
+    if candidates.is_empty() {
+        tracing::debug!("no proper noun candidates — skipping LLM extraction for this chunk");
+        return Ok((vec![], vec![]));
+    }
 
-    let prompt = format!(
-        "You are a precise knowledge extraction engine.\n\
-         Extract named entities and relationships from the text below.\n\
-         Return ONLY valid JSON matching this schema (no markdown, no explanation):\n\
-         {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\"}},...],\
-         \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
-         Entity types: {entity_list}\n\
-         Relation types: {relation_list}\n\n\
-         IMPORTANT RULES:\n\
-         - Never create an entity whose name is a pronoun or generic role: \
-           do NOT use names like \"I\", \"me\", \"my\", \"he\", \"she\", \"they\", \
-           \"narrator\", \"author\", \"writer\", \"the author\", \"the narrator\", \
-           \"the writer\", \"speaker\", \"subject\".\n\
-         - If the text uses \"I\" or \"the author\" to refer to a named person, \
-           use that person's actual name as the entity name instead.\n\
-         - Only extract entities that have a real proper name or a specific \
-           organisation/place/event name.\n\n\
-         If no clear entities exist, return {{\"entities\":[],\"relations\":[]}}.\n\n\
-         Text:\n{text}"
-    );
+    let effective_types = if entity_types.is_empty() {
+        ENTITY_TYPES
+    } else {
+        entity_types
+    };
+    let entity_list = effective_types.join(", ");
+
+    let section_context = section_note
+        .map(|note| format!("DOCUMENT CONTEXT: {note}\n\n"))
+        .unwrap_or_default();
+
+    // Resolved pronouns injected as a preamble so the LLM never treats a pronoun
+    // as a candidate entity name.
+    let pronoun_context = if pronoun_map.is_empty() {
+        String::new()
+    } else {
+        let pairs = pronoun_map
+            .iter()
+            .map(|(pron, name)| format!("'{pron}' = '{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("KNOWN COREFERENCES: {pairs}\n\n")
+    };
+
+    // Cap prevents JSON overflow failures on entity-dense passages (+7pp reliability,
+    // experiments show no recall loss at this cap with window=1 chunking).
+    let entity_cap = if entity_types.len() <= 3 { 25 } else { 20 };
+
+    let candidates_block = candidates
+        .iter()
+        .map(|c| format!("- {c}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = if no_relations {
+        format!(
+            "{section_context}\
+             {pronoun_context}\
+             You are a precise knowledge extraction engine.\n\
+             The following proper noun candidates were identified in the text.\n\
+             Classify each as a named entity (keep) or discard it if it is not a real entity.\n\
+             For kept entities output: name, type, and structured fields.\n\
+             List AT MOST {entity_cap} entities.\n\
+             Return ONLY valid JSON (no markdown, no explanation):\n\
+             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"fields\":{{...}}}},...]}}\n\n\
+             Candidates:\n{candidates_block}\n\n\
+             Entity types: {entity_list}\n\n\
+             Field keys by entity type — include only keys whose values appear in the text:\n\
+               Person:       birthDate, birthPlace, deathDate, nationality, occupation, \
+                             affiliation, spouse, parent, sibling, child\n\
+               Place:        addressLocality, addressRegion, addressCountry, locationType, \
+                             historicalNote\n\
+               Organization: foundingDate, dissolutionDate, location, founder, orgType\n\n\
+             IMPORTANT RULES:\n\
+             - Never create an entity whose name is a pronoun or generic role.\n\
+             - Only keep candidates that are real proper names, organisations, or places.\n\
+             - Omit any field whose value is not clearly stated in the text.\n\n\
+             If no candidates are real entities, return {{\"entities\":[]}}.\n\n\
+             Text:\n{text}"
+        )
+    } else {
+        let relation_list = RELATION_TYPES.join(", ");
+        format!(
+            "{section_context}\
+             {pronoun_context}\
+             You are a precise knowledge extraction engine.\n\
+             The following proper noun candidates were identified in the text.\n\
+             Classify each as a named entity (keep) or discard it if it is not a real entity,\n\
+             then extract relationships between kept entities.\n\
+             List AT MOST {entity_cap} entities.\n\
+             Return ONLY valid JSON (no markdown, no explanation):\n\
+             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\"}},...],\
+             \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
+             Candidates:\n{candidates_block}\n\n\
+             Entity types: {entity_list}\n\
+             Relation types: {relation_list}\n\n\
+             IMPORTANT RULES:\n\
+             - Never create an entity whose name is a pronoun or generic role.\n\
+             - Only keep candidates that are real proper names, organisations, or places.\n\n\
+             If no candidates are real entities, return {{\"entities\":[],\"relations\":[]}}.\n\n\
+             Text:\n{text}"
+        )
+    };
 
     let url = format!(
         "{}/v1/chat/completions",
@@ -1457,7 +2561,7 @@ pub async fn extract_from_text(
     });
 
     let send_result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(90),
         client.post(&url).json(&body).send(),
     )
     .await;
@@ -1468,7 +2572,7 @@ pub async fn extract_from_text(
             return Ok((vec![], vec![]));
         }
         Err(_) => {
-            tracing::warn!("entity extraction send timed out after 30s");
+            tracing::warn!("entity extraction send timed out after 90s");
             return Ok((vec![], vec![]));
         }
     };
@@ -1502,12 +2606,95 @@ pub async fn extract_from_text(
         .trim();
 
     match serde_json::from_str::<ExtractionPayload>(cleaned) {
-        Ok(p) => Ok((p.entities, p.relations)),
+        Ok(p) => {
+            let entities = p
+                .entities
+                .into_iter()
+                .map(|mut e| {
+                    e.name = clean_entity_name(&e.name);
+                    e
+                })
+                .collect();
+            let relations = if no_relations {
+                vec![]
+            } else {
+                p.relations
+                    .into_iter()
+                    .map(|mut r| {
+                        r.from = clean_entity_name(&r.from);
+                        r.to = clean_entity_name(&r.to);
+                        r
+                    })
+                    .collect()
+            };
+            Ok((entities, relations))
+        }
         Err(e) => {
             tracing::debug!("entity extraction JSON parse failed: {e}; raw: {cleaned:.200}");
             Ok((vec![], vec![]))
         }
     }
+}
+
+/// Fix PDF-extraction underscore artifacts in entity names extracted by the LLM.
+///
+/// PDF text extraction commonly produces:
+///   "Dr_"      instead of "Dr."   (period after title/initial → underscore)
+///   "J_ M_"    instead of "J. M." (initials lose their periods)
+///   "Wooding_s" instead of "Wooding's" (apostrophe-s → underscore-s)
+///
+/// Rules applied in order:
+///   1. `WORD_s` at a word boundary → `WORD's`   (possessive/contraction)
+///   2. `LETTER_` followed by space, end, or another initial pattern → `LETTER.`
+///   3. Remaining lone underscores → stripped
+fn clean_entity_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let chars: Vec<char> = name.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if c == '_' {
+            // Rule 1: `_s` at word boundary → `'s`
+            if i + 1 < n && chars[i + 1] == 's' {
+                let after_s = i + 2;
+                let is_boundary = after_s >= n
+                    || !chars[after_s].is_alphabetic()
+                    || chars[after_s].is_uppercase();
+                if is_boundary {
+                    out.push('\'');
+                    out.push('s');
+                    i += 2;
+                    continue;
+                }
+            }
+            // Rule 2: single letter before `_`, followed by space/end/next initial
+            let prev_is_single_letter = out
+                .chars()
+                .last()
+                .map(|p| p.is_alphabetic())
+                .unwrap_or(false)
+                && !out.is_empty()
+                && {
+                    // check the previous char was preceded by a space or start
+                    let ob: &[u8] = out.as_bytes();
+                    ob.len() == 1 || ob[ob.len() - 2] == b' ' || ob[ob.len() - 2] == b'.'
+                };
+            let next_is_space_or_end = i + 1 >= n || chars[i + 1] == ' ';
+            if prev_is_single_letter && next_is_space_or_end {
+                out.push('.');
+                i += 1;
+                continue;
+            }
+            // Rule 3: strip remaining underscores (don't emit anything)
+            i += 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    // Collapse any double spaces created by stripping
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

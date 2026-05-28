@@ -1,0 +1,37 @@
+name: CI — kwaai-platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-cli/**"
+      - "core/crates/map-server/**"
+      - "core/crates/summit-server/**"
+      - "projects/kwaai-platform/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-cli/**"
+      - "core/crates/map-server/**"
+      - "core/crates/summit-server/**"
+      - "projects/kwaai-platform/**"
+
+jobs:
+  ci:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check -p kwaainet
+      - name: clippy
+        run: cargo clippy -p kwaainet -- -D warnings
+      - name: test
+        run: cargo test -p kwaainet

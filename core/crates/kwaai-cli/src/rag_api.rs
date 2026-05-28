@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use kwaai_rag::{
     embedder::EmbedClient,
+    graph::GraphStore,
     ingestion::{ingest_text, IngestConfig},
     meta_store::MetaStore,
     prompt::build_chat_messages,
@@ -46,6 +47,8 @@ struct RagState {
     inference_url: String,
     top_k: usize,
     http: reqwest::Client,
+    /// Document context line loaded from persisted doc_metadata (if present).
+    doc_context: Option<String>,
 }
 
 pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> Result<()> {
@@ -94,6 +97,21 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
         };
         let meta = Arc::new(MetaStore::open(&rag.data_dir(), tenant_id)?);
 
+        let doc_context: Option<String> = GraphStore::open(&rag.data_dir(), tenant_id)
+            .ok()
+            .and_then(|g| {
+                let meta = g.get_doc_metadata();
+                if meta.is_empty() {
+                    return None;
+                }
+                let schema = kwaai_rag::doc_schema::DocSchema {
+                    metadata: meta,
+                    document_title: g.get_document_titles().into_iter().next(),
+                    ..Default::default()
+                };
+                schema.context_line()
+            });
+
         let state = Arc::new(RagState {
             tenant_id,
             storage_url,
@@ -105,6 +123,7 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
             inference_url: inference_url.clone(),
             top_k,
             http: reqwest::Client::new(),
+            doc_context,
         });
 
         let app = Router::new()
@@ -285,7 +304,13 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
             })
             .collect();
 
-        let messages = build_chat_messages(&query, &chunks, &history, 8192);
+        let messages = build_chat_messages(
+            &query,
+            &chunks,
+            &history,
+            8192,
+            state.doc_context.as_deref(),
+        );
 
         // Forward to shard API.
         let mut payload = serde_json::json!({

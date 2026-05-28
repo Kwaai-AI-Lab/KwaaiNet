@@ -306,3 +306,195 @@ pub(crate) fn bytes_to_f32s(b: &[u8]) -> Vec<f32> {
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn unit(dim: usize, pos: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; dim];
+        v[pos] = 1.0;
+        v
+    }
+
+    // ── TenantIndex ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn index_new_is_empty() {
+        let idx = TenantIndex::new(4);
+        assert_eq!(idx.live_count(), 0);
+        assert_eq!(idx.dimension, 4);
+    }
+
+    #[test]
+    fn index_insert_increments_live_count() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        assert_eq!(idx.live_count(), 1);
+        idx.insert(2, &unit(4, 1));
+        assert_eq!(idx.live_count(), 2);
+    }
+
+    #[test]
+    fn index_tombstone_decrements_live_count() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        assert!(idx.tombstone(1));
+        assert_eq!(idx.live_count(), 0);
+    }
+
+    #[test]
+    fn index_tombstone_unknown_returns_false() {
+        let mut idx = TenantIndex::new(4);
+        assert!(!idx.tombstone(999));
+    }
+
+    #[test]
+    fn index_search_on_empty_returns_empty() {
+        let idx = TenantIndex::new(4);
+        assert!(idx.search(&unit(4, 0), 5).is_empty());
+    }
+
+    #[test]
+    fn index_search_top_k_zero_returns_empty() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        assert!(idx.search(&unit(4, 0), 0).is_empty());
+    }
+
+    #[test]
+    fn index_search_exact_identical_score_one() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        let r = idx.search_exact(&unit(4, 0), 1);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, 1);
+        assert!((r[0].1 - 1.0).abs() < 1e-6, "score={}", r[0].1);
+    }
+
+    #[test]
+    fn index_search_exact_orthogonal_score_zero() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        let r = idx.search_exact(&unit(4, 1), 1);
+        assert_eq!(r.len(), 1);
+        assert!((r[0].1 - 0.0).abs() < 1e-6, "score={}", r[0].1);
+    }
+
+    #[test]
+    fn index_search_exact_sorted_descending() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0)); // score 1.0 against query [1,0,0,0]
+        idx.insert(2, &unit(4, 1)); // score 0.0
+        let r = idx.search_exact(&unit(4, 0), 2);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].0, 1);
+        assert!(r[0].1 > r[1].1);
+    }
+
+    #[test]
+    fn index_search_exact_respects_top_k() {
+        let mut idx = TenantIndex::new(4);
+        for i in 0..8i64 {
+            idx.insert(i, &unit(4, (i as usize) % 4));
+        }
+        let r = idx.search_exact(&unit(4, 0), 3);
+        assert_eq!(r.len(), 3);
+    }
+
+    #[test]
+    fn index_search_exact_zero_query_returns_empty() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        assert!(idx.search_exact(&[0.0, 0.0, 0.0, 0.0], 5).is_empty());
+    }
+
+    #[test]
+    fn index_upsert_keeps_live_count_at_one() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        idx.insert(1, &unit(4, 1)); // re-insert same doc_id
+        assert_eq!(idx.live_count(), 1);
+        // updated vector is now at dim 1
+        let r = idx.search_exact(&unit(4, 1), 1);
+        assert!((r[0].1 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn index_tombstoned_doc_absent_from_exact_search() {
+        let mut idx = TenantIndex::new(4);
+        idx.insert(1, &unit(4, 0));
+        idx.insert(2, &unit(4, 0));
+        idx.tombstone(1);
+        let r = idx.search_exact(&unit(4, 0), 5);
+        assert!(!r.iter().any(|(id, _)| *id == 1));
+    }
+
+    #[test]
+    fn index_search_hnsw_ef_basic() {
+        // Uses HNSW path directly (small corpus is fine — just verifying no panics + shape).
+        let mut idx = TenantIndex::new(4);
+        for i in 0..30i64 {
+            let mut v = vec![0.0f32; 4];
+            v[(i as usize) % 4] = 1.0;
+            idx.insert(i, &v);
+        }
+        let r = idx.search_hnsw_ef(&unit(4, 0), 5, 32);
+        assert!(!r.is_empty());
+        assert!(r.len() <= 5);
+        for (_, score) in &r {
+            assert!(*score >= 0.0 && *score <= 1.0);
+        }
+    }
+
+    // ── Encoding helpers ─────────────────────────────────────────────────────
+
+    #[test]
+    fn f32_bytes_roundtrip() {
+        let original = vec![1.0f32, -2.5, 0.0, 1e10];
+        let bytes = f32s_to_bytes(&original);
+        let restored = bytes_to_f32s(&bytes);
+        assert_eq!(restored.len(), original.len());
+        for (a, b) in original.iter().zip(restored.iter()) {
+            assert!((a - b).abs() < 1e-9, "mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn f32_bytes_empty_roundtrip() {
+        assert!(f32s_to_bytes(&[]).is_empty());
+        assert!(bytes_to_f32s(&[]).is_empty());
+    }
+
+    #[test]
+    fn vector_key_length_and_layout() {
+        let tid = Uuid::new_v4();
+        let doc_id: i64 = 0x0102030405060708;
+        let k = vector_key(tid, doc_id);
+        assert_eq!(k.len(), 24);
+        assert_eq!(&k[..16], tid.as_bytes());
+        assert_eq!(&k[16..], &doc_id.to_be_bytes());
+    }
+
+    // ── StorageDb ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn storage_db_open_creates_directory() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("nested/store");
+        StorageDb::open(&sub).unwrap();
+        assert!(sub.exists());
+    }
+
+    #[test]
+    fn storage_db_open_starts_with_empty_indices() {
+        let tmp = TempDir::new().unwrap();
+        let db = StorageDb::open(tmp.path()).unwrap();
+        assert!(db.inner.indices.read().unwrap().is_empty());
+    }
+}

@@ -695,4 +695,54 @@ mod tests {
         let result = engine.load_model(Path::new("/tmp/model.pt"), ModelFormat::PyTorch);
         assert!(matches!(result, Err(InferenceError::InvalidFormat(_))));
     }
+
+    use crate::DeviceType;
+
+    #[test]
+    fn test_initial_throughput_is_zero() {
+        let engine = InferenceEngine::new(EngineConfig::default()).unwrap();
+        assert_eq!(engine.last_throughput_tps(), 0.0);
+    }
+
+    #[test]
+    fn test_list_models_empty_on_new_engine() {
+        let engine = InferenceEngine::new(EngineConfig::default()).unwrap();
+        assert!(engine.list_models().is_empty());
+    }
+
+    #[test]
+    fn test_invalid_handle_error() {
+        let engine = InferenceEngine::new(EngineConfig::default()).unwrap();
+        let handle = ModelHandle::new(999);
+        let result = engine.benchmark(&handle, 5);
+        assert!(matches!(result, Err(InferenceError::InvalidHandle(999))));
+    }
+
+    #[test]
+    fn test_browser_config_constraints() {
+        let cfg = EngineConfig::browser_optimized();
+        assert!(matches!(cfg.device, DeviceType::Cpu));
+        assert_eq!(cfg.model_cache_size, 1);
+        assert_eq!(cfg.max_batch_size, 1);
+        assert!(!cfg.use_flash_attention);
+        assert!(cfg.max_memory <= 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_mobile_config_constraints() {
+        let cfg = EngineConfig::mobile_optimized();
+        assert!(matches!(cfg.device, DeviceType::Cpu));
+        assert_eq!(cfg.max_batch_size, 1);
+        assert!(cfg.max_seq_len <= 2048);
+        assert!(cfg.max_memory <= 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_server_config_constraints() {
+        let cfg = EngineConfig::server_optimized();
+        assert!(cfg.model_cache_size >= 5);
+        assert!(cfg.max_batch_size >= 16);
+        assert!(cfg.max_seq_len >= 4096);
+        assert!(!cfg.prefer_quantized);
+    }
 }

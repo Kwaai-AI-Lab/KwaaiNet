@@ -1,0 +1,31 @@
+flowchart LR
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef config fill:#fce7f3,stroke:#db2777,color:#831843
+    classDef transient fill:#f3f4f6,stroke:#9ca3af,color:#6b7280,stroke-dasharray:5 5
+
+    %% Persistent stores
+    GDB[("Graph DB\n<rag_dir>/graph.redb\nEntityNode, RelationEdge")]:::store
+    MDB[("Metadata\n<rag_dir>/meta.redb\nChunkMeta per chunk_id")]:::store
+    VDB[("Vector DB\n<rag_dir>/vectors.redb\nembedding per chunk_id")]:::store
+    BM25[("BM25 Index\n<rag_dir>/tantivy/\nfull-text per chunk")]:::store
+    QCACHE[("Query Cache\n<rag_dir>/query_cache.redb\ncosine-sim 0.92, TTL 24h, max 2000")]:::store
+
+    %% Config / schema stores (files, not DBs)
+    SCHEMA[("Document Schema\n*.yaml\nDocSchema + SectionDef[]")]:::config
+    ONTOLOGY[("Ontology\nentity_types, relation_types\nfamilial_rels")]:::config
+    EMBED_CFG[("Embedding Config\nmodel_name, dim\nembedding_url")]:::config
+    CHUNK_CFG[("Chunk Config\nstrategy, chunk_size\noverlap, surr_mode")]:::config
+
+    %% Transient (in-memory only, not persisted)
+    CHAT[("Chat History\nheld by caller\n[not persisted in kwaai-rag]")]:::transient
+    QSTRUCT[("Query Structure\nVec of sub-queries\n[transient per request]")]:::transient
+
+    %% Relationships
+    GDB <--> MDB
+    GDB <--> VDB
+    VDB <--> BM25
+    SCHEMA --> CHUNK_CFG
+    SCHEMA --> ONTOLOGY
+    EMBED_CFG --> VDB
+    QCACHE -.- QSTRUCT
+    CHAT -.- QSTRUCT

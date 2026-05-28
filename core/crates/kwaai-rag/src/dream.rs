@@ -19,9 +19,10 @@ use tokio::sync::{mpsc, Semaphore};
 use uuid::Uuid;
 
 use crate::embedder::EmbedClient;
-use crate::graph::{GraphStore, RELATION_TYPES};
+use crate::graph::{description_from_fields, GraphStore, RELATION_TYPES};
 use crate::meta_store::MetaStore;
 use crate::scorer::{score_entity, score_graph};
+use std::collections::HashMap;
 
 // ── Config & report ───────────────────────────────────────────────────────────
 
@@ -76,8 +77,11 @@ pub struct DreamReport {
 pub struct EntityCompletion {
     pub entity_id: i64,
     pub schema_type: Option<String>,
-    pub description: Option<String>,      // None = no improvement
+    pub description: Option<String>, // None = no improvement (legacy / General task)
     pub relations: Vec<(String, String)>, // (relation_type, target_name)
+    /// Structured field updates from task-specific completion; evidence_chunk_ids
+    /// are the entity's full evidence set at the time the dream cycle ran.
+    pub fields: HashMap<String, crate::graph::FieldValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +175,7 @@ pub async fn complete_entity(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                fields: HashMap::new(),
             }
         }
     };
@@ -195,6 +200,7 @@ pub async fn complete_entity(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                fields: HashMap::new(),
             }
         }
     };
@@ -208,6 +214,7 @@ pub async fn complete_entity(
                     schema_type: None,
                     description: None,
                     relations: vec![],
+                    fields: HashMap::new(),
                 }
             }
         };
@@ -230,6 +237,7 @@ pub async fn complete_entity(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                fields: HashMap::new(),
             }
         }
     };
@@ -270,6 +278,7 @@ pub async fn complete_entity(
         schema_type,
         description,
         relations,
+        fields: HashMap::new(),
     }
 }
 
@@ -282,6 +291,10 @@ struct WorkItem {
     schema_type: Option<String>,
     description: String,
     evidence_text: String,
+    mention_count: u32,
+    chunk_count: usize,
+    /// Chunk IDs used as evidence; passed to parse_result for field provenance.
+    evidence_chunk_ids: Vec<i64>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -310,12 +323,35 @@ pub async fn run_dream_cycle(
     };
 
     // ── Step 1: Score, collect work items ────────────────────────────────────
-    let work_items = {
+    let (work_items, document_titles, doc_context_line) = {
         // Open MetaStore inside this block so it is dropped before the LLM
         // fan-out — prevents "Database already open" errors if another command
         // (e.g. alias-scan) runs concurrently against the same KB.
         let meta = MetaStore::open(data_dir, tenant_id).context("open meta store for scoring")?;
         let store = GraphStore::open(data_dir, tenant_id).context("open graph for scoring")?;
+        let document_titles = store.get_document_titles();
+        let doc_meta = store.get_doc_metadata();
+        let doc_context_line: Option<String> = if doc_meta.is_empty() {
+            None
+        } else {
+            let schema = crate::doc_schema::DocSchema {
+                metadata: doc_meta.clone(),
+                document_title: document_titles.first().cloned(),
+                ..Default::default()
+            };
+            schema.context_line()
+        };
+        // Build a set of entity names that have a special document role (author, narrator).
+        let doc_role_entities: std::collections::HashMap<String, String> = {
+            let mut m = std::collections::HashMap::new();
+            if let Some(author) = doc_meta.get("author") {
+                m.insert(
+                    crate::graph::normalize_name(author),
+                    "author of this document".to_string(),
+                );
+            }
+            m
+        };
         let health = score_graph(&store);
         report.score_before = health.overall;
         let mut items: Vec<WorkItem> = Vec::new();
@@ -351,12 +387,35 @@ pub async fn run_dream_cycle(
             let evidence_text: String = chunks
                 .iter()
                 .flatten()
-                .map(|c| c.text.as_str())
+                .map(|c| {
+                    let mut s = String::new();
+                    if let Some(ref sec) = c.section_name {
+                        s.push_str(&format!("[Section: {sec}]\n"));
+                    }
+                    if let Some(ref note) = c.section_note {
+                        s.push_str(&format!("[Note: {note}]\n"));
+                    }
+                    s.push_str(&c.text);
+                    s
+                })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
             if evidence_text.is_empty() {
                 continue;
             }
+
+            // Prepend a document-role note for entities named in doc metadata
+            // (e.g. the author) so the LLM knows their significance even when
+            // the source text only uses first-person pronouns.
+            let norm = crate::graph::normalize_name(&node.name);
+            let evidence_text = if let Some(role) = doc_role_entities.get(&norm) {
+                let ctx = doc_context_line.as_deref().unwrap_or("");
+                format!(
+                    "[Document role: This entity is the {role}. Document: {ctx}]\n---\n{evidence_text}"
+                )
+            } else {
+                evidence_text
+            };
 
             items.push(WorkItem {
                 entity_id: score.entity_id,
@@ -365,9 +424,12 @@ pub async fn run_dream_cycle(
                 schema_type: node.schema_type.clone(),
                 description: node.description.clone(),
                 evidence_text,
+                mention_count: node.mention_count,
+                chunk_count: chunk_ids.len(),
+                evidence_chunk_ids: chunk_ids,
             });
         }
-        items
+        (items, document_titles, doc_context_line)
     }; // GraphStore dropped here
 
     let total = work_items.len();
@@ -388,6 +450,8 @@ pub async fn run_dream_cycle(
     // while the spawning loop still holds all semaphore permits).
     let (tx, mut rx) = mpsc::channel::<Result<EntityCompletion>>(total.max(1));
     let model_str = model.to_string();
+    let document_titles = Arc::new(document_titles);
+    let doc_context_arc = Arc::new(doc_context_line);
 
     for item in work_items {
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
@@ -395,6 +459,8 @@ pub async fn run_dream_cycle(
         let urls = urls.clone();
         let url_counter = url_counter.clone();
         let model = model_str.clone();
+        let doc_titles = document_titles.clone();
+        let doc_ctx = doc_context_arc.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -408,15 +474,27 @@ pub async fn run_dream_cycle(
                 .as_deref()
                 .or_else(|| crate::scorer::schema_type_for(&item.entity_type));
             let kind = crate::dream_tasks::task_for_schema_type(resolved_st);
+            // Prepend document context to every task so the LLM knows what
+            // document it is working with (author, subject, year).
+            let evidence_with_ctx = match doc_ctx.as_ref() {
+                Some(ctx) if !item.evidence_text.starts_with("[Document role:") => {
+                    format!("[Document context: {ctx}]\n---\n{}", item.evidence_text)
+                }
+                _ => item.evidence_text.clone(),
+            };
             let result = crate::dream_tasks::run_task(
                 kind,
                 item.entity_id,
                 &item.name,
                 &item.entity_type,
                 &item.description,
-                &item.evidence_text,
+                &evidence_with_ctx,
                 url,
                 &model,
+                item.mention_count,
+                item.chunk_count,
+                &doc_titles,
+                &item.evidence_chunk_ids,
             )
             .await;
             let _ = tx.send(Ok(result)).await;
@@ -459,18 +537,43 @@ pub async fn run_dream_cycle(
                 }
             }
 
-            // Summary completion — upsert with longer description + re-embed
-            if let Some(ref new_desc) = completion.description {
-                if let Some(node) = store.get_entity(eid).cloned() {
+            // Field completion — merge structured fields, recompute description, re-embed
+            let has_new_fields = !completion.fields.is_empty();
+            let has_new_desc = completion.description.is_some();
+            if has_new_fields || has_new_desc {
+                if let Some(mut node) = store.get_entity(eid).cloned() {
+                    // Merge new fields into the node, then recompute description.
+                    for (key, fv) in &completion.fields {
+                        node.fields
+                            .entry(key.clone())
+                            .and_modify(|efv| {
+                                for &cid in &fv.evidence_chunk_ids {
+                                    efv.add_evidence(cid);
+                                }
+                                if efv.value.is_empty() && !fv.value.is_empty() {
+                                    efv.value.clone_from(&fv.value);
+                                }
+                            })
+                            .or_insert_with(|| fv.clone());
+                    }
+                    let computed =
+                        description_from_fields(&node.name, &node.entity_type, &node.fields);
+                    let new_desc = if !computed.is_empty() {
+                        computed
+                    } else if let Some(ref d) = completion.description {
+                        d.clone()
+                    } else {
+                        node.description.clone()
+                    };
                     let embed_text = crate::graph::GraphStore::entity_embed_text(
                         &node.name,
                         &node.aliases,
-                        new_desc,
+                        &new_desc,
                     );
                     match embed.embed_batch(&[embed_text.as_str()]).await {
                         Ok(embs) if !embs.is_empty() => {
                             let updated = crate::graph::EntityNode {
-                                description: new_desc.clone(),
+                                description: new_desc,
                                 embedding: embs.into_iter().next().unwrap(),
                                 schema_type: completion
                                     .schema_type
@@ -479,7 +582,7 @@ pub async fn run_dream_cycle(
                                 ..node
                             };
                             if let Err(e) = store.upsert_entity(updated) {
-                                cycle_errors.push(format!("upsert description {eid}: {e}"));
+                                cycle_errors.push(format!("upsert fields {eid}: {e}"));
                             } else {
                                 report.entities_summary_completed += 1;
                             }
@@ -492,14 +595,33 @@ pub async fn run_dream_cycle(
 
             // Relation completion — only add if both endpoints exist in graph
             for (rel_type, target_name) in &completion.relations {
-                let dst_id = match store.find_by_name(target_name) {
+                let dst_id = match store
+                    .find_by_name(target_name)
+                    .or_else(|| store.find_by_name_normalized(target_name))
+                {
                     Some(n) => n.id,
                     None => continue, // reject hallucinated targets
                 };
-                let src_chunk = store.chunks_for_entity(eid).first().copied().unwrap_or(0);
-                if let Err(e) = store.upsert_relation(eid, dst_id, rel_type, src_chunk) {
-                    cycle_errors.push(format!("upsert_relation {eid}→{dst_id}: {e}"));
+                // Use ALL evidence chunks so strength reflects how well-evidenced the entity is.
+                // Relations added by dream cycle inherit the entity's text support (not just one chunk).
+                let evidence_chunks: Vec<i64> = store.chunks_for_entity(eid).to_vec();
+                let chunks_to_use: &[i64] = if evidence_chunks.is_empty() {
+                    &[0]
                 } else {
+                    &evidence_chunks
+                };
+                let mut upsert_ok = false;
+                for &cid in chunks_to_use {
+                    match store.upsert_relation(eid, dst_id, rel_type, cid) {
+                        Ok(()) => {
+                            upsert_ok = true;
+                        }
+                        Err(e) => {
+                            cycle_errors.push(format!("upsert_relation {eid}→{dst_id}: {e}"));
+                        }
+                    }
+                }
+                if upsert_ok {
                     report.entities_relations_added += 1;
                 }
             }
@@ -568,7 +690,25 @@ pub async fn run_dream_cycle(
             store.rebuild_in_memory().ok();
         }
 
-        // ── Step 8: Final score ───────────────────────────────────────────────
+        // ── Step 8: Relation integrity pass ──────────────────────────────────
+        // Runs every cycle to prevent hallucinated relations from accumulating:
+        //   - removes familial relations where either endpoint is not a Person
+        //   - removes same-gender spouse_of pairs (LLM confuses "associated" with "married")
+        //   - adds missing logical inverses (parent_of ↔ child_of)
+        //   - recomputes relation strength from shared-evidence-chunk co-occurrence
+        if let Some(ref cb) = progress {
+            cb(0, 0, "sanitizing relations");
+        }
+        match store.sanitize_relations() {
+            Ok((removed, _added, _recomputed, gendered)) => {
+                if removed > 0 || gendered > 0 {
+                    tracing::debug!("sanitize: removed={removed} gendered={gendered}");
+                }
+            }
+            Err(e) => cycle_errors.push(format!("sanitize_relations: {e}")),
+        }
+
+        // ── Step 9: Final score ───────────────────────────────────────────────
         report.score_after = score_graph(&store).overall;
     }
 

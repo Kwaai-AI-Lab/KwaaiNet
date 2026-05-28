@@ -104,3 +104,76 @@ impl Default for ModelInfo {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_handle_equality_and_id() {
+        let h1 = ModelHandle::new(42);
+        let h2 = ModelHandle::new(42);
+        let h3 = ModelHandle::new(99);
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_eq!(h1.id(), 42);
+    }
+
+    #[test]
+    fn model_handle_hashable() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(ModelHandle::new(1));
+        set.insert(ModelHandle::new(2));
+        set.insert(ModelHandle::new(1));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn format_from_extension_known() {
+        assert_eq!(ModelFormat::from_extension("gguf"), Some(ModelFormat::Gguf));
+        assert_eq!(
+            ModelFormat::from_extension("safetensors"),
+            Some(ModelFormat::SafeTensors)
+        );
+        assert_eq!(ModelFormat::from_extension("ggml"), Some(ModelFormat::Ggml));
+        assert_eq!(ModelFormat::from_extension("bin"), Some(ModelFormat::Ggml));
+        assert_eq!(
+            ModelFormat::from_extension("pt"),
+            Some(ModelFormat::PyTorch)
+        );
+        assert_eq!(
+            ModelFormat::from_extension("pth"),
+            Some(ModelFormat::PyTorch)
+        );
+    }
+
+    #[test]
+    fn format_from_extension_case_insensitive() {
+        assert_eq!(
+            ModelFormat::from_extension("GGUF"),
+            Some(ModelFormat::Gguf)
+        );
+        assert_eq!(
+            ModelFormat::from_extension("SafeTensors"),
+            Some(ModelFormat::SafeTensors)
+        );
+    }
+
+    #[test]
+    fn format_from_extension_unknown_returns_none() {
+        assert_eq!(ModelFormat::from_extension("pkl"), None);
+        assert_eq!(ModelFormat::from_extension(""), None);
+        assert_eq!(ModelFormat::from_extension("json"), None);
+    }
+
+    #[test]
+    fn model_info_default_fields() {
+        let info = ModelInfo::default();
+        assert_eq!(info.architecture, "unknown");
+        assert_eq!(info.format, ModelFormat::Gguf);
+        assert!(!info.is_quantized);
+        assert_eq!(info.num_parameters, 0);
+        assert_eq!(info.hidden_dim, 0);
+    }
+}

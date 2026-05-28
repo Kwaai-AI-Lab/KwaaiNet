@@ -442,4 +442,91 @@ mod tests {
         assert_eq!(decoded.shape, req.shape);
         assert_eq!(decoded.payload_type, req.payload_type);
     }
+
+    #[test]
+    fn inference_response_msgpack_round_trip() {
+        let resp = InferenceResponse {
+            session_id: 99,
+            response_type: ResponseType::Logits,
+            shape: vec![1, 32000],
+            data: vec![0u8; 64000],
+            error: None,
+        };
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        let decoded: InferenceResponse = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.session_id, resp.session_id);
+        assert_eq!(decoded.response_type, resp.response_type);
+        assert_eq!(decoded.shape, resp.shape);
+        assert_eq!(decoded.data.len(), resp.data.len());
+        assert!(decoded.error.is_none());
+    }
+
+    #[test]
+    fn inference_response_error_field_survives_roundtrip() {
+        let resp = InferenceResponse {
+            session_id: 1,
+            response_type: ResponseType::HiddenStates,
+            shape: vec![],
+            data: vec![],
+            error: Some("session expired".to_string()),
+        };
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        let decoded: InferenceResponse = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.error.as_deref(), Some("session expired"));
+    }
+
+    #[test]
+    fn token_ids_round_trip_empty() {
+        let ids: Vec<u32> = vec![];
+        let (shape, bytes) = token_ids_to_bytes(&ids);
+        assert_eq!(shape, vec![0]);
+        let decoded = bytes_to_token_ids(&bytes).unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn token_ids_round_trip_single() {
+        let ids = vec![0u32];
+        let (shape, bytes) = token_ids_to_bytes(&ids);
+        assert_eq!(shape, vec![1]);
+        let decoded = bytes_to_token_ids(&bytes).unwrap();
+        assert_eq!(decoded, ids);
+    }
+
+    #[test]
+    fn payload_type_serialization() {
+        let variants = [PayloadType::TokenIds, PayloadType::HiddenStates];
+        for v in &variants {
+            let bytes = rmp_serde::to_vec_named(v).unwrap();
+            let decoded: PayloadType = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(&decoded, v);
+        }
+    }
+
+    #[test]
+    fn response_type_serialization() {
+        let variants = [ResponseType::HiddenStates, ResponseType::Logits];
+        for v in &variants {
+            let bytes = rmp_serde::to_vec_named(v).unwrap();
+            let decoded: ResponseType = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(&decoded, v);
+        }
+    }
+
+    #[test]
+    fn f16_bytes_large_tensor() {
+        use candle_core::{DType, Device, Tensor};
+        let device = Device::Cpu;
+        // Simulate a hidden state: [1, 1, 4096]
+        let data: Vec<f32> = (0..4096).map(|i| (i as f32) * 0.001).collect();
+        let tensor = Tensor::from_vec(data.clone(), (1usize, 1usize, 4096usize), &device)
+            .unwrap()
+            .to_dtype(DType::F16)
+            .unwrap();
+        let (shape, bytes) = tensor_to_f16_bytes(&tensor).unwrap();
+        assert_eq!(shape, vec![1, 1, 4096]);
+        assert_eq!(bytes.len(), 4096 * 2); // 2 bytes per f16
+        let recovered = f16_bytes_to_tensor(&bytes, &shape, &device).unwrap();
+        assert_eq!(recovered.dims(), &[1, 1, 4096]);
+    }
 }

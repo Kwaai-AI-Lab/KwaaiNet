@@ -831,4 +831,100 @@ mod tests {
         let out = repeat_kv(&t, 2).unwrap();
         assert_eq!(out.dims(), &[1, 4, 3, 4]);
     }
+
+    #[test]
+    fn repeat_kv_n_rep_one_is_identity() {
+        let device = Device::Cpu;
+        let t = Tensor::zeros((1usize, 4usize, 8usize, 16usize), DType::F32, &device).unwrap();
+        let out = repeat_kv(&t, 1).unwrap();
+        assert_eq!(out.dims(), t.dims());
+    }
+
+    #[test]
+    fn shard_config_n_rep_gqa() {
+        let cfg = ShardConfig {
+            num_total_blocks: 32,
+            hidden_dim: 4096,
+            num_heads: 32,
+            num_kv_heads: 8,
+            head_dim: 128,
+            intermediate_dim: 11008,
+            vocab_size: 32000,
+            rope_theta: 10000.0,
+            max_seq_len: 4096,
+            rms_norm_eps: 1e-5,
+            dtype: DType::F32,
+        };
+        // n_rep = num_heads / num_kv_heads = 32 / 8 = 4
+        assert_eq!(cfg.n_rep(), 4);
+    }
+
+    #[test]
+    fn shard_config_n_rep_mha() {
+        let cfg = ShardConfig {
+            num_total_blocks: 8,
+            hidden_dim: 512,
+            num_heads: 8,
+            num_kv_heads: 8,
+            head_dim: 64,
+            intermediate_dim: 2048,
+            vocab_size: 1000,
+            rope_theta: 10000.0,
+            max_seq_len: 128,
+            rms_norm_eps: 1e-5,
+            dtype: DType::F32,
+        };
+        // Standard multi-head attention: n_rep = 1
+        assert_eq!(cfg.n_rep(), 1);
+    }
+
+    #[test]
+    fn causal_mask_all_positions_correct() {
+        // seq_len=4, kv_len=4, seq_start=0 → square causal mask
+        let mask = causal_mask(4, 4, 0, &Device::Cpu, DType::F32).unwrap();
+        assert_eq!(mask.dims(), &[4, 4]);
+        let data = mask.to_vec2::<f32>().unwrap();
+        for q in 0..4usize {
+            for k in 0..4usize {
+                if k <= q {
+                    assert_eq!(data[q][k], 0.0, "q={q} k={k} should be 0");
+                } else {
+                    assert!(
+                        data[q][k].is_infinite() && data[q][k] < 0.0,
+                        "q={q} k={k} should be -inf"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rope_cache_different_theta() {
+        let device = Device::Cpu;
+        let make = |theta: f64| {
+            let cfg = ShardConfig {
+                num_total_blocks: 4,
+                hidden_dim: 32,
+                num_heads: 2,
+                num_kv_heads: 2,
+                head_dim: 16,
+                intermediate_dim: 64,
+                vocab_size: 128,
+                rope_theta: theta,
+                max_seq_len: 32,
+                rms_norm_eps: 1e-5,
+                dtype: DType::F32,
+            };
+            RopeCache::new(&cfg, &device).unwrap()
+        };
+        let r1 = make(10000.0);
+        let r2 = make(500000.0);
+        // Different theta → different cos/sin values
+        let v1: Vec<f32> = r1.cos.flatten_all().unwrap().to_vec1().unwrap();
+        let v2: Vec<f32> = r2.cos.flatten_all().unwrap().to_vec1().unwrap();
+        assert!(
+            v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-4),
+            "RoPE caches with different theta should differ"
+        );
+    }
 }

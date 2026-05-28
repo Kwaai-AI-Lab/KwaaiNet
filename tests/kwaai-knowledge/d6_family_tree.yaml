@@ -1,0 +1,339 @@
+# Ground truth Gool–Rassool family tree for the D6 memoir
+# Source: NotebookLM analysis of "Y.S. Rassool: The District Six Memoir"
+# Usage: kwaainet rag graph seed --file tests/d6_family_tree.yaml --kb D6
+#        Run after `rag graph build` to merge aliases and plant authoritative family relations.
+#
+# NOTE: descriptions are intentionally omitted — they are set by dream extraction from the text.
+# The seed provides canonical names, aliases, and family relations only.
+
+persons:
+
+  # ─── Patriarch ─────────────────────────────────────────────────────────────
+
+  - canonical: "Haji Joosub Maulvi Hamid Gool"
+    aliases:
+      - "J.M.H. Gool"
+      - "JMH Gool"
+      - "J. Gool"
+      - "Joosub Gool"
+      - "Joosub Maulvi Hamid Gool"
+      - "Grandpa"
+      - "grandfather"
+      - "my grandpa"
+      - "my grandfather"
+      - "Grandpa Gool"
+      - "Gool"
+
+  - canonical: "Bibi Gool"
+    aliases:
+      - "Bibi"
+      - "Peari Beghum"
+
+  - canonical: "Wahida Gool"
+    aliases:
+      - "Wahida Ta'al"
+      - "Wahida"
+      - "Hajima"
+
+  # ─── Branch 1: JMH + Bibi ──────────────────────────────────────────────────
+
+  - canonical: "Ayesha Rassool"
+    aliases:
+      - "Lallie"
+      - "Ayesha"
+      - "Lallie Gool"
+      - "Ayesha Gool"
+
+  - canonical: "Mohamed Saaid Gool"
+    aliases:
+      - "Aity (Mohamed Saaid Gool)"
+      - "Uncle Aity"
+      - "Aity"
+
+  - canonical: "Zohra Abdurahman"
+    aliases:
+      - "Zohra (Auntie Jolly)"
+      - "Auntie Jolly"
+      - "Aunt Jolly"
+      - "Jolly (Zohra)"
+      - "Jolly"
+      - "Zohra"
+
+  # ─── Branch 2: JMH + Wahida ────────────────────────────────────────────────
+
+  - canonical: "Abdul Hamid Gool"
+    aliases:
+      - "A.H. Gool"
+      - "AH Gool"
+      - "Abdul Hamid (BG)"
+      - "Abdul Hamid"
+      - "B.G."
+      - "B.G. Gool"
+      - "BG"
+      - "Cheops"
+      - "Dr. Gool"
+      - "Dr Gool"
+
+  - canonical: "Goolam Gool"
+    aliases:
+      - "Dr Goolam Gool"
+      - "Dr. Goolam"
+      - "Goolam (GH)"
+      - "Goolam"
+      - "Dr_ Goolam"
+
+  - canonical: "Jane Gool-Tabata"
+    aliases:
+      - "Jane Gool"
+      - "Janab"
+
+  - canonical: "Minnie Gool"
+    aliases:
+      - "Amina Gool"
+
+  - canonical: "Fatima Gool"
+    aliases:
+      - "Fatima (Timmie)"
+      - "Timmie"
+      - "my Auntie Timmie"
+      - "Aunt Fatima"
+
+  - canonical: "Mariam Gool"
+    aliases:
+      - "Margie"
+      - "Mariam (Margie)"
+
+  - canonical: "Zobeida Gool"
+    aliases:
+      - "Billy"
+      - "Zobeida (Billy)"
+
+  - canonical: "Mohammed Hanief Gool"
+    aliases:
+      - "Mohammed Hanief"
+      - "Aboeta"
+
+  # ─── Abdurahman family (connected by marriage) ─────────────────────────────
+
+  - canonical: "Dr. Abdulla Abdurahman"
+    aliases:
+      - "Abdulla Abdurahman"
+      - "Abdullah Abdurahman"
+      - "Dr. Abdullah Abdurahman"
+      - "Dr. Abdurahman"
+
+  - canonical: "Cissie Gool"
+    aliases:
+      - "Zainunnisa Cissie Gool"
+      - "Zainunnisa Gool"
+      - "Zainunnissa Cissie Gool"
+      - "Zainunnissa Gool"
+      - "Zainunnissa"
+
+  # ─── Rassool family ─────────────────────────────────────────────────────────
+
+  - canonical: "Peter Alexander Rassool"
+    aliases: []
+
+  - canonical: "Annie Rassool"
+    aliases: []
+
+  - canonical: "Yousuf Rassool"
+    aliases:
+      - "Joe Rassool"
+      - "Yousuf (Joe) Rassool"
+      - "Yusuf Rassool"
+      - "Y.S. Rassool"
+      - "Joe"
+      - "I"
+      - "narrator"
+      - "author"
+      - "the author"
+      - "the narrator"
+      - "the writer"
+
+  - canonical: "Nazima Rassool"
+    aliases:
+      - "Nazima"
+      - "Professor Nazima Rassool"
+      - "Prof. Nazima Rassool"
+
+  - canonical: "Abdul Rassool"
+    aliases:
+      - "Abdul"
+      - "Doolie"
+      - "Doolie Rassool"
+
+  - canonical: "Fazil Rassool"
+    aliases:
+      - "Fazil"
+
+  - canonical: "Zain Rassool"
+    aliases:
+      - "Zain"
+
+  - canonical: "Rasheda Rassool"
+    aliases:
+      - "Rasheda"
+
+  - canonical: "Berina Rassool"
+    aliases:
+      - "Berina"
+
+  - canonical: "Yasmin Rassool"
+    aliases:
+      - "Yasmin"
+      - "Jessie"
+      - "Jessie Rassool"
+
+  - canonical: "Nasim Rassool"
+    aliases:
+      - "Nasim"
+
+  # ─── Fostered relatives (the Ally/Noor line) ───────────────────────────────
+
+  - canonical: "Gadija Noor"
+    aliases:
+      - "Gadija"
+      - "Auntie Dij"
+
+  - canonical: "Hanief Ally"
+    aliases:
+      - "Uncle Hanief"
+      - "Sayed Hanief Ally"
+      - "Hanief"
+
+  - canonical: "Toetie Ally"
+    aliases:
+      - "Toetie"
+      - "Auntie Toetie"
+
+  - canonical: "Hamid Ally"
+    aliases:
+      - "Midi"
+
+  # ─── Hassen Mall (friend of the narrator) ──────────────────────────────────
+
+  - canonical: "Hassen Mall"
+    aliases:
+      - "Hassen"
+
+  # ─── Mohandas Karamchand Gandhi (historical figure) ────────────────────────
+
+  - canonical: "Mohandas Karamchand Gandhi"
+    aliases:
+      - "MK Gandhi"
+      - "M.K. Gandhi"
+      - "M_ Gandhi"
+      - "M. Gandhi"
+      - "Gandhiji"
+      - "hatma Gandhi"
+      - "Mahatma Gandhi"
+      - "Gandhi"
+
+  # ─── I.B. Tabata (Jane's husband) ──────────────────────────────────────────
+
+  - canonical: "I.B. Tabata"
+    aliases:
+      - "Tabata"
+      - "I. Tabata"
+      - "Mr. Tabata"
+      - "Dr. Tabata"
+      - "B.M. Tabata"
+
+relations:
+
+  # ─── JMH Gool's two marriages ──────────────────────────────────────────────
+  - from: "Haji Joosub Maulvi Hamid Gool"
+    to: "Bibi Gool"
+    type: "spouse_of"
+  - from: "Haji Joosub Maulvi Hamid Gool"
+    to: "Wahida Gool"
+    type: "spouse_of"
+
+  # ─── Branch 1 parent_of ────────────────────────────────────────────────────
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Ayesha Rassool",     type: "parent_of" }
+  - { from: "Bibi Gool",                     to: "Ayesha Rassool",     type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Mohamed Saaid Gool", type: "parent_of" }
+  - { from: "Bibi Gool",                     to: "Mohamed Saaid Gool", type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Zohra Abdurahman",   type: "parent_of" }
+  - { from: "Bibi Gool",                     to: "Zohra Abdurahman",   type: "parent_of" }
+
+  # ─── Branch 2 parent_of ────────────────────────────────────────────────────
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Abdul Hamid Gool",    type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Abdul Hamid Gool",    type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Goolam Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Goolam Gool",         type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Jane Gool-Tabata",    type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Jane Gool-Tabata",    type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Minnie Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Minnie Gool",         type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Fatima Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Fatima Gool",         type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Mariam Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Mariam Gool",         type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Zobeida Gool",        type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Zobeida Gool",        type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Mohammed Hanief Gool", type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Mohammed Hanief Gool", type: "parent_of" }
+
+  # ─── Marriages ─────────────────────────────────────────────────────────────
+  - { from: "Ayesha Rassool",    to: "Peter Alexander Rassool", type: "spouse_of" }
+  - { from: "Mohamed Saaid Gool", to: "Annie Rassool",          type: "spouse_of" }
+  - { from: "Zohra Abdurahman",  to: "Ahmed Abdurahman",        type: "spouse_of" }
+  - { from: "Abdul Hamid Gool",  to: "Cissie Gool",             type: "spouse_of" }
+  - { from: "Jane Gool-Tabata",  to: "I.B. Tabata",             type: "spouse_of" }
+
+  # ─── Abdurahman → Cissie ───────────────────────────────────────────────────
+  - { from: "Dr. Abdulla Abdurahman", to: "Cissie Gool", type: "parent_of" }
+
+  # ─── Rassool children ─────────────────────────────────────────────────────
+  - { from: "Ayesha Rassool",          to: "Yousuf Rassool", type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Yousuf Rassool", type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Abdul Rassool",  type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Abdul Rassool",  type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Fazil Rassool",   type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Fazil Rassool",   type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Zain Rassool",    type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Zain Rassool",    type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Rasheda Rassool", type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Rasheda Rassool", type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Berina Rassool",  type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Berina Rassool",  type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Yasmin Rassool",  type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Yasmin Rassool",  type: "parent_of" }
+  - { from: "Ayesha Rassool",          to: "Nasim Rassool",   type: "parent_of" }
+  - { from: "Peter Alexander Rassool", to: "Nasim Rassool",   type: "parent_of" }
+  - { from: "Yousuf Rassool",          to: "Abdul Rassool",   type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Fazil Rassool",   type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Zain Rassool",    type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Rasheda Rassool", type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Berina Rassool",  type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Yasmin Rassool",  type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Nasim Rassool",   type: "sibling_of" }
+  - { from: "Yousuf Rassool",          to: "Nazima Rassool",  type: "spouse_of" }
+
+  # ─── Children of Abdul Hamid + Cissie ──────────────────────────────────────
+  - { from: "Abdul Hamid Gool", to: "Shaheen Gool", type: "parent_of" }
+  - { from: "Cissie Gool",      to: "Shaheen Gool", type: "parent_of" }
+
+  # ─── Goolam Gool's child ───────────────────────────────────────────────────
+  - { from: "Goolam Gool", to: "Selim Gool", type: "parent_of" }
+
+  # ─── Foster relations ──────────────────────────────────────────────────────
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Gadija Noor",  type: "foster_parent_of" }
+  - { from: "Wahida Gool",                   to: "Gadija Noor",  type: "foster_parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Hanief Ally",  type: "foster_parent_of" }
+  - { from: "Wahida Gool",                   to: "Hanief Ally",  type: "foster_parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Toetie Ally",  type: "foster_parent_of" }
+  - { from: "Wahida Gool",                   to: "Toetie Ally",  type: "foster_parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Hamid Ally",   type: "foster_parent_of" }
+  - { from: "Wahida Gool",                   to: "Hamid Ally",   type: "foster_parent_of" }
+
+  # ─── Half-siblings (share JMH Gool as father, different mothers) ────────────
+  - { from: "Ayesha Rassool",     to: "Abdul Hamid Gool", type: "half_sibling_of" }
+  - { from: "Ayesha Rassool",     to: "Goolam Gool",      type: "half_sibling_of" }
+  - { from: "Ayesha Rassool",     to: "Jane Gool-Tabata", type: "half_sibling_of" }
+  - { from: "Mohamed Saaid Gool", to: "Abdul Hamid Gool", type: "half_sibling_of" }
+  - { from: "Mohamed Saaid Gool", to: "Goolam Gool",      type: "half_sibling_of" }
+  - { from: "Zohra Abdurahman",   to: "Abdul Hamid Gool", type: "half_sibling_of" }

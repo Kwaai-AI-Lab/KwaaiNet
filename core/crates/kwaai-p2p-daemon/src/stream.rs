@@ -120,6 +120,73 @@ pub async fn read_varint_framed(stream: &mut TcpStream) -> Result<Vec<u8>> {
     Ok(payload)
 }
 
+/// Decode a varint-framed `PersistentConnectionRequest` sent by a remote peer
+/// over a stream-handler connection.
+///
+/// Returns `(call_id_bytes, dht_payload_bytes)`.  The `dht_payload_bytes` is
+/// the raw protobuf of the actual DHT request (StoreRequest / FindRequest /
+/// PingRequest) and is decoded by the caller using the kwaai-hivemind-dht
+/// prost types (which share the same prost version as the workspace).
+///
+/// This function lives in kwaai-p2p-daemon so it can use prost 0.13 (the same
+/// version as the p2pd protobuf types) without causing a version conflict in
+/// kwaai-cli which uses prost 0.12 via the workspace.
+pub fn unwrap_stream_handler_request(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    use crate::protocol::p2pd::{
+        persistent_connection_request, PersistentConnectionRequest,
+    };
+    use prost::Message as _;
+
+    let outer = PersistentConnectionRequest::decode(bytes)
+        .map_err(|e| Error::Protocol(format!("decode PersistentConnectionRequest: {}", e)))?;
+
+    let call_id = outer.call_id.clone();
+
+    let dht_data = match &outer.message {
+        Some(persistent_connection_request::Message::CallUnary(cu)) => cu.data.clone(),
+        other => {
+            return Err(Error::Protocol(format!(
+                "expected CallUnary in PersistentConnectionRequest, got: {:?}",
+                other.as_ref().map(|_| "other variant")
+            )))
+        }
+    };
+
+    Ok((call_id, dht_data))
+}
+
+/// Encode a DHT response as a varint-framed `PersistentConnectionResponse`.
+///
+/// `call_id` must be the bytes extracted by `unwrap_stream_handler_request`.
+/// `response_data` is the raw protobuf of the DHT response.
+///
+/// Returns the varint-framed bytes ready to write back to the TCP stream.
+pub fn wrap_stream_handler_response(call_id: Vec<u8>, response_data: Vec<u8>) -> Vec<u8> {
+    use crate::protocol::p2pd::{
+        call_unary_response, persistent_connection_response, CallUnaryResponse,
+        PersistentConnectionResponse,
+    };
+    use prost::Message as _;
+    use unsigned_varint::encode as varint_encode;
+
+    let wrapper = PersistentConnectionResponse {
+        call_id,
+        message: Some(persistent_connection_response::Message::CallUnaryResponse(
+            CallUnaryResponse {
+                result: Some(call_unary_response::Result::Response(response_data)),
+            },
+        )),
+    };
+
+    let wrapper_bytes = wrapper.encode_to_vec();
+    let mut vbuf = varint_encode::usize_buffer();
+    let prefix = varint_encode::usize(wrapper_bytes.len(), &mut vbuf);
+    let mut framed = Vec::with_capacity(prefix.len() + wrapper_bytes.len());
+    framed.extend_from_slice(prefix);
+    framed.extend_from_slice(&wrapper_bytes);
+    framed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,3 +21,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [[example]]
 name = "vector_search_bench"
 path = "examples/vector_search_bench.rs"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"

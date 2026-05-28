@@ -863,7 +863,7 @@ async fn main() -> Result<()> {
                                 .stderr(std::process::Stdio::null())
                                 .spawn();
                             }
-                            print_error(&format!("Update failed: {e}"));
+                            print_error(&format!("Update failed: {e:#}"));
                             print_separator();
                             return Ok(());
                         }

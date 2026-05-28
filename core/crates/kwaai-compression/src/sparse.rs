@@ -149,4 +149,81 @@ mod tests {
         // The large values should be preserved
         assert!(compressed.values.iter().any(|&v| v.abs() > 0.5));
     }
+
+    #[test]
+    fn test_k_fraction_getter() {
+        let c = TopKCompressor::new(0.25);
+        assert!((c.k_fraction() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_k_fraction_clamped() {
+        let lo = TopKCompressor::new(-1.0);
+        assert_eq!(lo.k_fraction(), 0.0);
+        let hi = TopKCompressor::new(2.0);
+        assert_eq!(hi.k_fraction(), 1.0);
+    }
+
+    #[test]
+    fn test_decompress_roundtrip_preserves_large_values() {
+        let compressor = TopKCompressor::new(0.1);
+        let mut data = vec![0.0f32; 100];
+        data[5] = 3.0;
+        data[42] = -2.5;
+        data[77] = 1.8;
+        let tensor = Tensor::from_vec(data.clone(), &[100], &Device::Cpu).unwrap();
+        let compressed = compressor.compress(&tensor).unwrap();
+        let recovered: Vec<f32> = compressor
+            .decompress(&compressed)
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        // Large values at their original positions must be preserved
+        assert!((recovered[5] - 3.0).abs() < 1e-4);
+        assert!((recovered[42] - (-2.5)).abs() < 1e-4);
+        assert!((recovered[77] - 1.8).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_k_fraction_one_keeps_all() {
+        let compressor = TopKCompressor::new(1.0);
+        let data: Vec<f32> = (0..20).map(|i| i as f32).collect();
+        let tensor = Tensor::from_vec(data.clone(), &[20], &Device::Cpu).unwrap();
+        let compressed = compressor.compress(&tensor).unwrap();
+        assert_eq!(compressed.indices.len(), 20);
+        let recovered: Vec<f32> = compressor
+            .decompress(&compressed)
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        // Every original value should be recovered exactly
+        for (orig, got) in data.iter().zip(recovered.iter()) {
+            assert!((orig - got).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn test_shape_and_metadata() {
+        let compressor = TopKCompressor::new(0.5);
+        let data: Vec<f32> = (0..50).map(|i| i as f32).collect();
+        let tensor = Tensor::from_vec(data, &[5, 10], &Device::Cpu).unwrap();
+        let compressed = compressor.compress(&tensor).unwrap();
+        assert_eq!(compressed.shape, vec![5, 10]);
+        assert_eq!(compressed.original_size, 50);
+        assert_eq!(
+            compressed.original_size_bytes(),
+            50 * 4,
+            "f32 = 4 bytes each"
+        );
+    }
+
+    #[test]
+    fn test_decompress_restores_shape() {
+        let compressor = TopKCompressor::new(0.5);
+        let data: Vec<f32> = (0..30).map(|i| i as f32).collect();
+        let tensor = Tensor::from_vec(data, &[3, 10], &Device::Cpu).unwrap();
+        let compressed = compressor.compress(&tensor).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+        assert_eq!(decompressed.dims(), &[3, 10]);
+    }
 }

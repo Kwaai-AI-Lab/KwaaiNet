@@ -25,19 +25,34 @@ pub fn build_rag_prompt(
 }
 
 /// Build a chat message list for `/v1/chat/completions`.
+///
+/// `doc_context` is an optional one-line preamble about the source document
+/// (e.g. `"District Six - Lest We Forget" by Yousuf (Joe) Rassool (1984)`)
+/// injected before the sources so the LLM always knows authorship and subject.
 pub fn build_chat_messages(
     user_query: &str,
     chunks: &[RetrievedChunk],
     history: &[ChatMessage],
     max_context_chars: usize,
+    doc_context: Option<&str>,
 ) -> Vec<ChatMessage> {
     let context = build_context_block(chunks, max_context_chars);
+
+    let doc_preamble = match doc_context {
+        Some(dc) if !dc.is_empty() => format!(
+            "Document being queried: {dc}\n\
+             Use this document context to resolve references like \"the author\", \
+             \"the book\", or \"this memoir\" in the question.\n\n"
+        ),
+        _ => String::new(),
+    };
 
     let n = chunks.len();
     let system = ChatMessage {
         role: "system".to_string(),
         content: format!(
-            "You are a research assistant. The following {n} source excerpt(s) are numbered [1]–[{n}].\n\n\
+            "{doc_preamble}\
+             You are a research assistant. The following {n} source excerpt(s) are numbered [1]–[{n}].\n\n\
              Rules you must follow:\n\
              1. Read ALL excerpts before answering. Names, dates, and facts may appear \
                 in any excerpt, not just the first one.\n\

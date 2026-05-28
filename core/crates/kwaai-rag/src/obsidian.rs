@@ -79,11 +79,15 @@ pub fn export_vault(graph: &GraphStore, out_dir: &Path, kb_name: &str) -> Result
         .map(|n| (n.id, (n.name.clone(), n.entity_type.clone())))
         .collect();
 
+    // Track every path we write so we can clean up stale files from previous exports
+    let mut written_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+
     for node in graph.all_entities() {
         let path = entity_path(out_dir, &node.entity_type, &node.name);
         std::fs::create_dir_all(path.parent().unwrap())?;
 
-        let relations = graph.neighbors_of(node.id);
+        let relations = graph.outgoing_relations(node.id)?;
         let mut rel_lines = String::new();
         for (dst_id, rel_type, strength) in &relations {
             if let Some((dst_name, _)) = name_type.get(dst_id) {
@@ -120,8 +124,16 @@ pub fn export_vault(graph: &GraphStore, out_dir: &Path, kb_name: &str) -> Result
         );
 
         std::fs::write(&path, &content)?;
+        written_paths.insert(path.canonicalize().unwrap_or(path));
         stats.entities += 1;
         stats.relations += relations.len();
+    }
+
+    // Remove entity .md files from previous exports that are no longer in the graph.
+    // This prevents pruned or merged entities from appearing as ghost nodes in Obsidian.
+    let entities_dir = out_dir.join("entities");
+    if entities_dir.exists() {
+        collect_md_files(&entities_dir, &written_paths, &mut stats);
     }
 
     // Write index
@@ -304,6 +316,11 @@ pub async fn import_vault(
                 .unwrap_or_default(),
             schema_type: existing.as_ref().and_then(|e| e.schema_type.clone()),
             evidence: Vec::new(),
+            gender: existing.as_ref().and_then(|e| e.gender.clone()),
+            fields: existing
+                .as_ref()
+                .map(|e| e.fields.clone())
+                .unwrap_or_default(),
         };
 
         graph.upsert_entity(node)?;
@@ -480,6 +497,7 @@ fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
 pub struct ExportStats {
     pub entities: usize,
     pub relations: usize,
+    pub stale_removed: usize,
 }
 
 #[derive(Debug, Default)]
@@ -488,4 +506,27 @@ pub struct ImportStats {
     pub descriptions_updated: usize,
     pub relations_updated: usize,
     pub skipped: usize,
+}
+
+/// Recursively walk `dir`, delete any `.md` file not in `keep`, and increment `stats.stale_removed`.
+fn collect_md_files(
+    dir: &std::path::Path,
+    keep: &std::collections::HashSet<std::path::PathBuf>,
+    stats: &mut ExportStats,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_md_files(&path, keep, stats);
+        } else if path.extension().and_then(|x| x.to_str()) == Some("md") {
+            let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !keep.contains(&canon) {
+                let _ = std::fs::remove_file(&path);
+                stats.stale_removed += 1;
+            }
+        }
+    }
 }

@@ -281,4 +281,67 @@ mod tests {
             _ => panic!("Expected success"),
         }
     }
+
+    #[tokio::test]
+    async fn test_step_with_no_accumulated_returns_no_peers() {
+        let mut averager = DecentralizedAverager::new(AveragingConfig::default());
+        let result = averager.step().await.unwrap();
+        assert!(matches!(result, AveragingResult::NoPeersAvailable));
+    }
+
+    #[test]
+    fn test_clear_resets_state() {
+        let mut averager = DecentralizedAverager::new(AveragingConfig::default());
+        let grad = Tensor::from_vec(vec![1.0f32, 2.0], &[2], &Device::Cpu).unwrap();
+        averager.accumulate(&[grad]).unwrap();
+        assert!(!averager.get_accumulated().is_empty());
+        averager.clear();
+        assert!(averager.get_accumulated().is_empty());
+    }
+
+    #[test]
+    fn test_accumulate_mismatch_returns_error() {
+        let mut averager = DecentralizedAverager::new(AveragingConfig::default());
+        let g1 = Tensor::from_vec(vec![1.0f32, 2.0], &[2], &Device::Cpu).unwrap();
+        let g2 = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3], &Device::Cpu).unwrap();
+        averager.accumulate(&[g1]).unwrap();
+        // Second accumulate has different count → should error
+        let result = averager.accumulate(&[g2]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compress_decompress_roundtrip() {
+        let averager = DecentralizedAverager::new(AveragingConfig::default());
+        let g = Tensor::from_vec(
+            (0..128).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
+            &[128],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let compressed = averager.compress_gradients(&[g.clone()]).unwrap();
+        let recovered = averager.decompress_gradients(&compressed).unwrap();
+        let orig: Vec<f32> = g.to_vec1().unwrap();
+        let got: Vec<f32> = recovered[0].to_vec1().unwrap();
+        for (o, r) in orig.iter().zip(got.iter()) {
+            assert!((o - r).abs() < 0.5, "orig={o} recovered={r}");
+        }
+    }
+
+    #[test]
+    fn test_average_gradients_two_sets() {
+        let averager = DecentralizedAverager::new(AveragingConfig::default());
+        let a = Tensor::from_vec(vec![0.0f32, 4.0], &[2], &Device::Cpu).unwrap();
+        let b = Tensor::from_vec(vec![2.0f32, 8.0], &[2], &Device::Cpu).unwrap();
+        let result = averager.average_gradients(&[vec![a], vec![b]]).unwrap();
+        let vals: Vec<f32> = result[0].to_vec1().unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-4);
+        assert!((vals[1] - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_average_gradients_empty_errors() {
+        let averager = DecentralizedAverager::new(AveragingConfig::default());
+        assert!(averager.average_gradients(&[]).is_err());
+    }
 }

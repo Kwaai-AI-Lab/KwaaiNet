@@ -363,6 +363,16 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         )
         .await;
 
+    // Shard proxy — lets remote nodes route requests to our local shard API (no Ollama needed).
+    let shard_proxy_handler = crate::ollama_proxy::make_shard_proxy_handler();
+    let _ = client
+        .add_unary_handler(
+            crate::ollama_proxy::SHARD_PROXY_PROTO,
+            shard_proxy_handler,
+            false,
+        )
+        .await;
+
     print_box_header("🧩 KwaaiNet Shard Server");
     println!("  Blocks:      [{}, {})", start_block, end_block);
     println!("  Device:      {}", device_type);
@@ -2827,6 +2837,12 @@ async fn run_via_local_bypass(
 /// Path to the file that holds the local TCP bypass port written by `shard serve`.
 fn local_server_port_file() -> std::path::PathBuf {
     crate::config::run_dir().join("shard_local.port")
+}
+
+/// Path to the file that holds the port written by `kwaainet shard api` at startup.
+/// Read by `make_shard_proxy_handler` to forward incoming P2P requests to the local API.
+pub fn shard_api_port_file() -> std::path::PathBuf {
+    crate::config::run_dir().join("shard_api.port")
 }
 
 /// Spawn a local TCP server on `127.0.0.1:0` that serves the same

@@ -1,0 +1,35 @@
+flowchart TD
+    classDef process fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
+
+    DOC["Document / Structured data"]:::external
+    USER["User / Application"]:::external
+
+    LLM1["LLM\n(entity extraction)"]:::external
+    LLM2["LLM\n(decomposition\nHyDE / rerank)"]:::external
+    LLM3["LLM\n(generation)"]:::external
+    LLM4["LLM\n(entity completions)"]:::external
+
+    P1(("1\nIngest")):::process
+    P2(("2\nQuery")):::process
+    P3(("3\nRespond")):::process
+    P4(("4\nDream")):::process
+
+    KB[("Knowledge\n(Graph + Vector + BM25)")]:::store
+
+    DOC -->|"raw text / PDF / YAML / JSON"| P1
+    P1 -->|"chunks + entities + embeddings"| KB
+    P1 <-->|"entity extraction"| LLM1
+
+    USER -->|"natural language query"| P2
+    KB -->|"ranked chunks + entity context"| P2
+    P2 <-->|"decomposition / HyDE / rerank"| LLM2
+
+    P2 -->|"top-K results + query structure"| P3
+    P3 -->|"answer"| USER
+    P3 <-->|"generation"| LLM3
+
+    KB -->|"entity graph (scored)"| P4
+    P4 -->|"enriched entities"| KB
+    P4 <-->|"completions + embeddings"| LLM4

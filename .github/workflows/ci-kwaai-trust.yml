@@ -1,0 +1,35 @@
+name: CI — kwaai-trust
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-trust/**"
+      - "core/crates/kwaai-wasm/**"
+      - "projects/kwaai-trust/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-trust/**"
+      - "core/crates/kwaai-wasm/**"
+      - "projects/kwaai-trust/**"
+
+jobs:
+  ci:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check -p kwaai-trust
+      - name: clippy
+        run: cargo clippy -p kwaai-trust -- -D warnings
+      - name: test
+        run: cargo test -p kwaai-trust

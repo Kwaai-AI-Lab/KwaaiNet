@@ -1,0 +1,39 @@
+name: CI — kwaai-network
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-p2p/**"
+      - "core/crates/kwaai-p2p-daemon/**"
+      - "core/crates/kwaai-hivemind-dht/**"
+      - "core/crates/kwaai-rpc/**"
+      - "projects/kwaai-network/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/crates/kwaai-p2p/**"
+      - "core/crates/kwaai-p2p-daemon/**"
+      - "core/crates/kwaai-hivemind-dht/**"
+      - "core/crates/kwaai-rpc/**"
+      - "projects/kwaai-network/**"
+
+jobs:
+  ci:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check -p kwaai-p2p -p kwaai-hivemind-dht
+      - name: clippy
+        run: cargo clippy -p kwaai-p2p -p kwaai-hivemind-dht -- -D warnings
+      - name: test
+        run: cargo test -p kwaai-p2p -p kwaai-hivemind-dht

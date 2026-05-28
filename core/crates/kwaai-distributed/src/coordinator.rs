@@ -98,3 +98,81 @@ impl Default for DistributedCoordinator {
         Self::new(DistributedConfig::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn disabled_config() -> DistributedConfig {
+        DistributedConfig {
+            enable_moe: false,
+            enable_averaging: false,
+            ..DistributedConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_disabled_coordinator_not_enabled() {
+        let coord = DistributedCoordinator::new(disabled_config());
+        assert!(!coord.is_enabled());
+    }
+
+    #[test]
+    fn test_not_running_before_init() {
+        let coord = DistributedCoordinator::new(DistributedConfig::default());
+        assert!(!coord.is_running());
+    }
+
+    #[test]
+    fn test_initialize_sets_running() {
+        let mut coord = DistributedCoordinator::new(DistributedConfig::default());
+        coord.initialize().unwrap();
+        assert!(coord.is_running());
+    }
+
+    #[test]
+    fn test_stop_clears_running() {
+        let mut coord = DistributedCoordinator::new(DistributedConfig::default());
+        coord.initialize().unwrap();
+        coord.stop();
+        assert!(!coord.is_running());
+    }
+
+    #[test]
+    fn test_averaging_enabled_creates_averager() {
+        let cfg = DistributedConfig {
+            enable_moe: false,
+            enable_averaging: true,
+            ..DistributedConfig::default()
+        };
+        let mut coord = DistributedCoordinator::new(cfg);
+        coord.initialize().unwrap();
+        assert!(coord.averager().is_some());
+        assert!(coord.moe().is_none());
+    }
+
+    #[test]
+    fn test_averaging_disabled_no_averager() {
+        let mut coord = DistributedCoordinator::new(disabled_config());
+        coord.initialize().unwrap();
+        assert!(coord.averager().is_none());
+    }
+
+    #[test]
+    fn test_is_enabled_with_averaging_only() {
+        let cfg = DistributedConfig {
+            enable_moe: false,
+            enable_averaging: true,
+            ..DistributedConfig::default()
+        };
+        let coord = DistributedCoordinator::new(cfg);
+        assert!(coord.is_enabled());
+    }
+
+    #[test]
+    fn test_default_coordinator() {
+        let coord = DistributedCoordinator::default();
+        // Default config has both enabled
+        assert!(coord.is_enabled());
+    }
+}

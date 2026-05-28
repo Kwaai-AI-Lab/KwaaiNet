@@ -192,4 +192,77 @@ mod tests {
             Some(&"peer-123".to_string())
         );
     }
+
+    #[test]
+    fn test_expert_id_display() {
+        let id = ExpertId::new(7);
+        assert_eq!(id.to_string(), "expert-7");
+    }
+
+    #[test]
+    fn test_expert_id_equality_and_hash() {
+        use std::collections::HashSet;
+        let a = ExpertId::new(3);
+        let b = ExpertId::new(3);
+        let c = ExpertId::new(4);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut s = HashSet::new();
+        s.insert(a);
+        s.insert(b);
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn test_list_experts_sorted() {
+        let mut registry = ExpertRegistry::new();
+        registry.register_local(Box::new(LocalExpert::new(3, 64)));
+        registry.register_local(Box::new(LocalExpert::new(1, 64)));
+        registry.register_remote(ExpertId::new(2), "peer-x".to_string());
+        let list = registry.list_experts();
+        assert_eq!(list, vec![ExpertId::new(1), ExpertId::new(2), ExpertId::new(3)]);
+    }
+
+    #[test]
+    fn test_list_experts_deduplicates() {
+        let mut registry = ExpertRegistry::new();
+        registry.register_local(Box::new(LocalExpert::new(5, 64)));
+        // Registering same ID as remote too — list_experts deduplicates
+        registry.register_remote(ExpertId::new(5), "peer-y".to_string());
+        let list = registry.list_experts();
+        assert_eq!(list.iter().filter(|&&id| id == ExpertId::new(5)).count(), 1);
+    }
+
+    #[test]
+    fn test_fallback_registration_and_retrieval() {
+        let mut registry = ExpertRegistry::new();
+        let fallbacks = vec![ExpertId::new(10), ExpertId::new(11)];
+        registry.register_fallback(ExpertId::new(5), fallbacks.clone());
+        assert_eq!(registry.get_fallbacks(ExpertId::new(5)), Some(&fallbacks));
+        assert_eq!(registry.get_fallbacks(ExpertId::new(99)), None);
+    }
+
+    #[test]
+    fn test_report_failure_does_not_panic() {
+        let mut registry = ExpertRegistry::new();
+        // Reporting failure on an unknown expert should not panic
+        registry.report_failure(ExpertId::new(999));
+    }
+
+    #[test]
+    fn test_local_expert_properties() {
+        let expert = LocalExpert::new(42, 2048);
+        assert_eq!(expert.id(), ExpertId::new(42));
+        assert_eq!(expert.hidden_dim(), 2048);
+        assert!(expert.is_ready());
+    }
+
+    #[tokio::test]
+    async fn test_local_expert_forward_passthrough() {
+        use candle_core::{DType, Device, Tensor};
+        let expert = LocalExpert::new(0, 4);
+        let input = Tensor::zeros((2usize, 4usize), DType::F32, &Device::Cpu).unwrap();
+        let output = expert.forward(&input).await.unwrap();
+        assert_eq!(output.dims(), input.dims());
+    }
 }

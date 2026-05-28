@@ -1,0 +1,188 @@
+{
+  "main": {
+    "id": "9c718ba87981aae0",
+    "type": "split",
+    "children": [
+      {
+        "id": "fc95c19c88115823",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d518c44daf17d1a5",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "entities/Person/Yousuf Rassool.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Yousuf Rassool"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "a22b13bee7fcb55a",
+    "type": "split",
+    "children": [
+      {
+        "id": "eaedfde01deb50e7",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d44158e1e675d90d",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "1a09d304cc3b68a3",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "ea4bf38ccd10b10c",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "ac672795e314a62e",
+    "type": "split",
+    "children": [
+      {
+        "id": "c2099ef3e1c72afe",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4ec2f8bcfaa4f444",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "entities/Person/Yousuf Rassool.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for Yousuf Rassool"
+            }
+          },
+          {
+            "id": "fabe6f949fd449cc",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "entities/Person/Yousuf Rassool.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from Yousuf Rassool"
+            }
+          },
+          {
+            "id": "093d4b5549bbf977",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "0bafa747a4ffa382",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "e9480cc6df12c517",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "entities/Person/Yousuf Rassool.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of Yousuf Rassool"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "d518c44daf17d1a5",
+  "lastOpenFiles": []
+}

@@ -114,14 +114,16 @@ pub struct KwaaiNetConfig {
     /// discovery is unreliable (small networks, NAT-isolated test topologies)
     /// or when you want to force traffic through specific known-good relays.
     /// Empty means "let AutoRelay discover relays via DHT" (the default).
-    #[serde(default)]
+    #[serde(default = "default_trusted_relays")]
     pub trusted_relays: Vec<String>,
 
     /// When true, pre-declare this node as private (`-forceReachabilityPrivate`)
     /// so AutoRelay activates immediately without waiting for AutoNAT probes.
     /// Side effect: AutoNAT can never *promote* the node to public, even if
-    /// it actually is. Off by default — leave AutoNAT to decide.
-    #[serde(default)]
+    /// it actually is. Defaults to true so AutoRelay activates on start without
+    /// waiting for AutoNAT probes (AutoNAT can falsely detect public reachability
+    /// via NAT-PMP, preventing relay circuits from forming).
+    #[serde(default = "default_force_private")]
     pub force_private: bool,
 
     #[serde(default)]
@@ -379,6 +381,11 @@ pub struct RagConfig {
     #[serde(default = "default_inference_url")]
     pub inference_url: String,
 
+    /// Base URL for embedding requests. Accepts `http://...` or `p2p://PEER_ID`.
+    /// Defaults to `inference_url` when absent (same host for both).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_url: Option<String>,
+
     /// Number of context chunks to inject per request.
     #[serde(default = "default_top_k")]
     pub top_k: usize,
@@ -443,6 +450,7 @@ impl Default for RagConfig {
             embed_dim: default_embed_dim(),
             inference_url: default_inference_url(),
             top_k: default_top_k(),
+            embed_url: None,
             storage_url: None,
             rag_data_dir: None,
         }
@@ -526,6 +534,17 @@ fn default_peers() -> Vec<String> {
             .to_string(),
     ]
 }
+fn default_trusted_relays() -> Vec<String> {
+    vec![
+        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
+            .to_string(),
+        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
+            .to_string(),
+    ]
+}
+fn default_force_private() -> bool {
+    true
+}
 fn default_api_endpoint() -> String {
     "https://map.kwaai.ai/api/v1/state".to_string()
 }
@@ -591,8 +610,8 @@ impl Default for KwaaiNetConfig {
             identity_key: None,
             no_relay: false,
             initial_peers: default_peers(),
-            trusted_relays: Vec::new(),
-            force_private: false,
+            trusted_relays: default_trusted_relays(),
+            force_private: default_force_private(),
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,

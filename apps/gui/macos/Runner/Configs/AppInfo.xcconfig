@@ -1,0 +1,18 @@
+// Application-level settings for the Runner target.
+//
+// This may be replaced with something auto-generated from metadata (e.g., pubspec.yaml) in the
+// future. If not, the values below would default to using the project name when this becomes a
+// 'flutter create' template.
+
+// The bundle / executable name — no spaces, never user-visible. The
+// display name shown in the Dock, Cmd-Tab, and the About panel comes
+// from CFBundleDisplayName / CFBundleName in Info.plist; the strings
+// in the Apple menu (About / Hide / Quit) are hardcoded in
+// Base.lproj/MainMenu.xib. Keep all three in sync if you rename the app.
+PRODUCT_NAME = kwaainet_gui
+
+// The application's bundle identifier
+PRODUCT_BUNDLE_IDENTIFIER = ai.kwaai.kwaainetGui
+
+// The copyright displayed in application information
+PRODUCT_COPYRIGHT = Copyright © 2026 ai.kwaai. All rights reserved.

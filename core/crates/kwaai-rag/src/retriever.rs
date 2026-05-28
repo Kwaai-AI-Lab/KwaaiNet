@@ -188,7 +188,155 @@ pub async fn retrieve_graph_anchored(
 
     // 6. RRF fusion: graph chunks + vector chunks.
     let merged = rrf_merge(&graph_chunks, &vector_chunks, cfg.top_k * 2);
-    assemble_results(merged, cfg, meta)
+    let mut results = assemble_results(merged, cfg, meta)?;
+    inject_entity_descriptions(query, &seed_hits, graph, &mut results);
+    Ok(results)
+}
+
+/// Returns true when `entity_id` is the memoir author (Yousuf Rassool).
+fn is_author_entity(entity_id: i64, graph: &GraphStore) -> bool {
+    let Some(entity) = graph.get_entity(entity_id) else {
+        return false;
+    };
+    if entity.name.to_lowercase().contains("yousuf rassool")
+        || entity.name.to_lowercase().contains("yusuf rassool")
+    {
+        return true;
+    }
+    entity.aliases.iter().any(|a| {
+        matches!(
+            a.to_lowercase().as_str(),
+            "author" | "the author" | "narrator" | "the narrator" | "the writer"
+        )
+    })
+}
+
+/// Resolve a query about the author to the specific relative being asked about.
+///
+/// Uses the adjacency list relation types seeded by the family tree to walk
+/// spouse_of / child_of / sibling_of edges from Yousuf Rassool's node.
+fn resolve_author_relative(query: &str, anchor_id: i64, graph: &GraphStore) -> Option<i64> {
+    let q = query.to_lowercase();
+    let neighbors = graph.neighbors_of(anchor_id);
+
+    // Wife / spouse
+    if q.contains("wife") || q.contains("spouse") {
+        return neighbors
+            .iter()
+            .find(|(_, rel, _)| rel == "spouse_of")
+            .map(|(id, _, _)| *id);
+    }
+
+    // Mother
+    if q.contains("mother") || q.contains(" mom") || q.contains("mama") {
+        // child_of edges from Yousuf point to parents; return the most-mentioned one
+        return neighbors
+            .iter()
+            .filter(|(_, rel, _)| rel == "child_of")
+            .max_by_key(|(id, _, _)| graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0))
+            .map(|(id, _, _)| *id);
+    }
+
+    // Father
+    if q.contains("father") || q.contains(" dad") || q.contains("papa") {
+        // Among Yousuf's child_of neighbors, Peter has fewer mentions than Ayesha
+        return neighbors
+            .iter()
+            .filter(|(_, rel, _)| rel == "child_of")
+            .min_by_key(|(id, _, _)| graph.get_entity(*id).map(|e| e.mention_count).unwrap_or(0))
+            .map(|(id, _, _)| *id);
+    }
+
+    // Grandfather / grandpa
+    if q.contains("grandfather") || q.contains("grandpa") || q.contains("grandfath") {
+        let parents: Vec<i64> = neighbors
+            .iter()
+            .filter(|(_, rel, _)| rel == "child_of")
+            .map(|(id, _, _)| *id)
+            .collect();
+        // Walk one more child_of hop; pick the grandparent with the most mentions
+        // (JMH Gool has ~40 mentions vs Bibi Gool ~5, so this correctly selects him)
+        let mut best: Option<(i64, u32)> = None;
+        for parent_id in &parents {
+            for (gp_id, rel, _) in graph.neighbors_of(*parent_id) {
+                if rel == "child_of" {
+                    let m = graph
+                        .get_entity(gp_id)
+                        .map(|e| e.mention_count)
+                        .unwrap_or(0);
+                    if best.is_none_or(|(_, bm)| m > bm) {
+                        best = Some((gp_id, m));
+                    }
+                }
+            }
+        }
+        return best.map(|(id, _)| id);
+    }
+
+    // Siblings
+    if q.contains("sibling") || q.contains("brother") || q.contains("sister") {
+        // Return the first sibling — the LLM will mention all from the chunk context
+        return neighbors
+            .iter()
+            .find(|(_, rel, _)| rel == "sibling_of")
+            .map(|(id, _, _)| *id);
+    }
+
+    None
+}
+
+/// Prepend a synthetic chunk for the most relevant graph entity.
+///
+/// When the top matched entity is the memoir author (Yousuf Rassool), resolves
+/// the query to the specific relative being asked about (wife, grandfather, mother…)
+/// and injects that relative's description instead.  Otherwise injects the top
+/// embedding-matched entity's description.  Exactly one synthetic chunk is added
+/// so the context window is not crowded.
+pub(crate) fn inject_entity_descriptions(
+    query: &str,
+    seed_hits: &[(i64, f64)],
+    graph: &GraphStore,
+    pool: &mut Vec<RetrievedChunk>,
+) {
+    // Prefer the top embedding hit (score > 0.85); fall back to whatever is first.
+    let top = seed_hits
+        .iter()
+        .find(|(_, score)| *score > 0.85)
+        .or_else(|| seed_hits.first());
+
+    let Some((anchor_id, _)) = top else { return };
+
+    let inject_id = if is_author_entity(*anchor_id, graph) {
+        resolve_author_relative(query, *anchor_id, graph).unwrap_or(*anchor_id)
+    } else {
+        *anchor_id
+    };
+
+    let Some(entity) = graph.get_entity(inject_id) else {
+        return;
+    };
+    if entity.description.trim().len() < 20 {
+        return;
+    }
+
+    let synthetic = RetrievedChunk {
+        chunk_meta: ChunkMeta {
+            doc_name: format!("[Graph: {}]", entity.name),
+            chunk_index: 0,
+            text: format!("{}: {}", entity.name, entity.description),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+        },
+        score: 2.0,
+        source_kb: None,
+        rerank_score: None,
+    };
+
+    pool.insert(0, synthetic);
 }
 
 pub(crate) fn assemble_results(

@@ -17,6 +17,7 @@ use kwaai_rag::{
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
     retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
+    seed_json,
 };
 
 use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs};
@@ -54,6 +55,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             chunk_strategy,
             surr_mode,
             doc_meta,
+            doc_schema,
             kb,
         } => {
             cmd_ingest(
@@ -68,6 +70,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 chunk_strategy,
                 surr_mode,
                 doc_meta,
+                doc_schema,
                 kb,
             )
             .await
@@ -145,6 +148,11 @@ pub async fn run(args: RagArgs) -> Result<()> {
             seed_file,
             chunk_strategy,
             doc_meta,
+            doc_schema,
+            entity_types,
+            no_relations,
+            graph_window,
+            sample_pct,
             yes,
         } => {
             cmd_rebuild(
@@ -157,6 +165,11 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 seed_file,
                 chunk_strategy,
                 doc_meta,
+                doc_schema,
+                entity_types,
+                no_relations,
+                graph_window,
+                sample_pct,
                 yes,
             )
             .await
@@ -211,14 +224,6 @@ pub async fn run(args: RagArgs) -> Result<()> {
         RagAction::Cache { action, kb } => cmd_cache(action, kb).await,
 
         RagAction::Dream { action, kb } => cmd_dream(action, kb).await,
-
-        RagAction::Export { output_dir, kb } => cmd_export(output_dir, kb).await,
-
-        RagAction::Import {
-            input_dir,
-            since,
-            kb,
-        } => cmd_import(input_dir, since, kb).await,
 
         RagAction::Eval {
             questions,
@@ -377,6 +382,7 @@ async fn cmd_init(
                 eve_peer_id: None,
                 embed_model,
                 embed_dim,
+                embed_url: None,
                 inference_url: "http://localhost:8080".to_string(),
                 top_k: 5,
                 storage_url: Some("local".to_string()),
@@ -482,6 +488,7 @@ async fn cmd_ingest(
     chunk_strategy: String,
     surr_mode: String,
     doc_meta_path: Option<std::path::PathBuf>,
+    doc_schema_path: Option<std::path::PathBuf>,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -506,8 +513,15 @@ async fn cmd_ingest(
             text.len()
         ));
 
-        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+        let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+
+        // Store document title in graph store for LLM prompt injection
+        {
+            if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+                let _ = g.set_document_titles(&[doc_name.clone()]);
+            }
+        }
 
         let mut cfg = IngestConfig::new(embed);
         cfg.chunk_cfg.chunk_size = chunk_size;
@@ -519,6 +533,58 @@ async fn cmd_ingest(
         if let Some(path) = doc_meta_path {
             cfg.doc_meta = load_doc_meta(&path)?;
             print_info(&format!("Doc-meta loaded: {} entries", cfg.doc_meta.len()));
+        }
+
+        // Doc schema: load from YAML, or auto-detect from the document header.
+        let loaded_schema: Option<kwaai_rag::doc_schema::DocSchema> = if let Some(path) =
+            doc_schema_path
+        {
+            let schema = kwaai_rag::doc_schema::load_doc_schema(&path)?;
+            let skip_count = schema.sections.iter().filter(|s| s.skip).count();
+            let seed_count = schema.sections.iter().filter(|s| s.index_seeds).count();
+            let note_count = schema
+                .sections
+                .iter()
+                .filter(|s| s.narrator_note.is_some())
+                .count();
+            print_info(&format!(
+                "Doc-schema loaded: type={} sections={} (skip={}, index_seeds={}, narrator_notes={})",
+                schema.schema_type.as_deref().unwrap_or("untyped"),
+                schema.sections.len(), skip_count, seed_count, note_count
+            ));
+            Some(schema)
+        } else {
+            let preview = &text[..text.len().min(4000)];
+            let detected = kwaai_rag::doc_schema::auto_detect_schema(preview);
+            if detected.schema_type.is_some() || !detected.metadata.is_empty() {
+                print_info(&format!(
+                    "Doc-schema auto-detected: type={}, metadata_keys=[{}]",
+                    detected.schema_type.as_deref().unwrap_or("unknown"),
+                    detected
+                        .metadata
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                Some(detected)
+            } else {
+                None
+            }
+        };
+
+        if let Some(ref schema) = loaded_schema {
+            // Persist document metadata into the graph store for use at query/dream time.
+            if !schema.metadata.is_empty() {
+                if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+                    let _ = g.set_doc_metadata(&schema.metadata);
+                    print_info(&format!(
+                        "Doc metadata persisted: {} key(s)",
+                        schema.metadata.len()
+                    ));
+                }
+            }
+            cfg.doc_schema = Some(schema.clone());
         }
 
         if extract_entities {
@@ -533,6 +599,9 @@ async fn cmd_ingest(
                 inference_urls: vec![],
                 model: extraction_model.clone(),
                 workers: 1,
+                entity_types: vec![],
+                no_relations: false,
+                context_window: 1,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -611,7 +680,140 @@ async fn cmd_ingest(
                 result.chunks_ingested, result.vectors_uploaded
             ))
             .await;
+
+        // After ingest: inject entity seeds from index sections.
+        if let Some(ref schema) = loaded_schema {
+            if schema.has_index_seeds() {
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                inject_index_seeds(&text, schema, &rag_cfg, tenant_id, &embed).await;
+            }
+        }
+
         Ok(())
+    }
+}
+
+// ── index seed injection ──────────────────────────────────────────────────────
+
+/// Find and return the text of a section whose heading contains `pattern` (case-insensitive).
+/// Returns the text from the heading line to the start of the next all-caps heading or EOF.
+fn extract_section_text<'a>(full_text: &'a str, pattern: &str) -> Option<&'a str> {
+    let lower_pattern = pattern.to_lowercase();
+    let mut start_byte: Option<usize> = None;
+    let mut end_byte = full_text.len();
+
+    let mut offset = 0usize;
+    for line in full_text.lines() {
+        let line_lower = line.trim().to_lowercase();
+        if start_byte.is_none() {
+            if line_lower.contains(&lower_pattern) {
+                start_byte = Some(offset);
+            }
+        } else {
+            // Stop at the next standalone all-caps short heading (another section)
+            let trimmed = line.trim();
+            if !trimmed.is_empty()
+                && trimmed.len() < 30
+                && trimmed == trimmed.to_uppercase()
+                && trimmed.chars().any(|c| c.is_alphabetic())
+                && !line_lower.contains(&lower_pattern)
+            {
+                end_byte = offset;
+                break;
+            }
+        }
+        offset += line.len() + 1; // +1 for the newline
+    }
+
+    start_byte.map(|s| &full_text[s..end_byte.min(full_text.len())])
+}
+
+async fn inject_index_seeds(
+    full_text: &str,
+    schema: &kwaai_rag::doc_schema::DocSchema,
+    rag_cfg: &crate::config::RagConfig,
+    tenant_id: Uuid,
+    embed: &EmbedClient,
+) {
+    use kwaai_rag::graph::{entity_id, EntityNode, GraphStore};
+
+    let mut total_added = 0usize;
+    let mut total_skipped = 0usize;
+
+    for sec in schema.sections.iter().filter(|s| s.index_seeds) {
+        let section_text = match extract_section_text(full_text, &sec.pattern) {
+            Some(t) => t,
+            None => {
+                print_warning(&format!(
+                    "Index seeds: section '{}' not found in document text",
+                    sec.pattern
+                ));
+                continue;
+            }
+        };
+
+        let seeds = kwaai_rag::doc_schema::parse_index_seeds(section_text);
+        if seeds.is_empty() {
+            continue;
+        }
+
+        print_info(&format!(
+            "Index seeds: found {} entries in '{}' section",
+            seeds.len(),
+            sec.pattern
+        ));
+
+        // Embed all seed names in one batch
+        let names: Vec<&str> = seeds.iter().map(|(n, _)| n.as_str()).collect();
+        let embeddings = match embed.embed_batch(&names).await {
+            Ok(e) => e,
+            Err(e) => {
+                print_warning(&format!("Index seed embedding failed: {e}"));
+                continue;
+            }
+        };
+
+        let store = match GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+            Ok(s) => s,
+            Err(e) => {
+                print_warning(&format!("Could not open graph store for index seeds: {e}"));
+                continue;
+            }
+        };
+        let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+
+        for ((name, type_hint), embedding) in seeds.iter().zip(embeddings) {
+            let entity_type = type_hint.as_deref().unwrap_or("Person");
+            let eid = entity_id(name, entity_type);
+            let node = EntityNode {
+                id: eid,
+                name: name.clone(),
+                entity_type: entity_type.to_string(),
+                description: String::new(),
+                embedding,
+                mention_count: 1,
+                first_chunk_id: 0,
+                aliases: vec![],
+                schema_type: None,
+                gender: None,
+                evidence: vec![],
+                fields: Default::default(),
+            };
+            match store.lock() {
+                Ok(mut g) => match g.upsert_entity(node) {
+                    Ok(_) => total_added += 1,
+                    Err(_) => total_skipped += 1,
+                },
+                Err(_) => total_skipped += 1,
+            }
+        }
+    }
+
+    if total_added > 0 {
+        print_success(&format!(
+            "Index seeds: injected {total_added} entity seeds into graph ({total_skipped} skipped)"
+        ));
     }
 }
 
@@ -733,7 +935,8 @@ async fn cmd_query(
                     continue;
                 }
             };
-            let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+            let embed =
+                EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
             let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
             let infer_url = inference_url
                 .clone()
@@ -1003,7 +1206,7 @@ async fn cmd_chat(
             })
             .unwrap_or_else(|| rag_cfg.inference_url.clone());
 
-        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+        let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
 
         let retrieve_cfg = RetrieveConfig {
@@ -1087,6 +1290,22 @@ async fn cmd_chat(
                     }
                 }
             }
+
+            // Load document context preamble from persisted schema metadata (if any).
+            let doc_context_line: Option<String> = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                .ok()
+                .and_then(|g| {
+                    let meta = g.get_doc_metadata();
+                    if meta.is_empty() {
+                        return None;
+                    }
+                    let schema = kwaai_rag::doc_schema::DocSchema {
+                        metadata: meta,
+                        document_title: g.get_document_titles().into_iter().next(),
+                        ..Default::default()
+                    };
+                    schema.context_line()
+                });
 
             // Resolve effective mode for this turn (auto → graph if KB has entities).
             let effective_mode_chat: &str = if mode == "auto" {
@@ -1192,7 +1411,13 @@ async fn cmd_chat(
                 chunks
             };
 
-            let messages = build_chat_messages(&query, &chunks, &history, 24000);
+            let messages = build_chat_messages(
+                &query,
+                &chunks,
+                &history,
+                24000,
+                doc_context_line.as_deref(),
+            );
             let payload = serde_json::json!({
                 "model": model,
                 "messages": messages,
@@ -1413,6 +1638,11 @@ async fn cmd_rebuild(
     seed_file: Option<std::path::PathBuf>,
     chunk_strategy: String,
     doc_meta: Option<std::path::PathBuf>,
+    doc_schema: Option<std::path::PathBuf>,
+    entity_types: Option<String>,
+    no_relations: bool,
+    graph_window: usize,
+    sample_pct: Option<u8>,
     yes: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -1458,6 +1688,7 @@ async fn cmd_rebuild(
             chunk_strategy,
             "truncated".to_string(),
             doc_meta,
+            doc_schema,
             kb.clone(),
         )
         .await?;
@@ -1473,6 +1704,11 @@ async fn cmd_rebuild(
                 docs: None,
                 workers,
                 inference_urls: Some(inference_urls),
+                entity_types,
+                no_relations,
+                reset_graph: false,
+                graph_window,
+                sample_pct,
             },
             kb.clone(),
         )
@@ -1766,7 +2002,7 @@ async fn run_sync_pass(
             }
         };
 
-        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+        let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let mut ingest_cfg = IngestConfig::new(embed);
         ingest_cfg.chunk_cfg = chunk_cfg.clone();
         ingest_cfg.doc_meta = doc_meta.clone();
@@ -1782,6 +2018,9 @@ async fn run_sync_pass(
                     inference_urls: vec![],
                     model: extraction_model.clone(),
                     workers: 1,
+                    entity_types: vec![],
+                    no_relations: false,
+                    context_window: 1,
                 });
             }
         }
@@ -1969,6 +2208,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 docs,
                 workers,
                 inference_urls,
+                entity_types,
+                no_relations,
+                graph_window,
+                reset_graph,
+                sample_pct,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2009,6 +2253,28 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let infer_url = resolved_all[0].clone();
                 let extra_urls: Vec<String> = resolved_all[1..].to_vec();
 
+                // Parse --entity-types into a Vec<String>
+                let parsed_entity_types: Vec<String> = entity_types
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Optionally wipe the graph before rebuilding.
+                if reset_graph {
+                    let graph_path = rag_cfg.data_dir().join(format!("graph-{}.redb", tenant_id));
+                    if graph_path.exists() {
+                        std::fs::remove_file(&graph_path).with_context(|| {
+                            format!("clearing graph at {}", graph_path.display())
+                        })?;
+                        print_info("Graph cleared — rebuilding from scratch.");
+                    }
+                }
+
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
                 let mut all_chunks = meta.all_chunks()?;
 
@@ -2030,6 +2296,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if let Some(n) = limit {
                     all_chunks.truncate(n);
                 }
+                if let Some(pct) = sample_pct {
+                    let n = ((all_chunks.len() * pct.min(100) as usize) + 99) / 100;
+                    all_chunks.truncate(n);
+                }
                 let total = all_chunks.len();
 
                 if total == 0 {
@@ -2043,6 +2313,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if let Some(ref p) = docs {
                     println!("  Doc filter:        {p}");
                 }
+                if let Some(pct) = sample_pct {
+                    println!("  Sample:            {pct}% of corpus");
+                }
                 println!("  Chunks to process: {total}");
                 if !extra_urls.is_empty() {
                     println!("  Inference URLs:    {}", extra_urls.join(", "));
@@ -2053,9 +2326,16 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         println!("  Workers:           {effective_workers}");
                     }
                 }
+                if !parsed_entity_types.is_empty() {
+                    println!("  Entity types:      {}", parsed_entity_types.join(", "));
+                }
+                if no_relations {
+                    println!("  Relations:         disabled");
+                }
                 println!("  This may take a while — one LLM call per chunk.\n");
 
-                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let store = Arc::new(Mutex::new(
                     GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                         .context("opening graph store")?,
@@ -2066,6 +2346,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     inference_urls: extra_urls,
                     model,
                     workers: effective_workers,
+                    entity_types: parsed_entity_types,
+                    no_relations,
+                    context_window: graph_window,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
@@ -2077,18 +2360,33 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         text: cm.text.clone(),
                         surrounding: cm.surrounding.clone(),
                         page_num: cm.page_num,
+                        section_name: cm.section_name.clone(),
+                        skip_extraction: cm.skip_extraction,
+                        section_note: cm.section_note.clone(),
                     })
                     .collect();
                 let ids: Vec<i64> = all_chunks.iter().map(|(id, _)| *id).collect();
 
+                let build_start = std::time::Instant::now();
                 kwaai_rag::ingestion::extract_and_store_entities_pub(
                     &chunks,
                     &ids,
                     &embed,
                     &graph_cfg,
-                    Some(std::sync::Arc::new(|done: usize, total: usize, entities: usize, relations: usize| {
-                        if done.is_multiple_of(50) || done == total {
-                            println!("  [{done:>4}/{total}]  entities={entities}  relations={relations}");
+                    Some(std::sync::Arc::new(move |done: usize, total: usize, entities: usize, relations: usize| {
+                        let elapsed = build_start.elapsed().as_secs_f64();
+                        let eta_str = if done > 0 && done < total {
+                            let rate = elapsed / done as f64;
+                            let remaining = rate * (total - done) as f64;
+                            format!("  ETA {:.0}s", remaining)
+                        } else {
+                            String::new()
+                        };
+                        eprint!(
+                            "\r  [{done:>4}/{total}]  entities={entities:>4}  rels={relations:>4}  elapsed={elapsed:.0}s{eta_str}    "
+                        );
+                        if done == total {
+                            eprintln!();
                         }
                     })),
                 )
@@ -2517,7 +2815,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     file.display()
                 );
 
-                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
 
@@ -2548,7 +2847,72 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     store.node_count(),
                     store.relation_count()
                 );
-                println!("\n  Tip: run `rag export` to view the updated graph in Obsidian.");
+                println!("\n  Tip: run `rag graph export` to view the updated graph in Obsidian.");
+            }
+
+            GraphAction::SeedFromJson { file, emit_yaml } => {
+                print_box_header(&format!("Graph Seed from JSON ({})", kb));
+
+                let payload = seed_json::load_nb_json(&file)
+                    .with_context(|| format!("loading {}", file.display()))?;
+
+                let (low_ents, low_rels) = seed_json::count_low_confidence(&payload);
+                let total_ents = payload.entities.len();
+                let total_rels = payload.relations.len();
+
+                println!(
+                    "  Loaded {} entities ({} low-confidence), {} relations ({} low-confidence skipped) from {}",
+                    total_ents,
+                    low_ents,
+                    total_rels,
+                    low_rels,
+                    file.display()
+                );
+
+                // Optionally emit the converted YAML
+                if let Some(yaml_path) = &emit_yaml {
+                    let yaml = seed_json::to_seed_yaml(&payload);
+                    std::fs::write(yaml_path, &yaml)
+                        .with_context(|| format!("writing YAML to {}", yaml_path.display()))?;
+                    print_success(&format!("Seed YAML written to {}", yaml_path.display()));
+                }
+
+                // Convert to FamilyTree and seed the graph directly
+                let tree = seed_json::to_family_tree(&payload);
+
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+
+                println!(
+                    "  Graph before: {} entities, {} relations\n",
+                    store.node_count(),
+                    store.relation_count()
+                );
+
+                let stats = family::seed_family_tree(&mut store, &tree, &embed, |msg| {
+                    println!("  {msg}");
+                })
+                .await?;
+
+                println!();
+                print_success(&format!(
+                    "Seed complete — {} canonical entities upserted, {} aliases merged \
+                     ({} relations re-pointed), {} relations planted, {} aliases \
+                     not found in graph",
+                    stats.entities_upserted,
+                    stats.aliases_merged,
+                    stats.relations_merged,
+                    stats.relations_upserted,
+                    stats.aliases_not_found,
+                ));
+                println!(
+                    "  Graph after:  {} entities, {} relations",
+                    store.node_count(),
+                    store.relation_count()
+                );
+                println!("\n  Tip: run `rag graph export` to view the updated graph in Obsidian.");
             }
 
             GraphAction::AliasScan {
@@ -2565,6 +2929,31 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     min_hits,
                 )
                 .await?;
+            }
+
+            GraphAction::Sanitize => {
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store for sanitize")?;
+                if store.node_count() == 0 {
+                    print_warning("Graph is empty — nothing to sanitize.");
+                    return Ok(());
+                }
+                print_box_header(&format!("Graph Sanitize ({})", kb));
+                println!("  Entities: {}", store.node_count());
+                println!("  Relations before: {}", store.relation_count());
+                println!();
+
+                let spinner = crate::progress::Spinner::start("sanitizing…");
+                let (removed, added, recomputed, gendered) = store.sanitize_relations()?;
+                drop(spinner);
+
+                println!("  Familial relations removed (non-Person endpoint): {removed}");
+                println!("  Missing inverse / symmetric relations added:       {added}");
+                println!("  Relation strengths recomputed from evidence:       {recomputed}");
+                println!("  Person entities with gender inferred:              {gendered}");
+                println!();
+                println!("  Relations after: {}", store.relation_count());
+                print_success("Sanitize complete. Run `graph score` to re-evaluate health.");
             }
 
             GraphAction::Score { top, json } => {
@@ -2628,6 +3017,33 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         }
                     }
                 }
+            }
+
+            GraphAction::SetMetadata { doc_schema } => {
+                let schema = kwaai_rag::doc_schema::load_doc_schema(&doc_schema)
+                    .context("loading doc schema")?;
+                if schema.metadata.is_empty() {
+                    print_warning("Doc schema has no metadata section — nothing to persist.");
+                    return Ok(());
+                }
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                store.set_doc_metadata(&schema.metadata)?;
+                print_success(&format!(
+                    "Persisted {} metadata key(s) into KB '{kb}':",
+                    schema.metadata.len()
+                ));
+                for (k, v) in &schema.metadata {
+                    println!("    {k}: {v}");
+                }
+            }
+
+            GraphAction::Export { output_dir } => {
+                return cmd_export(output_dir, kb).await;
+            }
+
+            GraphAction::Import { input_dir, since } => {
+                return cmd_import(input_dir, since, kb).await;
             }
         }
         Ok(())
@@ -3071,7 +3487,8 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     (vec![], raw_urls)
                 };
 
-                let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
                 let cfg = kwaai_rag::dream::DreamConfig {
                     completeness_threshold: threshold,
                     dedup_threshold,
@@ -3176,6 +3593,93 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     }
                 }
             }
+
+            DreamAction::EmbedEval {
+                max_queries,
+                output,
+                verbose,
+                json,
+            } => {
+                let graph = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store for eval")?;
+                let embed =
+                    EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+                let vs = std::sync::Arc::new(open_local_vs(&rag_cfg.data_dir())?);
+
+                if !json {
+                    print_box_header(&format!("Dream RAG — Retrieval Eval ({})", kb));
+                    let n = kwaai_rag::eval_retrieve::generate_eval_queries(
+                        &graph,
+                        max_queries.unwrap_or(usize::MAX),
+                    )
+                    .len();
+                    println!("  Embed model: {}", rag_cfg.embed_model);
+                    println!("  Queries:     {n}");
+                    println!();
+                }
+
+                let spinner = if json {
+                    None
+                } else {
+                    Some(crate::progress::Spinner::start("evaluating…"))
+                };
+
+                let report = kwaai_rag::eval_retrieve::evaluate_retrieval(
+                    &graph,
+                    &embed,
+                    |emb, k| {
+                        let vs = vs.clone();
+                        async move {
+                            let raw = vs.search(tenant_id, &emb, k).await?;
+                            Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                        }
+                    },
+                    max_queries.unwrap_or(usize::MAX),
+                    verbose,
+                    if json {
+                        None
+                    } else {
+                        Some(&|i, total| {
+                            let _ = (i, total); // progress is shown via spinner
+                        })
+                    },
+                )
+                .await?;
+
+                drop(spinner);
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("  Graph score:   {:.1}%", report.graph_score * 100.0);
+                    println!("  Queries run:   {}", report.query_count);
+                    println!(
+                        "  Content queries (description-based): {:.0}%  Name queries: {:.0}%",
+                        report.content_query_fraction * 100.0,
+                        (1.0 - report.content_query_fraction) * 100.0
+                    );
+                    println!();
+                    println!("  Entity-space retrieval (primary — query → entity embeddings):");
+                    println!("    Recall@1:  {:.1}%", report.entity_recall_at_1 * 100.0);
+                    println!("    Recall@3:  {:.1}%", report.entity_recall_at_3 * 100.0);
+                    println!("    Recall@5:  {:.1}%", report.entity_recall_at_5 * 100.0);
+                    println!("    Recall@10: {:.1}%", report.entity_recall_at_10 * 100.0);
+                    println!("    MRR:       {:.3}", report.entity_mrr);
+                    println!();
+                    println!("  Chunk-space retrieval (lower bound — query → raw text chunks):");
+                    println!("    Recall@1:  {:.1}%", report.chunk_recall_at_1 * 100.0);
+                    println!("    Recall@5:  {:.1}%", report.chunk_recall_at_5 * 100.0);
+                    println!("    Recall@10: {:.1}%", report.chunk_recall_at_10 * 100.0);
+                    println!("    MRR:       {:.3}", report.chunk_mrr);
+                }
+
+                if let Some(path) = output {
+                    std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+                    if !json {
+                        print_success(&format!("Report saved: {}", path.display()));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -3261,12 +3765,35 @@ async fn cmd_eval(
         }
 
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
-        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+        let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
         let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
+
+        // Resolve p2p:// URLs to local HTTP proxies (same pattern as dream/graph build).
+        let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
+        let inference_url = if inference_url.starts_with("p2p://") {
+            use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+            let sock = std::env::var("KWAAINET_SOCKET")
+                .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+            #[cfg(unix)]
+            let addr = format!("/unix/{sock}");
+            #[cfg(not(unix))]
+            let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+            let p2p = std::sync::Arc::new(
+                P2PClient::connect(&addr)
+                    .await
+                    .context("connecting to p2pd for p2p:// URL resolution")?,
+            );
+            let (resolved, handles) =
+                crate::ollama_proxy::resolve_inference_urls(&[inference_url], &p2p).await?;
+            _proxy_handles = handles;
+            resolved.into_iter().next().unwrap_or_default()
+        } else {
+            inference_url
+        };
 
         let retrieve_cfg = RetrieveConfig {
             top_k,
@@ -3284,6 +3811,22 @@ async fn cmd_eval(
                 None
             },
         };
+
+        // Load document context preamble from persisted schema metadata (if any).
+        let eval_doc_context: Option<String> = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+            .ok()
+            .and_then(|g| {
+                let meta = g.get_doc_metadata();
+                if meta.is_empty() {
+                    return None;
+                }
+                let schema = kwaai_rag::doc_schema::DocSchema {
+                    metadata: meta,
+                    document_title: g.get_document_titles().into_iter().next(),
+                    ..Default::default()
+                };
+                schema.context_line()
+            });
 
         // Resolve "auto" mode: use graph if the KB has entities, else vector.
         let effective_mode = if mode == "auto" {
@@ -3425,7 +3968,13 @@ async fn cmd_eval(
                 .collect();
 
             // Generate answer.
-            let messages = build_chat_messages(&q.question, &chunks, &[], 24000);
+            let messages = build_chat_messages(
+                &q.question,
+                &chunks,
+                &[],
+                24000,
+                eval_doc_context.as_deref(),
+            );
             let payload = serde_json::json!({
                 "model": model,
                 "messages": messages,
@@ -3720,17 +4269,21 @@ async fn cmd_export(output_dir: std::path::PathBuf, kb: String) -> Result<()> {
 
         let stats = kwaai_rag::obsidian::export_vault(&graph, &output_dir, &kb)?;
 
+        let stale_msg = if stats.stale_removed > 0 {
+            format!(", {} stale files removed", stats.stale_removed)
+        } else {
+            String::new()
+        };
         print_success(&format!(
-            "Vault written — {} entity files, {} relation links",
-            stats.entities,
-            stats.relations / 2
+            "Vault written — {} entity files, {} relation links{}",
+            stats.entities, stats.relations, stale_msg
         ));
         println!(
             "  Open {} in Obsidian and enable Graph View (Ctrl/Cmd+G).",
             output_dir.display()
         );
         println!(
-            "  After curation run:  kwaainet rag import --input-dir {} --kb {}",
+            "  After curation run:  kwaainet rag graph import --input-dir {} --kb {}",
             output_dir.display(),
             kb
         );
@@ -3749,7 +4302,7 @@ async fn cmd_import(input_dir: std::path::PathBuf, since: u64, kb: String) -> Re
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
         let mut graph =
             GraphStore::open(&rag_cfg.data_dir(), tenant_id).context("opening graph store")?;
-        let embed = EmbedClient::new(None, Some(rag_cfg.embed_model.clone()));
+        let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
 
         print_box_header(&format!("RAG Import ({})", kb));
         if since > 0 {

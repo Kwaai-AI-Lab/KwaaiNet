@@ -14,13 +14,14 @@ members = [
     "crates/kwaai-storage",
     "crates/kwaai-rag",
     "crates/kwaai-rpc",
+    "crates/kwaai-network-tests",
 ]
 default-members = ["crates/kwaai-cli"]
 
 # Root package for examples
 [package]
 name = "kwaai-core"
-version = "0.4.74"
+version = "0.4.79"
 edition = "2021"
 publish = false
 
@@ -126,7 +127,7 @@ name = "query_dht_state"
 path = "examples/query_dht_state.rs"
 
 [workspace.package]
-version = "0.4.74"
+version = "0.4.79"
 
 edition = "2021"
 authors = ["Kwaai AI Lab <dev@kwaai.ai>"]

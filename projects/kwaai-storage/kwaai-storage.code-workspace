@@ -1,0 +1,18 @@
+{
+  "folders": [
+    { "path": "../../core/crates/kwaai-storage", "name": "kwaai-storage (crate)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (vpk)" },
+    { "path": ".", "name": "project docs" },
+    { "path": "../../tests/kwaai-storage", "name": "tests" }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": ["../../core/Cargo.toml"],
+    "rust-analyzer.cargo.features": "all"
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust-analyzer",
+      "tamasfe.even-better-toml"
+    ]
+  }
+}

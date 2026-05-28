@@ -1,22 +1,21 @@
-//! P2P proxy for Ollama HTTP — tunnels `/v1/chat/completions` and friends
-//! through the KwaaiNet fabric so remote nodes can offload LLM inference to
-//! peers that have Ollama running locally.
+//! P2P proxy for HTTP inference — tunnels `/v1/chat/completions` and friends
+//! through the KwaaiNet fabric so remote nodes can offload LLM inference.
 //!
-//! Protocol ID: `/kwaai/ollama-proxy/1.0.0`
+//! Two protocols are supported:
+//!
+//! * `/kwaai/ollama-proxy/1.0.0` — forwards to `localhost:11434` (Ollama).
+//! * `/kwaai/shard-proxy/1.0.0` — forwards to the local shard API port
+//!   (written to `~/.kwaainet/run/shard_api.port` by `kwaainet shard api`).
+//!
+//! When a caller resolves a `p2p://PEER_ID` URL, this module probes the remote
+//! peer to see which protocol is available and picks the best one automatically.
 //!
 //! Message flow (client perspective):
 //! ```text
 //! extract_from_text  ──HTTP──▶  local TCP proxy  ──P2P──▶  remote node
-//!                                                             │  Ollama
+//!                                                             │  shard api / Ollama
 //!                              local TCP proxy  ◀──P2P──  ◀──┘
 //! ```
-//!
-//! The **server** handler (`make_ollama_proxy_handler`) forwards the incoming
-//! msgpack request to `localhost:11434` and sends back the response.
-//!
-//! The **client** helper (`start_local_proxy`) starts a local TCP listener on a
-//! random port.  Callers substitute the returned `http://127.0.0.1:PORT` for any
-//! `p2p://PEER_ID` URL so that the rest of the pipeline needs no modification.
 
 use anyhow::{Context, Result};
 use kwaai_p2p_daemon::P2PClient;
@@ -27,9 +26,10 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 pub const OLLAMA_PROXY_PROTO: &str = "/kwaai/ollama-proxy/1.0.0";
+pub const SHARD_PROXY_PROTO: &str = "/kwaai/shard-proxy/1.0.0";
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -112,6 +112,79 @@ pub fn make_ollama_proxy_handler() -> impl Fn(
     }
 }
 
+/// Build a unary handler that forwards incoming proxy requests to the local
+/// shard API port written by `kwaainet shard api` at startup.
+///
+/// Returns 503 immediately if the shard API is not running (port file absent).
+/// Register with `client.add_unary_handler(SHARD_PROXY_PROTO, handler, false)`.
+#[allow(clippy::type_complexity)]
+pub fn make_shard_proxy_handler() -> impl Fn(
+    Vec<u8>,
+) -> Pin<
+    Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
+> + Send
+       + Sync
+       + 'static {
+    move |data: Vec<u8>| {
+        Box::pin(async move {
+            let port = match std::fs::read_to_string(crate::shard_cmd::shard_api_port_file())
+                .ok()
+                .and_then(|s| s.trim().parse::<u16>().ok())
+            {
+                Some(p) => p,
+                None => return encode_err(503, "shard api not running"),
+            };
+
+            let req: ProxyRequest = match rmp_serde::from_slice(&data) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("shard_proxy server: bad request: {e}");
+                    return encode_err(400, &format!("bad request: {e}"));
+                }
+            };
+
+            debug!("shard_proxy server: {} {}", req.method, req.path);
+
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => return encode_err(503, &format!("reqwest init: {e}")),
+            };
+
+            let url = format!("http://127.0.0.1:{port}{}", req.path);
+            let method: reqwest::Method = req.method.parse().unwrap_or(reqwest::Method::POST);
+
+            let result = client
+                .request(method, &url)
+                .header("Content-Type", "application/json")
+                .body(req.body)
+                .send()
+                .await;
+
+            let (status, body) = match result {
+                Ok(r) => {
+                    let status = r.status().as_u16();
+                    let body =
+                        match tokio::time::timeout(std::time::Duration::from_secs(120), r.bytes())
+                            .await
+                        {
+                            Ok(Ok(b)) => b.to_vec(),
+                            Ok(Err(e)) => format!("body error: {e}").into_bytes(),
+                            Err(_) => b"body timeout".to_vec(),
+                        };
+                    (status, body)
+                }
+                Err(e) => (503u16, format!("upstream: {e}").into_bytes()),
+            };
+
+            rmp_serde::to_vec_named(&ProxyResponse { status, body })
+                .map_err(|e| kwaai_p2p_daemon::error::Error::Protocol(e.to_string()))
+        })
+    }
+}
+
 fn encode_err(status: u16, msg: &str) -> kwaai_p2p_daemon::error::Result<Vec<u8>> {
     rmp_serde::to_vec_named(&ProxyResponse {
         status,
@@ -129,9 +202,27 @@ pub async fn start_local_proxy(
     client: Arc<P2PClient>,
     peer_id: PeerId,
 ) -> Result<(u16, tokio::task::JoinHandle<()>)> {
+    start_proxy_with_proto(client, peer_id, OLLAMA_PROXY_PROTO).await
+}
+
+/// Start a local TCP listener that proxies HTTP → P2P → remote shard API.
+///
+/// Returns `(local_port, join_handle)`.  Drop the handle to stop the proxy.
+pub async fn start_local_shard_proxy(
+    client: Arc<P2PClient>,
+    peer_id: PeerId,
+) -> Result<(u16, tokio::task::JoinHandle<()>)> {
+    start_proxy_with_proto(client, peer_id, SHARD_PROXY_PROTO).await
+}
+
+async fn start_proxy_with_proto(
+    client: Arc<P2PClient>,
+    peer_id: PeerId,
+    protocol: &'static str,
+) -> Result<(u16, tokio::task::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .context("bind local ollama proxy")?;
+        .context("bind local inference proxy")?;
     let port = listener.local_addr()?.port();
 
     let handle = tokio::spawn(async move {
@@ -139,13 +230,12 @@ pub async fn start_local_proxy(
             let (stream, _) = match listener.accept().await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("ollama_proxy local accept: {e}");
+                    warn!("inference_proxy local accept: {e}");
                     break;
                 }
             };
             let client = client.clone();
-            let peer_id = peer_id;
-            tokio::spawn(handle_connection(stream, client, peer_id));
+            tokio::spawn(handle_connection(stream, client, peer_id, protocol));
         }
     });
 
@@ -156,6 +246,7 @@ async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     client: Arc<P2PClient>,
     peer_id: PeerId,
+    protocol: &'static str,
 ) {
     // Read the full HTTP request (Ollama payloads are typically < 4 KB).
     let mut buf = vec![0u8; 4 * 1024 * 1024];
@@ -185,12 +276,12 @@ async fn handle_connection(
     };
 
     let resp_bytes = match client
-        .call_unary_handler(&peer_id.to_bytes(), OLLAMA_PROXY_PROTO, &req_bytes)
+        .call_unary_handler(&peer_id.to_bytes(), protocol, &req_bytes)
         .await
     {
         Ok(b) => b,
         Err(e) => {
-            warn!("ollama_proxy: P2P call to {peer_id}: {e}");
+            warn!("inference_proxy: P2P call to {peer_id} via {protocol}: {e}");
             let msg = b"Bad Gateway";
             let _ = stream
                 .write_all(
@@ -254,6 +345,32 @@ fn status_text(code: u16) -> &'static str {
 
 // ── URL resolution ─────────────────────────────────────────────────────────────
 
+/// Probe whether the remote peer has `/kwaai/shard-proxy/1.0.0` available and
+/// its shard API running (returns HTTP 200 for GET /v1/models).
+/// Returns `true` if the shard proxy should be used, `false` to fall back to Ollama.
+async fn probe_shard_proxy(client: &Arc<P2PClient>, peer_id: PeerId) -> bool {
+    let probe = ProxyRequest {
+        method: "GET".to_string(),
+        path: "/v1/models".to_string(),
+        body: vec![],
+    };
+    let probe_bytes = match rmp_serde::to_vec_named(&probe) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client.call_unary_handler(&peer_id.to_bytes(), SHARD_PROXY_PROTO, &probe_bytes),
+    )
+    .await;
+    match result {
+        Ok(Ok(resp_bytes)) => rmp_serde::from_slice::<ProxyResponse>(&resp_bytes)
+            .map(|r| r.status == 200)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Resolve a list of inference URLs, starting a local HTTP proxy for each
 /// `p2p://PEER_ID` entry.
 ///
@@ -271,10 +388,25 @@ pub async fn resolve_inference_urls(
             let peer_id: PeerId = peer_str
                 .parse()
                 .with_context(|| format!("invalid PeerId in inference URL: {url}"))?;
-            let (port, handle) = start_local_proxy(client.clone(), peer_id).await?;
+
+            // Probe whether the remote peer has a shard API running.
+            // Prefer shard-proxy (no Ollama needed); fall back to ollama-proxy.
+            let shard_available = probe_shard_proxy(client, peer_id).await;
+            let (proto_name, (port, handle)) = if shard_available {
+                (
+                    "shard-proxy",
+                    start_local_shard_proxy(client.clone(), peer_id).await?,
+                )
+            } else {
+                (
+                    "ollama-proxy",
+                    start_local_proxy(client.clone(), peer_id).await?,
+                )
+            };
+
             resolved.push(format!("http://127.0.0.1:{port}"));
             handles.push(handle);
-            tracing::info!("ollama_proxy: {url} → http://127.0.0.1:{port}");
+            info!("inference_proxy: {url} → http://127.0.0.1:{port} (via {proto_name})");
         } else {
             resolved.push(url.clone());
         }

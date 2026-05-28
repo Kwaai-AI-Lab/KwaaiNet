@@ -871,6 +871,15 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     let addr = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
+    // Advertise our port so the shard-proxy P2P handler can find us.
+    let _ = std::fs::create_dir_all(crate::config::run_dir());
+    if let Err(e) = std::fs::write(
+        crate::shard_cmd::shard_api_port_file(),
+        args.port.to_string(),
+    ) {
+        tracing::warn!("Could not write shard_api.port: {e}");
+    }
+
     print_success(&format!(
         "API server ready — http://localhost:{}/v1",
         args.port
@@ -891,5 +900,6 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     print_separator();
 
     axum::serve(listener, app).await?;
+    let _ = std::fs::remove_file(crate::shard_cmd::shard_api_port_file());
     Ok(())
 }

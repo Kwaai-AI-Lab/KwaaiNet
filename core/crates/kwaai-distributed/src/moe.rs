@@ -211,3 +211,89 @@ impl MixtureOfExperts for DistributedMoE {
         self.router.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expert::LocalExpert;
+    use candle_core::{DType, Device, Tensor};
+
+    fn make_router(hidden: usize, num_experts: usize, top_k: usize) -> TopKRouter {
+        let gate = Tensor::zeros((hidden, num_experts), DType::F32, &Device::Cpu).unwrap();
+        TopKRouter::new(gate, top_k, num_experts, 0.01)
+    }
+
+    #[test]
+    fn test_router_accessors() {
+        let router = make_router(64, 8, 2);
+        assert_eq!(router.top_k(), 2);
+        assert_eq!(router.num_experts(), 8);
+    }
+
+    #[test]
+    fn test_routing_output_matches_seq_len() {
+        let router = make_router(16, 4, 2);
+        let seq_len = 5usize;
+        let input = Tensor::zeros((seq_len, 16usize), DType::F32, &Device::Cpu).unwrap();
+        let routing = router.route(&input).unwrap();
+        assert_eq!(routing.expert_indices.len(), seq_len);
+        assert_eq!(routing.expert_weights.len(), seq_len);
+        for row in &routing.expert_indices {
+            assert_eq!(row.len(), 2, "top_k=2 → each token routed to 2 experts");
+        }
+    }
+
+    #[test]
+    fn test_routing_weights_sum_to_one() {
+        let router = make_router(8, 4, 2);
+        let input = Tensor::zeros((3usize, 8usize), DType::F32, &Device::Cpu).unwrap();
+        let routing = router.route(&input).unwrap();
+        for row in &routing.expert_weights {
+            let sum: f32 = row.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-5, "weights sum={sum}");
+        }
+    }
+
+    #[test]
+    fn test_moe_register_local_expert() {
+        let router = make_router(16, 4, 2);
+        let cfg = MoEConfig {
+            hidden_dim: 16,
+            num_experts: 4,
+            top_k: 2,
+            timeout_ms: 1000,
+        };
+        let mut moe = DistributedMoE::new(Box::new(router), cfg);
+        moe.register_expert(Box::new(LocalExpert::new(0, 16)));
+        assert!(moe.registry().is_local(crate::expert::ExpertId::new(0)));
+        assert!(!moe.registry().is_local(crate::expert::ExpertId::new(1)));
+    }
+
+    #[test]
+    fn test_moe_register_remote_expert() {
+        let router = make_router(16, 4, 2);
+        let cfg = MoEConfig::default();
+        let mut moe = DistributedMoE::new(Box::new(router), cfg);
+        moe.register_remote_expert(crate::expert::ExpertId::new(5), "peer-abc".to_string());
+        assert_eq!(
+            moe.registry()
+                .get_remote_peer(crate::expert::ExpertId::new(5)),
+            Some(&"peer-abc".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_moe_forward_returns_same_shape() {
+        let router = make_router(8, 2, 1);
+        let cfg = MoEConfig {
+            hidden_dim: 8,
+            num_experts: 2,
+            top_k: 1,
+            timeout_ms: 1000,
+        };
+        let mut moe = DistributedMoE::new(Box::new(router), cfg);
+        let input = Tensor::zeros((2usize, 8usize), DType::F32, &Device::Cpu).unwrap();
+        let output = moe.forward(&input).await.unwrap();
+        assert_eq!(output.dims(), input.dims());
+    }
+}

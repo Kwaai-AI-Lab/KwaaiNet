@@ -5,7 +5,7 @@
 //!   2. Merge known alias entities into each canonical (re-pointing all their relations).
 //!   3. Upsert ground-truth family relations (parent_of, spouse_of, sibling_of, etc.).
 //!
-//! The YAML format is documented in `tests/d6_family_tree.yaml`.
+//! The YAML format is documented in `tests/kwaai-knowledge/d6_family_tree.yaml`.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -123,6 +123,11 @@ pub async fn seed_family_tree(
             aliases: merged_aliases,
             schema_type: existing.as_ref().and_then(|e| e.schema_type.clone()),
             evidence: Vec::new(),
+            gender: existing.as_ref().and_then(|e| e.gender.clone()),
+            fields: existing
+                .as_ref()
+                .map(|e| e.fields.clone())
+                .unwrap_or_default(),
         };
 
         graph.upsert_entity(node)?;

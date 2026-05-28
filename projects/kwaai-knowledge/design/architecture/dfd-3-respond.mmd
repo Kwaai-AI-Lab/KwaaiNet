@@ -1,0 +1,26 @@
+flowchart TD
+    classDef process fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef external fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef stub fill:#f3f4f6,stroke:#9ca3af,color:#6b7280,stroke-dasharray:5 5
+
+    %% NOTE: The Respond decomposition has not yet been designed.
+    %% This placeholder shows the boundary — what flows in and what flows out.
+    %% TODO: Design the internal decomposition (3.1 … 3.N) in a future session.
+    %%
+    %% Open design questions:
+    %%   - Does 3.0 stream tokens or return a complete string?
+    %%   - Where does chat history context get injected (multi-turn)?
+    %%   - Does 3.0 own citation formatting, or does 2.5 already add sources?
+    %%   - Is there a hallucination-check step between generation and output?
+    %%   - How does wiki synthesis (1.9) connect back to Respond?
+
+    QUERY["2 Query"]:::external
+    USER["User / Application"]:::external
+    LLM30["LLM\n(generation)"]:::external
+
+    P30(("3.0\nRespond\n[TO BE\nDESIGNED]")):::stub
+
+    QUERY -->|"top-K chunks + entity context\n+ query structure"| P30
+    P30 -->|"generation prompt"| LLM30
+    LLM30 -->|"generated answer"| P30
+    P30 -->|"answer + citations"| USER

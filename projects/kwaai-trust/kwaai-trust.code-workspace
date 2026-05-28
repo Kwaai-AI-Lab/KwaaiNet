@@ -1,0 +1,19 @@
+{
+  "folders": [
+    { "path": "../../core/crates/kwaai-trust", "name": "kwaai-trust (crate)" },
+    { "path": "../../core/crates/kwaai-wasm", "name": "kwaai-wasm (crate)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (identity, trust)" },
+    { "path": ".", "name": "project docs" },
+    { "path": "../../tests/kwaai-trust", "name": "tests" }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": ["../../core/Cargo.toml"],
+    "rust-analyzer.cargo.features": "all"
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust-analyzer",
+      "tamasfe.even-better-toml"
+    ]
+  }
+}
