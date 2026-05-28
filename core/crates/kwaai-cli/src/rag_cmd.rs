@@ -2865,9 +2865,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                 for (bi, batch) in batches.into_iter().enumerate() {
                     let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
-                    let embeddings = embed.embed_batch(&texts).await.with_context(|| {
-                        format!("embedding batch {}/{n_batches}", bi + 1)
-                    })?;
+                    let embeddings = embed
+                        .embed_batch(&texts)
+                        .await
+                        .with_context(|| format!("embedding batch {}/{n_batches}", bi + 1))?;
                     let vectors: Vec<(i64, Vec<f32>)> = batch
                         .iter()
                         .zip(embeddings.into_iter())
@@ -2892,7 +2893,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     uploaded_total += n;
 
                     let done = (bi + 1) * BATCH;
-                    eprint!("\r  [{:>4}/{found}]  uploaded={uploaded_total}    ", done.min(found));
+                    eprint!(
+                        "\r  [{:>4}/{found}]  uploaded={uploaded_total}    ",
+                        done.min(found)
+                    );
                 }
                 eprintln!();
 
@@ -3183,7 +3187,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         continue;
                     }
                     // Keep if name appears in any chunk text.
-                    if all_chunk_texts.iter().any(|t| t.contains(name_lower.as_str())) {
+                    if all_chunk_texts
+                        .iter()
+                        .any(|t| t.contains(name_lower.as_str()))
+                    {
                         continue;
                     }
                     // Ghost candidate: name not found in any source text.
@@ -3227,9 +3234,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 println!(" done.");
 
                 // Clean up any dangling edges that pointed to deleted entities.
-                let dangling = store
-                    .prune_dangling_relations()
-                    .unwrap_or_else(|e| { eprintln!("  Warning: relation cleanup failed: {e}"); 0 });
+                let dangling = store.prune_dangling_relations().unwrap_or_else(|e| {
+                    eprintln!("  Warning: relation cleanup failed: {e}");
+                    0
+                });
                 if dangling > 0 {
                     println!("  Dangling relations removed: {dangling}");
                 }

@@ -269,9 +269,7 @@ impl UpdateChecker {
             std::fs::write(&ps1, &ps1_content).context("Failed to write update script")?;
             // canonicalize() resolves the real path (long form, no 8.3 short
             // names) after the file exists.
-            let ps1_real = ps1
-                .canonicalize()
-                .unwrap_or(ps1.clone());
+            let ps1_real = ps1.canonicalize().unwrap_or(ps1.clone());
 
             std::process::Command::new("powershell")
                 .args([
@@ -537,7 +535,6 @@ async fn nvidia_smi_windows() -> bool {
     .unwrap_or(false)
 }
 
-
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
@@ -581,8 +578,14 @@ mod tests {
     fn cuda_url_suffix_detection() {
         let cuda_url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda.zip";
         let cpu_url  = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc.zip";
-        assert!(cuda_url.contains("-cuda.zip"), "CUDA URL must contain -cuda.zip");
-        assert!(!cpu_url.contains("-cuda.zip"), "CPU URL must not contain -cuda.zip");
+        assert!(
+            cuda_url.contains("-cuda.zip"),
+            "CUDA URL must contain -cuda.zip"
+        );
+        assert!(
+            !cpu_url.contains("-cuda.zip"),
+            "CPU URL must not contain -cuda.zip"
+        );
     }
 
     /// Verify the file_include string for CUDA zips contains '*.dll' so bundled
@@ -590,13 +593,21 @@ mod tests {
     #[test]
     fn cuda_file_include_has_dll_glob() {
         let is_cuda = true;
-        let file_include = if is_cuda { "'*.exe','*.dll'" } else { "'*.exe'" };
+        let file_include = if is_cuda {
+            "'*.exe','*.dll'"
+        } else {
+            "'*.exe'"
+        };
         assert!(
             file_include.contains("*.dll"),
             "CUDA file_include must contain *.dll glob to install bundled CUDA DLLs"
         );
         let is_cuda = false;
-        let file_include = if is_cuda { "'*.exe','*.dll'" } else { "'*.exe'" };
+        let file_include = if is_cuda {
+            "'*.exe','*.dll'"
+        } else {
+            "'*.exe'"
+        };
         assert!(
             !file_include.contains("*.dll"),
             "CPU file_include must not contain *.dll glob"
