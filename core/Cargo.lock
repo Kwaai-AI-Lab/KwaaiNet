@@ -2959,7 +2959,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-compression"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "bincode",
  "candle-core",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-core"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "async-trait",
  "bincode",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-distributed"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-hivemind-dht"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-inference"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3067,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-network-tests"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3091,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-p2p"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-rag"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-rpc"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "prost 0.13.5",
  "tonic",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-trust"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3201,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-wasm"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "console_error_panic_hook",
  "futures",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "kwaainet"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3905,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "map-server"
-version = "0.4.90"
+version = "0.4.92"
 dependencies = [
  "anyhow",
  "axum",

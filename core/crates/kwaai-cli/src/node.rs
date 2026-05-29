@@ -974,6 +974,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                             discovered_addrs = new_addrs.clone();
                             server_info.using_relay = all_addrs_are_relay(&discovered_addrs);
                             pending_restart = None;
+                            // p2pd's routing table is empty immediately after restart;
+                            // delay re-announcement so bootstrap peers can populate it first.
+                            next_announce
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + Duration::from_secs(30));
                         }
                     }
                 }
