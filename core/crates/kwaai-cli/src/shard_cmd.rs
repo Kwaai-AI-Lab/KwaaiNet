@@ -958,9 +958,15 @@ async fn cmd_shard_run_via_ollama(args: &ShardRunArgs, raw_url: &str) -> Result<
         println!("  Tokens generated: {eval_count}");
         println!("  Speed:            {tok_per_sec:.1} tok/s (remote GPU)");
         println!("  Model load:       {:.1}s", load_duration_ns as f64 / 1e9);
-        println!("  Prompt eval:      {:.1}s", prompt_duration_ns as f64 / 1e9);
+        println!(
+            "  Prompt eval:      {:.1}s",
+            prompt_duration_ns as f64 / 1e9
+        );
         println!("  Generation:       {:.1}s", eval_duration_ns as f64 / 1e9);
-        println!("  Wall time:        {:.1}s (incl. relay)", wall_elapsed.as_secs_f64());
+        println!(
+            "  Wall time:        {:.1}s (incl. relay)",
+            wall_elapsed.as_secs_f64()
+        );
     }
 
     print_separator();

@@ -2818,7 +2818,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 println!("  Graph entity search now includes name tokens in the embedding.\n");
             }
 
-            GraphAction::ChunkTag { embed_url, max_tags, restore } => {
+            GraphAction::ChunkTag {
+                embed_url,
+                max_tags,
+                restore,
+            } => {
                 let mode_label = if restore { "Restore" } else { "Chunk-Tag" };
                 print_box_header(&format!("Graph {} ({})", mode_label, kb));
                 let embed_url_str = embed_url.as_deref().unwrap_or("");
@@ -3987,8 +3991,8 @@ fn keyword_hit(kw: &str, answer: &str, answer_toks: &std::collections::HashSet<S
         return false;
     }
     let need = match kw_toks.len() {
-        1 | 2 => kw_toks.len(),   // exact for short phrases
-        n => (n + 1) / 2,         // majority for 3+ word phrases
+        1 | 2 => kw_toks.len(), // exact for short phrases
+        n => n.div_ceil(2),      // majority for 3+ word phrases
     };
     let found = kw_toks.iter().filter(|t| answer_toks.contains(*t)).count();
     if found >= need {

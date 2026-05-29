@@ -2449,7 +2449,7 @@ impl GraphStore {
                 if names.is_empty() {
                     return None;
                 }
-                names.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                names.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
                 names.truncate(max_tags);
                 let prefix = names
                     .iter()

@@ -503,7 +503,9 @@ async fn handle_mux_proxy_connection(
                 }
             }
         }
-        Err(anyhow::anyhow!("inference-mux: all retry attempts exhausted"))
+        Err(anyhow::anyhow!(
+            "inference-mux: all retry attempts exhausted"
+        ))
     };
 
     let resp = match resp {
