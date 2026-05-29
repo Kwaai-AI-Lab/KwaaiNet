@@ -138,10 +138,6 @@ impl UpdateChecker {
 
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
-            const DETACHED_PROCESS: u32 = 0x00000008;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-
             // Resolve 8.3 short names (e.g. METRO_~1) in the temp dir.
             // Expand-Archive -LiteralPath rejects 8.3 paths because .NET's
             // ZipFile doesn't call GetLongPathName internally.
@@ -158,9 +154,6 @@ impl UpdateChecker {
                     }
                 })
                 .unwrap_or_else(|_| std::env::temp_dir());
-
-            let log = canonical_temp.join("kwaainet-update.log");
-            let log_path = log.to_string_lossy().into_owned();
 
             let install_dir = std::env::current_exe()
                 .ok()
@@ -236,82 +229,72 @@ impl UpdateChecker {
             println!(" done.");
 
             let kwaainet_exe = install_dir.join("kwaainet.exe");
-            // Escape single quotes in paths for use inside PS1 single-quoted strings.
-            let zip_str = zip_path.to_string_lossy().replace('\'', "''");
-            let dir_str = install_dir.to_string_lossy().replace('\'', "''");
-            let exe_str = kwaainet_exe.to_string_lossy().replace('\'', "''");
-            let log_str = log_path.replace('\'', "''");
 
-            // Include *.dll so the full CUDA zip's bundled runtime DLLs land in
-            // the install dir.  Safe for lean zips and CPU zips — no DLLs found,
-            // nothing extra installed.
-            let file_include = if is_cuda {
-                "'*.exe','*.dll'"
-            } else {
-                "'*.exe'"
-            };
+            // ── Extract zip ──────────────────────────────────────────────────
+            // Canonicalize removes 8.3 short names (e.g. METRO_~1) so that
+            // zip::ZipArchive can open the file on all Windows configurations.
+            let tmp = canonical_temp.join("kwaainet-upd-extract");
+            if tmp.exists() {
+                std::fs::remove_dir_all(&tmp).context("Clearing old extract dir")?;
+            }
+            std::fs::create_dir_all(&tmp).context("Creating extract dir")?;
 
-            // Single PS1 script handles the full update: waits for kwaainet to
-            // exit, kills kwaainet.exe AND p2pd.exe (both may hold file locks),
-            // extracts the zip, installs binaries, restarts the daemon, and
-            // cleans up.  Spawning powershell.exe directly avoids cmd.exe's
-            // 8.3-path / DETACHED_PROCESS batch-file parsing quirks.
-            let ps1 = canonical_temp.join("kwaainet-update.ps1");
-            let ps1_content = format!(
-                "Start-Sleep -Seconds 3\r\n\
-                 Get-Process kwaainet,p2pd -ErrorAction SilentlyContinue | Stop-Process -Force\r\n\
-                 Start-Sleep -Seconds 5\r\n\
-                 $ErrorActionPreference = 'Stop'\r\n\
-                 $zip  = '{zip_str}'\r\n\
-                 $dest = '{dir_str}'\r\n\
-                 $tmp  = Join-Path ([System.IO.Path]::GetTempPath()) 'kwaainet-upd-extract'\r\n\
-                 if (Test-Path $tmp) {{ Remove-Item $tmp -Recurse -Force }}\r\n\
-                 Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force\r\n\
-                 Get-ChildItem -Path $tmp -Recurse -Include {file_include} | ForEach-Object {{\r\n\
-                   $target = Join-Path $dest $_.Name\r\n\
-                   $retries = 0\r\n\
-                   while ($retries -lt 5) {{\r\n\
-                     try {{\r\n\
-                       Move-Item -Path $_.FullName -Destination $target -Force -ErrorAction Stop\r\n\
-                       break\r\n\
-                     }} catch {{\r\n\
-                       $retries++\r\n\
-                       Start-Sleep -Seconds 2\r\n\
-                     }}\r\n\
-                   }}\r\n\
-                   Add-Content -Path '{log_str}' -Value ('Installed ' + $_.Name)\r\n\
-                 }}\r\n\
-                 Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n\
-                 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
-                 Add-Content -Path '{log_str}' -Value 'Swap complete — restarting daemon'\r\n\
-                 Start-Sleep -Seconds 2\r\n\
-                 Start-Process -FilePath '{exe_str}' -ArgumentList 'start', '--daemon' -WindowStyle Hidden\r\n\
-                 Add-Content -Path '{log_str}' -Value 'Daemon restart triggered'\r\n\
-                 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n"
-            );
-            std::fs::write(&ps1, &ps1_content).context("Failed to write update script")?;
-            // canonicalize() resolves the real path (long form, no 8.3 short
-            // names) after the file exists.
-            let ps1_real = ps1.canonicalize().unwrap_or(ps1.clone());
+            print!("  Extracting…");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            {
+                let zip_file =
+                    std::fs::File::open(&zip_path).context("Opening downloaded zip")?;
+                let mut archive =
+                    zip::ZipArchive::new(zip_file).context("Reading zip archive")?;
+                for i in 0..archive.len() {
+                    let mut entry = archive.by_index(i)?;
+                    let raw_name = entry.name().to_string();
+                    // Strip directory structure — prevents path-traversal writes.
+                    let fname = std::path::Path::new(&raw_name)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    if fname.is_empty() {
+                        continue;
+                    }
+                    // Only extract executables; include DLLs for CUDA zips.
+                    if !fname.ends_with(".exe") && !(is_cuda && fname.ends_with(".dll")) {
+                        continue;
+                    }
+                    let dest = tmp.join(&fname);
+                    let mut out = std::fs::File::create(&dest)
+                        .with_context(|| format!("Creating {fname}"))?;
+                    std::io::copy(&mut entry, &mut out)
+                        .with_context(|| format!("Extracting {fname}"))?;
+                }
+            }
+            println!(" done.");
 
-            std::process::Command::new("powershell")
-                .args([
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-File",
-                    ps1_real.to_str().unwrap_or("kwaainet-update.ps1"),
-                ])
-                .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-                .stderr(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn updater")?;
+            // ── Swap binary ──────────────────────────────────────────────────
+            // On Windows Vista+ the OS loader opens EXEs with FILE_SHARE_DELETE,
+            // so a running process can rename its own executable — the memory
+            // mapping stays valid because it points to the file data, not the name.
+            // We rename the old binary aside first, then copy the new files in.
+            // The .old file is kept so that the user can manually restore it if
+            // the daemon fails to start with the new binary.
+            let exe_bak = install_dir.join("kwaainet.exe.old");
+            let _ = std::fs::remove_file(&exe_bak); // clean up any previous backup
+            std::fs::rename(&kwaainet_exe, &exe_bak)
+                .context("Could not rename kwaainet.exe — is another process holding it?")?;
 
-            println!("  Installer running in background.");
-            println!("  Log: {}", log_path);
-            println!("  Daemon will restart automatically.");
+            for entry in std::fs::read_dir(&tmp).context("Reading extract dir")? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let dest = install_dir.join(&name);
+                std::fs::copy(entry.path(), &dest)
+                    .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
+                println!("  Installed {}", name.to_string_lossy());
+            }
+
+            // ── Clean up ─────────────────────────────────────────────────────
+            let _ = std::fs::remove_file(&zip_path);
+            let _ = std::fs::remove_dir_all(&tmp);
+            // kwaainet.exe.old intentionally kept for manual rollback.
         }
 
         #[cfg(not(any(unix, windows)))]
