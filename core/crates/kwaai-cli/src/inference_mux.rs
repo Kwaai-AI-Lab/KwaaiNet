@@ -67,7 +67,10 @@ async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> 
         anyhow::bail!("inference-mux frame too large: {len} bytes");
     }
     let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).await.context("read frame body")?;
+    reader
+        .read_exact(&mut buf)
+        .await
+        .context("read frame body")?;
     Ok(buf)
 }
 
@@ -210,8 +213,8 @@ impl InferenceMuxClient {
     /// Creates a fresh P2PClient connection just for `stream_open()` (cheap
     /// Unix socket call); the TcpStream lives on independently afterward.
     pub async fn connect(peer_id: PeerId) -> Result<Arc<Self>> {
-        let sock = std::env::var("KWAAINET_SOCKET")
-            .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+        let sock =
+            std::env::var("KWAAINET_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
         #[cfg(unix)]
         let addr = format!("/unix/{sock}");
         #[cfg(not(unix))]
@@ -277,12 +280,7 @@ impl InferenceMuxClient {
 
     /// Send one inference request and await the response.
     /// Multiple concurrent callers share the same underlying stream.
-    pub async fn send(
-        &self,
-        method: &str,
-        path: &str,
-        body: Vec<u8>,
-    ) -> Result<MuxResponse> {
+    pub async fn send(&self, method: &str, path: &str, body: Vec<u8>) -> Result<MuxResponse> {
         let request_id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -350,11 +348,7 @@ pub async fn start_local_mux_proxy(peer_id: PeerId) -> Result<(u16, JoinHandle<(
 
 /// Reconnect the shared client if the stream has died.
 /// Only one concurrent caller will actually reconnect; others wait and reuse the new client.
-async fn reconnect_mux_client(
-    shared: &SharedMuxClient,
-    failed_addr: usize,
-    peer_id: PeerId,
-) {
+async fn reconnect_mux_client(shared: &SharedMuxClient, failed_addr: usize, peer_id: PeerId) {
     let mut guard = shared.write().await;
     // Someone else may have already reconnected while we waited for the write lock.
     if Arc::as_ptr(&*guard) as usize != failed_addr {
@@ -377,11 +371,8 @@ async fn handle_mux_proxy_connection(
     peer_id: PeerId,
 ) {
     let mut buf = vec![0u8; 4 * 1024 * 1024];
-    let n = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        stream.read(&mut buf),
-    )
-    .await
+    let n = match tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf))
+        .await
     {
         Ok(Ok(n)) if n > 0 => n,
         _ => return,
@@ -415,7 +406,9 @@ async fn handle_mux_proxy_connection(
                 }
             }
         }
-        Err(anyhow::anyhow!("inference-mux: all retry attempts exhausted"))
+        Err(anyhow::anyhow!(
+            "inference-mux: all retry attempts exhausted"
+        ))
     };
 
     let resp = match resp {
