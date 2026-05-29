@@ -241,6 +241,19 @@ pub async fn extract_and_store_entities_pub(
 
             let mut entity_ids_for_chunk = Vec::new();
             for (extracted, emb) in res.entities.iter().zip(res.embeddings) {
+                // Drop generic family roles and pronouns that slip through the LLM prompt.
+                const GENERIC_ROLE_BLOCKLIST: &[&str] = &[
+                    "granny", "gran", "grandma", "grandfather", "grandpa", "gramps",
+                    "dad", "daddy", "father", "mother", "mom", "mum", "mama",
+                    "uncle", "auntie", "aunt", "cousin", "son", "daughter",
+                    "me", "i", "he", "she", "they", "we",
+                    "the narrator", "the author", "narrator", "author",
+                ];
+                let name_lc = extracted.name.to_lowercase();
+                let name_lc = name_lc.trim();
+                if GENERIC_ROLE_BLOCKLIST.contains(&name_lc) {
+                    continue;
+                }
                 let eid = entity_id(&extracted.name, &extracted.entity_type);
                 // Build FieldValue map: wrap each extracted string value with chunk provenance.
                 let fields: HashMap<String, FieldValue> = extracted

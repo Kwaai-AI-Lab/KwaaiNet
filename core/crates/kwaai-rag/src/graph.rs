@@ -100,6 +100,33 @@ pub const RELATION_TYPES: &[&str] = &[
     "caused_by",
 ];
 
+/// Relation types used when entity_types is restricted to Person only.
+/// Drops structural/temporal/informational types that are meaningless between two people.
+pub const PERSON_RELATION_TYPES: &[&str] = &[
+    // Family
+    "parent_of",
+    "child_of",
+    "spouse_of",
+    "sibling_of",
+    "half_sibling_of",
+    "grandparent_of",
+    "grandchild_of",
+    "uncle_of",
+    "aunt_of",
+    "niece_of",
+    "nephew_of",
+    "cousin_of",
+    "foster_parent_of",
+    "foster_child_of",
+    // Social / agent (Person–Person only variants)
+    "works_at",
+    "belongs_to",
+    "endorses",
+    "associated_with",
+    "related_to",
+    "supported",
+];
+
 /// Familial relation types — only valid between two Person entities.
 pub const FAMILIAL_RELS: &[&str] = &[
     "parent_of",
@@ -2624,12 +2651,25 @@ pub async fn extract_from_text(
 separated by commas or 'and', extract each as its own entity.\n\
              - Descriptions must contain at least one specific fact (date, place, role, or \
 relationship) from the text. Do not describe in generic terms.\n\
-             - Omit any field whose value is not clearly stated in the text.\n\n\
+             - Omit any field whose value is not clearly stated in the text.\n\
+             - NEVER extract generic family roles as entity names: Granny, Gran, Dad, Daddy, \
+Mom, Mum, Mama, Uncle, Auntie, Aunt, Grandfather, Grandpa, Grandma, the narrator, \
+the author. Only extract proper names (first name + surname, or a well-known single name).\n\
+             - If a name appears ONLY as the author of a literary work being read or cited \
+(e.g. Chekhov, Dickens, Shaw) it is NOT an entity in this memoir text — skip it.\n\
+             - Collective nouns (\"the servants\", \"the uncles\", \"the family\") and bare \
+titles (\"the Imam\", \"the Doctor\") are not Person entities.\n\n\
              If no candidates are real entities, return {{\"entities\":[]}}.\n\n\
              Text:\n{text}"
         )
     } else {
-        let relation_list = RELATION_TYPES.join(", ");
+        let person_only =
+            entity_types.len() == 1 && entity_types[0].eq_ignore_ascii_case("Person");
+        let relation_list = if person_only {
+            PERSON_RELATION_TYPES.join(", ")
+        } else {
+            RELATION_TYPES.join(", ")
+        };
         format!(
             "{section_context}\
              {pronoun_context}\
@@ -2650,7 +2690,22 @@ relationship) from the text. Do not describe in generic terms.\n\
              - Entity names must be ≤ 5 words. If a candidate contains multiple names \
 separated by commas or 'and', extract each as its own entity.\n\
              - Descriptions must contain at least one specific fact (date, place, role, or \
-relationship) from the text. Do not describe in generic terms.\n\n\
+relationship) from the text. Do not describe in generic terms.\n\
+             - NEVER extract generic family roles as entity names: Granny, Gran, Dad, Daddy, \
+Mom, Mum, Mama, Uncle, Auntie, Aunt, Grandfather, Grandpa, Grandma, the narrator, \
+the author. Only extract proper names.\n\
+             - If a name appears ONLY as the author of a literary work being read or cited \
+(e.g. Chekhov, Dickens, Shaw) it is NOT an entity in this memoir text — skip it.\n\
+             - Only assert a relation when the text EXPLICITLY STATES IT. Do not infer \
+relations from two people being mentioned in the same paragraph.\n\
+             - Use `spouse_of` ONLY when the text says \"married\", \"wife\", \"husband\", \
+\"wed\", or \"betrothed\".\n\
+             - Use `child_of`/`parent_of` ONLY when the text says \"son of\", \"daughter of\", \
+\"mother of\", \"father of\", or \"born to\".\n\
+             - Two people who share a common spouse are NOT `sibling_of` or `spouse_of` \
+each other — use `associated_with` at most.\n\
+             - Do not create relations to generic roles (\"Dad\", \"Granny\") or to a person \
+who appears only as an author of a literary work.\n\n\
              If no candidates are real entities, return {{\"entities\":[],\"relations\":[]}}.\n\n\
              Text:\n{text}"
         )
