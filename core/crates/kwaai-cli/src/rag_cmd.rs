@@ -2397,7 +2397,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             eprintln!();
                         }
                         // Write progress JSON every 10 chunks (and on completion).
-                        if done % 10 == 0 || done == total {
+                        if done.is_multiple_of(10) || done == total {
                             let json = format!(
                                 "{{\"chunks_done\":{done},\"chunks_total\":{total},\"entities\":{entities},\"relations\":{relations},\"elapsed_secs\":{elapsed:.1},\"chunks_per_sec\":{rate:.2},\"eta_secs\":{eta_secs:.0},\"started_at\":\"{started_at}\",\"updated_at\":\"{}\"}}\n",
                                 chrono::Utc::now().to_rfc3339()
