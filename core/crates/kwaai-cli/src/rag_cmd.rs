@@ -3956,6 +3956,44 @@ async fn cmd_cache(action: CacheAction, kb: String) -> Result<()> {
 
 // ── eval ──────────────────────────────────────────────────────────────────────
 
+/// Tokenise text into lowercase alphanumeric words (≥ 2 chars), ignoring punctuation.
+fn eval_tokens(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2)
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// Token-overlap recall for one keyword phrase against a pre-built answer token set.
+///
+/// Rules (chosen to match RAG recall semantics):
+/// - 1 token  → exact token match OR substring fallback (catches "India"→"Indian")
+/// - 2 tokens → both tokens required OR substring fallback
+/// - 3+ tokens → majority match: ⌈n/2⌉ tokens must appear (partial credit for long
+///   phrases where the LLM uses a close variant, e.g. "All African" vs "All Africa")
+///
+/// The substring fallback ensures this metric is always ≥ the old exact-substring metric.
+fn keyword_hit(kw: &str, answer: &str, answer_toks: &std::collections::HashSet<String>) -> bool {
+    let kw_toks: Vec<String> = kw
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2)
+        .map(|t| t.to_lowercase())
+        .collect();
+    if kw_toks.is_empty() {
+        return false;
+    }
+    let need = match kw_toks.len() {
+        1 | 2 => kw_toks.len(),   // exact for short phrases
+        n => (n + 1) / 2,         // majority for 3+ word phrases
+    };
+    let found = kw_toks.iter().filter(|t| answer_toks.contains(*t)).count();
+    if found >= need {
+        return true;
+    }
+    // Fallback: substring match catches morphological variants ("India"/"Indian", plurals, etc.)
+    answer.to_lowercase().contains(&kw.to_lowercase())
+}
+
 #[derive(serde::Deserialize)]
 struct EvalQuestion {
     id: String,
@@ -4237,12 +4275,12 @@ async fn cmd_eval(
 
             let latency_ms = t0.elapsed().as_millis();
 
-            // Score keywords (case-insensitive substring match).
-            let answer_lower = answer.to_lowercase();
+            // Score keywords (token-overlap recall, substring fallback).
+            let answer_toks = eval_tokens(&answer);
             let keyword_hits = q
                 .expected_keywords
                 .iter()
-                .filter(|kw| answer_lower.contains(&kw.to_lowercase()))
+                .filter(|kw| keyword_hit(kw, &answer, &answer_toks))
                 .count();
             let total_keywords = q.expected_keywords.len();
 
@@ -4372,7 +4410,7 @@ async fn cmd_eval(
              | Metric | Value |\n\
              |--------|-------|\n\
              | Questions | {} |\n\
-             | Overall keyword hit rate | {:.1}% ({total_hits}/{total_kw}) |\n\
+             | Overall recall (token-overlap) | {:.1}% ({total_hits}/{total_kw}) |\n\
              {judge_summary}\
              | Avg latency | {avg_latency_ms}ms |\n\n",
             rows.len(),
@@ -4441,7 +4479,7 @@ async fn cmd_eval(
         } else {
             println!("\n{report}");
             print_success(&format!(
-                "Overall: {:.1}% keyword hit rate{judge_note}  ({total_hits}/{total_kw})  avg {avg_latency_ms}ms",
+                "Overall: {:.1}% recall (token-overlap){judge_note}  ({total_hits}/{total_kw})  avg {avg_latency_ms}ms",
                 overall_score * 100.0,
             ));
         }
