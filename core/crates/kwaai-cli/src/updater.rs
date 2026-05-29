@@ -245,7 +245,11 @@ impl UpdateChecker {
             // Include *.dll so the full CUDA zip's bundled runtime DLLs land in
             // the install dir.  Safe for lean zips and CPU zips — no DLLs found,
             // nothing extra installed.
-            let file_include = if is_cuda { "'*.exe','*.dll'" } else { "'*.exe'" };
+            let file_include = if is_cuda {
+                "'*.exe','*.dll'"
+            } else {
+                "'*.exe'"
+            };
 
             // Single PS1 script handles the full update: waits for kwaainet to
             // exit, kills kwaainet.exe AND p2pd.exe (both may hold file locks),
@@ -589,9 +593,15 @@ mod tests {
         let cuda_lean = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda.zip";
         let cuda_full = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda-full.zip";
         let cpu_url   = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc.zip";
-        assert!(cuda_lean.contains("-cuda"), "Lean CUDA URL must contain -cuda");
-        assert!(cuda_full.contains("-cuda"), "Full CUDA URL must contain -cuda");
-        assert!(!cpu_url.contains("-cuda"),  "CPU URL must not contain -cuda");
+        assert!(
+            cuda_lean.contains("-cuda"),
+            "Lean CUDA URL must contain -cuda"
+        );
+        assert!(
+            cuda_full.contains("-cuda"),
+            "Full CUDA URL must contain -cuda"
+        );
+        assert!(!cpu_url.contains("-cuda"), "CPU URL must not contain -cuda");
     }
 
     /// Verify the file_include string for CUDA zips contains '*.dll' so bundled
