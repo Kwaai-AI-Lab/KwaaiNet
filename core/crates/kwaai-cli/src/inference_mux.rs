@@ -210,7 +210,14 @@ impl InferenceMuxClient {
     /// Creates a fresh P2PClient connection just for `stream_open()` (cheap
     /// Unix socket call); the TcpStream lives on independently afterward.
     pub async fn connect(peer_id: PeerId) -> Result<Arc<Self>> {
-        let mut p2p = P2PClient::connect(DEFAULT_SOCKET_NAME)
+        let sock = std::env::var("KWAAINET_SOCKET")
+            .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+        #[cfg(unix)]
+        let addr = format!("/unix/{sock}");
+        #[cfg(not(unix))]
+        let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+
+        let mut p2p = P2PClient::connect(&addr)
             .await
             .context("connect to p2pd for inference-mux stream")?;
 
@@ -303,14 +310,16 @@ impl InferenceMuxClient {
 
 // ── Local HTTP shim ───────────────────────────────────────────────────────────
 
+type SharedMuxClient = Arc<tokio::sync::RwLock<Arc<InferenceMuxClient>>>;
+
 /// Start a local HTTP proxy that routes all requests through a shared
-/// `InferenceMuxClient` to the remote GPU node.
+/// `InferenceMuxClient` to the remote GPU node.  The proxy automatically
+/// reconnects if the underlying yamux stream drops.
 ///
 /// Returns `(local_port, join_handle)`. Drop the handle to stop the proxy.
-pub async fn start_local_mux_proxy(
-    peer_id: PeerId,
-) -> Result<(u16, JoinHandle<()>)> {
+pub async fn start_local_mux_proxy(peer_id: PeerId) -> Result<(u16, JoinHandle<()>)> {
     let client = InferenceMuxClient::connect(peer_id).await?;
+    let shared: SharedMuxClient = Arc::new(tokio::sync::RwLock::new(client));
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -331,16 +340,42 @@ pub async fn start_local_mux_proxy(
                     break;
                 }
             };
-            let client = client.clone();
-            tokio::spawn(handle_mux_proxy_connection(stream, client));
+            let shared = shared.clone();
+            tokio::spawn(handle_mux_proxy_connection(stream, shared, peer_id));
         }
     });
 
     Ok((port, handle))
 }
 
+/// Reconnect the shared client if the stream has died.
+/// Only one concurrent caller will actually reconnect; others wait and reuse the new client.
+async fn reconnect_mux_client(
+    shared: &SharedMuxClient,
+    failed_addr: usize,
+    peer_id: PeerId,
+) {
+    let mut guard = shared.write().await;
+    // Someone else may have already reconnected while we waited for the write lock.
+    if Arc::as_ptr(&*guard) as usize != failed_addr {
+        return;
+    }
+    match InferenceMuxClient::connect(peer_id).await {
+        Ok(new_client) => {
+            *guard = new_client;
+            info!("inference-mux: reconnected to {}", peer_id.to_base58());
+        }
+        Err(e) => warn!("inference-mux: reconnect failed: {e}"),
+    }
+}
+
 /// Parse one HTTP request from a worker, forward via mux, write HTTP response back.
-async fn handle_mux_proxy_connection(mut stream: TcpStream, client: Arc<InferenceMuxClient>) {
+/// Retries once after an automatic reconnect on channel-closed errors.
+async fn handle_mux_proxy_connection(
+    mut stream: TcpStream,
+    shared: SharedMuxClient,
+    peer_id: PeerId,
+) {
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     let n = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -362,7 +397,28 @@ async fn handle_mux_proxy_connection(mut stream: TcpStream, client: Arc<Inferenc
         }
     };
 
-    let resp = match client.send(&method, &path, body).await {
+    let resp = 'send: {
+        for attempt in 0u32..2 {
+            let client = shared.read().await.clone();
+            match client.send(&method, &path, body.clone()).await {
+                Ok(r) => break 'send Ok(r),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if attempt == 0 && msg.contains("channel closed") {
+                        warn!("inference-mux: stream dead, reconnecting (attempt {attempt})…");
+                        let addr = Arc::as_ptr(&client) as usize;
+                        drop(client);
+                        reconnect_mux_client(&shared, addr, peer_id).await;
+                    } else {
+                        break 'send Err(e);
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!("inference-mux: all retry attempts exhausted"))
+    };
+
+    let resp = match resp {
         Ok(r) => r,
         Err(e) => {
             warn!("inference-mux proxy: send failed: {e}");

@@ -81,6 +81,8 @@
 | 37 | v0.4.80 | M30 graph — eval run 3 | llama3.1:8b | **56.0%** (65/116) | — | 3-run confirmed. Variance: 56.0–59.5pp (3.5pp spread). True mean ≈ 57.8%. |
 | 38 | v0.4.80 | M30 + **mode=auto** (vs iterative) | llama3.1:8b | **39.7%** (46/116) | — | Auto mode catastrophic vs iterative on this dataset (−18pp). Iterative multi-round gap-fill is essential for memoir content. |
 | 39 | v0.4.80 | M30 + **dream cycle --no-relations**. Plateau confirmed — 0 completions in 1.8s. All entities already have descriptions from M25-M29 cycles. | llama3.1:8b | — | — | Dream plateau at 56.5% health is real. M30 graph is ceiling with current approach. Config fixed: D6 inference_url → 11434. Next: investigate per-question failures, or consider mxbai-embed-large re-embed (M22 used mxbai, M25+ used nomic). |
+| 40 | v0.4.87 | M30 graph + overnight injection changes (alias merge fix, grandfather alias-scan, try-all-candidates). **Regression** — injection became net negative. | llama3.1:8b | **53.4%** (62/116) | — | Root cause: NER phrase-merge bug creates multi-entity candidates like "Soviet Ambassador Cissie Gool Moses Kotane..." → LLM stores them as one entity → injection destroys q05 (1/8 vs 4/8 without injection). q12 also hurt (2/6 vs 4/6). |
+| 41 | v0.4.87 | **Round 1 baseline (NO_INJECT=1)** — same M30 graph, injection disabled via env guard. | llama3.1:8b | **56.9%** (66/116) | — | Confirms injection is currently net negative (−3.5pp). Pure vector+graph Round 1 scores. q05: 4/8 ✓, q12: 4/6 ✓. NER phrase boundary fix + better extraction prompt committed (v0.4.88). Graph rebuild with `--reset-graph` started — M42 will measure post-fix. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -111,7 +113,37 @@
 | q19 | NEUM? | **5/6** | 1/2 | 4/6 | **2/2** ⬆ | **5/6** | 2/2 | kw ⬆ +1 |
 | q20 | Cricket? | 2/5 | 1/2 | 1/5 | **2/2** ⬆ | 2/5 | 2/2 | kw ⬆ +1 |
 
-**M19 summary:** 11×2/2, 9×1/2, 0×0/2 → **54.3% kw / 1.55/2 judge** ⬇ regression  
+**M19 summary:** 11×2/2, 9×1/2, 0×0/2 → **54.3% kw / 1.55/2 judge** ⬇ regression
+
+---
+
+## Per-question results: M40 vs M41 (injection on/off diagnostic)
+
+| ID | Question (kw) | M40 inject | M41 no-inject | Δ | Note |
+|----|--------------|------------|---------------|---|------|
+| q01 | Author? (3) | 2/3 | 2/3 | = | |
+| q02 | Children? (3) | 3/3 | 3/3 | = | |
+| q03 | Grandchildren? (6) | 6/6 | 6/6 | = | |
+| q04 | Dedication? (4) | 4/4 | 4/4 | = | |
+| q05 | JMH Gool? (8) | 1/8 | **4/8** | **+3** ⬆ | "[Graph: Soviet Ambassador...]" destroyed q05 |
+| q06 | Buitencingle? (8) | 2/8 | 1/8 | −1 | Injection helped slightly |
+| q07 | Wife? (3) | 1/3 | 2/3 | +1 | |
+| q08 | More wife? (6) | 4/6 | **5/6** | +1 | |
+| q09 | Grandfather? (9) | 3/9 | 3/9 | = | Cissie Gool injected (wrong) |
+| q10 | Kloof Nek? (7) | 4/7 | 4/7 | = | |
+| q11 | TLSA? (6) | 4/6 | 4/6 | = | |
+| q12 | Cissie Gool? (6) | 2/6 | **4/6** | **+2** ⬆ | "[Graph: Mariam Gool]" injected wrong entity |
+| q13 | All Africa Conv? (6) | 3/6 | 2/6 | −1 | Injection helped |
+| q14 | District Six? (6) | 2/6 | 1/6 | −1 | Injection helped |
+| q15 | Forced removals? (6) | 3/6 | 2/6 | −1 | Injection helped |
+| q16 | Gandhi/Gool? (7) | 4/7 | 3/7 | −1 | Injection helped |
+| q17 | Hewat? (5) | 5/5 | 4/5 | −1 | Injection helped |
+| q18 | NEF? (6) | 4/6 | 5/6 | +1 | |
+| q19 | NEUM? (6) | 3/6 | 4/6 | +1 | |
+| q20 | Cricket? (5) | 2/5 | 3/5 | +1 | |
+| **Total** | | **62/116 (53.4%)** | **66/116 (56.9%)** | **+3.5pp** | Injection net negative due to NER bug |
+
+**Diagnosis:** Injection is +4 on 7 questions, −9 on 4 questions (q05, q07, q08, q12 combined = −4→+3 net when injection bad). The NER phrase-merge bug creating multi-entity names is the root cause. Fix: `ends_phrase()` with comma separators + 5-word cap (committed v0.4.88). Graph rebuild with `--reset-graph` in progress → M42.  
 **M20 summary (alias embedding fix):** 15×2/2, 4×1/2, 1×0/2 → 51.7% kw / 1.70/2 judge  
 **M21 summary (merge chunk-transfer + description fix):** 17×2/2, 3×1/2, 0×0/2 → **54.3% kw / 1.85/2 judge** ← new judge best (strict)
 

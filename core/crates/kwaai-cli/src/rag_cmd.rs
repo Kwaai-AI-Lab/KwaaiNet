@@ -2230,7 +2230,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let all_raw: Vec<String> = std::iter::once(raw_infer_url)
                     .chain(raw_extra_urls)
                     .collect();
-                let has_p2p = all_raw.iter().any(|u| u.starts_with("p2p://"));
+                let has_p2p = all_raw.iter().any(|u| u.starts_with("p2p://") || u.starts_with("mux://"));
                 let (_proxy_handles, resolved_all) = if has_p2p {
                     use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
                     let sock = std::env::var("KWAAINET_SOCKET")
@@ -3684,7 +3684,7 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                 };
 
                 // Resolve p2p:// URLs to local HTTP proxies (same pattern as graph build).
-                let has_p2p = raw_urls.iter().any(|u| u.starts_with("p2p://"));
+                let has_p2p = raw_urls.iter().any(|u| u.starts_with("p2p://") || u.starts_with("mux://"));
                 let (_proxy_handles, urls) = if has_p2p {
                     use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
                     let sock = std::env::var("KWAAINET_SOCKET")
@@ -3994,7 +3994,7 @@ async fn cmd_eval(
 
         // Resolve p2p:// URLs to local HTTP proxies (same pattern as dream/graph build).
         let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
-        let inference_url = if inference_url.starts_with("p2p://") {
+        let inference_url = if inference_url.starts_with("p2p://") || inference_url.starts_with("mux://") {
             use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
             let sock = std::env::var("KWAAINET_SOCKET")
                 .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
