@@ -3992,7 +3992,7 @@ fn keyword_hit(kw: &str, answer: &str, answer_toks: &std::collections::HashSet<S
     }
     let need = match kw_toks.len() {
         1 | 2 => kw_toks.len(), // exact for short phrases
-        n => n.div_ceil(2),      // majority for 3+ word phrases
+        n => n.div_ceil(2),     // majority for 3+ word phrases
     };
     let found = kw_toks.iter().filter(|t| answer_toks.contains(*t)).count();
     if found >= need {
