@@ -863,6 +863,13 @@ pub struct ShardRunArgs {
     /// Create one with: kwaainet shard circuit create
     #[arg(long, value_name = "ID")]
     pub circuit: Option<String>,
+
+    /// Route inference to a remote Ollama instance instead of block sharding.
+    /// Accepts http://host:port or mux://PEER_ID (p2p relay to remote Ollama).
+    /// When set, --model is the Ollama model name (e.g. "llama3.1:8b").
+    /// Example: --inference-url mux://12D3KooW...
+    #[arg(long, value_name = "URL")]
+    pub inference_url: Option<String>,
 }
 
 #[derive(Args)]
@@ -1679,6 +1686,11 @@ pub enum GraphAction {
         /// Embedding server URL (defaults to config embed_url)
         #[arg(long, value_name = "URL")]
         embed_url: Option<String>,
+
+        /// Maximum number of entity tags to prepend per chunk, ranked by mention count.
+        /// Higher values improve multi-subject recall at the cost of embedding drift.
+        #[arg(long, default_value = "3")]
+        max_tags: usize,
 
         /// Undo a previous chunk-tag run: re-embed entity-linked chunks without the
         /// [EntityName] prefix, restoring natural ingest embeddings.
