@@ -461,7 +461,19 @@ jobs:
           Copy-Item "target\release\kwaainet.exe" "$label\"
           $p2pd = Get-ChildItem "target\release\p2pd.exe" -ErrorAction SilentlyContinue
           if ($p2pd) { Copy-Item $p2pd.FullName "$label\"; Write-Host "Included p2pd.exe" }
-          # Bundle CUDA 12.6 runtime DLLs so end users don't need the toolkit
+
+          # Lean zip — binary only, used for fast incremental updates when CUDA
+          # runtime DLLs are already present on the machine (~30 MB).
+          Compress-Archive -Path "$label\*" -DestinationPath "$label.zip" -Force
+          $hash = (Get-FileHash "$label.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $label.zip" | Set-Content "$label.zip.sha256"
+          Write-Host "Lean CUDA archive: $((Get-Item ""$label.zip"").Length) bytes"
+
+          # Full zip — binary + CUDA 12.6 runtime DLLs, used on first install when
+          # the runtime is not already present (~978 MB, one-time download).
+          $labelFull = "$label-full"
+          New-Item -ItemType Directory -Path $labelFull -Force | Out-Null
+          Copy-Item "$label\*" "$labelFull\"
           $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"
           if (Test-Path $cudaBin) {
             $dlls = @(
@@ -470,19 +482,17 @@ jobs:
             )
             foreach ($dll in $dlls) {
               $src = Join-Path $cudaBin $dll
-              if (Test-Path $src) { Copy-Item $src "$label\"; Write-Host "  Bundled: $dll" }
+              if (Test-Path $src) { Copy-Item $src "$labelFull\"; Write-Host "  Bundled: $dll" }
             }
-            Get-ChildItem $cudaBin "nvrtc*.dll"          -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$label\"; Write-Host "  Bundled: $($_.Name)" }
-            Get-ChildItem $cudaBin "nvrtc-builtins*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$label\"; Write-Host "  Bundled: $($_.Name)" }
+            Get-ChildItem $cudaBin "nvrtc*.dll"          -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$labelFull\"; Write-Host "  Bundled: $($_.Name)" }
+            Get-ChildItem $cudaBin "nvrtc-builtins*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$labelFull\"; Write-Host "  Bundled: $($_.Name)" }
           } else {
-            Write-Warning "CUDA bin dir not found: $cudaBin"
+            Write-Warning "CUDA bin dir not found: $cudaBin — full zip will not contain DLLs"
           }
-          $dllCount = (Get-ChildItem "$label\*.dll" -ErrorAction SilentlyContinue).Count
-          Write-Host "CUDA DLLs bundled: $dllCount"
-          Compress-Archive -Path "$label\*" -DestinationPath "$label.zip" -Force
-          $hash = (Get-FileHash "$label.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $label.zip" | Set-Content "$label.zip.sha256"
-          Write-Host "CUDA archive: $((Get-Item ""$label.zip"").Length) bytes"
+          Compress-Archive -Path "$labelFull\*" -DestinationPath "$labelFull.zip" -Force
+          $hashFull = (Get-FileHash "$labelFull.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hashFull  $labelFull.zip" | Set-Content "$labelFull.zip.sha256"
+          Write-Host "Full CUDA archive: $((Get-Item ""$labelFull.zip"").Length) bytes"
       - name: Build kwaainet with CUDA (Linux)
         if: runner.os == 'Linux'
         working-directory: core
@@ -520,6 +530,8 @@ jobs:
           path: |
             core/${{ matrix.label }}.${{ matrix.ext }}
             core/${{ matrix.label }}.${{ matrix.ext }}.sha256
+            core/${{ matrix.label }}-full.${{ matrix.ext }}
+            core/${{ matrix.label }}-full.${{ matrix.ext }}.sha256
           retention-days: 3
 
   # Upload the pre-built CUDA archive to the GitHub Release once it exists.
@@ -551,9 +563,13 @@ jobs:
       - name: Upload to GitHub Release
         run: |
           TAG="${{ needs.plan.outputs.tag }}"
+          # Upload lean zip (binary only) + full zip (binary + DLLs) for Windows.
+          # Linux only has the one archive so the glob safely finds nothing extra.
           gh release upload "$TAG" \
             cuda-dist/${{ matrix.label }}.${{ matrix.ext }} \
             cuda-dist/${{ matrix.label }}.${{ matrix.ext }}.sha256 \
+            $(ls cuda-dist/${{ matrix.label }}-full.${{ matrix.ext }} 2>/dev/null || true) \
+            $(ls cuda-dist/${{ matrix.label }}-full.${{ matrix.ext }}.sha256 2>/dev/null || true) \
             --repo "${{ github.repository }}" \
             --clobber
 

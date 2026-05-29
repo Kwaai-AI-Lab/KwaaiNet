@@ -180,9 +180,18 @@ impl UpdateChecker {
                 "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc.zip"
             );
             let archive_url = if nvidia_smi_windows().await {
-                let cuda_url = format!(
-                    "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda.zip"
-                );
+                // DLLs already present → use the lean binary-only zip (~30 MB, fast).
+                // DLLs missing       → use the full zip with bundled CUDA runtime (~978 MB, one-time).
+                let dlls_present = install_dir.join("cublas64_12.dll").exists();
+                let cuda_url = if dlls_present {
+                    format!(
+                        "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda.zip"
+                    )
+                } else {
+                    format!(
+                        "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda-full.zip"
+                    )
+                };
                 let client = reqwest::Client::builder()
                     .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
                     .timeout(std::time::Duration::from_secs(10))
@@ -210,10 +219,15 @@ impl UpdateChecker {
                 cpu_url
             };
 
-            let is_cuda = archive_url.contains("-cuda.zip");
+            let is_cuda = archive_url.contains("-cuda");
             let zip_path = canonical_temp.join("kwaainet-update.zip");
             if is_cuda {
-                print!("  NVIDIA GPU detected — downloading CUDA build for v{version}…");
+                let dlls_present = install_dir.join("cublas64_12.dll").exists();
+                if dlls_present {
+                    print!("  NVIDIA GPU detected — downloading CUDA update for v{version} (binary only)…");
+                } else {
+                    print!("  NVIDIA GPU detected — downloading CUDA build for v{version} (first install, includes runtime DLLs)…");
+                }
             } else {
                 print!("  Downloading v{version} for Windows…");
             }
@@ -228,14 +242,10 @@ impl UpdateChecker {
             let exe_str = kwaainet_exe.to_string_lossy().replace('\'', "''");
             let log_str = log_path.replace('\'', "''");
 
-            // CUDA zips include bundled DLLs alongside the executables; include
-            // *.dll in the file glob so they land in the install directory too.
-            // p2pd.exe is already matched by *.exe so no separate entry needed.
-            let file_include = if is_cuda {
-                "'*.exe','*.dll'"
-            } else {
-                "'*.exe'"
-            };
+            // Include *.dll so the full CUDA zip's bundled runtime DLLs land in
+            // the install dir.  Safe for lean zips and CPU zips — no DLLs found,
+            // nothing extra installed.
+            let file_include = if is_cuda { "'*.exe','*.dll'" } else { "'*.exe'" };
 
             // Single PS1 script handles the full update: waits for kwaainet to
             // exit, kills kwaainet.exe AND p2pd.exe (both may hold file locks),
@@ -572,20 +582,16 @@ mod tests {
         println!("nvidia_smi_windows() = {has_gpu}");
     }
 
-    /// Verify that the CUDA archive URL contains the -cuda.zip suffix so that
-    /// is_cuda detection and file_include selection work correctly.
+    /// Verify that the CUDA archive URLs contain "-cuda" so is_cuda detection
+    /// and file_include selection work correctly for both lean and full zips.
     #[test]
     fn cuda_url_suffix_detection() {
-        let cuda_url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda.zip";
-        let cpu_url  = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc.zip";
-        assert!(
-            cuda_url.contains("-cuda.zip"),
-            "CUDA URL must contain -cuda.zip"
-        );
-        assert!(
-            !cpu_url.contains("-cuda.zip"),
-            "CPU URL must not contain -cuda.zip"
-        );
+        let cuda_lean = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda.zip";
+        let cuda_full = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc-cuda-full.zip";
+        let cpu_url   = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.4.79/kwaainet-x86_64-pc-windows-msvc.zip";
+        assert!(cuda_lean.contains("-cuda"), "Lean CUDA URL must contain -cuda");
+        assert!(cuda_full.contains("-cuda"), "Full CUDA URL must contain -cuda");
+        assert!(!cpu_url.contains("-cuda"),  "CPU URL must not contain -cuda");
     }
 
     /// Verify the file_include string for CUDA zips contains '*.dll' so bundled
