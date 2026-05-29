@@ -2427,18 +2427,36 @@ impl GraphStore {
         self.chunk_to_entities.iter().map(|(&k, v)| (k, v))
     }
 
-    /// For each chunk linked to at least one entity, return (chunk_id, primary_entity_name).
-    /// Primary = the linked entity with the highest mention_count.
-    /// Chunks with no entity links are omitted.
+    /// For each chunk linked to at least one entity, return (chunk_id, tag_prefix).
+    ///
+    /// tag_prefix is a space-separated `[Name]` sequence of all entities linked to that
+    /// chunk, sorted descending by mention_count and capped at `max_tags`.  Using all
+    /// linked entities (rather than just the top-1) ensures that chunks covering multiple
+    /// subjects (e.g. Gandhi visiting Buitencingle) are reachable via any of their entities.
     pub fn chunk_primary_entity_names(&self) -> Vec<(i64, String)> {
+        self.chunk_entity_tag_prefixes(3)
+    }
+
+    pub fn chunk_entity_tag_prefixes(&self, max_tags: usize) -> Vec<(i64, String)> {
         self.chunk_to_entities
             .iter()
             .filter_map(|(&cid, eids)| {
-                let best = eids
+                let mut names: Vec<(u32, &str)> = eids
                     .iter()
                     .filter_map(|&eid| self.nodes.get(&eid))
-                    .max_by_key(|n| n.mention_count)?;
-                Some((cid, best.name.clone()))
+                    .map(|n| (n.mention_count, n.name.as_str()))
+                    .collect();
+                if names.is_empty() {
+                    return None;
+                }
+                names.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                names.truncate(max_tags);
+                let prefix = names
+                    .iter()
+                    .map(|(_, name)| format!("[{name}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                Some((cid, prefix))
             })
             .collect()
     }

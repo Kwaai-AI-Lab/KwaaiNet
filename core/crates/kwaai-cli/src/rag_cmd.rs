@@ -2818,7 +2818,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 println!("  Graph entity search now includes name tokens in the embedding.\n");
             }
 
-            GraphAction::ChunkTag { embed_url, restore } => {
+            GraphAction::ChunkTag { embed_url, max_tags, restore } => {
                 let mode_label = if restore { "Restore" } else { "Chunk-Tag" };
                 print_box_header(&format!("Graph {} ({})", mode_label, kb));
                 let embed_url_str = embed_url.as_deref().unwrap_or("");
@@ -2835,8 +2835,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening meta store")?;
 
-                // Build (chunk_id, entity_name) pairs from the graph.
-                let mut pairs = graph.chunk_primary_entity_names();
+                // Build (chunk_id, tag_prefix) pairs: up to max_tags entities per chunk.
+                let mut pairs = graph.chunk_entity_tag_prefixes(max_tags);
                 pairs.sort_by_key(|(cid, _)| *cid);
                 let total = pairs.len();
                 println!("  Chunks linked to entities: {total}");
@@ -2871,7 +2871,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     println!("  Chunks missing from meta store (skipped): {missing}");
                 }
                 let action_verb = if restore { "Restoring" } else { "Tagging" };
-                println!("  {action_verb} and re-embedding {found} chunks…\n");
+                if restore {
+                    println!("  {action_verb} and re-embedding {found} chunks…\n");
+                } else {
+                    println!("  {action_verb} and re-embedding {found} chunks (up to {max_tags} entity tags each)…\n");
+                }
 
                 // Embed and upload in batches of 32.
                 const BATCH: usize = 32;
