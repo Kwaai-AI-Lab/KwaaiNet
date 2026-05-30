@@ -53,14 +53,15 @@ fn extract_pdf(path: &Path) -> Result<String> {
 ///
 /// Some PDFs encode periods and apostrophes using glyph IDs that pdf-extract maps
 /// to `_` instead of the intended character:
-///   "Dr_"       → "Dr."    (period after abbreviation)
-///   "J_ M_ H_"  → "J. M. H."  (periods after initials)
-///   "Wooding_s" → "Wooding's"  (apostrophe in possessive)
+///   "Dr_"       → "Dr."      (period after abbreviation)
+///   "J_ M_ H_"  → "J. M. H." (spaced initials)
+///   "M_K_"      → "M.K."     (chained initials — next char is uppercase)
+///   "Wooding_s" → "Wooding's" (apostrophe in possessive)
 ///
 /// Rules applied in order per `_`:
 ///   1. `_s` at a word boundary → `'s`
-///   2. `_` preceded by a letter and followed by whitespace, end, or another
-///      letter-then-underscore pattern (chained initials) → `.`
+///   2. `_` preceded by a letter and followed by whitespace, end, or an uppercase
+///      letter (chained initial) → `.`
 ///   3. All other underscores → stripped
 #[allow(dead_code)]
 fn clean_pdf_text(text: &str) -> String {
@@ -86,17 +87,19 @@ fn clean_pdf_text(text: &str) -> String {
                 continue;
             }
         }
-        // Rule 2: `_` preceded by a letter and followed by whitespace / end → period
+        // Rule 2: `_` preceded by a letter and followed by whitespace, end, or an
+        // uppercase letter (chained initials like M_K_ → M.K.) → period
         let prev_is_alpha = out
             .chars()
             .last()
             .map(|p| p.is_alphabetic())
             .unwrap_or(false);
-        let next_is_break = i + 1 >= n
+        let next_is_break_or_initial = i + 1 >= n
             || chars[i + 1].is_whitespace()
             || chars[i + 1] == '\n'
-            || chars[i + 1] == '\r';
-        if prev_is_alpha && next_is_break {
+            || chars[i + 1] == '\r'
+            || chars[i + 1].is_uppercase();
+        if prev_is_alpha && next_is_break_or_initial {
             out.push('.');
             i += 1;
             continue;
@@ -211,6 +214,20 @@ fn extract_doc_legacy(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_clean_pdf_text_chained_initials() {
+        // Chained initials without spaces: M_K_ → M.K.
+        assert_eq!(clean_pdf_text("M_K_ Gandhi"), "M.K. Gandhi");
+        // Initials with spaces: J_ M_ H_ → J. M. H.
+        assert_eq!(clean_pdf_text("J_ M_ H_ Gool"), "J. M. H. Gool");
+        // Trailing period on title: Dr_ → Dr.
+        assert_eq!(clean_pdf_text("Dr_ Smith"), "Dr. Smith");
+        // Possessive: Wooding_s → Wooding's
+        assert_eq!(clean_pdf_text("Wooding_s house"), "Wooding's house");
+        // E_S_ Reddy → E.S. Reddy
+        assert_eq!(clean_pdf_text("E_S_ Reddy"), "E.S. Reddy");
+    }
 
     #[test]
     fn test_parse_ooxml_text() {

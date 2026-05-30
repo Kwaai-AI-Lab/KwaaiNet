@@ -273,13 +273,13 @@ impl UpdateChecker {
                    while ($retries -lt 5) {{\r\n\
                      try {{\r\n\
                        Move-Item -Path $_.FullName -Destination $target -Force -ErrorAction Stop\r\n\
+                       Add-Content -Path '{log_str}' -Value ('Installed ' + $_.Name)\r\n\
                        break\r\n\
                      }} catch {{\r\n\
                        $retries++\r\n\
                        Start-Sleep -Seconds 2\r\n\
                      }}\r\n\
                    }}\r\n\
-                   Add-Content -Path '{log_str}' -Value ('Installed ' + $_.Name)\r\n\
                  }}\r\n\
                  Remove-Item $zip -Force -ErrorAction SilentlyContinue\r\n\
                  Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue\r\n\
