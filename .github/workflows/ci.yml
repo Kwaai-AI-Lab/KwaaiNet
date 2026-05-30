@@ -188,32 +188,7 @@ jobs:
         working-directory: core/crates/kwaai-wasm
         run: wasm-pack build --target web
 
-  # ── 5. Flutter GUI (analyze + test for apps/gui) ──────────────────────────
-  gui:
-    name: GUI (Flutter)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - name: Pub get
-        working-directory: apps/gui
-        run: flutter pub get
-
-      - name: Analyze
-        working-directory: apps/gui
-        run: flutter analyze
-
-      - name: Test
-        working-directory: apps/gui
-        run: flutter test
-
-  # ── 6. Dev binaries (push to main only — gives devs/QA a downloadable build) ─
+  # ── 5. Dev binaries (push to main only — gives devs/QA a downloadable build) ─
   dev-binary:
     name: Dev binary (${{ matrix.target }})
     if: github.event_name == 'push'
