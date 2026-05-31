@@ -242,10 +242,8 @@ impl UpdateChecker {
             print!("  Extracting…");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             {
-                let zip_file =
-                    std::fs::File::open(&zip_path).context("Opening downloaded zip")?;
-                let mut archive =
-                    zip::ZipArchive::new(zip_file).context("Reading zip archive")?;
+                let zip_file = std::fs::File::open(&zip_path).context("Opening downloaded zip")?;
+                let mut archive = zip::ZipArchive::new(zip_file).context("Reading zip archive")?;
                 for i in 0..archive.len() {
                     let mut entry = archive.by_index(i)?;
                     let raw_name = entry.name().to_string();
