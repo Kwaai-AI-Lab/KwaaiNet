@@ -2881,7 +2881,7 @@ entities or omit the fictional one entirely.\n\n\
     };
 
     let url = format!(
-        "{}/v1/chat/completions",
+        "{}/api/chat",
         inference_url.trim_end_matches('/')
     );
     let client = reqwest::Client::builder()
@@ -2892,9 +2892,12 @@ entities or omit the fictional one entirely.\n\n\
     let body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
-        "max_tokens": 1024,
-        "options": {"num_ctx": 8192},
+        "stream": false,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 1024,
+            "num_ctx": 8192,
+        },
     });
 
     let send_result = tokio::time::timeout(
@@ -2932,7 +2935,7 @@ entities or omit the fictional one entirely.\n\n\
             }
         };
 
-    let content = v["choices"][0]["message"]["content"]
+    let content = v["message"]["content"]
         .as_str()
         .unwrap_or("{}");
     let cleaned = content
