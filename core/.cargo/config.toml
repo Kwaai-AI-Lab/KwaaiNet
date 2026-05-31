@@ -1,2 +1,7 @@
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+fp16,+fullfp16"]
+
+# /usr/lib/libcuda.so on this machine is 32-bit; inject the 64-bit path first
+# so lld doesn't grab the wrong one before /usr/lib64 is searched.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-L", "/usr/lib64"]
