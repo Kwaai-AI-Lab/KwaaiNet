@@ -27,24 +27,27 @@ fn slug(name: &str) -> String {
     let cleaned = clean_entity_name(name);
     cleaned
         .chars()
-        .map(|c| match c {
+        .filter_map(|c| match c {
             // Normalise typographic single quotes (from PDF OCR) to ASCII apostrophe
-            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => Some('\''),
+            // Strip periods — "P.V. Tobias" → "PV Tobias", "Dr." → "Dr"
+            '.' => None,
             c if c.is_alphanumeric()
                 || c == ' '
                 || c == '-'
-                || c == '.'
                 || c == '('
                 || c == ')'
                 || c == '\'' =>
             {
-                c
+                Some(c)
             }
-            _ => '_',
+            _ => Some('_'),
         })
         .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .trim()
-        .trim_matches('.')
         .to_string()
 }
 
