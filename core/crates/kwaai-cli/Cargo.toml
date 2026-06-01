@@ -66,6 +66,7 @@ tokio-stream = { version = "0.1", features = ["net"] }
 sha1 = "0.10"
 hex = "0.4"
 rmpv = "1.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 half = { workspace = true }
 unicode-width = "0.1"
 

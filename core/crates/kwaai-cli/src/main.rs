@@ -817,9 +817,9 @@ async fn main() -> Result<()> {
                         print_info("Run 'kwaainet update' (without --check) to install");
                     } else {
                         // Gracefully stop tracked services so the daemon can
-                        // unannounce from DHT before the hard kill in the batch.
+                        // unannounce from DHT before the binary swap.
                         #[cfg(windows)]
-                        {
+                        let daemon_was_running = {
                             let shard_mgr = ShardManager::new();
                             if shard_mgr.is_running() {
                                 shard_mgr.stop_process();
@@ -831,12 +831,14 @@ async fn main() -> Result<()> {
                                 print_info("Storage API stopping…");
                             }
                             let node_mgr = DaemonManager::new();
-                            if node_mgr.is_running() {
+                            let was = node_mgr.is_running();
+                            if was {
                                 let _ = node_mgr.stop_process();
                                 print_info("Daemon stopping…");
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        }
+                            was
+                        };
                         println!("  Installing v{}…", info.version);
                         println!();
                         #[cfg(not(windows))]
@@ -869,12 +871,57 @@ async fn main() -> Result<()> {
                             return Ok(());
                         }
                         #[cfg(windows)]
-                        checker.install_update(&info.version).await?;
-                        println!();
-                        #[cfg(windows)]
-                        print_success(&format!(
-                            "Installer launched in background — daemon will restart automatically."
-                        ));
+                        {
+                            let install_dir = std::env::current_exe()
+                                .ok()
+                                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                                .unwrap_or_else(|| {
+                                    dirs::home_dir()
+                                        .map(|h| h.join(".cargo").join("bin"))
+                                        .unwrap_or_default()
+                                });
+
+                            if let Err(e) = checker.install_update(&info.version).await {
+                                if daemon_was_running {
+                                    let _ = std::process::Command::new(
+                                        install_dir.join("kwaainet.exe"),
+                                    )
+                                    .args(["start", "--daemon"])
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .spawn();
+                                }
+                                print_error(&format!("Update failed: {e:#}"));
+                                print_separator();
+                                return Ok(());
+                            }
+
+                            println!();
+                            if daemon_was_running {
+                                match std::process::Command::new(install_dir.join("kwaainet.exe"))
+                                    .args(["start", "--daemon"])
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .spawn()
+                                {
+                                    Ok(_) => print_success(&format!(
+                                        "Updated to v{} — daemon restarted with new binary.",
+                                        info.version
+                                    )),
+                                    Err(e) => print_warning(&format!(
+                                        "Updated to v{} but daemon restart failed ({e}).\n  Run: kwaainet start --daemon",
+                                        info.version
+                                    )),
+                                }
+                            } else {
+                                print_success(&format!(
+                                    "Updated to v{}. Run 'kwaainet start --daemon' to start the node.",
+                                    info.version
+                                ));
+                            }
+                        }
                         #[cfg(not(windows))]
                         let current_bin = std::env::current_exe()
                             .ok()
