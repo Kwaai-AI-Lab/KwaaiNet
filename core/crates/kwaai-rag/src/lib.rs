@@ -8,6 +8,7 @@ pub mod dream_tasks;
 pub mod embedder;
 pub mod eval_retrieve;
 pub mod family;
+pub mod gliner;
 pub mod graph;
 pub mod hyde;
 pub mod ingestion;

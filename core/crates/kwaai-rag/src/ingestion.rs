@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use crate::chunker::{split_text, Chunk, ChunkConfig};
 use crate::doc_schema::DocSchema;
 use crate::embedder::EmbedClient;
+use crate::gliner::GliNERClient;
 use crate::graph::{
     description_from_fields, entity_id, extract_from_text, EntityNode, ExtractedEntity,
     ExtractedRelation, FieldValue, GraphStore,
@@ -38,6 +39,9 @@ pub struct GraphIngestConfig {
     /// entities from a chunk. 0 = current chunk only (legacy). 1 = include one chunk
     /// before and after (recommended; +7pp recall in experiments). Default: 1.
     pub context_window: usize,
+    /// Optional GLiNER NER client. When set, person spans are detected before each LLM
+    /// call and injected as high-confidence hints into the extraction prompt.
+    pub gliner_client: Option<GliNERClient>,
 }
 
 impl GraphIngestConfig {
@@ -202,6 +206,7 @@ pub async fn extract_and_store_entities_pub(
     let no_relations = graph_cfg.no_relations;
     let context_window = graph_cfg.context_window;
     let store = graph_cfg.store.clone();
+    let gliner = Arc::new(graph_cfg.gliner_client.clone());
 
     // Channel capacity must be large enough that spawned tasks never block waiting
     // to send while the spawn loop holds the only tokio task slot.  Using a
@@ -802,6 +807,7 @@ pub async fn extract_and_store_entities_pub(
         let embed = embed.clone();
         let entity_types_cfg = entity_types_cfg.clone();
         let gender_context = gender_context.clone();
+        let gliner = gliner.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -812,6 +818,16 @@ pub async fn extract_and_store_entities_pub(
             let candidates = ner::extract_proper_noun_candidates(&text);
             let pronoun_map = ner::resolve_pronouns(&text, &gender_context);
 
+            let gliner_hints: Vec<String> = match gliner.as_ref() {
+                Some(client) => client.person_spans(&text).await,
+                None => vec![],
+            };
+            let hints_opt: Option<&[String]> = if gliner_hints.is_empty() {
+                None
+            } else {
+                Some(&gliner_hints)
+            };
+
             let (mut entities, relations) = match extract_from_text(
                 &text,
                 &candidates,
@@ -821,6 +837,7 @@ pub async fn extract_and_store_entities_pub(
                 &model,
                 &et,
                 no_relations,
+                hints_opt,
             )
             .await
             {
@@ -930,6 +947,15 @@ async fn extract_and_store_entities(
         };
         let et: Vec<&str> = graph_cfg.entity_types.iter().map(|s| s.as_str()).collect();
         let candidates = ner::extract_proper_noun_candidates(&text);
+        let gliner_hints: Vec<String> = match &graph_cfg.gliner_client {
+            Some(client) => client.person_spans(&text).await,
+            None => vec![],
+        };
+        let hints_opt: Option<&[String]> = if gliner_hints.is_empty() {
+            None
+        } else {
+            Some(&gliner_hints)
+        };
         let (mut entities, relations) = match extract_from_text(
             &text,
             &candidates,
@@ -939,6 +965,7 @@ async fn extract_and_store_entities(
             &graph_cfg.model,
             &et,
             graph_cfg.no_relations,
+            hints_opt,
         )
         .await
         {

@@ -1612,6 +1612,12 @@ pub enum GraphAction {
         /// Example: --sample 10 processes the first 10% of chunks.
         #[arg(long, value_name = "PERCENT")]
         sample_pct: Option<u8>,
+
+        /// Base URL of a running GLiNER NER server (e.g. http://localhost:8080).
+        /// When set, Person spans are detected before each LLM call and injected as
+        /// high-confidence hints into the extraction prompt. Requires `scripts/gliner_server.py`.
+        #[arg(long, value_name = "URL")]
+        gliner_url: Option<String>,
     },
 
     /// Seed the graph from a ground-truth YAML family tree — upserts canonical entities with

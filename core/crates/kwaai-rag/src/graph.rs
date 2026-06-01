@@ -2751,6 +2751,7 @@ pub async fn extract_from_text(
     model: &str,
     entity_types: &[&str],
     no_relations: bool,
+    gliner_hints: Option<&[String]>,
 ) -> Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)> {
     // Skip the LLM entirely when the local pre-screener found no proper nouns.
     // Avoids inference cost on boilerplate, numeric, or table-heavy chunks.
@@ -2799,6 +2800,23 @@ pub async fn extract_from_text(
         .collect::<Vec<_>>()
         .join("\n");
 
+    // GLiNER hints: high-confidence Person spans from a dedicated NER model.
+    // Injected as a preamble block so the LLM treats them as validated anchors.
+    let hints_block = match gliner_hints {
+        Some(hints) if !hints.is_empty() => {
+            let list = hints
+                .iter()
+                .map(|h| format!("- {h}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "CONFIRMED PERSON NAMES (detected by a dedicated NER model — treat these as \
+                 high-confidence Person entities if they appear in the text):\n{list}\n\n"
+            )
+        }
+        _ => String::new(),
+    };
+
     let prompt = if no_relations {
         format!(
             "{section_context}\
@@ -2810,6 +2828,7 @@ pub async fn extract_from_text(
              List AT MOST {entity_cap} entities.\n\
              Return ONLY valid JSON (no markdown, no explanation):\n\
              {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"fields\":{{...}}}},...]}}\n\n\
+             {hints_block}\
              Candidates:\n{candidates_block}\n\n\
              Entity types: {entity_list}\n\n\
              Field keys by entity type — include only keys whose values appear in the text:\n\
@@ -2871,6 +2890,7 @@ Regrettably, Science, Several, Soon, Still, Tell, Whether, Worse.\n\
              Return ONLY valid JSON (no markdown, no explanation):\n\
              {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\"}},...],\
              \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
+             {hints_block}\
              Candidates:\n{candidates_block}\n\n\
              Entity types: {entity_list}\n\
              Relation types: {relation_list}\n\n\

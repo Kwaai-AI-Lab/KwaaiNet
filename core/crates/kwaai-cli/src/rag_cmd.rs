@@ -602,6 +602,7 @@ async fn cmd_ingest(
                 entity_types: vec![],
                 no_relations: false,
                 context_window: 1,
+                gliner_client: None,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -1709,6 +1710,7 @@ async fn cmd_rebuild(
                 reset_graph: false,
                 graph_window,
                 sample_pct,
+                gliner_url: None,
             },
             kb.clone(),
         )
@@ -2021,6 +2023,7 @@ async fn run_sync_pass(
                     entity_types: vec![],
                     no_relations: false,
                     context_window: 1,
+                    gliner_client: None,
                 });
             }
         }
@@ -2213,6 +2216,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 graph_window,
                 reset_graph,
                 sample_pct,
+                gliner_url,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2342,6 +2346,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                         .context("opening graph store")?,
                 ));
+                let gliner_client = gliner_url.as_deref().map(|url| {
+                    println!("  GLiNER NER:        {url}");
+                    kwaai_rag::gliner::GliNERClient::new(url, 0.4)
+                });
+
                 let graph_cfg = kwaai_rag::ingestion::GraphIngestConfig {
                     store: store.clone(),
                     inference_url: infer_url,
@@ -2351,6 +2360,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     entity_types: parsed_entity_types,
                     no_relations,
                     context_window: graph_window,
+                    gliner_client,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
