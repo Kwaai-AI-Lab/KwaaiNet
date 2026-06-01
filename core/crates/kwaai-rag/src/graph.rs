@@ -625,6 +625,73 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Remove `alias_name` from `canonical_name`'s alias list and re-insert it as its own
+    /// stub entity. Returns the number of aliases removed (0 = alias not found, 1 = removed).
+    /// The restored entity has mention_count=1 and a zero embedding — run `graph reembed`
+    /// afterwards to restore a proper embedding for it.
+    pub fn unmerge_alias(
+        &mut self,
+        canonical_name: &str,
+        entity_type: &str,
+        alias_name: &str,
+    ) -> Result<usize> {
+        let canonical_id = entity_id(canonical_name, entity_type);
+        let canonical = match self.nodes.get(&canonical_id).cloned() {
+            Some(n) => n,
+            None => anyhow::bail!("entity '{}' not found", canonical_name),
+        };
+        let pos = canonical.aliases.iter().position(|a| a == alias_name);
+        if pos.is_none() {
+            return Ok(0);
+        }
+        let mut new_aliases = canonical.aliases.clone();
+        new_aliases.remove(pos.unwrap());
+        let new_mention_count = canonical.mention_count.saturating_sub(1);
+        let updated_canonical = EntityNode {
+            aliases: new_aliases,
+            mention_count: new_mention_count,
+            ..canonical.clone()
+        };
+
+        let dim = canonical.embedding.len();
+        let alias_id = entity_id(alias_name, entity_type);
+        let alias_node = EntityNode {
+            id: alias_id,
+            name: alias_name.to_string(),
+            entity_type: entity_type.to_string(),
+            description: String::new(),
+            embedding: vec![0.0_f32; dim],
+            mention_count: 1,
+            first_chunk_id: canonical.first_chunk_id,
+            aliases: vec![],
+            schema_type: None,
+            gender: None,
+            evidence: vec![],
+            fields: Default::default(),
+        };
+
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            t.insert(
+                &canonical_id.to_le_bytes()[..],
+                serde_json::to_vec(&updated_canonical)?.as_slice(),
+            )?;
+            t.insert(
+                &alias_id.to_le_bytes()[..],
+                serde_json::to_vec(&alias_node)?.as_slice(),
+            )?;
+        }
+        wtxn.commit()?;
+
+        if let Some(n) = self.nodes.get_mut(&canonical_id) {
+            n.aliases = updated_canonical.aliases;
+            n.mention_count = updated_canonical.mention_count;
+        }
+        self.nodes.insert(alias_id, alias_node);
+        Ok(1)
+    }
+
     /// Insert or strengthen a directed relation, adding the evidence chunk.
     pub fn upsert_relation(
         &mut self,

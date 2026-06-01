@@ -1620,6 +1620,27 @@ pub enum GraphAction {
         gliner_url: Option<String>,
     },
 
+    /// Reverse a bad dedup merge: remove an alias from a canonical entity and restore it as its
+    /// own stub entity. Run `graph reembed --kb <KB>` afterwards to give the restored entity a
+    /// proper embedding. Accepts a --pairs-file with one "alias <- canonical" line per merge to fix.
+    Unmerge {
+        /// Entity type for both the canonical and alias (default: Person).
+        #[arg(long, default_value = "Person", value_name = "TYPE")]
+        entity_type: String,
+
+        /// Canonical entity name to remove the alias from.
+        #[arg(long, value_name = "NAME", conflicts_with = "pairs_file")]
+        canonical: Option<String>,
+
+        /// Alias name to split off from the canonical entity.
+        #[arg(long, value_name = "NAME", conflicts_with = "pairs_file")]
+        alias: Option<String>,
+
+        /// Path to a file with one "alias <- canonical" line per bad merge to fix.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["canonical", "alias"])]
+        pairs_file: Option<std::path::PathBuf>,
+    },
+
     /// Seed the graph from a ground-truth YAML family tree — upserts canonical entities with
     /// name+description embeddings, merges alias entities into their canonical, and plants
     /// family relations. Aliases declared in the YAML are stored on the canonical entity so

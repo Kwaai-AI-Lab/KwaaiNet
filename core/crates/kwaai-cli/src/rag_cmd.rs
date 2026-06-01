@@ -2163,6 +2163,14 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         print_box_header(&format!("Entity: {} [{}]", node.name, node.entity_type));
                         println!("  Description: {}", node.description);
                         println!("  Mentions:    {}", node.mention_count);
+                        if node.aliases.is_empty() {
+                            println!("  Aliases:     (none)");
+                        } else {
+                            println!("  Aliases ({}):", node.aliases.len());
+                            for a in &node.aliases {
+                                println!("    • {a}");
+                            }
+                        }
                         let neighbors = store.neighbors_of(node.id);
                         if neighbors.is_empty() {
                             println!("  Neighbors:   (none)");
@@ -3220,10 +3228,16 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     if name_lower.len() < 4 {
                         continue;
                     }
-                    // Keep if name appears in any chunk text.
+                    // Normalize: remove periods so "Mr. Smith" matches "Mr Smith" in source text.
+                    let name_normalized: String = name_lower
+                        .replace('.', " ")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    // Keep if name (or period-stripped variant) appears in any chunk text.
                     if all_chunk_texts
                         .iter()
-                        .any(|t| t.contains(name_lower.as_str()))
+                        .any(|t| t.contains(name_lower.as_str()) || t.contains(name_normalized.as_str()))
                     {
                         continue;
                     }
@@ -3294,6 +3308,63 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
             GraphAction::Import { input_dir, since } => {
                 return cmd_import(input_dir, since, kb).await;
+            }
+
+            GraphAction::Unmerge {
+                entity_type,
+                canonical,
+                alias,
+                pairs_file,
+            } => {
+                #[cfg(not(feature = "storage"))]
+                bail!("RAG requires the 'storage' feature.");
+
+                #[cfg(feature = "storage")]
+                {
+                    let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+                    let mut store = kwaai_rag::graph::GraphStore::open(
+                        &rag_cfg.data_dir(),
+                        tenant_id,
+                    )
+                    .context("opening graph store")?;
+
+                    // Build list of (canonical, alias) pairs to fix.
+                    let pairs: Vec<(String, String)> = if let Some(path) = pairs_file {
+                        std::fs::read_to_string(&path)
+                            .with_context(|| format!("reading {}", path.display()))?
+                            .lines()
+                            .filter(|l| l.contains("<-"))
+                            .map(|l| {
+                                let mut parts = l.splitn(2, "<-");
+                                let a = parts.next().unwrap_or("").trim().to_string();
+                                let c = parts.next().unwrap_or("").trim().to_string();
+                                (c, a)
+                            })
+                            .filter(|(c, a)| !c.is_empty() && !a.is_empty())
+                            .collect()
+                    } else {
+                        match (canonical, alias) {
+                            (Some(c), Some(a)) => vec![(c, a)],
+                            _ => bail!("provide either --canonical + --alias or --pairs-file"),
+                        }
+                    };
+
+                    print_box_header(&format!("Graph Unmerge ({})", kb));
+                    let mut total = 0usize;
+                    for (c, a) in &pairs {
+                        match store.unmerge_alias(c, &entity_type, a) {
+                            Ok(0) => println!("  ⚠️  alias '{}' not found on '{}'", a, c),
+                            Ok(_) => {
+                                println!("  ✅ split '{}' off '{}'", a, c);
+                                total += 1;
+                            }
+                            Err(e) => println!("  ❌ '{}' <- '{}': {}", a, c, e),
+                        }
+                    }
+                    println!();
+                    println!("  {} alias(es) restored as stub entities.", total);
+                    println!("  Run `kwaainet rag graph reembed --kb {}` to restore embeddings.", kb);
+                }
             }
         }
         Ok(())
