@@ -21,7 +21,10 @@ use anyhow::{Context, Result};
 use kwaai_p2p_daemon::P2PClient;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
-use std::{pin::Pin, sync::{Arc, OnceLock}};
+use std::{
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -251,8 +254,7 @@ async fn handle_connection(
     //
     // Phase 1 — accumulate until the header/body separator (\r\n\r\n) arrives.
     // Phase 2 — read the remaining body bytes indicated by Content-Length.
-    let deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
 
     let header_end = loop {

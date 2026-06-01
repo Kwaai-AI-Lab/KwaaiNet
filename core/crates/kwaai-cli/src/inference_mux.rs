@@ -281,6 +281,14 @@ impl InferenceMuxClient {
         let raw: P2PStream = p2p
             .stream_open_raw(&peer_id.to_bytes(), vec![MUX_PROTO.to_string()])
             .await
+            .map_err(|e| {
+                warn!(
+                    "inference-mux stream_open_raw failed for peer {}: {:#}",
+                    peer_id.to_base58(),
+                    e
+                );
+                e
+            })
             .context("stream_open_raw for inference-mux")?;
 
         let (mut reader, writer) = tokio::io::split(raw);
@@ -503,7 +511,7 @@ async fn handle_mux_proxy_connection(
             let client = match ensure_mux_client(&shared, peer_id).await {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!("inference-mux: connect failed (attempt {attempt}): {e}");
+                    warn!("inference-mux: connect failed (attempt {attempt}): {e:#}");
                     if attempt < 1 {
                         continue;
                     }

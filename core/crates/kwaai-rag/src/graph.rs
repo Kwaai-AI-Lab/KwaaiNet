@@ -2727,6 +2727,18 @@ impl GraphStore {
 
 /// Extract entities and relations from a chunk of text using the local LLM.
 /// Returns `Ok((entities, relations))` or `Ok(([], []))` on parse failure so
+/// Normalise OCR underscores in proper-noun candidates before sending to the LLM.
+/// In this corpus `_` replaces `.` in abbreviated initials: `J_ M_ H_` → `J. M. H.`
+/// We replace every `_ ` (underscore-space) with `. ` and every trailing `_` with `.`.
+fn normalize_underscores(s: &str) -> String {
+    let mut out = s.replace("_ ", ". ");
+    if out.ends_with('_') {
+        out.pop();
+        out.push('.');
+    }
+    out
+}
+
 /// ingestion can continue without hard errors.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_from_text(
@@ -2774,7 +2786,13 @@ pub async fn extract_from_text(
     // experiments show no recall loss at this cap with window=1 chunking).
     let entity_cap = if entity_types.len() <= 3 { 25 } else { 20 };
 
-    let candidates_block = candidates
+    // Normalise OCR artifacts before presenting candidates to the LLM.
+    // In this corpus underscores replace periods in initials (J_ M_ H_ → J. M. H.).
+    let normalized_candidates: Vec<String> = candidates
+        .iter()
+        .map(|c| normalize_underscores(c))
+        .collect();
+    let candidates_block = normalized_candidates
         .iter()
         .map(|c| format!("- {c}"))
         .collect::<Vec<_>>()
@@ -2807,20 +2825,30 @@ separated by commas or 'and', extract each as its own entity.\n\
              - Descriptions must contain at least one specific fact (date, place, role, or \
 relationship) from the text. Do not describe in generic terms.\n\
              - Omit any field whose value is not clearly stated in the text.\n\
-             - NEVER extract generic family roles as entity names: Granny, Gran, Dad, Daddy, \
-Mom, Mum, Mama, Uncle, Auntie, Aunt, Grandfather, Grandpa, Grandma, the narrator, \
-the author. Only extract proper names (first name + surname, or a well-known single name).\n\
+             - NEVER extract generic family roles as entity names. \"Uncle Aity\", \
+\"Auntie Cissie\", \"Granny Bibi\" are NOT valid entity names — skip them. Only extract \
+proper names (first name + family name, or a well-known single name).\n\
              - If a name appears ONLY as the author of a literary work being read or cited \
-(e.g. Chekhov, Dickens, Shaw) it is NOT an entity in this memoir text — skip it.\n\
+(e.g. Chekhov, Dickens, Shaw, Homer, Milton, Dostoevsky, Gogol, Gorki, Zola, Steinbeck, \
+Wordsworth, Browning, Jack London, Mark Twain) it is NOT an entity — skip it.\n\
              - Collective nouns (\"the servants\", \"the uncles\", \"the family\") and bare \
-titles (\"the Imam\", \"the Doctor\") are not Person entities.\n\
-             - Do NOT extract: common English words (Many, Such, One, Moreover, Sometime, \
-Alas, Half, How, When), ethnic/racial adjectives used as nouns (German, French, Russian, \
-Jewish, Moslem, Xhosa, Pathan, Slavic, Aryan, Non-White), group nouns (Royal Family, \
-Killers), vehicles (Black Maria), or fictional characters from other works (Hamlet, \
-Cassandra) unless they are real people explicitly named in this memoir.\n\
+titles (\"the Imam\", \"the Doctor\") are NOT Person entities.\n\
+             - Do NOT extract ethnic or racial group nouns as Person entities: African, Indian, \
+Arab, Chinese, Bantu, Boer, Cape Malay, Coolie, Dutch, Griqua, Hindu, Irish, Japanese, \
+Malay, Non-White, Pathan, Punjabi, Sikh, Turk, West Indian, Zulu, Afrikaner.\n\
+             - Do NOT extract ideological or political labels: Nationalist, Socialist, \
+Marxist, Nazi, Communist, Labour, Victorian, Native.\n\
+             - Do NOT extract fictional characters from comics or films even if the memoir \
+mentions reading/watching them: Tarzan, Flash, Buck Rogers, Buck Jones, Dandy, Globi, \
+Lobo, Brick Bradford, Hopalong Cassidy, Roy Rogers, Gene Autry, Cobra Woman, Ali Baba, \
+Banquo, Dorian Gray, Mephistopheles, Hunchback of Notre Dame.\n\
+             - Do NOT extract common English words or sentence fragments as entity names: \
+Apart, Being, Figure, Hatless, History, Just, Later, Little, Much, Now, Perhaps, \
+Regrettably, Science, Several, Soon, Still, Tell, Whether, Worse.\n\
              - Do NOT fuse a fictional character with its author: \"King Lear\" and \
-\"William Shakespeare\" are separate entities — do not output \"King Lear William Shakespeare\".\n\n\
+\"William Shakespeare\" are separate — do not output \"King Lear William Shakespeare\".\n\
+             - Do NOT fuse a list of names into one entity. If the source text has \
+\"A, B, C and D\" extract each as a separate entity or skip all.\n\n\
              If no candidates are real entities, return {{\"entities\":[]}}.\n\n\
              Text:\n{text}"
         )
@@ -2853,11 +2881,25 @@ Cassandra) unless they are real people explicitly named in this memoir.\n\
 separated by commas or 'and', extract each as its own entity.\n\
              - Descriptions must contain at least one specific fact (date, place, role, or \
 relationship) from the text. Do not describe in generic terms.\n\
-             - NEVER extract generic family roles as entity names: Granny, Gran, Dad, Daddy, \
-Mom, Mum, Mama, Uncle, Auntie, Aunt, Grandfather, Grandpa, Grandma, the narrator, \
-the author. Only extract proper names.\n\
+             - NEVER extract generic family roles as entity names. \"Uncle Aity\", \
+\"Auntie Cissie\", \"Granny Bibi\" are NOT valid entity names — skip them. Only extract \
+proper names (first name + family name, or a well-known single name).\n\
              - If a name appears ONLY as the author of a literary work being read or cited \
-(e.g. Chekhov, Dickens, Shaw) it is NOT an entity in this memoir text — skip it.\n\
+(e.g. Chekhov, Dickens, Shaw, Homer, Dostoevsky, Gogol, Gorki, Zola, Steinbeck, \
+Wordsworth, Browning, Jack London, Mark Twain) it is NOT an entity — skip it.\n\
+             - Do NOT extract ethnic or racial group nouns as Person entities: African, Indian, \
+Arab, Chinese, Bantu, Boer, Cape Malay, Coolie, Dutch, Griqua, Hindu, Irish, Japanese, \
+Malay, Non-White, Pathan, Punjabi, Sikh, Turk, West Indian, Zulu, Afrikaner.\n\
+             - Do NOT extract ideological or political labels: Nationalist, Socialist, \
+Marxist, Nazi, Communist, Labour, Victorian, Native.\n\
+             - Do NOT extract fictional characters from comics or films even if the memoir \
+mentions reading/watching them: Tarzan, Flash, Buck Rogers, Buck Jones, Dandy, Globi, \
+Lobo, Brick Bradford, Hopalong Cassidy, Roy Rogers, Gene Autry, Cobra Woman, Ali Baba, \
+Banquo, Dorian Gray, Mephistopheles.\n\
+             - Do NOT extract common English words or sentence fragments: Apart, Being, \
+Figure, Hatless, History, Just, Later, Little, Much, Now, Perhaps, Several, Soon, Still, \
+Tell, Whether, Worse.\n\
+             - Do NOT fuse a list of names into one entity. Extract each name separately.\n\
              - Only assert a relation when the text EXPLICITLY STATES IT. Do not infer \
 relations from two people being mentioned in the same paragraph.\n\
              - Use `spouse_of` ONLY when the text says \"married\", \"wife\", \"husband\", \
@@ -2868,11 +2910,6 @@ relations from two people being mentioned in the same paragraph.\n\
 each other — use `associated_with` at most.\n\
              - Do not create relations to generic roles (\"Dad\", \"Granny\") or to a person \
 who appears only as an author of a literary work.\n\
-             - Do NOT extract: common English words (Many, Such, One, Moreover, Sometime, \
-Alas, Half, When), ethnic/racial adjectives used as nouns (German, French, Russian, \
-Jewish, Moslem, Xhosa, Pathan, Slavic, Non-White), group nouns (Royal Family), \
-vehicles (Black Maria), or fictional characters from other works (Hamlet, Cassandra) \
-unless they are real people explicitly named in this memoir.\n\
              - Do NOT fuse a fictional character with its author: keep them as separate \
 entities or omit the fictional one entirely.\n\n\
              If no candidates are real entities, return {{\"entities\":[],\"relations\":[]}}.\n\n\
