@@ -80,4 +80,4 @@ The key struct governing entity extraction quality:
 ## D6 accuracy progression
 
 Target: ≥ 80% on `d6_eval_questions.json` (60 questions).
-See `tests/kwaai-knowledge/d6_accuracy_progress.md` for per-milestone results.
+See `projects/kwaai-knowledge/d6_accuracy_progress.md` for per-milestone results.

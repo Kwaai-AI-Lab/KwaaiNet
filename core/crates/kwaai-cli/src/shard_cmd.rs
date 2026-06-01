@@ -873,12 +873,117 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
     Ok(())
 }
 
+// ── run via remote Ollama (mux:// or http://) ────────────────────────────────
+
+/// Bypass block sharding: proxy the prompt to a remote Ollama via mux:// or
+/// a plain HTTP URL. Returns the generated text with timing if --stats is set.
+async fn cmd_shard_run_via_ollama(args: &ShardRunArgs, raw_url: &str) -> Result<()> {
+    // Resolve mux://PEER_ID → local HTTP proxy port.
+    let (ollama_base, _proxy_handle) = if let Some(peer_str) = raw_url.strip_prefix("mux://") {
+        let peer_id: PeerId = peer_str
+            .parse()
+            .with_context(|| format!("invalid PeerId in mux:// URL: {raw_url}"))?;
+        let (port, handle) = crate::inference_mux::start_local_mux_proxy(peer_id)
+            .await
+            .context("start mux proxy")?;
+        // Give the proxy a moment to accept connections before the first request.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        (format!("http://127.0.0.1:{port}"), Some(handle))
+    } else {
+        (raw_url.to_string(), None)
+    };
+
+    let model = args
+        .model
+        .clone()
+        .unwrap_or_else(|| "llama3.1:8b".to_string());
+
+    print_box_header("KwaaiNet Remote Inference");
+    println!("  Remote:  {raw_url}");
+    println!("  Model:   {model}");
+    println!("  Prompt:  {:?}", args.prompt);
+    print_separator();
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": args.prompt,
+        "stream": false,
+    });
+    // Only include options that differ from Ollama defaults to keep the request clean.
+    let mut opts = serde_json::Map::new();
+    if (args.temperature - 1.0).abs() > 1e-4 {
+        opts.insert("temperature".into(), args.temperature.into());
+    }
+    if (args.top_p - 1.0).abs() > 1e-4 {
+        opts.insert("top_p".into(), args.top_p.into());
+    }
+    if args.top_k > 0 {
+        opts.insert("top_k".into(), (args.top_k as i64).into());
+    }
+    opts.insert("num_predict".into(), (args.max_tokens as i64).into());
+    body["options"] = serde_json::Value::Object(opts);
+
+    let wall_start = std::time::Instant::now();
+    let resp = http
+        .post(format!("{ollama_base}/api/generate"))
+        .json(&body)
+        .send()
+        .await
+        .context("POST /api/generate to remote Ollama")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        bail!("Ollama returned {status}: {text}");
+    }
+
+    let json: serde_json::Value = resp.json().await.context("parse Ollama response")?;
+    let wall_elapsed = wall_start.elapsed();
+
+    let text = json["response"].as_str().unwrap_or("(empty response)");
+    println!("{text}");
+    println!();
+
+    if args.stats {
+        let eval_count = json["eval_count"].as_u64().unwrap_or(0);
+        let load_duration_ns = json["load_duration"].as_u64().unwrap_or(0);
+        let prompt_duration_ns = json["prompt_eval_duration"].as_u64().unwrap_or(0);
+        let eval_duration_ns = json["eval_duration"].as_u64().unwrap_or(1);
+        let tok_per_sec = eval_count as f64 / (eval_duration_ns as f64 / 1e9);
+        print_separator();
+        println!("  Tokens generated: {eval_count}");
+        println!("  Speed:            {tok_per_sec:.1} tok/s (remote GPU)");
+        println!("  Model load:       {:.1}s", load_duration_ns as f64 / 1e9);
+        println!(
+            "  Prompt eval:      {:.1}s",
+            prompt_duration_ns as f64 / 1e9
+        );
+        println!("  Generation:       {:.1}s", eval_duration_ns as f64 / 1e9);
+        println!(
+            "  Wall time:        {:.1}s (incl. relay)",
+            wall_elapsed.as_secs_f64()
+        );
+    }
+
+    print_separator();
+    Ok(())
+}
+
 // ── run ───────────────────────────────────────────────────────────────────────
 
 pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     // --local: bypass all networking, load model in-process and infer directly.
     if args.local {
         return cmd_shard_run_local(args).await;
+    }
+
+    // --inference-url: bypass block sharding, proxy to a remote Ollama instead.
+    if let Some(ref url) = args.inference_url {
+        return cmd_shard_run_via_ollama(&args, url).await;
     }
 
     let cfg = KwaaiNetConfig::load_or_create()?;

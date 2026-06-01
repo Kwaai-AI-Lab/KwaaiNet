@@ -11,8 +11,12 @@ use crate::protocol::p2pd::{
 };
 use bytes::{BufMut, BytesMut};
 use prost::Message;
-use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tracing::{debug, trace};
@@ -28,11 +32,61 @@ pub struct P2PClient {
     daemon_addr: String,
 }
 
-/// Platform-specific stream abstraction
+/// Platform-specific stream abstraction (private implementation detail)
 enum DaemonStream {
     Tcp(TcpStream),
     #[cfg(unix)]
     UnixSocket(UnixStream),
+}
+
+/// Raw bidirectional stream to the p2p daemon, usable as a data channel after `stream_open_raw`.
+///
+/// Implements `AsyncRead + AsyncWrite + Unpin` so callers can use `tokio::io::split` to get
+/// independent send and receive halves for concurrent I/O.
+pub struct P2PStream(DaemonStream);
+
+impl AsyncRead for P2PStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match &mut self.0 {
+            DaemonStream::Tcp(tcp) => Pin::new(tcp).poll_read(cx, buf),
+            #[cfg(unix)]
+            DaemonStream::UnixSocket(sock) => Pin::new(sock).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for P2PStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match &mut self.0 {
+            DaemonStream::Tcp(tcp) => Pin::new(tcp).poll_write(cx, buf),
+            #[cfg(unix)]
+            DaemonStream::UnixSocket(sock) => Pin::new(sock).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut self.0 {
+            DaemonStream::Tcp(tcp) => Pin::new(tcp).poll_flush(cx),
+            #[cfg(unix)]
+            DaemonStream::UnixSocket(sock) => Pin::new(sock).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut self.0 {
+            DaemonStream::Tcp(tcp) => Pin::new(tcp).poll_shutdown(cx),
+            #[cfg(unix)]
+            DaemonStream::UnixSocket(sock) => Pin::new(sock).poll_shutdown(cx),
+        }
+    }
 }
 
 impl P2PClient {
@@ -592,6 +646,56 @@ impl P2PClient {
 
         debug!("Connected to daemon stream");
         Ok(stream)
+    }
+
+    /// Open a stream to a peer and return the **daemon socket itself** as the data channel.
+    ///
+    /// The go-libp2p-daemon protocol works as follows for `STREAM_OPEN`:
+    /// 1. Client sends `StreamOpen` request on the control socket.
+    /// 2. Daemon opens the libp2p stream, sends back `StreamInfo` on the same socket.
+    /// 3. Daemon calls `doStreamPipe(socket, libp2p_stream)` — raw bytes of the libp2p stream
+    ///    now flow directly on the daemon socket (no separate TCP connection needed).
+    ///
+    /// This method consumes `self` and returns the socket as a [`P2PStream`].
+    /// The `StreamInfo.addr` field (the remote peer's multiaddr) is intentionally ignored —
+    /// connecting to it would reach the relay node, not a local proxy.
+    pub async fn stream_open_raw(
+        mut self,
+        peer_id: &[u8],
+        protocols: Vec<String>,
+    ) -> Result<P2PStream> {
+        let request = Request {
+            r#type: request::Type::StreamOpen as i32,
+            connect: None,
+            stream_open: Some(StreamOpenRequest {
+                peer: peer_id.to_vec(),
+                proto: protocols.clone(),
+                timeout: Some(60),
+            }),
+            stream_handler: None,
+            remove_stream_handler: None,
+            dht: None,
+            conn_manager: None,
+            disconnect: None,
+            pubsub: None,
+        };
+
+        debug!("Opening raw stream for protocols: {:?}", protocols);
+        let response = self.send_request(request).await?;
+
+        let stream_info = response
+            .stream_info
+            .ok_or_else(|| Error::Protocol("No StreamInfo in response".to_string()))?;
+
+        debug!(
+            "StreamInfo received (raw mode): proto={}, peer_len={} — daemon now in pipe mode",
+            stream_info.proto,
+            stream_info.peer.len(),
+        );
+
+        // The daemon has set up doStreamPipe on its end: from this point raw libp2p stream
+        // bytes flow directly on the daemon socket. Return it as the data channel.
+        Ok(P2PStream(self.stream))
     }
 
     // ===== Persistent Connection / Unary Handler Support =====

@@ -241,7 +241,374 @@ pub async fn extract_and_store_entities_pub(
 
             let mut entity_ids_for_chunk = Vec::new();
             for (extracted, emb) in res.entities.iter().zip(res.embeddings) {
-                let eid = entity_id(&extracted.name, &extracted.entity_type);
+                // Drop generic family roles, pronouns, collective labels, and common words
+                // that slip through the LLM prompt despite the extraction rules.
+                const GENERIC_ROLE_BLOCKLIST: &[&str] = &[
+                    // Generic family roles
+                    "granny",
+                    "gran",
+                    "grandma",
+                    "grandfather",
+                    "grandpa",
+                    "gramps",
+                    "dad",
+                    "daddy",
+                    "father",
+                    "mother",
+                    "mom",
+                    "mum",
+                    "mama",
+                    "uncle",
+                    "auntie",
+                    "aunt",
+                    "cousin",
+                    "son",
+                    "daughter",
+                    // Pronouns / self-reference
+                    "me",
+                    "i",
+                    "he",
+                    "she",
+                    "they",
+                    "we",
+                    "the narrator",
+                    "the author",
+                    "narrator",
+                    "author",
+                    // Political/ideological concepts extracted as persons
+                    "herrenvolk",
+                    "herrenvolkism",
+                    "apartheid",
+                    "coloured",
+                    "coloureds",
+                    "blacks",
+                    "whites",
+                    "white",
+                    "black",
+                    "indians",
+                    "africans",
+                    "europeans",
+                    "non-white",
+                    "non-whites",
+                    "non-european",
+                    "cape malay",
+                    "cape malay_indian",
+                    "pathan",
+                    "pathans",
+                    "xhosa",
+                    "slavic",
+                    "hungarian",
+                    "jewish",
+                    "aryan",
+                    "moslem",
+                    "muslim",
+                    "nationalist",
+                    "nationalists",
+                    // Ethnic/national/religious group nouns (not individuals)
+                    "german",
+                    "french",
+                    "russian",
+                    "british",
+                    "english",
+                    "african",
+                    "indian",
+                    "arab",
+                    "arabs",
+                    "chinese",
+                    "boer",
+                    "bantu",
+                    "coolie",
+                    "coolies",
+                    "malay",
+                    "malays",
+                    "griqua",
+                    "hindu",
+                    "hindus",
+                    "irish",
+                    "japanese",
+                    "norwegian",
+                    "sikh",
+                    "turks",
+                    "zulus",
+                    "afrikaner",
+                    "afrikaners",
+                    "west indians",
+                    "south african",
+                    "cape coloured",
+                    "non-white muslim south africans",
+                    // Ideological / political labels (not persons)
+                    "socialist",
+                    "marxist",
+                    "labour",
+                    "communist",
+                    "fascist",
+                    "nazi",
+                    "nats",
+                    "native",
+                    "bantu",
+                    // Abstract concepts mistakenly extracted as persons
+                    "christmas",
+                    "eid",
+                    "eid mubarak",
+                    "islam",
+                    "ramadan",
+                    "victorian",
+                    "history",
+                    "science",
+                    "schooling",
+                    "mother tongue",
+                    // Common English words mistakenly extracted as persons
+                    "everything",
+                    "something",
+                    "nothing",
+                    "anything",
+                    "there",
+                    "here",
+                    "this",
+                    "that",
+                    "these",
+                    "those",
+                    "each",
+                    "every",
+                    "all",
+                    "none",
+                    "some",
+                    "any",
+                    "both",
+                    "one",
+                    "many",
+                    "such",
+                    "how",
+                    "when",
+                    "moreover",
+                    "sometime",
+                    "alas",
+                    "half",
+                    // Single-word extraction artifacts and garbage tokens
+                    "apart",
+                    "being",
+                    "blot",
+                    "do",
+                    "everyone",
+                    "figure",
+                    "found",
+                    "great",
+                    "had",
+                    "hatless",
+                    "just",
+                    "later",
+                    "little",
+                    "much",
+                    "needless",
+                    "next",
+                    "now",
+                    "ob",
+                    "perh",
+                    "perhaps",
+                    "peru",
+                    "piccadilly",
+                    "regrettably",
+                    "several",
+                    "shyly",
+                    "soon",
+                    "still",
+                    "tell",
+                    "theoretically",
+                    "v1",
+                    "va",
+                    "whether",
+                    "wo",
+                    "worse",
+                    "poor abdul",
+                    "flash",
+                    "dandy",
+                    "lobo",
+                    // Single-word names that are too ambiguous (surname-only, nickname-only)
+                    "baby",
+                    "youth",
+                    "legless",
+                    "muddy",
+                    "polly",
+                    "tiny",
+                    "vic",
+                    "bill",
+                    "solly",
+                    "nina",
+                    "kismets",
+                    // Academic subjects / objects mistaken for persons
+                    "zoology",
+                    "cadbury",
+                    "freubel",
+                    // Ethnic group phrases not caught by exact-word check
+                    "south african indian",
+                    "head of british muslims",
+                    "non-white councillors",
+                    // Standalone title/role (no name attached)
+                    "prof",
+                    "prof.",
+                    "prof_",
+                    // Plural family/group names (not individuals)
+                    "gools",
+                    "rassools",
+                    "goldings",
+                    "killers",
+                    "stranglers",
+                    "royal family",
+                    // Possessives / corrupted text artifacts
+                    "mr.",
+                    "mr_",
+                    "rev.",
+                    "rev_",
+                    "dr.",
+                    "dr_",
+                    // Abstract / non-human concepts
+                    "god",
+                    "allah",
+                    "lord",
+                    "devil",
+                    "fate",
+                    "nature",
+                    "y_allah",
+                    "y allah",
+                    // Islamic honorifics extracted as standalone entities
+                    "hadji",
+                    "haji",
+                    "hajj",
+                    "maulvi",
+                    "molvi",
+                    "imam",
+                    "sheikh",
+                    // Vehicles / objects mistaken for persons
+                    "black maria",
+                    // Literary authors (only referenced as writers of books/plays)
+                    "homer",
+                    "longfellow",
+                    "wordsworth",
+                    "robert browning",
+                    "robert louis stevenson",
+                    "john milton",
+                    "mark twain",
+                    "charles dickens",
+                    "shakespeare",
+                    "william shakespeare",
+                    "bernard shaw",
+                    "shaw",
+                    "chekov",
+                    "chekhov",
+                    "dostoevsky",
+                    "gogol",
+                    "gorki",
+                    "emile zola",
+                    "sinclair lewis",
+                    "steinbeck",
+                    "jack london",
+                    "damon runyon",
+                    // Fictional characters from comics, films, novels
+                    "tarzan",
+                    "buck rogers",
+                    "buck jones",
+                    "hopalong cassidy",
+                    "roy rogers",
+                    "gene autry",
+                    "bob steele",
+                    "cobra woman",
+                    "brick bradford",
+                    "globi",
+                    "ali baba",
+                    "tsotsi",
+                    "banquo",
+                    "mephistopheles",
+                    "dorian gray",
+                    "pharaoh cheops",
+                    "hunchback of notre dame",
+                    "goofy",
+                    "captain america",
+                    "captain marvel",
+                    "captain britain",
+                    "superman",
+                    "batman",
+                    "spiderman",
+                    "spider-man",
+                    "hamlet",
+                    "cassandra",
+                    // More family role variants
+                    "mommy",
+                    "mummy",
+                    // Common words / abbreviations extracted as persons
+                    "then",
+                    "tb",
+                    "cac",
+                    "gandhian",
+                    // Fused bad extractions
+                    "berlin hitler",
+                    "mom ayesha",
+                    // Long list-string artifacts
+                    "european native coloured indian malay griqua",
+                ];
+                let name_lc = extracted.name.to_lowercase();
+                let name_lc = name_lc.trim();
+                if GENERIC_ROLE_BLOCKLIST.contains(&name_lc) {
+                    continue;
+                }
+                // Drop names that start with a family role prefix but have no true surname —
+                // "Uncle Aity", "Auntie Cissie", "Granny Bibi" are role-addressed individuals,
+                // not canonical entity names.  We allow 4+ word names (e.g. "Aunty Minnie
+                // Amina Gool") through so that compound proper names are not lost.
+                const ROLE_PREFIXES: &[&str] = &[
+                    "uncle ",
+                    "auntie ",
+                    "aunt ",
+                    "granny ",
+                    "gran ",
+                    "grandpa ",
+                    "grandma ",
+                    "grandfather ",
+                    "grandmother ",
+                    "sis ",
+                    "boeta ",
+                    "boetie ",
+                ];
+                let word_count = name_lc.split_whitespace().count();
+                if word_count <= 3 && ROLE_PREFIXES.iter().any(|p| name_lc.starts_with(p)) {
+                    continue;
+                }
+                // Drop entities whose name starts with a sentence-opening word —
+                // these are extraction artifacts where the LLM grabbed a phrase
+                // fragment ("When Auntie Jolly", "That Mr Smith", etc.).
+                const SENTENCE_STARTERS: &[&str] = &[
+                    "when", "where", "while", "that", "this", "those", "these", "what", "which",
+                    "who", "whom", "whose", "how", "why", "if", "although", "because", "since",
+                    "after", "before", "as", "and", "but", "or", "nor", "so", "yet", "for", "the",
+                    "a", "an",
+                ];
+                let first_word = name_lc.split_whitespace().next().unwrap_or("");
+                if SENTENCE_STARTERS.contains(&first_word) {
+                    continue;
+                }
+                // Normalise OCR underscore artifacts in entity names returned by the LLM.
+                // In this corpus `_` replaces `.` in initials (J_ M_ H_ → J. M. H.).
+                let name_normalised = {
+                    let mut s = extracted.name.replace("_ ", ". ");
+                    if s.ends_with('_') {
+                        s.pop();
+                        s.push('.');
+                    }
+                    s
+                };
+                // Strip trailing possessive 's / 's from entity names so
+                // "Ebrahim's" and "Khalifa's" don't persist as separate entities.
+                let clean_name = name_normalised
+                    .trim_end_matches("'s")
+                    .trim_end_matches("\u{2019}s") // right single quotation mark
+                    .trim_end_matches("s'") // plural possessive
+                    .trim()
+                    .to_string();
+                let extracted_name = if clean_name.is_empty() {
+                    name_normalised.as_str()
+                } else {
+                    &clean_name
+                };
+                let eid = entity_id(extracted_name, &extracted.entity_type);
                 // Build FieldValue map: wrap each extracted string value with chunk provenance.
                 let fields: HashMap<String, FieldValue> = extracted
                     .fields
@@ -251,7 +618,7 @@ pub async fn extract_and_store_entities_pub(
                     .collect();
                 let description = {
                     let from_fields =
-                        description_from_fields(&extracted.name, &extracted.entity_type, &fields);
+                        description_from_fields(extracted_name, &extracted.entity_type, &fields);
                     if from_fields.is_empty() {
                         extracted.description.clone()
                     } else {
@@ -260,7 +627,7 @@ pub async fn extract_and_store_entities_pub(
                 };
                 let node = EntityNode {
                     id: eid,
-                    name: extracted.name.clone(),
+                    name: extracted_name.to_string(),
                     entity_type: extracted.entity_type.clone(),
                     description,
                     embedding: emb,

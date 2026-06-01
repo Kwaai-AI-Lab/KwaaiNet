@@ -46,7 +46,7 @@ pub mod persistent;
 pub mod protocol;
 pub mod stream;
 
-pub use client::P2PClient;
+pub use client::{P2PClient, P2PStream};
 pub use daemon::{DaemonBuilder, P2PDaemon};
 pub use dht::{DhtPeerInfo, DhtValue};
 pub use error::{Error, Result};

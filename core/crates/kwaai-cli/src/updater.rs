@@ -643,4 +643,11 @@ mod tests {
         let _has_gpu = nvidia_smi_async().await;
         // Pass as long as it returns within the 4-second timeout.
     }
+
+    #[tokio::test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn nvidia_smi_detects_gpu_on_linux() {
+        let has_gpu = nvidia_smi_async().await;
+        println!("nvidia_smi_async() = {has_gpu}");
+    }
 }

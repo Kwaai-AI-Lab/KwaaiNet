@@ -21,7 +21,10 @@ use anyhow::{Context, Result};
 use kwaai_p2p_daemon::P2PClient;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
-use std::{pin::Pin, sync::Arc};
+use std::{
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -48,6 +51,17 @@ pub struct ProxyResponse {
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
+static PROXY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn proxy_client() -> &'static reqwest::Client {
+    PROXY_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("build reqwest client")
+    })
+}
+
 /// Build a unary handler that forwards incoming proxy requests to the local
 /// Ollama at `localhost:11434`.
 ///
@@ -72,14 +86,7 @@ pub fn make_ollama_proxy_handler() -> impl Fn(
 
             debug!("ollama_proxy server: {} {}", req.method, req.path);
 
-            let client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return encode_err(503, &format!("reqwest init: {e}")),
-            };
-
+            let client = proxy_client();
             let url = format!("http://localhost:11434{}", req.path);
             let method: reqwest::Method = req.method.parse().unwrap_or(reqwest::Method::POST);
 
@@ -145,14 +152,7 @@ pub fn make_shard_proxy_handler() -> impl Fn(
 
             debug!("shard_proxy server: {} {}", req.method, req.path);
 
-            let client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return encode_err(503, &format!("reqwest init: {e}")),
-            };
-
+            let client = proxy_client();
             let url = format!("http://127.0.0.1:{port}{}", req.path);
             let method: reqwest::Method = req.method.parse().unwrap_or(reqwest::Method::POST);
 
@@ -248,16 +248,46 @@ async fn handle_connection(
     peer_id: PeerId,
     protocol: &'static str,
 ) {
-    // Read the full HTTP request (Ollama payloads are typically < 4 KB).
-    let mut buf = vec![0u8; 4 * 1024 * 1024];
-    let n = match tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf))
-        .await
-    {
-        Ok(Ok(n)) if n > 0 => n,
-        _ => return,
+    // Read the full HTTP request in two phases so that large LLM prompts
+    // (~20-50 KB) delivered over a relay connection are not silently truncated
+    // by a single read() that only captures the first TCP segment.
+    //
+    // Phase 1 — accumulate until the header/body separator (\r\n\r\n) arrives.
+    // Phase 2 — read the remaining body bytes indicated by Content-Length.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+
+    let header_end = loop {
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos;
+        }
+        let mut tmp = [0u8; 16 * 1024];
+        match tokio::time::timeout_at(deadline, stream.read(&mut tmp)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return,
+            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+        }
     };
 
-    let (method, path, body) = match parse_http_request(&buf[..n]) {
+    let content_length: usize = std::str::from_utf8(&buf[..header_end])
+        .unwrap_or("")
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        .and_then(|l| l.split_once(':').map(|x| x.1))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+
+    let total = header_end + 4 + content_length;
+    while buf.len() < total {
+        let mut tmp = [0u8; 16 * 1024];
+        let want = (total - buf.len()).min(tmp.len());
+        match tokio::time::timeout_at(deadline, stream.read(&mut tmp[..want])).await {
+            Ok(Ok(0)) | Err(_) => break, // EOF or timeout — use what we have
+            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+            Ok(Err(_)) => return,
+        }
+    }
+
+    let (method, path, body) = match parse_http_request(&buf) {
         Some(t) => t,
         None => {
             let _ = stream
@@ -318,7 +348,7 @@ async fn handle_connection(
 /// Parse a raw HTTP/1.1 request into `(method, path, body)`.
 ///
 /// Handles the typical `POST /v1/... HTTP/1.1` shape sent by reqwest.
-/// Does not attempt to handle chunked encoding or multi-read bodies.
+/// Caller guarantees `raw` contains the full request (headers + body).
 fn parse_http_request(raw: &[u8]) -> Option<(String, String, Vec<u8>)> {
     let sep = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let headers = std::str::from_utf8(&raw[..sep]).ok()?;
