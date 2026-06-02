@@ -404,6 +404,36 @@ const HONORIFICS: &[&str] = &[
     "my",
 ];
 
+/// Strip trailing academic/professional qualification tokens from a name.
+/// Returns the normalized stripped form if at least one token was removed; None otherwise.
+///
+/// Works on the original (pre-normalize) tokens so that dotted forms like "M.A.",
+/// "Ph.D.", "LL.B." are recognised — normalize_name() maps dots to spaces, which
+/// would split "M.A." into ["m", "a"] and break the match.
+fn strip_qualifications(name: &str) -> Option<String> {
+    fn is_qual(tok: &str) -> bool {
+        const QUALS: &[&str] = &[
+            "ma", "ba", "bsc", "msc", "phd", "llb", "llm", "bed", "bcom", "mba",
+            "mpa", "hons", "dip", "jp", "obe", "mbe", "mbbs",
+        ];
+        // Strip all dots then lowercase — recognises "M.A.", "Ph.D.", "LL.B." as well as
+        // undotted "MA", "PhD", "LLB".
+        let undotted: String = tok.chars().filter(|&c| c != '.').collect::<String>().to_lowercase();
+        !undotted.is_empty() && QUALS.contains(&undotted.as_str())
+    }
+
+    let tokens: Vec<&str> = name.split_whitespace().collect();
+    let orig_len = tokens.len();
+    let mut end = orig_len;
+    while end > 0 && is_qual(tokens[end - 1]) {
+        end -= 1;
+    }
+    if end == orig_len {
+        return None; // nothing stripped
+    }
+    Some(normalize_name(&tokens[..end].join(" ")))
+}
+
 /// Normalize then strip all leading and trailing honorific tokens.
 fn stripped_key(name: &str) -> String {
     let norm = normalize_name(name);
@@ -2338,6 +2368,64 @@ impl GraphStore {
                                 out.push((alias, canonical, "fuzzy"));
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // ── D: qualification-suffix-stripped exact match ──────────────────────
+        // "Ben Kies M.A" ↔ "Ben Kies",  "P.V. Tobias M.D." ↔ "P.V. Tobias"
+        // Key = strip_qualifications(name) if quals present, else normalize_name(name).
+        // Only index names that resolve to ≥ 2 tokens (avoids single-surname ambiguity).
+        {
+            let mut key_map: HashMap<String, Vec<i64>> = HashMap::new();
+            for (&id, node) in &self.nodes {
+                let key = match strip_qualifications(&node.name) {
+                    Some(s) => s,
+                    None => normalize_name(&node.name),
+                };
+                if key.split_whitespace().count() >= 2 {
+                    key_map.entry(key).or_default().push(id);
+                }
+            }
+            for ids in key_map.values() {
+                if ids.len() < 2 {
+                    continue;
+                }
+                // Only emit when at least one entity actually carries qualifications;
+                // otherwise this is a duplicate of Tier 1 / 3A.
+                let any_has_qual = ids.iter().any(|&id| {
+                    self.nodes
+                        .get(&id)
+                        .map_or(false, |n| strip_qualifications(&n.name).is_some())
+                });
+                if !any_has_qual {
+                    continue;
+                }
+                let &canonical = ids
+                    .iter()
+                    .max_by_key(|&&id| {
+                        self.nodes
+                            .get(&id)
+                            .map(|n| (n.mention_count, n.name.len()))
+                            .unwrap_or((0, 0))
+                    })
+                    .unwrap();
+                for &alias in ids.iter().filter(|&&id| id != canonical) {
+                    let na = match self.nodes.get(&alias) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    let nc = match self.nodes.get(&canonical) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if normalize_name(&na.name) == normalize_name(&nc.name) {
+                        continue; // Tier 1 handles exact matches
+                    }
+                    let key2 = ord_pair(alias, canonical);
+                    if seen.insert(key2) {
+                        out.push((alias, canonical, "qualification"));
                     }
                 }
             }
