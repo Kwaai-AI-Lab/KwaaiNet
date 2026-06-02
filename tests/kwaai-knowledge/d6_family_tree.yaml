@@ -23,17 +23,35 @@ persons:
       - "my grandfather"
       - "Grandpa Gool"
       - "Gool"
+    description: >-
+      Haji Joosub Maulvi Hamid Gool was the author's maternal grandfather, a
+      prosperous merchant from India who arrived at the Cape via Mauritius in
+      1884. His father was a Pushto-speaking Maulvi from the Province of Swat
+      who had moved to Rander in Gujarat. Joosub left behind his
+      eleven-year-old bride in India and came to Cape Town where he established
+      J.M.H. Gool & Co. at 25 Church Street, supplying spices and becoming a
+      supplier to the troops of Queen Victoria during the Anglo-Boer War. He
+      founded the Hanaffi Quwatul Islam Mosque in Loop Street (completed 1898),
+      built the grand 13-room mansion at 7 Buitencingle Street, and knew
+      Gandhi, Cecil Rhodes, and Dr. Abdullah Abdurahman personally.
 
   - canonical: "Bibi Gool"
     aliases:
       - "Bibi"
       - "Peari Beghum"
+    description: >-
+      Bibi Gool (Peari Beghum) was the first wife of Haji Joosub Maulvi Hamid
+      Gool. She was mother to Ayesha (Lallie), Mohamed Saaid, and Zohra.
 
   - canonical: "Wahida Gool"
     aliases:
       - "Wahida Ta'al"
       - "Wahida"
       - "Hajima"
+    description: >-
+      Wahida Gool (Hajima) was the second wife of Haji Joosub Maulvi Hamid
+      Gool. She was mother to Abdul Hamid, Goolam, Jane, Minnie, Fatima,
+      Mariam, Zobeida, and Mohammed Hanief.
 
   # ─── Branch 1: JMH + Bibi ──────────────────────────────────────────────────
 
@@ -73,6 +91,13 @@ persons:
       - "Cheops"
       - "Dr. Gool"
       - "Dr Gool"
+    description: >-
+      Abdul Hamid Gool (known as B.G. or Cheops) was a son of Haji Joosub
+      Maulvi Hamid Gool and his second wife Wahida. He studied medicine in
+      London and was known in Cape Town for his commanding personality and
+      pharaonic bearing. He married Cissie Gool (Zainunnissa), daughter of
+      Dr. Abdullah Abdurahman. He was a doctor and prominent figure in the
+      extended Gool family circle.
 
   - canonical: "Goolam Gool"
     aliases:
@@ -121,6 +146,13 @@ persons:
       - "Abdullah Abdurahman"
       - "Dr. Abdullah Abdurahman"
       - "Dr. Abdurahman"
+    description: >-
+      Dr. Abdullah Abdurahman was a long-serving Cape Town city councillor
+      and one of the most prominent political figures in the Cape Coloured
+      community in the early twentieth century. He was a medical doctor and
+      father of Cissie Gool (Zainunnissa Gool), the well-known activist and
+      city councillor. Dr. Abdurahman was known personally to J.M.H. Gool
+      and visited the Gool family mansion at Buitencingle Street.
 
   - canonical: "Cissie Gool"
     aliases:
@@ -129,6 +161,13 @@ persons:
       - "Zainunnissa Cissie Gool"
       - "Zainunnissa Gool"
       - "Zainunnissa"
+    description: >-
+      Zainunnissa (Cissie) Gool was a renowned Cape Town politician and
+      community activist, daughter of Dr. Abdullah Abdurahman. She served as
+      a Cape Town city councillor and was known for her fiery speeches and
+      dedication to non-European rights. She was a key figure in the
+      Non-European Unity Movement and one of the foremost women activists of
+      her time in South Africa. She married Dr. Abdul Hamid Gool (B.G.).
 
   # ─── Rassool family ─────────────────────────────────────────────────────────
 
@@ -151,12 +190,27 @@ persons:
       - "the author"
       - "the narrator"
       - "the writer"
+    description: >-
+      Yousuf (Joe) Rassool (Y.S. Rassool) is the author and narrator of this
+      memoir about District Six, Cape Town. He was a teacher and community
+      activist, deeply involved in the Teachers League of South Africa (TLSA),
+      the Non-European Unity Movement (NEUM), and the New Era Fellowship
+      (NEF). He was a keen cricketer who played in the non-European cricket
+      structure in Cape Town. He is married to Professor Nazima Rassool and
+      has three children: Feyruz, Reza, and Zarina.
 
   - canonical: "Nazima Rassool"
     aliases:
       - "Nazima"
       - "Professor Nazima Rassool"
       - "Prof. Nazima Rassool"
+    description: >-
+      Professor Nazima Rassool is the author's wife and an academic
+      researcher. She urged the author not to rely solely on personal memories
+      but to ground his memoir in historical research. Her insistence on
+      scholarly rigour produced staggering information that transformed the
+      book from a purely subjective family recollection into a work revealing
+      a rich historical layer previously unrecorded by any historian.
 
   - canonical: "Abdul Rassool"
     aliases:
@@ -230,6 +284,14 @@ persons:
       - "hatma Gandhi"
       - "Mahatma Gandhi"
       - "Gandhi"
+    description: >-
+      Mohandas Karamchand Gandhi (Mahatma Gandhi) lived in South Africa from
+      1893 to 1914 and organised the Indian community's resistance to
+      discriminatory legislation, developing his method of non-violent
+      resistance (satyagraha). He knew J.M.H. Gool personally, visited the
+      Gool family mansion at 7 Buitencingle Street, and was a subscriber to
+      the Indian Opinion. His connection to the Gool family is documented
+      in archival correspondence.
 
   # ─── I.B. Tabata (Jane's husband) ──────────────────────────────────────────
 
