@@ -815,13 +815,25 @@ pub async fn extract_and_store_entities_pub(
             let url = &urls[idx];
             let et: Vec<&str> = entity_types_cfg.iter().map(|s| s.as_str()).collect();
 
-            let candidates = ner::extract_proper_noun_candidates(&text);
-            let pronoun_map = ner::resolve_pronouns(&text, &gender_context);
-
+            // GLiNER runs first when available — higher recall for Person names than
+            // the regex pre-screener (catches mid-sentence names, OCR artifacts, etc.).
             let gliner_hints: Vec<String> = match gliner.as_ref() {
                 Some(client) => client.person_spans(&text).await,
                 None => vec![],
             };
+
+            // Candidates = regex proper-nouns ∪ GLiNER spans.
+            // Regex still provides coverage for non-Person types (Place, Organization).
+            // The union is what the LLM-skip gate in extract_from_text() checks, so a
+            // chunk is only skipped when both the regex AND GLiNER find nothing.
+            let mut candidates = ner::extract_proper_noun_candidates(&text);
+            for span in &gliner_hints {
+                if !candidates.contains(span) {
+                    candidates.push(span.clone());
+                }
+            }
+
+            let pronoun_map = ner::resolve_pronouns(&text, &gender_context);
             let hints_opt: Option<&[String]> = if gliner_hints.is_empty() {
                 None
             } else {
