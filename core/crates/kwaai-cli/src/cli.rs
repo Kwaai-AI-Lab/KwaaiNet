@@ -1626,6 +1626,13 @@ pub enum GraphAction {
         /// per-entity descriptions. Use with --sample-pct for comparison runs.
         #[arg(long)]
         entity_centric: bool,
+
+        /// Process N consecutive chunks per LLM call (default 1).
+        /// With --chunk-batch 3, the loop strides by 3 so 12 chunks → 4 calls, each
+        /// covering 3 consecutive chunks plus the context window on each side.
+        /// Reduces LLM calls by N× at the cost of denser context per call.
+        #[arg(long, value_name = "N", default_value = "1")]
+        chunk_batch: usize,
     },
 
     /// Reverse a bad dedup merge: remove an alias from a canonical entity and restore it as its

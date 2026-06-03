@@ -46,6 +46,10 @@ pub struct GraphIngestConfig {
     /// collect unique person names, then one focused LLM call is made per name with
     /// aggregated multi-chunk context. Requires gliner_client to be set.
     pub entity_centric: bool,
+    /// Process N consecutive chunks per LLM call (default 1 = one chunk + context_window).
+    /// chunk_batch=3: loop strides by 3, each call covers chunks [i..i+3] plus the
+    /// context_window on each side. Reduces calls by 3× at the cost of denser context.
+    pub chunk_batch: usize,
 }
 
 impl GraphIngestConfig {
@@ -213,6 +217,7 @@ pub async fn extract_and_store_entities_pub(
     let entity_types_cfg = Arc::new(graph_cfg.entity_types.clone());
     let no_relations = graph_cfg.no_relations;
     let context_window = graph_cfg.context_window;
+    let chunk_batch = graph_cfg.chunk_batch.max(1);
     let store = graph_cfg.store.clone();
     let gliner = Arc::new(graph_cfg.gliner_client.clone());
 
@@ -254,469 +259,10 @@ pub async fn extract_and_store_entities_pub(
 
             let mut entity_ids_for_chunk = Vec::new();
             for (extracted, emb) in res.entities.iter().zip(res.embeddings) {
-                // Drop generic family roles, pronouns, collective labels, and common words
-                // that slip through the LLM prompt despite the extraction rules.
-                const GENERIC_ROLE_BLOCKLIST: &[&str] = &[
-                    // Generic family roles
-                    "granny",
-                    "gran",
-                    "grandma",
-                    "grandfather",
-                    "grandpa",
-                    "gramps",
-                    "dad",
-                    "daddy",
-                    "father",
-                    "mother",
-                    "mom",
-                    "mum",
-                    "mama",
-                    "uncle",
-                    "auntie",
-                    "aunt",
-                    "cousin",
-                    "son",
-                    "daughter",
-                    // Pronouns / self-reference
-                    "me",
-                    "i",
-                    "he",
-                    "she",
-                    "they",
-                    "we",
-                    "the narrator",
-                    "the author",
-                    "narrator",
-                    "author",
-                    // Political/ideological concepts extracted as persons
-                    "herrenvolk",
-                    "herrenvolkism",
-                    "apartheid",
-                    "coloured",
-                    "coloureds",
-                    "blacks",
-                    "whites",
-                    "white",
-                    "black",
-                    "indians",
-                    "africans",
-                    "europeans",
-                    "non-white",
-                    "non-whites",
-                    "non-european",
-                    "cape malay",
-                    "cape malay_indian",
-                    "pathan",
-                    "pathans",
-                    "xhosa",
-                    "slavic",
-                    "hungarian",
-                    "jewish",
-                    "aryan",
-                    "moslem",
-                    "muslim",
-                    "nationalist",
-                    "nationalists",
-                    // Ethnic/national/religious group nouns (not individuals)
-                    "german",
-                    "french",
-                    "russian",
-                    "british",
-                    "english",
-                    "african",
-                    "indian",
-                    "arab",
-                    "arabs",
-                    "chinese",
-                    "boer",
-                    "bantu",
-                    "coolie",
-                    "coolies",
-                    "malay",
-                    "malays",
-                    "griqua",
-                    "hindu",
-                    "hindus",
-                    "irish",
-                    "japanese",
-                    "norwegian",
-                    "sikh",
-                    "turks",
-                    "zulus",
-                    "afrikaner",
-                    "afrikaners",
-                    "west indians",
-                    "south african",
-                    "cape coloured",
-                    "non-white muslim south africans",
-                    // Ideological / political labels (not persons)
-                    "socialist",
-                    "marxist",
-                    "labour",
-                    "communist",
-                    "fascist",
-                    "nazi",
-                    "nats",
-                    "native",
-                    "bantu",
-                    // Abstract concepts mistakenly extracted as persons
-                    "christmas",
-                    "eid",
-                    "eid mubarak",
-                    "islam",
-                    "ramadan",
-                    "victorian",
-                    "history",
-                    "science",
-                    "schooling",
-                    "mother tongue",
-                    // Common English words mistakenly extracted as persons
-                    "everything",
-                    "something",
-                    "nothing",
-                    "anything",
-                    "there",
-                    "here",
-                    "this",
-                    "that",
-                    "these",
-                    "those",
-                    "each",
-                    "every",
-                    "all",
-                    "none",
-                    "some",
-                    "any",
-                    "both",
-                    "one",
-                    "many",
-                    "such",
-                    "how",
-                    "when",
-                    "moreover",
-                    "sometime",
-                    "alas",
-                    "half",
-                    // Single-word extraction artifacts and garbage tokens
-                    "apart",
-                    "being",
-                    "blot",
-                    "do",
-                    "everyone",
-                    "figure",
-                    "found",
-                    "great",
-                    "had",
-                    "hatless",
-                    "just",
-                    "later",
-                    "little",
-                    "much",
-                    "needless",
-                    "next",
-                    "now",
-                    "ob",
-                    "perh",
-                    "perhaps",
-                    "peru",
-                    "piccadilly",
-                    "regrettably",
-                    "several",
-                    "shyly",
-                    "soon",
-                    "still",
-                    "tell",
-                    "theoretically",
-                    "v1",
-                    "va",
-                    "whether",
-                    "wo",
-                    "worse",
-                    "poor abdul",
-                    "flash",
-                    "dandy",
-                    "lobo",
-                    // Single-word names that are too ambiguous (surname-only, nickname-only)
-                    "baby",
-                    "youth",
-                    "legless",
-                    "muddy",
-                    "polly",
-                    "tiny",
-                    "vic",
-                    "bill",
-                    "solly",
-                    "nina",
-                    "kismets",
-                    // Academic subjects / objects mistaken for persons
-                    "zoology",
-                    "cadbury",
-                    "freubel",
-                    // Ethnic group phrases not caught by exact-word check
-                    "south african indian",
-                    "head of british muslims",
-                    "non-white councillors",
-                    // Standalone title/role (no name attached)
-                    "prof",
-                    "prof.",
-                    "prof_",
-                    // Plural family/group names (not individuals)
-                    "gools",
-                    "rassools",
-                    "goldings",
-                    "killers",
-                    "stranglers",
-                    "royal family",
-                    // Possessives / corrupted text artifacts
-                    "mr.",
-                    "mr_",
-                    "rev.",
-                    "rev_",
-                    "dr.",
-                    "dr_",
-                    // Abstract / non-human concepts
-                    "god",
-                    "allah",
-                    "lord",
-                    "devil",
-                    "fate",
-                    "nature",
-                    "y_allah",
-                    "y allah",
-                    // Islamic honorifics extracted as standalone entities
-                    "hadji",
-                    "haji",
-                    "hajj",
-                    "maulvi",
-                    "molvi",
-                    "imam",
-                    "sheikh",
-                    // Vehicles / objects mistaken for persons
-                    "black maria",
-                    // Literary authors (only referenced as writers of books/plays)
-                    "homer",
-                    "longfellow",
-                    "wordsworth",
-                    "robert browning",
-                    "robert louis stevenson",
-                    "john milton",
-                    "mark twain",
-                    "charles dickens",
-                    "shakespeare",
-                    "william shakespeare",
-                    "bernard shaw",
-                    "shaw",
-                    "chekov",
-                    "chekhov",
-                    "dostoevsky",
-                    "gogol",
-                    "gorki",
-                    "emile zola",
-                    "sinclair lewis",
-                    "steinbeck",
-                    "jack london",
-                    "damon runyon",
-                    // Fictional characters from comics, films, novels
-                    "tarzan",
-                    "buck rogers",
-                    "buck jones",
-                    "hopalong cassidy",
-                    "roy rogers",
-                    "gene autry",
-                    "bob steele",
-                    "cobra woman",
-                    "brick bradford",
-                    "globi",
-                    "ali baba",
-                    "tsotsi",
-                    "banquo",
-                    "mephistopheles",
-                    "dorian gray",
-                    "pharaoh cheops",
-                    "hunchback of notre dame",
-                    "goofy",
-                    "captain america",
-                    "captain marvel",
-                    "captain britain",
-                    "superman",
-                    "batman",
-                    "spiderman",
-                    "spider-man",
-                    "hamlet",
-                    "cassandra",
-                    // More family role variants
-                    "mommy",
-                    "mummy",
-                    // Common words / abbreviations extracted as persons
-                    "then",
-                    "tb",
-                    "cac",
-                    "gandhian",
-                    // Fused bad extractions
-                    "berlin hitler",
-                    "mom ayesha",
-                    // Long list-string artifacts
-                    "european native coloured indian malay griqua",
-                ];
-                let name_lc = extracted.name.to_lowercase();
-                let name_lc = name_lc.trim();
-                if GENERIC_ROLE_BLOCKLIST.contains(&name_lc) {
+                let Some(extracted_name_owned) = clean_extracted_name(&extracted.name) else {
                     continue;
-                }
-                // Drop names that start with a family role prefix but have no true surname —
-                // "Uncle Aity", "Auntie Cissie", "Granny Bibi" are role-addressed individuals,
-                // not canonical entity names.  We allow 4+ word names (e.g. "Aunty Minnie
-                // Amina Gool") through so that compound proper names are not lost.
-                const ROLE_PREFIXES: &[&str] = &[
-                    "uncle ",
-                    "auntie ",
-                    "aunt ",
-                    "granny ",
-                    "gran ",
-                    "grandpa ",
-                    "grandma ",
-                    "grandfather ",
-                    "grandmother ",
-                    "sis ",
-                    "boeta ",
-                    "boetie ",
-                ];
-                let word_count = name_lc.split_whitespace().count();
-                if word_count <= 3 && ROLE_PREFIXES.iter().any(|p| name_lc.starts_with(p)) {
-                    continue;
-                }
-                // Drop entities whose name starts with a sentence-opening word —
-                // these are extraction artifacts where the LLM grabbed a phrase
-                // fragment ("When Auntie Jolly", "That Mr Smith", etc.).
-                const SENTENCE_STARTERS: &[&str] = &[
-                    "when", "where", "while", "that", "this", "those", "these", "what", "which",
-                    "who", "whom", "whose", "how", "why", "if", "although", "because", "since",
-                    "after", "before", "as", "and", "but", "or", "nor", "so", "yet", "for", "the",
-                    "a", "an",
-                ];
-                let first_word = name_lc.split_whitespace().next().unwrap_or("");
-                if SENTENCE_STARTERS.contains(&first_word) {
-                    continue;
-                }
-                // Normalise OCR underscore artifacts: J_ M_ H_ → J. M. H., M_K_ → M.K.
-                // Rule: `_` preceded by a letter AND followed by space/end/uppercase → `.`
-                // Pre-pass: ` _Word_ ` → ` (Word) ` parenthetical nicknames.
-                // Then: `_s` at word boundary → `'s`, initials `M_K_` → `M.K.`,
-                // remaining underscores stripped.
-                let name_normalised = {
-                    // parenthetical pre-pass
-                    let paren_fixed = {
-                        let mut result = extracted.name.clone();
-                        loop {
-                            let b = result.as_bytes().to_vec();
-                            let mut found: Option<(usize, usize)> = None;
-                            let mut ii = 0;
-                            while ii < b.len() {
-                                if b[ii] == b'_' && (ii == 0 || b[ii - 1] == b' ') {
-                                    let mut jj = ii + 1;
-                                    while jj < b.len() {
-                                        if b[jj] == b'_'
-                                            && jj > ii + 1
-                                            && (jj + 1 >= b.len() || b[jj + 1] == b' ')
-                                        {
-                                            found = Some((ii, jj));
-                                            break;
-                                        }
-                                        jj += 1;
-                                    }
-                                }
-                                if found.is_some() {
-                                    break;
-                                }
-                                ii += 1;
-                            }
-                            match found {
-                                Some((open, close)) => {
-                                    let content = result[open + 1..close].to_string();
-                                    result = format!(
-                                        "{}({}){}", &result[..open], content, &result[close + 1..]
-                                    );
-                                }
-                                None => break,
-                            }
-                        }
-                        result
-                    };
-                    let raw = &paren_fixed;
-                    let chars: Vec<char> = raw.chars().collect();
-                    let n = chars.len();
-                    let mut s = String::with_capacity(raw.len());
-                    let mut i = 0;
-                    while i < n {
-                        let c = chars[i];
-                        if c == '_' {
-                            // `_s` at word boundary → `'s`
-                            if i + 1 < n && chars[i + 1] == 's' {
-                                let after = i + 2;
-                                if after >= n
-                                    || !chars[after].is_alphabetic()
-                                    || chars[after].is_uppercase()
-                                {
-                                    s.push('\'');
-                                    s.push('s');
-                                    i += 2;
-                                    continue;
-                                }
-                            }
-                            // `_` preceded by letter, followed by space/end/uppercase → `.`
-                            let prev_alpha =
-                                s.chars().last().map(|p| p.is_alphabetic()).unwrap_or(false);
-                            let next_break =
-                                i + 1 >= n || chars[i + 1] == ' ' || chars[i + 1].is_uppercase();
-                            if prev_alpha && next_break {
-                                s.push('.');
-                            }
-                            // else: strip (leading `_`, lowercase-followed, etc.)
-                        } else {
-                            s.push(c);
-                        }
-                        i += 1;
-                    }
-                    s.split_whitespace().collect::<Vec<_>>().join(" ")
                 };
-                // Strip trailing possessive 's / 's from entity names so
-                // "Ebrahim's" and "Khalifa's" don't persist as separate entities.
-                let after_possessive = name_normalised
-                    .trim_end_matches("'s")
-                    .trim_end_matches("\u{2019}s") // right single quotation mark
-                    .trim_end_matches("s'") // plural possessive
-                    .trim()
-                    .to_string();
-                // Strip trailing sentence fragments the LLM accidentally appended:
-                // "Aminabhen Please" → "Aminabhen", guards single-word names.
-                const TRAILING_JUNK: &[&str] = &[
-                    "please", "thank", "thanks", "yes", "no", "too", "also", "only", "said",
-                    "asked", "replied", "told", "wrote", "was", "is", "are", "the", "a", "an",
-                    "and", "but", "or", "for", "to", "of", "in", "on", "at", "with", "from", "by",
-                    "as", "his", "her", "their",
-                ];
-                let clean_name = {
-                    let mut s = after_possessive;
-                    loop {
-                        let words: Vec<&str> = s.split_whitespace().collect();
-                        if words.len() <= 1 {
-                            break;
-                        }
-                        let last = words.last().unwrap().to_lowercase();
-                        if TRAILING_JUNK.contains(&last.as_str()) {
-                            let trim_to = s.len() - words.last().unwrap().len();
-                            s = s[..trim_to].trim_end().to_string();
-                        } else {
-                            break;
-                        }
-                    }
-                    s
-                };
-                let extracted_name = if clean_name.is_empty() {
-                    name_normalised.as_str()
-                } else {
-                    clean_name.as_str()
-                };
+                let extracted_name = extracted_name_owned.as_str();
                 let eid = entity_id(extracted_name, &extracted.entity_type);
                 // Build FieldValue map: wrap each extracted string value with chunk provenance.
                 let fields: HashMap<String, FieldValue> = extracted
@@ -782,24 +328,31 @@ pub async fn extract_and_store_entities_pub(
             .collect::<Vec<_>>()
     });
 
-    // Spawn one extraction task per chunk; semaphore caps concurrency.
-    for (i, (chunk, &chunk_id)) in chunks.iter().zip(chunk_ids.iter()).enumerate() {
+    // Spawn one extraction task per chunk (or per batch when chunk_batch > 1).
+    // With chunk_batch=N the loop strides by N: chunks 0,N,2N,… are centers,
+    // each covering [center .. center+N-1] plus context_window on each side.
+    let mut i = 0;
+    while i < total {
+        let batch_end = (i + chunk_batch).min(total);
+        let chunk = &chunks[i];
+        let chunk_id = chunk_ids[i];
+
+        // Skip entire batch if the leading chunk is flagged (index/appendix sections).
         if chunk.skip_extraction {
             debug!(
                 chunk_id,
                 section = ?chunk.section_name,
                 "skipping extraction for flagged section"
             );
+            i += chunk_batch;
             continue;
         }
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
         let tx = tx.clone();
-        // Build context text: current chunk plus up to context_window adjacent chunks.
-        // Adjacent chunks provide surrounding narrative context that improves entity
-        // identification by ~7pp recall (experiments on D6 memoir, 2026-05).
-        let text = if context_window > 0 {
+        // Build context: [i-window .. batch_end+window), preserving narrative context.
+        let text = if context_window > 0 || chunk_batch > 1 {
             let start = i.saturating_sub(context_window);
-            let end = (i + context_window + 1).min(total);
+            let end = (batch_end + context_window).min(total);
             chunks[start..end]
                 .iter()
                 .map(|c| c.text.as_str())
@@ -929,6 +482,7 @@ pub async fn extract_and_store_entities_pub(
                 })
                 .await;
         });
+        i += chunk_batch;
     }
     drop(tx); // close sender — drain task's rx.recv() will return None once queue empties
 
@@ -1148,6 +702,157 @@ fn apply_doc_meta(
     chunks
 }
 
+// ── Shared entity name filter ─────────────────────────────────────────────────
+
+/// Filter and normalise an extracted entity name.
+///
+/// Returns `None` if the name should be discarded (blocklist hit, role prefix,
+/// sentence starter, empty after normalisation). Returns `Some(clean_name)`
+/// otherwise. Used by both chunk-centric and entity-centric drains so they
+/// apply identical filtering.
+pub(crate) fn clean_extracted_name(raw: &str) -> Option<String> {
+    const GENERIC_ROLE_BLOCKLIST: &[&str] = &[
+        "granny","gran","grandma","grandfather","grandpa","gramps","dad","daddy",
+        "father","mother","mom","mum","mama","uncle","auntie","aunt","cousin",
+        "son","daughter","me","i","he","she","they","we","the narrator","the author",
+        "narrator","author","herrenvolk","herrenvolkism","apartheid","coloured",
+        "coloureds","blacks","whites","white","black","indians","africans","europeans",
+        "non-white","non-whites","non-european","cape malay","cape malay_indian",
+        "pathan","pathans","xhosa","slavic","hungarian","jewish","aryan","moslem",
+        "muslim","nationalist","nationalists","german","french","russian","british",
+        "english","african","indian","arab","arabs","chinese","boer","bantu","coolie",
+        "coolies","malay","malays","griqua","hindu","hindus","irish","japanese",
+        "norwegian","sikh","turks","zulus","afrikaner","afrikaners","west indians",
+        "south african","cape coloured","non-white muslim south africans","socialist",
+        "marxist","labour","communist","fascist","nazi","nats","native","christmas",
+        "eid","eid mubarak","islam","ramadan","victorian","history","science",
+        "schooling","mother tongue","everything","something","nothing","anything",
+        "there","here","this","that","these","those","each","every","all","none",
+        "some","any","both","one","many","such","how","when","moreover","sometime",
+        "alas","half","apart","being","blot","do","everyone","figure","found","great",
+        "had","hatless","just","later","little","much","needless","next","now","ob",
+        "perh","perhaps","peru","piccadilly","regrettably","several","shyly","soon",
+        "still","tell","theoretically","v1","va","whether","wo","worse","poor abdul",
+        "flash","dandy","lobo","baby","youth","legless","muddy","polly","tiny","vic",
+        "bill","solly","nina","kismets","zoology","cadbury","freubel",
+        "south african indian","head of british muslims","non-white councillors",
+        "prof","prof.","prof_","gools","rassools","goldings","killers","stranglers",
+        "royal family","mr.","mr_","rev.","rev_","dr.","dr_","god","allah","lord",
+        "devil","fate","nature","y_allah","y allah","hadji","haji","hajj","maulvi",
+        "molvi","imam","sheikh","black maria","homer","longfellow","wordsworth",
+        "robert browning","robert louis stevenson","john milton","mark twain",
+        "charles dickens","shakespeare","william shakespeare","bernard shaw","shaw",
+        "chekov","chekhov","dostoevsky","gogol","gorki","emile zola","sinclair lewis",
+        "steinbeck","jack london","damon runyon","tarzan","buck rogers","buck jones",
+        "hopalong cassidy","roy rogers","gene autry","bob steele","cobra woman",
+        "brick bradford","globi","ali baba","tsotsi","banquo","mephistopheles",
+        "dorian gray","pharaoh cheops","hunchback of notre dame","goofy",
+        "captain america","captain marvel","captain britain","superman","batman",
+        "spiderman","spider-man","hamlet","cassandra","mommy","mummy","then","tb",
+        "cac","gandhian","berlin hitler","mom ayesha",
+        "european native coloured indian malay griqua","lot",
+    ];
+    const ROLE_PREFIXES: &[&str] = &[
+        "uncle ","auntie ","aunt ","granny ","gran ","grandpa ","grandma ",
+        "grandfather ","grandmother ","sis ","boeta ","boetie ",
+    ];
+    const SENTENCE_STARTERS: &[&str] = &[
+        "when","where","while","that","this","those","these","what","which","who",
+        "whom","whose","how","why","if","although","because","since","after","before",
+        "as","and","but","or","nor","so","yet","for","the","a","an",
+    ];
+    const TRAILING_JUNK: &[&str] = &[
+        "please","thank","thanks","yes","no","too","also","only","said","asked",
+        "replied","told","wrote","was","is","are","the","a","an","and","but","or",
+        "for","to","of","in","on","at","with","from","by","as","his","her","their",
+    ];
+
+    let name_lc = raw.to_lowercase();
+    let name_lc = name_lc.trim();
+    if GENERIC_ROLE_BLOCKLIST.contains(&name_lc) { return None; }
+    let word_count = name_lc.split_whitespace().count();
+    if word_count <= 3 && ROLE_PREFIXES.iter().any(|p| name_lc.starts_with(p)) { return None; }
+    let first_word = name_lc.split_whitespace().next().unwrap_or("");
+    if SENTENCE_STARTERS.contains(&first_word) { return None; }
+
+    // OCR underscore normalisation: _Word_ → (Word), _s → 's, M_ → M., else strip
+    let normalised = {
+        let paren_fixed = {
+            let mut result = raw.to_string();
+            loop {
+                let b = result.as_bytes().to_vec();
+                let mut found: Option<(usize, usize)> = None;
+                let mut ii = 0;
+                while ii < b.len() {
+                    if b[ii] == b'_' && (ii == 0 || b[ii - 1] == b' ') {
+                        let mut jj = ii + 1;
+                        while jj < b.len() {
+                            if b[jj] == b'_' && jj > ii + 1 && (jj + 1 >= b.len() || b[jj + 1] == b' ') {
+                                found = Some((ii, jj)); break;
+                            }
+                            jj += 1;
+                        }
+                    }
+                    if found.is_some() { break; }
+                    ii += 1;
+                }
+                match found {
+                    Some((open, close)) => {
+                        let content = result[open + 1..close].to_string();
+                        result = format!("{}({}){}", &result[..open], content, &result[close + 1..]);
+                    }
+                    None => break,
+                }
+            }
+            result
+        };
+        let chars: Vec<char> = paren_fixed.chars().collect();
+        let n = chars.len();
+        let mut s = String::with_capacity(paren_fixed.len());
+        let mut i = 0;
+        while i < n {
+            let c = chars[i];
+            if c == '_' {
+                if i + 1 < n && chars[i + 1] == 's' {
+                    let after = i + 2;
+                    if after >= n || !chars[after].is_alphabetic() || chars[after].is_uppercase() {
+                        s.push('\''); s.push('s'); i += 2; continue;
+                    }
+                }
+                let prev_alpha = s.chars().last().map(|p| p.is_alphabetic()).unwrap_or(false);
+                let next_break = i + 1 >= n || chars[i + 1] == ' ' || chars[i + 1].is_uppercase();
+                if prev_alpha && next_break { s.push('.'); }
+            } else {
+                s.push(c);
+            }
+            i += 1;
+        }
+        s.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
+    // Strip possessives
+    let after_poss = normalised
+        .trim_end_matches("'s")
+        .trim_end_matches('\u{2019}')
+        .trim_end_matches("s'")
+        .trim()
+        .to_string();
+
+    // Strip trailing junk words
+    let mut clean = after_poss;
+    loop {
+        let words: Vec<&str> = clean.split_whitespace().collect();
+        if words.len() <= 1 { break; }
+        let last = words.last().unwrap().to_lowercase();
+        if TRAILING_JUNK.contains(&last.as_str()) {
+            let trim_to = clean.len() - words.last().unwrap().len();
+            clean = clean[..trim_to].trim_end().to_string();
+        } else { break; }
+    }
+
+    if clean.is_empty() { None } else { Some(clean) }
+}
+
 // ── Entity-centric extraction ─────────────────────────────────────────────────
 
 /// Build the text window for a single chunk center with adjacent context.
@@ -1235,6 +940,9 @@ async fn extract_entity_centric(
                     Err(_) => { warn!("graph mutex poisoned"); continue; }
                 };
                 for (extracted, emb) in res.entities.iter().zip(res.embeddings.iter()) {
+                    let Some(clean_name) = clean_extracted_name(&extracted.name) else {
+                        continue;
+                    };
                     let fields: std::collections::HashMap<String, crate::graph::FieldValue> =
                         extracted.fields.iter().map(|(k, v)| {
                             (k.clone(), crate::graph::FieldValue {
@@ -1245,14 +953,14 @@ async fn extract_entity_centric(
                         }).collect();
                     let description = {
                         let from_fields = crate::graph::description_from_fields(
-                            &extracted.name, &extracted.entity_type, &fields,
+                            &clean_name, &extracted.entity_type, &fields,
                         );
                         if from_fields.is_empty() { extracted.description.clone() } else { from_fields }
                     };
-                    let eid = crate::graph::entity_id(&extracted.name, &extracted.entity_type);
+                    let eid = crate::graph::entity_id(&clean_name, &extracted.entity_type);
                     let node = crate::graph::EntityNode {
                         id: eid,
-                        name: extracted.name.clone(),
+                        name: clean_name.clone(),
                         entity_type: extracted.entity_type.clone(),
                         description,
                         embedding: emb.clone(),
