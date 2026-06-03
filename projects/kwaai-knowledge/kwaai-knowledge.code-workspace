@@ -3,6 +3,7 @@
     { "path": "../../core/crates/kwaai-rag", "name": "kwaai-rag (crate)" },
     { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (rag_cmd, rag_api)" },
     { "path": ".", "name": "project docs" },
+    { "path": "plans", "name": "plans" },
     { "path": "../../tests/kwaai-knowledge", "name": "tests" }
   ],
   "settings": {
