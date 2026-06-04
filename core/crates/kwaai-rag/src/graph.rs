@@ -2213,15 +2213,6 @@ impl GraphStore {
                 if !key.is_empty() {
                     key_map.entry(key.clone()).or_default().push(id);
                 }
-                // Also index by stripped alias keys. This lets "Dr. A. H. Gool"
-                // (separate entity) find entities that carry "A.H. Gool" as an alias,
-                // without requiring the canonical name to match.
-                for alias in &node.aliases {
-                    let akey = stripped_key(alias);
-                    if !akey.is_empty() && akey != key {
-                        key_map.entry(akey.clone()).or_default().push(id);
-                    }
-                }
             }
             for ids in key_map.values() {
                 if ids.len() < 2 {
@@ -2269,6 +2260,65 @@ impl GraphStore {
                     if seen.insert(key) {
                         out.push((alias, canonical, "honorific"));
                     }
+                }
+            }
+        }
+
+        // ── A2: canonical-name matches an alias of another entity ─────────────
+        // Catches "Dr. A. H. Gool" (entity) whose stripped canonical "a h gool"
+        // matches alias "A.H. Gool" carried on "Abdul Hamid Gool".
+        // Directional: entity E's NAME → must appear as an ALIAS of entity F.
+        // This avoids the false-positive of symmetric alias-key grouping, where
+        // two entities sharing a surname alias ("Gool") wrongly end up merged.
+        {
+            // Build alias-stripped → canonical_id reverse map (one entry per alias)
+            let mut alias_key_to_id: HashMap<String, i64> = HashMap::new();
+            for (&id, node) in &self.nodes {
+                for alias in &node.aliases {
+                    let akey = stripped_key(alias);
+                    if akey.is_empty() {
+                        continue;
+                    }
+                    // Prefer the entity with more mentions when aliases collide
+                    alias_key_to_id
+                        .entry(akey)
+                        .and_modify(|existing| {
+                            let existing_mc = self.nodes.get(existing).map(|n| n.mention_count).unwrap_or(0);
+                            let new_mc = node.mention_count;
+                            if new_mc > existing_mc {
+                                *existing = id;
+                            }
+                        })
+                        .or_insert(id);
+                }
+            }
+
+            for (&eid, node) in &self.nodes {
+                let ekey = stripped_key(&node.name);
+                if ekey.is_empty() {
+                    continue;
+                }
+                let Some(&canonical_id) = alias_key_to_id.get(&ekey) else {
+                    continue;
+                };
+                if canonical_id == eid {
+                    continue; // same entity
+                }
+                // Don't merge if the canonical is already an alias of this entity
+                if node.aliases.iter().any(|a| {
+                    self.nodes.get(&canonical_id).map(|n| n.name == *a).unwrap_or(false)
+                }) {
+                    continue;
+                }
+                // Require that the entity's own name normalises differently from canonical
+                if let Some(nc) = self.nodes.get(&canonical_id) {
+                    if normalize_name(&node.name) == normalize_name(&nc.name) {
+                        continue; // Tier 1 handles exact matches
+                    }
+                }
+                let pair = ord_pair(eid, canonical_id);
+                if seen.insert(pair) {
+                    out.push((eid, canonical_id, "alias_match"));
                 }
             }
         }
