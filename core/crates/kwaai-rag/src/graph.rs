@@ -2211,7 +2211,16 @@ impl GraphStore {
             for (&id, node) in &self.nodes {
                 let key = stripped_key(&node.name);
                 if !key.is_empty() {
-                    key_map.entry(key).or_default().push(id);
+                    key_map.entry(key.clone()).or_default().push(id);
+                }
+                // Also index by stripped alias keys. This lets "Dr. A. H. Gool"
+                // (separate entity) find entities that carry "A.H. Gool" as an alias,
+                // without requiring the canonical name to match.
+                for alias in &node.aliases {
+                    let akey = stripped_key(alias);
+                    if !akey.is_empty() && akey != key {
+                        key_map.entry(akey.clone()).or_default().push(id);
+                    }
                 }
             }
             for ids in key_map.values() {
@@ -2396,23 +2405,31 @@ impl GraphStore {
                             }
                             // Skip when same surname but differing leading initials:
                             // "jmh gool" ≠ "a h gool" — different family members.
+                            // Guard only fires when at least one name has ≥2 pre-surname
+                            // tokens: "jmh" (1 token) vs "a h" (2 tokens) → max=2 ≥ 2 → guard.
+                            // "ben" (1 token) vs "bm" (1 token) → max=1 < 2 → skip guard,
+                            // letting edit-distance decide (abbreviation vs nickname).
                             if wa_v.len() >= 2 && wb_v.len() >= 2 {
                                 let last_a = *wa_v.last().unwrap();
                                 let last_b = *wb_v.last().unwrap();
                                 if last_a == last_b && last_a.len() >= 4 {
-                                    let all_init_a =
-                                        wa_v[..wa_v.len() - 1].iter().all(|t| t.len() <= 3);
-                                    let all_init_b =
-                                        wb_v[..wb_v.len() - 1].iter().all(|t| t.len() <= 3);
-                                    if all_init_a && all_init_b {
-                                        let mut sa: Vec<&&str> =
-                                            wa_v[..wa_v.len() - 1].iter().collect();
-                                        let mut sb: Vec<&&str> =
-                                            wb_v[..wb_v.len() - 1].iter().collect();
-                                        sa.sort();
-                                        sb.sort();
-                                        if sa != sb {
-                                            continue;
+                                    let pre_a = wa_v.len() - 1;
+                                    let pre_b = wb_v.len() - 1;
+                                    if pre_a.max(pre_b) >= 2 {
+                                        let all_init_a =
+                                            wa_v[..pre_a].iter().all(|t| t.len() <= 3);
+                                        let all_init_b =
+                                            wb_v[..pre_b].iter().all(|t| t.len() <= 3);
+                                        if all_init_a && all_init_b {
+                                            let mut sa: Vec<&&str> =
+                                                wa_v[..pre_a].iter().collect();
+                                            let mut sb: Vec<&&str> =
+                                                wb_v[..pre_b].iter().collect();
+                                            sa.sort();
+                                            sb.sort();
+                                            if sa != sb {
+                                                continue;
+                                            }
                                         }
                                     }
                                 }
