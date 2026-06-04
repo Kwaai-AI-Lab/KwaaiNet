@@ -1458,6 +1458,13 @@ pub enum RagAction {
         /// Write the markdown report to this file instead of stdout
         #[arg(long, value_name = "FILE")]
         output: Option<std::path::PathBuf>,
+
+        /// Path to write per-question progress JSON after each answer.
+        /// Defaults to {data_dir}/eval-progress.json so it can be polled
+        /// without knowing the path. JSON fields: done, total, running_recall,
+        /// last_q, last_score, elapsed_s, eta_s.
+        #[arg(long, value_name = "FILE")]
+        progress_file: Option<std::path::PathBuf>,
     },
 
     /// Autonomous knowledge graph completion (Dream RAG)

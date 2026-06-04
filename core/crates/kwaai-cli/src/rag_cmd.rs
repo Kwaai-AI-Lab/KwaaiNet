@@ -239,6 +239,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             llm_judge,
             judge_model,
             output,
+            progress_file,
         } => {
             cmd_eval(
                 questions,
@@ -254,6 +255,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 llm_judge,
                 judge_model,
                 output,
+                progress_file,
             )
             .await
         }
@@ -4145,6 +4147,7 @@ async fn cmd_eval(
     llm_judge: bool,
     judge_model: Option<String>,
     output: Option<std::path::PathBuf>,
+    progress_file: Option<std::path::PathBuf>,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -4170,6 +4173,12 @@ async fn cmd_eval(
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
         let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+
+        // Progress file: default to {data_dir}/eval-progress.json so it can be
+        // read without knowing the path (e.g. via `cat ~/.kwaainet/rag/D6/eval-progress.json`).
+        let progress_path = progress_file
+            .unwrap_or_else(|| rag_cfg.data_dir().join("eval-progress.json"));
+        let eval_start = std::time::Instant::now();
         let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -4492,6 +4501,37 @@ async fn cmd_eval(
                 latency_ms,
                 judge_score,
             });
+
+            // Write per-question progress JSON so the eval can be monitored
+            // without piping stdout (which buffers until process exit).
+            {
+                let done = rows.len();
+                let total = questions.len();
+                let hits_so_far: usize = rows.iter().map(|r| r.keyword_hits).sum();
+                let kw_so_far: usize = rows.iter().map(|r| r.total_keywords).sum();
+                let running_recall = if kw_so_far > 0 {
+                    (hits_so_far as f64 / kw_so_far as f64 * 100.0).round() / 100.0
+                } else {
+                    0.0
+                };
+                let elapsed_s = eval_start.elapsed().as_secs();
+                let eta_s = if done > 0 && done < total {
+                    elapsed_s * (total - done) as u64 / done as u64
+                } else {
+                    0
+                };
+                let progress = serde_json::json!({
+                    "done": done,
+                    "total": total,
+                    "running_recall": running_recall,
+                    "last_q": q.id,
+                    "last_score": format!("{keyword_hits}/{total_keywords}"),
+                    "elapsed_s": elapsed_s,
+                    "eta_s": eta_s,
+                    "kb": kb,
+                });
+                let _ = std::fs::write(&progress_path, progress.to_string());
+            }
 
             // Brief pause to avoid hammering Ollama.
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
