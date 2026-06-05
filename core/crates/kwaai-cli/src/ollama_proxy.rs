@@ -97,12 +97,18 @@ pub fn make_ollama_proxy_handler() -> impl Fn(
                 .send()
                 .await;
 
+            // Pull and generate/chat can run for many minutes — use a generous timeout.
+            let body_timeout_secs = if req.path.contains("/api/pull") { 7200 } else { 600 };
+
             let (status, body) = match result {
                 Ok(r) => {
                     let status = r.status().as_u16();
                     let body =
-                        match tokio::time::timeout(std::time::Duration::from_secs(120), r.bytes())
-                            .await
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(body_timeout_secs),
+                            r.bytes(),
+                        )
+                        .await
                         {
                             Ok(Ok(b)) => b.to_vec(),
                             Ok(Err(e)) => format!("body error: {e}").into_bytes(),

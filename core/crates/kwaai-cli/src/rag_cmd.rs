@@ -3187,6 +3187,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 sample,
                 output,
                 commit,
+                list_models,
+                pull,
             } => {
                 cmd_extract_relations(
                     &rag_cfg.data_dir(),
@@ -3196,6 +3198,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     sample,
                     output.as_deref(),
                     commit,
+                    list_models,
+                    pull.as_deref(),
                 )
                 .await?;
             }
@@ -3930,17 +3934,80 @@ fn count_entity_mentions_in_text(
 ) -> usize {
     let lower = text.to_lowercase();
     entities.iter().filter(|(name, aliases)| {
-        // Check canonical name
         let name_lc = name.to_lowercase();
         if name_lc.split_whitespace().any(|w| w.len() >= 4) && lower.contains(&name_lc) {
             return true;
         }
-        // Check aliases
         aliases.iter().any(|a| {
             let a_lc = a.to_lowercase();
             a_lc.split_whitespace().any(|w| w.len() >= 4) && lower.contains(&a_lc)
         })
     }).count()
+}
+
+/// Extract sentences from `text` that contain a family trigger AND at least one
+/// entity name (or alias). Returns only those sentences — this is the "focused
+/// context" that goes to the LLM instead of the full chunk.
+///
+/// A "sentence" is loosely defined as text delimited by `.`, `!`, `?`, or `\n`.
+/// We also include the previous sentence for context (a name may appear just
+/// before the sentence that contains the trigger).
+fn extract_focused_sentences(
+    text: &str,
+    entities: &[(String, Vec<String>)],
+) -> String {
+    // Split into rough sentences / clauses
+    let raw_sents: Vec<&str> = text
+        .split(|c: char| matches!(c, '.' | '!' | '?' | '\n'))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let lower_text = text.to_lowercase();
+
+    // Build entity name set (canonical + aliases ≥4 chars)
+    let entity_tokens: Vec<String> = entities
+        .iter()
+        .flat_map(|(name, aliases)| {
+            std::iter::once(name.as_str())
+                .chain(aliases.iter().map(|a| a.as_str()))
+                .filter(|s| s.split_whitespace().any(|w| w.len() >= 4))
+                .map(|s| s.to_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    let sent_has_trigger = |s: &str| {
+        let sl = s.to_lowercase();
+        FAMILY_TRIGGERS.iter().any(|&t| sl.contains(t))
+    };
+    let sent_has_entity = |s: &str| {
+        let sl = s.to_lowercase();
+        entity_tokens.iter().any(|t| sl.contains(t.as_str()))
+    };
+
+    // Collect indices of trigger sentences that also mention at least one entity
+    let mut keep_idxs: Vec<usize> = Vec::new();
+    for (i, s) in raw_sents.iter().enumerate() {
+        if sent_has_trigger(s) && sent_has_entity(s) {
+            // Include previous sentence for subject context
+            if i > 0 { keep_idxs.push(i - 1); }
+            keep_idxs.push(i);
+            if i + 1 < raw_sents.len() { keep_idxs.push(i + 1); }
+        }
+    }
+    keep_idxs.dedup();
+
+    if keep_idxs.is_empty() {
+        // Fallback: return the first 300 chars of the chunk
+        return lower_text.chars().take(300).collect::<String>();
+    }
+
+    keep_idxs
+        .into_iter()
+        .map(|i| raw_sents[i])
+        .collect::<Vec<_>>()
+        .join(". ")
 }
 
 async fn cmd_extract_relations(
@@ -3951,11 +4018,107 @@ async fn cmd_extract_relations(
     sample: f64,
     output: Option<&std::path::Path>,
     commit: bool,
+    list_models: bool,
+    pull: Option<&str>,
 ) -> Result<()> {
     use std::collections::HashMap;
     use std::io::Write;
 
     print_box_header("Graph: Extract Family Relations");
+
+    // Resolve p2p:// or mux:// URLs to local TCP proxies (same as dream/eval).
+    let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
+    let inference_url: String =
+        if inference_url.starts_with("p2p://") || inference_url.starts_with("mux://") {
+            use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+            let sock = std::env::var("KWAAINET_SOCKET")
+                .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+            #[cfg(unix)]
+            let addr = format!("/unix/{sock}");
+            #[cfg(not(unix))]
+            let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+            let p2p = std::sync::Arc::new(
+                P2PClient::connect(&addr)
+                    .await
+                    .context("connecting to p2pd for p2p:// URL resolution")?,
+            );
+            let (resolved, handles) =
+                crate::ollama_proxy::resolve_inference_urls(&[inference_url.to_string()], &p2p)
+                    .await?;
+            _proxy_handles = handles;
+            println!("  P2P proxy: {} → {}", inference_url, resolved.first().map(|s| s.as_str()).unwrap_or("?"));
+            resolved.into_iter().next().unwrap_or_default()
+        } else {
+            inference_url.to_string()
+        };
+    let inference_url = inference_url.as_str();
+
+    // --pull <MODEL>: pull a model on the (remote) endpoint and stream progress
+    if let Some(model_to_pull) = pull {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3600)) // 1h — large model downloads
+            .build()?;
+        let pull_url = format!("{}/api/pull", inference_url.trim_end_matches('/'));
+        println!("  Pulling '{}' on {} …", model_to_pull, inference_url);
+        println!("  (streaming progress — Ctrl-C safe: pull continues on the remote node)\n");
+
+        let body = serde_json::json!({"name": model_to_pull, "stream": true});
+        let mut resp = client
+            .post(&pull_url)
+            .json(&body)
+            .send()
+            .await
+            .context("sending pull request")?;
+
+        let mut last_pct = 0u64;
+        while let Some(chunk) = resp.chunk().await? {
+            // Ollama streams NDJSON lines during a pull
+            for line in chunk.split(|&b| b == b'\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
+                    let status = v["status"].as_str().unwrap_or("");
+                    if let (Some(completed), Some(total)) =
+                        (v["completed"].as_u64(), v["total"].as_u64())
+                    {
+                        let pct = if total > 0 { completed * 100 / total } else { 0 };
+                        if pct != last_pct || pct == 100 {
+                            let gb_done = completed as f64 / 1e9;
+                            let gb_total = total as f64 / 1e9;
+                            print!(
+                                "\r  [{pct:3}%]  {gb_done:.1}/{gb_total:.1} GB  {status}      "
+                            );
+                            let _ = std::io::Write::flush(&mut std::io::stdout());
+                            last_pct = pct;
+                        }
+                    } else if !status.is_empty() {
+                        println!("\r  {status}");
+                    }
+                }
+            }
+        }
+        println!("\n  ✅ Pull complete: '{model_to_pull}' is now available on {inference_url}");
+        return Ok(());
+    }
+
+    // --list-models: show available models on the target endpoint and exit
+    if list_models {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        let tags_url = format!("{}/api/tags", inference_url.trim_end_matches('/'));
+        let resp = client.get(&tags_url).send().await.context("calling /api/tags")?;
+        let raw: serde_json::Value = resp.json().await.context("parsing /api/tags")?;
+        let models = raw["models"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        println!("  {} model(s) available on {}:", models.len(), inference_url);
+        for m in models {
+            let name = m["name"].as_str().unwrap_or("?");
+            let size = m["size"].as_u64().map(|s| format!("  {:.1}GB", s as f64 / 1e9)).unwrap_or_default();
+            println!("    • {name}{size}");
+        }
+        return Ok(());
+    }
 
     let meta = kwaai_rag::meta_store::MetaStore::open(data_dir, tenant_id)
         .context("opening meta store")?;
@@ -4086,7 +4249,12 @@ async fn cmd_extract_relations(
         });
 
         // ── Call the LLM ────────────────────────────────────────────────────
-        let prompt = build_relation_prompt(&chunk.text, &entity_block, &canonical_names, narrator_name);
+        // Extract only the sentences that contain both a trigger and an entity.
+        // Passing a focused excerpt instead of the full chunk reduces hallucination
+        // because the model can't connect entities that appear in unrelated sentences.
+        let focused_text = extract_focused_sentences(&chunk.text, &entities);
+
+        let prompt = build_relation_prompt(&focused_text, &entity_block, &canonical_names, narrator_name);
         let relations_json = call_llm_for_relations(inference_url, model, &prompt).await?;
 
         // ── Parse the response ───────────────────────────────────────────────
@@ -4112,8 +4280,8 @@ async fn cmd_extract_relations(
             .copied()
             .collect();
         out.push_str(&triggers_hit.join(", "));
-        out.push_str("\n\n**Chunk text:**\n```\n");
-        out.push_str(chunk.text.trim());
+        out.push_str("\n\n**Focused sentences (sent to LLM):**\n```\n");
+        out.push_str(focused_text.trim());
         out.push_str("\n```\n\n**LLM response (raw):**\n```json\n");
         out.push_str(relations_json.trim());
         out.push_str("\n```\n\n");
@@ -4235,7 +4403,7 @@ async fn call_llm_for_relations(
     prompt: &str,
 ) -> Result<String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(600))  // 10 min — needed for large models (70b)
         .build()?;
 
     #[derive(serde::Serialize)]
@@ -4257,7 +4425,8 @@ async fn call_llm_for_relations(
     }
     #[derive(serde::Deserialize)]
     struct Resp {
-        message: MsgResp,
+        message: Option<MsgResp>,
+        error: Option<String>,
     }
     #[derive(serde::Deserialize)]
     struct MsgResp {
@@ -4272,17 +4441,27 @@ async fn call_llm_for_relations(
         options: Opts { temperature: 0.0, num_ctx: 8192 },
     };
 
-    let resp: Resp = client
+    let http_resp = client
         .post(&url)
         .json(&body)
         .send()
         .await
-        .context("calling LLM")?
-        .json()
-        .await
-        .context("parsing LLM response")?;
+        .context("calling LLM")?;
 
-    Ok(resp.message.content)
+    let status = http_resp.status();
+    let raw_body = http_resp.bytes().await.context("reading LLM response body")?;
+
+    let resp: Resp = serde_json::from_slice(&raw_body)
+        .with_context(|| {
+            let preview = String::from_utf8_lossy(&raw_body[..raw_body.len().min(300)]);
+            format!("parsing LLM response (HTTP {status}): {preview}")
+        })?;
+
+    if let Some(err) = resp.error {
+        anyhow::bail!("LLM error: {err}");
+    }
+
+    Ok(resp.message.map(|m| m.content).unwrap_or_default())
 }
 
 fn parse_relation_response(

@@ -1848,6 +1848,15 @@ pub enum GraphAction {
         /// Actually persist extracted relations to the graph (default: dry-run only)
         #[arg(long)]
         commit: bool,
+
+        /// List models available on the inference endpoint and exit
+        #[arg(long)]
+        list_models: bool,
+
+        /// Pull this model on the (possibly remote) inference endpoint and exit.
+        /// Useful for pulling a model on a remote node via p2p:// URL before extraction.
+        #[arg(long, value_name = "MODEL")]
+        pull: Option<String>,
     },
 
     /// Enforce relation integrity rules across the whole knowledge graph:
