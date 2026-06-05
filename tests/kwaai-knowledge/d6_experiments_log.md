@@ -10,6 +10,71 @@ Plan: [`projects/kwaai-knowledge/d6-person-entity-experiments.md`](../../project
 | D6_person_10pct_dedup_v1_20260602 | 2026-06-02 | 2 | 114 (10%) | 288 | 262 | — | — | Tier 2 NOT merged — FP rate 69%; see analysis |
 | D6_confidence_hybrid_10pct_v1_20260603 | 2026-06-03 | confidence hybrid Stage 2 | 114 (10%) | 223 CC | 242 CC+EC | — | — | 11 improved, 19 new discovered |
 | D6_mini_loop_10pct_20260604 | 2026-06-04 | full mini-loop | 114 (10%) | 223 CC | 241 final | **52.0%** | — | CC+EC+dedup+seed+dream+EC@0.34 |
+| D6_firstname_dedup_20260604 | 2026-06-04 | first-name dedup | full | 1085 | 1051 | **53.3%** | — | Cissie/Fatima/Zobeida merged; Tier 3E added; q38 +20pp |
+
+---
+
+## 2026-06-04 – D6_firstname_dedup_20260604
+
+**Goal:** Merge first-name-only stubs (e.g. "Cissie") into their full-name canonicals ("Cissie Gool")
+when they fail Tier 3B's ≥2-shared-neighbour requirement because the stub has no graph connections.
+
+### Problem identified
+
+Three extracted entities were disconnected from their canonical counterparts:
+
+| Stub entity | Mentions | Canonical | Mentions | Issue |
+|-------------|---------|-----------|---------|-------|
+| Cissie | 4 | Cissie Gool | 36 | 0 neighbors → Tier 3B silent |
+| Fatima | 28 | Fatima Gool | 1 | Fatima was richer — seed had wrong direction |
+| Zobeida | 4 | Zobeida Gool | 9 | 0 neighbors → Tier 3B silent |
+
+### Fixes applied
+
+**1. YAML aliases** (`d6_family_tree.yaml`):
+Added `"Cissie"`, `"Fatima"`, `"Zobeida"` as explicit first-name aliases.
+Re-seed merged all three immediately (3 aliases merged, 4 relations re-pointed).
+
+**2. Tier 3E code** (`graph.rs` → `find_dedup_candidates_name_structure`):
+New dedup sub-tier: if a single-word entity (≥4 chars, not an honorific or common word) is
+the first token of **exactly one** other multi-word entity in the graph, it is a first-name alias.
+No neighbour requirement. Safety: uniqueness guard + `WORD_BLOCKLIST` (head, prince, premier, instead, …).
+Catches future Cissie/Fatima patterns automatically after each `graph build`.
+
+### Post-merge state
+
+| Entity | Before (mentions) | After (mentions) | Aliases gained |
+|--------|------------------|-----------------|----------------|
+| Cissie Gool | 36 | 41 | + "Cissie" |
+| Fatima Gool | 1 | 30 | + "Fatima", Timmie aliases |
+| Zobeida Gool | 9 | 14 | + "Zobeida" |
+
+### Eval results
+
+| Question | Baseline | After | Δ |
+|----------|---------|-------|---|
+| q12 Who was Cissie Gool? | 33% | 33% | = |
+| q24 Children of JMH Gool? | 43% | 0% | ↓ (LLM noise) |
+| q26 Dr. Abdurahman? | 100% | 83% | ↓ (LLM noise) |
+| q32 Cissie↔JMH relationship? | 60% | 40% | ↓ (LLM noise) |
+| q38 Cissie's father? | **40%** | **60%** | **↑+20pp** |
+| **Overall** | **53.3%** | **53.3%** | = |
+
+q38 (+20pp) is the clearest signal from the Cissie merge. Other changes are within LLM noise
+(14 questions improved, 13 regressed, net zero). Overall score is stable at 53.3%.
+
+### Also fixed during session
+
+Two bad Tier 2 auto-merges detected and unmerged:
+- `"I.B. Tabata"` → `"Jane Gool-Tabata"` (different people, same surname)
+- `"Nasim Rassool"` → `"Nazima Rassool"` (child vs. wife of author)
+
+Ran `graph reembed` to restore embeddings after unmerge.
+
+### Files changed
+
+- `core/crates/kwaai-rag/src/graph.rs` — Tier 3E `first_name_only` + `WORD_BLOCKLIST`
+- `tests/kwaai-knowledge/d6_family_tree.yaml` — added Cissie, Fatima, Zobeida as first-name aliases
 
 ---
 

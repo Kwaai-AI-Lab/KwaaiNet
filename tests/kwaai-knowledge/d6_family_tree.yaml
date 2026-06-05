@@ -118,6 +118,7 @@ persons:
 
   - canonical: "Fatima Gool"
     aliases:
+      - "Fatima"
       - "Fatima (Timmie)"
       - "Timmie"
       - "my Auntie Timmie"
@@ -130,6 +131,7 @@ persons:
 
   - canonical: "Zobeida Gool"
     aliases:
+      - "Zobeida"
       - "Billy"
       - "Zobeida (Billy)"
 
@@ -156,6 +158,7 @@ persons:
 
   - canonical: "Cissie Gool"
     aliases:
+      - "Cissie"
       - "Zainunnisa Cissie Gool"
       - "Zainunnisa Gool"
       - "Zainunnissa Cissie Gool"

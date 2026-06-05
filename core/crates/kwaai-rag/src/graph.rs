@@ -2571,6 +2571,73 @@ impl GraphStore {
             }
         }
 
+        // ── E: first-name-only subset ─────────────────────────────────────────
+        // Catches "Cissie" → "Cissie Gool", "Fatima" → "Fatima Gool", "Zobeida" → "Zobeida Gool".
+        //
+        // A single-word entity A (≥4 chars, not an honorific/title/common word) is a
+        // first-name alias of multi-word entity B when A's word is the first token of B's
+        // name AND B is the ONLY entity in the graph whose name starts with that word.
+        // The uniqueness guard prevents "Gool" (surname shared by many) from collapsing.
+        //
+        // No neighbour requirement — first-name-only stubs typically have sparse graphs.
+        // Canonical = the longer name (entity B); alias = the single-word entity A.
+        {
+            // Common English words and titles that should never be treated as a first name.
+            const WORD_BLOCKLIST: &[&str] = &[
+                "instead", "even", "head", "chief", "prince", "princess", "premier",
+                "president", "king", "queen", "lord", "lady", "captain", "major",
+                "general", "colonel", "minister", "secretary", "director", "chairman",
+                "leader", "speaker", "judge", "justice", "senator", "member",
+            ];
+
+            // Map: first-token (≥4 chars, non-honorific, non-blocked) → entity IDs whose name starts with it
+            let mut first_token_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
+            for (&id, node) in &self.nodes {
+                let norm = normalize_name(&node.name);
+                let words: Vec<&str> = norm.split_whitespace().collect();
+                if words.len() >= 2 {
+                    let first = words[0];
+                    if first.len() >= 4
+                        && !HONORIFICS.contains(&first)
+                        && !WORD_BLOCKLIST.contains(&first)
+                    {
+                        first_token_to_ids.entry(first.to_string()).or_default().push(id);
+                    }
+                }
+            }
+
+            for (&id, node) in &self.nodes {
+                let norm = normalize_name(&node.name);
+                let words: Vec<&str> = norm.split_whitespace().collect();
+                if words.len() != 1 {
+                    continue;
+                }
+                let word = words[0];
+                if word.len() < 4
+                    || HONORIFICS.contains(&word)
+                    || WORD_BLOCKLIST.contains(&word)
+                {
+                    continue;
+                }
+                let Some(candidates) = first_token_to_ids.get(word) else {
+                    continue;
+                };
+                // Safety: exactly one multi-word entity starts with this first name
+                if candidates.len() != 1 {
+                    continue;
+                }
+                let canonical_id = candidates[0];
+                if canonical_id == id {
+                    continue;
+                }
+                // Must not already be covered by earlier tiers
+                let pair = ord_pair(id, canonical_id);
+                if seen.insert(pair) {
+                    out.push((id, canonical_id, "first_name_only"));
+                }
+            }
+        }
+
         out
     }
 
