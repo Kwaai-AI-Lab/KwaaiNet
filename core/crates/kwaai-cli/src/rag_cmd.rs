@@ -4224,8 +4224,31 @@ async fn cmd_extract_relations(
             None => continue,
         };
 
-        // Build entity block: canonical name + top aliases
-        let entity_block: String = entities
+        // Build entity block: canonical name + top aliases.
+        // Filter out pure role-description entities (no proper name tokens ≥4 chars
+        // that aren't honorifics/roles). These are ghost extractions like "My mother",
+        // "Uncle Hanief", "The author" — they confuse the EC by appearing as endpoints.
+        const ROLE_WORDS: &[&str] = &[
+            "my", "the", "his", "her", "our", "their", "your",
+            "uncle", "aunt", "mother", "father", "brother", "sister",
+            "grandpa", "grandma", "grandfather", "grandmother",
+            "narrator", "author", "writer",
+        ];
+        let is_role_only = |name: &str| -> bool {
+            let words: Vec<&str> = name.split_whitespace().collect();
+            words.iter().all(|w| {
+                let wl = w.to_lowercase();
+                wl.len() < 4 || ROLE_WORDS.contains(&wl.as_str())
+            })
+        };
+
+        // Keep entities that have at least one proper name token (not a role word)
+        let proper_entities: Vec<&(String, Vec<String>)> = entities
+            .iter()
+            .filter(|(name, _)| !is_role_only(name))
+            .collect();
+
+        let entity_block: String = proper_entities
             .iter()
             .map(|(name, aliases)| {
                 if aliases.is_empty() {
@@ -4238,7 +4261,7 @@ async fn cmd_extract_relations(
             .collect::<Vec<_>>()
             .join("\n");
 
-        let canonical_names: Vec<&str> = entities.iter().map(|(n, _)| n.as_str()).collect();
+        let canonical_names: Vec<&str> = proper_entities.iter().map(|(n, _)| n.as_str()).collect();
 
         // Detect narrator entity: any entity whose aliases include "narrator", "author", or "I"
         let narrator_name: Option<&str> = entities.iter().find_map(|(name, aliases)| {
@@ -4248,17 +4271,86 @@ async fn cmd_extract_relations(
             if is_narrator { Some(name.as_str()) } else { None }
         });
 
-        // ── Call the LLM ────────────────────────────────────────────────────
-        // Extract only the sentences that contain both a trigger and an entity.
-        // Passing a focused excerpt instead of the full chunk reduces hallucination
-        // because the model can't connect entities that appear in unrelated sentences.
-        let focused_text = extract_focused_sentences(&chunk.text, &entities);
+        // ── Two-pass CC + EC extraction ──────────────────────────────────────
+        //
+        // CC pass: "Does this text explicitly state a family relation between
+        // any of these people? If yes, quote the exact clause."
+        // EC pass: fires only when CC returns a non-empty quote; extracts the
+        // structured {from, relation, to} triple from that anchor.
+        //
+        // Mirrors the entity CC + EC refinement pipeline in ingestion.rs:
+        // CC is the cheap broad filter; EC is the focused, expensive extraction.
+        let cc_prompt = build_cc_prompt(&chunk.text, &entity_block, &canonical_names, narrator_name);
+        let cc_raw = call_llm_for_relations(inference_url, model, &cc_prompt).await?;
+        let cc_quote = parse_cc_quote(&cc_raw);
 
-        let prompt = build_relation_prompt(&focused_text, &entity_block, &canonical_names, narrator_name);
-        let relations_json = call_llm_for_relations(inference_url, model, &prompt).await?;
+        // Name-anchor guard: the CC quote must contain at least one token (≥4 chars)
+        // from a canonical entity name, alias, or narrator name. Quotes like "my mother"
+        // with no named person don't anchor the EC — skip them to avoid hallucination.
+        //
+        // We check: canonical names, all aliases, and individual tokens of each (≥4 chars),
+        // plus the narrator name. This catches "Fazil" (alias token of "Fazil Rassool"),
+        // "Goolam" (token of "Goolam Gool"), etc.
+        let all_name_tokens: Vec<String> = {
+            let mut tokens = Vec::new();
+            for &n in &canonical_names {
+                tokens.push(n.to_lowercase());
+                for w in n.split_whitespace() {
+                    if w.len() >= 4 { tokens.push(w.to_lowercase()); }
+                }
+            }
+            // Also include entity aliases
+            for (_name, aliases) in entities.iter() {
+                for a in aliases.iter() {
+                    tokens.push(a.to_lowercase());
+                    for w in a.split_whitespace() {
+                        if w.len() >= 4 { tokens.push(w.to_lowercase()); }
+                    }
+                }
+            }
+            if let Some(n) = narrator_name {
+                tokens.push(n.to_lowercase());
+                for w in n.split_whitespace() {
+                    if w.len() >= 4 { tokens.push(w.to_lowercase()); }
+                }
+            }
+            tokens
+        };
+        let cc_quote_anchored = cc_quote.as_ref().and_then(|q| {
+            let ql = q.to_lowercase();
+            let has_name = all_name_tokens.iter().any(|t| ql.contains(t.as_str()));
+            if has_name { Some(q.as_str()) } else { None }
+        });
 
-        // ── Parse the response ───────────────────────────────────────────────
-        let extracted = parse_relation_response(&relations_json, &canonical_names);
+        // Code-level guard: if the CC quote only contains non-schema relation words
+        // (aunt, uncle, nephew, niece, cousin) with no schema-covered relation word,
+        // skip EC entirely. The 8b model ignores this instruction when embedded in the EC prompt.
+        const NON_SCHEMA_RELS: &[&str] = &["aunt", "uncle", "nephew", "niece", "cousin"];
+        const SCHEMA_REL_WORDS: &[&str] = &[
+            "wife", "husband", "married", "wed", "spouse",
+            "son", "daughter", "father", "mother", "parent",
+            "sibling", "brother", "sister", "born to", "gave birth",
+        ];
+        let quote_is_non_schema = cc_quote_anchored.map_or(false, |q| {
+            let ql = q.to_lowercase();
+            NON_SCHEMA_RELS.iter().any(|&r| ql.contains(r))
+                && !SCHEMA_REL_WORDS.iter().any(|&r| ql.contains(r))
+        });
+
+        let (relations_json, extracted) = if let Some(quote) = cc_quote_anchored {
+            if quote_is_non_schema {
+                // Non-schema relation word (aunt/uncle/etc.) — skip EC
+                (String::from("[non-schema relation — EC skipped]"), vec![])
+            } else {
+                // EC pass: extract structured relation from the quoted anchor
+                let ec_prompt = build_ec_prompt(quote, &entity_block, &canonical_names, narrator_name);
+                let ec_raw = call_llm_for_relations(inference_url, model, &ec_prompt).await?;
+                let rels = parse_relation_response(&ec_raw, &canonical_names);
+                (ec_raw, rels)
+            }
+        } else {
+            (String::new(), vec![])
+        };
 
         // ── Write review section ─────────────────────────────────────────────
         out.push_str(&format!(
@@ -4280,11 +4372,25 @@ async fn cmd_extract_relations(
             .copied()
             .collect();
         out.push_str(&triggers_hit.join(", "));
-        out.push_str("\n\n**Focused sentences (sent to LLM):**\n```\n");
-        out.push_str(focused_text.trim());
-        out.push_str("\n```\n\n**LLM response (raw):**\n```json\n");
-        out.push_str(relations_json.trim());
-        out.push_str("\n```\n\n");
+        out.push_str("\n\n**CC pass (raw):**\n```json\n");
+        out.push_str(cc_raw.trim());
+        out.push_str("\n```\n\n**CC quote:** ");
+        match &cc_quote {
+            None => { out.push_str("none — EC pass skipped\n\n"); }
+            Some(q) => {
+                out.push_str(&format!("`{q}`  "));
+                if cc_quote_anchored.is_some() {
+                    out.push_str("✅ anchored → EC\n\n");
+                } else {
+                    out.push_str("⚠️ no entity name in quote → EC skipped\n\n");
+                }
+            }
+        }
+        if !relations_json.is_empty() {
+            out.push_str("**EC pass (raw):**\n```json\n");
+            out.push_str(relations_json.trim());
+            out.push_str("\n```\n\n");
+        }
 
         if extracted.is_empty() {
             out.push_str("**Extracted relations:** none\n");
@@ -4318,7 +4424,9 @@ async fn cmd_extract_relations(
             }
         }
 
-        print!("  [{}/{}] chunk {}  → {} relation(s)\r", i + 1, sampled.len(), chunk_id, extracted.len());
+        let cc_status = if cc_quote.is_some() { "EC→" } else { "skip" };
+        print!("  [{}/{}] chunk {} [CC:{}] → {} relation(s)\r",
+            i + 1, sampled.len(), chunk_id, cc_status, extracted.len());
         let _ = std::io::stdout().flush();
     }
     println!();
@@ -4352,6 +4460,111 @@ async fn cmd_extract_relations(
     }
 
     Ok(())
+}
+
+/// CC pass: cheap broad scan.
+/// Ask the LLM to scan the passage and quote any clause that EXPLICITLY DECLARES
+/// a direct family relation between two named people from the list.
+///
+/// Key distinction: a DECLARATION names both people ("X is the wife of Y",
+/// "Y's son Goolam", "married to Cissie"). A MENTION uses a role without
+/// naming the person ("my mother was pleased", "his uncle arrived").
+/// Only declarations proceed to EC.
+fn build_cc_prompt(
+    text: &str,
+    entity_block: &str,
+    canonical_names: &[&str],
+    narrator_name: Option<&str>,
+) -> String {
+    let names_csv = canonical_names.join(", ");
+    let narrator_line = match narrator_name {
+        Some(name) => format!(
+            "\nNARRATOR: \"{name}\" — 'I', 'me', 'my' in this text refer to this person.\n"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "Scan this passage for a clause that identifies a direct family relationship \
+         between two people — where at least one person from the list is named.\n\
+         {narrator_line}\n\
+         Persons: {names_csv}\n\
+         Entity details:\n{entity_block}\n\
+         \n\
+         RULES — a clause QUALIFIES if it contains:\n\
+         - A relationship word (wife, husband, married, son, daughter, father, mother, brother, \
+           sister, sibling, cousin, uncle, aunt) AND\n\
+         - At least one proper name from the persons list (or the narrator's name via 'I'/'my'/'me')\n\
+         \n\
+         QUALIFIES (quote these):\n\
+         - \"my brother Fazil\" — role (brother) + name (Fazil)\n\
+         - \"son of Goolam Gool\" — role (son) + name\n\
+         - \"Cissie married Abdul Hamid\" — both names + relation word\n\
+         - \"Gandhi's son Manilal\" — role + name\n\
+         \n\
+         DOES NOT QUALIFY (return none):\n\
+         - \"my mother was pleased\" — role only, no name\n\
+         - \"his uncle arrived\" — role only, no names\n\
+         - \"they were brothers in arms\" — metaphorical\n\
+         - \"the Gool family\" — family group, not a specific relation\n\
+         \n\
+         If a qualifying clause exists: quote it exactly, word-for-word from the passage.\n\
+         If none exists: return none.\n\
+         Return ONLY valid JSON:\n\
+         {{\"quote\": \"exact words from passage\"}} or {{\"quote\": \"none\"}}\n\
+         \n\
+         Passage:\n{text}"
+    )
+}
+
+/// Parse the CC pass response and return the quoted clause, or None if "none".
+fn parse_cc_quote(raw: &str) -> Option<String> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}').map(|e| e + 1)?;
+    let json_str = &raw[start..end];
+    let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let quote = v["quote"].as_str()?;
+    if quote.trim().to_lowercase() == "none" || quote.trim().is_empty() {
+        None
+    } else {
+        Some(quote.to_string())
+    }
+}
+
+/// EC pass: focused structured extraction anchored to the CC quote.
+/// Only called when CC returned a non-empty quote anchored to a named entity.
+fn build_ec_prompt(
+    quote: &str,
+    entity_block: &str,
+    canonical_names: &[&str],
+    narrator_name: Option<&str>,
+) -> String {
+    let names_csv = canonical_names.join(", ");
+    let narrator_line = match narrator_name {
+        Some(name) => format!(
+            "\nNARRATOR: \"{name}\" — 'I', 'me', 'my' refer to this person.\n"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "Extract the family relationship stated in this exact quote.\n\
+         {narrator_line}\n\
+         Known persons:\n{entity_block}\n\
+         \n\
+         Quote: \"{quote}\"\n\
+         \n\
+         CRITICAL RULES:\n\
+         - Use ONLY: spouse_of, parent_of, child_of, sibling_of, half_sibling_of\n\
+         - \"from\" and \"to\" must be exact canonical names from: {names_csv}\n\
+         - If the quote uses 'aunt', 'uncle', 'nephew', 'niece', or 'cousin', \
+           return {{\"relations\":[]}} — these relation types are not in the schema\n\
+         - If the narrator is 'my' and the NARRATOR name is given, use that name as 'from'\n\
+         - Extract only what the quote directly states\n\
+         - If both endpoints are not identifiable as canonical names, return empty\n\
+         \n\
+         Return ONLY valid JSON:\n\
+         {{\"relations\":[{{\"from\":\"Name A\",\"relation\":\"sibling_of\",\"to\":\"Name B\"}}]}}\n\
+         or {{\"relations\":[]}}"
+    )
 }
 
 fn build_relation_prompt(
