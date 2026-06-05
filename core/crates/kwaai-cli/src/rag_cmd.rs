@@ -2480,6 +2480,27 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let mut total_merged = 0usize;
                 let mut need_rebuild = false;
 
+                // ── Pre-compute relation-based merge blocks ───────────────
+                // R1: role contradiction (same entity would be spouse_of+sibling_of same person)
+                // R2: half-sibling disambiguation (shared parent but different other parents)
+                // These are computed once against all candidates and checked before any merge.
+                let all_candidates: Vec<(i64, i64)> = {
+                    let t1 = store.find_dedup_candidates_exact();
+                    let t2 = store.find_dedup_candidates(threshold);
+                    let t3 = store.find_dedup_candidates_name_structure();
+                    t1.into_iter()
+                        .chain(t2.into_iter().map(|(a, b, _)| (a, b)))
+                        .chain(t3.into_iter().map(|(a, b, _)| (a, b)))
+                        .collect()
+                };
+                let relation_blocks = store.find_dedup_relation_blocks(&all_candidates);
+                if !relation_blocks.is_empty() {
+                    println!(
+                        "  Relation blocks: {} pair(s) blocked by R1/R2 relation guards\n",
+                        relation_blocks.len()
+                    );
+                }
+
                 // ── Tier 1: exact normalized name matches ─────────────────
                 let exact = store.find_dedup_candidates_exact();
                 if exact.is_empty() {
@@ -2488,6 +2509,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     println!("  Tier 1  {} exact-name duplicate(s):", exact.len());
                     if !dry_run {
                         for (alias_id, canonical_id) in &exact {
+                            if relation_blocks.contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id)) {
+                                let aname = store.get_entity(*alias_id).map(|n| n.name.clone()).unwrap_or_default();
+                                println!("    blocked (relation guard) '{}' skipped", aname);
+                                continue;
+                            }
                             let aname = store
                                 .get_entity(*alias_id)
                                 .map(|n| n.name.clone())
@@ -2536,12 +2562,20 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             if let (Some(a), Some(b)) = (a, b) {
                                 let a_rels = store.neighbors_of(*alias_id).len();
                                 let b_rels = store.neighbors_of(*canonical_id).len();
+                                let guard = if relation_blocks.contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id)) {
+                                    "  [BLOCKED:R1/R2]"
+                                } else if store.dedup_r3_high_risk_surname(*alias_id, *canonical_id) {
+                                    "  [DEFERRED:R3]"
+                                } else {
+                                    ""
+                                };
                                 println!(
-                                    "  {:>3}.  \"{}\"  (mentions={}, relations={})",
+                                    "  {:>3}.  \"{}\"  (mentions={}, relations={}){}",
                                     i + 1,
                                     a.name,
                                     a.mention_count,
-                                    a_rels
+                                    a_rels,
+                                    guard
                                 );
                                 println!(
                                     "         ↔  \"{}\"  (mentions={}, relations={})  sim={:.3}",
@@ -2559,6 +2593,20 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             }
                             // Entity may have been absorbed in a prior iteration
                             if store.get_entity(*alias_id).is_none() {
+                                continue;
+                            }
+                            // R1/R2 hard block
+                            if relation_blocks.contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id)) {
+                                let aname = store.get_entity(*alias_id).map(|n| n.name.clone()).unwrap_or_default();
+                                let cname = store.get_entity(*canonical_id).map(|n| n.name.clone()).unwrap_or_default();
+                                println!("    blocked (R1/R2) '{}' ↔ '{}'  sim={:.3}", aname, cname, sim);
+                                continue;
+                            }
+                            // R3 soft downgrade: high-risk surname without matching relation
+                            if store.dedup_r3_high_risk_surname(*alias_id, *canonical_id) {
+                                let aname = store.get_entity(*alias_id).map(|n| n.name.clone()).unwrap_or_default();
+                                let cname = store.get_entity(*canonical_id).map(|n| n.name.clone()).unwrap_or_default();
+                                println!("    deferred (R3:surname) '{}' ↔ '{}'  sim={:.3}  — review manually", aname, cname, sim);
                                 continue;
                             }
                             let aname = store
@@ -2670,12 +2718,32 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                             let a = store.get_entity(*alias_id);
                             let b = store.get_entity(*canonical_id);
                             if let (Some(a), Some(b)) = (a, b) {
-                                println!("        \"{}\"  →  \"{}\"  [{}]", a.name, b.name, reason);
+                                let guard = if relation_blocks.contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id)) {
+                                    "  [BLOCKED:R1/R2]"
+                                } else if store.dedup_r3_high_risk_surname(*alias_id, *canonical_id) {
+                                    "  [DEFERRED:R3]"
+                                } else {
+                                    ""
+                                };
+                                println!("        \"{}\"  →  \"{}\"  [{}]{}", a.name, b.name, reason, guard);
                             }
                         }
                     } else if auto {
                         for (alias_id, canonical_id, reason) in &name_struct {
                             if store.get_entity(*alias_id).is_none() {
+                                continue;
+                            }
+                            // R1/R2 hard block
+                            if relation_blocks.contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id)) {
+                                let aname = store.get_entity(*alias_id).map(|n| n.name.clone()).unwrap_or_default();
+                                println!("    blocked (R1/R2) '{}' skipped  [{}]", aname, reason);
+                                continue;
+                            }
+                            // R3 soft downgrade for high-risk surnames
+                            if store.dedup_r3_high_risk_surname(*alias_id, *canonical_id) {
+                                let aname = store.get_entity(*alias_id).map(|n| n.name.clone()).unwrap_or_default();
+                                let cname = store.get_entity(*canonical_id).map(|n| n.name.clone()).unwrap_or_default();
+                                println!("    deferred (R3:surname) '{}' → '{}'  [{}]  — review manually", aname, cname, reason);
                                 continue;
                             }
                             let aname = store

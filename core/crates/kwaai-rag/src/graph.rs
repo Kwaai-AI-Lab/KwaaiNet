@@ -385,7 +385,41 @@ pub fn normalize_name(s: &str) -> String {
 
 /// Canonical ordered pair — always (smaller, larger) — for dedup seen-sets.
 #[inline]
-fn ord_pair(a: i64, b: i64) -> (i64, i64) {
+/// Returns true when two family relation types are structurally contradictory when
+/// applied from the same entity to the same target (e.g., cannot be both `spouse_of`
+/// and `sibling_of` the same person simultaneously).
+///
+/// Same role to the same target is NOT contradictory — it is a positive dedup signal.
+/// Inverse pairs (parent_of ↔ child_of) applied to the same target ARE contradictory
+/// because they would create a self-referential loop.
+fn family_role_contradicts(r1: &str, r2: &str) -> bool {
+    if r1 == r2 {
+        return false; // same role — positive signal, not a contradiction
+    }
+    // Pairs that would create circular or impossible relationships:
+    const CONTRADICTION_PAIRS: &[(&str, &str)] = &[
+        ("spouse_of", "sibling_of"),
+        ("spouse_of", "half_sibling_of"),
+        ("spouse_of", "child_of"),
+        ("spouse_of", "parent_of"),
+        ("spouse_of", "grandparent_of"),
+        ("spouse_of", "grandchild_of"),
+        ("parent_of", "child_of"),
+        ("grandparent_of", "grandchild_of"),
+        ("sibling_of", "parent_of"),
+        ("sibling_of", "child_of"),
+        ("half_sibling_of", "parent_of"),
+        ("half_sibling_of", "child_of"),
+    ];
+    for &(a, b) in CONTRADICTION_PAIRS {
+        if (r1 == a && r2 == b) || (r1 == b && r2 == a) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn ord_pair(a: i64, b: i64) -> (i64, i64) {
     if a < b {
         (a, b)
     } else {
@@ -2639,6 +2673,166 @@ impl GraphStore {
         }
 
         out
+    }
+
+    // ── Relation-aware dedup blocking ────────────────────────────────────────
+
+    /// Return the subset of `candidates` that MUST NOT be merged because doing
+    /// so would create a structural contradiction in the family graph.
+    ///
+    /// **R1 — Role contradiction** (catches Nasim/Nazima, I.B. Tabata/Jane Tabata):
+    /// For a given candidate pair (A, B), look at their family relations to any
+    /// shared third-entity C. If A has relation R1 to C and B has relation R2 to C
+    /// and R1 ≠ R2, merging A into B would give one entity two different family roles
+    /// to the same person — impossible in reality.
+    ///
+    /// **R2 — Half-sibling disambiguation** (catches Mohamed Saaid / Mohammed Hanief):
+    /// Both A and B are `child_of` the same parent P, but each also has a **different**
+    /// additional parent that the other lacks. This proves they are half-siblings, not
+    /// the same person.
+    ///
+    /// **Trusted relations**: only relations with `strength ≥ 0.1` (all seeded + multi-
+    /// chunk LLM) are considered. The minimum possible strength (0.1) corresponds to
+    /// a single evidence source, which is sufficient for blocking since family relations
+    /// in this graph are primarily YAML-seeded ground truth.
+    pub fn find_dedup_relation_blocks(
+        &self,
+        candidates: &[(i64, i64)],
+    ) -> HashSet<(i64, i64)> {
+        let mut blocked = HashSet::new();
+        for &(alias_id, canonical_id) in candidates {
+            if self.dedup_block_r1(alias_id, canonical_id)
+                || self.dedup_block_r2(alias_id, canonical_id)
+            {
+                blocked.insert(ord_pair(alias_id, canonical_id));
+            }
+        }
+        blocked
+    }
+
+    /// R3: returns true when both entities share a high-risk surname (Gool, Rassool, …)
+    /// but have NO matching family relation to any shared third entity. Used to downgrade
+    /// high-risk pairs from "auto-merge" to "review-only" without blocking outright.
+    pub fn dedup_r3_high_risk_surname(&self, a: i64, b: i64) -> bool {
+        const HIGH_RISK_SURNAMES: &[&str] = &["gool", "rassool", "abdurahman", "tabata"];
+
+        let surname_of = |id: i64| -> Option<&'static str> {
+            let name = self.nodes.get(&id).map(|n| n.name.as_str())?;
+            let norm = normalize_name(name);
+            let last = norm.split_whitespace().last()?.to_string();
+            HIGH_RISK_SURNAMES.iter().copied().find(|&s| s == last.as_str())
+        };
+
+        let sa = surname_of(a);
+        let sb = surname_of(b);
+        if sa.is_none() || sa != sb {
+            return false; // different surnames or not high-risk
+        }
+
+        // Check for at least one matching family relation to a shared third entity
+        let a_family: HashMap<i64, HashSet<String>> = self.trusted_family_rel_map(a);
+        let b_family: HashMap<i64, HashSet<String>> = self.trusted_family_rel_map(b);
+        for (target, a_rels) in &a_family {
+            if let Some(b_rels) = b_family.get(target) {
+                // Same target, same role → matching relation evidence
+                if a_rels.intersection(b_rels).next().is_some() {
+                    return false; // found matching relation — not high-risk
+                }
+            }
+        }
+        // Shared high-risk surname, no matching relation → flag for R3
+        true
+    }
+
+    /// R1: merging A into B would give one entity two *different* family roles to
+    /// the same third entity (e.g., both `spouse_of X` and `sibling_of X`).
+    fn dedup_block_r1(&self, a: i64, b: i64) -> bool {
+        // Build: target_id → set of normalized relation types, from A's perspective
+        let a_rels = self.trusted_family_rel_map(a);
+        for (target, rel_b) in self.trusted_family_rel_iter(b) {
+            if let Some(rels_a) = a_rels.get(&target) {
+                for rel_a in rels_a {
+                    if family_role_contradicts(rel_a, &rel_b) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// R2: both A and B are `child_of` the same parent P, but each also has a
+    /// *different* additional parent → they are half-siblings, not duplicates.
+    fn dedup_block_r2(&self, a: i64, b: i64) -> bool {
+        let a_parents = self.trusted_parent_ids(a);
+        let b_parents = self.trusted_parent_ids(b);
+        if a_parents.is_empty() || b_parents.is_empty() {
+            return false;
+        }
+        let shared_count = a_parents.intersection(&b_parents).count();
+        if shared_count == 0 {
+            return false;
+        }
+        // Have at least one shared parent. Block if both have non-overlapping additional parents.
+        let a_only = a_parents.difference(&b_parents).count();
+        let b_only = b_parents.difference(&a_parents).count();
+        a_only > 0 && b_only > 0
+    }
+
+    /// Collect (target_id → HashSet<rel_type>) for **symmetric** family relations from `id`.
+    ///
+    /// Only symmetric relations (spouse_of, sibling_of, half_sibling_of, cousin_of) are used
+    /// here because the in-memory adj stores both directions with the same label for all
+    /// relations. Asymmetric relations (parent_of, child_of) appear in both directions in adj,
+    /// causing false contradictions (an entity appears as both parent and child of another).
+    /// Asymmetric relation checks (R2) must use `trusted_parent_ids` which reads from the DB.
+    fn trusted_family_rel_map(&self, id: i64) -> HashMap<i64, HashSet<String>> {
+        const SYMMETRIC: &[&str] = &["spouse_of", "sibling_of", "half_sibling_of", "cousin_of"];
+        let mut map: HashMap<i64, HashSet<String>> = HashMap::new();
+        if let Some(edges) = self.adj.get(&id) {
+            for (nbr, rel, strength) in edges {
+                if SYMMETRIC.contains(&rel.as_str()) && *strength >= 0.1 {
+                    map.entry(*nbr).or_default().insert(rel.clone());
+                }
+            }
+        }
+        map
+    }
+
+    /// Iterator over (target_id, rel_type) for trusted symmetric family relations from `id`.
+    fn trusted_family_rel_iter(&self, id: i64) -> Vec<(i64, String)> {
+        const SYMMETRIC: &[&str] = &["spouse_of", "sibling_of", "half_sibling_of", "cousin_of"];
+        self.adj
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter(|(_, rel, strength)| {
+                SYMMETRIC.contains(&rel.as_str()) && *strength >= 0.1
+            })
+            .map(|(nbr, rel, _)| (*nbr, rel.clone()))
+            .collect()
+    }
+
+    /// Set of entity IDs that are **parents** of `id`.
+    ///
+    /// Reads `child_of(id, parent)` records directly from the DB rather than from adj,
+    /// because adj stores both directions of asymmetric relations with the same label,
+    /// which would incorrectly include backward `child_of` entries from the inverse storage.
+    fn trusted_parent_ids(&self, id: i64) -> HashSet<i64> {
+        let Ok(rtxn) = self.db.begin_read() else { return HashSet::new() };
+        let Ok(table) = rtxn.open_table(RELATIONS_TABLE) else { return HashSet::new() };
+        let mut parents = HashSet::new();
+        if let Ok(iter) = table.iter() {
+            for entry in iter.flatten() {
+                let (_, v) = entry;
+                if let Ok(rel) = serde_json::from_slice::<RelationRecord>(v.value()) {
+                    if rel.src_id == id && rel.relation_type == "child_of" && rel.strength >= 0.1 {
+                        parents.insert(rel.dst_id);
+                    }
+                }
+            }
+        }
+        parents
     }
 
     /// Tier 4: Role-pronoun neighbour-containment dedup.
