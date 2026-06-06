@@ -4725,9 +4725,19 @@ async fn cmd_extract_relations(
             vec![]
         };
 
-        let cc_prompt = build_cc_prompt(&chunk.text, &entity_block, &canonical_names, narrator_name);
-        let cc_raw = call_llm_for_relations(inference_url, model, &cc_prompt).await?;
-        let cc_quote = parse_cc_quote(&cc_raw);
+        // In RC mode: skip the CC LLM call entirely — RC windows replace the CC scan.
+        // CC is only needed for non-RC mode and for display in the review output.
+        let (cc_prompt_str, cc_raw, cc_quote) = if rc_mode {
+            (String::new(), String::new(), None)
+        } else {
+            let p = build_cc_prompt(&chunk.text, &entity_block, &canonical_names, narrator_name);
+            let r = call_llm_for_relations(inference_url, model, &p).await?;
+            let q = parse_cc_quote(&r);
+            (p, r, q)
+        };
+        let cc_prompt = cc_prompt_str.as_str();
+        let _ = cc_prompt; // suppress unused warning
+        let cc_quote = cc_quote;
 
         // Name-anchor guard: the CC quote must contain at least one token (≥4 chars)
         // from a canonical entity name, alias, or narrator name. Quotes like "my mother"
@@ -5073,6 +5083,12 @@ fn build_cc_prompt(
          - \"his uncle arrived\" — role only, no names\n\
          - \"they were brothers in arms\" — metaphorical\n\
          - \"the Gool family\" — family group, not a specific relation\n\
+         \n\
+         CRITICAL QUOTING RULE: include the FULL phrase with possessive words.\n\
+         - Quote \"my brother Fazil\" NOT \"brother Fazil\" — keep \"my\"\n\
+         - Quote \"his wife Cissie\" NOT \"wife Cissie\" — keep \"his\"\n\
+         - Quote \"her father Dr. Abdurahman\" NOT \"father Dr. Abdurahman\" — keep \"her\"\n\
+         Possessive words establish WHO the relationship belongs to — omitting them loses the endpoint.\n\
          \n\
          If a qualifying clause exists: quote it exactly, word-for-word from the passage.\n\
          If none exists: return none.\n\
