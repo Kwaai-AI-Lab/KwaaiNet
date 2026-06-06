@@ -1141,6 +1141,64 @@ impl GraphStore {
             .map(|(_, _, s)| *s)
     }
 
+    /// Return candidate Person entities for coreference resolution for a given chunk.
+    ///
+    /// Collects the entity sets for the chunk itself plus up to `window` adjacent
+    /// chunks (by iterating `chunk_to_entities` for nearby chunk IDs), then returns
+    /// the unique Person entities as `(name, aliases, gender)` triples.
+    ///
+    /// Also always includes any entity whose aliases contain "narrator", "author",
+    /// or "i" — these are high-priority coref targets regardless of window.
+    pub fn coref_candidates_for_chunk(
+        &self,
+        chunk_id: i64,
+        adjacent_chunk_ids: &[i64],
+    ) -> Vec<(String, Vec<String>, Option<String>)> {
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut candidates: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+
+        // Always include the narrator/author entity. Force gender to Some("Male") for
+        // entities whose aliases include "narrator"/"author"/"I" — the narrator in this
+        // corpus is Yousuf Rassool, a man. The stored gender field may be wrong (inferred
+        // from an impoverished description), so we override it here.
+        for node in self.nodes.values() {
+            if node.entity_type.eq_ignore_ascii_case("person")
+                && node.aliases.iter().any(|a| {
+                    matches!(a.to_lowercase().as_str(), "narrator" | "author" | "i" | "the author" | "the narrator")
+                })
+            {
+                if seen.insert(node.id) {
+                    candidates.push((
+                        node.name.clone(),
+                        node.aliases.clone(),
+                        Some("Male".to_string()), // narrator is always Male in this corpus
+                    ));
+                }
+            }
+        }
+
+        // Collect entities from this chunk + adjacent chunks
+        let all_chunk_ids = std::iter::once(&chunk_id).chain(adjacent_chunk_ids.iter());
+        for &cid in all_chunk_ids {
+            if let Some(entity_ids) = self.chunk_to_entities.get(&cid) {
+                for &eid in entity_ids {
+                    if seen.contains(&eid) { continue; }
+                    if let Some(node) = self.nodes.get(&eid) {
+                        if node.entity_type.eq_ignore_ascii_case("person") {
+                            seen.insert(eid);
+                            candidates.push((
+                                node.name.clone(),
+                                node.aliases.clone(),
+                                node.gender.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        candidates
+    }
+
     pub fn chunks_for_entity(&self, entity_id: i64) -> &[i64] {
         self.entity_to_chunks
             .get(&entity_id)

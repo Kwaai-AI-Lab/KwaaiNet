@@ -3181,6 +3181,27 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 .await?;
             }
 
+            GraphAction::Coref {
+                inference_url,
+                model,
+                sample,
+                window,
+                output,
+                commit,
+            } => {
+                cmd_coref(
+                    &rag_cfg.data_dir(),
+                    tenant_id,
+                    &inference_url,
+                    &model,
+                    sample,
+                    window,
+                    output.as_deref(),
+                    commit,
+                )
+                .await?;
+            }
+
             GraphAction::ExtractRelations {
                 inference_url,
                 model,
@@ -3189,6 +3210,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 commit,
                 list_models,
                 pull,
+                rc,
+                rc_window,
             } => {
                 cmd_extract_relations(
                     &rag_cfg.data_dir(),
@@ -3200,6 +3223,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     commit,
                     list_models,
                     pull.as_deref(),
+                    rc,
+                    rc_window,
                 )
                 .await?;
             }
@@ -3880,6 +3905,391 @@ async fn cmd_alias_scan(
     Ok(())
 }
 
+// ── coref ─────────────────────────────────────────────────────────────────────
+
+async fn cmd_coref(
+    data_dir: &std::path::Path,
+    tenant_id: uuid::Uuid,
+    inference_url: &str,
+    model: &str,
+    sample: f64,
+    window: usize,
+    output: Option<&std::path::Path>,
+    commit: bool,
+) -> Result<()> {
+    use std::collections::HashMap;
+    use std::io::Write;
+
+    print_box_header("Graph: Coreference Resolution");
+
+    // Resolve p2p:// URLs the same way extract-relations does
+    let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
+    let inference_url: String =
+        if inference_url.starts_with("p2p://") || inference_url.starts_with("mux://") {
+            use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+            let sock = std::env::var("KWAAINET_SOCKET")
+                .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+            #[cfg(unix)]
+            let addr = format!("/unix/{sock}");
+            #[cfg(not(unix))]
+            let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+            let p2p = std::sync::Arc::new(
+                P2PClient::connect(&addr)
+                    .await
+                    .context("connecting to p2pd for p2p:// URL resolution")?,
+            );
+            let (resolved, handles) =
+                crate::ollama_proxy::resolve_inference_urls(&[inference_url.to_string()], &p2p)
+                    .await?;
+            _proxy_handles = handles;
+            resolved.into_iter().next().unwrap_or_default()
+        } else {
+            inference_url.to_string()
+        };
+    let inference_url = inference_url.as_str();
+
+    let meta = kwaai_rag::meta_store::MetaStore::open(data_dir, tenant_id)
+        .context("opening meta store")?;
+    let mut store = kwaai_rag::graph::GraphStore::open(data_dir, tenant_id)
+        .context("opening graph store")?;
+
+    let all_chunks = meta.all_chunks().context("loading chunks")?;
+    let total_chunks = all_chunks.len();
+
+    // Build chunk_id → ChunkMeta. Sort by chunk_index (document order), not by chunk_id
+    // hash — adjacency must follow narrative order so ±window gives context sentences.
+    let chunk_map: HashMap<i64, _> = all_chunks.into_iter().collect();
+    let mut sorted_chunk_ids: Vec<i64> = chunk_map.keys().copied().collect();
+    sorted_chunk_ids.sort_by_key(|id| chunk_map[id].chunk_index);
+
+    // Sample chunks to process
+    let n_sample = ((total_chunks as f64 * sample).ceil() as usize).max(1)
+        .min(total_chunks);
+    let sampled_ids = &sorted_chunk_ids[..n_sample];
+
+    println!(
+        "  Total chunks: {total_chunks}  |  Sample ({}%): {n_sample}\n",
+        (sample * 100.0).round()
+    );
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# Coreference Resolution — {}% sample\n\n\
+         **Model:** {model}  \n\
+         **Commit:** {}  \n\
+         **Window:** ±{window} chunks\n\n---\n\n",
+        (sample * 100.0).round(),
+        if commit { "yes" } else { "dry-run" }
+    ));
+
+    let mut total_resolved = 0usize;
+    let mut total_links_added = 0usize;
+    // Dedup surface: surface_text → Vec<(chunk_id, entity_id)> — for dedup reporting
+    let mut coref_surface_map: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
+
+    for (i, &chunk_id) in sampled_ids.iter().enumerate() {
+        let chunk = match chunk_map.get(&chunk_id) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        // Build adjacent chunk IDs (±window, same section preferred)
+        let pos = sorted_chunk_ids.partition_point(|&id| id < chunk_id);
+        let adj_start = pos.saturating_sub(window);
+        let adj_end = (pos + window + 1).min(sorted_chunk_ids.len());
+        let adjacent: Vec<i64> = sorted_chunk_ids[adj_start..adj_end]
+            .iter()
+            .filter(|&&id| id != chunk_id)
+            .copied()
+            .collect();
+
+        // Get candidate antecedents from graph
+        let candidates = store.coref_candidates_for_chunk(chunk_id, &adjacent);
+        if candidates.is_empty() {
+            continue; // no Person entities in context — nothing to resolve to
+        }
+
+        // ── Tier 1a: definite description / alias matching ────────────────────
+        let desc_resolutions = kwaai_rag::ner::resolve_definite_descriptions(
+            &chunk.text,
+            &candidates,
+        );
+
+        // ── Tier 1b: gender + nearest-Person pronoun resolution ───────────────
+        // Only resolve pronouns to entities whose name/alias appears in the current
+        // chunk text. Entities from the ±window context are available for definite
+        // descriptions (alias match), but pronoun resolution is much noisier — we
+        // need the entity to be explicitly named nearby to anchor the pronoun.
+        let chunk_lower = chunk.text.to_lowercase();
+        let in_chunk_candidates: Vec<(String, Vec<String>, Option<String>)> = candidates
+            .iter()
+            .filter(|(name, aliases, _)| {
+                let nl = name.to_lowercase();
+                // Check if name or any ≥4-char alias token appears in chunk text
+                nl.split_whitespace().any(|w| w.len() >= 4 && chunk_lower.contains(w))
+                    || aliases.iter().any(|a| {
+                        let al = a.to_lowercase();
+                        al.split_whitespace().any(|w| w.len() >= 4 && chunk_lower.contains(w))
+                    })
+                    // Always include narrator (they narrate even when not explicitly named)
+                    || aliases.iter().any(|a| {
+                        matches!(a.to_lowercase().as_str(),
+                            "narrator" | "author" | "i" | "the author" | "the narrator")
+                    })
+            })
+            .cloned()
+            .collect();
+        let pronoun_resolutions = kwaai_rag::ner::resolve_pronouns_from_candidates(
+            &chunk.text,
+            &in_chunk_candidates,
+        );
+
+        // Merge Tier 1 results; deduplicate by entity_name (one link per entity per chunk)
+        let mut tier1: Vec<kwaai_rag::ner::CorefResolution> = Vec::new();
+        let mut seen_entities: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for r in desc_resolutions.into_iter().chain(pronoun_resolutions) {
+            if seen_entities.insert(r.entity_name.clone()) {
+                tier1.push(r);
+            }
+        }
+
+        // ── Tier 2: LLM-assisted for remaining unresolved pronouns ────────────
+        // Find pronouns in the text that Tier 1 didn't resolve
+        let tier1_surfaces: std::collections::HashSet<String> =
+            tier1.iter().map(|r| r.surface.to_lowercase()).collect();
+        let unresolved_pronouns = extract_unresolved_pronouns(&chunk.text, &tier1_surfaces);
+
+        let mut tier2: Vec<kwaai_rag::ner::CorefResolution> = Vec::new();
+        for pronoun in &unresolved_pronouns {
+            if seen_entities.len() >= candidates.len() { break; } // all candidates used
+            let window_text = extract_pronoun_window(&chunk.text, pronoun, 300);
+            let resolved = call_llm_for_coref(
+                inference_url,
+                model,
+                pronoun,
+                &window_text,
+                &candidates,
+            )
+            .await
+            .ok()
+            .flatten();
+            if let Some(entity_name) = resolved {
+                if seen_entities.insert(entity_name.clone()) {
+                    tier2.push(kwaai_rag::ner::CorefResolution {
+                        surface: pronoun.clone(),
+                        entity_name,
+                        offset: 0,
+                        confidence: 0.7,
+                        method: "llm",
+                    });
+                }
+            }
+        }
+
+        let all_resolutions: Vec<&kwaai_rag::ner::CorefResolution> =
+            tier1.iter().chain(tier2.iter()).collect();
+
+        if all_resolutions.is_empty() {
+            continue;
+        }
+
+        total_resolved += all_resolutions.len();
+
+        // ── Write review section ─────────────────────────────────────────────
+        out.push_str(&format!(
+            "## Chunk {} (id={})\n\n",
+            i + 1, chunk_id
+        ));
+        if let Some(sec) = chunk.section_name.as_deref() {
+            out.push_str(&format!("**Section:** {sec}  \n"));
+        }
+        out.push_str(&format!("**Doc:** {}  chunk #{}\n\n", chunk.doc_name, chunk.chunk_index));
+        out.push_str("**Candidates:**\n");
+        for (name, aliases, gender) in &candidates {
+            let g = gender.as_deref().unwrap_or("?");
+            let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(3).collect();
+            if shown.is_empty() {
+                out.push_str(&format!("  - {name} [{g}]\n"));
+            } else {
+                out.push_str(&format!("  - {name} [{g}]  ({})\n", shown.join(", ")));
+            }
+        }
+        out.push_str("\n**Resolutions:**\n");
+        for r in &all_resolutions {
+            out.push_str(&format!(
+                "  - `{}` → **{}**  conf={:.1}  [{}]\n",
+                r.surface, r.entity_name, r.confidence, r.method
+            ));
+        }
+        out.push('\n');
+
+        // ── Commit links + track for dedup ───────────────────────────────────
+        for r in &all_resolutions {
+            // Look up entity ID by name
+            let eid = store
+                .find_by_name_normalized(&r.entity_name)
+                .map(|n| kwaai_rag::graph::entity_id(&n.name, &n.entity_type));
+            if let Some(eid) = eid {
+                // Track surface → (chunk, entity) for dedup signal
+                coref_surface_map
+                    .entry(r.entity_name.clone())
+                    .or_default()
+                    .push((chunk_id, eid));
+
+                if commit {
+                    store.link_chunk(chunk_id, &[eid])?;
+                    total_links_added += 1;
+                }
+            }
+        }
+
+        out.push_str("---\n\n");
+        print!("  [{}/{}] chunk {}  → {} resolved\r", i + 1, n_sample, chunk_id, all_resolutions.len());
+        let _ = std::io::stdout().flush();
+    }
+    println!();
+
+    // ── Dedup surface analysis ────────────────────────────────────────────────
+    // Report chunk-entity pairs where multiple entity stubs resolved to the same
+    // referent — these are strong dedup candidates.
+    let dedup_candidates: Vec<(&String, &Vec<(i64, i64)>)> = coref_surface_map
+        .iter()
+        .filter(|(_, pairs)| pairs.len() >= 2)
+        .collect();
+
+    if !dedup_candidates.is_empty() {
+        out.push_str("## Coref-Derived Dedup Candidates\n\n");
+        out.push_str("Entity stubs that resolved to the same referent in multiple chunks:\n\n");
+        for (entity_name, pairs) in &dedup_candidates {
+            out.push_str(&format!("- **{}**: {} chunk(s) added via coref\n", entity_name, pairs.len()));
+        }
+        out.push('\n');
+    }
+
+    // ── Summary ───────────────────────────────────────────────────────────────
+    let summary = format!(
+        "## Summary\n\n\
+         | Metric | Value |\n\
+         |--------|-------|\n\
+         | Chunks processed | {n_sample} |\n\
+         | Total resolutions | {total_resolved} |\n\
+         | Links written to graph | {} |\n\
+         | Dedup candidates surfaced | {} |\n",
+        if commit { total_links_added } else { 0 },
+        dedup_candidates.len()
+    );
+    out.push_str(&summary);
+
+    println!("  Chunks processed:   {n_sample}");
+    println!("  Resolutions found:  {total_resolved}");
+    if commit { println!("  Links written:      {total_links_added}"); }
+    println!("  Dedup candidates:   {}", dedup_candidates.len());
+
+    if let Some(path) = output {
+        std::fs::write(path, &out).with_context(|| format!("writing {}", path.display()))?;
+        println!("\n  ✅ Review written to: {}", path.display());
+    } else {
+        println!("\n{out}");
+    }
+
+    Ok(())
+}
+
+fn extract_unresolved_pronouns(
+    text: &str,
+    already_resolved: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    const ALL_PRONOUNS: &[&str] = &[
+        "he", "him", "his", "she", "her", "they", "them", "their",
+    ];
+    let lower = text.to_lowercase();
+    ALL_PRONOUNS
+        .iter()
+        .filter(|&&p| !already_resolved.contains(p))
+        .filter(|&&p| {
+            // whole-word match
+            lower.split_whitespace().any(|w| {
+                let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+                w == p
+            })
+        })
+        .map(|&p| p.to_string())
+        .collect()
+}
+
+fn extract_pronoun_window(text: &str, pronoun: &str, window_chars: usize) -> String {
+    let lower = text.to_lowercase();
+    // Find first whole-word occurrence
+    let pos = lower.split_whitespace().enumerate().find_map(|(i, w)| {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+        if w == pronoun {
+            Some(text.char_indices().nth(i).map(|(p, _)| p).unwrap_or(0))
+        } else {
+            None
+        }
+    }).unwrap_or(0);
+    let start = pos.saturating_sub(window_chars);
+    let end = (pos + window_chars).min(text.len());
+    text[start..end].to_string()
+}
+
+async fn call_llm_for_coref(
+    inference_url: &str,
+    model: &str,
+    pronoun: &str,
+    window_text: &str,
+    candidates: &[(String, Vec<String>, Option<String>)],
+) -> Result<Option<String>> {
+    let candidate_block: String = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, (name, aliases, _))| {
+            if aliases.is_empty() {
+                format!("  {}. {name}", i + 1)
+            } else {
+                let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(2).collect();
+                format!("  {}. {name}  ({})", i + 1, shown.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let names_list: Vec<&str> = candidates.iter().map(|(n, _, _)| n.as_str()).collect();
+    let names_csv = names_list.join(", ");
+
+    let prompt = format!(
+        "In the following passage, who does \"{pronoun}\" refer to?\n\
+         \n\
+         Candidates:\n{candidate_block}\n\
+         \n\
+         Rules:\n\
+         - Answer with the EXACT canonical name from the list: {names_csv}\n\
+         - If uncertain or not determinable, answer \"none\"\n\
+         \n\
+         Return ONLY valid JSON: {{\"referent\": \"Exact Name\"}} or {{\"referent\": \"none\"}}\n\
+         \n\
+         Passage:\n{window_text}"
+    );
+
+    let raw = call_llm_for_relations(inference_url, model, &prompt).await?;
+
+    // Parse referent
+    let start = raw.find('{').unwrap_or(0);
+    let end = raw.rfind('}').map(|e| e + 1).unwrap_or(raw.len());
+    let json_str = &raw[start..end];
+    let v: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let referent = v["referent"].as_str().unwrap_or("none");
+    if referent == "none" || referent.is_empty() {
+        return Ok(None);
+    }
+    // Validate against candidate list
+    let valid = names_list.iter().any(|&n| n == referent);
+    Ok(if valid { Some(referent.to_string()) } else { None })
+}
+
 // ── extract-relations ─────────────────────────────────────────────────────────
 
 /// Lexical triggers indicating a family relation may be explicitly stated.
@@ -4020,6 +4430,8 @@ async fn cmd_extract_relations(
     commit: bool,
     list_models: bool,
     pull: Option<&str>,
+    rc_mode: bool,
+    rc_window: usize,
 ) -> Result<()> {
     use std::collections::HashMap;
     use std::io::Write;
@@ -4278,8 +4690,17 @@ async fn cmd_extract_relations(
         // EC pass: fires only when CC returns a non-empty quote; extracts the
         // structured {from, relation, to} triple from that anchor.
         //
-        // Mirrors the entity CC + EC refinement pipeline in ingestion.rs:
-        // CC is the cheap broad filter; EC is the focused, expensive extraction.
+        // In RC mode (--rc): bypass the CC scan entirely. Instead, anchor on each
+        // trigger-word occurrence in the text and expand a window of ±rc_window chars.
+        // Each window that contains ≥1 entity token goes directly to EC. Analogous to
+        // ingestion's EC pass (anchor on entity dossier); here we anchor on the
+        // relation word rather than the entity.
+        let rc_windows: Vec<(String, String)> = if rc_mode {
+            extract_rc_windows(&chunk.text, entities.as_slice(), narrator_name, rc_window)
+        } else {
+            vec![]
+        };
+
         let cc_prompt = build_cc_prompt(&chunk.text, &entity_block, &canonical_names, narrator_name);
         let cc_raw = call_llm_for_relations(inference_url, model, &cc_prompt).await?;
         let cc_quote = parse_cc_quote(&cc_raw);
@@ -4337,12 +4758,34 @@ async fn cmd_extract_relations(
                 && !SCHEMA_REL_WORDS.iter().any(|&r| ql.contains(r))
         });
 
-        let (relations_json, extracted) = if let Some(quote) = cc_quote_anchored {
+        // ── RC mode: run EC on each trigger window; CC already computed for review ─
+        let (relations_json, extracted) = if rc_mode && !rc_windows.is_empty() {
+            let mut all_rels = Vec::new();
+            let mut all_ec = String::new();
+            for (trigger, window) in &rc_windows {
+                let wl = window.to_lowercase();
+                // Skip non-schema triggers (aunt/uncle/etc.)
+                let is_non_schema = NON_SCHEMA_RELS.iter().any(|&r| wl.contains(r))
+                    && !SCHEMA_REL_WORDS.iter().any(|&r| wl.contains(r));
+                if is_non_schema {
+                    continue;
+                }
+                let ec_prompt = build_ec_prompt(window, &entity_block, &canonical_names, narrator_name);
+                let ec_raw = call_llm_for_relations(inference_url, model, &ec_prompt).await?;
+                let rels = parse_relation_response(&ec_raw, &canonical_names);
+                if !all_ec.is_empty() { all_ec.push('\n'); }
+                all_ec.push_str(&format!("[trigger: {trigger}] "));
+                all_ec.push_str(&ec_raw);
+                all_rels.extend(rels);
+            }
+            // Deduplicate relations
+            all_rels.sort();
+            all_rels.dedup();
+            (all_ec, all_rels)
+        } else if let Some(quote) = cc_quote_anchored {
             if quote_is_non_schema {
-                // Non-schema relation word (aunt/uncle/etc.) — skip EC
                 (String::from("[non-schema relation — EC skipped]"), vec![])
             } else {
-                // EC pass: extract structured relation from the quoted anchor
                 let ec_prompt = build_ec_prompt(quote, &entity_block, &canonical_names, narrator_name);
                 let ec_raw = call_llm_for_relations(inference_url, model, &ec_prompt).await?;
                 let rels = parse_relation_response(&ec_raw, &canonical_names);
@@ -4372,17 +4815,29 @@ async fn cmd_extract_relations(
             .copied()
             .collect();
         out.push_str(&triggers_hit.join(", "));
-        out.push_str("\n\n**CC pass (raw):**\n```json\n");
-        out.push_str(cc_raw.trim());
-        out.push_str("\n```\n\n**CC quote:** ");
-        match &cc_quote {
-            None => { out.push_str("none — EC pass skipped\n\n"); }
-            Some(q) => {
-                out.push_str(&format!("`{q}`  "));
-                if cc_quote_anchored.is_some() {
-                    out.push_str("✅ anchored → EC\n\n");
-                } else {
-                    out.push_str("⚠️ no entity name in quote → EC skipped\n\n");
+
+        if rc_mode {
+            out.push_str(&format!("\n\n**RC windows ({}):**\n", rc_windows.len()));
+            for (trigger, window) in &rc_windows {
+                out.push_str(&format!("- trigger `{trigger}`: `{}`\n",
+                    window.chars().take(120).collect::<String>().replace('\n', " ")));
+            }
+            out.push_str("\n\n**RC EC pass (raw):**\n```\n");
+            out.push_str(relations_json.trim());
+            out.push_str("\n```\n\n");
+        } else {
+            out.push_str("\n\n**CC pass (raw):**\n```json\n");
+            out.push_str(cc_raw.trim());
+            out.push_str("\n```\n\n**CC quote:** ");
+            match &cc_quote {
+                None => { out.push_str("none — EC pass skipped\n\n"); }
+                Some(q) => {
+                    out.push_str(&format!("`{q}`  "));
+                    if cc_quote_anchored.is_some() {
+                        out.push_str("✅ anchored → EC\n\n");
+                    } else {
+                        out.push_str("⚠️ no entity name in quote → EC skipped\n\n");
+                    }
                 }
             }
         }
@@ -4470,6 +4925,94 @@ async fn cmd_extract_relations(
 /// "Y's son Goolam", "married to Cissie"). A MENTION uses a role without
 /// naming the person ("my mother was pleased", "his uncle arrived").
 /// Only declarations proceed to EC.
+/// RC (Relation-Centric) extraction: for each occurrence of a trigger word in
+/// the chunk text, extract a window of ±`window_chars` characters around it.
+///
+/// Analogous to EC in ingestion: EC anchors on an entity and builds a dossier;
+/// RC anchors on a relation trigger and expands to capture surrounding context.
+///
+/// Returns a Vec of (trigger_word, window_text) pairs for windows that contain
+/// at least one entity name token — these go directly to the EC pass without a
+/// CC scan (the trigger position is the anchor).
+///
+/// This catches cases like "my brother Fazil contributing towards the domestic
+/// kitty" where the OCR fragments the sentence across a page break and the CC
+/// scan misses the trigger because it doesn't look like a complete sentence.
+fn extract_rc_windows(
+    text: &str,
+    entities: &[(String, Vec<String>)],
+    narrator_name: Option<&str>,
+    window_chars: usize,
+) -> Vec<(String, String)> {
+    let lower = text.to_lowercase();
+
+    // Build set of name tokens to check window entity presence
+    let name_tokens: Vec<String> = entities
+        .iter()
+        .flat_map(|(name, aliases)| {
+            std::iter::once(name.as_str())
+                .chain(aliases.iter().map(|a| a.as_str()))
+                .flat_map(|s| s.split_whitespace())
+                .filter(|w| w.len() >= 4)
+                .map(|w| w.to_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .chain(
+            narrator_name
+                .into_iter()
+                .flat_map(|n| n.split_whitespace())
+                .filter(|w| w.len() >= 4)
+                .map(|w| w.to_lowercase()),
+        )
+        .collect();
+
+    let mut results: Vec<(String, String)> = Vec::new();
+    let mut seen_windows: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for &trigger in FAMILY_TRIGGERS {
+        let mut search_start = 0;
+        while let Some(pos) = lower[search_start..].find(trigger) {
+            let abs_pos = search_start + pos;
+            let window_start = abs_pos.saturating_sub(window_chars);
+            let window_end = (abs_pos + trigger.len() + window_chars).min(text.len());
+
+            // Snap to UTF-8 character boundaries
+            let window_start = text
+                .char_indices()
+                .map(|(i, _)| i)
+                .filter(|&i| i <= window_start)
+                .last()
+                .unwrap_or(0);
+            let window_end = text
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain(std::iter::once(text.len()))
+                .filter(|&i| i >= window_end)
+                .next()
+                .unwrap_or(text.len());
+
+            let window = &text[window_start..window_end];
+            let window_lower = window.to_lowercase();
+
+            // Only proceed if at least one entity name token appears in this window
+            if name_tokens.iter().any(|t| window_lower.contains(t.as_str())) {
+                // Deduplicate by trigger+window content to avoid re-processing
+                let key = format!("{trigger}||{}", &window_lower[..window_lower.len().min(80)]);
+                if seen_windows.insert(key) {
+                    results.push((trigger.trim().to_string(), window.to_string()));
+                }
+            }
+
+            search_start = abs_pos + trigger.len();
+            if search_start >= lower.len() {
+                break;
+            }
+        }
+    }
+
+    results
+}
+
 fn build_cc_prompt(
     text: &str,
     entity_block: &str,

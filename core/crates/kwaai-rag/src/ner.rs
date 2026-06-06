@@ -213,8 +213,17 @@ pub fn resolve_pronouns(
         }
 
         // Strategy 1: most-recent entity with matching gender.
+        // For Neutral pronouns (they/them/their), only resolve if there is exactly
+        // one candidate with no gender set — otherwise too ambiguous.
+        let neutral_candidates: Vec<_> = entities
+            .iter()
+            .filter(|(_, g)| g.is_none())
+            .collect();
+        if gender == "Neutral" && neutral_candidates.len() != 1 {
+            continue; // ambiguous — skip
+        }
         let found = entities.iter().rev().find(|(_, g)| match g.as_deref() {
-            Some(eg) => eg == gender || gender == "Neutral",
+            Some(eg) => eg == gender,
             None => gender == "Neutral",
         });
 
@@ -228,6 +237,132 @@ pub fn resolve_pronouns(
     }
 
     resolved
+}
+
+/// A resolved pronoun/definite-description → entity mapping, produced by the coref pass.
+#[derive(Debug, Clone)]
+pub struct CorefResolution {
+    /// The surface form that was resolved ("he", "my grandfather", "Grandpa", etc.)
+    pub surface: String,
+    /// Canonical entity name it resolved to
+    pub entity_name: String,
+    /// Character byte offset of the surface form in the original text
+    pub offset: usize,
+    /// Confidence: 0.9 = rule-based, 0.7 = LLM-assisted
+    pub confidence: f32,
+    /// Source of the resolution
+    pub method: &'static str,
+}
+
+/// Definite descriptions and kinship roles that should be resolved to known entities.
+/// Each entry is (surface_pattern, alias_to_match_against_entity_aliases).
+/// The surface pattern is checked case-insensitively against chunk text.
+const DEFINITE_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("grandpa",       "grandpa"),
+    ("grandfather",   "grandfather"),
+    ("my grandfather","my grandfather"),
+    ("grandma",       "grandma"),
+    ("grandmother",   "grandmother"),
+    ("the author",    "author"),
+    ("the narrator",  "narrator"),
+    ("my mother",     "mother"),
+    ("his mother",    "mother"),
+    ("her mother",    "mother"),
+    ("my father",     "father"),
+    ("his father",    "father"),
+    ("her father",    "father"),
+    ("my wife",       "wife"),
+    ("his wife",      "wife"),
+    ("my husband",    "husband"),
+    ("her husband",   "husband"),
+];
+
+/// Resolve definite descriptions and kinship roles to known entities by alias matching.
+///
+/// For each surface form in `DEFINITE_DESCRIPTIONS` that appears in `text`, look up
+/// candidate entities (from the graph) whose aliases include the alias pattern. Returns
+/// a `CorefResolution` for each match.
+///
+/// `candidates` is a slice of `(name, aliases, gender)` from the graph's entity store,
+/// pre-filtered to Person entities in the chunk's context window.
+pub fn resolve_definite_descriptions(
+    text: &str,
+    candidates: &[(String, Vec<String>, Option<String>)],
+) -> Vec<CorefResolution> {
+    let text_lower = text.to_lowercase();
+    let mut results = Vec::new();
+
+    for &(surface, alias_pattern) in DEFINITE_DESCRIPTIONS {
+        let Some(offset) = text_lower.find(surface) else { continue };
+        // Find candidate whose aliases contain the alias_pattern
+        let matched = candidates.iter().find(|(_, aliases, _)| {
+            aliases.iter().any(|a| a.to_lowercase() == alias_pattern)
+        });
+        if let Some((name, _, _)) = matched {
+            results.push(CorefResolution {
+                surface: surface.to_string(),
+                entity_name: name.clone(),
+                offset,
+                confidence: 0.9,
+                method: "alias_match",
+            });
+        }
+    }
+    results
+}
+
+/// Resolve pronouns to entities using gender matching against graph candidates.
+///
+/// Extended version of the ingestion-time `resolve_pronouns` that accepts the
+/// richer `(name, aliases, gender)` candidate list from the graph rather than the
+/// global gender snapshot.
+pub fn resolve_pronouns_from_candidates(
+    text: &str,
+    candidates: &[(String, Vec<String>, Option<String>)],
+) -> Vec<CorefResolution> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (idx, &w) in words.iter().enumerate() {
+        let lower = core(w).to_lowercase();
+        let gender_wanted = if MALE_PRONOUNS.contains(&lower.as_str()) {
+            Some("Male")
+        } else if FEMALE_PRONOUNS.contains(&lower.as_str()) {
+            Some("Female")
+        } else if NEUTRAL_PRONOUNS.contains(&lower.as_str()) {
+            Some("Neutral")
+        } else {
+            None
+        };
+        let Some(gender) = gender_wanted else { continue };
+        if !seen.insert(lower.clone()) { continue }
+
+        // Find the most-recent candidate with matching gender (scan candidates in reverse,
+        // assuming they were ordered by recency / appearance position).
+        let matched = candidates.iter().rev().find(|(_, _, g)| match g.as_deref() {
+            Some(eg) => eg == gender || gender == "Neutral",
+            None     => gender == "Neutral",
+        });
+
+        if let Some((name, _, _)) = matched {
+            // Find byte offset of this pronoun in original text
+            let offset = text
+                .split_whitespace()
+                .take(idx + 1)
+                .map(|s| s.len() + 1)
+                .sum::<usize>()
+                .saturating_sub(w.len() + 1);
+            results.push(CorefResolution {
+                surface: w.to_string(),
+                entity_name: name.clone(),
+                offset,
+                confidence: 0.9,
+                method: "gender_nearest",
+            });
+        }
+    }
+    results
 }
 
 /// Scan forward through `words` past lowercase words to find the first capitalised

@@ -1823,6 +1823,44 @@ pub enum GraphAction {
         min_hits: usize,
     },
 
+    /// Resolve pronouns and definite descriptions to canonical Person entities,
+    /// then add chunk links to those entities in the graph.
+    ///
+    /// Three-tier approach:
+    ///   Tier 1 — alias matching ("Grandpa" → entity with alias "grandpa")
+    ///   Tier 1 — gender + nearest-Person pronoun resolution (rule-based, 0.9 confidence)
+    ///   Tier 2 — LLM-assisted for uncertain cases (EC refinement pattern, 0.7 confidence)
+    ///
+    /// Run BEFORE `extract-relations` — coref adds the narrator to pronoun chunks,
+    /// fixing the narrator-endpoint problem in the CC+EC relation extraction.
+    /// Also surfaces dedup candidates: if two entity stubs coref to the same referent
+    /// in the same chunk, they are likely duplicates.
+    Coref {
+        /// Inference URL for LLM tier (default: localhost:11434)
+        #[arg(long, default_value = "http://localhost:11434", value_name = "URL")]
+        inference_url: String,
+
+        /// Model for LLM-assisted tier
+        #[arg(long, default_value = "llama3.1:8b", value_name = "MODEL")]
+        model: String,
+
+        /// Fraction of chunks to process (default: all)
+        #[arg(long, default_value = "1.0", value_name = "FRAC")]
+        sample: f64,
+
+        /// ±N adjacent chunks to include when building candidate antecedents
+        #[arg(long, default_value = "2", value_name = "N")]
+        window: usize,
+
+        /// Write a review markdown file instead of printing to stdout
+        #[arg(long, value_name = "FILE")]
+        output: Option<std::path::PathBuf>,
+
+        /// Persist resolved links to the graph (default: dry-run only)
+        #[arg(long)]
+        commit: bool,
+    },
+
     /// Extract family relations between known co-occurring entities.
     /// Finds chunks linked to ≥ 2 graph entities, applies a lexical-trigger filter
     /// for family-relation keywords, then calls the LLM with a focused prompt that asks
@@ -1857,6 +1895,17 @@ pub enum GraphAction {
         /// Useful for pulling a model on a remote node via p2p:// URL before extraction.
         #[arg(long, value_name = "MODEL")]
         pull: Option<String>,
+
+        /// Use RC (Relation-Centric) extraction: anchor on each trigger-word occurrence
+        /// and expand a window of ±N chars around it instead of a CC scan of the whole
+        /// chunk. Analogous to the EC pass in ingestion — anchors on the relation word,
+        /// not the entity. Window size can be set with --rc-window (default 200).
+        #[arg(long)]
+        rc: bool,
+
+        /// Character window around each trigger word for RC extraction (default: 200)
+        #[arg(long, default_value = "200", value_name = "N")]
+        rc_window: usize,
     },
 
     /// Enforce relation integrity rules across the whole knowledge graph:
