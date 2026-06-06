@@ -5198,8 +5198,31 @@ async fn call_llm_for_relations(
     model: &str,
     prompt: &str,
 ) -> Result<String> {
+    // Wrap with an explicit tokio timeout (120s) that fires even when the TCP connection
+    // is still alive. The reqwest .timeout() alone is insufficient when the relay (p2p proxy)
+    // holds the socket open while the remote 70b is generating — the TCP connection never
+    // drops, so reqwest's deadline never fires.
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        call_llm_for_relations_inner(inference_url, model, prompt),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            // Timeout — return empty JSON so the caller gracefully returns no relation
+            Ok(String::from("{\"quote\":\"none\",\"relations\":[]}"))
+        }
+    }
+}
+
+async fn call_llm_for_relations_inner(
+    inference_url: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))  // 10 min — needed for large models (70b)
+        .timeout(std::time::Duration::from_secs(110))
         .build()?;
 
     #[derive(serde::Serialize)]
