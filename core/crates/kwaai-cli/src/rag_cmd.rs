@@ -5260,24 +5260,42 @@ async fn call_llm_for_relations_inner(
         options: Opts { temperature: 0.0, num_ctx: 8192 },
     };
 
-    let http_resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("calling LLM")?;
+    // Network errors (relay stream resets, connection refused) → return empty result
+    let http_resp = match client.post(&url).json(&body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("LLM call failed (network): {e} — skipping chunk");
+            return Ok(String::from("{\"quote\":\"none\",\"relations\":[]}"));
+        }
+    };
 
     let status = http_resp.status();
-    let raw_body = http_resp.bytes().await.context("reading LLM response body")?;
 
-    let resp: Resp = serde_json::from_slice(&raw_body)
-        .with_context(|| {
-            let preview = String::from_utf8_lossy(&raw_body[..raw_body.len().min(300)]);
-            format!("parsing LLM response (HTTP {status}): {preview}")
-        })?;
+    // Non-2xx responses (502 Bad Gateway from relay, etc.) → return empty result
+    if !status.is_success() {
+        tracing::warn!("LLM returned HTTP {status} — skipping chunk");
+        return Ok(String::from("{\"quote\":\"none\",\"relations\":[]}"));
+    }
+
+    let raw_body = match http_resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("LLM response body read failed: {e} — skipping chunk");
+            return Ok(String::from("{\"quote\":\"none\",\"relations\":[]}"));
+        }
+    };
+
+    let resp: Resp = match serde_json::from_slice(&raw_body) {
+        Ok(r) => r,
+        Err(_) => {
+            tracing::warn!("LLM response parse failed — skipping chunk");
+            return Ok(String::from("{\"quote\":\"none\",\"relations\":[]}"));
+        }
+    };
 
     if let Some(err) = resp.error {
-        anyhow::bail!("LLM error: {err}");
+        tracing::warn!("LLM error: {err} — skipping chunk");
+        return Ok(String::from("{\"quote\":\"none\",\"relations\":[]}"));
     }
 
     Ok(resp.message.map(|m| m.content).unwrap_or_default())
