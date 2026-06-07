@@ -126,8 +126,8 @@ write_progress "5-eval" "complete" "eval done → $OUTPUT_MD"
 # ── Step 6: extract key metrics and log ─────────────────────────────────────
 log "Step 6: logging to $LOG_FILE"
 
-RECALL=$(grep "Overall recall" "$OUTPUT_MD" 2>/dev/null | grep -oP '\d+\.\d+%' | head -1 || echo "?")
-KW_SCORE=$(grep "Overall recall" "$OUTPUT_MD" 2>/dev/null | grep -oP '\d+/\d+' | head -1 || echo "?")
+RECALL=$(grep "Overall recall" "$OUTPUT_MD" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+%' | head -1 || echo "?")
+KW_SCORE=$(grep "Overall recall" "$OUTPUT_MD" 2>/dev/null | grep -oE '[0-9]+/[0-9]+' | head -1 || echo "?")
 
 # Append to experiments log
 cat >> "$LOG_FILE" << ENTRY
