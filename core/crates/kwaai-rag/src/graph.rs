@@ -3386,21 +3386,26 @@ impl GraphStore {
             }
         }
 
-        let texts: Vec<String> = ids
-            .iter()
-            .map(|id| {
-                let n = &self.nodes[id];
-                Self::entity_embed_text(&n.name, &n.aliases, &n.description)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let embeddings = embed.embed_batch(&text_refs).await?;
+        // Embed in batches of 64 — sending all entities in one request OOMs Ollama on large graphs.
+        const EMBED_BATCH: usize = 64;
+        let mut all_embeddings: Vec<Vec<f32>> = Vec::with_capacity(ids.len());
+        for id_chunk in ids.chunks(EMBED_BATCH) {
+            let texts: Vec<String> = id_chunk
+                .iter()
+                .map(|id| {
+                    let n = &self.nodes[id];
+                    Self::entity_embed_text(&n.name, &n.aliases, &n.description)
+                })
+                .collect();
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let mut batch_embeddings = embed.embed_batch(&text_refs).await?;
+            all_embeddings.append(&mut batch_embeddings);
+        }
 
         let wtxn = self.db.begin_write()?;
         {
             let mut t = wtxn.open_table(ENTITIES_TABLE)?;
-            for (id, emb) in ids.iter().zip(embeddings) {
+            for (id, emb) in ids.iter().zip(all_embeddings) {
                 if let Some(node) = self.nodes.get_mut(id) {
                     node.embedding = emb;
                     let key = id.to_le_bytes();

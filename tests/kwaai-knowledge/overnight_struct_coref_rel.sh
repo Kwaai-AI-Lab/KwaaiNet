@@ -29,14 +29,32 @@ RE_INFERENCE_URL="$METRO_LINUX"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LABEL="D6_struct_coref_rel_${TIMESTAMP}"
 OUTPUT_MD="$RESULTS/eval_${LABEL}.md"
+PROGRESS_FILE="$HOME/.kwaainet/rag/D6/overnight-progress.json"
+
+RUN_START=$(date +%s)
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
+write_progress() {
+  local step="$1"
+  local status="$2"  # running | complete | failed
+  local detail="${3:-}"
+  local now
+  now=$(date +%s)
+  local elapsed=$(( now - RUN_START ))
+  mkdir -p "$(dirname "$PROGRESS_FILE")"
+  printf '{"step":"%s","status":"%s","detail":"%s","label":"%s","elapsed_secs":%d,"updated_at":"%s"}\n' \
+    "$step" "$status" "$detail" "$LABEL" "$elapsed" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    > "$PROGRESS_FILE"
+}
+
 # ── Step 0: record baseline ─────────────────────────────────────────────────
 log "Step 0: recording current graph state"
+write_progress "0-baseline" "running" "reading graph stats"
 BEFORE_ENTITIES=$(kwaainet rag graph stats --kb D6 2>/dev/null | grep Entities | awk '{print $2}')
 BEFORE_RELATIONS=$(kwaainet rag graph stats --kb D6 2>/dev/null | grep Relations | awk '{print $2}')
 log "Before: $BEFORE_ENTITIES entities, $BEFORE_RELATIONS relations"
+write_progress "0-baseline" "complete" "before: ${BEFORE_ENTITIES} entities, ${BEFORE_RELATIONS} relations"
 
 # ── Step 1: full rebuild with structure-aware schema ────────────────────────
 log "Step 1: full rebuild (destroy → ingest → graph build → seed → dedup)"
@@ -45,6 +63,7 @@ log "  doc-schema: $DOC_SCHEMA"
 log "  seed-file:  $SEED_FILE"
 log "  entity-types: Person only (matches D6_person_full baseline)"
 log "  no-relations: yes (CC+EC pass runs separately with 70b)"
+write_progress "1-rebuild" "running" "destroy → ingest → graph build → seed → dedup"
 
 kwaainet rag rebuild "$PDF" \
   --kb D6 \
@@ -59,18 +78,22 @@ kwaainet rag rebuild "$PDF" \
   --yes
 
 log "Step 1 complete"
+write_progress "1-rebuild" "complete" "rebuild finished"
 
 # ── Step 2: coref pass (Tier 1 only, fast) ──────────────────────────────────
 log "Step 2: coref pass (alias-match + gender-nearest, no LLM)"
+write_progress "2-coref" "running" "alias-match + gender-nearest, no LLM, window=2"
 kwaainet rag graph coref --kb D6 \
   --no-llm \
   --commit \
   --window 2 \
   --output "$RESULTS/coref_${LABEL}.md"
 log "Step 2 complete"
+write_progress "2-coref" "complete" "coref committed → $RESULTS/coref_${LABEL}.md"
 
 # ── Step 3: relation extraction with --commit ────────────────────────────────
 log "Step 3: CC+EC relation extraction (70b Q3 on metro A6000, --commit)"
+write_progress "3-relations" "running" "70b Q3 CC+EC on metro-linux, sample=1.0"
 kwaainet rag graph extract-relations --kb D6 \
   --inference-url "$RE_INFERENCE_URL" \
   --model "$RE_MODEL" \
@@ -78,22 +101,27 @@ kwaainet rag graph extract-relations --kb D6 \
   --commit \
   --output "$RESULTS/extract_rel_${LABEL}.md"
 log "Step 3 complete"
+write_progress "3-relations" "complete" "relations committed → $RESULTS/extract_rel_${LABEL}.md"
 
 # ── Step 4: graph health + stats ─────────────────────────────────────────────
 log "Step 4: graph stats after rebuild+coref+relations"
+write_progress "4-stats" "running" "graph score + stats"
 AFTER_ENTITIES=$(kwaainet rag graph stats --kb D6 2>/dev/null | grep Entities | awk '{print $2}')
 AFTER_RELATIONS=$(kwaainet rag graph stats --kb D6 2>/dev/null | grep Relations | awk '{print $2}')
 HEALTH=$(kwaainet rag graph score --kb D6 2>/dev/null | grep "Overall:" | awk '{print $2}')
 log "After:  $AFTER_ENTITIES entities, $AFTER_RELATIONS relations, health=$HEALTH"
+write_progress "4-stats" "complete" "entities=${AFTER_ENTITIES} relations=${AFTER_RELATIONS} health=${HEALTH}"
 
 # ── Step 5: eval ─────────────────────────────────────────────────────────────
 log "Step 5: full eval (40 questions, iterative mode)"
+write_progress "5-eval" "running" "40 questions, iterative mode"
 kwaainet rag eval \
   --questions "$EVAL_Q" \
   --kb D6 \
   --mode iterative \
   --output "$OUTPUT_MD"
 log "Step 5 complete — results at $OUTPUT_MD"
+write_progress "5-eval" "complete" "eval done → $OUTPUT_MD"
 
 # ── Step 6: extract key metrics and log ─────────────────────────────────────
 log "Step 6: logging to $LOG_FILE"
@@ -123,6 +151,7 @@ $(grep -E "q09|q12|q24|q26|q32|q38|Overall" "$OUTPUT_MD" 2>/dev/null | grep "|" 
 \`\`\`
 ENTRY
 
+write_progress "done" "complete" "recall=${RECALL} (${KW_SCORE})"
 log "Done. Experiment $LABEL complete."
 log "Recall: $RECALL  ($KW_SCORE)"
 log "Results: $OUTPUT_MD"
