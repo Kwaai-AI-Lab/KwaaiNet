@@ -15,8 +15,17 @@ SEED_FILE="$REPO/tests/kwaai-knowledge/d6_family_tree.yaml"
 EVAL_Q="$REPO/tests/kwaai-knowledge/d6_eval_questions.json"
 RESULTS="$REPO/tests/kwaai-knowledge/results"
 LOG_FILE="$REPO/tests/kwaai-knowledge/d6_experiments_log.md"
-METRO="p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs"
+# Multi-machine resource allocation (per user):
+#   metro-linux (A6000 48GB): 70b Q3_K_M for relation extraction
+#   metro-win   (A6000 48GB): 8b for entity extraction (parallel with metro-linux)
+#   local M4 Pro:             embedding only
+METRO_LINUX="p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs"
+METRO_WIN="p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE"
+# Graph build uses both metro machines for parallel 8b extraction
+BUILD_INFERENCE_URLS="${METRO_LINUX},${METRO_WIN}"
+# Relation extraction uses metro-linux 70b Q3 only
 RE_MODEL="llama3.1:70b-instruct-q3_K_M"
+RE_INFERENCE_URL="$METRO_LINUX"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LABEL="D6_struct_coref_rel_${TIMESTAMP}"
 OUTPUT_MD="$RESULTS/eval_${LABEL}.md"
@@ -44,8 +53,9 @@ kwaainet rag rebuild "$PDF" \
   --chunk-strategy paragraph \
   --entity-types Person \
   --no-relations \
-  --workers 4 \
+  --workers 8 \
   --model llama3.1:8b \
+  --inference-urls "$BUILD_INFERENCE_URLS" \
   --yes
 
 log "Step 1 complete"
@@ -62,7 +72,7 @@ log "Step 2 complete"
 # ── Step 3: relation extraction with --commit ────────────────────────────────
 log "Step 3: CC+EC relation extraction (70b Q3 on metro A6000, --commit)"
 kwaainet rag graph extract-relations --kb D6 \
-  --inference-url "$METRO" \
+  --inference-url "$RE_INFERENCE_URL" \
   --model "$RE_MODEL" \
   --sample 1.0 \
   --commit \
