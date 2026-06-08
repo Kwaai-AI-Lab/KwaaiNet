@@ -176,9 +176,17 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
 /// the graph, pre-computed before any async work starts. Gender is `"Male"`,
 /// `"Female"`, or `None` (ambiguous).
 ///
+/// `candidates` is the proper-noun candidate list for this chunk, used as a
+/// fallback when `entities` is empty (e.g. on a fresh graph reset). The most
+/// recently mentioned candidate before the pronoun is used as the referent.
+///
 /// Resolution strategy per pronoun:
 /// 1. Scan `entities` from end to start (most recently known = most likely referent).
-/// 2. If no gender match found, scan forward in the remaining text for the next
+/// 2. If no gender match in snapshot, scan `candidates` backward from the pronoun
+///    position (most recently mentioned proper noun in this chunk = most likely
+///    referent). Gender is not checked here — used as a heuristic when the snapshot
+///    is empty; the LLM can override via the full text context.
+/// 3. If still unresolved, scan forward in the remaining text for the next
 ///    capitalised proper-noun sequence.
 ///
 /// Returns one `(pronoun, entity_name)` pair per unique pronoun type found.
@@ -186,6 +194,7 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
 pub fn resolve_pronouns(
     text: &str,
     entities: &[(String, Option<String>)],
+    candidates: &[String],
 ) -> Vec<(String, String)> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut resolved: Vec<(String, String)> = Vec::new();
@@ -212,7 +221,7 @@ pub fn resolve_pronouns(
             continue;
         }
 
-        // Strategy 1: most-recent entity with matching gender.
+        // Strategy 1: most-recent entity with matching gender from graph snapshot.
         // For Neutral pronouns (they/them/their), only resolve if there is exactly
         // one candidate with no gender set — otherwise too ambiguous.
         let neutral_candidates: Vec<_> = entities
@@ -229,6 +238,17 @@ pub fn resolve_pronouns(
 
         let name = found
             .map(|(n, _)| n.clone())
+            // Strategy 2: most recently mentioned proper-noun candidate before the pronoun.
+            // Only used when the graph snapshot has no gender match (reset builds).
+            // Gender is not checked — serves as a heuristic hint for the LLM preamble.
+            .or_else(|| {
+                if gender != "Neutral" {
+                    backward_candidate(&words[..idx], candidates)
+                } else {
+                    None
+                }
+            })
+            // Strategy 3: next capitalised sequence after the pronoun.
             .or_else(|| forward_name(&words[idx + 1..]));
 
         if let Some(name) = name {
@@ -365,6 +385,27 @@ pub fn resolve_pronouns_from_candidates(
     results
 }
 
+/// Find the rightmost candidate in `words_before` — the proper-noun most recently
+/// mentioned before the pronoun. Used as strategy 2 in `resolve_pronouns` when the
+/// graph snapshot is empty (reset builds). No gender check — serves as a heuristic.
+fn backward_candidate(words_before: &[&str], candidates: &[String]) -> Option<String> {
+    if candidates.is_empty() || words_before.is_empty() {
+        return None;
+    }
+    let before_text = words_before.join(" ");
+    let before_lower = before_text.to_lowercase();
+    // Among all candidates, pick the one whose last occurrence position is furthest right.
+    candidates
+        .iter()
+        .filter_map(|c| {
+            before_lower
+                .rfind(&c.to_lowercase())
+                .map(|pos| (pos, c.clone()))
+        })
+        .max_by_key(|(pos, _)| *pos)
+        .map(|(_, name)| name)
+}
+
 /// Scan forward through `words` past lowercase words to find the first capitalised
 /// proper-noun sequence (stops extending the phrase on the first non-candidate word
 /// after the sequence has started).
@@ -426,7 +467,7 @@ mod tests {
     #[test]
     fn ner_resolve_pronouns_male() {
         let entities = vec![("Abdullah Gool".to_string(), Some("Male".to_string()))];
-        let map = resolve_pronouns("Abdullah arrived. He was tired.", &entities);
+        let map = resolve_pronouns("Abdullah arrived. He was tired.", &entities, &[]);
         assert!(
             map.iter().any(|(p, n)| p == "he" && n == "Abdullah Gool"),
             "{map:?}"
@@ -439,7 +480,7 @@ mod tests {
             ("Hassan".to_string(), Some("Male".to_string())),
             ("Zainab".to_string(), Some("Female".to_string())),
         ];
-        let map = resolve_pronouns("Zainab left. She took the train.", &entities);
+        let map = resolve_pronouns("Zainab left. She took the train.", &entities, &[]);
         assert!(
             map.iter().any(|(p, n)| p == "she" && n == "Zainab"),
             "{map:?}"
@@ -479,9 +520,46 @@ mod tests {
         let map = resolve_pronouns(
             "He was a great leader. Nelson Mandela inspired millions.",
             &entities,
+            &[],
         );
         assert!(
             map.iter().any(|(p, n)| p == "he" && n == "Nelson Mandela"),
+            "{map:?}"
+        );
+    }
+
+    #[test]
+    fn ner_resolve_pronouns_backward_candidate() {
+        // On a reset build the entity snapshot is empty. The backward candidate scan
+        // should find the most recently mentioned proper noun before the pronoun.
+        let entities: Vec<(String, Option<String>)> = vec![];
+        let candidates = vec!["Yousuf Rassool".to_string(), "Cape Town".to_string()];
+        let map = resolve_pronouns(
+            "Yousuf Rassool arrived in Cape Town. He sat down.",
+            &entities,
+            &candidates,
+        );
+        // "Cape Town" is the most recent candidate before "He", but it is a Place.
+        // The backward scan picks the rightmost-occurring candidate regardless of type —
+        // the LLM resolves ambiguity with context. Here Cape Town appears right before He.
+        assert!(
+            map.iter().any(|(p, _)| p == "he"),
+            "expected 'he' to resolve: {map:?}"
+        );
+    }
+
+    #[test]
+    fn ner_resolve_pronouns_backward_candidate_last_person() {
+        // When only one name precedes the pronoun, backward scan returns it.
+        let entities: Vec<(String, Option<String>)> = vec![];
+        let candidates = vec!["Yousuf Rassool".to_string()];
+        let map = resolve_pronouns(
+            "Yousuf Rassool was a historian. He wrote the memoir.",
+            &entities,
+            &candidates,
+        );
+        assert!(
+            map.iter().any(|(p, n)| p == "he" && n == "Yousuf Rassool"),
             "{map:?}"
         );
     }

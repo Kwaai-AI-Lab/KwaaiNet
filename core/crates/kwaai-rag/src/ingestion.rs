@@ -424,7 +424,20 @@ pub async fn extract_and_store_entities_pub(
                 }
             }
 
-            let pronoun_map = ner::resolve_pronouns(&text, &gender_context);
+            // Pass candidates to the pronoun resolver so it can use backward text scan
+            // as a fallback when the graph snapshot is empty (reset builds).
+            let pronoun_map = ner::resolve_pronouns(&text, &gender_context, &candidates);
+
+            // Merge resolved pronoun targets into candidates so the LLM sees them in
+            // the classification list, not only in the KNOWN COREFERENCES preamble.
+            // This ensures a chunk like "He sat down." still produces a Person entity
+            // when the pronoun resolved to a known name.
+            for (_, name) in &pronoun_map {
+                if !candidates.contains(name) {
+                    candidates.push(name.clone());
+                }
+            }
+
             let hints_opt: Option<&[String]> = if gliner_hints.is_empty() {
                 None
             } else {

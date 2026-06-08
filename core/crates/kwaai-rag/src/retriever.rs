@@ -623,6 +623,7 @@ mod tests {
                 evidence: Vec::new(),
                 gender: None,
                 fields: Default::default(),
+                confidence: 0.0,
             })
             .unwrap();
         (store, dir)
