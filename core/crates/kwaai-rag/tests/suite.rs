@@ -58,6 +58,7 @@ fn make_entity(name: &str, entity_type: &str) -> EntityNode {
         gender: None,
         evidence: vec![],
         fields: HashMap::new(),
+        confidence: 0.0,
     }
 }
 
@@ -72,6 +73,7 @@ fn make_chunk_meta(text: &str) -> ChunkMeta {
         section_name: None,
         skip_extraction: false,
         section_note: None,
+        section_type: Default::default(),
     }
 }
 
@@ -364,6 +366,7 @@ fn paragraph_schema_skip_extraction() {
         skip: true,
         narrator_note: None,
         index_seeds: false,
+        section_type: Default::default(),
     });
 
     // Use a small chunk_size so the main-content paragraph and the index
@@ -621,6 +624,7 @@ fn match_section_case_insensitive() {
         skip: true,
         narrator_note: None,
         index_seeds: false,
+        section_type: Default::default(),
     });
     let sec = match_section("APPENDIX A — Documents", &schema);
     assert!(sec.is_some(), "should match case-insensitively");
@@ -636,6 +640,7 @@ fn match_section_no_match_returns_none() {
         skip: false,
         narrator_note: None,
         index_seeds: false,
+        section_type: Default::default(),
     });
     assert!(match_section("Introduction", &schema).is_none());
 }
@@ -649,12 +654,14 @@ fn match_section_first_pattern_wins() {
         skip: false,
         narrator_note: Some("first".to_string()),
         index_seeds: false,
+        section_type: Default::default(),
     });
     schema.sections.push(SectionDef {
         pattern: "chapter one".to_string(),
         skip: true,
         narrator_note: Some("second".to_string()),
         index_seeds: false,
+        section_type: Default::default(),
     });
     let sec = match_section("Chapter One", &schema).unwrap();
     assert_eq!(
@@ -746,6 +753,7 @@ fn doc_schema_has_index_seeds() {
         skip: true,
         narrator_note: None,
         index_seeds: true,
+        section_type: Default::default(),
     });
     assert!(schema.has_index_seeds());
 
@@ -1357,6 +1365,7 @@ fn score_entity_unknown_type_zero_type_score() {
         gender: None,
         evidence: vec![],
         fields: HashMap::new(),
+        confidence: 0.0,
     };
     let score = score_entity(&node, &[]);
     assert_eq!(
@@ -1383,6 +1392,7 @@ fn score_entity_concept_with_good_description() {
         gender: None,
         evidence: vec![],
         fields: HashMap::new(),
+        confidence: 0.0,
     };
     let score = score_entity(&node, &[]);
     assert!(
@@ -1412,6 +1422,7 @@ fn score_entity_person_with_fields() {
         gender: None,
         evidence: vec![],
         fields,
+        confidence: 0.0,
     };
     let score = score_entity(&node, &[]);
     // 2/10 fields = 0.2 summary_score
@@ -1439,6 +1450,7 @@ fn score_entity_relation_score_with_all_groups_matched() {
         gender: None,
         evidence: vec![],
         fields: HashMap::new(),
+        confidence: 0.0,
     };
     let score = score_entity(&node, &rels);
     assert!(
@@ -1465,6 +1477,7 @@ fn score_entity_peripheral_entity_lower_bar() {
         gender: None,
         evidence: vec![],
         fields: HashMap::new(),
+        confidence: 0.0,
     };
     let score = score_entity(&node, &rels);
     assert!(
@@ -1488,6 +1501,7 @@ fn score_entity_overall_is_average() {
         gender: None,
         evidence: vec![],
         fields: HashMap::new(),
+        confidence: 0.0,
     };
     let score = score_entity(&node, &[]);
     // overall = (0.0 + 0.0 + neutral_relation) / 3
@@ -1519,6 +1533,7 @@ fn meta(doc: &str, idx: u32, text: &str) -> ChunkMeta {
         section_name: None,
         skip_extraction: false,
         section_note: None,
+        section_type: Default::default(),
     }
 }
 

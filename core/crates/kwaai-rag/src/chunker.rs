@@ -135,6 +135,7 @@ fn split_character(text: &str, doc_name: &str, cfg: &ChunkConfig) -> Vec<Chunk> 
 
 // ── Paragraph strategy ────────────────────────────────────────────────────────
 
+#[allow(clippy::type_complexity)]
 fn split_paragraph(
     text: &str,
     doc_name: &str,
@@ -156,7 +157,13 @@ fn split_paragraph(
     let mut cur_section_type = crate::doc_schema::SectionType::Main;
 
     // (text, section_name, skip, note, section_type) — content units only, in order.
-    let mut content_units: Vec<(String, Option<String>, bool, Option<String>, crate::doc_schema::SectionType)> = Vec::new();
+    let mut content_units: Vec<(
+        String,
+        Option<String>,
+        bool,
+        Option<String>,
+        crate::doc_schema::SectionType,
+    )> = Vec::new();
 
     for (is_heading, unit_text) in &units {
         if *is_heading {
@@ -254,19 +261,49 @@ fn split_paragraph(
 
 /// Pack content units into chunks up to `chunk_size`, carrying the section
 /// metadata of the FIRST unit that opens each packed chunk.
+#[allow(clippy::type_complexity)]
 fn pack_chunks_with_meta(
-    units: &[(String, Option<String>, bool, Option<String>, crate::doc_schema::SectionType)],
+    units: &[(
+        String,
+        Option<String>,
+        bool,
+        Option<String>,
+        crate::doc_schema::SectionType,
+    )],
     cfg: &ChunkConfig,
-) -> Vec<(String, Option<String>, bool, Option<String>, crate::doc_schema::SectionType)> {
-    type Meta = (Option<String>, bool, Option<String>, crate::doc_schema::SectionType);
-    let mut result: Vec<(String, Option<String>, bool, Option<String>, crate::doc_schema::SectionType)> = Vec::new();
+) -> Vec<(
+    String,
+    Option<String>,
+    bool,
+    Option<String>,
+    crate::doc_schema::SectionType,
+)> {
+    type Meta = (
+        Option<String>,
+        bool,
+        Option<String>,
+        crate::doc_schema::SectionType,
+    );
+    let mut result: Vec<(
+        String,
+        Option<String>,
+        bool,
+        Option<String>,
+        crate::doc_schema::SectionType,
+    )> = Vec::new();
     let mut parts: Vec<String> = Vec::new();
     let mut cur_len = 0usize;
     let mut cur_meta: Meta = (None, false, None, crate::doc_schema::SectionType::Main);
 
     let emit = |parts: &mut Vec<String>,
                 cur_meta: &Meta,
-                result: &mut Vec<(String, Option<String>, bool, Option<String>, crate::doc_schema::SectionType)>| {
+                result: &mut Vec<(
+        String,
+        Option<String>,
+        bool,
+        Option<String>,
+        crate::doc_schema::SectionType,
+    )>| {
         if !parts.is_empty() {
             result.push((
                 parts.join("\n"),
@@ -296,11 +333,15 @@ fn pack_chunks_with_meta(
             emit(&mut parts, &cur_meta, &mut result);
 
             // Overlap prefix from tail of emitted chunk — but only within the same zone.
-            let prev_zone_same = result.last()
+            let prev_zone_same = result
+                .last()
                 .map(|(_, _, _, _, t)| t.same_window_zone(sec_type))
                 .unwrap_or(false);
             let overlap = if prev_zone_same {
-                let prev_text = result.last().map(|(t, _, _, _, _)| t.as_str()).unwrap_or("");
+                let prev_text = result
+                    .last()
+                    .map(|(t, _, _, _, _)| t.as_str())
+                    .unwrap_or("");
                 let prev_chars: Vec<char> = prev_text.chars().collect();
                 let ol_start = prev_chars.len().saturating_sub(cfg.chunk_overlap);
                 prev_chars[ol_start..].iter().collect::<String>()

@@ -222,12 +222,13 @@ pub async fn extract_and_store_entities_pub(
     // EC-refine-only: skip CC extraction, just re-score and run refinement pass.
     if graph_cfg.ec_refine_only {
         println!("  EC refine-only: skipping CC extraction, re-scoring existing entities");
-        let mut g = graph_cfg.store.lock().unwrap();
-        g.sync_evidence();
-        if let Err(e) = g.score_all_confidences() {
-            warn!("confidence scoring failed: {e}");
+        {
+            let mut g = graph_cfg.store.lock().unwrap();
+            g.sync_evidence();
+            if let Err(e) = g.score_all_confidences() {
+                warn!("confidence scoring failed: {e}");
+            }
         }
-        drop(g);
         if graph_cfg.ec_refine_threshold > 0.0 {
             refine_low_confidence_entities(chunks, chunk_ids, embed, graph_cfg).await;
         }
@@ -778,71 +779,327 @@ fn apply_doc_meta(
 /// apply identical filtering.
 pub(crate) fn clean_extracted_name(raw: &str) -> Option<String> {
     const GENERIC_ROLE_BLOCKLIST: &[&str] = &[
-        "granny","gran","grandma","grandfather","grandpa","gramps","dad","daddy",
-        "father","mother","mom","mum","mama","uncle","auntie","aunt","cousin",
-        "son","daughter","me","i","he","she","they","we","the narrator","the author",
-        "narrator","author","herrenvolk","herrenvolkism","apartheid","coloured",
-        "coloureds","blacks","whites","white","black","indians","africans","europeans",
-        "non-white","non-whites","non-european","cape malay","cape malay_indian",
-        "pathan","pathans","xhosa","slavic","hungarian","jewish","aryan","moslem",
-        "muslim","nationalist","nationalists","german","french","russian","british",
-        "english","african","indian","arab","arabs","chinese","boer","bantu","coolie",
-        "coolies","malay","malays","griqua","hindu","hindus","irish","japanese",
-        "norwegian","sikh","turks","zulus","afrikaner","afrikaners","west indians",
-        "south african","cape coloured","non-white muslim south africans","socialist",
-        "marxist","labour","communist","fascist","nazi","nats","native","christmas",
-        "eid","eid mubarak","islam","ramadan","victorian","history","science",
-        "schooling","mother tongue","everything","something","nothing","anything",
-        "there","here","this","that","these","those","each","every","all","none",
-        "some","any","both","one","many","such","how","when","moreover","sometime",
-        "alas","half","apart","being","blot","do","everyone","figure","found","great",
-        "had","hatless","just","later","little","much","needless","next","now","ob",
-        "perh","perhaps","peru","piccadilly","regrettably","several","shyly","soon",
-        "still","tell","theoretically","v1","va","whether","wo","worse","poor abdul",
-        "flash","dandy","lobo","baby","youth","legless","muddy","polly","tiny","vic",
-        "bill","solly","nina","kismets","zoology","cadbury","freubel",
-        "south african indian","head of british muslims","non-white councillors",
-        "prof","prof.","prof_","gools","rassools","goldings","killers","stranglers",
-        "royal family","mr.","mr_","rev.","rev_","dr.","dr_","god","allah","lord",
-        "devil","fate","nature","y_allah","y allah","hadji","haji","hajj","maulvi",
-        "molvi","imam","sheikh","black maria","homer","longfellow","wordsworth",
-        "robert browning","robert louis stevenson","john milton","mark twain",
-        "charles dickens","shakespeare","william shakespeare","bernard shaw","shaw",
-        "chekov","chekhov","dostoevsky","gogol","gorki","emile zola","sinclair lewis",
-        "steinbeck","jack london","damon runyon","tarzan","buck rogers","buck jones",
-        "hopalong cassidy","roy rogers","gene autry","bob steele","cobra woman",
-        "brick bradford","globi","ali baba","tsotsi","banquo","mephistopheles",
-        "dorian gray","pharaoh cheops","hunchback of notre dame","goofy",
-        "captain america","captain marvel","captain britain","superman","batman",
-        "spiderman","spider-man","hamlet","cassandra","mommy","mummy","then","tb",
-        "cac","gandhian","berlin hitler","mom ayesha",
-        "european native coloured indian malay griqua","lot",
+        "granny",
+        "gran",
+        "grandma",
+        "grandfather",
+        "grandpa",
+        "gramps",
+        "dad",
+        "daddy",
+        "father",
+        "mother",
+        "mom",
+        "mum",
+        "mama",
+        "uncle",
+        "auntie",
+        "aunt",
+        "cousin",
+        "son",
+        "daughter",
+        "me",
+        "i",
+        "he",
+        "she",
+        "they",
+        "we",
+        "the narrator",
+        "the author",
+        "narrator",
+        "author",
+        "herrenvolk",
+        "herrenvolkism",
+        "apartheid",
+        "coloured",
+        "coloureds",
+        "blacks",
+        "whites",
+        "white",
+        "black",
+        "indians",
+        "africans",
+        "europeans",
+        "non-white",
+        "non-whites",
+        "non-european",
+        "cape malay",
+        "cape malay_indian",
+        "pathan",
+        "pathans",
+        "xhosa",
+        "slavic",
+        "hungarian",
+        "jewish",
+        "aryan",
+        "moslem",
+        "muslim",
+        "nationalist",
+        "nationalists",
+        "german",
+        "french",
+        "russian",
+        "british",
+        "english",
+        "african",
+        "indian",
+        "arab",
+        "arabs",
+        "chinese",
+        "boer",
+        "bantu",
+        "coolie",
+        "coolies",
+        "malay",
+        "malays",
+        "griqua",
+        "hindu",
+        "hindus",
+        "irish",
+        "japanese",
+        "norwegian",
+        "sikh",
+        "turks",
+        "zulus",
+        "afrikaner",
+        "afrikaners",
+        "west indians",
+        "south african",
+        "cape coloured",
+        "non-white muslim south africans",
+        "socialist",
+        "marxist",
+        "labour",
+        "communist",
+        "fascist",
+        "nazi",
+        "nats",
+        "native",
+        "christmas",
+        "eid",
+        "eid mubarak",
+        "islam",
+        "ramadan",
+        "victorian",
+        "history",
+        "science",
+        "schooling",
+        "mother tongue",
+        "everything",
+        "something",
+        "nothing",
+        "anything",
+        "there",
+        "here",
+        "this",
+        "that",
+        "these",
+        "those",
+        "each",
+        "every",
+        "all",
+        "none",
+        "some",
+        "any",
+        "both",
+        "one",
+        "many",
+        "such",
+        "how",
+        "when",
+        "moreover",
+        "sometime",
+        "alas",
+        "half",
+        "apart",
+        "being",
+        "blot",
+        "do",
+        "everyone",
+        "figure",
+        "found",
+        "great",
+        "had",
+        "hatless",
+        "just",
+        "later",
+        "little",
+        "much",
+        "needless",
+        "next",
+        "now",
+        "ob",
+        "perh",
+        "perhaps",
+        "peru",
+        "piccadilly",
+        "regrettably",
+        "several",
+        "shyly",
+        "soon",
+        "still",
+        "tell",
+        "theoretically",
+        "v1",
+        "va",
+        "whether",
+        "wo",
+        "worse",
+        "poor abdul",
+        "flash",
+        "dandy",
+        "lobo",
+        "baby",
+        "youth",
+        "legless",
+        "muddy",
+        "polly",
+        "tiny",
+        "vic",
+        "bill",
+        "solly",
+        "nina",
+        "kismets",
+        "zoology",
+        "cadbury",
+        "freubel",
+        "south african indian",
+        "head of british muslims",
+        "non-white councillors",
+        "prof",
+        "prof.",
+        "prof_",
+        "gools",
+        "rassools",
+        "goldings",
+        "killers",
+        "stranglers",
+        "royal family",
+        "mr.",
+        "mr_",
+        "rev.",
+        "rev_",
+        "dr.",
+        "dr_",
+        "god",
+        "allah",
+        "lord",
+        "devil",
+        "fate",
+        "nature",
+        "y_allah",
+        "y allah",
+        "hadji",
+        "haji",
+        "hajj",
+        "maulvi",
+        "molvi",
+        "imam",
+        "sheikh",
+        "black maria",
+        "homer",
+        "longfellow",
+        "wordsworth",
+        "robert browning",
+        "robert louis stevenson",
+        "john milton",
+        "mark twain",
+        "charles dickens",
+        "shakespeare",
+        "william shakespeare",
+        "bernard shaw",
+        "shaw",
+        "chekov",
+        "chekhov",
+        "dostoevsky",
+        "gogol",
+        "gorki",
+        "emile zola",
+        "sinclair lewis",
+        "steinbeck",
+        "jack london",
+        "damon runyon",
+        "tarzan",
+        "buck rogers",
+        "buck jones",
+        "hopalong cassidy",
+        "roy rogers",
+        "gene autry",
+        "bob steele",
+        "cobra woman",
+        "brick bradford",
+        "globi",
+        "ali baba",
+        "tsotsi",
+        "banquo",
+        "mephistopheles",
+        "dorian gray",
+        "pharaoh cheops",
+        "hunchback of notre dame",
+        "goofy",
+        "captain america",
+        "captain marvel",
+        "captain britain",
+        "superman",
+        "batman",
+        "spiderman",
+        "spider-man",
+        "hamlet",
+        "cassandra",
+        "mommy",
+        "mummy",
+        "then",
+        "tb",
+        "cac",
+        "gandhian",
+        "berlin hitler",
+        "mom ayesha",
+        "european native coloured indian malay griqua",
+        "lot",
     ];
     const ROLE_PREFIXES: &[&str] = &[
-        "uncle ","auntie ","aunt ","granny ","gran ","grandpa ","grandma ",
-        "grandfather ","grandmother ","sis ","boeta ","boetie ",
+        "uncle ",
+        "auntie ",
+        "aunt ",
+        "granny ",
+        "gran ",
+        "grandpa ",
+        "grandma ",
+        "grandfather ",
+        "grandmother ",
+        "sis ",
+        "boeta ",
+        "boetie ",
     ];
     const SENTENCE_STARTERS: &[&str] = &[
-        "when","where","while","that","this","those","these","what","which","who",
-        "whom","whose","how","why","if","although","because","since","after","before",
-        "as","and","but","or","nor","so","yet","for","the","a","an",
+        "when", "where", "while", "that", "this", "those", "these", "what", "which", "who", "whom",
+        "whose", "how", "why", "if", "although", "because", "since", "after", "before", "as",
+        "and", "but", "or", "nor", "so", "yet", "for", "the", "a", "an",
     ];
     const TRAILING_JUNK: &[&str] = &[
-        "please","thank","thanks","yes","no","too","also","only","said","asked",
-        "replied","told","wrote","was","is","are","the","a","an","and","but","or",
-        "for","to","of","in","on","at","with","from","by","as","his","her","their",
+        "please", "thank", "thanks", "yes", "no", "too", "also", "only", "said", "asked",
+        "replied", "told", "wrote", "was", "is", "are", "the", "a", "an", "and", "but", "or",
+        "for", "to", "of", "in", "on", "at", "with", "from", "by", "as", "his", "her", "their",
     ];
 
     let name_lc = raw.to_lowercase();
     let name_lc = name_lc.trim();
-    if GENERIC_ROLE_BLOCKLIST.contains(&name_lc) { return None; }
+    if GENERIC_ROLE_BLOCKLIST.contains(&name_lc) {
+        return None;
+    }
     let word_count = name_lc.split_whitespace().count();
     // The extraction prompt instructs ≤5 words; anything over 7 is an NER phrase-merge
     // artifact where the LLM concatenated a list of names into one entity.
-    if word_count > 7 { return None; }
-    if word_count <= 3 && ROLE_PREFIXES.iter().any(|p| name_lc.starts_with(p)) { return None; }
+    if word_count > 7 {
+        return None;
+    }
+    if word_count <= 3 && ROLE_PREFIXES.iter().any(|p| name_lc.starts_with(p)) {
+        return None;
+    }
     let first_word = name_lc.split_whitespace().next().unwrap_or("");
-    if SENTENCE_STARTERS.contains(&first_word) { return None; }
+    if SENTENCE_STARTERS.contains(&first_word) {
+        return None;
+    }
 
     // OCR underscore normalisation: _Word_ → (Word), _s → 's, M_ → M., else strip
     let normalised = {
@@ -856,19 +1113,26 @@ pub(crate) fn clean_extracted_name(raw: &str) -> Option<String> {
                     if b[ii] == b'_' && (ii == 0 || b[ii - 1] == b' ') {
                         let mut jj = ii + 1;
                         while jj < b.len() {
-                            if b[jj] == b'_' && jj > ii + 1 && (jj + 1 >= b.len() || b[jj + 1] == b' ') {
-                                found = Some((ii, jj)); break;
+                            if b[jj] == b'_'
+                                && jj > ii + 1
+                                && (jj + 1 >= b.len() || b[jj + 1] == b' ')
+                            {
+                                found = Some((ii, jj));
+                                break;
                             }
                             jj += 1;
                         }
                     }
-                    if found.is_some() { break; }
+                    if found.is_some() {
+                        break;
+                    }
                     ii += 1;
                 }
                 match found {
                     Some((open, close)) => {
                         let content = result[open + 1..close].to_string();
-                        result = format!("{}({}){}", &result[..open], content, &result[close + 1..]);
+                        result =
+                            format!("{}({}){}", &result[..open], content, &result[close + 1..]);
                     }
                     None => break,
                 }
@@ -885,12 +1149,17 @@ pub(crate) fn clean_extracted_name(raw: &str) -> Option<String> {
                 if i + 1 < n && chars[i + 1] == 's' {
                     let after = i + 2;
                     if after >= n || !chars[after].is_alphabetic() || chars[after].is_uppercase() {
-                        s.push('\''); s.push('s'); i += 2; continue;
+                        s.push('\'');
+                        s.push('s');
+                        i += 2;
+                        continue;
                     }
                 }
                 let prev_alpha = s.chars().last().map(|p| p.is_alphabetic()).unwrap_or(false);
                 let next_break = i + 1 >= n || chars[i + 1] == ' ' || chars[i + 1].is_uppercase();
-                if prev_alpha && next_break { s.push('.'); }
+                if prev_alpha && next_break {
+                    s.push('.');
+                }
             } else {
                 s.push(c);
             }
@@ -911,15 +1180,23 @@ pub(crate) fn clean_extracted_name(raw: &str) -> Option<String> {
     let mut clean = after_poss;
     loop {
         let words: Vec<&str> = clean.split_whitespace().collect();
-        if words.len() <= 1 { break; }
+        if words.len() <= 1 {
+            break;
+        }
         let last = words.last().unwrap().to_lowercase();
         if TRAILING_JUNK.contains(&last.as_str()) {
             let trim_to = clean.len() - words.last().unwrap().len();
             clean = clean[..trim_to].trim_end().to_string();
-        } else { break; }
+        } else {
+            break;
+        }
     }
 
-    if clean.is_empty() { None } else { Some(clean) }
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
 }
 
 // ── Entity-centric extraction ─────────────────────────────────────────────────
@@ -947,6 +1224,7 @@ fn window_text(chunks: &[Chunk], center: usize, window: usize) -> String {
 ///            chunk windows, make one focused LLM call, and store the result.
 ///
 /// Requires `--gliner-url`. Prints comparison metrics on completion.
+#[allow(clippy::type_complexity)]
 async fn extract_entity_centric(
     chunks: &[Chunk],
     _chunk_ids: &[i64],
@@ -1008,25 +1286,41 @@ async fn extract_entity_centric(
             while let Some(res) = rx.recv().await {
                 let mut g = match drain_store.lock() {
                     Ok(g) => g,
-                    Err(_) => { warn!("graph mutex poisoned"); continue; }
+                    Err(_) => {
+                        warn!("graph mutex poisoned");
+                        continue;
+                    }
                 };
                 for (extracted, emb) in res.entities.iter().zip(res.embeddings.iter()) {
                     let Some(clean_name) = clean_extracted_name(&extracted.name) else {
                         continue;
                     };
                     let fields: std::collections::HashMap<String, crate::graph::FieldValue> =
-                        extracted.fields.iter().map(|(k, v)| {
-                            (k.clone(), crate::graph::FieldValue {
-                                value: v.clone(),
-                                evidence_chunk_ids: vec![],
-                                confidence: 1.0,
+                        extracted
+                            .fields
+                            .iter()
+                            .map(|(k, v)| {
+                                (
+                                    k.clone(),
+                                    crate::graph::FieldValue {
+                                        value: v.clone(),
+                                        evidence_chunk_ids: vec![],
+                                        confidence: 1.0,
+                                    },
+                                )
                             })
-                        }).collect();
+                            .collect();
                     let description = {
                         let from_fields = crate::graph::description_from_fields(
-                            &clean_name, &extracted.entity_type, &fields,
+                            &clean_name,
+                            &extracted.entity_type,
+                            &fields,
                         );
-                        if from_fields.is_empty() { extracted.description.clone() } else { from_fields }
+                        if from_fields.is_empty() {
+                            extracted.description.clone()
+                        } else {
+                            from_fields
+                        }
                     };
                     let eid = crate::graph::entity_id(&clean_name, &extracted.entity_type);
                     let node = crate::graph::EntityNode {
@@ -1072,9 +1366,12 @@ async fn extract_entity_centric(
         for &ci in source_indices.iter().take(MAX_SOURCE_CHUNKS) {
             let start = ci.saturating_sub(cw);
             let end = (ci + cw + 1).min(total);
-            for idx in start..end { seen.insert(idx); }
+            for idx in start..end {
+                seen.insert(idx);
+            }
         }
-        let context: String = seen.iter()
+        let context: String = seen
+            .iter()
             .map(|&ci| chunks[ci].text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n[...]\n\n");
@@ -1092,27 +1389,57 @@ async fn extract_entity_centric(
             let et_refs: Vec<&str> = et_owned.iter().map(|s| s.as_str()).collect();
 
             let (mut entities, _) = match extract_from_text(
-                &context, &candidates, &[], None, url, &model,
-                &et_refs, no_relations, Some(&hints),
-            ).await {
+                &context,
+                &candidates,
+                &[],
+                None,
+                url,
+                &model,
+                &et_refs,
+                no_relations,
+                Some(&hints),
+            )
+            .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     warn!("ec extract error for '{entity_name}': {e}");
-                    let _ = tx.send(ChunkResult { chunk_id: 0, entities: vec![], relations: vec![], embeddings: vec![] }).await;
+                    let _ = tx
+                        .send(ChunkResult {
+                            chunk_id: 0,
+                            entities: vec![],
+                            relations: vec![],
+                            embeddings: vec![],
+                        })
+                        .await;
                     return;
                 }
             };
 
-            let texts: Vec<String> = entities.iter()
+            let texts: Vec<String> = entities
+                .iter()
                 .map(|e| format!("{}: {}", e.name, e.description))
                 .collect();
-            let embeddings = match embed.embed_batch(&texts.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await {
+            let embeddings = match embed
+                .embed_batch(&texts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .await
+            {
                 Ok(v) => v,
-                Err(e) => { warn!("ec embed error: {e}"); vec![] }
+                Err(e) => {
+                    warn!("ec embed error: {e}");
+                    vec![]
+                }
             };
             entities.truncate(embeddings.len());
 
-            let _ = tx.send(ChunkResult { chunk_id: 0, entities, relations: vec![], embeddings }).await;
+            let _ = tx
+                .send(ChunkResult {
+                    chunk_id: 0,
+                    entities,
+                    relations: vec![],
+                    embeddings,
+                })
+                .await;
         });
     }
 
@@ -1170,11 +1497,20 @@ async fn refine_low_confidence_entities(
             .filter(|n| {
                 n.confidence < threshold
                     && (cfg.entity_types.is_empty()
-                        || cfg.entity_types.iter().any(|t| {
-                            t.eq_ignore_ascii_case(&n.entity_type)
-                        }))
+                        || cfg
+                            .entity_types
+                            .iter()
+                            .any(|t| t.eq_ignore_ascii_case(&n.entity_type)))
             })
-            .map(|n| (n.id, n.name.clone(), n.entity_type.clone(), n.evidence.clone(), n.confidence))
+            .map(|n| {
+                (
+                    n.id,
+                    n.name.clone(),
+                    n.entity_type.clone(),
+                    n.evidence.clone(),
+                    n.confidence,
+                )
+            })
             .collect();
         // Lowest confidence first so the budget targets the weakest entities.
         v.sort_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
@@ -1199,12 +1535,11 @@ async fn refine_low_confidence_entities(
     let et_owned: Arc<Vec<String>> = Arc::new(cfg.entity_types.clone());
 
     let mut improved = 0usize;
-    let mut new_entities = 0usize;
     let mut confidence_delta_sum = 0f32;
     let initial_entity_count = cfg.store.lock().unwrap().node_count();
 
     // Sequential refinement (EC calls are already expensive; no need to parallelize at budget=50).
-    for (target_id, entity_name, entity_type, evidence, old_conf) in &targets {
+    for (target_id, entity_name, _entity_type, evidence, old_conf) in &targets {
         // Build aggregated context from evidence chunks.
         let source_indices: Vec<usize> = evidence
             .iter()
@@ -1262,7 +1597,9 @@ async fn refine_low_confidence_entities(
         // Filter by entity type and blocklist.
         entities.retain(|e| {
             et_owned.is_empty()
-                || et_owned.iter().any(|t| t.eq_ignore_ascii_case(&e.entity_type))
+                || et_owned
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(&e.entity_type))
         });
 
         for extracted in &entities {
@@ -1281,20 +1618,32 @@ async fn refine_low_confidence_entities(
                 }
             };
 
-            let fields: std::collections::HashMap<String, crate::graph::FieldValue> =
-                extracted.fields.iter().map(|(k, v)| {
-                    (k.clone(), crate::graph::FieldValue {
-                        value: v.clone(),
-                        evidence_chunk_ids: vec![],
-                        confidence: 1.0,
-                    })
-                }).collect();
+            let fields: std::collections::HashMap<String, crate::graph::FieldValue> = extracted
+                .fields
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::graph::FieldValue {
+                            value: v.clone(),
+                            evidence_chunk_ids: vec![],
+                            confidence: 1.0,
+                        },
+                    )
+                })
+                .collect();
 
             let description = {
                 let from_fields = crate::graph::description_from_fields(
-                    &clean_name, &extracted.entity_type, &fields,
+                    &clean_name,
+                    &extracted.entity_type,
+                    &fields,
                 );
-                if from_fields.is_empty() { extracted.description.clone() } else { from_fields }
+                if from_fields.is_empty() {
+                    extracted.description.clone()
+                } else {
+                    from_fields
+                }
             };
 
             let node = crate::graph::EntityNode {
@@ -1340,8 +1689,12 @@ async fn refine_low_confidence_entities(
     }
 
     let final_entity_count = cfg.store.lock().unwrap().node_count();
-    new_entities = final_entity_count.saturating_sub(initial_entity_count);
-    let avg_delta = if improved > 0 { confidence_delta_sum / improved as f32 } else { 0.0 };
+    let new_entities = final_entity_count.saturating_sub(initial_entity_count);
+    let avg_delta = if improved > 0 {
+        confidence_delta_sum / improved as f32
+    } else {
+        0.0
+    };
     println!(
         "  EC refinement done: {}/{} existing entities improved (avg confidence ↑ +{avg_delta:.2}), {} new entities discovered",
         improved,

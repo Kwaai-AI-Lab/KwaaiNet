@@ -474,10 +474,12 @@ pub(crate) fn inject_entity_descriptions(
         let q_sig_tokens: std::collections::HashSet<String> = q_lower
             .split_whitespace()
             .filter(|t| t.len() >= 3)
-            .map(|t| crate::graph::normalize_name(t))
+            .map(crate::graph::normalize_name)
             .collect();
         let name_overlap = |id: i64| -> usize {
-            let Some(e) = graph.get_entity(id) else { return 0 };
+            let Some(e) = graph.get_entity(id) else {
+                return 0;
+            };
             std::iter::once(e.name.as_str())
                 .chain(e.aliases.iter().map(|a| a.as_str()))
                 .map(|n| {
@@ -507,17 +509,14 @@ pub(crate) fn inject_entity_descriptions(
         // 2. Fall back to non-name-matched at original thresholds so thematically-relevant
         //    entities (e.g. Bibi Gool for Gandhi/Gool queries) still inject at 0.85+.
         //    Raising this to 0.92 blocked too many helpful injections (-7.6pp regression).
-        let candidate = nm
-            .iter()
-            .find(|(id, _)| desc_ok(*id, true))
-            .or_else(|| {
-                seed_hits
-                    .iter()
-                    .filter(|(_, s)| *s > 0.85)
-                    .chain(seed_hits.iter().filter(|(_, s)| *s > 0.7 && *s <= 0.85))
-                    .filter(|(id, _)| !name_matched.contains(id))
-                    .find(|(id, _)| desc_ok(*id, false))
-            });
+        let candidate = nm.iter().find(|(id, _)| desc_ok(*id, true)).or_else(|| {
+            seed_hits
+                .iter()
+                .filter(|(_, s)| *s > 0.85)
+                .chain(seed_hits.iter().filter(|(_, s)| *s > 0.7 && *s <= 0.85))
+                .filter(|(id, _)| !name_matched.contains(id))
+                .find(|(id, _)| desc_ok(*id, false))
+        });
         let Some((id, _)) = candidate else { return };
         (*id, *id)
     };

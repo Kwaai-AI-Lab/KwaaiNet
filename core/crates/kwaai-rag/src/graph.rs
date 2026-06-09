@@ -355,9 +355,16 @@ pub fn description_from_fields(
                     // Drop placeholder values the LLM emits when it has no evidence.
                     !matches!(
                         fv.value.to_lowercase().trim(),
-                        "unknown" | "undefined" | "n/a" | "none" | "not stated"
-                            | "not specified" | "not mentioned" | "not known"
-                            | "not applicable" | "unspecified"
+                        "unknown"
+                            | "undefined"
+                            | "n/a"
+                            | "none"
+                            | "not stated"
+                            | "not specified"
+                            | "not mentioned"
+                            | "not known"
+                            | "not applicable"
+                            | "unspecified"
                     )
                 })
                 .map(|fv| format!("{}: {}", key, fv.value))
@@ -463,12 +470,16 @@ const HONORIFICS: &[&str] = &[
 fn strip_qualifications(name: &str) -> Option<String> {
     fn is_qual(tok: &str) -> bool {
         const QUALS: &[&str] = &[
-            "ma", "ba", "bsc", "msc", "phd", "llb", "llm", "bed", "bcom", "mba",
-            "mpa", "hons", "dip", "jp", "obe", "mbe", "mbbs",
+            "ma", "ba", "bsc", "msc", "phd", "llb", "llm", "bed", "bcom", "mba", "mpa", "hons",
+            "dip", "jp", "obe", "mbe", "mbbs",
         ];
         // Strip all dots then lowercase — recognises "M.A.", "Ph.D.", "LL.B." as well as
         // undotted "MA", "PhD", "LLB".
-        let undotted: String = tok.chars().filter(|&c| c != '.').collect::<String>().to_lowercase();
+        let undotted: String = tok
+            .chars()
+            .filter(|&c| c != '.')
+            .collect::<String>()
+            .to_lowercase();
         !undotted.is_empty() && QUALS.contains(&undotted.as_str())
     }
 
@@ -1143,14 +1154,23 @@ impl GraphStore {
         let mut removed = false;
         {
             let mut t = wtxn.open_table(RELATIONS_TABLE)?;
-            if t.remove(key.as_slice())?.is_some() { removed = true; }
+            if t.remove(key.as_slice())?.is_some() {
+                removed = true;
+            }
             // Also remove logical inverse (e.g. child_of ↔ parent_of)
-            if let Some(&inv) = FAMILIAL_INVERSE.iter().find(|(r, _)| *r == rel_type).map(|(_, i)| i) {
+            if let Some(&inv) = FAMILIAL_INVERSE
+                .iter()
+                .find(|(r, _)| *r == rel_type)
+                .map(|(_, i)| i)
+            {
                 let inv_key = relation_key(dst_id, src_id, inv);
                 t.remove(inv_key.as_slice())?;
             }
             // Also remove symmetric reverse (e.g. sibling_of, spouse_of stored both directions)
-            if matches!(rel_type, "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of") {
+            if matches!(
+                rel_type,
+                "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
+            ) {
                 let sym_key = relation_key(dst_id, src_id, rel_type);
                 t.remove(sym_key.as_slice())?;
             }
@@ -1169,7 +1189,9 @@ impl GraphStore {
     }
 
     pub fn get_relation_strength(&self, src_id: i64, dst_id: i64, rel_type: &str) -> Option<f32> {
-        self.adj.get(&src_id)?.iter()
+        self.adj
+            .get(&src_id)?
+            .iter()
             .find(|(nbr, rel, _)| *nbr == dst_id && rel == rel_type)
             .map(|(_, _, s)| *s)
     }
@@ -1197,16 +1219,18 @@ impl GraphStore {
         for node in self.nodes.values() {
             if node.entity_type.eq_ignore_ascii_case("person")
                 && node.aliases.iter().any(|a| {
-                    matches!(a.to_lowercase().as_str(), "narrator" | "author" | "i" | "the author" | "the narrator")
+                    matches!(
+                        a.to_lowercase().as_str(),
+                        "narrator" | "author" | "i" | "the author" | "the narrator"
+                    )
                 })
+                && seen.insert(node.id)
             {
-                if seen.insert(node.id) {
-                    candidates.push((
-                        node.name.clone(),
-                        node.aliases.clone(),
-                        Some("Male".to_string()), // narrator is always Male in this corpus
-                    ));
-                }
+                candidates.push((
+                    node.name.clone(),
+                    node.aliases.clone(),
+                    Some("Male".to_string()), // narrator is always Male in this corpus
+                ));
             }
         }
 
@@ -1215,7 +1239,9 @@ impl GraphStore {
         for &cid in all_chunk_ids {
             if let Some(entity_ids) = self.chunk_to_entities.get(&cid) {
                 for &eid in entity_ids {
-                    if seen.contains(&eid) { continue; }
+                    if seen.contains(&eid) {
+                        continue;
+                    }
                     if let Some(node) = self.nodes.get(&eid) {
                         if node.entity_type.eq_ignore_ascii_case("person") {
                             seen.insert(eid);
@@ -2415,7 +2441,11 @@ impl GraphStore {
                     alias_key_to_id
                         .entry(akey)
                         .and_modify(|existing| {
-                            let existing_mc = self.nodes.get(existing).map(|n| n.mention_count).unwrap_or(0);
+                            let existing_mc = self
+                                .nodes
+                                .get(existing)
+                                .map(|n| n.mention_count)
+                                .unwrap_or(0);
                             let new_mc = node.mention_count;
                             if new_mc > existing_mc {
                                 *existing = id;
@@ -2438,7 +2468,10 @@ impl GraphStore {
                 }
                 // Don't merge if the canonical is already an alias of this entity
                 if node.aliases.iter().any(|a| {
-                    self.nodes.get(&canonical_id).map(|n| n.name == *a).unwrap_or(false)
+                    self.nodes
+                        .get(&canonical_id)
+                        .map(|n| n.name == *a)
+                        .unwrap_or(false)
                 }) {
                     continue;
                 }
@@ -2598,15 +2631,11 @@ impl GraphStore {
                                     let pre_a = wa_v.len() - 1;
                                     let pre_b = wb_v.len() - 1;
                                     if pre_a.max(pre_b) >= 2 {
-                                        let all_init_a =
-                                            wa_v[..pre_a].iter().all(|t| t.len() <= 3);
-                                        let all_init_b =
-                                            wb_v[..pre_b].iter().all(|t| t.len() <= 3);
+                                        let all_init_a = wa_v[..pre_a].iter().all(|t| t.len() <= 3);
+                                        let all_init_b = wb_v[..pre_b].iter().all(|t| t.len() <= 3);
                                         if all_init_a && all_init_b {
-                                            let mut sa: Vec<&&str> =
-                                                wa_v[..pre_a].iter().collect();
-                                            let mut sb: Vec<&&str> =
-                                                wb_v[..pre_b].iter().collect();
+                                            let mut sa: Vec<&&str> = wa_v[..pre_a].iter().collect();
+                                            let mut sb: Vec<&&str> = wb_v[..pre_b].iter().collect();
                                             sa.sort();
                                             sb.sort();
                                             if sa != sb {
@@ -2669,7 +2698,7 @@ impl GraphStore {
                 let any_has_qual = ids.iter().any(|&id| {
                     self.nodes
                         .get(&id)
-                        .map_or(false, |n| strip_qualifications(&n.name).is_some())
+                        .is_some_and(|n| strip_qualifications(&n.name).is_some())
                 });
                 if !any_has_qual {
                     continue;
@@ -2716,10 +2745,32 @@ impl GraphStore {
         {
             // Common English words and titles that should never be treated as a first name.
             const WORD_BLOCKLIST: &[&str] = &[
-                "instead", "even", "head", "chief", "prince", "princess", "premier",
-                "president", "king", "queen", "lord", "lady", "captain", "major",
-                "general", "colonel", "minister", "secretary", "director", "chairman",
-                "leader", "speaker", "judge", "justice", "senator", "member",
+                "instead",
+                "even",
+                "head",
+                "chief",
+                "prince",
+                "princess",
+                "premier",
+                "president",
+                "king",
+                "queen",
+                "lord",
+                "lady",
+                "captain",
+                "major",
+                "general",
+                "colonel",
+                "minister",
+                "secretary",
+                "director",
+                "chairman",
+                "leader",
+                "speaker",
+                "judge",
+                "justice",
+                "senator",
+                "member",
             ];
 
             // Map: first-token (≥4 chars, non-honorific, non-blocked) → entity IDs whose name starts with it
@@ -2733,7 +2784,10 @@ impl GraphStore {
                         && !HONORIFICS.contains(&first)
                         && !WORD_BLOCKLIST.contains(&first)
                     {
-                        first_token_to_ids.entry(first.to_string()).or_default().push(id);
+                        first_token_to_ids
+                            .entry(first.to_string())
+                            .or_default()
+                            .push(id);
                     }
                 }
             }
@@ -2745,10 +2799,7 @@ impl GraphStore {
                     continue;
                 }
                 let word = words[0];
-                if word.len() < 4
-                    || HONORIFICS.contains(&word)
-                    || WORD_BLOCKLIST.contains(&word)
-                {
+                if word.len() < 4 || HONORIFICS.contains(&word) || WORD_BLOCKLIST.contains(&word) {
                     continue;
                 }
                 let Some(candidates) = first_token_to_ids.get(word) else {
@@ -2793,10 +2844,7 @@ impl GraphStore {
     /// chunk LLM) are considered. The minimum possible strength (0.1) corresponds to
     /// a single evidence source, which is sufficient for blocking since family relations
     /// in this graph are primarily YAML-seeded ground truth.
-    pub fn find_dedup_relation_blocks(
-        &self,
-        candidates: &[(i64, i64)],
-    ) -> HashSet<(i64, i64)> {
+    pub fn find_dedup_relation_blocks(&self, candidates: &[(i64, i64)]) -> HashSet<(i64, i64)> {
         let mut blocked = HashSet::new();
         for &(alias_id, canonical_id) in candidates {
             if self.dedup_block_r1(alias_id, canonical_id)
@@ -2818,7 +2866,10 @@ impl GraphStore {
             let name = self.nodes.get(&id).map(|n| n.name.as_str())?;
             let norm = normalize_name(name);
             let last = norm.split_whitespace().last()?.to_string();
-            HIGH_RISK_SURNAMES.iter().copied().find(|&s| s == last.as_str())
+            HIGH_RISK_SURNAMES
+                .iter()
+                .copied()
+                .find(|&s| s == last.as_str())
         };
 
         let sa = surname_of(a);
@@ -2904,9 +2955,7 @@ impl GraphStore {
             .get(&id)
             .into_iter()
             .flatten()
-            .filter(|(_, rel, strength)| {
-                SYMMETRIC.contains(&rel.as_str()) && *strength >= 0.1
-            })
+            .filter(|(_, rel, strength)| SYMMETRIC.contains(&rel.as_str()) && *strength >= 0.1)
             .map(|(nbr, rel, _)| (*nbr, rel.clone()))
             .collect()
     }
@@ -2917,8 +2966,12 @@ impl GraphStore {
     /// because adj stores both directions of asymmetric relations with the same label,
     /// which would incorrectly include backward `child_of` entries from the inverse storage.
     fn trusted_parent_ids(&self, id: i64) -> HashSet<i64> {
-        let Ok(rtxn) = self.db.begin_read() else { return HashSet::new() };
-        let Ok(table) = rtxn.open_table(RELATIONS_TABLE) else { return HashSet::new() };
+        let Ok(rtxn) = self.db.begin_read() else {
+            return HashSet::new();
+        };
+        let Ok(table) = rtxn.open_table(RELATIONS_TABLE) else {
+            return HashSet::new();
+        };
         let mut parents = HashSet::new();
         if let Ok(iter) = table.iter() {
             for entry in iter.flatten() {
@@ -3378,7 +3431,8 @@ impl GraphStore {
         for id in ids {
             if let Some(node) = self.nodes.get_mut(id) {
                 if !node.fields.is_empty() {
-                    let fresh = description_from_fields(&node.name, &node.entity_type, &node.fields);
+                    let fresh =
+                        description_from_fields(&node.name, &node.entity_type, &node.fields);
                     if !fresh.is_empty() {
                         node.description = fresh;
                     }
@@ -3876,7 +3930,12 @@ fn jaro_winkler(s1: &str, s2: &str) -> f32 {
     }
     let m = matches as f64;
     let jaro = (m / l1 as f64 + m / l2 as f64 + (m - t as f64 / 2.0) / m) / 3.0;
-    let prefix = c1.iter().zip(c2.iter()).take(4).take_while(|(a, b)| a == b).count();
+    let prefix = c1
+        .iter()
+        .zip(c2.iter())
+        .take(4)
+        .take_while(|(a, b)| a == b)
+        .count();
     (jaro + prefix as f64 * 0.1 * (1.0 - jaro)) as f32
 }
 
@@ -3885,7 +3944,7 @@ fn jaro_winkler(s1: &str, s2: &str) -> f32 {
 /// named entity (e.g. "John Smith (novelist)" or "John Smith III").
 fn has_disambiguation_token(name: &str) -> bool {
     let t = name.trim_end();
-    if t.ends_with(')') && t.rfind('(').map_or(false, |p| p > 0) {
+    if t.ends_with(')') && t.rfind('(').is_some_and(|p| p > 0) {
         return true;
     }
     matches!(
@@ -3966,15 +4025,27 @@ mod tests {
     #[test]
     fn test_clean_entity_name_unicode_quotes() {
         // U+2019 right single quotation mark (PDF apostrophe)
-        assert_eq!(clean_entity_name("Grandpa\u{2019}s daughter"), "Grandpa's daughter");
+        assert_eq!(
+            clean_entity_name("Grandpa\u{2019}s daughter"),
+            "Grandpa's daughter"
+        );
         assert_eq!(clean_entity_name("Granny\u{2019}s niece"), "Granny's niece");
         assert_eq!(clean_entity_name("Y\u{2019}Allah"), "Y'Allah");
         // U+2018/U+2019 as nickname delimiters
-        assert_eq!(clean_entity_name("Pharaoh \u{2018}Cheops\u{2019}"), "Pharaoh 'Cheops'");
+        assert_eq!(
+            clean_entity_name("Pharaoh \u{2018}Cheops\u{2019}"),
+            "Pharaoh 'Cheops'"
+        );
         // underscore possessive still works
-        assert_eq!(clean_entity_name("Grandpa_s daughter"), "Grandpa's daughter");
+        assert_eq!(
+            clean_entity_name("Grandpa_s daughter"),
+            "Grandpa's daughter"
+        );
         // parenthetical
-        assert_eq!(clean_entity_name("Yousuf _Joe_ Rassool"), "Yousuf (Joe) Rassool");
+        assert_eq!(
+            clean_entity_name("Yousuf _Joe_ Rassool"),
+            "Yousuf (Joe) Rassool"
+        );
     }
 
     #[test]
