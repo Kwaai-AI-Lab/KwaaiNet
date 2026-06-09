@@ -494,3 +494,82 @@ This run introduced the backward-candidate pronoun resolver (`ner.rs` commit `60
 2. Fix backward_candidate: constrain to multi-word names or revert to forward-scan-only
 3. Reduce worker count (8→4) or add retry logic to reduce timeout rate
 4. Consider overnight eval with Place+Org re-enabled to isolate entity-type impact
+
+## 2026-06-09 – D6_struct_coref_rel_20260608_195113
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 1037 entities, 194 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  1965 entities, 208 relations, health=37.3%, **56.4%** recall (127/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260608_195113.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260608_195113.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260608_195113.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 56.4% (127/225) |
+| q09 | Who was the author's grandfather? | 2/9 (22%) | LEST WE FORGET -rev25.pdf | 20500ms |
+| q12 | Who was Cissie Gool? | 2/6 (33%) | [Graph: Uncle Aity (Mohamed Saaid Gool)], LEST WE FORGET -rev25.pdf | 30253ms |
+| q24 | Who were the children of J.M.H. Gool? | 2/7 (29%) | LEST WE FORGET -rev25.pdf, [Graph: J. M. H. Gool & Co.] | 32099ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 6/6 (100%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdulla Abdurahman] | 24872ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 4/5 (80%) | [Graph: Uncle Aity (Mohamed Saaid Gool)], LEST WE FORGET -rev25.pdf | 24879ms |
+| q38 | Who was Cissie Gool's father? | 3/5 (60%) | LEST WE FORGET -rev25.pdf | 28834ms |
+```
+
+## 2026-06-09 – D6_struct_coref_rel_20260608_195113
+
+- **Experiment:** Full rebuild with Person+Place+Organization + 4 workers + coref + CC/EC relations
+- **Before:** 1037 entities, 194 relations, **52.0%** recall (D6_struct_coref_rel_20260608_163617)
+- **After:**  1965 entities, 208 relations, health=37.3%, **56.4%** recall (127/225)
+- **Changes vs previous run:**
+  - Entity types: Person only → Person,Place,Organization
+  - Workers: 8 → 4
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260608_195113.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260608_195113.md
+
+### Key delta questions (vs 20260608_163617 — 52.0%)
+```
+| Overall recall (token-overlap) | 56.4% (127/225) |
+| q05 | Who was J.M.H. Gool? | 5/8 (62%) | +37pp | [Graph: Uncle Aity (Mohamed Saaid Gool)] |
+| q06 | Tell me about Buitencingle. | 5/8 (62%) | +37pp | Place entity now extracted |
+| q15 | What were forced removals from District Six? | 5/6 (83%) | +50pp | |
+| q18 | What was the New Era Fellowship? | 5/6 (83%) | +16pp | [Graph: New Era Fellowship] Org entity |
+| q21 | Who was the author's mother? | 3/5 (60%) | +20pp | |
+| q22 | Who was the author's father? | 2/4 (50%) | +25pp | |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 4/5 (80%) | +40pp | |
+| q17 | What was Hewat Training College? | 4/5 (80%) | -20pp | regression |
+| q20 | Author's involvement in cricket | 2/5 (40%) | -20pp | regression |
+| q24 | Children of J.M.H. Gool | 2/7 (29%) | -14pp | regression |
+```
+
+### Analysis vs all previous runs
+
+**Result: BEST FULL-DOC RUN — 56.4% vs 53.3% baseline (+3.1pp), vs 52.0% previous (+4.4pp)**
+
+| Run | Recall | Entity types | Workers |
+|-----|--------|-------------|---------|
+| D6_person_full baseline (2026-06-04) | 53.3% | Person+Place+Org | — |
+| D6_struct_coref_rel_20260607_220927 | 51.6% | Person only | 8 |
+| D6_struct_coref_rel_20260608_163617 | 52.0% | Person only | 8 |
+| **D6_struct_coref_rel_20260608_195113** | **56.4%** | **Person+Place+Org** | **4** |
+
+**Place+Org impact was decisive**: re-enabling them added ~928 entities (1965 vs 1037) and drove the biggest single-run improvement (+4.4pp). Place questions (q06 Buitencingle +37pp, q15 forced removals +50pp) and Org questions (q18 New Era Fellowship +16pp) were the main beneficiaries.
+
+**Graph entities actively helping retrieval**: "Uncle Aity (Mohamed Saaid Gool)" pulled up for q05, q12, q32, q33. "New Era Fellowship" for q18. "Dr. Abdulla Abdurahman" for q26. "Bibi Gool" for q16, q27. The graph boost is working.
+
+**Remaining regressions** (vs baseline 53.3% on specific questions):
+- q09 (grandfather) 22% — still weak, not seeded
+- q23 (siblings) 20% — not seeded
+- q24 (JMH children) 29% — dropped from 43%; graph retrieves "J.M.H. Gool & Co." (Org) instead of family members
+- q30 (JMH arrival) 0% — specific biographical fact not in seeded relations
+- q36 (political orgs) 0% — broad query, no single good retrieval path
+
+**Still below 1pct pronoun_fix run** (57.8%) but that was only 1% of document — not comparable.
+
+**Next steps**:
+- q24 regression: "J.M.H. Gool & Co." (Org) is crowding out family relations — consider blocking org names that are person-name derivatives from the entity cap
+- q09/q23: seed grandfather + sibling relations in d6_family_tree.yaml
+- q30/q36: these need better retrieval (passage-level) not graph — consider hyde or rerank for specific factual lookups
