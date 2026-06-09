@@ -636,3 +636,60 @@ Per-question swings between the two runs:
 **Implication**: Single-run comparisons under ±3pp are not meaningful. The true performance of the current Person+Place+Org config is approximately **54–56%**, vs the 53.3% baseline. We are likely above baseline but not by a large margin.
 
 **To reliably distinguish configs**: Need 3+ runs per config and compare averages, or use a deterministic eval (temperature=0, fixed seed).
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_065108
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 2002 entities, 204 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  1984 entities, 196 relations, health=37.3%, **53.8%** recall (121/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_065108.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260609_065108.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260609_065108.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 53.8% (121/225) |
+| q09 | Who was the author's grandfather? | 2/9 (22%) | [Graph: Yousuf Rassool], LEST WE FORGET -rev25.pdf | 70768ms |
+| q12 | Who was Cissie Gool? | 2/6 (33%) | [Graph: Wahida Gool], LEST WE FORGET -rev25.pdf | 93990ms |
+| q24 | Who were the children of J.M.H. Gool? | 3/7 (43%) | [Graph: Bibi Gool], LEST WE FORGET -rev25.pdf | 35901ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 2/6 (33%) | [Graph: Dr. Abdulla Abdurahman], LEST WE FORGET -rev25.pdf | 30238ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 3/5 (60%) | [Graph: Bibi Gool], LEST WE FORGET -rev25.pdf | 32534ms |
+| q38 | Who was Cissie Gool's father? | 2/5 (40%) | [Graph: Yousuf Rassool], LEST WE FORGET -rev25.pdf | 28464ms |
+```
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_065108
+
+- **Experiment:** Reproducibility run 3 — identical settings to 20260608_195113 and 20260609_011814
+- **After:**  1984 entities, 196 relations, health=37.3%, **53.8%** recall (121/225)
+- **Settings:** Person+Place+Org, 4 workers, 70b Q3 relations
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_065108.md
+
+### Three-run summary for Person+Place+Org config
+
+| Run | Recall | Keywords |
+|-----|--------|----------|
+| 20260608_195113 | 56.4% | 127/225 |
+| 20260609_011814 | 52.9% | 119/225 |
+| 20260609_065108 | 53.8% | 121/225 |
+| **Mean** | **54.4%** | **122.3/225** |
+| **Std dev** | **1.5pp** | |
+| **95% CI (n=3)** | **~50.7–58.0%** | |
+| D6_person_full baseline | 53.3% | — |
+
+**Conclusion: improvement is NOT statistically significant.** The baseline (53.3%) falls within the 95% CI of [50.7%, 58.0%]. We cannot claim the struct+coref+relations pipeline reliably beats the baseline with n=3 runs.
+
+**What we can say:**
+- Results are in the 52–57% range — consistent with or marginally above the 53.3% baseline
+- Run-to-run variance (~±3.5pp) is driven by 8b LLM stochasticity in entity extraction and eval answers
+- The pipeline is not hurting recall (vs earlier Person-only runs that regressed to 51-52%)
+- Place+Org entity types are clearly useful (specific place/org questions improved), but the benefit is masked by noise
+
+**To achieve a reliable signal, options:**
+1. Run 8+ times and compare means — impractical overnight
+2. Fix eval stochasticity: run the 8b LLM at temperature=0 with a fixed seed
+3. Use a stronger eval model (70b or Claude) for answer generation — less variance
+4. Focus on structural improvements that move the needle by >5pp to clear the noise floor
