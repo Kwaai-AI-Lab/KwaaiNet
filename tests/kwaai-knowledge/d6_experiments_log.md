@@ -573,3 +573,66 @@ This run introduced the backward-candidate pronoun resolver (`ner.rs` commit `60
 - q24 regression: "J.M.H. Gool & Co." (Org) is crowding out family relations — consider blocking org names that are person-name derivatives from the entity cap
 - q09/q23: seed grandfather + sibling relations in d6_family_tree.yaml
 - q30/q36: these need better retrieval (passage-level) not graph — consider hyde or rerank for specific factual lookups
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_011814
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 1965 entities, 208 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  2002 entities, 204 relations, health=37.4%, **52.9%** recall (119/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_011814.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260609_011814.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260609_011814.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 52.9% (119/225) |
+| q09 | Who was the author's grandfather? | 2/9 (22%) | LEST WE FORGET -rev25.pdf | 25990ms |
+| q12 | Who was Cissie Gool? | 2/6 (33%) | LEST WE FORGET -rev25.pdf, [Graph: Wahida Gool] | 37656ms |
+| q24 | Who were the children of J.M.H. Gool? | 0/7 (0%) | [Graph: Bibi Gool], LEST WE FORGET -rev25.pdf | 25645ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 6/6 (100%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdulla Abdurahman] | 29727ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 4/5 (80%) | [Graph: Bibi Gool], LEST WE FORGET -rev25.pdf | 25075ms |
+| q38 | Who was Cissie Gool's father? | 3/5 (60%) | LEST WE FORGET -rev25.pdf | 32178ms |
+```
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_011814
+
+- **Experiment:** Reproducibility run — identical settings to 20260608_195113
+- **Before:** 1965 entities, 208 relations (20260608_195113 end state)
+- **After:**  2002 entities, 204 relations, health=37.4%, **52.9%** recall (119/225)
+- **Settings:** Person+Place+Org, 4 workers, 70b Q3 relations, no changes
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_011814.md
+
+### Analysis — HIGH VARIANCE FINDING
+
+**Two identical-config runs produced 56.4% vs 52.9% — a 3.5pp spread (8 keyword matches).**
+
+| Run | Recall | Config |
+|-----|--------|--------|
+| D6_struct_coref_rel_20260608_195113 | 56.4% (127/225) | Person+Place+Org, 4w |
+| D6_struct_coref_rel_20260609_011814 | 52.9% (119/225) | Person+Place+Org, 4w (identical) |
+| **Average** | **54.7%** | |
+
+Per-question swings between the two runs:
+
+| Question | Run 1 | Run 2 | Swing |
+|----------|-------|-------|-------|
+| q05 JMH Gool | 62% | 12% | -50pp |
+| q15 forced removals | 83% | 33% | -50pp |
+| q08 author's wife | 67% | 33% | -34pp |
+| q25 IB Tabata | 20% | 80% | +60pp |
+| q22 author's father | 50% | 100% | +50pp |
+| q06 Buitencingle | 62% | 50% | -12pp |
+| q24 JMH children | 29% | 0% | -29pp |
+
+**Root causes of variance:**
+1. **Entity extraction stochasticity**: 8b LLM extracts different entity sets each run — which entities are in the graph changes which graph nodes the retriever surfaces. q05 got "Uncle Aity (Mohamed Saaid Gool)" run 1 vs "Wahida Gool" run 2 — completely different graph hits.
+2. **Eval answer stochasticity**: 8b LLM generates different answer text each run — token-overlap scoring varies accordingly.
+3. **Combined noise floor**: ~±2pp is inherent noise for a single run on this eval set.
+
+**Implication**: Single-run comparisons under ±3pp are not meaningful. The true performance of the current Person+Place+Org config is approximately **54–56%**, vs the 53.3% baseline. We are likely above baseline but not by a large margin.
+
+**To reliably distinguish configs**: Need 3+ runs per config and compare averages, or use a deterministic eval (temperature=0, fixed seed).
