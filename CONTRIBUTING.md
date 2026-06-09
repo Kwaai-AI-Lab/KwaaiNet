@@ -20,7 +20,7 @@ We're not just building software - we're democratizing AI infrastructure for hum
 
 ### 🛠 Ways to Contribute
 
-1. **Core Development**: Work on major components (see ARCHITECTURE.md)
+1. **Core Development**: Work on major components (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))
 2. **Documentation Improvements**: Enhance guides, fix typos, add examples
 3. **Bug Reports**: Submit detailed issue reports with reproduction steps
 4. **Feature Development**: Propose and implement new features aligned with distributed AI vision
@@ -266,8 +266,9 @@ For contributors, we provide:
 - **Pair Programming**: Collaborative development sessions
 
 ### Community Resources
-- **Architecture Documentation**: [ARCHITECTURE.md](./ARCHITECTURE.md)
-- **Integration Examples**: [INTEGRATIONS.md](./INTEGRATIONS.md)
+- **Architecture Documentation**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Integration Examples**: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)
+- **Contributor Guide**: [docs/contributor-guide.md](docs/contributor-guide.md)
 - **API Reference**: Generated from code documentation
 - **Example Projects**: Reference implementations and tutorials
 
