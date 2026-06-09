@@ -226,10 +226,7 @@ pub fn resolve_pronouns(
         // Strategy 1: most-recent entity with matching gender from graph snapshot.
         // For Neutral pronouns (they/them/their), only resolve if there is exactly
         // one candidate with no gender set — otherwise too ambiguous.
-        let neutral_candidates: Vec<_> = entities
-            .iter()
-            .filter(|(_, g)| g.is_none())
-            .collect();
+        let neutral_candidates: Vec<_> = entities.iter().filter(|(_, g)| g.is_none()).collect();
         if gender == "Neutral" && neutral_candidates.len() != 1 {
             continue; // ambiguous — skip
         }
@@ -280,23 +277,23 @@ pub struct CorefResolution {
 /// Each entry is (surface_pattern, alias_to_match_against_entity_aliases).
 /// The surface pattern is checked case-insensitively against chunk text.
 const DEFINITE_DESCRIPTIONS: &[(&str, &str)] = &[
-    ("grandpa",       "grandpa"),
-    ("grandfather",   "grandfather"),
-    ("my grandfather","my grandfather"),
-    ("grandma",       "grandma"),
-    ("grandmother",   "grandmother"),
-    ("the author",    "author"),
-    ("the narrator",  "narrator"),
-    ("my mother",     "mother"),
-    ("his mother",    "mother"),
-    ("her mother",    "mother"),
-    ("my father",     "father"),
-    ("his father",    "father"),
-    ("her father",    "father"),
-    ("my wife",       "wife"),
-    ("his wife",      "wife"),
-    ("my husband",    "husband"),
-    ("her husband",   "husband"),
+    ("grandpa", "grandpa"),
+    ("grandfather", "grandfather"),
+    ("my grandfather", "my grandfather"),
+    ("grandma", "grandma"),
+    ("grandmother", "grandmother"),
+    ("the author", "author"),
+    ("the narrator", "narrator"),
+    ("my mother", "mother"),
+    ("his mother", "mother"),
+    ("her mother", "mother"),
+    ("my father", "father"),
+    ("his father", "father"),
+    ("her father", "father"),
+    ("my wife", "wife"),
+    ("his wife", "wife"),
+    ("my husband", "husband"),
+    ("her husband", "husband"),
 ];
 
 /// Resolve definite descriptions and kinship roles to known entities by alias matching.
@@ -315,11 +312,13 @@ pub fn resolve_definite_descriptions(
     let mut results = Vec::new();
 
     for &(surface, alias_pattern) in DEFINITE_DESCRIPTIONS {
-        let Some(offset) = text_lower.find(surface) else { continue };
+        let Some(offset) = text_lower.find(surface) else {
+            continue;
+        };
         // Find candidate whose aliases contain the alias_pattern
-        let matched = candidates.iter().find(|(_, aliases, _)| {
-            aliases.iter().any(|a| a.to_lowercase() == alias_pattern)
-        });
+        let matched = candidates
+            .iter()
+            .find(|(_, aliases, _)| aliases.iter().any(|a| a.to_lowercase() == alias_pattern));
         if let Some((name, _, _)) = matched {
             results.push(CorefResolution {
                 surface: surface.to_string(),
@@ -357,15 +356,22 @@ pub fn resolve_pronouns_from_candidates(
         } else {
             None
         };
-        let Some(gender) = gender_wanted else { continue };
-        if !seen.insert(lower.clone()) { continue }
+        let Some(gender) = gender_wanted else {
+            continue;
+        };
+        if !seen.insert(lower.clone()) {
+            continue;
+        }
 
         // Find the most-recent candidate with matching gender (scan candidates in reverse,
         // assuming they were ordered by recency / appearance position).
-        let matched = candidates.iter().rev().find(|(_, _, g)| match g.as_deref() {
-            Some(eg) => eg == gender || gender == "Neutral",
-            None     => gender == "Neutral",
-        });
+        let matched = candidates
+            .iter()
+            .rev()
+            .find(|(_, _, g)| match g.as_deref() {
+                Some(eg) => eg == gender || gender == "Neutral",
+                None => gender == "Neutral",
+            });
 
         if let Some((name, _, _)) = matched {
             // Find byte offset of this pronoun in original text
