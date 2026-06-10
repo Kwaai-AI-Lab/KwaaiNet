@@ -793,3 +793,37 @@ Key insight: Despite having only 45 LLM-extracted entities (vs 1451), the eval s
 Fix: Restored send timeout to 120s (more generous than original 90s). `stream: true` + NDJSON accumulation retained — it's correct code, just irrelevant over the current relay architecture.
 
 Run 8 (started 2026-06-09 17:56 PDT) uses the corrected 120s timeout. Expected to match or exceed 63.1%.
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_175629
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 45 entities, 164 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  1340 entities, 176 relations, health=37.0%, **59.6%** recall (134/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_175629.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260609_175629.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260609_175629.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 59.6% (134/225) |
+| q09 | Who was the author's grandfather? | 0/9 (0%) | [Graph: Yousuf Rassool], LEST WE FORGET -rev25.pdf | 23873ms |
+| q12 | Who was Cissie Gool? | 4/6 (67%) | LEST WE FORGET -rev25.pdf, [Graph: Haji Joosub Maulvi Hamid Gool] | 29780ms |
+| q24 | Who were the children of J.M.H. Gool? | 2/7 (29%) | LEST WE FORGET -rev25.pdf, [Graph: Dr Goolam Gool District Six] | 27962ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 6/6 (100%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdulla Abdurahman] | 30151ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 3/5 (60%) | LEST WE FORGET -rev25.pdf, [Graph: Nurjehan Gool Mohamed] | 27226ms |
+| q38 | Who was Cissie Gool's father? | 3/5 (60%) | LEST WE FORGET -rev25.pdf, [Graph: Yousuf Rassool] | 25261ms |
+```
+
+### Regression analysis vs M43 (63.1%)
+
+**−3.5pp regression from M43.** Two root causes:
+
+1. **Metro-linux offline all night** (373 `routing: not found` errors) — only metro-win (8b) was productive. 70b relation extraction completed in 8 seconds = near-total failure; only 12 relations committed vs ~80+ expected. Entity extraction ran at half throughput.
+
+2. **Cross-type dedup bug** — `[Graph: Dr Goolam Gool District Six]` appears as source for q05/q14/q15/q34/q39. The seeded "District Six" Place entity was merged with a noisy NER extraction where a person name got prepended to a place name. Dedup chose the noisier name as canonical — this degraded q13 (AAC) from ~100% to 33%.
+
+**Fix needed:** Entity-type compatibility guard in dedup — a Person and Place entity must never be merged regardless of embedding similarity. Open bug.

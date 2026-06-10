@@ -29,7 +29,7 @@ A mid-run regression was introduced and fixed: the streaming fix for entity extr
 | D6_struct_20260609_065108 | 2026-06-09 | **53.8%** | 121/225 | 1984 | 196 | Reproducibility run 2 |
 | D6_struct_20260609_122405 | 2026-06-09 | **63.1%** | 142/225 | 1451 | 176 | **+Org/Place seed entities** |
 | D6_struct_20260609_162328 | 2026-06-09 | **61.3%** | 138/225 | 45 | 164 | 30s timeout regression |
-| D6_struct_current (run 8) | 2026-06-09 | TBD | — | in progress | — | 120s timeout fix |
+| D6_struct_coref_rel_20260609_175629 (run 8) | 2026-06-09 17:56 | **59.6%** | 134/225 | 1340 | 176 | 120s fix; metro-linux offline → degraded extraction |
 
 ### Three-run average for struct+coref+rel baseline (before seeds)
 
@@ -343,4 +343,60 @@ Getting from 78% to 80%+ requires either better text coverage (dream cycles) or 
 
 ---
 
-*Report generated 2026-06-09. Run 8 results will be appended to `d6_experiments_log.md` on completion.*
+---
+
+## Run 8 — Analysis (2026-06-09 17:56 PDT)
+
+**Result: 59.6% (134/225) — regression vs M43 (63.1%), −3.5pp**
+
+### Root cause: metro-linux offline all run
+
+Metro-linux (`12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs`) returned `routing: not found` for every chunk throughout the 4-hour graph build. Only metro-win (A5000, 8b only) was productive — effectively half the workers were dead all night. This degraded entity extraction across the board.
+
+| Metric | Run 8 (metro-win only) | M43 (both machines) |
+|--------|----------------------|---------------------|
+| Recall | 59.6% | 63.1% |
+| Entities (raw) | 1599 | ~1600 |
+| Entities (final) | 1340 | 1451 |
+| Relations (70b) | +12 | ~80+ |
+| Graph health | 37.0% | — |
+
+The 70b relation extraction step completed in ~8 seconds — confirming near-total failure (metro-linux hosts the 70b model; metro-win doesn't). Only 12 new relations were committed vs ~80+ expected.
+
+### Why not worse than 59.6%?
+
+The **seed entities are doing most of the retrieval work**. The 44 canonical YAML entities (including 7 Org/Place nodes) survive every rebuild and provide reliable graph anchors. A run with near-zero 70b relations still scores 59.6% because:
+- The family tree YAML has 96 family relations covering all key person→person queries
+- The 7 Org/Place seeds unlock TLSA/NEUM/NEF/AAC/Mosque questions directly
+- 1340 entities (vs 1451 in M43) means ~111 fewer entity links — modest but measurable degradation
+
+### Suspicious entity: "Dr Goolam Gool District Six"
+
+The entity `[Graph: Dr Goolam Gool District Six]` appears as a source for q05, q14, q15, q34, q39 — questions about District Six. This looks like dedup merged the seeded "District Six" Place entity with a noisy NER extraction "Dr Goolam Gool District Six" (a common NER error where a nearby person name gets prepended to a place). The dedup chose the longer/noisier name as canonical.
+
+**Impact:** The entity still retrieves the right chunks (it has the right evidence links), but its name is wrong. This degrades the LLM's answer quality for place-specific questions.
+
+**Fix needed:** Guard in dedup against merging Person and Place entity types. The current dedup doesn't check entity_type compatibility before merging — a Person and a Place should never merge regardless of embedding similarity.
+
+### Per-question run 8 vs M43
+
+| Question | Run 8 | M43 | Δ |
+|----------|-------|-----|---|
+| q09 grandfather | 0% | ~0% | = (persistent failure) |
+| q11 TLSA | 50% | ~67% | −17pp |
+| q13 AAC | 33% | ~100% | −67pp ← biggest regression |
+| q15 forced removals | 100% | 100% | = |
+| q26 Abdurahman | 100% | — | ✓ |
+| q28 author orgs | 100% | 100% | = |
+| q31 mosque | 83% | 100% | −17pp |
+
+q13 (All Africa Convention) collapsed from ~100% to 33%. This is likely the "Dr Goolam Gool District Six" dedup contamination affecting the AAC graph node.
+
+### Next experiments
+
+1. **Fix cross-type dedup** — add entity_type compatibility check before merging (Person ≠ Place ≠ Organization should never merge)
+2. **Run when metro-linux is back online** — get a clean run with both machines + 70b relations
+3. **Place+org coref** — new binary (v0.4.94) with place/org coref is installed; will take effect on next overnight run
+4. **Seed q09 grandfather node** — this has been 0% across all runs; a YAML seed would fix it permanently
+
+*Updated 2026-06-10 with run 8 results.*

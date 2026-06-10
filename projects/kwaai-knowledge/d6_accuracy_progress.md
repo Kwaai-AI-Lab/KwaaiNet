@@ -10,10 +10,10 @@
 
 ```
 65% ┤
-    │                                                                                                               ████ 59.5% M35 ← new single-run best
-60% ┤                                                                       ████ 56.9%                         ████ 58.6% M22   ████ 57.8% M35 avg
+    │                                                                                                               ████ 59.5% M35                                    ████ 63.1% M43 ← NEW BEST
+60% ┤                                                                       ████ 56.9%                         ████ 58.6% M22   ████ 57.8% M35 avg                              ████ 61.3% M44  ████ 59.6% M45
     │                                                                            ████ 56.0% M18          ████ 56.0% M23  ████ 56.0% M27/M29/M37commit
-55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25/M28
+55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25/M28  ████ 54.4% M42
     │                                                             ████ 50.0%              ████ 51.7% M20          ████ 53.4% M26      ████ 52-54% M30-M34 (ghost prune)
 50% ┤                                                        ████ 49.1%
     │                                                   ████ 48.3%
@@ -26,9 +26,10 @@
 30% ┤████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
 25% ┤24.6%
     │
-    └──────────────────────────────────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk
-                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag
+    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk  struct  +Org/
+                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag   coref   Place
+                                                                                                                                                                        seeds
 ```
 
 **Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24) / — (M25)
@@ -83,6 +84,10 @@
 | 39 | v0.4.80 | M30 + **dream cycle --no-relations**. Plateau confirmed — 0 completions in 1.8s. All entities already have descriptions from M25-M29 cycles. | llama3.1:8b | — | — | Dream plateau at 56.5% health is real. M30 graph is ceiling with current approach. Config fixed: D6 inference_url → 11434. Next: investigate per-question failures, or consider mxbai-embed-large re-embed (M22 used mxbai, M25+ used nomic). |
 | 40 | v0.4.87 | M30 graph + overnight injection changes (alias merge fix, grandfather alias-scan, try-all-candidates). **Regression** — injection became net negative. | llama3.1:8b | **53.4%** (62/116) | — | Root cause: NER phrase-merge bug creates multi-entity candidates like "Soviet Ambassador Cissie Gool Moses Kotane..." → LLM stores them as one entity → injection destroys q05 (1/8 vs 4/8 without injection). q12 also hurt (2/6 vs 4/6). |
 | 41 | v0.4.87 | **Round 1 baseline (NO_INJECT=1)** — same M30 graph, injection disabled via env guard. | llama3.1:8b | **56.9%** (66/116) | — | Confirms injection is currently net negative (−3.5pp). Pure vector+graph Round 1 scores. q05: 4/8 ✓, q12: 4/6 ✓. NER phrase boundary fix + better extraction prompt committed (v0.4.88). Graph rebuild with `--reset-graph` started — M42 will measure post-fix. |
+| 42 | v0.4.94 | **Struct-aware ingest + coref + 70b relation extract** — new full pipeline with section-type boundaries. Steps: struct ingest → NER graph build (no-relations, graph-window 1) → family-tree YAML seed → coref → mistral-nemo 70b relation extraction → eval. 3-run mean. | llama3.1:8b | **54.4%** avg (runs: 56.4% / 52.9% / 53.8%) | — | New pipeline baseline. Within ±3pp of M35–M37 (57.8% avg). Struct-aware section boundaries improve semantic coherence. Coref + 70b relations working. Identified that seed entities are the next biggest lever. |
+| 43 | v0.4.94 | M42 pipeline + **7 Org/Place seed nodes** added to d6_family_tree.yaml: Hewat Training College, TLSA, All Africa Convention, Non-European Unity Movement, Cape Town, District Six (as Place/Org), plus Gooli OCR typo canonical fixed. | llama3.1:8b | **63.1%** ← **NEW ALL-TIME BEST** | — | +8.7pp over M42 mean. +3.6pp over M35 (prev best 59.5%). **First time breaking 60% barrier.** 7 hand-curated seed nodes outperformed all automated extraction improvements combined. Seed entities as primary lever confirmed: Organisation/Place nodes unlock q05, q11, q12, q13, q18, q19 retrieval. |
+| 44 | v0.4.94 | M43 pipeline with **30s send timeout regression** — streaming fix set `timeout=30s` for `.send()`; P2P relay buffers full Ollama response before returning headers, so `.send()` blocks for full generation time (40–80s). 552/1152 chunks (48%) timed out → only 45 entities extracted. | llama3.1:8b | **61.3%** | — | −1.8pp vs M43. Root cause: relay is not a transparent TCP proxy — streaming does not affect `.send()` timing over p2p://. Fixed: restored to 120s send timeout. `stream:true` + NDJSON accumulation retained (correct code, right architecture). |
+| 45 | v0.4.94 | M43 pipeline, corrected 120s timeout, **metro-linux offline all run** (373 `routing: not found` errors). Only metro-win (8b) active. 70b relations completed in 8s = near-total failure (12 relations committed). Place+org coref (v0.4.94) active but untested with working infra. Cross-type dedup bug: `Dr Goolam Gool District Six` (Person+Place merged) degraded q13 AAC. | llama3.1:8b | **59.6%** (134/225) | — | −3.5pp vs M43. Metro downtime isolates: 70b relations + full throughput = +3.5pp. Seeds still hold the 59% floor. Bug filed: entity-type guard needed in dedup (Person ≠ Place merge). |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 

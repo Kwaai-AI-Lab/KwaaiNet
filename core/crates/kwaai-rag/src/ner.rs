@@ -393,6 +393,148 @@ pub fn resolve_pronouns_from_candidates(
     results
 }
 
+/// Spatial pronouns that strongly indicate a place antecedent.
+/// "it"/"that"/"which" are excluded — too ambiguous.
+const SPATIAL_PRONOUNS: &[&str] = &["there", "where"];
+
+/// Definite descriptions → alias patterns for Place entities.
+const PLACE_DEFINITE_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("the district", "district"),
+    ("the area", "area"),
+    ("the neighbourhood", "neighbourhood"),
+    ("the neighborhood", "neighborhood"),
+    ("the suburb", "suburb"),
+    ("the street", "street"),
+    ("the road", "road"),
+    ("the building", "building"),
+    ("the mosque", "mosque"),
+    ("the church", "church"),
+    ("the field", "field"),
+    ("the park", "park"),
+];
+
+/// Definite descriptions → alias patterns for Organization entities.
+const ORG_DEFINITE_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("the organization", "organization"),
+    ("the organisation", "organisation"),
+    ("the group", "group"),
+    ("the movement", "movement"),
+    ("the committee", "committee"),
+    ("the party", "party"),
+    ("the league", "league"),
+    ("the association", "association"),
+    ("the college", "college"),
+    ("the school", "school"),
+    ("the congress", "congress"),
+    ("the council", "council"),
+];
+
+/// Resolve spatial pronouns ("there", "where") and definite place descriptions to
+/// known Place entities.
+///
+/// Only resolves to `in_chunk_candidates` — places explicitly named in the current
+/// chunk. Uses the most recently mentioned in-chunk place as the spatial antecedent.
+pub fn resolve_place_pronouns_from_candidates(
+    text: &str,
+    in_chunk_candidates: &[(String, Vec<String>)],
+) -> Vec<CorefResolution> {
+    if in_chunk_candidates.is_empty() {
+        return Vec::new();
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let text_lower = text.to_lowercase();
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (idx, &w) in words.iter().enumerate() {
+        let lower = core(w).to_lowercase();
+        if !SPATIAL_PRONOUNS.contains(&lower.as_str()) {
+            continue;
+        }
+        if !seen.insert(lower.clone()) {
+            continue;
+        }
+        let before_text = words[..idx].join(" ").to_lowercase();
+        // Resolve to the candidate with the rightmost mention before this pronoun
+        let best = in_chunk_candidates.iter().max_by_key(|(name, aliases)| {
+            let np = name.to_lowercase().split_whitespace()
+                .filter(|w| w.len() >= 4)
+                .filter_map(|w| before_text.rfind(w))
+                .max()
+                .unwrap_or(0);
+            let ap = aliases.iter().flat_map(|a| {
+                let al = a.to_lowercase();
+                al.split_whitespace()
+                    .filter(|w| w.len() >= 4)
+                    .filter_map(|w| before_text.rfind(w))
+                    .collect::<Vec<_>>()
+            }).max().unwrap_or(0);
+            np.max(ap)
+        });
+        if let Some((name, _)) = best {
+            // Guard: entity must actually appear before this pronoun
+            let nl = name.to_lowercase();
+            let mentioned = nl.split_whitespace()
+                .filter(|w| w.len() >= 4)
+                .any(|w| before_text.contains(w));
+            if mentioned {
+                let offset = words[..idx].iter().map(|s| s.len() + 1).sum::<usize>();
+                results.push(CorefResolution {
+                    surface: w.to_string(),
+                    entity_name: name.clone(),
+                    offset,
+                    confidence: 0.85,
+                    method: "spatial_pronoun",
+                });
+            }
+        }
+    }
+
+    // Definite place descriptions: alias matching (uses all window candidates)
+    for &(surface, alias_pat) in PLACE_DEFINITE_DESCRIPTIONS {
+        let Some(offset) = text_lower.find(surface) else { continue; };
+        let matched = in_chunk_candidates.iter()
+            .find(|(_, aliases)| aliases.iter().any(|a| a.to_lowercase() == alias_pat));
+        if let Some((name, _)) = matched {
+            results.push(CorefResolution {
+                surface: surface.to_string(),
+                entity_name: name.clone(),
+                offset,
+                confidence: 0.9,
+                method: "place_alias_match",
+            });
+        }
+    }
+    results
+}
+
+/// Resolve definite descriptions to known Organization entities by alias matching.
+pub fn resolve_org_descriptions_from_candidates(
+    text: &str,
+    candidates: &[(String, Vec<String>)],
+) -> Vec<CorefResolution> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let text_lower = text.to_lowercase();
+    let mut results = Vec::new();
+    for &(surface, alias_pat) in ORG_DEFINITE_DESCRIPTIONS {
+        let Some(offset) = text_lower.find(surface) else { continue; };
+        let matched = candidates.iter()
+            .find(|(_, aliases)| aliases.iter().any(|a| a.to_lowercase() == alias_pat));
+        if let Some((name, _)) = matched {
+            results.push(CorefResolution {
+                surface: surface.to_string(),
+                entity_name: name.clone(),
+                offset,
+                confidence: 0.9,
+                method: "org_alias_match",
+            });
+        }
+    }
+    results
+}
+
 /// Find the rightmost candidate in `words_before` — the proper-noun most recently
 /// mentioned before the pronoun. Used as strategy 2 in `resolve_pronouns` when the
 /// graph snapshot is empty (reset builds). No gender check — serves as a heuristic.

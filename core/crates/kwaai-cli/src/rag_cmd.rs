@@ -4146,10 +4146,14 @@ async fn cmd_coref(
             .copied()
             .collect();
 
-        // Get candidate antecedents from graph
+        // Get candidate antecedents from graph (Person, Place, Organization)
         let candidates = store.coref_candidates_for_chunk(chunk_id, &adjacent);
-        if candidates.is_empty() {
-            continue; // no Person entities in context — nothing to resolve to
+        let place_candidates =
+            store.coref_typed_candidates_for_chunk(chunk_id, &adjacent, "place");
+        let org_candidates =
+            store.coref_typed_candidates_for_chunk(chunk_id, &adjacent, "organization");
+        if candidates.is_empty() && place_candidates.is_empty() && org_candidates.is_empty() {
+            continue;
         }
 
         // ── Tier 1a: definite description / alias matching ────────────────────
@@ -4222,6 +4226,73 @@ async fn cmd_coref(
             }
         }
 
+        // ── Tier 1 (Place): spatial pronouns + definite descriptions ─────────
+        if !place_candidates.is_empty() {
+            let in_chunk_places: Vec<(String, Vec<String>)> = place_candidates
+                .iter()
+                .filter(|(name, aliases)| {
+                    let nl = name.to_lowercase();
+                    nl.split_whitespace().any(|w| w.len() >= 4 && chunk_lower.contains(w))
+                        || aliases.iter().any(|a| {
+                            let al = a.to_lowercase();
+                            al.split_whitespace().any(|w| w.len() >= 4 && chunk_lower.contains(w))
+                        })
+                })
+                .cloned()
+                .collect();
+            for r in kwaai_rag::ner::resolve_place_pronouns_from_candidates(
+                &chunk.text,
+                &in_chunk_places,
+            ) {
+                if seen_entities.insert(r.entity_name.clone()) {
+                    tier1.push(r);
+                }
+            }
+            // Tier 2: LLM for unresolved spatial pronouns
+            if !no_llm && !in_chunk_places.is_empty() {
+                let resolved_surfaces: std::collections::HashSet<String> =
+                    tier1.iter().map(|r| r.surface.to_lowercase()).collect();
+                for pronoun in
+                    &extract_unresolved_spatial_pronouns(&chunk.text, &resolved_surfaces)
+                {
+                    let window_text = extract_pronoun_window(&chunk.text, pronoun, 300);
+                    let resolved = call_llm_for_place_coref(
+                        inference_url,
+                        model,
+                        pronoun,
+                        &window_text,
+                        &in_chunk_places,
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(entity_name) = resolved {
+                        if seen_entities.insert(entity_name.clone()) {
+                            tier2.push(kwaai_rag::ner::CorefResolution {
+                                surface: pronoun.clone(),
+                                entity_name,
+                                offset: 0,
+                                confidence: 0.7,
+                                method: "place_llm",
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Tier 1 (Organization): definite descriptions ─────────────────────
+        if !org_candidates.is_empty() {
+            for r in kwaai_rag::ner::resolve_org_descriptions_from_candidates(
+                &chunk.text,
+                &org_candidates,
+            ) {
+                if seen_entities.insert(r.entity_name.clone()) {
+                    tier1.push(r);
+                }
+            }
+        }
+
         let all_resolutions: Vec<&kwaai_rag::ner::CorefResolution> =
             tier1.iter().chain(tier2.iter()).collect();
 
@@ -4240,14 +4311,38 @@ async fn cmd_coref(
             "**Doc:** {}  chunk #{}\n\n",
             chunk.doc_name, chunk.chunk_index
         ));
-        out.push_str("**Candidates:**\n");
-        for (name, aliases, gender) in &candidates {
-            let g = gender.as_deref().unwrap_or("?");
-            let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(3).collect();
-            if shown.is_empty() {
-                out.push_str(&format!("  - {name} [{g}]\n"));
-            } else {
-                out.push_str(&format!("  - {name} [{g}]  ({})\n", shown.join(", ")));
+        if !candidates.is_empty() {
+            out.push_str("**Person candidates:**\n");
+            for (name, aliases, gender) in &candidates {
+                let g = gender.as_deref().unwrap_or("?");
+                let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(3).collect();
+                if shown.is_empty() {
+                    out.push_str(&format!("  - {name} [{g}]\n"));
+                } else {
+                    out.push_str(&format!("  - {name} [{g}]  ({})\n", shown.join(", ")));
+                }
+            }
+        }
+        if !place_candidates.is_empty() {
+            out.push_str("**Place candidates:**\n");
+            for (name, aliases) in &place_candidates {
+                let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(3).collect();
+                if shown.is_empty() {
+                    out.push_str(&format!("  - {name}\n"));
+                } else {
+                    out.push_str(&format!("  - {name}  ({})\n", shown.join(", ")));
+                }
+            }
+        }
+        if !org_candidates.is_empty() {
+            out.push_str("**Org candidates:**\n");
+            for (name, aliases) in &org_candidates {
+                let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(3).collect();
+                if shown.is_empty() {
+                    out.push_str(&format!("  - {name}\n"));
+                } else {
+                    out.push_str(&format!("  - {name}  ({})\n", shown.join(", ")));
+                }
             }
         }
         out.push_str("\n**Resolutions:**\n");
@@ -4467,6 +4562,76 @@ async fn call_llm_for_coref(
     } else {
         None
     })
+}
+
+fn extract_unresolved_spatial_pronouns(
+    text: &str,
+    already_resolved: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    const SPATIAL: &[&str] = &["there", "where"];
+    let lower = text.to_lowercase();
+    SPATIAL
+        .iter()
+        .filter(|&&p| !already_resolved.contains(p))
+        .filter(|&&p| {
+            lower.split_whitespace().any(|w| {
+                let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+                w == p
+            })
+        })
+        .map(|&p| p.to_string())
+        .collect()
+}
+
+async fn call_llm_for_place_coref(
+    inference_url: &str,
+    model: &str,
+    pronoun: &str,
+    window_text: &str,
+    candidates: &[(String, Vec<String>)],
+) -> Result<Option<String>> {
+    let candidate_block: String = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, (name, aliases))| {
+            if aliases.is_empty() {
+                format!("  {}. {name}", i + 1)
+            } else {
+                let shown: Vec<&str> = aliases.iter().map(|a| a.as_str()).take(2).collect();
+                format!("  {}. {name}  ({})", i + 1, shown.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let names_list: Vec<&str> = candidates.iter().map(|(n, _)| n.as_str()).collect();
+    let names_csv = names_list.join(", ");
+    let prompt = format!(
+        "In the following passage, what place or location does \"{pronoun}\" refer to?\n\
+         \n\
+         Candidates:\n{candidate_block}\n\
+         \n\
+         Rules:\n\
+         - Answer with the EXACT canonical name from the list: {names_csv}\n\
+         - If uncertain or not determinable, answer \"none\"\n\
+         \n\
+         Return ONLY valid JSON: {{\"referent\": \"Exact Name\"}} or {{\"referent\": \"none\"}}\n\
+         \n\
+         Passage:\n{window_text}"
+    );
+    let raw = call_llm_for_relations(inference_url, model, &prompt).await?;
+    let start = raw.find('{').unwrap_or(0);
+    let end = raw.rfind('}').map(|e| e + 1).unwrap_or(raw.len());
+    let json_str = &raw[start..end];
+    let v: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let referent = v["referent"].as_str().unwrap_or("none");
+    if referent == "none" || referent.is_empty() {
+        return Ok(None);
+    }
+    let valid = names_list.contains(&referent);
+    Ok(if valid { Some(referent.to_string()) } else { None })
 }
 
 // ── extract-relations ─────────────────────────────────────────────────────────

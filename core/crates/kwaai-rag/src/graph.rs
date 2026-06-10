@@ -1264,6 +1264,35 @@ impl GraphStore {
         candidates
     }
 
+    /// Gather entity candidates of a specific type (Place, Organization, …) for coref.
+    /// Returns `(name, aliases)` pairs — no gender field, unlike person candidates.
+    pub fn coref_typed_candidates_for_chunk(
+        &self,
+        chunk_id: i64,
+        adjacent_chunk_ids: &[i64],
+        entity_type: &str,
+    ) -> Vec<(String, Vec<String>)> {
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+        let all_chunk_ids = std::iter::once(&chunk_id).chain(adjacent_chunk_ids.iter());
+        for &cid in all_chunk_ids {
+            if let Some(entity_ids) = self.chunk_to_entities.get(&cid) {
+                for &eid in entity_ids {
+                    if seen.contains(&eid) {
+                        continue;
+                    }
+                    if let Some(node) = self.nodes.get(&eid) {
+                        if node.entity_type.eq_ignore_ascii_case(entity_type) {
+                            seen.insert(eid);
+                            candidates.push((node.name.clone(), node.aliases.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        candidates
+    }
+
     pub fn chunks_for_entity(&self, entity_id: i64) -> &[i64] {
         self.entity_to_chunks
             .get(&entity_id)
