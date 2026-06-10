@@ -811,17 +811,19 @@ impl GraphStore {
         }
 
         // ── Constraint: familial relations require both endpoints to be Person entities ──
+        // If an entity is absent from the graph (e.g., a seed target not yet extracted),
+        // treat it as potentially valid — absent entities can't be "wrong type".
         if FAMILIAL_RELS.contains(&relation_type) {
             let src_is_person = self
                 .nodes
                 .get(&src_id)
                 .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
-                .unwrap_or(false);
+                .unwrap_or(true); // absent → assume OK; only reject known non-Person entities
             let dst_is_person = self
                 .nodes
                 .get(&dst_id)
                 .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
-                .unwrap_or(false);
+                .unwrap_or(true);
             if !src_is_person || !dst_is_person {
                 return Ok(()); // silently skip — non-person familial relations are always errors
             }
@@ -1086,7 +1088,7 @@ impl GraphStore {
     /// entries — so `Peter parent_of Yousuf` will appear on Peter's list but NOT on Yousuf's
     /// (Yousuf's `child_of Peter` DB record appears there instead).
     /// Used by the Obsidian exporter for semantically-correct directed relation display.
-    pub fn outgoing_relations(&self, entity_id: i64) -> Result<Vec<(i64, String, f32)>> {
+    pub fn outgoing_relations(&self, entity_id: i64) -> Result<Vec<(i64, String, f32, usize)>> {
         let rtxn = self.db.begin_read()?;
         let table = rtxn.open_table(RELATIONS_TABLE)?;
         let prefix: Vec<u8> = entity_id.to_le_bytes().to_vec();
@@ -1095,11 +1097,111 @@ impl GraphStore {
             let (k, v) = item?;
             if k.value().starts_with(&prefix) {
                 if let Ok(rel) = serde_json::from_slice::<RelationRecord>(v.value()) {
-                    out.push((rel.dst_id, rel.relation_type, rel.strength));
+                    let evid = rel.evidence_chunk_ids.len();
+                    out.push((rel.dst_id, rel.relation_type, rel.strength, evid));
                 }
             }
         }
         Ok(out)
+    }
+
+    /// For each `spouse_of` pair, identify the female entity (by gender field) and search
+    /// for other Person entities that share her first name but carry a different surname.
+    /// Those are candidate pre-marriage (maiden name) forms of the same person.
+    ///
+    /// Requires `sanitize_relations` to have been run first so that `gender` fields are
+    /// populated from pronoun cues in entity descriptions.
+    pub fn infer_maiden_name_candidates(&self) -> Result<Vec<(i64, i64, String)>> {
+        let spouse_rels: Vec<RelationRecord> = {
+            let rtxn = self.db.begin_read()?;
+            let table = rtxn.open_table(RELATIONS_TABLE)?;
+            table
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(_, v)| serde_json::from_slice::<RelationRecord>(v.value()).ok())
+                .filter(|r| r.relation_type == "spouse_of")
+                .collect()
+        };
+
+        let mut seen_pairs: std::collections::HashSet<(i64, i64)> =
+            std::collections::HashSet::new();
+        let mut candidates: Vec<(i64, i64, String)> = Vec::new();
+
+        for rel in &spouse_rels {
+            let pair = if rel.src_id < rel.dst_id {
+                (rel.src_id, rel.dst_id)
+            } else {
+                (rel.dst_id, rel.src_id)
+            };
+            if !seen_pairs.insert(pair) {
+                continue;
+            }
+
+            let a = match self.nodes.get(&rel.src_id) {
+                Some(n) if n.entity_type.to_lowercase() == "person" => n,
+                _ => continue,
+            };
+            let b = match self.nodes.get(&rel.dst_id) {
+                Some(n) if n.entity_type.to_lowercase() == "person" => n,
+                _ => continue,
+            };
+
+            // Identify the female entity using the gender field set by sanitize_relations.
+            // Surname-sharing heuristics are not used — they fail when both spouses carry
+            // the same surname (the common case when the wife takes the husband's name).
+            let (female, male) = {
+                let ga = a.gender.as_deref();
+                let gb = b.gender.as_deref();
+                if ga == Some("Female") && gb != Some("Female") {
+                    (a, b)
+                } else if gb == Some("Female") && ga != Some("Female") {
+                    (b, a)
+                } else {
+                    // Gender unknown for both or same gender — skip; run sanitize first.
+                    continue;
+                }
+            };
+
+            // Female's first name token
+            let first_name = match female.name.split_whitespace().next() {
+                Some(f) if f.len() >= 3 => f.to_lowercase(),
+                _ => continue,
+            };
+
+            // Male's surname token (last word)
+            let male_surname = match male.name.split_whitespace().last() {
+                Some(s) if s.len() >= 3 => s.to_lowercase(),
+                _ => continue,
+            };
+
+            // Search for Person entities sharing the female's first name but NOT having the
+            // husband's surname — these are potential pre-marriage (maiden name) forms.
+            for node in self.nodes.values() {
+                if node.id == female.id || node.id == male.id {
+                    continue;
+                }
+                if node.entity_type.to_lowercase() != "person" {
+                    continue;
+                }
+                let node_tokens: Vec<String> =
+                    node.name.split_whitespace().map(|w| w.to_lowercase()).collect();
+                let node_first = node_tokens.first().map(|s| s.as_str()).unwrap_or("");
+                if node_first != first_name {
+                    continue;
+                }
+                // Must NOT contain the husband's surname (that would be the same married form)
+                if node_tokens.contains(&male_surname) {
+                    continue;
+                }
+                let reason = format!(
+                    "{} (maiden) ← first name '{}' matches {} (married name, spouse of {})",
+                    node.name, first_name, female.name, male.name
+                );
+                candidates.push((female.id, node.id, reason));
+            }
+        }
+
+        Ok(candidates)
     }
 
     pub fn node_count(&self) -> usize {

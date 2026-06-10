@@ -64,6 +64,7 @@ persons:
       - "Ayesha"
       - "Lallie Gool"
       - "Ayesha Gool"
+      - "Ayesha Lallie Gool"
 
   - canonical: "Mohamed Saaid Gool"
     aliases:
@@ -80,6 +81,9 @@ persons:
       - "Jolly (Zohra)"
       - "Jolly"
       - "Zohra"
+      - "Zohra Jolly Gool"
+
+  - canonical: "Ahmed Abdurahman"
 
   # ─── Branch 2: JMH + Wahida ────────────────────────────────────────────────
 

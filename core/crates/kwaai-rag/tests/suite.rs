@@ -1309,7 +1309,7 @@ fn graph_outgoing_relations_directed() {
     let outgoing = g.outgoing_relations(aid).unwrap();
     assert!(outgoing
         .iter()
-        .any(|(id, rel, _)| *id == bid && rel == "related_to"));
+        .any(|(id, rel, _, _)| *id == bid && rel == "related_to"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

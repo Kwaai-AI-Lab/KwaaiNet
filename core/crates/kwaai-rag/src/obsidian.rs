@@ -110,12 +110,13 @@ pub fn export_vault(graph: &GraphStore, out_dir: &Path, kb_name: &str) -> Result
 
         let relations = graph.outgoing_relations(node.id)?;
         let mut rel_lines = String::new();
-        for (dst_id, rel_type, strength) in &relations {
+        for (dst_id, rel_type, strength, evid) in &relations {
             if let Some((dst_name, _)) = name_type.get(dst_id) {
                 rel_lines.push_str(&format!(
-                    "- **{}** [[{}]]  *(strength: {:.2})*\n",
+                    "- **{}** [[{}]]  *({} evid · strength: {:.2})*\n",
                     rel_type,
                     slug(dst_name),
+                    evid,
                     strength
                 ));
             }

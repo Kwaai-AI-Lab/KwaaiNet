@@ -1985,6 +1985,21 @@ pub enum GraphAction {
         limit: Option<usize>,
     },
 
+    /// Propose entity merges derived from marriage (spouse_of) relations.
+    /// For each spouse pair, identifies the female entity by gender or shared surname,
+    /// then searches for other Person entities with the same first name but a different
+    /// surname — likely pre-marriage (maiden name) forms of the same person.
+    /// Prints proposals by default. Use --commit to merge them into the graph.
+    CorefMarriage {
+        /// Write review markdown to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        output: Option<std::path::PathBuf>,
+
+        /// Actually merge the proposed entities (default: dry-run only)
+        #[arg(long)]
+        commit: bool,
+    },
+
     /// Export the knowledge graph to an Obsidian vault
     Export {
         /// Output directory for the vault (created if absent)

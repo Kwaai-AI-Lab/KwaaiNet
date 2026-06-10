@@ -3587,6 +3587,100 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 .await;
             }
 
+            GraphAction::CorefMarriage { output, commit } => {
+                #[cfg(not(feature = "storage"))]
+                bail!("RAG requires the 'storage' feature.");
+
+                #[cfg(feature = "storage")]
+                {
+                    let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+                    let mut store =
+                        kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .context("opening graph store")?;
+
+                    let candidates = store
+                        .infer_maiden_name_candidates()
+                        .context("maiden name inference")?;
+
+                    if candidates.is_empty() {
+                        println!("No maiden-name merge candidates found.");
+                        return Ok(());
+                    }
+
+                    // Collect names upfront to avoid borrow conflicts during merge
+                    let resolved: Vec<(i64, i64, String, String, String)> = candidates
+                        .iter()
+                        .map(|(married_id, maiden_id, reason)| {
+                            let mn = store
+                                .get_entity(*married_id)
+                                .map(|n| n.name.clone())
+                                .unwrap_or_else(|| "?".to_string());
+                            let dn = store
+                                .get_entity(*maiden_id)
+                                .map(|n| n.name.clone())
+                                .unwrap_or_else(|| "?".to_string());
+                            (*married_id, *maiden_id, mn, dn, reason.clone())
+                        })
+                        .collect();
+
+                    let mut lines: Vec<String> = Vec::new();
+                    lines.push(format!(
+                        "# Marriage-based maiden name merge proposals ({})\n",
+                        resolved.len()
+                    ));
+                    lines.push(
+                        "Each row: married entity · maiden-name entity · reason\n".to_string(),
+                    );
+
+                    let mut merge_count = 0usize;
+                    for (married_id, maiden_id, married_name, maiden_name, reason) in &resolved {
+                        lines.push(format!(
+                            "- **{}** ← merge ← **{}**\n  _{}_",
+                            married_name, maiden_name, reason
+                        ));
+
+                        if commit {
+                            match store.merge_entity_into(*maiden_id, *married_id) {
+                                Ok(n) => {
+                                    println!(
+                                        "  merged '{}' into '{}' ({} relations moved)",
+                                        maiden_name, married_name, n
+                                    );
+                                    merge_count += 1;
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "  WARN: could not merge '{}' into '{}': {}",
+                                        maiden_name, married_name, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    let report = lines.join("\n");
+
+                    if let Some(path) = output {
+                        std::fs::write(&path, &report)?;
+                        println!("Written to {}", path.display());
+                    } else {
+                        println!("{}", report);
+                    }
+
+                    if commit {
+                        store
+                            .rebuild_in_memory()
+                            .context("rebuild after marriage merges")?;
+                        println!("\n{} entities merged via marriage deduction.", merge_count);
+                    } else {
+                        println!(
+                            "\n{} candidate(s) found. Re-run with --commit to merge.",
+                            candidates.len()
+                        );
+                    }
+                }
+            }
+
             GraphAction::Export { output_dir } => {
                 return cmd_export(output_dir, kb).await;
             }
@@ -6730,11 +6824,37 @@ async fn cmd_enrich_entities(
             print_info(&format!("  Limit:         {}", l));
         }
 
+        // Resolve p2p:// or mux:// URLs to a local HTTP proxy before handing off to
+        // enrich (which uses raw reqwest and cannot handle non-HTTP schemes).
+        let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
+        let resolved_url: String =
+            if effective_url.starts_with("p2p://") || effective_url.starts_with("mux://") {
+                use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+                let sock = std::env::var("KWAAINET_SOCKET")
+                    .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+                #[cfg(unix)]
+                let addr = format!("/unix/{sock}");
+                #[cfg(not(unix))]
+                let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+                let p2p = std::sync::Arc::new(
+                    P2PClient::connect(&addr)
+                        .await
+                        .context("connecting to p2pd for p2p:// URL resolution")?,
+                );
+                let (resolved, handles) =
+                    crate::ollama_proxy::resolve_inference_urls(&[effective_url.clone()], &p2p)
+                        .await?;
+                _proxy_handles = handles;
+                resolved.into_iter().next().unwrap_or(effective_url)
+            } else {
+                effective_url
+            };
+
         let data_dir = rag_cfg.data_dir();
         let report = enrich_entity_descriptions(
             &cfg,
             &model,
-            &effective_url,
+            &resolved_url,
             &embed,
             &data_dir,
             tenant_id,

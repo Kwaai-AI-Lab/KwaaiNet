@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-p2p-daemon"
-version = "0.1.4"
+version = "0.4.94"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "kwaai-rag"
-version = "0.4.94"
+version = "0.4.95"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
