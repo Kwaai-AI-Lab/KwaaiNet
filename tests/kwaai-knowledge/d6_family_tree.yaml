@@ -458,6 +458,16 @@ relations:
   # ─── Abdurahman → Cissie ───────────────────────────────────────────────────
   - { from: "Dr. Abdulla Abdurahman", to: "Cissie Gool", type: "parent_of" }
 
+  # ─── JMH Gool grandchildren (via Ayesha) — direct seed for q09 ──────────
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Yousuf Rassool",   type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Abdul Rassool",    type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Fazil Rassool",    type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Zain Rassool",     type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Rasheda Rassool",  type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Berina Rassool",   type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Yasmin Rassool",   type: "grandparent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Nasim Rassool",    type: "grandparent_of" }
+
   # ─── Rassool children ─────────────────────────────────────────────────────
   - { from: "Ayesha Rassool",          to: "Yousuf Rassool", type: "parent_of" }
   - { from: "Peter Alexander Rassool", to: "Yousuf Rassool", type: "parent_of" }
@@ -486,9 +496,6 @@ relations:
   - { from: "Yousuf Rassool",          to: "Feyruz Rassool",  type: "parent_of" }
   - { from: "Yousuf Rassool",          to: "Reza Rassool",    type: "parent_of" }
   - { from: "Yousuf Rassool",          to: "Zarina Rassool",  type: "parent_of" }
-  - { from: "Nazima Rassool",          to: "Feyruz Rassool",  type: "parent_of" }
-  - { from: "Nazima Rassool",          to: "Reza Rassool",    type: "parent_of" }
-  - { from: "Nazima Rassool",          to: "Zarina Rassool",  type: "parent_of" }
 
   # ─── Children of Abdul Hamid + Cissie ──────────────────────────────────────
   - { from: "Abdul Hamid Gool", to: "Shaheen Gool", type: "parent_of" }
