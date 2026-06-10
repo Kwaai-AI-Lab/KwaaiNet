@@ -3,7 +3,6 @@ name = "kwaai-storage"
 version = "0.1.0"
 edition = "2021"
 description = "Multi-tenant vector storage fabric for KwaaiNet (Eve role) — embedded, zero deps"
-publish = false
 
 [dependencies]
 anyhow = "1"

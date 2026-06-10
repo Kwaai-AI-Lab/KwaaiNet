@@ -5,7 +5,6 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "RAG library for KwaaiNet — chunking, embedding, retrieval, and prompting"
-publish = false
 
 [dependencies]
 anyhow = { workspace = true }
