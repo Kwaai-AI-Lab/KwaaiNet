@@ -223,7 +223,10 @@ pub async fn extract_and_store_entities_pub(
     if graph_cfg.ec_refine_only {
         println!("  EC refine-only: skipping CC extraction, re-scoring existing entities");
         {
-            let mut g = graph_cfg.store.lock().unwrap();
+            let mut g = graph_cfg.store.lock().unwrap_or_else(|e| {
+                warn!("graph store mutex was poisoned; recovering inner value");
+                e.into_inner()
+            });
             g.sync_evidence();
             if let Err(e) = g.score_all_confidences() {
                 warn!("confidence scoring failed: {e}");
@@ -347,7 +350,10 @@ pub async fn extract_and_store_entities_pub(
     // Snapshot Person entity genders for pronoun resolution.  Taken once before
     // the spawn loop so async tasks never need to hold the graph lock.
     let gender_context = Arc::new({
-        let g = store.lock().unwrap();
+        let g = store.lock().unwrap_or_else(|e| {
+            warn!("graph store mutex was poisoned; recovering inner value");
+            e.into_inner()
+        });
         g.all_entities()
             .filter(|e| e.entity_type == "Person")
             .map(|e| (e.name.clone(), e.gender.clone()))
@@ -540,7 +546,10 @@ pub async fn extract_and_store_entities_pub(
     // link_chunk(), but not automatically reflected on in-memory EntityNode fields).
     // Needed so EC refinement and confidence scoring can read per-entity chunk lists.
     {
-        let mut g = store.lock().unwrap();
+        let mut g = store.lock().unwrap_or_else(|e| {
+            warn!("graph store mutex was poisoned; recovering inner value");
+            e.into_inner()
+        });
         g.sync_evidence();
         if let Err(e) = g.score_all_confidences() {
             warn!("confidence scoring failed: {e}");
@@ -1491,7 +1500,10 @@ async fn refine_low_confidence_entities(
 
     // Collect targets: low-confidence entities matching our entity_types filter.
     let targets: Vec<(i64, String, String, Vec<i64>, f32)> = {
-        let g = cfg.store.lock().unwrap();
+        let g = cfg.store.lock().unwrap_or_else(|e| {
+            warn!("graph store mutex was poisoned; recovering inner value");
+            e.into_inner()
+        });
         let mut v: Vec<_> = g
             .all_entities()
             .filter(|n| {
@@ -1536,7 +1548,10 @@ async fn refine_low_confidence_entities(
 
     let mut improved = 0usize;
     let mut confidence_delta_sum = 0f32;
-    let initial_entity_count = cfg.store.lock().unwrap().node_count();
+    let initial_entity_count = cfg.store.lock().unwrap_or_else(|e| {
+        warn!("graph store mutex was poisoned; recovering inner value");
+        e.into_inner()
+    }).node_count();
 
     // Sequential refinement (EC calls are already expensive; no need to parallelize at budget=50).
     for (target_id, entity_name, _entity_type, evidence, old_conf) in &targets {
@@ -1662,7 +1677,10 @@ async fn refine_low_confidence_entities(
                 confidence: 0.0, // will be re-scored below
             };
 
-            let mut g = cfg.store.lock().unwrap();
+            let mut g = cfg.store.lock().unwrap_or_else(|e| {
+                warn!("graph store mutex was poisoned; recovering inner value");
+                e.into_inner()
+            });
             if let Err(e) = g.upsert_entity(node) {
                 warn!("EC refinement upsert error: {e}");
             }
@@ -1670,7 +1688,10 @@ async fn refine_low_confidence_entities(
 
         // Re-score the target entity to measure improvement.
         let new_conf = {
-            let mut g = cfg.store.lock().unwrap();
+            let mut g = cfg.store.lock().unwrap_or_else(|e| {
+                warn!("graph store mutex was poisoned; recovering inner value");
+                e.into_inner()
+            });
             g.rescore_entity(*target_id)
         };
 
@@ -1682,13 +1703,19 @@ async fn refine_low_confidence_entities(
 
     // Persist updated confidence scores.
     {
-        let mut g = cfg.store.lock().unwrap();
+        let mut g = cfg.store.lock().unwrap_or_else(|e| {
+            warn!("graph store mutex was poisoned; recovering inner value");
+            e.into_inner()
+        });
         if let Err(e) = g.score_all_confidences() {
             warn!("EC refinement confidence persist failed: {e}");
         }
     }
 
-    let final_entity_count = cfg.store.lock().unwrap().node_count();
+    let final_entity_count = cfg.store.lock().unwrap_or_else(|e| {
+        warn!("graph store mutex was poisoned; recovering inner value");
+        e.into_inner()
+    }).node_count();
     let new_entities = final_entity_count.saturating_sub(initial_entity_count);
     let avg_delta = if improved > 0 {
         confidence_delta_sum / improved as f32
