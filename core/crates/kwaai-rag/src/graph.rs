@@ -3706,8 +3706,11 @@ entities or omit the fictional one entirely.\n\n\
         },
     });
 
+    // Note: the P2P relay buffers the full response before returning headers,
+    // so this timeout covers the full round-trip (relay + generation), not
+    // just connection setup. 120s gives headroom for slow chunks on loaded GPUs.
     let send_result = tokio::time::timeout(
-        std::time::Duration::from_secs(30), // relay overhead only — not generation time
+        std::time::Duration::from_secs(120),
         client.post(&url).json(&body).send(),
     )
     .await;
@@ -3718,7 +3721,7 @@ entities or omit the fictional one entirely.\n\n\
             return Ok((vec![], vec![]));
         }
         Err(_) => {
-            tracing::warn!("entity extraction send timed out after 30s");
+            tracing::warn!("entity extraction send timed out after 120s");
             return Ok((vec![], vec![]));
         }
     };
