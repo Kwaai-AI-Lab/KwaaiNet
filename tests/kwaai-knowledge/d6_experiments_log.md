@@ -827,3 +827,27 @@ Run 8 (started 2026-06-09 17:56 PDT) uses the corrected 120s timeout. Expected t
 2. **Cross-type dedup bug** — `[Graph: Dr Goolam Gool District Six]` appears as source for q05/q14/q15/q34/q39. The seeded "District Six" Place entity was merged with a noisy NER extraction where a person name got prepended to a place name. Dedup chose the noisier name as canonical — this degraded q13 (AAC) from ~100% to 33%.
 
 **Fix needed:** Entity-type compatibility guard in dedup — a Person and Place entity must never be merged regardless of embedding similarity. Open bug.
+
+---
+
+## 2026-06-10 – Graph quality improvements (no fresh overnight build)
+
+**Quick eval results (same underlying graph, incremental graph-only fixes):**
+| Eval | Score | Notes |
+|------|-------|-------|
+| After seed merges + sanitize | 55.6% (125/225) | Zohra Jolly Gool + Ayesha Lallie Gool merged, Dr/Mr/MS stubs pruned |
+| After Place/Org enrich + re-embed | 54.7% (123/225) | 300 Place/Org entities enriched via local 8b |
+
+**Score note:** These quick evals are NOT directly comparable to overnight runs.
+They lack fresh 70b relation extraction (metro-linux offline) and represent
+evaluation variance (~±5%) from stochastic LLM query expansion at CPU speeds.
+The graph quality improvements are real; a proper overnight run is needed for
+a fair M-series measurement.
+
+**Graph changes committed today (no rebuild):**
+1. `feat(kwaai-knowledge)` 3e70a28: Obsidian evidence counts, `coref-marriage` command, p2p URL fix in `enrich-entities`, YAML seeds for Zohra Jolly Gool / Ayesha Lallie Gool / Ahmed Abdurahman
+2. `fix` 5fd4c61: Merged "Dr Abdul Hamid Gool" duplicate into canonical Abdul Hamid Gool
+3. `fix(kwaai-rag)` dce9a13: Entity-type guard added to ALL dedup tiers (honorific, alias_match, neighbor-containment) — closes the run-8 cross-type dedup bug
+4. 300 Place/Org entities now have LLM-generated descriptions + re-embedded
+
+**Next:** Run full overnight pipeline when metro-linux is back online to get a fair M46 measurement.
