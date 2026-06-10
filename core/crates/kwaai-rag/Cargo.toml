@@ -1,6 +1,6 @@
 [package]
 name = "kwaai-rag"
-version.workspace = true
+version = "0.4.95"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

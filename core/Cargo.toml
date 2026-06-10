@@ -148,7 +148,7 @@ kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.4.2" }
 kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.4.94" }
 kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.4.2" }
 kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.1.0" }
-kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.4.94" }
+kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.4.95" }
 kwaai-rpc          = { path = "crates/kwaai-rpc",          version = "0.4.94" }
 
 # Async runtime
