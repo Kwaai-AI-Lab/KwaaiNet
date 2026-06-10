@@ -2572,6 +2572,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id))
                                 {
                                     "  [BLOCKED:R1/R2]"
+                                } else if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                    "  [BLOCKED:DESC]"
                                 } else if store.dedup_r3_high_risk_surname(*alias_id, *canonical_id)
                                 {
                                     "  [DEFERRED:R3]"
@@ -2618,6 +2620,22 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .unwrap_or_default();
                                 println!(
                                     "    blocked (R1/R2) '{}' ↔ '{}'  sim={:.3}",
+                                    aname, cname, sim
+                                );
+                                continue;
+                            }
+                            // Description-divergence block: descriptions present and clearly differ
+                            if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                let aname = store
+                                    .get_entity(*alias_id)
+                                    .map(|n| n.name.clone())
+                                    .unwrap_or_default();
+                                let cname = store
+                                    .get_entity(*canonical_id)
+                                    .map(|n| n.name.clone())
+                                    .unwrap_or_default();
+                                println!(
+                                    "    blocked (DESC) '{}' ↔ '{}'  sim={:.3}  — descriptions diverge",
                                     aname, cname, sim
                                 );
                                 continue;
@@ -2748,6 +2766,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id))
                                 {
                                     "  [BLOCKED:R1/R2]"
+                                } else if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                    "  [BLOCKED:DESC]"
                                 } else if store.dedup_r3_high_risk_surname(*alias_id, *canonical_id)
                                 {
                                     "  [DEFERRED:R3]"
@@ -2774,6 +2794,22 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .map(|n| n.name.clone())
                                     .unwrap_or_default();
                                 println!("    blocked (R1/R2) '{}' skipped  [{}]", aname, reason);
+                                continue;
+                            }
+                            // Description-divergence block
+                            if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                let aname = store
+                                    .get_entity(*alias_id)
+                                    .map(|n| n.name.clone())
+                                    .unwrap_or_default();
+                                let cname = store
+                                    .get_entity(*canonical_id)
+                                    .map(|n| n.name.clone())
+                                    .unwrap_or_default();
+                                println!(
+                                    "    blocked (DESC) '{}' → '{}'  [{}]  — descriptions diverge",
+                                    aname, cname, reason
+                                );
                                 continue;
                             }
                             // R3 soft downgrade for high-risk surnames

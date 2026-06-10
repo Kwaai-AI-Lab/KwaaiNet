@@ -1,19 +1,44 @@
 # Plan: D6 RAG Accuracy Improvement — Phased Pipeline Upgrade
 
-**Rename this file to `d6-rag-accuracy-improvement.md` after exiting plan mode.**
+## Progress tracker
+
+| Phase | Status | Recall | Date |
+|-------|--------|--------|------|
+| Baseline (Person-only, first-name dedup) | ✅ Complete | 53.3% | 2026-06-04 |
+| Structure-aware ingestion + coref + CC/EC relations | ✅ Complete | 54.4% avg (3 runs) | 2026-06-08 |
+| Org/Place seed entities + 16 relations (YAML) | ✅ Complete | **63.1%** | 2026-06-09 |
+| 120s timeout fix + stream:true entity extraction | ✅ Complete (run 8 in progress) | TBD | 2026-06-09 |
+| `enrich-entities` — LLM paragraph summaries | ⏳ Next | — | — |
+| Description-aware dedup (Tier 2 + Tier 3) | ✅ Implemented | — | 2026-06-09 |
+| Relation-aware dedup (R1/R2/R3) | ✅ Implemented | — | 2026-06-09 |
+| Seed JMH Gool parent_of edges → fix q24 | ⏳ Planned | +3–5pp | — |
+| Stronger answer model for q36 | ⏳ Planned | +2pp | — |
+| HyDE for q30 specific facts | ⏳ Planned | +1pp | — |
+
+**Current best: 63.1%  |  Target: 80–90%  |  Addressable gap: ~15pp**
+
+---
 
 ## Context
 
-The D6 knowledge base has 466 clean Person entities (Phase 1 complete) but **zero relations**.
-Without edges, `retrieve_graph_anchored()` BFS traversal does nothing — seed entities have no
-neighbours to follow. The four worst-scoring eval questions share two root causes:
+The D6 pipeline has evolved significantly from the original plan. Key findings:
 
-- **Missing edges**: q07 (wife: 0%) and q09 (grandfather: 11%) need `spouse_of`/`grandchild_of`
-  edges. `resolve_author_relative()` at `retriever.rs:285` is written and waiting for them.
-- **Thin descriptions**: q05 (J.M.H. Gool: 12%) and q20 (cricket: 20%) fail the quality gate
-  in `inject_entity_descriptions()` at `retriever.rs:398` (≥40 chars, ≥1 sentence required).
+- **Seed entities beat extraction**: Hand-curating 7 Org/Place nodes in `d6_family_tree.yaml` drove
+  the largest single improvement (+9.8pp). The graph's BFS traversal now has anchor nodes for every
+  political-org and place question.
+- **Description enrichment is the next multiplier**: Most entities have empty or thin descriptions.
+  After `enrich-entities` fills them, (a) retrieval improves for secondary figures, (b) the new
+  description-aware dedup can use semantic divergence to block false merges.
+- **Description-aware dedup (Tier 2 + Tier 3)**: Implemented 2026-06-09. Uses Jaccard word-overlap
+  on entity descriptions to block merges where descriptions clearly describe different people. Active
+  when both entities have descriptions ≥100 chars (post-enrich). Blocks show as `[BLOCKED:DESC]`.
+- **Relation-aware dedup (R1/R2/R3)**: Fully implemented. R1/R2 hard-block contradictory family
+  relations. R3 defers high-risk surname pairs (Gool, Rassool, etc.) without matching family evidence.
 
-Current baseline: **52.6% token-overlap recall, 1.80/2.0 judge score** (20-question D6 set).
+Original context (40-question eval set, 225 keywords):
+- q24 (JMH children) is 0–14% — fix by seeding parent_of edges
+- q36 (political orgs) is 17% — fix by using 70b answer model  
+- q30 (JMH arrival) is 0% — fix by seeding biographical facts or using HyDE
 
 **Template note**: This plan is written for D6 but is a template for any small memoir/biography KB.
 Steps tagged `[corpus-specific]` require KB-specific content authoring. Steps tagged

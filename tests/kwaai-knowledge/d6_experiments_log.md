@@ -11,6 +11,8 @@ Plan: [`projects/kwaai-knowledge/d6-person-entity-experiments.md`](../../project
 | D6_confidence_hybrid_10pct_v1_20260603 | 2026-06-03 | confidence hybrid Stage 2 | 114 (10%) | 223 CC | 242 CC+EC | — | — | 11 improved, 19 new discovered |
 | D6_mini_loop_10pct_20260604 | 2026-06-04 | full mini-loop | 114 (10%) | 223 CC | 241 final | **52.0%** | — | CC+EC+dedup+seed+dream+EC@0.34 |
 | D6_firstname_dedup_20260604 | 2026-06-04 | first-name dedup | full | 1085 | 1051 | **53.3%** | — | Cissie/Fatima/Zobeida merged; Tier 3E added; q38 +20pp |
+| D6_struct_coref_rel_20260609_122405 | 2026-06-09 | Org/Place seed entities | 1152 | 1451 | — | **63.1%** | — | +9.8pp: seed 7 Org/Place nodes + 16 relations |
+| D6_struct_coref_rel_20260609_162328 | 2026-06-09 | 30s timeout regression | 1152 | 45 | — | **61.3%** | — | REGRESSION: streaming fix 30s too short, 552 timeouts |
 
 ---
 
@@ -693,3 +695,101 @@ Per-question swings between the two runs:
 2. Fix eval stochasticity: run the 8b LLM at temperature=0 with a fixed seed
 3. Use a stronger eval model (70b or Claude) for answer generation — less variance
 4. Focus on structural improvements that move the needle by >5pp to clear the noise floor
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_122405
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 1984 entities, 196 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  1451 entities, 176 relations, health=36.5%, **63.1%** recall (142/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_122405.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260609_122405.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260609_122405.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 63.1% (142/225) |
+| q09 | Who was the author's grandfather? | 2/9 (22%) | LEST WE FORGET -rev25.pdf, [Graph: Yousuf Rassool] | 21457ms |
+| q12 | Who was Cissie Gool? | 3/6 (50%) | LEST WE FORGET -rev25.pdf, [Graph: Bibi Gool] | 26598ms |
+| q24 | Who were the children of J.M.H. Gool? | 0/7 (0%) | LEST WE FORGET -rev25.pdf, [Graph: Abdul Hamid Gool] | 26654ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 6/6 (100%) | [Graph: Dr. Abdulla Abdurahman], LEST WE FORGET -rev25.pdf | 30207ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 4/5 (80%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdul Hamid Gool] | 50381ms |
+| q38 | Who was Cissie Gool's father? | 2/5 (40%) | [Graph: Yousuf Rassool], LEST WE FORGET -rev25.pdf | 25745ms |
+```
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_122405
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations + new org/place seed entities
+- **Before:** 1984 entities, 196 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  1451 entities, 176 relations, health=36.5%, **63.1%** recall (142/225)
+- **Changes vs baseline:**
+  - NEW: Org/Place entities seeded via YAML (NEUM, TLSA, NEF, AAC, Hanaffi Mosque, District Six, 7 Buitencingle Street)
+  - NEW: 16 Person→Org/Place relations in seed (member_of, founded, lived_in, associated_with)
+  - NEW: member_of, lived_in, visited, built, led added to ALLOWED_RELATION_TYPES
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000)
+- **Eval output:** tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_122405.md
+
+### Key delta questions (vs 53.3% baseline)
+```
+| q11 | TLSA                              | 4/6  (67%)  | +  (graph: TLSA entity)        |
+| q13 | All Africa Convention             | 6/6  (100%) | ++ (graph: AAC entity)         |
+| q18 | New Era Fellowship                | 5/6  (83%)  | ++ (graph: NEF entity)         |
+| q19 | NEUM                              | 5/6  (83%)  | ++ (graph: NEUM entity)        |
+| q26 | Dr. Abdullah Abdurahman           | 6/6  (100%) | ++ (graph anchor working)      |
+| q27 | Gandhi–Gool connection            | 5/5  (100%) | ++ (graph anchor working)      |
+| q28 | Author's organisations            | 5/5  (100%) | ++ (graph: NEUM/TLSA/NEF)      |
+| q29 | TLSA–NEUM relationship            | 6/6  (100%) | ++ (graph entities)            |
+| q31 | Hanaffi mosque                    | 6/6  (100%) | ++ (graph: mosque entity)      |
+| q09 | Author's grandfather              | 2/9  (22%)  | = (still failing)              |
+| q24 | Children of JMH Gool              | 0/7  (0%)   | = (still failing)              |
+| q30 | JMH arrival year                  | 0/6  (0%)   | = (still failing)              |
+| q36 | All political orgs                | 1/6  (17%)  | = (still failing)              |
+```
+
+### Analysis
++9.8pp improvement (53.3% → 63.1%) — largest single-run gain. Driven entirely by seeding
+Org/Place entities: the graph anchors are finding NEUM, TLSA, NEF, AAC, District Six nodes
+and using them as retrieval entry points for question matching. Note: entity count LOWER
+(1451 vs 1984) due to 45% timeout rate (streaming fix not yet active — committed after run
+started). Run 5 uses streaming fix; expect higher entity count and potentially more gains.
+
+
+## 2026-06-09 – D6_struct_coref_rel_20260609_162328
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 1451 entities, 176 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  45 entities, 164 relations, health=60.7%, **61.3%** recall (138/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260609_162328.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260609_162328.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260609_162328.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 61.3% (138/225) |
+| q09 | Who was the author's grandfather? | 2/9 (22%) | LEST WE FORGET -rev25.pdf, [Graph: Yousuf Rassool] | 17909ms |
+| q12 | Who was Cissie Gool? | 5/6 (83%) | [Graph: Cissie Gool], LEST WE FORGET -rev25.pdf | 21392ms |
+| q24 | Who were the children of J.M.H. Gool? | 1/7 (14%) | [Graph: Bibi Gool], LEST WE FORGET -rev25.pdf | 24821ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 6/6 (100%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdulla Abdurahman] | 22773ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 3/5 (60%) | LEST WE FORGET -rev25.pdf, [Graph: Cissie Gool] | 24873ms |
+| q38 | Who was Cissie Gool's father? | 3/5 (60%) | [Graph: Yousuf Rassool], LEST WE FORGET -rev25.pdf | 24216ms |
+```
+
+### Analysis — REGRESSION
+
+**REGRESSION: 61.3% vs 63.1% previous run (-1.8pp), and only 45 entities extracted vs 1451.**
+
+Root cause: The streaming fix changed entity extraction to `stream: true` but set a 30-second send timeout. The P2P relay buffers the complete Ollama response before returning HTTP headers — it is NOT a transparent TCP proxy. So `.send()` still blocks for the full generation time (40–80s per chunk). 552/1152 chunks (48%) hit the 30s timeout and returned empty.
+
+Key insight: Despite having only 45 LLM-extracted entities (vs 1451), the eval score was still 61.3% vs 63.1%. This proves the **seed entities (family tree YAML) are doing most of the retrieval work** — the 7 Org/Place nodes + 16 relations added in the previous run survive every rebuild and account for most of the 63% score. LLM extraction is needed for the incremental gains above that floor.
+
+Fix: Restored send timeout to 120s (more generous than original 90s). `stream: true` + NDJSON accumulation retained — it's correct code, just irrelevant over the current relay architecture.
+
+Run 8 (started 2026-06-09 17:56 PDT) uses the corrected 120s timeout. Expected to match or exceed 63.1%.

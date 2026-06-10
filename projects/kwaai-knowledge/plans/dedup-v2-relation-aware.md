@@ -1,9 +1,27 @@
-# Dedup V2 — Relation-Aware Entity Deduplication
+# Dedup V2 — Relation-Aware + Description-Aware Entity Deduplication
 
-**Status:** Phase 1 complete (snapshot frozen, failure modes documented)  
+**Status:** Phase 3 implemented  
 **Owner:** kwaai-rag  
 **Graph snapshot:** `D6_person_full_dream5_20260604` → now labelled **dedup_v1**  
 **Entity count at freeze:** 1051 entities, 150 relations
+
+## Implementation status
+
+| Feature | Status | Location |
+|---------|--------|----------|
+| R1 — contradict family role block | ✅ Complete | `graph.rs:dedup_block_r1` |
+| R2 — half-sibling block (shared parent, different co-parent) | ✅ Complete | `graph.rs:dedup_block_r2` |
+| R3 — high-risk surname deferred (no matching family relation) | ✅ Complete | `graph.rs:dedup_r3_high_risk_surname` |
+| Description divergence block (Jaccard < 12% → cap to 0.94) | ✅ Complete | `graph.rs:dedup_desc_diverges` |
+| `[BLOCKED:DESC]` label in dry-run + auto-merge output | ✅ Complete | `rag_cmd.rs` |
+| `pinned: true` YAML seed override for OCR typo canonicals | ⏳ Planned | — |
+| Cross-chunk relation support counter | ⏳ Planned | — |
+
+### Description-aware dedup (new, 2026-06-09)
+
+`dedup_desc_diverges(a, b)` — activates when both entities have descriptions ≥100 chars (i.e., after `enrich-entities`). Computes Jaccard word-overlap on significant words (≥4 chars, excluding stop words). If Jaccard < 0.12 (< 12% of unique words shared), descriptions clearly describe different people → sim is capped at 0.94 in Tier 2, preventing auto-merge at the 0.97 threshold.
+
+**Why Jaccard not embedding similarity:** The entity embedding after `reembed` already encodes description content. Jaccard adds a complementary signal: raw word co-occurrence catches explicit shared names, roles, and places that embedding similarity may blur together when context is similar (e.g., two family members in the same household both mention "District Six" and "Gool family" → embeddings cluster → but their descriptions mention different names and roles → Jaccard diverges).
 
 ---
 

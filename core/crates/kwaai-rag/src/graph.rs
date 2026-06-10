@@ -2333,6 +2333,12 @@ impl GraphStore {
                             }
                         }
                     }
+                    // Guard: description divergence. When both entities have rich
+                    // descriptions (post-enrich) but share very few significant
+                    // words, their descriptions contradict → cap to prevent auto-merge.
+                    if self.dedup_desc_diverges(a, b) {
+                        sim = sim.min(0.94);
+                    }
                     if sim < threshold {
                         continue;
                     }
@@ -2860,6 +2866,34 @@ impl GraphStore {
             }
         }
         blocked
+    }
+
+    /// Returns true when both entities have rich descriptions (≥ `MIN_DESC_LEN` chars)
+    /// but share fewer than `MIN_JACCARD` of their significant word types.
+    ///
+    /// Used as a blocking guard in Tier 2: if descriptions clearly describe different
+    /// people (different roles, different eras, different locations) we cap embedding
+    /// similarity to prevent auto-merge even when name similarity is high.
+    pub fn dedup_desc_diverges(&self, a: i64, b: i64) -> bool {
+        const MIN_DESC_LEN: usize = 100;
+        const MIN_JACCARD: f32 = 0.12; // < 12% word overlap → descriptions diverge
+
+        let (da, db) = match (self.nodes.get(&a), self.nodes.get(&b)) {
+            (Some(na), Some(nb)) => (na.description.as_str(), nb.description.as_str()),
+            _ => return false,
+        };
+        if da.len() < MIN_DESC_LEN || db.len() < MIN_DESC_LEN {
+            return false; // not rich enough to judge
+        }
+        let words_a: std::collections::HashSet<String> = desc_sig_words(da).collect();
+        let words_b: std::collections::HashSet<String> = desc_sig_words(db).collect();
+        if words_a.is_empty() || words_b.is_empty() {
+            return false;
+        }
+        let intersect = words_a.intersection(&words_b).count();
+        let union = words_a.union(&words_b).count();
+        let jaccard = intersect as f32 / union as f32;
+        jaccard < MIN_JACCARD
     }
 
     /// R3: returns true when both entities share a high-risk surname (Gool, Rassool, …)
@@ -3978,6 +4012,19 @@ fn has_disambiguation_token(name: &str) -> bool {
         name.split_whitespace().last().unwrap_or(""),
         "II" | "III" | "IV" | "VI" | "VII" | "VIII" | "IX"
     )
+}
+
+/// Tokenise a description into significant words (≥4 chars, not stop words).
+fn desc_sig_words(desc: &str) -> impl Iterator<Item = String> + '_ {
+    const DESC_STOP: &[&str] = &[
+        "that", "this", "with", "from", "have", "been", "were", "they", "their", "also",
+        "well", "known", "very", "when", "some", "many", "most", "more", "than", "into",
+        "about", "after", "which", "would", "could", "should", "other", "over",
+    ];
+    desc.split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() >= 4)
+        .map(|w| w.to_lowercase())
+        .filter(move |w| !DESC_STOP.contains(&w.as_str()))
 }
 
 fn cosine_sim_f32(a: &[f32], b: &[f32]) -> f32 {
