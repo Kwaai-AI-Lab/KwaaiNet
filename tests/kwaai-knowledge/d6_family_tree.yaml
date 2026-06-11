@@ -341,7 +341,7 @@ persons:
   # ─── Children of seeded people (referenced in relations but not in persons) ──
 
   - canonical: "Shaheen Gool"
-    gender: "Female"
+    gender: "Male"
     aliases:
       - "Shaheen"
 
@@ -366,7 +366,7 @@ persons:
       - "Messaris"
 
   - canonical: "Tykie Messaris"
-    gender: "Female"
+    gender: "Male"
     aliases:
       - "Tykie"
 
