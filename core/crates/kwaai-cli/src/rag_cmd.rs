@@ -5308,32 +5308,59 @@ async fn cmd_extract_relations(
             !SCHEMA_REL_WORDS.iter().any(|&r| ql.contains(r))
         });
 
-        // Skip EC if the CC quote has a third-person possessive pronoun ("his"/"her")
-        // but fewer than 2 canonical name tokens appear in the quote. This prevents the
-        // EC from falsely resolving "his" to the narrator when "his" refers to another
-        // person in the chunk (root cause of "Yousuf spouse_of Wahida Gool" etc.).
-        // "his wife Wahida" → 1 name token → skip.
-        // "JMH Gool and his wife Wahida" → 2 name tokens → proceed.
-        let quote_pronoun_unresolvable = cc_quote_anchored.is_some_and(|q| {
+        // Skip EC when the CC quote has fewer than 2 identifiable endpoints.
+        //
+        // An endpoint is identifiable when:
+        //   (a) the entity's full canonical name OR any alias (≥4 chars) appears as a
+        //       substring in the quote (avoids false-positive from shared 4-char tokens
+        //       like "gool" which match many different Gool family members), OR
+        //   (b) a first-person pronoun ("my"/"I"/"me") appears AND the narrator is known.
+        //
+        // This blocks two patterns:
+        //   • pronoun-only: "his wife Wahida" → Wahida = 1 endpoint, "his" is unresolvable
+        //   • genitive-missing-target: "Khadija's young brother" → Khadija = 1 endpoint,
+        //     brother is unnamed; EC guesses the narrator
+        //   • false-plural via shared token: "his wife Cissie Gool" → Goolam Gool matches
+        //     via "gool" but is not actually named → correct count = 1 → blocked
+        // Legitimate cases still pass:
+        //   • "my brother Fazil"    → narrator(my) + Fazil = 2 endpoints
+        //   • "Cissie married Abdul Hamid" → Cissie + Abdul = 2 endpoints
+        //   • "JMH Gool and his wife Wahida" → JMH (alias match) + Wahida = 2 endpoints
+        let quote_insufficient_endpoints = cc_quote_anchored.is_some_and(|q| {
             let ql = q.to_lowercase();
-            let has_third_person = ql.starts_with("his ")
-                || ql.contains(" his ")
-                || ql.starts_with("her ")
-                || ql.contains(" her ");
-            if !has_third_person {
-                return false;
-            }
-            // Count distinct canonical entities with a name token (≥4 chars) in the quote
-            let named_count = canonical_names
+            // Match entity by: full canonical name OR any alias ≥4 chars as substring.
+            // Tokens-only matching causes false plurals via shared short tokens ("gool").
+            let named_count = proper_entities
                 .iter()
-                .filter(|&&n| {
-                    n.to_lowercase()
-                        .split_whitespace()
-                        .filter(|w| w.len() >= 4)
+                .filter(|(name, aliases)| {
+                    let nl = name.to_lowercase();
+                    // Full canonical name as substring
+                    if ql.contains(&nl) {
+                        return true;
+                    }
+                    // Any alias ≥4 chars as substring
+                    if aliases.iter().any(|a| {
+                        let al = a.to_lowercase();
+                        al.len() >= 4 && ql.contains(&al)
+                    }) {
+                        return true;
+                    }
+                    // Fallback: any canonical token ≥5 chars as substring (avoids 4-char noise)
+                    nl.split_whitespace()
+                        .filter(|w| w.len() >= 5)
                         .any(|w| ql.contains(w))
                 })
                 .count();
-            named_count < 2
+            // First-person reference with a known narrator counts as one endpoint
+            let has_first_person = narrator_name.is_some()
+                && (ql.starts_with("my ")
+                    || ql.contains(" my ")
+                    || ql.starts_with("i ")
+                    || ql.contains(" i ")
+                    || ql.starts_with("me ")
+                    || ql.contains(" me "));
+            let total_endpoints = named_count + usize::from(has_first_person);
+            total_endpoints < 2
         });
 
         // ── RC mode: run EC on each trigger window; CC already computed for review ─
@@ -5368,8 +5395,8 @@ async fn cmd_extract_relations(
                 (String::from("[non-schema relation — EC skipped]"), vec![])
             } else if quote_lacks_schema {
                 (String::from("[no schema relation word in CC quote — EC skipped]"), vec![])
-            } else if quote_pronoun_unresolvable {
-                (String::from("[CC quote has unresolvable third-person pronoun — EC skipped]"), vec![])
+            } else if quote_insufficient_endpoints {
+                (String::from("[CC quote has fewer than 2 identifiable endpoints — EC skipped]"), vec![])
             } else {
                 let ec_prompt =
                     build_ec_prompt(quote, &entity_block, &canonical_names, narrator_name);
@@ -5712,11 +5739,10 @@ fn build_ec_prompt(
          - If the quote uses 'aunt', 'uncle', 'nephew', 'niece', or 'cousin', \
            return {{\"relations\":[]}} — these relation types are not in the schema\n\
          - 'I', 'me', 'my' (first person) → use the NARRATOR name as one endpoint\n\
-         - 'his', 'her', 'their' (third person) are NEVER automatically the narrator.\n\
-           Both endpoints must appear as explicit canonical names in the quote itself.\n\
-           \"his wife Wahida\" → possessor unnamed → return {{\"relations\":[]}}\n\
-         - Extract only what the quote directly states — no inference, no deduction\n\
-         - If both endpoints are not identifiable as canonical names, return empty\n\
+         - 'his', 'her', 'their' (third person) are NOT automatically the narrator —\n\
+           only use them if the possessor is explicitly named in the quote\n\
+         - Extract ONLY what the quote directly states — no inference or deduction\n\
+         - If either endpoint is not a canonical name in the quote, return empty\n\
          \n\
          Return ONLY valid JSON:\n\
          {{\"relations\":[{{\"from\":\"Name A\",\"relation\":\"sibling_of\",\"to\":\"Name B\"}}]}}\n\
