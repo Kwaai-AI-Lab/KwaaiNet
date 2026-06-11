@@ -5300,6 +5300,42 @@ async fn cmd_extract_relations(
                 && !SCHEMA_REL_WORDS.iter().any(|&r| ql.contains(r))
         });
 
+        // Skip EC if the CC quote contains no schema relation word.
+        // Blocks family-group quotes like "the entire Abed family" which the CC
+        // extracted despite the prompt example showing "the Gool family" → doesn't qualify.
+        let quote_lacks_schema = cc_quote_anchored.is_some_and(|q| {
+            let ql = q.to_lowercase();
+            !SCHEMA_REL_WORDS.iter().any(|&r| ql.contains(r))
+        });
+
+        // Skip EC if the CC quote has a third-person possessive pronoun ("his"/"her")
+        // but fewer than 2 canonical name tokens appear in the quote. This prevents the
+        // EC from falsely resolving "his" to the narrator when "his" refers to another
+        // person in the chunk (root cause of "Yousuf spouse_of Wahida Gool" etc.).
+        // "his wife Wahida" → 1 name token → skip.
+        // "JMH Gool and his wife Wahida" → 2 name tokens → proceed.
+        let quote_pronoun_unresolvable = cc_quote_anchored.is_some_and(|q| {
+            let ql = q.to_lowercase();
+            let has_third_person = ql.starts_with("his ")
+                || ql.contains(" his ")
+                || ql.starts_with("her ")
+                || ql.contains(" her ");
+            if !has_third_person {
+                return false;
+            }
+            // Count distinct canonical entities with a name token (≥4 chars) in the quote
+            let named_count = canonical_names
+                .iter()
+                .filter(|&&n| {
+                    n.to_lowercase()
+                        .split_whitespace()
+                        .filter(|w| w.len() >= 4)
+                        .any(|w| ql.contains(w))
+                })
+                .count();
+            named_count < 2
+        });
+
         // ── RC mode: run EC on each trigger window; CC already computed for review ─
         let (relations_json, extracted) = if rc_mode && !rc_windows.is_empty() {
             let mut all_rels = Vec::new();
@@ -5330,6 +5366,10 @@ async fn cmd_extract_relations(
         } else if let Some(quote) = cc_quote_anchored {
             if quote_is_non_schema {
                 (String::from("[non-schema relation — EC skipped]"), vec![])
+            } else if quote_lacks_schema {
+                (String::from("[no schema relation word in CC quote — EC skipped]"), vec![])
+            } else if quote_pronoun_unresolvable {
+                (String::from("[CC quote has unresolvable third-person pronoun — EC skipped]"), vec![])
             } else {
                 let ec_prompt =
                     build_ec_prompt(quote, &entity_block, &canonical_names, narrator_name);
@@ -5613,12 +5653,15 @@ fn build_cc_prompt(
          - \"his uncle arrived\" — role only, no names\n\
          - \"they were brothers in arms\" — metaphorical\n\
          - \"the Gool family\" — family group, not a specific relation\n\
+         - \"the entire Abed family\" — family group, not a specific relation\n\
          \n\
-         CRITICAL QUOTING RULE: include the FULL phrase with possessive words.\n\
-         - Quote \"my brother Fazil\" NOT \"brother Fazil\" — keep \"my\"\n\
-         - Quote \"his wife Cissie\" NOT \"wife Cissie\" — keep \"his\"\n\
-         - Quote \"her father Dr. Abdurahman\" NOT \"father Dr. Abdurahman\" — keep \"her\"\n\
-         Possessive words establish WHO the relationship belongs to — omitting them loses the endpoint.\n\
+         CRITICAL QUOTING RULE: include BOTH named persons in the quote.\n\
+         - Quote \"my brother Fazil\" — narrator 'my' + name (Fazil): both endpoints known\n\
+         - Quote \"Cissie married Abdul Hamid\" — both names explicit\n\
+         - Quote \"JMH Gool and his wife Wahida\" NOT just \"his wife Wahida\" — keep the \
+           possessor's name so both endpoints are identified\n\
+         - If a qualifying clause uses 'his'/'her' but the possessor's name does not appear \
+           in the same clause, do NOT return that clause — return none instead.\n\
          \n\
          If a qualifying clause exists: quote it exactly, word-for-word from the passage.\n\
          If none exists: return none.\n\
@@ -5668,8 +5711,11 @@ fn build_ec_prompt(
          - \"from\" and \"to\" must be exact canonical names from: {names_csv}\n\
          - If the quote uses 'aunt', 'uncle', 'nephew', 'niece', or 'cousin', \
            return {{\"relations\":[]}} — these relation types are not in the schema\n\
-         - If the narrator is 'my' and the NARRATOR name is given, use that name as 'from'\n\
-         - Extract only what the quote directly states\n\
+         - 'I', 'me', 'my' (first person) → use the NARRATOR name as one endpoint\n\
+         - 'his', 'her', 'their' (third person) are NEVER automatically the narrator.\n\
+           Both endpoints must appear as explicit canonical names in the quote itself.\n\
+           \"his wife Wahida\" → possessor unnamed → return {{\"relations\":[]}}\n\
+         - Extract only what the quote directly states — no inference, no deduction\n\
          - If both endpoints are not identifiable as canonical names, return empty\n\
          \n\
          Return ONLY valid JSON:\n\
