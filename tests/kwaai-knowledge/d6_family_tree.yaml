@@ -338,6 +338,60 @@ persons:
     aliases:
       - "Midi"
 
+  # ─── Children of seeded people (referenced in relations but not in persons) ──
+
+  - canonical: "Shaheen Gool"
+    gender: "Female"
+    aliases:
+      - "Shaheen"
+
+  - canonical: "Selim Gool"
+    gender: "Male"
+    aliases:
+      - "Selim"
+
+  # ─── Gandhi's son (historical figure, appears in memoir) ────────────────────
+
+  - canonical: "Manilal Gandhi"
+    gender: "Male"
+    aliases:
+      - "Manilal"
+
+  # ─── Messaris family (Louis is a teacher, Tykie his child/relative) ─────────
+
+  - canonical: "Louis Messaris"
+    gender: "Male"
+    aliases:
+      - "Mr. Messaris"
+      - "Messaris"
+
+  - canonical: "Tykie Messaris"
+    gender: "Female"
+    aliases:
+      - "Tykie"
+
+  # ─── Omar Abrahams and his sibling Jameel ────────────────────────────────────
+
+  - canonical: "Omar Abrahams"
+    gender: "Male"
+    aliases:
+      - "Omar"
+
+  - canonical: "Jameel"
+    gender: "Male"
+
+  # ─── Other key figures frequently mentioned in the text ─────────────────────
+
+  - canonical: "Nurjehan Gool Mohamed"
+    gender: "Female"
+    aliases:
+      - "Nurjehan"
+
+  - canonical: "Khadija Ebrahim"
+    gender: "Female"
+    aliases:
+      - "Khadija"
+
   # ─── Hassen Mall (friend of the narrator) ──────────────────────────────────
 
   - canonical: "Hassen Mall"
