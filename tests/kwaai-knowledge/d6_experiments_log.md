@@ -851,3 +851,27 @@ a fair M-series measurement.
 4. 300 Place/Org entities now have LLM-generated descriptions + re-embedded
 
 **Next:** Run full overnight pipeline when metro-linux is back online to get a fair M46 measurement.
+
+## 2026-06-10 – D6_struct_coref_rel_20260610_150222
+
+- **Experiment:** Full rebuild with structure-aware ingestion + coref + CC/EC relations
+- **Before:** 45 entities, 176 relations, **53.3%** recall (D6_person_full baseline 2026-06-04)
+- **After:**  2059 entities, 236 relations, health=37.8%, **53.3%** recall (120/225)
+- **Changes vs baseline:**
+  - SectionType boundaries in chunk packing, context windows, coref adjacency, CC/EC windows
+  - Coref pass (Tier 1: alias-match + gender-nearest, --no-llm, ±2 window)
+  - CC+EC relation extraction committed (70b Q3 on metro A6000, --commit)
+- **Eval output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_struct_coref_rel_20260610_150222.md
+- **Coref output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/coref_D6_struct_coref_rel_20260610_150222.md
+- **Relation output:** /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_struct_coref_rel_20260610_150222.md
+
+### Key delta questions
+```
+| Overall recall (token-overlap) | 53.3% (120/225) |
+| q09 | Who was the author's grandfather? | 2/9 (22%) | LEST WE FORGET -rev25.pdf | 28898ms |
+| q12 | Who was Cissie Gool? | 2/6 (33%) | [Graph: Wahida Gool], LEST WE FORGET -rev25.pdf | 33038ms |
+| q24 | Who were the children of J.M.H. Gool? | 3/7 (43%) | LEST WE FORGET -rev25.pdf, [Graph: Bibi Gool] | 35170ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 5/6 (83%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdulla Abdurahman] | 24930ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 2/5 (40%) | LEST WE FORGET -rev25.pdf, [Graph: Wahida Gool] | 32784ms |
+| q38 | Who was Cissie Gool's father? | 1/5 (20%) | LEST WE FORGET -rev25.pdf | 30745ms |
+```
