@@ -5488,14 +5488,36 @@ async fn cmd_extract_relations(
         total_extracted += extracted.len();
 
         // ── Commit to graph if requested ─────────────────────────────────────
+        // Family/personal relations only make sense between two Person entities.
+        // Reject parent_of/sibling_of/spouse_of/child_of/married_to/born_to
+        // when the target is not a Person — catches 8b model confusions like
+        // "Yousuf Rassool parent_of Barnato Board" (a building).
+        const PERSON_ONLY_RELS: &[&str] = &[
+            "parent_of", "sibling_of", "spouse_of", "child_of", "married_to", "born_to",
+        ];
         if commit && !extracted.is_empty() {
             for (from_name, rel_type, to_name) in &extracted {
-                let from_id = store
-                    .find_by_name_normalized(from_name)
-                    .map(|n| kwaai_rag::graph::entity_id(&n.name, &n.entity_type));
-                let to_id = store
-                    .find_by_name_normalized(to_name)
-                    .map(|n| kwaai_rag::graph::entity_id(&n.name, &n.entity_type));
+                let from_node = store.find_by_name_normalized(from_name);
+                let to_node = store.find_by_name_normalized(to_name);
+
+                // Filter: person-only relation types require both ends to be Person.
+                if PERSON_ONLY_RELS.contains(&rel_type.as_str()) {
+                    let from_is_person = from_node.as_ref()
+                        .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                        .unwrap_or(false);
+                    let to_is_person = to_node.as_ref()
+                        .map(|n| n.entity_type.eq_ignore_ascii_case("person"))
+                        .unwrap_or(false);
+                    if !from_is_person || !to_is_person {
+                        tracing::debug!(
+                            "filter: skipping {rel_type} ({from_name} → {to_name}): non-Person endpoint"
+                        );
+                        continue;
+                    }
+                }
+
+                let from_id = from_node.map(|n| kwaai_rag::graph::entity_id(&n.name, &n.entity_type));
+                let to_id = to_node.map(|n| kwaai_rag::graph::entity_id(&n.name, &n.entity_type));
                 if let (Some(fid), Some(tid)) = (from_id, to_id) {
                     let before = store.get_relation_strength(fid, tid, rel_type);
                     store.upsert_relation(fid, tid, rel_type, *chunk_id)?;

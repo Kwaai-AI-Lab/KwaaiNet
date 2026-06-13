@@ -117,6 +117,12 @@ log "Step: dedup pass 2"
 kwaainet rag graph dedup --kb "$KB" --auto --auto-threshold 0.97
 kwaainet rag graph score --kb "$KB" > /dev/null 2>&1 || true
 
+# Pre-warm local Ollama so the first round-robin batch doesn't cold-load the model.
+log "Pre-warming localhost Ollama (llama3.1:8b)..."
+curl -sf http://localhost:11434/api/generate \
+  -d "{\"model\":\"$ENRICH_MODEL\",\"prompt\":\"hi\",\"stream\":false}" \
+  -o /dev/null && log "  localhost warm" || log "  localhost unavailable — continuing without it"
+
 log "Step: enrich-entities (descriptions + gender, retry-enabled)"
 kwaainet rag graph enrich-entities --kb "$KB" \
   --model "$ENRICH_MODEL" \
