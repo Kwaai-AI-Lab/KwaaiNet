@@ -77,6 +77,8 @@ struct WorkItem {
     /// Whether the entity needs gender extraction in this run.
     need_gender: bool,
     evidence_text: String,
+    /// Inference URL assigned to this item (round-robins across the pool).
+    inference_url: String,
 }
 
 struct EnrichResult {
@@ -92,7 +94,7 @@ struct EnrichResult {
 pub async fn enrich_entity_descriptions(
     cfg: &EnrichConfig,
     model: &str,
-    inference_url: &str,
+    inference_urls: &[String],
     embed: &EmbedClient,
     data_dir: &Path,
     tenant_id: Uuid,
@@ -163,6 +165,11 @@ pub async fn enrich_entity_descriptions(
                 continue;
             }
 
+            let url_idx = items.len() % inference_urls.len().max(1);
+            let inference_url = inference_urls
+                .get(url_idx)
+                .cloned()
+                .unwrap_or_default();
             items.push(WorkItem {
                 id: node.id,
                 name: node.name.clone(),
@@ -172,6 +179,7 @@ pub async fn enrich_entity_descriptions(
                 need_desc,
                 need_gender,
                 evidence_text,
+                inference_url,
             });
 
             if items.len() >= cfg.limit {
@@ -188,7 +196,6 @@ pub async fn enrich_entity_descriptions(
 
     // ── Phase 2: fan-out LLM calls ────────────────────────────────────────────
     let sem = Arc::new(Semaphore::new(cfg.workers.max(1)));
-    let url_arc = Arc::new(inference_url.to_string());
     let model_arc = Arc::new(model.to_string());
     let counter = Arc::new(AtomicUsize::new(0));
 
@@ -197,7 +204,7 @@ pub async fn enrich_entity_descriptions(
     for item in work_items {
         let permit = sem.clone().acquire_owned().await.expect("semaphore closed");
         let tx = tx.clone();
-        let url = url_arc.clone();
+        let url = item.inference_url.clone();
         let model_clone = model_arc.clone();
         let counter = counter.clone();
 

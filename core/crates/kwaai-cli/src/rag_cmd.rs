@@ -6878,11 +6878,11 @@ async fn cmd_enrich_entities(
         let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
         let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
 
-        let effective_url = inference_urls
+        // Collect all comma-separated URLs; fall back to the positional arg.
+        let raw_urls: Vec<String> = inference_urls
             .as_deref()
-            .and_then(|u| u.split(',').next())
-            .map(|s| s.trim().to_string())
-            .unwrap_or(inference_url);
+            .map(|s| s.split(',').map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect())
+            .unwrap_or_else(|| vec![inference_url]);
 
         let types: Vec<String> = entity_types
             .split(',')
@@ -6901,7 +6901,7 @@ async fn cmd_enrich_entities(
         };
 
         print_box_header(&format!("Enrich Entity Metadata ({})", kb));
-        print_info(&format!("  Inference URL:   {}", effective_url));
+        print_info(&format!("  Inference URLs:  {}", raw_urls.join(", ")));
         print_info(&format!("  Model:           {}", model));
         print_info(&format!("  Workers:         {}", workers));
         print_info(&format!("  Min mentions:    {}", min_mentions));
@@ -6912,11 +6912,11 @@ async fn cmd_enrich_entities(
             print_info(&format!("  Limit:           {}", l));
         }
 
-        // Resolve p2p:// or mux:// URLs to a local HTTP proxy before handing off to
-        // enrich (which uses raw reqwest and cannot handle non-HTTP schemes).
+        // Resolve p2p:// or mux:// URLs to local HTTP proxy endpoints before handing
+        // off to enrich (which uses raw reqwest and cannot handle non-HTTP schemes).
         let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
-        let resolved_url: String =
-            if effective_url.starts_with("p2p://") || effective_url.starts_with("mux://") {
+        let resolved_urls: Vec<String> =
+            if raw_urls.iter().any(|u| u.starts_with("p2p://") || u.starts_with("mux://")) {
                 use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
                 let sock = std::env::var("KWAAINET_SOCKET")
                     .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
@@ -6930,19 +6930,19 @@ async fn cmd_enrich_entities(
                         .context("connecting to p2pd for p2p:// URL resolution")?,
                 );
                 let (resolved, handles) =
-                    crate::ollama_proxy::resolve_inference_urls(&[effective_url.clone()], &p2p)
+                    crate::ollama_proxy::resolve_inference_urls(&raw_urls, &p2p)
                         .await?;
                 _proxy_handles = handles;
-                resolved.into_iter().next().unwrap_or(effective_url)
+                resolved
             } else {
-                effective_url
+                raw_urls
             };
 
         let data_dir = rag_cfg.data_dir();
         let report = enrich_entity_descriptions(
             &cfg,
             &model,
-            &resolved_url,
+            &resolved_urls,
             &embed,
             &data_dir,
             tenant_id,

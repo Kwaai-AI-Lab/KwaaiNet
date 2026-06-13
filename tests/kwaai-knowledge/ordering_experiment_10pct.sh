@@ -23,10 +23,15 @@ RESULTS="$REPO/tests/kwaai-knowledge/results"
 LOG_FILE="$REPO/tests/kwaai-knowledge/d6_experiments_log.md"
 
 # ── Machine pool ──────────────────────────────────────────────────────────────
-METRO_LINUX="p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs"
+# metro-linux (A6000): 70b only
+# metro-win  (A5000): 8b
+# jerome             : 8b
+METRO_WIN="p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE"
+JEROME="p2p://12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd"
 LOCAL="http://localhost:11434"
 
-INF_URL="$METRO_LINUX"
+# Enrich + extract-relations use 8b → metro-win + jerome + local (round-robin)
+INF_URLS_8B="$METRO_WIN,$JEROME,$LOCAL"
 RE_MODEL="llama3.1:8b"
 ENRICH_MODEL="llama3.1:8b"
 EXTRACT_SAMPLE="0.10"
@@ -90,7 +95,7 @@ log "━━━━━━━━━━━━━━━━━━━━━━━━━
 log "Ordering A (10%) — seed → dedup → coref → dedup → enrich → extract-rel → dedup"
 log "  KB:     $KB"
 log "  Label:  $LABEL"
-log "  INF:    $INF_URL"
+log "  INF:    $INF_URLS_8B"
 log "  Sample: $EXTRACT_SAMPLE"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -115,14 +120,14 @@ kwaainet rag graph score --kb "$KB" > /dev/null 2>&1 || true
 log "Step: enrich-entities (descriptions + gender, retry-enabled)"
 kwaainet rag graph enrich-entities --kb "$KB" \
   --model "$ENRICH_MODEL" \
-  --inference-urls "$INF_URL" \
+  --inference-urls "$INF_URLS_8B" \
   --workers 4 \
   --min-mentions 1 \
   --entity-types Person,Place,Organization
 
 log "Step: extract-relations (sample=$EXTRACT_SAMPLE, model=$RE_MODEL)"
 kwaainet rag graph extract-relations --kb "$KB" \
-  --inference-url "$INF_URL" \
+  --inference-url "$METRO_WIN" \
   --model "$RE_MODEL" \
   --sample "$EXTRACT_SAMPLE" \
   --commit \
@@ -166,7 +171,7 @@ ENRICH_UPDATED=$(grep "Enrich complete" "$EVAL_OUT" 2>/dev/null \
   echo "- **Sample:** \`--sample ${EXTRACT_SAMPLE}\`"
   echo "- **RE model:** ${RE_MODEL}"
   echo "- **Enrich model:** ${ENRICH_MODEL}"
-  echo "- **Machine:** metro-linux (A6000)"
+  echo "- **Machines:** metro-win (A5000) + jerome + local (8b, round-robin)"
   echo "- **Ordering:** seed → dedup → coref → dedup → enrich → extract-rel → dedup"
   echo ""
   echo "| Metric | Value |"
