@@ -875,3 +875,79 @@ a fair M-series measurement.
 | q32 | How was Cissie Gool related to J.M.H. Gool? | 2/5 (40%) | LEST WE FORGET -rev25.pdf, [Graph: Wahida Gool] | 32784ms |
 | q38 | Who was Cissie Gool's father? | 1/5 (20%) | LEST WE FORGET -rev25.pdf | 30745ms |
 ```
+
+## 2026-06-12 19:43 — Ordering Experiment (1% extract-relations)
+
+- **Sample:** `--sample 0.01`
+- **RE model:** llama3.1:8b
+- **Enrich model:** llama3.1:8b
+- **Machines:** metro-linux (A), metro-win (B), jerome (C)
+
+| Ordering | Steps | Recall | Health | False rels (Yousuf) | Coref resolutions |
+|----------|-------|--------|--------|---------------------|-------------------|
+| **A** | seed → dedup → coref → dedup → enrich → extract-rel → dedup | 61.8% (139/225) | 36.9% | 0
+0 false / 0
+0 total (Yousuf) | 1135 |
+| **B** | seed → coref → dedup → enrich → extract-rel → dedup | 54.2% (122/225) | 36.7% | 0
+0 false / 0
+0 total (Yousuf) | 1135 |
+| **C** | seed → dedup → enrich → coref → extract-rel → dedup | 56.9% (128/225) | 36.9% | 0
+0 false / 0
+0 total (Yousuf) | 1135 |
+
+### Key delta questions (q09=grandchildren, q24=Cissie, q32=family)
+
+#### Ordering A
+```
+| Overall recall (token-overlap) | 61.8% (139/225) |
+| q09 | Who was the author's grandfather? | 5/9 (56%) | LEST WE FORGET -rev25.pdf, [Graph: Haji Joosub Maulvi Hamid Gool] | 19968ms |
+| q12 | Who was Cissie Gool? | 6/6 (100%) | [Graph: Cissie Gool], LEST WE FORGET -rev25.pdf | 21157ms |
+| q24 | Who were the children of J.M.H. Gool? | 3/7 (43%) | LEST WE FORGET -rev25.pdf, [Graph: Bibi Gool] | 29048ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 6/6 (100%) | LEST WE FORGET -rev25.pdf, [Graph: Dr. Abdulla Abdurahman] | 22886ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 3/5 (60%) | [Graph: Cissie Gool], LEST WE FORGET -rev25.pdf | 23022ms |
+| q38 | Who was Cissie Gool's father? | 0/5 (0%) | [Graph: Yousuf Rassool], LEST WE FORGET -rev25.pdf | 21585ms |
+```
+
+#### Ordering B
+```
+| Overall recall (token-overlap) | 54.2% (122/225) |
+| q09 | Who was the author's grandfather? | 4/9 (44%) | LEST WE FORGET -rev25.pdf, [Graph: Haji Joosub Maulvi Hamid Gool] | 18519ms |
+| q12 | Who was Cissie Gool? | 2/6 (33%) | [Graph: Halima Gool Courtesy Selim Gool], LEST WE FORGET -rev25.pdf | 25015ms |
+| q24 | Who were the children of J.M.H. Gool? | 2/7 (29%) | [Graph: Halima Gool Courtesy Selim Gool], LEST WE FORGET -rev25.pdf | 26172ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 2/6 (33%) | [Graph: Dr. Abdulla Abdurahman], LEST WE FORGET -rev25.pdf | 27432ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 2/5 (40%) | LEST WE FORGET -rev25.pdf, [Graph: Halima Gool Courtesy Selim Gool] | 21942ms |
+| q38 | Who was Cissie Gool's father? | 3/5 (60%) | LEST WE FORGET -rev25.pdf, [Graph: Yousuf Rassool] | 22250ms |
+```
+
+#### Ordering C
+```
+| Overall recall (token-overlap) | 56.9% (128/225) |
+| q09 | Who was the author's grandfather? | 3/9 (33%) | [Graph: Haji Joosub Maulvi Hamid Gool], LEST WE FORGET -rev25.pdf | 19422ms |
+| q12 | Who was Cissie Gool? | 5/6 (83%) | [Graph: Cissie Gool], LEST WE FORGET -rev25.pdf | 22844ms |
+| q24 | Who were the children of J.M.H. Gool? | 0/7 (0%) | LEST WE FORGET -rev25.pdf, [Graph: Bibi Gool] | 26279ms |
+| q26 | Who was Dr. Abdullah Abdurahman? | 5/6 (83%) | [Graph: Dr. Abdulla Abdurahman], LEST WE FORGET -rev25.pdf | 26776ms |
+| q32 | How was Cissie Gool related to J.M.H. Gool? | 2/5 (40%) | [Graph: Cissie Gool], LEST WE FORGET -rev25.pdf | 22567ms |
+| q38 | Who was Cissie Gool's father? | 3/5 (60%) | LEST WE FORGET -rev25.pdf, [Graph: Yousuf Rassool] | 22357ms |
+```
+
+### Extract-relations detail
+
+#### Ordering A — Yousuf Rassool relations extracted
+```
+(none found)
+```
+
+#### Ordering B — Yousuf Rassool relations extracted
+```
+(none found)
+```
+
+#### Ordering C — Yousuf Rassool relations extracted
+```
+(none found)
+```
+
+### Files
+- Ordering A: `/Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_ordA_20260612_152741.md` / `/Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_ordA_20260612_152741.md`
+- Ordering B: `/Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_ordB_20260612_154535.md` / `/Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_ordB_20260612_154535.md`
+- Ordering C: `/Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/extract_rel_D6_ordC_20260612_192458.md` / `/Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/eval_D6_ordC_20260612_192458.md`

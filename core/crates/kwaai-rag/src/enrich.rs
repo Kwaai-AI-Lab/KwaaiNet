@@ -385,6 +385,19 @@ fn parse_enrich_json(text: &str) -> EnrichResult {
 }
 
 async fn call_llm(prompt: &str, url: &str, model: &str, json_mode: bool) -> Option<String> {
+    for attempt in 0u32..3 {
+        if attempt > 0 {
+            // Give the p2p proxy time to re-establish the stream after a reset.
+            tokio::time::sleep(std::time::Duration::from_secs(3 * attempt as u64)).await;
+        }
+        if let Some(text) = call_llm_once(prompt, url, model, json_mode).await {
+            return Some(text);
+        }
+    }
+    None
+}
+
+async fn call_llm_once(prompt: &str, url: &str, model: &str, json_mode: bool) -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(10))

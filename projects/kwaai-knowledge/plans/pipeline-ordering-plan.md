@@ -40,7 +40,7 @@ three interactions that make ordering matter:
 The five post-build steps, their purpose, and the cost of getting the order wrong:
 
 | Step | Command | What it does | Risk if too early | Risk if too late |
-|------|---------|--------------|-------------------|------------------|
+| --- | --- | --- | --- | --- |
 | `seed` | `graph seed` | Injects canonical names, aliases, gender, ground-truth relations from YAML | — always first | Missing gender breaks coref |
 | `dedup` | `graph dedup` | Merges duplicate entity nodes | Duplicate candidates confuse coref | Coref resolves to wrong node |
 | `coref` | `graph coref` | Resolves `his/her/the author` to canonical entities | Resolves against dirty list | extract-rel gets no pronoun mappings |
@@ -56,7 +56,8 @@ All orderings start identically: `build → seed`. The graph build uses `--no-re
 common base.
 
 ### Ordering A — Proposed
-```
+
+```text
 seed → dedup → coref → dedup → enrich → extract-rel → dedup
 ```
 
@@ -72,7 +73,8 @@ narrator). Enrich last before extract-rel: descriptions are available for the LL
 ---
 
 ### Ordering B — Coref before dedup (current/simpler)
-```
+
+```text
 seed → coref → dedup → enrich → extract-rel → dedup
 ```
 
@@ -88,7 +90,8 @@ during coref (e.g., two forms of "Abdul Hamid" are separate candidates, splittin
 ---
 
 ### Ordering C — Enrich before coref
-```
+
+```text
 seed → dedup → enrich → coref → extract-rel → dedup
 ```
 
@@ -109,7 +112,7 @@ gender extraction, which requires good dedup first — that ordering is satisfie
 For each ordering we capture:
 
 | Metric | How measured | Why it matters |
-|--------|-------------|----------------|
+| --- | --- | --- |
 | **False relations (Yousuf)** | Count lines matching `Yousuf Rassool.*spouse_of\|sibling_of` in extract-rel log, filtered against known-correct targets | Primary quality signal — the bug we fixed |
 | **Coref resolutions** | Count `→ **` lines in coref output | Proxy for how many pronouns were resolved vs left ambiguous |
 | **Eval recall** | `kwaainet rag eval` — 40 questions, token-overlap scoring | End-to-end RAG quality |
@@ -126,7 +129,7 @@ is whether correct ordering provides additional signal beyond the code-level gua
 ## Infrastructure
 
 | Machine | Role in experiment | Model |
-|---------|-------------------|-------|
+| --- | --- | --- |
 | metro-linux (A6000) | Graph build + Ordering A inference | llama3.1:8b (build), llama3.1:8b (extract-rel) |
 | metro-win (A5000) | Ordering B inference | llama3.1:8b |
 | Jerome's machine | Ordering C inference | llama3.1:8b |
@@ -148,6 +151,7 @@ If the winning ordering (fewest false Yousuf relations) is consistent across at 
 the ~11 sampled chunks, promote to `--sample 0.10`. Re-run only the winning ordering.
 
 Change `EXTRACT_SAMPLE=0.01` → `EXTRACT_SAMPLE=0.10` in the script, or run:
+
 ```bash
 kwaainet rag graph extract-relations --kb D6_ord_A \
   --inference-url $METRO_LINUX \
@@ -160,6 +164,7 @@ kwaainet rag graph extract-relations --kb D6_ord_A \
 
 If the 10% run produces precision > 80% on extracted relations (manually spot-checked), run
 the full pipeline with:
+
 - `--sample 1.0`
 - `--model llama3.1:70b-instruct-q3_K_M` (better precision for full run)
 - Both metro machines for throughput
@@ -211,13 +216,15 @@ echo "PID: $!"
 Estimated duration: ~30 min rebuild + 3 × ~25 min orderings = **~2 hours total**.
 
 Monitor:
+
 ```bash
 tail -f tests/kwaai-knowledge/ordering_experiment.log
 cat ~/.kwaainet/rag/D6_ord_A/progress.json   # after clones are created
 ```
 
 Results will appear in:
-```
+
+```text
 tests/kwaai-knowledge/d6_experiments_log.md  ← comparison table
 tests/kwaai-knowledge/results/eval_D6_ord*.md
 tests/kwaai-knowledge/results/extract_rel_D6_ord*.md

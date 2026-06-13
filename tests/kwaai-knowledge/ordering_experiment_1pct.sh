@@ -48,10 +48,14 @@ PROGRESS_DIR="$HOME/.kwaainet/rag"
 RUN_START=$(date +%s)
 
 ORDERINGS=("A" "B" "C")
-declare -A ORD_DESC
-ORD_DESC[A]="seed → dedup → coref → dedup → enrich → extract-rel → dedup"
-ORD_DESC[B]="seed → coref → dedup → enrich → extract-rel → dedup"
-ORD_DESC[C]="seed → dedup → enrich → coref → extract-rel → dedup"
+
+get_ord_desc() {
+  case "$1" in
+    A) echo "seed → dedup → coref → dedup → enrich → extract-rel → dedup" ;;
+    B) echo "seed → coref → dedup → enrich → extract-rel → dedup" ;;
+    C) echo "seed → dedup → enrich → coref → extract-rel → dedup" ;;
+  esac
+}
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -215,10 +219,6 @@ log "Clones ready."
 
 # ── Phase 2: run orderings ─────────────────────────────────────────────────────
 
-declare -A ORD_EVAL_FILE
-declare -A ORD_EXTRACT_FILE
-declare -A ORD_COREF_FILE
-
 run_ordering() {
   local ORD="$1" KB="D6_ord_$1"
   local TS; TS=$(date +%Y%m%d_%H%M%S)
@@ -227,13 +227,13 @@ run_ordering() {
   local EXTRACT_OUT="$RESULTS/extract_rel_${LABEL}.md"
   local EVAL_OUT="$RESULTS/eval_${LABEL}.md"
 
-  ORD_COREF_FILE[$ORD]="$COREF_OUT"
-  ORD_EXTRACT_FILE[$ORD]="$EXTRACT_OUT"
-  ORD_EVAL_FILE[$ORD]="$EVAL_OUT"
+  eval "ORD_COREF_FILE_${ORD}=\"\${COREF_OUT}\""
+  eval "ORD_EXTRACT_FILE_${ORD}=\"\${EXTRACT_OUT}\""
+  eval "ORD_EVAL_FILE_${ORD}=\"\${EVAL_OUT}\""
 
   log ""
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  log "Ordering $ORD — ${ORD_DESC[$ORD]}"
+  log "Ordering $ORD — $(get_ord_desc "$ORD")"
   log "  KB: $KB   Label: $LABEL"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -388,21 +388,21 @@ SUMMARY_TS=$(date '+%Y-%m-%d %H:%M')
 
   for ORD in "${ORDERINGS[@]}"; do
     SUM_KB="D6_ord_${ORD}"
-    SUM_EXTRACT="${ORD_EXTRACT_FILE[$ORD]:-}"
-    SUM_EVAL="${ORD_EVAL_FILE[$ORD]:-}"
-    SUM_COREF="${ORD_COREF_FILE[$ORD]:-}"
+    eval "SUM_EXTRACT=\"\${ORD_EXTRACT_FILE_${ORD}:-}\""
+    eval "SUM_EVAL=\"\${ORD_EVAL_FILE_${ORD}:-}\""
+    eval "SUM_COREF=\"\${ORD_COREF_FILE_${ORD}:-}\""
     SUM_RECALL=$(grep "Overall recall" "$SUM_EVAL" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+%' | head -1 || echo "?")
     SUM_KW=$(grep "Overall recall" "$SUM_EVAL" 2>/dev/null | grep -oE '[0-9]+/[0-9]+' | head -1 || echo "?")
     SUM_HEALTH=$(kwaainet rag graph score --kb "$SUM_KB" 2>/dev/null | grep "Overall:" | awk '{print $2}' || echo "?")
     SUM_FALSE=$(count_false_relations "$SUM_EXTRACT")
     SUM_COREF_CNT=$(coref_resolution_count "$SUM_COREF")
-    echo "| **$ORD** | ${ORD_DESC[$ORD]} | $SUM_RECALL ($SUM_KW) | $SUM_HEALTH | $SUM_FALSE | $SUM_COREF_CNT |"
+    echo "| **$ORD** | $(get_ord_desc "$ORD") | $SUM_RECALL ($SUM_KW) | $SUM_HEALTH | $SUM_FALSE | $SUM_COREF_CNT |"
   done
 
   echo ""
   echo "### Key delta questions (q09=grandchildren, q24=Cissie, q32=family)"
   for ORD in "${ORDERINGS[@]}"; do
-    SUM_EVAL="${ORD_EVAL_FILE[$ORD]:-}"
+    eval "SUM_EVAL=\"\${ORD_EVAL_FILE_${ORD}:-}\""
     echo ""
     echo "#### Ordering $ORD"
     echo "\`\`\`"
@@ -414,7 +414,7 @@ SUMMARY_TS=$(date '+%Y-%m-%d %H:%M')
   echo ""
   echo "### Extract-relations detail"
   for ORD in "${ORDERINGS[@]}"; do
-    SUM_EXTRACT="${ORD_EXTRACT_FILE[$ORD]:-}"
+    eval "SUM_EXTRACT=\"\${ORD_EXTRACT_FILE_${ORD}:-}\""
     echo ""
     echo "#### Ordering $ORD — Yousuf Rassool relations extracted"
     echo "\`\`\`"
@@ -426,7 +426,9 @@ SUMMARY_TS=$(date '+%Y-%m-%d %H:%M')
   echo ""
   echo "### Files"
   for ORD in "${ORDERINGS[@]}"; do
-    echo "- Ordering $ORD: \`${ORD_EXTRACT_FILE[$ORD]:-?}\` / \`${ORD_EVAL_FILE[$ORD]:-?}\`"
+    eval "SUM_EXTRACT=\"\${ORD_EXTRACT_FILE_${ORD}:-?}\""
+    eval "SUM_EVAL=\"\${ORD_EVAL_FILE_${ORD}:-?}\""
+    echo "- Ordering $ORD: \`${SUM_EXTRACT}\` / \`${SUM_EVAL}\`"
   done
 } >> "$LOG_FILE"
 
