@@ -9,10 +9,10 @@
 ## Progress Chart
 
 ```
-70% ┤                                                                                                                                                                              ████ ~70%? M48 (r9 running)
+70% ┤                                                                                                                                                                                                    ████ ~70%? M51 (r11 running)
     │
 65% ┤                                                                                                               ████ 59.5% M35            ████ 63.1% M43      ████ 64.9% M46 ← NEW BEST
-    │                                                                                                                                      ████ 58.6% M22  ████ 57.8% M35 avg          ████ 61.3% M44  ████ 59.6% M45  ████ 63.6% M47
+    │                                                                                                                                      ████ 58.6% M22  ████ 57.8% M35 avg          ████ 61.3% M44  ████ 59.6% M45  ████ 63.6% M47  ████ 61.8% M48  ████ 63.6% M49
 60% ┤                                                                       ████ 56.9%
     │                                                                            ████ 56.0% M18          ████ 56.0% M23  ████ 56.0% M27/M29/M37commit
 55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25/M28  ████ 54.4% M42
@@ -28,10 +28,10 @@
 30% ┤████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
 25% ┤24.6%
     │
-    └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk  struct  +Org/  OrdA   OrdA   iter
-                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag   coref   Place  r7     r8     alias
-                                                                                                                                                                        seeds  =M46   =M47   fix=M48
+    └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk  struct  +Org/  OrdA   OrdA   iter  name   graph
+                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag   coref   Place  r7     r8     alias  ovlap  rels
+                                                                                                                                                                        seeds  =M46   =M47   =M48  =M49   =M51
 ```
 
 **Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24) / — (M25)
@@ -92,7 +92,9 @@
 | 45 | v0.4.94 | M43 pipeline, corrected 120s timeout, **metro-linux offline all run** (373 `routing: not found` errors). Only metro-win (8b) active. 70b relations completed in 8s = near-total failure (12 relations committed). Place+org coref (v0.4.94) active but untested with working infra. Cross-type dedup bug: `Dr Goolam Gool District Six` (Person+Place merged) degraded q13 AAC. | llama3.1:8b | **59.6%** (134/225) | — | −3.5pp vs M43. Metro downtime isolates: 70b relations + full throughput = +3.5pp. Seeds still hold the 59% floor. Bug filed: entity-type guard needed in dedup (Person ≠ Place merge). |
 | 46 | v0.4.95 | **Ordering A pipeline** (seed→dedup→coref→dedup→enrich→extract-rel 25%→dedup). No-relations NER (8b, graph-window=1), Tier 4a/4b dedup (unique-surname + middle-name-drop), no-LLM coref, entity description enrich (4 workers, local only), 25% relation extraction sample. Halima Gool YAML alias fix (+q12). Org-membership + org↔org affiliated_with YAML edges. | llama3.1:8b | **64.9%** (146/225) ← **NEW ALL-TIME BEST** | — | +1.8pp over M43 (63.1%). First time exceeding 64%. 1019 entities, 196 relations. Best of 7 runs on Ordering A. |
 | 47 | v0.4.96 | M46 config + alias_token_index + enrich alias hints. Bug: `find_ids_by_alias_token` only wired into `retrieve_graph_anchored`; eval uses `--mode iterative` → `retrieve_iterative` → alias lookup silently missing. q05/q24/q30 (all JMH Gool queries) still broken. | llama3.1:8b | **63.6%** (143/225) | — | −1.3pp regression from M46 due to sampling variance. q05 1/8 (wrong entity injection persists). Alias fix incomplete. |
-| 48 | v0.4.97 | M47 + **iterative alias fix** (`find_ids_by_alias_token` added to `retrieve_iterative` word loop in `iterative.rs`). Root cause: same word-scan code duplicated in two files; fix only in one. q05/q24/q30 expected to recover: Haji Joosub description has 1884/Mauritius/India/Swat/Gujarat/mosque = 6/6 for q30, plus q05 7-8/8. | llama3.1:8b | **TBD** (r9 running) | — | Expected ≥70%. q05 0→6+/8, q24 0→4+/7, q30 0→5+/6 = +14–19 keywords over M47. |
+| 48 | v0.4.97 | M47 + **iterative alias fix** (`find_ids_by_alias_token` added to `retrieve_iterative` word loop in `iterative.rs`). Root cause: same word-scan code duplicated in two files; fix only in one. | llama3.1:8b | **61.8%** (139/225) r9 | — | q09 improved 3→5/9 ✓ (alias fix active). q05/q24/q30 still 2/8, 1/7, 1/6 — wrong entity injected. Root cause: `name_overlap` normalizes "J.M.H." → "j m h" (dots→spaces), single chars filtered; all Gool entities score equally. |
+| 49 | v0.4.98 | M48 + **name_overlap raw token fix** (`q_raw_tokens` keeps "j.m.h" intact; `name_overlap` takes max(norm_count, raw_count)). Alias "J.M.H. Gool" → raw_count=2, beats other Gool entities. | llama3.1:8b | **63.6%** (143/225) r10 | — | q05 2/8→**8/8** ✓ (fix confirmed). q24 still 1/7 (entity injected correctly but children not in description text). q30 0/6 (Cape Town Municipality injected instead of JMH Gool — equal name_overlap score). q09 5/9. Stochastic noise masks +6 from q05 at total level (+4 net). |
+| 50 | v0.4.100 | M49 + **graph relation injection** — `outgoing_relations` appended to injected entity chunk as grouped natural-language sentences: "The children of X are: A, B, C." "X was married to: Y, Z." Tested in isolation: q24 6/7 (86%) vs 1/7 before. | llama3.1:8b | **TBD** (r11 running) | — | Expected: q24 1→6/7 (+5), q09 may improve (grandparent_of facts). CI fix: clippy `too-many-arguments` on `call_enrich` suppressed. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
