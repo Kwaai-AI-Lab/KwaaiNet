@@ -505,12 +505,22 @@ pub(crate) fn inject_entity_descriptions(
             }
         };
 
-        // Count how many significant query tokens (≥3 chars) appear in the entity's
-        // canonical name or any of its aliases after normalisation.
+        // Count how many significant query tokens appear in the entity's name/aliases.
+        // Two forms are kept so abbreviations like "j.m.h." score correctly:
+        //   • q_sig_tokens: normalized form (dots→spaces) for ordinary words
+        //   • q_raw_tokens: raw trimmed+lowercased form so "j.m.h" stays intact
         let q_sig_tokens: std::collections::HashSet<String> = q_lower
             .split_whitespace()
             .filter(|t| t.len() >= 3)
             .map(crate::graph::normalize_name)
+            .collect();
+        let q_raw_tokens: std::collections::HashSet<String> = q_lower
+            .split_whitespace()
+            .map(|t| {
+                t.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|s| s.len() >= 2)
             .collect();
         let name_overlap = |id: i64| -> usize {
             let Some(e) = graph.get_entity(id) else {
@@ -519,10 +529,22 @@ pub(crate) fn inject_entity_descriptions(
             std::iter::once(e.name.as_str())
                 .chain(e.aliases.iter().map(|a| a.as_str()))
                 .map(|n| {
-                    crate::graph::normalize_name(n)
+                    // Normalized path: "J.M.H. Gool" → "j m h gool" → tokens ["j","m","h","gool"]
+                    let norm_count = crate::graph::normalize_name(n)
                         .split_whitespace()
                         .filter(|t| t.len() >= 3 && q_sig_tokens.contains(*t))
-                        .count()
+                        .count();
+                    // Raw path: "J.M.H. Gool" → ["j.m.h", "gool"] — catches abbreviated forms
+                    // that normalize_name breaks into single chars below the len>=3 floor.
+                    let raw_count = n
+                        .split_whitespace()
+                        .map(|t| {
+                            t.trim_matches(|c: char| !c.is_alphanumeric())
+                                .to_lowercase()
+                        })
+                        .filter(|t| t.len() >= 2 && q_raw_tokens.contains(t.as_str()))
+                        .count();
+                    norm_count.max(raw_count)
                 })
                 .max()
                 .unwrap_or(0)
