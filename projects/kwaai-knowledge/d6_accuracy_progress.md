@@ -9,9 +9,11 @@
 ## Progress Chart
 
 ```
-65% ┤
-    │                                                                                                               ████ 59.5% M35                                    ████ 63.1% M43 ← NEW BEST
-60% ┤                                                                       ████ 56.9%                         ████ 58.6% M22   ████ 57.8% M35 avg                              ████ 61.3% M44  ████ 59.6% M45
+70% ┤                                                                                                                                                                              ████ ~70%? M48 (r9 running)
+    │
+65% ┤                                                                                                               ████ 59.5% M35            ████ 63.1% M43      ████ 64.9% M46 ← NEW BEST
+    │                                                                                                                                      ████ 58.6% M22  ████ 57.8% M35 avg          ████ 61.3% M44  ████ 59.6% M45  ████ 63.6% M47
+60% ┤                                                                       ████ 56.9%
     │                                                                            ████ 56.0% M18          ████ 56.0% M23  ████ 56.0% M27/M29/M37commit
 55% ┤                                                                  ████ 51.7%    ████ 54.3% M19  ████ 54.3% M21         ████ 52.6% M24  ████ 55.2% M25/M28  ████ 54.4% M42
     │                                                             ████ 50.0%              ████ 51.7% M20          ████ 53.4% M26      ████ 52-54% M30-M34 (ghost prune)
@@ -26,10 +28,10 @@
 30% ┤████ 25.0% ── 31.9% ── 33.6% ← experiments (reverted)
 25% ┤24.6%
     │
-    └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk  struct  +Org/
-                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag   coref   Place
-                                                                                                                                                                        seeds
+    └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk  struct  +Org/  OrdA   OrdA   iter
+                                                           +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag   coref   Place  r7     r8     alias
+                                                                                                                                                                        seeds  =M46   =M47   fix=M48
 ```
 
 **Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24) / — (M25)
@@ -88,6 +90,9 @@
 | 43 | v0.4.94 | M42 pipeline + **7 Org/Place seed nodes** added to d6_family_tree.yaml: Hewat Training College, TLSA, All Africa Convention, Non-European Unity Movement, Cape Town, District Six (as Place/Org), plus Gooli OCR typo canonical fixed. | llama3.1:8b | **63.1%** ← **NEW ALL-TIME BEST** | — | +8.7pp over M42 mean. +3.6pp over M35 (prev best 59.5%). **First time breaking 60% barrier.** 7 hand-curated seed nodes outperformed all automated extraction improvements combined. Seed entities as primary lever confirmed: Organisation/Place nodes unlock q05, q11, q12, q13, q18, q19 retrieval. |
 | 44 | v0.4.94 | M43 pipeline with **30s send timeout regression** — streaming fix set `timeout=30s` for `.send()`; P2P relay buffers full Ollama response before returning headers, so `.send()` blocks for full generation time (40–80s). 552/1152 chunks (48%) timed out → only 45 entities extracted. | llama3.1:8b | **61.3%** | — | −1.8pp vs M43. Root cause: relay is not a transparent TCP proxy — streaming does not affect `.send()` timing over p2p://. Fixed: restored to 120s send timeout. `stream:true` + NDJSON accumulation retained (correct code, right architecture). |
 | 45 | v0.4.94 | M43 pipeline, corrected 120s timeout, **metro-linux offline all run** (373 `routing: not found` errors). Only metro-win (8b) active. 70b relations completed in 8s = near-total failure (12 relations committed). Place+org coref (v0.4.94) active but untested with working infra. Cross-type dedup bug: `Dr Goolam Gool District Six` (Person+Place merged) degraded q13 AAC. | llama3.1:8b | **59.6%** (134/225) | — | −3.5pp vs M43. Metro downtime isolates: 70b relations + full throughput = +3.5pp. Seeds still hold the 59% floor. Bug filed: entity-type guard needed in dedup (Person ≠ Place merge). |
+| 46 | v0.4.95 | **Ordering A pipeline** (seed→dedup→coref→dedup→enrich→extract-rel 25%→dedup). No-relations NER (8b, graph-window=1), Tier 4a/4b dedup (unique-surname + middle-name-drop), no-LLM coref, entity description enrich (4 workers, local only), 25% relation extraction sample. Halima Gool YAML alias fix (+q12). Org-membership + org↔org affiliated_with YAML edges. | llama3.1:8b | **64.9%** (146/225) ← **NEW ALL-TIME BEST** | — | +1.8pp over M43 (63.1%). First time exceeding 64%. 1019 entities, 196 relations. Best of 7 runs on Ordering A. |
+| 47 | v0.4.96 | M46 config + alias_token_index + enrich alias hints. Bug: `find_ids_by_alias_token` only wired into `retrieve_graph_anchored`; eval uses `--mode iterative` → `retrieve_iterative` → alias lookup silently missing. q05/q24/q30 (all JMH Gool queries) still broken. | llama3.1:8b | **63.6%** (143/225) | — | −1.3pp regression from M46 due to sampling variance. q05 1/8 (wrong entity injection persists). Alias fix incomplete. |
+| 48 | v0.4.97 | M47 + **iterative alias fix** (`find_ids_by_alias_token` added to `retrieve_iterative` word loop in `iterative.rs`). Root cause: same word-scan code duplicated in two files; fix only in one. q05/q24/q30 expected to recover: Haji Joosub description has 1884/Mauritius/India/Swat/Gujarat/mosque = 6/6 for q30, plus q05 7-8/8. | llama3.1:8b | **TBD** (r9 running) | — | Expected ≥70%. q05 0→6+/8, q24 0→4+/7, q30 0→5+/6 = +14–19 keywords over M47. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -290,30 +295,24 @@ With k=30 chunks at ~300 chars each, 8192 chars only showed ~16/30 chunks. Raisi
 
 | Priority | Approach | Expected gain |
 |----------|----------|---------------|
-| High | **M30 graph is working baseline** — 1905 entities, 6164 relations, ~57.8% avg (3-run). DO NOT ghost-prune. Graph connectivity is valuable. | Current best |
-| High | **mxbai-embed-large re-embed** — M22 used mxbai (1024-dim); M25+ used nomic (768-dim). Rebuilding KB with mxbai may push above 58.6%. Risk: full rebuild needed. | +1-3pp? |
-| Medium | **Per-question failure analysis** — get detailed per-question breakdown to find systematic failures. q04/q05/q07/q13/q20 are known weak spots. | Targeted fixes |
-| Medium | **Dream with wider threshold** — try `--threshold 0.7` to reattempt previously-good entities with a harder bar | Maybe 0 additional |
-| Medium | **M26 judge eval** — run with `--llm-judge` after dream cycles to measure structural improvement | Structural signal |
-| Medium | **Q5 (JMH Gool)** — 2/8 persistent failure; entity graph search returns wrong entity first. Investigate entity embedding for Haji Joosub Maulvi Hamid Gool. | +3–4 kw |
-| Medium | **Q16 (Gandhi/Gool)** — LLM hallucinated Gandhi as "scion of Gool-Rassool family". Gandhi entity description needs grounding from source text. | +2–3 kw |
-| Medium | **Q20 (cricket) — 0/5** — "Alec Bedser" entity injected into cricket question context. Noisy entity from NER; dream pruning should remove or demote. | +3–4 kw |
-| Low | Dream RAG Phase 3: quality gate — snapshot + rollback if score drops >5% after a cycle | Stability |
-| Done ✓ | **NER pre-screening + pronoun resolution** — `extract_from_text()` now receives proper noun candidates + pronoun→entity map; skips LLM when no candidates (v0.4.79) | M25 55.2% baseline |
-| Done ✓ | **graph build progress monitoring** — stderr `\r` in-place updates with ETA; `--sample-pct` for fast test cycles (v0.4.79) | Dev velocity |
-| Done ✓ | **Entity description injection** — relation-aware traversal for wife/parent/grandparent/sibling queries; 6 Rassool siblings + Nazima seeded (f4bebe5) | M24 (not net-positive) |
-| Done ✓ | **Doc metadata preamble** — author/subject/year in system prompt; Q1 fixed 0/3→3/3 (v0.4.75) | M23 +6 kw |
-| Done ✓ | **Dream RAG 31 cycles** — graph 51.5% → 78.1%; 8b model ~1.8%/cycle; plateau hit at cycle 25 | M22 58.6% kw best |
-| Done ✓ | **Sanitize type-mismatch** — 92 bad relations removed; 3 honorific stubs pruned (v0.4.75) | Graph quality |
-| Done ✓ | **clean_entity_name()** — PDF underscore artifacts fixed at LLM parse time (Dr_ → Dr., J_ → J.) | Graph quality |
-| Done ✓ | **Section-aware ingest** — Index/Appendix/Endnotes skipped; Editor's Note narrator override (v0.4.73) | Noise reduction |
-| Done ✓ | **q04 dedication resolved** — chunk-transfer fix enabled graph to reach intro.docx dedication chunk | 4/4 2/2 ← M21 |
-| Done ✓ | **Alias embedding fix** — `entity_embed_text()` bakes aliases into embed text (v0.4.72) | M19 regression reversed |
-| Done ✓ | **graph alias-scan** — inline text-scanning abbreviation finder + auto-merge (v0.4.72) | Implemented |
-| Done ✓ | **Dream RAG Phase 1+2**: graph health scorer + autonomous completion cycle (v0.4.72) | Graph quality |
-| Done ✓ | Best config found: **iterative k=20** — 56.9% kw / 1.80/2 judge (new best both metrics) | |
-| Done ✓ | `graph dedup --auto` + interactive pass (v0.4.56) | Graph cleaned |
-| Done ✓ | `graph reembed` — entities now embed `"{name}: {description}"` | Abbreviation lookup fixed |
+| **Running** | **M48 r9** — iterative alias fix (`find_ids_by_alias_token` in `retrieve_iterative`). q05/q24/q30 expected: +14–19 keywords → ~70% recall. | **TBD** |
+| High | **100% extract-relations** — once >65% confirmed, rerun with `EXTRACT_SAMPLE=1.0` + `RE_MODEL=llama3.1:70b-instruct-q3_K_M` on metro-linux A6000. | +3-5pp? |
+| High | **q36 political organisations** — consistently 17% (1/6). Graph injects wrong entity ("Western Cape Archives"). Need TLSA/NEUM/AAC all well-described + correct injection. | +3-4 kw |
+| Medium | **q30 "when did JMH Gool arrive"** — was 0/6; description has 1884/Mauritius/India/Swat/Gujarat. Should fix with M48 alias lookup. | +5-6 kw (in M48) |
+| Medium | **q38 Cissie Gool's father** — is_relative_query fires ("father" in list) but resolves author's father (Peter Rassool), not Cissie's. Need named-anchor detection. | +3 kw |
+| Medium | **q16 Gandhi/Gool** — "Amod Gool" injected (wrong). Query has "Gandhi" but Gandhi entity not in name_matched. Gandhi alias set may need "Mahatma" or explicit YAML alias. | +2-3 kw |
+| Low | **Enrich coverage** — currently local-only (OLLAMA_NUM_PARALLEL=4). Add metro-win back with longer keepalive (p2p stream reset at 30 min fixed by local-only). | Reliability |
+| Done ✓ | **Ordering A pipeline** — seed→dedup→coref→dedup→enrich→extract-rel 25%→dedup; 64.9% (M46) ← new best | |
+| Done ✓ | **Halima Gool alias fix** — NER artifact "Halima Gool Courtesy Selim Gool" → YAML alias; q12 33%→100% | M46 |
+| Done ✓ | **Tier 4a unique-surname dedup** — "Mr Kies" → "Benjamin Maximilian Kies" when surname is unique | v0.4.95 |
+| Done ✓ | **Tier 4b middle-name-drop dedup** — "Victor Wessels" → "Victor Walter Wesley Wessels" | v0.4.95 |
+| Done ✓ | **alias_token_index** — exhaustive HashMap<raw_token, Vec<entity_id>> for abbreviation lookup (e.g. "j.m.h" → haji_id) | v0.4.95 |
+| Done ✓ | **Enrich alias hints** — aliases passed to LLM prompt; coref-linked chunks included via chunks_for_entity | v0.4.95 |
+| Done ✓ | **Org-membership + org↔org YAML edges** — TLSA/NEUM/AAC affiliated_with; q11 +2 | v0.4.95 |
+| Done ✓ | **False-rel double-counting fix** — grep was matching JSON+markdown lines; 1 unique false relation (Barnato Board, blocked) | v0.4.95 |
+| Done ✓ | **iterative alias fix** — `find_ids_by_alias_token` added to `retrieve_iterative` (was missing; only in `retrieve_graph_anchored`) | v0.4.97 |
+| Done ✓ | **Struct-aware ingest + coref + place+org coref** — Place/Org entities now coref-resolved | v0.4.94 |
+| Done ✓ | **+Org/Place seeds (M43)** — 7 hand-curated nodes; +8.7pp over M42; first 60%+ | v0.4.94 |
 
 ---
 
