@@ -159,6 +159,14 @@ where
                 }
                 name_matched_ids.insert(id);
             }
+            // Exhaustive alias token index: catches "j.m.h." → canonical entity even when
+            // normalize_name() strips the dots and find_ids_by_name_token misses it.
+            for &id in graph.find_ids_by_alias_token(&w) {
+                if !emb_seed_ids.contains(&id) {
+                    seed_hits.push((id, 0.85));
+                }
+                name_matched_ids.insert(id);
+            }
         }
     }
 
