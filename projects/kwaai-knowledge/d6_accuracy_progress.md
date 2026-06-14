@@ -9,9 +9,9 @@
 ## Progress Chart
 
 ```
-70% ┤                                                                                                                                                                                                    ████ ~70%? M51 (r11 running)
+70% ┤
     │
-65% ┤                                                                                                               ████ 59.5% M35            ████ 63.1% M43      ████ 64.9% M46 ← NEW BEST
+65% ┤                                                                                                               ████ 59.5% M35            ████ 63.1% M43      ████ 64.9% M46        ████ 65.8% M50 ← NEW BEST
     │                                                                                                                                      ████ 58.6% M22  ████ 57.8% M35 avg          ████ 61.3% M44  ████ 59.6% M45  ████ 63.6% M47  ████ 61.8% M48  ████ 63.6% M49
 60% ┤                                                                       ████ 56.9%
     │                                                                            ████ 56.0% M18          ████ 56.0% M23  ████ 56.0% M27/M29/M37commit
@@ -94,7 +94,7 @@
 | 47 | v0.4.96 | M46 config + alias_token_index + enrich alias hints. Bug: `find_ids_by_alias_token` only wired into `retrieve_graph_anchored`; eval uses `--mode iterative` → `retrieve_iterative` → alias lookup silently missing. q05/q24/q30 (all JMH Gool queries) still broken. | llama3.1:8b | **63.6%** (143/225) | — | −1.3pp regression from M46 due to sampling variance. q05 1/8 (wrong entity injection persists). Alias fix incomplete. |
 | 48 | v0.4.97 | M47 + **iterative alias fix** (`find_ids_by_alias_token` added to `retrieve_iterative` word loop in `iterative.rs`). Root cause: same word-scan code duplicated in two files; fix only in one. | llama3.1:8b | **61.8%** (139/225) r9 | — | q09 improved 3→5/9 ✓ (alias fix active). q05/q24/q30 still 2/8, 1/7, 1/6 — wrong entity injected. Root cause: `name_overlap` normalizes "J.M.H." → "j m h" (dots→spaces), single chars filtered; all Gool entities score equally. |
 | 49 | v0.4.98 | M48 + **name_overlap raw token fix** (`q_raw_tokens` keeps "j.m.h" intact; `name_overlap` takes max(norm_count, raw_count)). Alias "J.M.H. Gool" → raw_count=2, beats other Gool entities. | llama3.1:8b | **63.6%** (143/225) r10 | — | q05 2/8→**8/8** ✓ (fix confirmed). q24 still 1/7 (entity injected correctly but children not in description text). q30 0/6 (Cape Town Municipality injected instead of JMH Gool — equal name_overlap score). q09 5/9. Stochastic noise masks +6 from q05 at total level (+4 net). |
-| 50 | v0.4.100 | M49 + **graph relation injection** — `outgoing_relations` appended to injected entity chunk as grouped natural-language sentences: "The children of X are: A, B, C." "X was married to: Y, Z." Tested in isolation: q24 6/7 (86%) vs 1/7 before. | llama3.1:8b | **TBD** (r11 running) | — | Expected: q24 1→6/7 (+5), q09 may improve (grandparent_of facts). CI fix: clippy `too-many-arguments` on `call_enrich` suppressed. |
+| 50 | v0.4.100 | M49 + **graph relation injection** — `outgoing_relations` appended to injected entity chunk as grouped natural-language sentences: "The children of X are: A, B, C." "X was married to: Y, Z." | llama3.1:8b | **65.8%** (148/225) r11 ← **NEW ALL-TIME BEST** | — | +2.2pp over M49, +0.9pp over M46 (prev best 64.9%). Gains widespread across 14 questions: q01+1, q11+1, q13+1, q19+1, q20+1, q21+1, q23+2, q25+1, q26+2, q27+1, q29+1, q30+1, q37+1, q39+2. q24 still 0/7 — 8b LLM unreliable for listing children even with correct context (isolation test: 6/7; full eval: 0/7). q09 regressed 5→3/9 (stochastic). Relations in entity chunks help many question types, not just family ones. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
