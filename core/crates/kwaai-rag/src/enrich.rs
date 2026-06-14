@@ -70,6 +70,10 @@ struct WorkItem {
     id: i64,
     name: String,
     entity_type: String,
+    /// All alias forms merged into this entity (pronoun aliases excluded).
+    /// Passed to the LLM prompt so it knows "he", "Dr. Gool", "J.M.H. Gool"
+    /// in the evidence text all refer to the same entity.
+    aliases: Vec<String>,
     current_desc: String,
     current_gender: Option<String>,
     /// Whether the entity needs description enrichment in this run.
@@ -170,10 +174,22 @@ pub async fn enrich_entity_descriptions(
                 .get(url_idx)
                 .cloned()
                 .unwrap_or_default();
+            // Filter out generic pronoun aliases so the LLM hint is signal, not noise.
+            const PRONOUN_ALIASES: &[&str] = &[
+                "i", "he", "she", "they", "him", "her", "his", "the author", "the narrator",
+                "narrator", "author", "the writer",
+            ];
+            let meaningful_aliases: Vec<String> = node
+                .aliases
+                .iter()
+                .filter(|a| !PRONOUN_ALIASES.contains(&a.to_lowercase().as_str()))
+                .cloned()
+                .collect();
             items.push(WorkItem {
                 id: node.id,
                 name: node.name.clone(),
                 entity_type: node.entity_type.clone(),
+                aliases: meaningful_aliases,
                 current_desc: node.description.clone(),
                 current_gender: node.gender.clone(),
                 need_desc,
@@ -213,6 +229,7 @@ pub async fn enrich_entity_descriptions(
             let result = call_enrich(
                 &item.name,
                 &item.entity_type,
+                &item.aliases,
                 &item.current_desc,
                 item.current_gender.as_deref(),
                 &item.evidence_text,
@@ -290,6 +307,7 @@ pub async fn enrich_entity_descriptions(
 async fn call_enrich(
     name: &str,
     entity_type: &str,
+    aliases: &[String],
     current_desc: &str,
     _current_gender: Option<&str>,
     evidence_text: &str,
@@ -311,11 +329,22 @@ async fn call_enrich(
         String::new()
     };
 
+    // Tell the LLM about alias forms so it can connect pronoun/abbreviation references
+    // in the evidence text back to the entity being described.
+    let alias_hint = if aliases.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (also referred to as: {})",
+            aliases.join(", ")
+        )
+    };
+
     let prompt = if need_gender {
         // JSON-mode prompt for Person entities: description + gender
         format!(
             "You are a knowledge extraction assistant working with a historical memoir.{existing_hint}\n\
-             Below are all excerpts from the document that mention \"{name}\" (a {type_label}):\n\n\
+             Below are all excerpts from the document that mention \"{name}\"{alias_hint} (a {type_label}):\n\n\
              {evidence_text}\n\n\
              Based ONLY on the excerpts above, return ONLY a JSON object with these two fields \
              (no other text, no markdown fences):\n\
@@ -334,7 +363,7 @@ async fn call_enrich(
         // Plain prose for non-Person entities or when only description is needed
         format!(
             "You are a knowledge extraction assistant working with a historical memoir.{existing_hint}\n\
-             Below are all excerpts from the document that mention \"{name}\" (a {type_label}):\n\n\
+             Below are all excerpts from the document that mention \"{name}\"{alias_hint} (a {type_label}):\n\n\
              {evidence_text}\n\n\
              Based ONLY on the excerpts above, write a concise 2–3 sentence description of \"{name}\" \
              that captures: who or what they are, their significance in the story, and any key \

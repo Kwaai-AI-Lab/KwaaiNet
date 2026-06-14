@@ -656,15 +656,21 @@ relations:
   - { from: "Omar Abrahams",              to: "Jameel",         type: "sibling_of" }
 
   # ─── Person → Organization (membership / founding) ───────────────────────────
-  - { from: "Yousuf Rassool",              to: "Non-European Unity Movement", type: "member_of" }
+  - { from: "Yousuf Rassool",              to: "Non-European Unity Movement",    type: "member_of" }
   - { from: "Yousuf Rassool",              to: "Teachers League of South Africa", type: "member_of" }
-  - { from: "Yousuf Rassool",              to: "New Era Fellowship",           type: "member_of" }
-  - { from: "Cissie Gool",                 to: "Non-European Unity Movement", type: "member_of" }
-  - { from: "I.B. Tabata",                 to: "Non-European Unity Movement", type: "member_of" }
-  - { from: "I.B. Tabata",                 to: "All African Convention",       type: "member_of" }
-  - { from: "Dr. Abdulla Abdurahman",      to: "Non-European Unity Movement", type: "associated_with" }
+  - { from: "Yousuf Rassool",              to: "New Era Fellowship",              type: "member_of" }
+  - { from: "Cissie Gool",                 to: "Non-European Unity Movement",    type: "member_of" }
+  - { from: "I.B. Tabata",                 to: "Non-European Unity Movement",    type: "member_of" }
+  - { from: "I.B. Tabata",                 to: "All African Convention",          type: "member_of" }
+  - { from: "Benjamin Maximilian Kies",    to: "Teachers League of South Africa", type: "member_of" }
+  - { from: "Benjamin Maximilian Kies",    to: "Non-European Unity Movement",    type: "member_of" }
+  - { from: "Dr. Abdulla Abdurahman",      to: "Non-European Unity Movement",    type: "associated_with" }
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Hanaffi Quwatul Islam Mosque", type: "founded" }
-  - { from: "Abdul Hamid Gool",            to: "Non-European Unity Movement", type: "associated_with" }
+  - { from: "Abdul Hamid Gool",            to: "Non-European Unity Movement",    type: "associated_with" }
+
+  # ─── Organization ↔ Organization (q29: TLSA/NEUM relationship) ──────────────
+  - { from: "Teachers League of South Africa", to: "Non-European Unity Movement", type: "affiliated_with" }
+  - { from: "Non-European Unity Movement",     to: "All African Convention",       type: "affiliated_with" }
 
   # ─── Person → Place (residence / location) ───────────────────────────────────
   - { from: "Yousuf Rassool",              to: "District Six",              type: "lived_in" }

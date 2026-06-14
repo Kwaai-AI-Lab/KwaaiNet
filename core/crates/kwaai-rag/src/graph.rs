@@ -548,6 +548,11 @@ pub struct GraphStore {
     chunk_to_entities: HashMap<i64, Vec<i64>>,
     /// entity_id → [chunk_id]
     entity_to_chunks: HashMap<i64, Vec<i64>>,
+    /// Exhaustive alias token index: raw-lowercased token → [entity_id].
+    /// Built from every whitespace-split token of canonical name + all aliases.
+    /// Stores both the raw form ("j.m.h.") and trimmed form ("j.m.h") so query
+    /// tokenizers that strip trailing punctuation still get a hit.
+    pub alias_token_index: HashMap<String, Vec<i64>>,
 }
 
 impl GraphStore {
@@ -574,6 +579,7 @@ impl GraphStore {
             adj: HashMap::new(),
             chunk_to_entities: HashMap::new(),
             entity_to_chunks: HashMap::new(),
+            alias_token_index: HashMap::new(),
         };
         store.rebuild()?;
         Ok(store)
@@ -639,6 +645,31 @@ impl GraphStore {
         for (&eid, cids) in &self.entity_to_chunks {
             if let Some(node) = self.nodes.get_mut(&eid) {
                 node.evidence = cids.clone();
+            }
+        }
+
+        // Build exhaustive alias token index: raw lowercased tokens (no normalization).
+        // Covers "j.m.h." from alias "J.M.H. Gool" so the retriever finds the canonical
+        // entity even when the query word hasn't been normalized.
+        self.alias_token_index.clear();
+        for (&id, node) in &self.nodes {
+            let name_forms = std::iter::once(node.name.as_str())
+                .chain(node.aliases.iter().map(|a| a.as_str()));
+            for form in name_forms {
+                for token in form.split_whitespace() {
+                    let raw = token.to_lowercase();
+                    let trimmed: String = token
+                        .trim_matches(|c: char| !c.is_alphanumeric())
+                        .to_lowercase();
+                    for tok in [raw.as_str(), trimmed.as_str()] {
+                        if tok.len() >= 2 {
+                            self.alias_token_index
+                                .entry(tok.to_string())
+                                .or_default()
+                                .push(id);
+                        }
+                    }
+                }
             }
         }
 
@@ -1456,6 +1487,21 @@ impl GraphStore {
             })
             .map(|n| n.id)
             .collect()
+    }
+
+    /// Look up entity IDs by a raw (non-normalized) lowercased token.
+    /// Hits the pre-built alias_token_index which stores tokens exactly as they appear
+    /// in alias strings (e.g. "j.m.h." from "J.M.H. Gool"), so abbreviations with
+    /// internal punctuation are found without stripping.  Returns an empty slice for
+    /// tokens shorter than 2 characters.
+    pub fn find_ids_by_alias_token(&self, token: &str) -> &[i64] {
+        if token.len() < 2 {
+            return &[];
+        }
+        self.alias_token_index
+            .get(token)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Merge all relations from `alias_id` into `canonical_id` and delete the alias entity.
@@ -3965,6 +4011,7 @@ impl GraphStore {
         self.adj.clear();
         self.chunk_to_entities.clear();
         self.entity_to_chunks.clear();
+        self.alias_token_index.clear();
         self.rebuild()
     }
 

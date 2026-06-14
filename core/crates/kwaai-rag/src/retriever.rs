@@ -208,6 +208,15 @@ pub async fn retrieve_graph_anchored(
                 }
                 name_matched_ids.insert(id);
             }
+            // Also query the exhaustive alias token index (raw tokens, no normalization).
+            // Catches abbreviations like "j.m.h." whose internal dots are stripped by
+            // normalize_name() and therefore missed by find_ids_by_name_token.
+            for &id in graph.find_ids_by_alias_token(&w) {
+                if !emb_seed_ids.contains(&id) {
+                    seed_hits.push((id, 0.85));
+                }
+                name_matched_ids.insert(id);
+            }
         }
     }
 
