@@ -504,17 +504,25 @@ pub fn retrieve_sequence(
         return None;
     }
 
-    // Quality gate: only surface the diagram if at least one event has a specific year.
-    // Vague dates ("decades ago", "1920s", empty strings) don't add reasoning signal and
-    // can actively harm the LLM by injecting noise that displaces better narrative chunks.
-    // A 4-digit year in date_raw is the minimum bar for "specific enough to be useful".
-    let has_dated_event = events.iter().any(|e| {
-        e.date_raw
-            .as_deref()
-            .map(|d| d.chars().filter(|c| c.is_ascii_digit()).count() >= 4)
-            .unwrap_or(false)
+    // Quality gate: only surface the diagram if at least one event has a specific year —
+    // not a decade approximation like "1920s" or vague phrase like "decades ago".
+    // A 4-digit year that is NOT immediately followed by 's' (decade suffix) is the bar.
+    // "1884" → passes. "February 1914" → passes. "1920s" → fails. "decades ago" → fails.
+    let has_specific_year = events.iter().any(|e| {
+        e.date_raw.as_deref().map(|d| {
+            let b = d.as_bytes();
+            for i in 0..b.len().saturating_sub(3) {
+                if b[i..i + 4].iter().all(|c| c.is_ascii_digit()) {
+                    let next = b.get(i + 4).copied();
+                    if !matches!(next, Some(b's') | Some(b'S')) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }).unwrap_or(false)
     });
-    if !has_dated_event {
+    if !has_specific_year {
         return None;
     }
 
