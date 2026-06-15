@@ -8,6 +8,7 @@ repository = "https://github.com/Kwaai-AI-Lab/KwaaiNet"
 homepage = "https://kwaai.ai"
 description = "kwaainet – KwaaiNet node CLI"
 default-run = "kwaainet"
+publish = false
 keywords = ["ai", "p2p", "decentralized", "inference", "kwaainet"]
 categories = ["command-line-utilities", "network-programming"]
 
