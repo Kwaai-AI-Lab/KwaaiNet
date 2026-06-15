@@ -1042,12 +1042,22 @@ async fn cmd_query(
                             )
                             .await?
                         } else if is_family_author {
-                            // Author-anchored family query: Replace mode so the retriever can
-                            // resolve the specific relative entity (wife/mother/grandfather) and
-                            // inject their description directly. Falls back to Prepend of the
-                            // author entity when no specific relative is resolvable (e.g. grandchildren).
+                            // Author-anchored family query: Replace mode injects the resolved
+                            // relative's entity description directly (wife/mother use this).
+                            // Exception: grandparents use Prepend — their entity description
+                            // alone is insufficient because biographical keywords (Swat, spice,
+                            // mosque, Buitencingle) live in the text chunks, not the description.
+                            let q_lower = query.to_lowercase();
+                            let is_grandparent = q_lower.contains("grandfather")
+                                || q_lower.contains("grandpa")
+                                || q_lower.contains("grandmother")
+                                || q_lower.contains("grandma");
                             let mut smart_cfg = retrieve_cfg.clone();
-                            smart_cfg.graph_mode = GraphMode::Replace;
+                            smart_cfg.graph_mode = if is_grandparent {
+                                GraphMode::Prepend
+                            } else {
+                                GraphMode::Replace
+                            };
                             retrieve_graph_anchored(
                                 &query,
                                 &smart_cfg,
@@ -6912,11 +6922,21 @@ async fn cmd_eval(
                     .await
                     .unwrap_or_default()
                 } else if is_family_author {
-                    // Author-anchored family query: Replace so the retriever resolves the specific
-                    // relative entity (wife/mother/grandfather) and uses their description directly.
-                    // Falls back to Prepend of the author entity when no specific relative resolves.
+                    // Author-anchored family query: Replace injects the resolved relative's
+                    // entity description directly (wife/mother use this).
+                    // Exception: grandparents use Prepend — their biographical keywords
+                    // (Swat, spice, mosque, Buitencingle) live in text chunks, not the entity.
+                    let q_lower = q.question.to_lowercase();
+                    let is_grandparent = q_lower.contains("grandfather")
+                        || q_lower.contains("grandpa")
+                        || q_lower.contains("grandmother")
+                        || q_lower.contains("grandma");
                     let mut smart_cfg = retrieve_cfg.clone();
-                    smart_cfg.graph_mode = GraphMode::Replace;
+                    smart_cfg.graph_mode = if is_grandparent {
+                        GraphMode::Prepend
+                    } else {
+                        GraphMode::Replace
+                    };
                     retrieve_graph_anchored(
                         &q.question,
                         &smart_cfg,
