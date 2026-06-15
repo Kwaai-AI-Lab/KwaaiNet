@@ -7426,7 +7426,7 @@ async fn cmd_enrich_entities(
             &data_dir,
             tenant_id,
             |done, total, _label| {
-                if done % 10 == 0 || done == total {
+                if done.is_multiple_of(10) || done == total {
                     print_info(&format!("  [{done}/{total}]"));
                 }
             },
@@ -7744,7 +7744,7 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                         let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         ev_total.fetch_add(n_ev, std::sync::atomic::Ordering::Relaxed);
                         ia_total.fetch_add(n_ia, std::sync::atomic::Ordering::Relaxed);
-                        if d % 50 == 0 || d == total {
+                        if d.is_multiple_of(50) || d == total {
                             let evs = ev_total.load(std::sync::atomic::Ordering::Relaxed);
                             let ias = ia_total.load(std::sync::atomic::Ordering::Relaxed);
                             println!("  [{d}/{total}] events={evs} interactions={ias}");
