@@ -27,6 +27,13 @@ const CHUNK_ENTITY_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("
 /// key = entity_id i64 LE (8 bytes) → [chunk_id] JSON array
 const ENTITY_CHUNK_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entity_chunks");
 
+/// key = entity_id i64 LE (8 bytes) → JSON Vec<TimelineEvent>
+const TIMELINE_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entity_timeline_v1");
+
+/// key = src_id_le(8) ++ dst_id_le(8) → JSON Vec<SequenceInteraction>
+const INTERACTION_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("seq_interactions_v1");
+
 /// key = string → JSON-encoded value (KB-level metadata)
 const METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("metadata");
 
@@ -3969,6 +3976,180 @@ impl GraphStore {
     /// Expose chunk→entity mapping for cross-link discovery in the dream loop.
     pub fn all_chunk_entity_pairs(&self) -> impl Iterator<Item = (i64, &Vec<i64>)> {
         self.chunk_to_entities.iter().map(|(&k, v)| (k, v))
+    }
+
+    /// Return the entity IDs linked to a chunk (empty slice if none).
+    pub fn get_chunk_entities(&self, chunk_id: i64) -> Vec<i64> {
+        self.chunk_to_entities
+            .get(&chunk_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    // ── Sequence diagram: timeline store/get ──────────────────────────────────
+
+    /// Append timeline events for an entity, merging with any already stored.
+    pub fn store_timeline_events(
+        &self,
+        entity_id: i64,
+        new_events: &[crate::sequence::TimelineEvent],
+    ) -> Result<()> {
+        if new_events.is_empty() {
+            return Ok(());
+        }
+        let key = entity_id.to_le_bytes();
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(TIMELINE_TABLE)?;
+            let existing: Vec<crate::sequence::TimelineEvent> = table
+                .get(key.as_ref())?
+                .and_then(|v| serde_json::from_slice(v.value()).ok())
+                .unwrap_or_default();
+            let mut merged = existing;
+            merged.extend_from_slice(new_events);
+            // Deduplicate by (chunk_id, description)
+            merged.dedup_by(|a, b| {
+                a.evidence_chunk_id == b.evidence_chunk_id && a.description == b.description
+            });
+            let val = serde_json::to_vec(&merged)?;
+            table.insert(key.as_ref(), val.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Return all timeline events for a list of entity IDs.
+    pub fn get_timeline_events(&self, entity_ids: &[i64]) -> Vec<crate::sequence::TimelineEvent> {
+        let rtxn = match self.db.begin_read() {
+            Ok(t) => t,
+            Err(_) => return vec![],
+        };
+        let table = match rtxn.open_table(TIMELINE_TABLE) {
+            Ok(t) => t,
+            Err(_) => return vec![],
+        };
+        let mut out = Vec::new();
+        for &eid in entity_ids {
+            let key = eid.to_le_bytes();
+            if let Ok(Some(v)) = table.get(key.as_ref()) {
+                if let Ok(evts) =
+                    serde_json::from_slice::<Vec<crate::sequence::TimelineEvent>>(v.value())
+                {
+                    out.extend(evts);
+                }
+            }
+        }
+        out
+    }
+
+    /// Append interactions between two entities, merging with any already stored.
+    /// Key is (min(from,to), max(from,to)) so direction doesn't matter for lookup.
+    pub fn store_interaction(
+        &self,
+        interaction: &crate::sequence::SequenceInteraction,
+    ) -> Result<()> {
+        let lo = interaction.from_entity_id.min(interaction.to_entity_id);
+        let hi = interaction.from_entity_id.max(interaction.to_entity_id);
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(&lo.to_le_bytes());
+        key[8..].copy_from_slice(&hi.to_le_bytes());
+
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(INTERACTION_TABLE)?;
+            let existing: Vec<crate::sequence::SequenceInteraction> = table
+                .get(key.as_ref())?
+                .and_then(|v| serde_json::from_slice(v.value()).ok())
+                .unwrap_or_default();
+            let mut merged = existing;
+            merged.push(interaction.clone());
+            merged
+                .dedup_by(|a, b| a.evidence_chunk_id == b.evidence_chunk_id && a.label == b.label);
+            let val = serde_json::to_vec(&merged)?;
+            table.insert(key.as_ref(), val.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Return all interactions where either endpoint is in `entity_ids`.
+    pub fn get_interactions_for(
+        &self,
+        entity_ids: &[i64],
+    ) -> Vec<crate::sequence::SequenceInteraction> {
+        let rtxn = match self.db.begin_read() {
+            Ok(t) => t,
+            Err(_) => return vec![],
+        };
+        let table = match rtxn.open_table(INTERACTION_TABLE) {
+            Ok(t) => t,
+            Err(_) => return vec![],
+        };
+        let id_set: std::collections::HashSet<i64> = entity_ids.iter().copied().collect();
+        let mut out = Vec::new();
+        for entry in table.iter().into_iter().flatten() {
+            if let Ok((_, v)) = entry {
+                if let Ok(interactions) =
+                    serde_json::from_slice::<Vec<crate::sequence::SequenceInteraction>>(v.value())
+                {
+                    for ia in interactions {
+                        if id_set.contains(&ia.from_entity_id) || id_set.contains(&ia.to_entity_id)
+                        {
+                            out.push(ia);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Drop all timeline events and interactions (used by --reset-timeline).
+    pub fn reset_timeline(&self) -> Result<()> {
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(TIMELINE_TABLE)?;
+            let keys: Vec<Vec<u8>> = t
+                .iter()?
+                .filter_map(|e| e.ok())
+                .map(|(k, _)| k.value().to_vec())
+                .collect();
+            for k in keys {
+                t.remove(k.as_slice())?;
+            }
+        }
+        {
+            let mut t = wtxn.open_table(INTERACTION_TABLE)?;
+            let keys: Vec<Vec<u8>> = t
+                .iter()?
+                .filter_map(|e| e.ok())
+                .map(|(k, _)| k.value().to_vec())
+                .collect();
+            for k in keys {
+                t.remove(k.as_slice())?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Count stored timeline events and interactions (for status display).
+    pub fn timeline_stats(&self) -> (usize, usize) {
+        let rtxn = match self.db.begin_read() {
+            Ok(t) => t,
+            Err(_) => return (0, 0),
+        };
+        let event_count = rtxn
+            .open_table(TIMELINE_TABLE)
+            .ok()
+            .and_then(|t| t.iter().ok().map(|iter| iter.count()))
+            .unwrap_or(0);
+        let interaction_count = rtxn
+            .open_table(INTERACTION_TABLE)
+            .ok()
+            .and_then(|t| t.iter().ok().map(|iter| iter.count()))
+            .unwrap_or(0);
+        (event_count, interaction_count)
     }
 
     /// For each chunk linked to at least one entity, return (chunk_id, tag_prefix).

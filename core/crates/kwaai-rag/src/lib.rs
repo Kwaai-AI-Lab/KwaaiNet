@@ -24,4 +24,5 @@ pub mod reranker;
 pub mod retriever;
 pub mod scorer;
 pub mod seed_json;
+pub mod sequence;
 pub mod wiki;

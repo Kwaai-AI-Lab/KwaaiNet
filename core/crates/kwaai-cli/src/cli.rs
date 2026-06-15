@@ -2060,6 +2060,53 @@ pub enum GraphAction {
         #[arg(long, default_value = "0", value_name = "SECS")]
         since: u64,
     },
+
+    /// Build and query UML sequence diagrams: per-entity lifelines and interactions.
+    /// Temporal questions ("when did…", "what happened to…") are routed here in smart mode.
+    Timeline {
+        #[command(subcommand)]
+        action: TimelineAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TimelineAction {
+    /// Extract temporal events from all entity-linked chunks and store them in the graph DB.
+    /// Run after `graph build` to populate lifeline and interaction data.
+    Build {
+        /// Inference URL for event extraction (defaults to config inference_url)
+        #[arg(long, value_name = "URL")]
+        inference_url: Option<String>,
+
+        /// LLM model name (e.g. "llama3.1:8b")
+        #[arg(long, default_value = "llama3.1:8b", value_name = "MODEL")]
+        model: String,
+
+        /// Parallel extraction workers
+        #[arg(long, default_value = "4", value_name = "N")]
+        workers: usize,
+
+        /// Drop all existing timeline data before building
+        #[arg(long)]
+        reset: bool,
+    },
+
+    /// Show the event lifeline for a named entity
+    Show {
+        /// Entity name (case-insensitive)
+        #[arg(long, value_name = "NAME")]
+        entity: String,
+    },
+
+    /// Render a Mermaid sequence diagram for a named entity (includes 1-hop neighbours)
+    ExportMermaid {
+        /// Entity name (case-insensitive)
+        #[arg(long, value_name = "NAME")]
+        entity: String,
+    },
+
+    /// Show event and interaction counts stored in the timeline tables
+    Stats,
 }
 
 #[derive(Subcommand)]

@@ -20,7 +20,7 @@ use kwaai_rag::{
     seed_json,
 };
 
-use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs};
+use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs, TimelineAction};
 use crate::config::{KwaaiNetConfig, RagConfig};
 use crate::display::*;
 
@@ -1042,8 +1042,12 @@ async fn cmd_query(
                             )
                             .await?
                         } else if is_family_author {
+                            // Author-anchored family query: Replace mode so the retriever can
+                            // resolve the specific relative entity (wife/mother/grandfather) and
+                            // inject their description directly. Falls back to Prepend of the
+                            // author entity when no specific relative is resolvable (e.g. grandchildren).
                             let mut smart_cfg = retrieve_cfg.clone();
-                            smart_cfg.graph_mode = GraphMode::Prepend;
+                            smart_cfg.graph_mode = GraphMode::Replace;
                             retrieve_graph_anchored(
                                 &query,
                                 &smart_cfg,
@@ -1067,31 +1071,45 @@ async fn cmd_query(
                             )
                             .await?
                         } else {
-                            retrieve_iterative(
-                                &query,
-                                &retrieve_cfg,
-                                &embed,
-                                &meta,
-                                &graph,
-                                move |emb, k| {
-                                    let vs = vs.clone();
-                                    Box::pin(async move {
-                                        let raw = vs.search(tenant_id, &emb, k).await?;
-                                        Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
-                                    })
-                                        as Pin<
-                                            Box<
-                                                dyn std::future::Future<
-                                                        Output = Result<Vec<(i64, f64)>>,
-                                                    > + Send,
-                                            >,
-                                        >
-                                },
-                                &infer_url,
-                                &model,
-                                |msg| println!("{msg}"),
-                            )
-                            .await?
+                            let is_temporal = matches!(qs.intent, QueryIntent::TemporalEvent);
+                            // Temporal routing: try sequence diagram first; fall back to iterative.
+                            let seq_chunk = if is_temporal {
+                                let eids = kwaai_rag::sequence::extract_temporal_entity_ids(
+                                    &query, &graph,
+                                );
+                                kwaai_rag::sequence::retrieve_sequence(&query, &eids, &graph)
+                            } else {
+                                None
+                            };
+                            if let Some(seq) = seq_chunk {
+                                vec![seq]
+                            } else {
+                                retrieve_iterative(
+                                    &query,
+                                    &retrieve_cfg,
+                                    &embed,
+                                    &meta,
+                                    &graph,
+                                    move |emb, k| {
+                                        let vs = vs.clone();
+                                        Box::pin(async move {
+                                            let raw = vs.search(tenant_id, &emb, k).await?;
+                                            Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+                                        })
+                                            as Pin<
+                                                Box<
+                                                    dyn std::future::Future<
+                                                            Output = Result<Vec<(i64, f64)>>,
+                                                        > + Send,
+                                                >,
+                                            >
+                                    },
+                                    &infer_url,
+                                    &model,
+                                    |msg| println!("{msg}"),
+                                )
+                                .await?
+                            }
                         }
                     } else if effective_mode == "iterative" {
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
@@ -4038,6 +4056,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 return cmd_import(input_dir, since, kb).await;
             }
 
+            GraphAction::Timeline { action } => {
+                return cmd_graph_timeline(action, &kb).await;
+            }
+
             GraphAction::Unmerge {
                 entity_type,
                 canonical,
@@ -6888,9 +6910,11 @@ async fn cmd_eval(
                     .await
                     .unwrap_or_default()
                 } else if is_family_author {
-                    // Author-anchored family query: graph+prepend (author entity facts + doc chunks).
+                    // Author-anchored family query: Replace so the retriever resolves the specific
+                    // relative entity (wife/mother/grandfather) and uses their description directly.
+                    // Falls back to Prepend of the author entity when no specific relative resolves.
                     let mut smart_cfg = retrieve_cfg.clone();
-                    smart_cfg.graph_mode = GraphMode::Prepend;
+                    smart_cfg.graph_mode = GraphMode::Replace;
                     retrieve_graph_anchored(
                         &q.question,
                         &smart_cfg,
@@ -6902,19 +6926,31 @@ async fn cmd_eval(
                     .await
                     .unwrap_or_default()
                 } else {
-                    retrieve_iterative(
-                        &q.question,
-                        &retrieve_cfg,
-                        &embed,
-                        &meta,
-                        &graph,
-                        search_fn,
-                        &inference_url,
-                        &model,
-                        |msg| println!("{msg}"),
-                    )
-                    .await
-                    .unwrap_or_default()
+                    let is_temporal = matches!(qs.intent, QueryIntent::TemporalEvent);
+                    let seq_chunk = if is_temporal {
+                        let eids =
+                            kwaai_rag::sequence::extract_temporal_entity_ids(&q.question, &graph);
+                        kwaai_rag::sequence::retrieve_sequence(&q.question, &eids, &graph)
+                    } else {
+                        None
+                    };
+                    if let Some(seq) = seq_chunk {
+                        vec![seq]
+                    } else {
+                        retrieve_iterative(
+                            &q.question,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            &graph,
+                            search_fn,
+                            &inference_url,
+                            &model,
+                            |msg| println!("{msg}"),
+                        )
+                        .await
+                        .unwrap_or_default()
+                    }
                 }
             } else if effective_mode == "iterative" {
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
@@ -7492,6 +7528,241 @@ async fn cmd_import(input_dir: std::path::PathBuf, since: u64, kb: String) -> Re
             stats.relations_updated,
             stats.skipped,
         ));
+        Ok(())
+    }
+}
+
+// ── graph timeline ────────────────────────────────────────────────────────────
+
+async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(kb)?;
+        let graph =
+            GraphStore::open(&rag_cfg.data_dir(), tenant_id).context("opening graph store")?;
+        let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id).context("opening meta store")?;
+
+        match action {
+            TimelineAction::Stats => {
+                let (event_count, interaction_count) = graph.timeline_stats();
+                print_box_header(&format!("Timeline Stats ({})", kb));
+                println!("  Entity timelines stored : {event_count}");
+                println!("  Interaction pairs stored: {interaction_count}");
+                if event_count == 0 && interaction_count == 0 {
+                    print_info(
+                        "No timeline data yet. Run `kwaainet rag graph timeline build` to extract.",
+                    );
+                }
+            }
+
+            TimelineAction::Show { entity } => {
+                let eid = graph.find_by_name(&entity).map(|e| e.id).or_else(|| {
+                    // token-intersection fallback
+                    let tokens: Vec<String> = entity
+                        .split_whitespace()
+                        .map(|t| t.to_lowercase())
+                        .filter(|t| t.len() >= 2)
+                        .collect();
+                    let mut scores: std::collections::HashMap<i64, usize> =
+                        std::collections::HashMap::new();
+                    for t in &tokens {
+                        for &id in graph.find_ids_by_alias_token(t) {
+                            *scores.entry(id).or_default() += 1;
+                        }
+                    }
+                    scores.into_iter().max_by_key(|(_, s)| *s).map(|(id, _)| id)
+                });
+                let Some(eid) = eid else {
+                    bail!("entity '{}' not found in graph", entity);
+                };
+                let events = graph.get_timeline_events(&[eid]);
+                let entity_name = graph
+                    .get_entity(eid)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_else(|| entity.clone());
+                print_box_header(&format!("Timeline: {} ({})", entity_name, kb));
+                if events.is_empty() {
+                    print_info("No timeline events found. Run `graph timeline build` first.");
+                } else {
+                    let mut sorted = events;
+                    sorted.sort_by(|a, b| a.date_sort.cmp(&b.date_sort));
+                    for ev in &sorted {
+                        let date = ev.date_raw.as_deref().unwrap_or("(date unknown)");
+                        println!("  [{:12}] {} — {}", ev.event_class, date, ev.description);
+                    }
+                }
+                let interactions = graph.get_interactions_for(&[eid]);
+                if !interactions.is_empty() {
+                    println!();
+                    println!("  Interactions:");
+                    let mut sorted_ia = interactions;
+                    sorted_ia.sort_by(|a, b| a.date_sort.cmp(&b.date_sort));
+                    for ia in &sorted_ia {
+                        let date = ia.date_raw.as_deref().unwrap_or("(date unknown)");
+                        println!(
+                            "    {} — {} {} {}",
+                            date, ia.from_entity_name, ia.label, ia.to_entity_name
+                        );
+                    }
+                }
+            }
+
+            TimelineAction::ExportMermaid { entity } => {
+                let eid = graph.find_by_name(&entity).map(|e| e.id).or_else(|| {
+                    let tokens: Vec<String> = entity
+                        .split_whitespace()
+                        .map(|t| t.to_lowercase())
+                        .filter(|t| t.len() >= 2)
+                        .collect();
+                    let mut scores: std::collections::HashMap<i64, usize> =
+                        std::collections::HashMap::new();
+                    for t in &tokens {
+                        for &id in graph.find_ids_by_alias_token(t) {
+                            *scores.entry(id).or_default() += 1;
+                        }
+                    }
+                    scores.into_iter().max_by_key(|(_, s)| *s).map(|(id, _)| id)
+                });
+                let Some(eid) = eid else {
+                    bail!("entity '{}' not found in graph", entity);
+                };
+                // Include 1-hop neighbours
+                let mut all_ids: std::collections::HashSet<i64> = std::iter::once(eid).collect();
+                for (nid, _, _) in graph.neighbors_of(eid) {
+                    all_ids.insert(nid);
+                }
+                let all_ids_vec: Vec<i64> = all_ids.into_iter().collect();
+                let events = graph.get_timeline_events(&all_ids_vec);
+                let mut interactions = graph.get_interactions_for(&all_ids_vec);
+                interactions.retain(|ia| {
+                    all_ids_vec.contains(&ia.from_entity_id)
+                        && all_ids_vec.contains(&ia.to_entity_id)
+                });
+                let entity_name = graph
+                    .get_entity(eid)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_else(|| entity.clone());
+                let mermaid =
+                    kwaai_rag::sequence::render_mermaid(&entity_name, &events, &interactions);
+                println!("{mermaid}");
+            }
+
+            TimelineAction::Build {
+                inference_url,
+                model,
+                workers,
+                reset,
+            } => {
+                let infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+
+                if reset {
+                    graph.reset_timeline()?;
+                    print_info("Timeline tables cleared.");
+                }
+
+                print_box_header(&format!("Timeline Build ({})", kb));
+                print_info(&format!(
+                    "Model: {model}  Workers: {workers}  Inference: {infer_url}"
+                ));
+
+                // Collect all chunks that are linked to at least one entity.
+                let chunk_ids: Vec<i64> =
+                    graph.all_chunk_entity_pairs().map(|(cid, _)| cid).collect();
+
+                let total = chunk_ids.len();
+                println!("  Processing {total} entity-linked chunks…");
+
+                let graph = std::sync::Arc::new(graph);
+                let meta = std::sync::Arc::new(meta);
+                let infer_url = std::sync::Arc::new(infer_url);
+                let model = std::sync::Arc::new(model);
+
+                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(workers));
+                let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let event_total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let ia_total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+                let mut handles = Vec::new();
+                for cid in chunk_ids {
+                    let graph = graph.clone();
+                    let meta = meta.clone();
+                    let infer_url = infer_url.clone();
+                    let model = model.clone();
+                    let sem = sem.clone();
+                    let done = done.clone();
+                    let ev_total = event_total.clone();
+                    let ia_total = ia_total.clone();
+
+                    let handle = tokio::spawn(async move {
+                        let _permit = sem.acquire().await.ok()?;
+                        let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
+                        let entity_ids = graph.get_chunk_entities(cid);
+                        let entity_names: Vec<String> = entity_ids
+                            .iter()
+                            .filter_map(|&id| graph.get_entity(id))
+                            .map(|e| e.name.clone())
+                            .collect();
+
+                        let (raw_events, raw_interactions) =
+                            kwaai_rag::sequence::extract_temporal_events(
+                                &chunk.text,
+                                &entity_names,
+                                &infer_url,
+                                &model,
+                            )
+                            .await
+                            .ok()?;
+
+                        let (events, interactions) = kwaai_rag::sequence::resolve_extracted(
+                            raw_events,
+                            raw_interactions,
+                            cid,
+                            &graph,
+                        );
+
+                        let n_ev = events.len();
+                        let n_ia = interactions.len();
+
+                        // Group events by entity_id and store
+                        let mut by_entity: std::collections::HashMap<
+                            i64,
+                            Vec<kwaai_rag::sequence::TimelineEvent>,
+                        > = std::collections::HashMap::new();
+                        for ev in events {
+                            by_entity.entry(ev.entity_id).or_default().push(ev);
+                        }
+                        for (eid, evs) in &by_entity {
+                            graph.store_timeline_events(*eid, evs).ok()?;
+                        }
+                        for ia in &interactions {
+                            graph.store_interaction(ia).ok()?;
+                        }
+
+                        let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        ev_total.fetch_add(n_ev, std::sync::atomic::Ordering::Relaxed);
+                        ia_total.fetch_add(n_ia, std::sync::atomic::Ordering::Relaxed);
+                        if d % 50 == 0 || d == total {
+                            let evs = ev_total.load(std::sync::atomic::Ordering::Relaxed);
+                            let ias = ia_total.load(std::sync::atomic::Ordering::Relaxed);
+                            println!("  [{d}/{total}] events={evs} interactions={ias}");
+                        }
+                        Some(())
+                    });
+                    handles.push(handle);
+                }
+                for h in handles {
+                    h.await.ok();
+                }
+                let ev_count = event_total.load(std::sync::atomic::Ordering::Relaxed);
+                let ia_count = ia_total.load(std::sync::atomic::Ordering::Relaxed);
+                print_success(&format!(
+                    "Timeline build complete — {ev_count} events, {ia_count} interactions extracted from {total} chunks."
+                ));
+            }
+        }
         Ok(())
     }
 }

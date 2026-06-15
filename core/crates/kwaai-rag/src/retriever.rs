@@ -294,7 +294,21 @@ pub async fn retrieve_graph_anchored(
             )
             .await;
 
-            let entity_id = crate::query_understand::resolve_target_entity(&qs, graph);
+            // For author-anchored FamilyRelation queries, resolve the specific relative
+            // (wife → Nazima, grandfather → JMH, mother → Ayesha) so we inject THEIR
+            // entity description rather than the author's own description.
+            let anchor_id = crate::query_understand::resolve_target_entity(&qs, graph);
+            let (entity_id, is_resolved_relative) = if qs.anchor_is_author {
+                let relative_id =
+                    anchor_id.and_then(|aid| resolve_author_relative(query, aid, graph));
+                if let Some(rel_id) = relative_id {
+                    (Some(rel_id), true)
+                } else {
+                    (anchor_id, false)
+                }
+            } else {
+                (anchor_id, false)
+            };
 
             if let Some(eid) = entity_id {
                 if let Some(entity) = graph.get_entity(eid) {
@@ -306,13 +320,19 @@ pub async fn retrieve_graph_anchored(
                     let synthetic =
                         make_synthetic_chunk(format!("[Graph: {}]", entity.name), text, 3.0);
 
+                    // Replace fires when:
+                    // - explicit Replace mode AND FamilyRelation intent AND either:
+                    //   (a) a specific relative was resolved from the author anchor, or
+                    //   (b) a non-author entity with ≥1 matching relation was resolved.
                     let is_replace = cfg.graph_mode == crate::query_understand::GraphMode::Replace
                         && matches!(
                             qs.intent,
                             crate::query_understand::QueryIntent::FamilyRelation { .. }
                         )
-                        && !qs.anchor_is_author
-                        && crate::query_understand::count_intent_facts(&qs, eid, graph) >= 1;
+                        && (is_resolved_relative
+                            || (!qs.anchor_is_author
+                                && crate::query_understand::count_intent_facts(&qs, eid, graph)
+                                    >= 1));
 
                     if is_replace {
                         results = vec![synthetic];
