@@ -6865,12 +6865,12 @@ async fn cmd_eval(
             };
 
             let mut chunks = if effective_mode == "smart" {
-                use kwaai_rag::query_understand::{understand_query_rule, QueryIntent, GraphMode};
+                use kwaai_rag::query_understand::{understand_query_rule, GraphMode, QueryIntent};
                 let qs = understand_query_rule(&q.question);
-                let is_family_nonauthor = matches!(qs.intent, QueryIntent::FamilyRelation { .. })
-                    && !qs.anchor_is_author;
-                let is_family_author = matches!(qs.intent, QueryIntent::FamilyRelation { .. })
-                    && qs.anchor_is_author;
+                let is_family_nonauthor =
+                    matches!(qs.intent, QueryIntent::FamilyRelation { .. }) && !qs.anchor_is_author;
+                let is_family_author =
+                    matches!(qs.intent, QueryIntent::FamilyRelation { .. }) && qs.anchor_is_author;
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
                 if is_family_nonauthor {
