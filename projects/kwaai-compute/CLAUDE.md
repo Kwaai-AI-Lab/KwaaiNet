@@ -21,14 +21,19 @@ CLI entry points in `core/crates/kwaai-cli/src/`:
 
 ## Infrastructure
 
-**Metro machines** (GPU inference):
-- `metro-linux` — NVIDIA A6000 (48GB VRAM), Ubuntu
-  - **DNS broken**: resolves to `192.168.1.1` (router); actual IP unknown
-  - Ollama bound to `127.0.0.1:11434` — run `OLLAMA_HOST=0.0.0.0 ollama serve` to accept remote
-  - Fix planned: route inference via p2p relay (see kwaai-network)
-- `metro-win` — NVIDIA A5000, Windows 11
-  - Same DNS issue
-  - `ollama serve` already running (port bound); restart with `OLLAMA_HOST=0.0.0.0`
+**GPU inference machines** (via p2p relay — no IP/DNS needed):
+
+Use `p2p://PEER_ID` or `mux://PEER_ID` as `--inference-urls`. The running kwaainet daemon
+routes requests over the p2p relay to the remote Ollama instance. `mux://` is preferred
+(concurrent, saturates OLLAMA_NUM_PARALLEL); `p2p://` for sequential use.
+
+| Machine | Peer ID | GPU |
+|---------|---------|-----|
+| metro-linux | `12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs` | A6000 48GB |
+| metro-win   | `12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE` | A5000 |
+| jerome      | `12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd` | |
+
+Example: `--inference-urls "p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs,p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE"`
 
 **Shard serve command** (run on each metro machine):
 ```bash
