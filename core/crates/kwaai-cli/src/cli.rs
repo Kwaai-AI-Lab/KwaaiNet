@@ -915,6 +915,23 @@ pub struct ShardApiArgs {
     /// Takes precedence over --ollama-model.
     #[arg(long, value_name = "PATH")]
     pub gguf_path: Option<std::path::PathBuf>,
+
+    /// Only use block servers whose public_name contains this string.
+    /// Matches the same filter available on `shard run`.
+    /// Example: --name-filter metro-linux
+    #[arg(long, value_name = "SUBSTR")]
+    pub name_filter: Option<String>,
+
+    /// Use a pre-formed circuit instead of discovering the chain fresh.
+    /// Create one with: kwaainet shard circuit create [--name-filter SUBSTR]
+    /// The server uses the circuit's chain snapshot; DHT discovery is skipped.
+    #[arg(long, value_name = "ID")]
+    pub circuit: Option<String>,
+
+    /// Pin all requests to a single peer (base58 PeerId).
+    /// The peer must cover the full block range or inference will fail.
+    #[arg(long, value_name = "PEER_ID")]
+    pub peer: Option<String>,
 }
 
 #[derive(Args)]

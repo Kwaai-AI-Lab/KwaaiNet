@@ -2353,7 +2353,7 @@ impl SerializableEntry {
         }
     }
 
-    fn to_entry(&self) -> Option<BlockServerEntry> {
+    pub fn to_entry(&self) -> Option<BlockServerEntry> {
         let peer_id = self.peer_id_b58.parse::<PeerId>().ok()?;
         Some(BlockServerEntry {
             peer_id,
