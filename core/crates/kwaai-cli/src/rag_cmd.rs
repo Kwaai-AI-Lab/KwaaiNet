@@ -270,6 +270,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             progress_file,
             graph_mode,
             query_classify,
+            summary_expansion,
         } => {
             cmd_eval(
                 questions,
@@ -288,6 +289,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 progress_file,
                 graph_mode,
                 query_classify,
+                summary_expansion,
             )
             .await
         }
@@ -6750,6 +6752,7 @@ async fn cmd_eval(
     progress_file: Option<std::path::PathBuf>,
     graph_mode: String,
     query_classify: String,
+    summary_expansion: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -6828,7 +6831,7 @@ async fn cmd_eval(
             graph_mode: parse_graph_mode(&graph_mode),
             query_classify: parse_classify_method(&query_classify),
             query_multi_hop: false,
-            use_summary_expansion: false,
+            use_summary_expansion: summary_expansion,
         };
 
         // Load document context preamble from persisted schema metadata (if any).
@@ -6870,7 +6873,7 @@ async fn cmd_eval(
         println!("  Model:     {model}");
         println!("  Inference: {inference_url}");
         let judge_mdl = judge_model.as_deref().unwrap_or(&model);
-        println!("  top_k={top_k}  mode={effective_mode}  graph_mode={graph_mode}  query_classify={query_classify}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}");
+        println!("  top_k={top_k}  mode={effective_mode}  graph_mode={graph_mode}  query_classify={query_classify}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}  summary_expansion={summary_expansion}");
         if llm_judge {
             println!("  Judge model: {judge_mdl}");
         }

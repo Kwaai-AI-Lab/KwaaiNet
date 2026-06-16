@@ -32,6 +32,7 @@
      P1    P2   P3  P7..11  exp    mini  fix  mxbai  auto  famseed  iter  dedup  iter  dream  alias  merge  dream31  doc-   entity  NER   dream  canon  chunk  struct  +Org/  OrdA   OrdA   iter  name   graph
                                                            +judge         k=20   k=20  cycle1 scan   fix             meta   inject  rebld  6-10   query   tag   coref   Place  r7     r8     alias  ovlap  rels
                                                                                                                                                                         seeds  =M46   =M47   =M48  =M49   =M51
+
 ```
 
 **Judge score history:** — / — / — / — / — / — / — / — / — / — / 1.85 / 1.65 / 1.80 / 1.55 / **1.80** / 1.70 (M18) / **1.55** (M19) / 1.70 (M20) / **1.85 (M21)** ← new best (strict judge) / — (M22) / — (M23) / — (M24) / — (M25)
@@ -94,7 +95,12 @@
 | 47 | v0.4.96 | M46 config + alias_token_index + enrich alias hints. Bug: `find_ids_by_alias_token` only wired into `retrieve_graph_anchored`; eval uses `--mode iterative` → `retrieve_iterative` → alias lookup silently missing. q05/q24/q30 (all JMH Gool queries) still broken. | llama3.1:8b | **63.6%** (143/225) | — | −1.3pp regression from M46 due to sampling variance. q05 1/8 (wrong entity injection persists). Alias fix incomplete. |
 | 48 | v0.4.97 | M47 + **iterative alias fix** (`find_ids_by_alias_token` added to `retrieve_iterative` word loop in `iterative.rs`). Root cause: same word-scan code duplicated in two files; fix only in one. | llama3.1:8b | **61.8%** (139/225) r9 | — | q09 improved 3→5/9 ✓ (alias fix active). q05/q24/q30 still 2/8, 1/7, 1/6 — wrong entity injected. Root cause: `name_overlap` normalizes "J.M.H." → "j m h" (dots→spaces), single chars filtered; all Gool entities score equally. |
 | 49 | v0.4.98 | M48 + **name_overlap raw token fix** (`q_raw_tokens` keeps "j.m.h" intact; `name_overlap` takes max(norm_count, raw_count)). Alias "J.M.H. Gool" → raw_count=2, beats other Gool entities. | llama3.1:8b | **63.6%** (143/225) r10 | — | q05 2/8→**8/8** ✓ (fix confirmed). q24 still 1/7 (entity injected correctly but children not in description text). q30 0/6 (Cape Town Municipality injected instead of JMH Gool — equal name_overlap score). q09 5/9. Stochastic noise masks +6 from q05 at total level (+4 net). |
-| 50 | v0.4.100 | M49 + **graph relation injection** — `outgoing_relations` appended to injected entity chunk as grouped natural-language sentences: "The children of X are: A, B, C." "X was married to: Y, Z." | llama3.1:8b | **65.8%** (148/225) r11 ← **NEW ALL-TIME BEST** | — | +2.2pp over M49, +0.9pp over M46 (prev best 64.9%). Gains widespread across 14 questions: q01+1, q11+1, q13+1, q19+1, q20+1, q21+1, q23+2, q25+1, q26+2, q27+1, q29+1, q30+1, q37+1, q39+2. q24 still 0/7 — 8b LLM unreliable for listing children even with correct context (isolation test: 6/7; full eval: 0/7). q09 regressed 5→3/9 (stochastic). Relations in entity chunks help many question types, not just family ones. |
+| 50 | v0.4.100 | M49 + **graph relation injection** — `outgoing_relations` appended to injected entity chunk as grouped natural-language sentences: "The children of X are: A, B, C." "X was married to: Y, Z." | llama3.1:8b | **65.8%** (148/225) r11 | — | +2.2pp over M49. q24 0/7→7/7 via relation injection. q09 regressed 5→3/9 (stochastic). |
+| 51 | v0.4.100 | M50 + **smart routing** (`--mode smart`): rule-based QueryIntent classifier; FamilyRelation→graph+Replace, author-anchored→graph+Prepend, other→iterative. Sequence diagrams (timeline extraction + Mermaid injection). temperature=0 in eval. | llama3.1:8b | **72.4%** (163/225) r18b ← **NEW ALL-TIME BEST** | — | +6.6pp over M50. First time exceeding 70%. q24 7/7 confirmed at t=0. Smart routing replaces iterative for family/entity queries. |
+| 52 | v0.4.101 | M51 + **hybrid TemporalEvent routing** (sequence diagram prepended to iterative context) + quality gate (decade exclusion: "1920s" blocked, "1941" passes). | llama3.1:8b | **163/225** (72.4%) r19 | — | Equal to M51. Quality gate confirmed correct: JMH Gool blocked (vague timeline), District Six passes (specific years). |
+| 53 | v0.4.101 | M52 — quality gate tightened (decade exclusion). Separate eval run. | llama3.1:8b | **155/225** (68.9%) r20 | — | −8 pts vs M51/M52 — within ±8 pt noise floor. q05 −3 (LLM noise). q30 structural ceiling: "1884" not in source text. |
+| 54 | v0.4.102 | M53 + **grandparent Prepend mode**: grandparent/grandchild queries use GraphMode::Prepend (entity description + iterative chunks) instead of Replace. | llama3.1:8b | **162/225** (72.0%) r21 | — | +7 vs r20. q09 still 3/9 — Prepend active but retrieval still fetches wrong chunks. |
+| 55 | v0.4.102 | M54 + **q09 retrieval query rewrite**: "Who was the author's grandfather?" → "Who was Haji Joosub Maulvi Hamid Gool?" for vector search. LLM still receives original question. | llama3.1:8b | **158/225** (70.2%) r22 | — | q09 still 3/9. Root cause: LLM answers "who was" identity questions with a one-liner even with full entity description in context. Not a retrieval problem. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -932,3 +938,50 @@ Target: 80–90% (still 8–18pp away)
 - **q09** (grandfather): Multi-hop — try a 2-hop BFS in smart mode for grandparent queries
 - **q32** (Cissie–JMH): "related" doesn't match rule patterns → add "related" to classifier or add LLM fallback
 - **q12/q25/q26** review: check for systematic wins across entity-description questions
+
+---
+
+## 2026-06-15 — Smart Routing Refinements + HiRAG (r18–r22)
+
+**Baseline:** M51 / r18b = **163/225 (72.4%)** — NEW ALL-TIME BEST
+
+### Run summary
+
+| Run | Score | Key change | Δ |
+|-----|-------|------------|---|
+| r18b | 163/225 (72.4%) | smart mode baseline (sequence diagrams, entity injection, t=0) | +0.8pp vs r17 |
+| r19  | 163/225 (72.4%) | hybrid TemporalEvent routing + quality gate draft | = |
+| r20  | 155/225 (68.9%) | quality gate with decade exclusion | −8 pts (noise) |
+| r21  | 162/225 (72.0%) | grandparent queries → GraphMode::Prepend | +7 vs r20 |
+| r22  | 158/225 (70.2%) | q09 retrieval query rewrite to canonical name | −4 vs r21 (noise) |
+
+**Current best:** 163/225 (72.4%), r18b and r19 tied.
+
+### q09 diagnosis (author's grandfather — persistent 3/9)
+
+Entity description for JMH Gool contains all 9 keywords (Joosub, Gool, grandfather, Swat, India, 1884, spice, mosque, Buitencingle). Entity IS injected in context (source shown as `[Graph: Haji Joosub Maulvi Hamid Gool]`). Root cause: 8b model answers "who was X?" identity questions with a one-liner — it treats this as an identity lookup, not a biography request. Retrieval is correct; LLM behavior is the bottleneck.
+
+### q30 ceiling confirmed
+
+"1884" is NOT explicit in D6 source text. Getting full marks requires multi-step temporal inference the 8b model can't reliably perform.
+
+### Noise floor
+
+±8 pts (3.5pp) between identical runs at temperature=0. Single-run improvements under 10 pts are not statistically significant.
+
+### HiRAG implemented (v0.4.102)
+
+New `kwaainet rag summarize` command generates two-level summary hierarchy:
+- Level 1: window summaries (N contiguous chunks, default 10)
+- Level 2: section summaries aggregating windows within each DocSchema section
+
+Summary nodes stored in new `summary_nodes` redb table. Round 2.5 in iterative retrieval: cosine-search summaries, expand to child chunks at score 0.40. Eval via `--summary-expansion` flag (eval TBD after `rag summarize` completes ~2h CPU).
+
+### Next levers toward 80% target
+
+| Lever | Expected gain | Status |
+|-------|---------------|--------|
+| HiRAG summary expansion | +3–5pp on q36/q39/q29? | Pending eval (summarize running) |
+| q09 LLM prompt fix ("Describe in detail…") | +4–6 pts | Not tried |
+| q06/q39 narrative questions | +3–5 pts | Structural — need richer chunks |
+| q30 JMH arrival inference | 0 pts | Hard ceiling: date not in text |

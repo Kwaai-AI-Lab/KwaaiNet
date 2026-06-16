@@ -1496,6 +1496,11 @@ pub enum RagAction {
         /// "hybrid" — rule first, LLM fallback when intent is unknown.
         #[arg(long, default_value = "rule", value_name = "METHOD")]
         query_classify: String,
+
+        /// Enable HiRAG Round 2.5: cosine-match summary nodes and expand to child chunks.
+        /// Requires running `kwaainet rag summarize --kb <KB>` first.
+        #[arg(long)]
+        summary_expansion: bool,
     },
 
     /// Autonomous knowledge graph completion (Dream RAG)
