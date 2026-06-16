@@ -22,11 +22,11 @@ CLI entry points in `core/crates/kwaai-cli/src/`:
 **D6** = "District Six — Lest We Forget" by Yousuf (Joe) Rassool.
 This is the primary eval document. Accuracy target: 80–90% on `d6_eval_questions.json`.
 
-**D6 rebuild command** (optimal settings):
+**D6 rebuild command** (optimal settings, GPU via p2p relay):
 ```bash
 kwaainet rag graph build --kb D6 \
   --model llama3.1:8b \
-  --inference-urls http://localhost:11434 \
+  --inference-urls "p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs,p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE,p2p://12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd" \
   --workers 4 \
   --entity-types Person,Place,Organization \
   --no-relations \
@@ -73,11 +73,28 @@ Pass to ingest: `kwaainet rag ingest --doc-schema tests/kwaai-knowledge/d6_doc_s
 
 ## Infrastructure
 
-**Local Ollama** (for rebuilds when metro unavailable): `http://localhost:11434`
-- Slow on CPU — 1136 chunks takes ~2–2.5 hours with frequent 30s timeouts
+**P2P relay inference** (GPU, preferred — no DNS/IP needed):
 
-**Metro machines** (GPU, much faster):
-- `metro-linux` A6000 / `metro-win` A5000 — see `projects/kwaai-compute/CLAUDE.md` for DNS/connectivity issues
+Inference URLs use the `p2p://PEER_ID` or `mux://PEER_ID` scheme. The running kwaainet daemon
+resolves them via the p2p relay to the remote machine's Ollama. `mux://` is preferred for
+concurrent requests (saturates OLLAMA_NUM_PARALLEL); `p2p://` works for sequential.
+
+| Machine | Scheme | Peer ID | GPU |
+|---------|--------|---------|-----|
+| metro-linux | `p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs` | A6000 48GB |
+| metro-win   | `p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE` | A5000 |
+| jerome      | `p2p://12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd` | |
+
+Example multi-machine build (all three GPUs):
+```bash
+kwaainet rag graph build --kb D6 \
+  --model llama3.1:8b \
+  --inference-urls "p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs,p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE,p2p://12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd" \
+  --workers 4 --entity-types Person,Place,Organization --no-relations --reset-graph --graph-window 1
+```
+
+**Local Ollama** (fallback, CPU only): `http://localhost:11434`
+- Very slow on CPU — 1152 chunks takes ~12 hours (43s/call). Use p2p machines instead.
 
 ## Build & test
 
