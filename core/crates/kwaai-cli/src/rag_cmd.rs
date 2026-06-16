@@ -7830,7 +7830,28 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 workers,
                 reset,
             } => {
-                let infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+                let raw_infer_url =
+                    inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+
+                // Resolve p2p:// / mux:// URLs to local HTTP proxies.
+                let infer_url = {
+                    use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+                    let sock = std::env::var("KWAAINET_SOCKET")
+                        .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+                    #[cfg(unix)]
+                    let addr = format!("/unix/{sock}");
+                    #[cfg(not(unix))]
+                    let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+                    let p2p = std::sync::Arc::new(
+                        P2PClient::connect(&addr)
+                            .await
+                            .context("p2p daemon not running — start with `kwaainet start`")?,
+                    );
+                    let (mut resolved, _handles) =
+                        crate::ollama_proxy::resolve_inference_urls(&[raw_infer_url], &p2p)
+                            .await?;
+                    resolved.remove(0)
+                };
 
                 if reset {
                     graph.reset_timeline()?;
