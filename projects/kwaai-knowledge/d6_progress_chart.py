@@ -73,6 +73,8 @@ MILESTONES = [
     ("M58", 74.7, 5, "Bio\nexpansion"),
     ("M59", 70.2, 5, None),
     ("M60", 77.8, 5, "Post-dream\nre-eval"),
+    ("M61", 76.0, 5, "Fresh\nrebuild"),
+    ("M62", 76.9, 5, None),
 ]
 
 # Eval set change: from 20q/116kw to 40q/225kw between M35 and M42
