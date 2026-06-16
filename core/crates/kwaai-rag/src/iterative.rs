@@ -303,7 +303,10 @@ where
                                 .section_name
                                 .as_deref()
                                 .unwrap_or(&node.doc_name);
-                            pool.push(RetrievedChunk {
+                            // Cap at 0.55 so summaries supplement context without
+                        // displacing high-confidence Round-1 source chunks (~0.6–1.0).
+                        let synth_score = score.min(0.55);
+                        pool.push(RetrievedChunk {
                                 chunk_meta: crate::meta_store::ChunkMeta {
                                     doc_name: format!("__summary__:{}", node.id),
                                     chunk_index: 0,
@@ -319,7 +322,7 @@ where
                                     section_note: None,
                                     section_type: Default::default(),
                                 },
-                                score: *score,
+                                score: synth_score,
                                 source_kb: None,
                                 rerank_score: None,
                             });
