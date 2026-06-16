@@ -946,13 +946,10 @@ async fn main() -> Result<()> {
                             println!("  {label}");
                         };
 
+                        #[cfg(not(windows))]
                         match checker.install_update(&info.version).await {
                             Ok(()) => {
                                 println!();
-                                #[cfg(windows)]
-                                print_success(&format!(
-                                    "Installer launched in background — daemon will restart automatically."
-                                ));
                                 #[cfg(not(windows))]
                                 if daemon_was_running {
                                     restart_daemon(&format!(
