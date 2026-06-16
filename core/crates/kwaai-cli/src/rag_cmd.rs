@@ -271,6 +271,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             graph_mode,
             query_classify,
             summary_expansion,
+            biographical_expansion,
         } => {
             cmd_eval(
                 questions,
@@ -290,6 +291,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 graph_mode,
                 query_classify,
                 summary_expansion,
+                biographical_expansion,
             )
             .await
         }
@@ -6753,6 +6755,7 @@ async fn cmd_eval(
     graph_mode: String,
     query_classify: String,
     summary_expansion: bool,
+    biographical_expansion: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -6873,7 +6876,7 @@ async fn cmd_eval(
         println!("  Model:     {model}");
         println!("  Inference: {inference_url}");
         let judge_mdl = judge_model.as_deref().unwrap_or(&model);
-        println!("  top_k={top_k}  mode={effective_mode}  graph_mode={graph_mode}  query_classify={query_classify}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}  summary_expansion={summary_expansion}");
+        println!("  top_k={top_k}  mode={effective_mode}  graph_mode={graph_mode}  query_classify={query_classify}  hyde={hyde}  rerank={rerank}  understand={understand}  llm_judge={llm_judge}  summary_expansion={summary_expansion}  biographical_expansion={biographical_expansion}");
         if llm_judge {
             println!("  Judge model: {judge_mdl}");
         }
@@ -7074,9 +7077,43 @@ async fn cmd_eval(
                 .into_iter()
                 .collect();
 
+            // For biographical "who was / who is" questions with --biographical-expansion,
+            // append a detailed-answer instruction so the LLM gives a full biography
+            // instead of a one-liner identity response. Also handles enumeration questions
+            // ("what organisations…") so the LLM lists ALL entities rather than 1-2.
+            let answer_question: std::borrow::Cow<str> = if biographical_expansion {
+                let q_lower = q.question.to_lowercase();
+                let is_bio = q_lower.starts_with("who was ")
+                    || q_lower.starts_with("who is ")
+                    || q_lower.starts_with("who were ");
+                let is_enum = q_lower.contains("organisation")
+                    || q_lower.contains("organization")
+                    || q_lower.contains("what political")
+                    || q_lower.contains("which organisation")
+                    || q_lower.contains("which organization");
+                if is_bio {
+                    std::borrow::Cow::Owned(format!(
+                        "{}\n\nPlease give a detailed answer covering background, \
+                         origins, family connections, role, and historical significance.",
+                        q.question
+                    ))
+                } else if is_enum {
+                    std::borrow::Cow::Owned(format!(
+                        "{}\n\nPlease list EVERY organisation mentioned in the sources, \
+                         not just the most prominent one. Include each organisation's \
+                         full name and abbreviation.",
+                        q.question
+                    ))
+                } else {
+                    std::borrow::Cow::Borrowed(q.question.as_str())
+                }
+            } else {
+                std::borrow::Cow::Borrowed(q.question.as_str())
+            };
+
             // Generate answer.
             let messages = build_chat_messages(
-                &q.question,
+                &answer_question,
                 &chunks,
                 &[],
                 24000,

@@ -1501,6 +1501,12 @@ pub enum RagAction {
         /// Requires running `kwaainet rag summarize --kb <KB>` first.
         #[arg(long)]
         summary_expansion: bool,
+
+        /// For "who was / who is" biographical questions: append a detailed-answer instruction
+        /// to the user question before sending to the LLM, eliciting full biography rather
+        /// than a one-liner identity response.
+        #[arg(long)]
+        biographical_expansion: bool,
     },
 
     /// Autonomous knowledge graph completion (Dream RAG)
