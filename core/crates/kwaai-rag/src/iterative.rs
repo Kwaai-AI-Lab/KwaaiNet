@@ -276,8 +276,6 @@ where
             "  ○ Round 2   added {gap_added} chunks via graph gap-fill"
         ));
 
-        let (coverage2, missing2) = compute_coverage(&terms, &pool);
-
         // ── Round 2.5: HiRAG summary expansion ───────────────────────────────
 
         if cfg.use_summary_expansion {
@@ -288,10 +286,56 @@ where
                 if !hits.is_empty() {
                     let existing_keys: HashSet<_> = pool.iter().map(chunk_key).collect();
                     let mut added = 0usize;
-                    for (idx, _score) in &hits {
+                    let mut synth_added = 0usize;
+                    for (idx, score) in &hits {
                         let node = &store.nodes[*idx];
+
+                        // Inject the summary text itself as a synthetic chunk at the
+                        // actual cosine similarity score so it ranks above the 0.40-floor
+                        // source chunks and the LLM receives the condensed narrative directly.
+                        // doc_name prefix "__summary__" keeps it out of real chunk dedup.
+                        let synth_key = (
+                            format!("__summary__:{}", node.id),
+                            0u32,
+                        );
+                        if !existing_keys.contains(&synth_key) {
+                            let label = node
+                                .section_name
+                                .as_deref()
+                                .unwrap_or(&node.doc_name);
+                            pool.push(RetrievedChunk {
+                                chunk_meta: crate::meta_store::ChunkMeta {
+                                    doc_name: format!("__summary__:{}", node.id),
+                                    chunk_index: 0,
+                                    text: format!(
+                                        "[Summary — {label} (L{})]\n{}",
+                                        node.level, node.text
+                                    ),
+                                    surrounding: String::new(),
+                                    page_num: None,
+                                    ingested_at: String::new(),
+                                    section_name: node.section_name.clone(),
+                                    skip_extraction: false,
+                                    section_note: None,
+                                    section_type: Default::default(),
+                                },
+                                score: *score,
+                                source_kb: None,
+                                rerank_score: None,
+                            });
+                            synth_added += 1;
+                        }
+
+                        // Also expand to source chunks (existing behaviour).
+                        // Level-2 nodes cover entire sections — cap source expansion
+                        // at 10 chunks to avoid flooding the pool.
+                        let source_limit: usize = if node.level == 2 { 10 } else { usize::MAX };
                         let child_metas = meta.get_chunks(&node.chunk_ids)?;
+                        let mut src_count = 0usize;
                         for cm_opt in child_metas {
+                            if src_count >= source_limit {
+                                break;
+                            }
                             if let Some(cm) = cm_opt {
                                 let key = (cm.doc_name.clone(), cm.chunk_index);
                                 if !existing_keys.contains(&key) {
@@ -302,19 +346,23 @@ where
                                         rerank_score: None,
                                     });
                                     added += 1;
+                                    src_count += 1;
                                 }
                             }
                         }
                     }
-                    if added > 0 {
+                    if synth_added > 0 || added > 0 {
                         on_status(&format!(
-                            "  ○ Round 2.5 summary expansion → {added} chunks from {} summary nodes",
+                            "  ○ Round 2.5 summary expansion → {synth_added} summaries + {added} chunks from {} nodes",
                             hits.len()
                         ));
                     }
                 }
             }
         }
+
+        // Recompute coverage after Round 2.5 so Round 3 only fires for genuine gaps.
+        let (coverage2, missing2) = compute_coverage(&terms, &pool);
 
         // ── Round 3: LLM query reformulation ──────────────────────────────────
 
