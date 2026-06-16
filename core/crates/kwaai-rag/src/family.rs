@@ -145,6 +145,8 @@ pub async fn seed_family_tree(
                 .map(|e| e.fields.clone())
                 .unwrap_or_default(),
             confidence: existing.as_ref().map(|e| e.confidence).unwrap_or(0.0),
+            // Seeded entities are ground-truth — always high confidence.
+            extraction_confidence: 1.0,
         };
 
         graph.upsert_entity(node)?;

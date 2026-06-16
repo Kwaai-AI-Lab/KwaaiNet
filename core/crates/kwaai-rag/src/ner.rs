@@ -79,7 +79,7 @@ const STOP_WORDS: &[&str] = &[
     "Friday",
     "Saturday",
     "Sunday",
-    // Months
+    // Months (full)
     "January",
     "February",
     "March",
@@ -92,6 +92,18 @@ const STOP_WORDS: &[&str] = &[
     "October",
     "November",
     "December",
+    // Months (abbreviated) — prevent "Indian Opinion Dec" from fusing into one candidate
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
 ];
 
 const MALE_PRONOUNS: &[&str] = &["he", "him", "his", "himself"];

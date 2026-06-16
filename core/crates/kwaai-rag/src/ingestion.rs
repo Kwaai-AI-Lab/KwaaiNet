@@ -322,6 +322,7 @@ pub async fn extract_and_store_entities_pub(
                     gender: None,
                     fields,
                     confidence: 0.0,
+                    extraction_confidence: extracted.extraction_confidence,
                 };
                 if let Err(e) = graph.upsert_entity(node) {
                     warn!("upsert_entity: {e}");
@@ -708,6 +709,7 @@ async fn extract_and_store_entities(
                 gender: None,
                 fields,
                 confidence: 0.0,
+                extraction_confidence: extracted.extraction_confidence,
             };
             if let Err(e) = graph.upsert_entity(node) {
                 warn!("upsert_entity failed: {e}");
@@ -1346,6 +1348,7 @@ async fn extract_entity_centric(
                         gender: None,
                         fields,
                         confidence: 0.0,
+                        extraction_confidence: extracted.extraction_confidence,
                     };
                     if let Err(e) = g.upsert_entity(node) {
                         warn!("ec upsert: {e}");
@@ -1507,7 +1510,9 @@ async fn refine_low_confidence_entities(
         let mut v: Vec<_> = g
             .all_entities()
             .filter(|n| {
-                n.confidence < threshold
+                // Target entities that are structurally incomplete (low completeness score)
+                // OR were extracted with low LLM confidence (possible hallucination).
+                (n.confidence < threshold || n.extraction_confidence < 0.5)
                     && (cfg.entity_types.is_empty()
                         || cfg
                             .entity_types
@@ -1679,6 +1684,7 @@ async fn refine_low_confidence_entities(
                 gender: None,
                 fields,
                 confidence: 0.0, // will be re-scored below
+                extraction_confidence: extracted.extraction_confidence,
             };
 
             let mut g = cfg.store.lock().unwrap_or_else(|e| {

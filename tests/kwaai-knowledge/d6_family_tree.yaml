@@ -513,6 +513,20 @@ persons:
       by Haji Joosub Maulvi Hamid Gool and completed in 1898. It served the
       Muslim community of District Six and the surrounding area.
 
+  - canonical: "Indian Opinion"
+    entity_type: Organization
+    aliases:
+      - "Indian Opinion Dec 29_ 1906 p986"
+      - "Indian Opinion Dec 29, 1906 p986"
+      - "Gandhi's Indian Opinion"
+      - "Gandhi Indian Opinion"
+    description: >-
+      Indian Opinion was a weekly newspaper founded by Mahatma Gandhi in 1903
+      in Natal, South Africa. It was Gandhi's primary publication vehicle during
+      his years in South Africa and covered the struggle for Indian rights.
+      It is cited in the D6 memoir as a primary source for events involving
+      J.M.H. Gool and the Indian community in Cape Town.
+
   # ─── Key places ───────────────────────────────────────────────────────────────
 
   - canonical: "District Six"

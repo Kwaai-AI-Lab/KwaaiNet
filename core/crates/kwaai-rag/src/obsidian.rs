@@ -344,6 +344,11 @@ pub async fn import_vault(
                 .map(|e| e.fields.clone())
                 .unwrap_or_default(),
             confidence: existing.as_ref().map(|e| e.confidence).unwrap_or(0.0),
+            // Obsidian imports are human-curated — always high confidence.
+            extraction_confidence: existing
+                .as_ref()
+                .map(|e| e.extraction_confidence)
+                .unwrap_or(1.0),
         };
 
         graph.upsert_entity(node)?;

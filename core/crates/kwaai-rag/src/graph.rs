@@ -246,6 +246,12 @@ pub struct EntityNode {
     /// Low scores drive EC refinement when --ec-refine-threshold is set.
     #[serde(default)]
     pub confidence: f32,
+    /// LLM-assigned confidence at extraction time: 1.0 = clearly stated in text,
+    /// 0.5 = inferred from context, 0.2 = uncertain/possible hallucination.
+    /// Persisted across dream cycles so low-confidence entities can be targeted for
+    /// review by a larger model (e.g. llama3.3:70b via --review-model).
+    #[serde(default = "default_extraction_confidence")]
+    pub extraction_confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +276,15 @@ pub struct ExtractedEntity {
     /// Structured fields returned by the 3-type (no_relations) extraction prompt.
     #[serde(default)]
     pub fields: HashMap<String, String>,
+    /// LLM-assigned extraction confidence: 1.0 = clearly stated in text, 0.5 = inferred
+    /// from context, 0.2 = uncertain or possible hallucination. Defaults to 1.0 when
+    /// the LLM omits the field (older prompts, backwards compatibility).
+    #[serde(default = "default_extraction_confidence")]
+    pub extraction_confidence: f32,
+}
+
+fn default_extraction_confidence() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -318,14 +333,11 @@ pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static s
             ("child", "child names"),
         ],
         "Place" | "Location" => &[
-            ("addressLocality", "city, district or suburb"),
-            ("addressRegion", "province or region"),
-            ("addressCountry", "country"),
             (
                 "locationType",
-                "type of place (district, city, country, neighbourhood)",
+                "type of place (district, city, country, neighbourhood, building, street)",
             ),
-            ("historicalNote", "historical significance or period"),
+            ("historicalNote", "what happened here — verbatim or close paraphrase from the text"),
         ],
         "Organization" => &[
             ("foundingDate", "year or period when founded"),
@@ -333,11 +345,10 @@ pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static s
                 "dissolutionDate",
                 "year or period when dissolved, if applicable",
             ),
-            ("location", "city or country of headquarters or main office"),
             ("founder", "founder name"),
             (
                 "orgType",
-                "type of organization (school, mosque, political party, etc.)",
+                "type of organization (school, mosque, newspaper, political party, etc.)",
             ),
         ],
         _ => &[],
@@ -749,6 +760,12 @@ impl GraphStore {
                     evidence: existing.evidence.clone(),
                     fields: merged_fields,
                     confidence: 0.0,
+                    // Multiple sightings raise extraction confidence — if it appears in
+                    // several chunks it is likely real even if one extraction was uncertain.
+                    extraction_confidence: f32::max(
+                        existing.extraction_confidence,
+                        node.extraction_confidence,
+                    ),
                 }
             }
             None => node,
@@ -810,6 +827,7 @@ impl GraphStore {
             evidence: vec![],
             fields: Default::default(),
             confidence: 0.0,
+            extraction_confidence: 1.0,
         };
 
         let wtxn = self.db.begin_write()?;
@@ -4381,24 +4399,31 @@ pub async fn extract_from_text(
              For kept entities output: name, type, and structured fields.\n\
              List AT MOST {entity_cap} entities.\n\
              Return ONLY valid JSON (no markdown, no explanation):\n\
-             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"fields\":{{...}}}},...]}}\n\n\
+             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"fields\":{{...}},\"extraction_confidence\":0.9}},...]}}\n\n\
              {hints_block}\
              Candidates:\n{candidates_block}\n\n\
              Entity types: {entity_list}\n\n\
-             Field keys by entity type — include only keys whose values appear in the text:\n\
+             Field keys by entity type — include only keys whose values are explicitly stated in this passage:\n\
                Person:       birthDate, birthPlace, deathDate, nationality, occupation, \
                              affiliation, spouse, parent, sibling, child\n\
-               Place:        addressLocality, addressRegion, addressCountry, locationType, \
-                             historicalNote\n\
-               Organization: foundingDate, dissolutionDate, location, founder, orgType\n\n\
+               Place:        locationType, historicalNote\n\
+               Organization: foundingDate, dissolutionDate, founder, orgType\n\n\
+             extraction_confidence: 1.0 = entity is explicitly named and described in the text;\
+ 0.5 = inferred from context or partially described; 0.2 = uncertain, might be a hallucination.\n\n\
              IMPORTANT RULES:\n\
              - Never create an entity whose name is a pronoun or generic role.\n\
              - Only keep candidates that are real proper names, organisations, or places.\n\
+             - Entity names must exactly match a candidate from the list above. \
+Do NOT append dates, page numbers, volume references, or citation details to entity names \
+(e.g. if the candidate is \"Indian Opinion\", the entity name is \"Indian Opinion\" — \
+not \"Indian Opinion Dec 29, 1906 p986\").\n\
              - Entity names must be ≤ 5 words. If a candidate contains multiple names \
 separated by commas or 'and', extract each as its own entity.\n\
              - Descriptions must contain at least one specific fact (date, place, role, or \
 relationship) from the text. Do not describe in generic terms.\n\
-             - Omit any field whose value is not clearly stated in the text.\n\
+             - Field values must be verbatim quotes or direct paraphrases from THIS passage. \
+Do NOT use background knowledge to fill in geographic locations, dates, or other attributes \
+not stated in the text.\n\
              - NEVER extract generic family roles as entity names. \"Uncle Aity\", \
 \"Auntie Cissie\", \"Granny Bibi\" are NOT valid entity names — skip them. Only extract \
 proper names (first name + family name, or a well-known single name).\n\
@@ -4442,15 +4467,19 @@ Regrettably, Science, Several, Soon, Still, Tell, Whether, Worse.\n\
              then extract relationships between kept entities.\n\
              List AT MOST {entity_cap} entities.\n\
              Return ONLY valid JSON (no markdown, no explanation):\n\
-             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\"}},...],\
+             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\",\"extraction_confidence\":0.9}},...],\
              \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
              {hints_block}\
              Candidates:\n{candidates_block}\n\n\
              Entity types: {entity_list}\n\
              Relation types: {relation_list}\n\n\
+             extraction_confidence: 1.0 = entity is explicitly named and described in the text;\
+ 0.5 = inferred from context or partially described; 0.2 = uncertain, might be a hallucination.\n\n\
              IMPORTANT RULES:\n\
              - Never create an entity whose name is a pronoun or generic role.\n\
              - Only keep candidates that are real proper names, organisations, or places.\n\
+             - Entity names must exactly match a candidate from the list above. \
+Do NOT append dates, page numbers, volume references, or citation details to entity names.\n\
              - Entity names must be ≤ 5 words. If a candidate contains multiple names \
 separated by commas or 'and', extract each as its own entity.\n\
              - Descriptions must contain at least one specific fact (date, place, role, or \

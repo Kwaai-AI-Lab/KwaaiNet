@@ -844,6 +844,7 @@ async fn inject_index_seeds(
                 evidence: vec![],
                 fields: Default::default(),
                 confidence: 0.0,
+                extraction_confidence: 1.0,
             };
             match store.lock() {
                 Ok(mut g) => match g.upsert_entity(node) {
