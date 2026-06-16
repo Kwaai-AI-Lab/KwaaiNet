@@ -6706,6 +6706,43 @@ fn eval_tokens(text: &str) -> std::collections::HashSet<String> {
 ///   phrases where the LLM uses a close variant, e.g. "All African" vs "All Africa")
 ///
 /// The substring fallback ensures this metric is always ≥ the old exact-substring metric.
+/// Numeric proximity score: finds the closest 4-digit year in the answer to `correct`
+/// and returns a score in [0.0, 1.0] based on how close it is within `tolerance` years.
+/// Exact match = 1.0; within tolerance = linear falloff; beyond = 0.0.
+/// Used for questions where the answer is a quantity (e.g. a year) rather than a keyword.
+fn numeric_proximity_score(answer: &str, correct: i64, tolerance: i64) -> f32 {
+    let bytes = answer.as_bytes();
+    let mut best_dist = i64::MAX;
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if bytes[i..i + 4].iter().all(|b| b.is_ascii_digit()) {
+            let before_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
+            let after_ok = i + 4 >= bytes.len() || !bytes[i + 4].is_ascii_digit();
+            if before_ok && after_ok {
+                if let Ok(s) = std::str::from_utf8(&bytes[i..i + 4]) {
+                    if let Ok(y) = s.parse::<i64>() {
+                        if (1000..=2100).contains(&y) {
+                            best_dist = best_dist.min((y - correct).abs());
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    if best_dist == i64::MAX {
+        return 0.0;
+    }
+    if best_dist == 0 {
+        return 1.0;
+    }
+    if best_dist <= tolerance {
+        1.0 - (best_dist as f32 / tolerance as f32)
+    } else {
+        0.0
+    }
+}
+
 fn keyword_hit(kw: &str, answer: &str, answer_toks: &std::collections::HashSet<String>) -> bool {
     let kw_toks: Vec<String> = kw
         .split(|c: char| !c.is_alphanumeric())
@@ -6728,12 +6765,24 @@ fn keyword_hit(kw: &str, answer: &str, answer_toks: &std::collections::HashSet<S
 }
 
 #[derive(serde::Deserialize)]
+struct NumericAnswer {
+    /// The correct numeric value (e.g. 1884 for a year).
+    correct: i64,
+    /// Half-range: score > 0 only within this many units of `correct`.
+    tolerance: i64,
+}
+
+#[derive(serde::Deserialize)]
 struct EvalQuestion {
     id: String,
     question: String,
     expected_keywords: Vec<String>,
     #[serde(default)]
     expected_answer: Option<String>,
+    /// Optional numeric answer for questions where the answer is a quantity
+    /// (e.g. a year). Scored by proximity instead of keyword overlap.
+    #[serde(default)]
+    numeric_answer: Option<NumericAnswer>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6887,8 +6936,8 @@ async fn cmd_eval(
             question: String,
             answer: String,
             retrieved_docs: Vec<String>,
-            keyword_hits: usize,
-            total_keywords: usize,
+            keyword_hits: f32, // f32 to accommodate numeric proximity partial credit
+            total_keywords: f32,
             latency_ms: u128,
             judge_score: Option<u8>,
         }
@@ -7145,12 +7194,18 @@ async fn cmd_eval(
 
             // Score keywords (token-overlap recall, substring fallback).
             let answer_toks = eval_tokens(&answer);
-            let keyword_hits = q
+            let kw_exact: usize = q
                 .expected_keywords
                 .iter()
                 .filter(|kw| keyword_hit(kw, &answer, &answer_toks))
                 .count();
-            let total_keywords = q.expected_keywords.len();
+            // Numeric proximity score (e.g. year estimation): adds fractional credit.
+            let num_score: f32 = q.numeric_answer.as_ref().map_or(0.0, |na| {
+                numeric_proximity_score(&answer, na.correct, na.tolerance)
+            });
+            let keyword_hits: f32 = kw_exact as f32 + num_score;
+            let total_keywords: f32 =
+                q.expected_keywords.len() as f32 + q.numeric_answer.is_some() as u8 as f32;
 
             // LLM-as-judge (optional, only if expected_answer is present).
             let judge_score: Option<u8> = if llm_judge {
@@ -7215,12 +7270,25 @@ async fn cmd_eval(
                 Some(s) => format!("  judge={s}/2"),
                 None => String::new(),
             };
+            let kw_display = {
+                let hits_s = if keyword_hits == keyword_hits.floor() {
+                    format!("{:.0}", keyword_hits)
+                } else {
+                    format!("{:.1}", keyword_hits)
+                };
+                let tot_s = if total_keywords == total_keywords.floor() {
+                    format!("{:.0}", total_keywords)
+                } else {
+                    format!("{:.1}", total_keywords)
+                };
+                format!("{hits_s}/{tot_s}")
+            };
             if effective_mode == "iterative" {
                 println!(
-                    "         → {keyword_hits}/{total_keywords} keywords{judge_str}  {latency_ms}ms"
+                    "         → {kw_display} keywords{judge_str}  {latency_ms}ms"
                 );
             } else {
-                println!("{keyword_hits}/{total_keywords} keywords{judge_str}  {latency_ms}ms");
+                println!("{kw_display} keywords{judge_str}  {latency_ms}ms");
             }
 
             rows.push(Row {
@@ -7239,10 +7307,10 @@ async fn cmd_eval(
             {
                 let done = rows.len();
                 let total = questions.len();
-                let hits_so_far: usize = rows.iter().map(|r| r.keyword_hits).sum();
-                let kw_so_far: usize = rows.iter().map(|r| r.total_keywords).sum();
-                let running_recall = if kw_so_far > 0 {
-                    (hits_so_far as f64 / kw_so_far as f64 * 100.0).round() / 100.0
+                let hits_so_far: f64 = rows.iter().map(|r| r.keyword_hits as f64).sum();
+                let kw_so_far: f64 = rows.iter().map(|r| r.total_keywords as f64).sum();
+                let running_recall = if kw_so_far > 0.0 {
+                    (hits_so_far / kw_so_far * 100.0).round() / 100.0
                 } else {
                     0.0
                 };
@@ -7257,7 +7325,7 @@ async fn cmd_eval(
                     "total": total,
                     "running_recall": running_recall,
                     "last_q": q.id,
-                    "last_score": format!("{keyword_hits}/{total_keywords}"),
+                    "last_score": kw_display,
                     "elapsed_s": elapsed_s,
                     "eta_s": eta_s,
                     "kb": kb,
@@ -7270,10 +7338,10 @@ async fn cmd_eval(
         }
 
         // Build report.
-        let total_hits: usize = rows.iter().map(|r| r.keyword_hits).sum();
-        let total_kw: usize = rows.iter().map(|r| r.total_keywords).sum();
-        let overall_score = if total_kw > 0 {
-            total_hits as f64 / total_kw as f64
+        let total_hits: f64 = rows.iter().map(|r| r.keyword_hits as f64).sum();
+        let total_kw: f64 = rows.iter().map(|r| r.total_keywords as f64).sum();
+        let overall_score = if total_kw > 0.0 {
+            total_hits / total_kw
         } else {
             0.0
         };
@@ -7309,11 +7377,13 @@ async fn cmd_eval(
              | Metric | Value |\n\
              |--------|-------|\n\
              | Questions | {} |\n\
-             | Overall recall (token-overlap) | {:.1}% ({total_hits}/{total_kw}) |\n\
+             | Overall recall (token-overlap) | {:.1}% ({:.1}/{:.0}) |\n\
              {judge_summary}\
              | Avg latency | {avg_latency_ms}ms |\n\n",
             rows.len(),
             overall_score * 100.0,
+            total_hits,
+            total_kw,
         ));
         report.push_str("## Per-question results\n\n");
         let has_judge = rows.iter().any(|r| r.judge_score.is_some());
@@ -7325,11 +7395,19 @@ async fn cmd_eval(
             report.push_str("|----|----------|----------|---------|--------|\n");
         }
         for r in &rows {
-            let pct = if r.total_keywords > 0 {
+            let pct = if r.total_keywords > 0.0 {
+                let hits_s = if r.keyword_hits == r.keyword_hits.floor() {
+                    format!("{:.0}", r.keyword_hits)
+                } else {
+                    format!("{:.1}", r.keyword_hits)
+                };
+                let tot_s = if r.total_keywords == r.total_keywords.floor() {
+                    format!("{:.0}", r.total_keywords)
+                } else {
+                    format!("{:.1}", r.total_keywords)
+                };
                 format!(
-                    "{}/{} ({:.0}%)",
-                    r.keyword_hits,
-                    r.total_keywords,
+                    "{hits_s}/{tot_s} ({:.0}%)",
                     r.keyword_hits as f64 / r.total_keywords as f64 * 100.0
                 )
             } else {
@@ -7378,8 +7456,10 @@ async fn cmd_eval(
         } else {
             println!("\n{report}");
             print_success(&format!(
-                "Overall: {:.1}% recall (token-overlap){judge_note}  ({total_hits}/{total_kw})  avg {avg_latency_ms}ms",
+                "Overall: {:.1}% recall (token-overlap){judge_note}  ({:.1}/{:.0})  avg {avg_latency_ms}ms",
                 overall_score * 100.0,
+                total_hits,
+                total_kw,
             ));
         }
         Ok(())
