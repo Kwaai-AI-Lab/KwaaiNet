@@ -953,8 +953,23 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                         &mut daemon, &mut client, &p2pd_path, &config,
                         &bootstrap_peers, &announce_addr, handler_addr,
                     ).await {
-                        Ok(()) => info!("✅ p2pd restarted and handlers re-registered"),
-                        Err(e) => warn!("p2pd restart failed: {} — will retry in 120s", e),
+                        Ok(()) => {
+                            info!("✅ p2pd restarted and handlers re-registered");
+                            // Routing table is empty right after restart; announcing now
+                            // fails with "no peer in table". Delay 30 s so bootstrap
+                            // peers can populate the routing table first.
+                            next_announce
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + Duration::from_secs(30));
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!("p2pd restart failed: {} — will retry in 120s", e);
+                            next_announce
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + Duration::from_secs(120));
+                            continue;
+                        }
                     }
                 }
 
