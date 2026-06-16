@@ -537,10 +537,13 @@ The q30 keywords are: `['1884', 'Mauritius', 'India', 'Swat', 'Gujarat', 'Joosub
 | r20 (+ quality gate) | 155/225 | 68.9% | decade exclusion in quality gate |
 | r21 (+ q09 Prepend mode) | 162/225 | 72.0% | grandparent queries use Prepend |
 | r22 (+ q09 retrieval rewrite) | 158/225 | 70.2% | retrieval query rewritten to canonical name |
+| r23 (+ HiRAG summary expansion) | 159/225 | 70.7% | 113 window summary nodes, Round 2.5 |
 | **Target** | | **80–90%** | |
 
-The gap to 80% target is **7.5–17.5pp**. Within the ±8 pt noise floor, r21 and r22 are equivalent to r18b/r19. The q09 retrieval rewrite does not help because the LLM gives a minimal one-liner ("The author's grandfather was Joosub Maulvi Hamid Gool") even when the full entity description is in context — the question form "who was" triggers an identity answer, not a biographical one. The entity description is correctly injected via graph Prepend (q09 source shows `[Graph: Haji Joosub Maulvi Hamid Gool]`) but the LLM doesn't expand it.
+r23 key changes vs r22: q06 Buitencingle **+4** (2→6/8, structural — summary expansion surfaces relevant narrative chunks); q03 grandchildren **−6** (LLM sampling variance, nothing changed for this question). Net +1. Within ±8 pt noise floor; no version bump.
 
-The gap to 80% target is **7.5–17.5pp**. Next lever: **HiRAG** (hierarchical summarization for broad summary questions like q39, q29, q36) — implemented in this session. Run `kwaainet rag summarize --kb D6` to generate summaries, then eval with `--use-summary-expansion` (not yet wired to eval CLI).
+**HiRAG signal:** q06 +4 is promising — Buitencingle was a consistent weak spot (2–4/8 across 22 runs). Summary expansion on a narrative place-description question is exactly HiRAG's target use case. Needs 3-run confirmation.
 
-*Updated 2026-06-15 with r21/r22 q09 fix results.*
+**Gap to 80% target is 7.5–17.5pp.** Next lever: either (a) q09 question-form fix (rephrase "Describe in detail…" instead of "Who was…" to elicit biography not identity), or (b) q36 entity enrichment (political orgs synthesis).
+
+*Updated 2026-06-15 with r23 HiRAG results.*

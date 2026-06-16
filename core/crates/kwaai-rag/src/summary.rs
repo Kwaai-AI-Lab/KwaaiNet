@@ -158,11 +158,14 @@ pub async fn generate_summaries(
                 .map(|(_, cm)| cm.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            let trimmed = if combined.len() > 6_000 {
-                &combined[..6_000]
+            let trimmed_end = if combined.len() > 6_000 {
+                let mut end = 6_000;
+                while !combined.is_char_boundary(end) { end -= 1; }
+                end
             } else {
-                &combined
+                combined.len()
             };
+            let trimmed = &combined[..trimmed_end];
             let prompt = format!(
                 "Summarize the following passage in 2-4 sentences, \
                  preserving key facts, names, dates, and places. Be concise.\n\n\
@@ -205,11 +208,14 @@ pub async fn generate_summaries(
                 .map(|w| w.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            let trimmed = if combined.len() > 6_000 {
-                &combined[..6_000]
+            let trimmed_end = if combined.len() > 6_000 {
+                let mut end = 6_000;
+                while !combined.is_char_boundary(end) { end -= 1; }
+                end
             } else {
-                &combined
+                combined.len()
             };
+            let trimmed = &combined[..trimmed_end];
             let label = if section_key.is_empty() {
                 "section"
             } else {

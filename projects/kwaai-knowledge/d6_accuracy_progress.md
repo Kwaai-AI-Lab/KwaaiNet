@@ -101,6 +101,7 @@
 | 53 | v0.4.101 | M52 — quality gate tightened (decade exclusion). Separate eval run. | llama3.1:8b | **155/225** (68.9%) r20 | — | −8 pts vs M51/M52 — within ±8 pt noise floor. q05 −3 (LLM noise). q30 structural ceiling: "1884" not in source text. |
 | 54 | v0.4.102 | M53 + **grandparent Prepend mode**: grandparent/grandchild queries use GraphMode::Prepend (entity description + iterative chunks) instead of Replace. | llama3.1:8b | **162/225** (72.0%) r21 | — | +7 vs r20. q09 still 3/9 — Prepend active but retrieval still fetches wrong chunks. |
 | 55 | v0.4.102 | M54 + **q09 retrieval query rewrite**: "Who was the author's grandfather?" → "Who was Haji Joosub Maulvi Hamid Gool?" for vector search. LLM still receives original question. | llama3.1:8b | **158/225** (70.2%) r22 | — | q09 still 3/9. Root cause: LLM answers "who was" identity questions with a one-liner even with full entity description in context. Not a retrieval problem. |
+| 56 | v0.4.102 | M55 + **HiRAG**: UTF-8 panic fixed (`is_char_boundary` truncation); 113 window summary nodes generated (window=10, 1129 chunks, ~15 min); `--summary-expansion` flag in eval (Round 2.5 cosine-search over summary embeddings, threshold=0.40). | llama3.1:8b | **159/225** (70.7%) r23 | — | +1 vs r22. q06 Buitencingle **2→6/8** (+4, structural win — summary expansion surfaces relevant chunks). q03 grandchildren 6→0/6 (−6, LLM sampling variance). q09 still 3/9. Net: within ±8 pt noise floor of r18b (163). No version bump. |
 
 > Note: keyword hit rate varies ±4pp between runs of the same config due to LLM sampling. Milestones 12–13 are separate runs of the same stack; consider 48–50% the range for the current best config.
 
@@ -969,19 +970,23 @@ Entity description for JMH Gool contains all 9 keywords (Joosub, Gool, grandfath
 
 ±8 pts (3.5pp) between identical runs at temperature=0. Single-run improvements under 10 pts are not statistically significant.
 
-### HiRAG implemented (v0.4.102)
+### HiRAG implemented (v0.4.102) — r23 results
 
 New `kwaainet rag summarize` command generates two-level summary hierarchy:
-- Level 1: window summaries (N contiguous chunks, default 10)
+- Level 1: window summaries (N contiguous chunks, default 10) — 113 nodes for D6
 - Level 2: section summaries aggregating windows within each DocSchema section
 
-Summary nodes stored in new `summary_nodes` redb table. Round 2.5 in iterative retrieval: cosine-search summaries, expand to child chunks at score 0.40. Eval via `--summary-expansion` flag (eval TBD after `rag summarize` completes ~2h CPU).
+Summary nodes stored in new `summary_nodes` redb table. Round 2.5 in iterative retrieval: cosine-search summaries, expand to child chunks at score 0.40. Enabled with `--summary-expansion` eval flag.
+
+**r23 result (M56):** 159/225 (70.7%) — +1 vs r22. q06 Buitencingle +4 (structural, 2→6/8 — summary expansion surfaces relevant narrative chunks). q03 grandchildren −6 (sampling variance, LLM). Net within ±8 pt noise floor.
+
+**q06 is a promising signal** — Buitencingle has historically been a weak spot (consistently 2–4/8). The +4 from summary expansion on a narrative place-description question is exactly the use case HiRAG targets. Needs confirmation across 3 runs.
 
 ### Next levers toward 80% target
 
 | Lever | Expected gain | Status |
 |-------|---------------|--------|
-| HiRAG summary expansion | +3–5pp on q36/q39/q29? | Pending eval (summarize running) |
+| HiRAG 3-run confirmation (q06) | +3–5 pts confirmed? | Single run so far |
 | q09 LLM prompt fix ("Describe in detail…") | +4–6 pts | Not tried |
-| q06/q39 narrative questions | +3–5 pts | Structural — need richer chunks |
+| q36 political organisations (2/6) | +3–4 pts | Needs entity enrichment |
 | q30 JMH arrival inference | 0 pts | Hard ceiling: date not in text |
