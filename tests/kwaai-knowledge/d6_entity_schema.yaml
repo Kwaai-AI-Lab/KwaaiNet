@@ -7,10 +7,45 @@
 
 entity_type_schemas:
 
+  - name: Person
+    # schema.org/Person — A person (alive, dead, undead, or fictional).
+    description: >-
+      A specific, named individual human being — living, historical, or
+      deceased. Must be a proper name referring to one identifiable person,
+      not a role, collective, or community. In the D6 memoir context: family
+      members, political figures, teachers, neighbours, and historical
+      personalities mentioned by name.
+    examples:
+      - Yousuf Rassool
+      - Haji Joosub Maulvi Hamid Gool
+      - Cissie Gool
+      - Dr. Abdullah Abdurahman
+      - Mahatma Gandhi
+      - Cecil John Rhodes
+      - George Bernard Shaw
+      - Peter Alexander Rassool
+      - Ayesha Rassool
+      - I.B. Tabata
+      - B.M. Kies
+      - Abdul Hamid Gool
+    anti_examples:
+      - the teachers
+      - Cape Coloured community
+      - the residents
+      - the Gool family
+      - non-Europeans
+      - the narrator
+      - the author
+      - District Six people
+      - the apartheid government
+
   - name: Organization
+    # schema.org/Organization — An organization such as a school, NGO, corporation, club, etc.
     description: >-
       A formal group of people organized for a shared political, professional,
-      or social purpose, with a recognized name and ongoing membership.
+      religious, or social purpose, with a recognized name and ongoing
+      membership. Includes political movements, trade unions, sports clubs,
+      mosques, businesses, and government departments.
     examples:
       - NEUM
       - TLSA
@@ -34,9 +69,12 @@ entity_type_schemas:
       - Indian community
 
   - name: Place
+    # schema.org/Place — Entities that have a somewhat fixed, physical extension (address, geo).
     description: >-
       A specific, named geographic location: a street address, building,
       neighbourhood, city, province, or country that can be found on a map.
+      Must be a proper name for a real, locatable place — not a vague
+      directional or descriptive reference.
     examples:
       - District Six
       - Buitencingle Street
@@ -60,18 +98,20 @@ entity_type_schemas:
       - the Cape area
 
   - name: Legislation
+    # schema.org/Legislation — A legal document such as an act, decree, draft regulation, etc.
     description: >-
-      A law, act, decree, or formal administrative or regulatory system with
-      legal force, enacted by a government or governing body.
+      A named law, act, ordinance, regulation, or decree with legal force,
+      enacted by a legislature or governing authority. Must have a specific
+      enacted title — not a general policy, ideology, or informal practice.
     examples:
       - Group Areas Act
       - Population Registration Act
       - Law 3 of 1885
       - Bantu Education Act
       - Separate Amenities Act
-      - Coloured Advisory Council
       - Mixed Marriages Act
       - Immorality Act
+      - Suppression of Communism Act
     anti_examples:
       - apartheid
       - racial policy
@@ -82,9 +122,12 @@ entity_type_schemas:
       - racial discrimination
 
   - name: Publication
+    # schema.org/CreativeWork — A book, movie, photograph, software program, etc.
     description: >-
-      A named newspaper, journal, book, pamphlet, or other published work
-      with a distinct title and established circulation or authorship.
+      A named newspaper, journal, book, pamphlet, play, or other published
+      work with a distinct title and established circulation or authorship.
+      Must have a proper title — not a generic reference to "a letter" or
+      "correspondence".
     examples:
       - The Torch
       - Indian Opinion
@@ -103,10 +146,13 @@ entity_type_schemas:
       - a pamphlet distributed at a meeting
 
   - name: Concept
+    # schema.org/DefinedTerm — A word, name, acronym, phrase with a formal definition.
     description: >-
       An abstract idea, social category, racial classification, ideological
-      position, or cultural practice that shapes the text's argument but is
-      not a physical or organizational entity.
+      principle, or cultural practice that shapes the text's argument but is
+      not a physical entity, organisation, or named individual. Includes
+      apartheid-era racial categories, political doctrines, and social
+      movements defined by shared beliefs rather than formal membership.
     examples:
       - non-collaboration
       - boycott weapon
