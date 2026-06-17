@@ -32,7 +32,8 @@ use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::shard_cmd::{
-    daemon_socket, discover_chain, forward_through_chain, sample_token, BlockServerEntry,
+    daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id, sample_token,
+    BlockServerEntry,
 };
 
 // ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
@@ -783,27 +784,77 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     println!("  Port:         {}", args.port);
     println!();
 
-    use std::io::Write as _;
-    print!("  Discovering block circuit…");
-    std::io::stdout().flush().ok();
+    // Acquire chain: from a saved circuit (skips DHT) or fresh discovery.
+    let chain = if let Some(ref circuit_id) = args.circuit {
+        let circuit = load_circuit_by_id(circuit_id)?;
+        let entries: Vec<BlockServerEntry> =
+            circuit.chain.iter().filter_map(|e| e.to_entry()).collect();
+        if entries.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Circuit '{}' loaded but contains no usable entries",
+                circuit_id
+            ));
+        }
+        println!("  Circuit:      {} ({} nodes, skipping DHT)", circuit.id, entries.len());
+        entries
+    } else {
+        use std::io::Write as _;
+        print!("  Discovering block circuit…");
+        std::io::stdout().flush().ok();
+        let discovered = discover_chain(
+            &mut client,
+            &our_peer_id,
+            &dht_prefix,
+            total_blocks,
+            &bootstrap_peers,
+        )
+        .await;
+        if discovered.is_empty() {
+            println!("no nodes found");
+            println!();
+            print_warning("No block servers found — start serving first: kwaainet shard serve");
+            print_separator();
+            return Ok(());
+        }
+        println!("{} node(s)", discovered.len());
+        discovered
+    };
 
-    let chain = discover_chain(
-        &mut client,
-        &our_peer_id,
-        &dht_prefix,
-        total_blocks,
-        &bootstrap_peers,
-    )
-    .await;
+    // Apply --name-filter (substring match on public_name).
+    let chain = if let Some(ref f) = args.name_filter {
+        let filtered: Vec<_> = chain
+            .into_iter()
+            .filter(|e| e.public_name.contains(f.as_str()))
+            .collect();
+        if filtered.is_empty() {
+            return Err(anyhow::anyhow!(
+                "--name-filter '{}' matched no block servers",
+                f
+            ));
+        }
+        println!("  Name filter:  '{}' → {} nodes", f, filtered.len());
+        filtered
+    } else {
+        chain
+    };
 
-    if chain.is_empty() {
-        println!("no nodes found");
-        println!();
-        print_warning("No block servers found — start serving first: kwaainet shard serve");
-        print_separator();
-        return Ok(());
-    }
-    println!("{} node(s)", chain.len());
+    // Apply --peer (pin to a single explicit peer ID).
+    let chain = if let Some(ref peer_str) = args.peer {
+        let filtered: Vec<_> = chain
+            .into_iter()
+            .filter(|e| e.peer_id.to_base58() == peer_str.as_str())
+            .collect();
+        if filtered.is_empty() {
+            return Err(anyhow::anyhow!(
+                "--peer '{}' not found in discovered chain",
+                peer_str
+            ));
+        }
+        println!("  Peer pin:     {}", peer_str);
+        filtered
+    } else {
+        chain
+    };
 
     for (i, entry) in chain.iter().enumerate() {
         println!(
