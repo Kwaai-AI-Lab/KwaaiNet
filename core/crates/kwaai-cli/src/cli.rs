@@ -1740,6 +1740,22 @@ pub enum GraphAction {
         /// second pass without re-extracting.
         #[arg(long)]
         ec_refine_only: bool,
+
+        /// Run a second-stage type-validation pass using this model (e.g. "llama3.1:70b").
+        /// Entities with extraction_confidence below --validation-floor are validated against
+        /// the KB's own type definitions (set with `graph schema set`).
+        /// Confirmed → confidence 0.85; rejected → 0.1 (low priority, not deleted).
+        #[arg(long, value_name = "MODEL")]
+        validation_model: Option<String>,
+
+        /// Confidence threshold below which entities are sent for type validation.
+        /// Default: 0.7. Only effective when --validation-model is set.
+        #[arg(long, default_value = "0.7", value_name = "FLOAT")]
+        validation_floor: f32,
+
+        /// Maximum entities to validate per run (cost guard). Default: 200.
+        #[arg(long, default_value = "200", value_name = "N")]
+        validation_budget: usize,
     },
 
     /// Reverse a bad dedup merge: remove an alias from a canonical entity and restore it as its
@@ -2117,6 +2133,43 @@ pub enum GraphAction {
     Timeline {
         #[command(subcommand)]
         action: TimelineAction,
+    },
+
+    /// Manage per-KB entity type schemas used by the 70b validation pass.
+    /// Schemas define what each entity type means in a specific document domain,
+    /// keeping domain knowledge in YAML rather than compiled Rust.
+    Schema {
+        #[command(subcommand)]
+        action: SchemaAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SchemaAction {
+    /// Load entity type schemas from a YAML file into the KB.
+    ///
+    /// The YAML file must have a top-level `entity_type_schemas:` list. Each entry has:
+    ///   - name: "Organization"
+    ///   - description: "..."
+    ///   - examples: [...]
+    ///   - anti_examples: [...]
+    ///
+    /// See tests/kwaai-knowledge/d6_entity_schema.yaml for an example.
+    Set {
+        /// Path to the YAML schema file
+        #[arg(long, value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+
+    /// Print the current KB entity type schemas.
+    Show {
+        /// Knowledge base name (default: "default")
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
     },
 }
 

@@ -55,6 +55,8 @@ pub const ENTITY_TYPES: &[&str] = &[
     "Technology",
     "Role",
     "Topic",
+    "Legislation",
+    "Publication",
     "Unknown",
 ];
 
@@ -287,6 +289,25 @@ fn default_extraction_confidence() -> f32 {
     1.0
 }
 
+/// Per-KB type definition used by the 70b validation pass.
+/// Stored in METADATA_TABLE under key "kb_entity_schemas" as JSON.
+/// Domain knowledge (examples, anti-examples) lives here, not in Rust source.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KBEntityTypeSchema {
+    pub name: String,
+    /// Used verbatim as the type definition in the validation prompt.
+    pub description: String,
+    /// Positive examples from this KB's domain.
+    #[serde(default)]
+    pub examples: Vec<String>,
+    /// Counter-examples — entities that look similar but are NOT this type.
+    #[serde(default)]
+    pub anti_examples: Vec<String>,
+    /// Optional field name overrides (uses expected_fields() defaults when empty).
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ExtractedRelation {
     pub from: String,
@@ -353,6 +374,20 @@ pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static s
                 "orgType",
                 "type of organization (school, mosque, newspaper, political party, etc.)",
             ),
+        ],
+        "Legislation" => &[
+            ("dateEnacted", "year or date the legislation was passed"),
+            ("jurisdiction", "geographic or political jurisdiction"),
+            ("effect", "primary effect or purpose of the legislation"),
+        ],
+        "Publication" => &[
+            ("publisher", "publisher, newspaper, or institution"),
+            ("datePublished", "year or date range of publication"),
+            ("frequency", "daily / weekly / pamphlet / one-off"),
+        ],
+        "Concept" => &[
+            ("definition", "short definition of the concept"),
+            ("domain", "social / political / religious / other"),
         ],
         _ => &[],
     }
@@ -3995,6 +4030,51 @@ impl GraphStore {
             return vec![];
         };
         let Ok(Some(v)) = table.get("document_titles") else {
+            return vec![];
+        };
+        serde_json::from_str(v.value()).unwrap_or_default()
+    }
+
+    /// Update an entity's extraction_confidence and persist the change.
+    /// No-op when the entity ID is not found.
+    pub fn set_extraction_confidence(&mut self, entity_id: i64, confidence: f32) -> Result<()> {
+        let node = match self.nodes.get_mut(&entity_id) {
+            Some(n) => n,
+            None => return Ok(()),
+        };
+        node.extraction_confidence = confidence;
+        let key = entity_id.to_le_bytes();
+        let val = serde_json::to_vec(node)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(ENTITIES_TABLE)?;
+            t.insert(key.as_ref(), val.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Persist per-KB entity type schemas loaded from a YAML schema file.
+    pub fn set_kb_entity_schemas(&mut self, schemas: &[KBEntityTypeSchema]) -> Result<()> {
+        let json = serde_json::to_string(schemas)?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut t = wtxn.open_table(METADATA_TABLE)?;
+            t.insert("kb_entity_schemas", json.as_str())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve per-KB entity type schemas. Returns empty vec if none stored.
+    pub fn get_kb_entity_schemas(&self) -> Vec<KBEntityTypeSchema> {
+        let Ok(rtxn) = self.db.begin_read() else {
+            return vec![];
+        };
+        let Ok(table) = rtxn.open_table(METADATA_TABLE) else {
+            return vec![];
+        };
+        let Ok(Some(v)) = table.get("kb_entity_schemas") else {
             return vec![];
         };
         serde_json::from_str(v.value()).unwrap_or_default()

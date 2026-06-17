@@ -13,7 +13,7 @@ use crate::embedder::EmbedClient;
 use crate::gliner::GliNERClient;
 use crate::graph::{
     description_from_fields, entity_id, extract_from_text, EntityNode, ExtractedEntity,
-    ExtractedRelation, FieldValue, GraphStore,
+    ExtractedRelation, FieldValue, GraphStore, KBEntityTypeSchema,
 };
 use crate::meta_store::{ChunkMeta, MetaStore};
 use crate::ner;
@@ -58,6 +58,17 @@ pub struct GraphIngestConfig {
     /// chunk_batch=3: loop strides by 3, each call covers chunks [i..i+3] plus the
     /// context_window on each side. Reduces calls by 3× at the cost of denser context.
     pub chunk_batch: usize,
+    /// When set, run a second-stage type-validation pass using this model (e.g. "llama3.1:70b").
+    /// Entities with extraction_confidence below validation_confidence_floor are sent to the
+    /// validation model with the KB's own type definitions (from KBEntityTypeSchema) and either
+    /// confirmed (confidence → 0.85) or flagged (confidence → 0.1) for later pruning.
+    /// None = disabled (default behaviour unchanged).
+    pub validation_model: Option<String>,
+    /// Entities with extraction_confidence below this threshold are candidates for validation.
+    /// Default 0.7. Only effective when validation_model is Some.
+    pub validation_confidence_floor: f32,
+    /// Maximum number of entities to validate per run (cost guard). Default 200.
+    pub validation_budget: usize,
 }
 
 impl GraphIngestConfig {
@@ -560,6 +571,32 @@ pub async fn extract_and_store_entities_pub(
     // EC refinement: escalate low-confidence entities for a targeted second pass.
     if graph_cfg.ec_refine_threshold > 0.0 {
         refine_low_confidence_entities(chunks, chunk_ids, embed, graph_cfg).await;
+    }
+
+    // Type validation: send low-confidence entities to a 70b model for correctness checking.
+    if let Some(ref val_model) = graph_cfg.validation_model {
+        let schemas = {
+            let g = graph_cfg.store.lock().unwrap_or_else(|e| e.into_inner());
+            g.get_kb_entity_schemas()
+        };
+        if !schemas.is_empty() {
+            let urls = graph_cfg.effective_urls();
+            let inference_url = urls
+                .first()
+                .cloned()
+                .unwrap_or_else(|| graph_cfg.inference_url.clone());
+            validate_entities_against_schemas(
+                &graph_cfg.store,
+                &schemas,
+                &inference_url,
+                val_model,
+                graph_cfg.validation_confidence_floor,
+                graph_cfg.validation_budget,
+            )
+            .await;
+        } else {
+            info!("validation_model set but KB has no entity schemas — skipping validation pass");
+        }
     }
 }
 
@@ -1741,5 +1778,207 @@ async fn refine_low_confidence_entities(
         improved,
         targets.len(),
         new_entities,
+    );
+}
+
+/// Validate entity type classifications against KB-supplied type definitions.
+///
+/// Entities with `extraction_confidence < floor` are batched by type and sent to
+/// the validation model. The model receives the KB's own description + examples
+/// for each type, keeping domain knowledge out of the Rust source.
+///
+/// Passed entities: extraction_confidence → max(existing, 0.85)
+/// Failed entities: extraction_confidence → 0.1 (low priority; not deleted)
+async fn validate_entities_against_schemas(
+    store: &Arc<Mutex<GraphStore>>,
+    schemas: &[KBEntityTypeSchema],
+    inference_url: &str,
+    model: &str,
+    floor: f32,
+    budget: usize,
+) {
+    // Collect candidates from the in-memory store.
+    let candidates: Vec<(i64, String, String, f32)> = {
+        let g = store.lock().unwrap_or_else(|e| e.into_inner());
+        g.all_entities()
+            .filter(|e| e.extraction_confidence < floor)
+            .take(budget)
+            .map(|e| {
+                (
+                    e.id,
+                    e.name.clone(),
+                    e.entity_type.clone(),
+                    e.extraction_confidence,
+                )
+            })
+            .collect()
+    };
+
+    if candidates.is_empty() {
+        println!("  Validation pass: no entities below floor {floor:.2} — nothing to validate");
+        return;
+    }
+
+    // Build schema lookup by type name.
+    let schema_map: std::collections::HashMap<&str, &KBEntityTypeSchema> =
+        schemas.iter().map(|s| (s.name.as_str(), s)).collect();
+
+    // Group candidates by entity type.
+    let mut by_type: std::collections::HashMap<String, Vec<(i64, String)>> =
+        std::collections::HashMap::new();
+    for (id, name, etype, _) in &candidates {
+        by_type
+            .entry(etype.clone())
+            .or_default()
+            .push((*id, name.clone()));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let url = format!("{}/api/chat", inference_url.trim_end_matches('/'));
+
+    let mut confirmed = 0usize;
+    let mut rejected = 0usize;
+    let mut skipped_no_schema = 0usize;
+
+    for (etype, group) in &by_type {
+        let Some(schema) = schema_map.get(etype.as_str()) else {
+            skipped_no_schema += group.len();
+            continue;
+        };
+
+        // Process in batches of 20 to stay within context limits.
+        for batch in group.chunks(20) {
+            let entity_list = batch
+                .iter()
+                .enumerate()
+                .map(|(i, (_, name))| format!("{}. {}", i + 1, name))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let examples_str = if schema.examples.is_empty() {
+                String::new()
+            } else {
+                format!("\nExamples: {}", schema.examples.join(", "))
+            };
+            let anti_str = if schema.anti_examples.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\nCounter-examples (these are NOT {}): {}",
+                    etype,
+                    schema.anti_examples.join(", ")
+                )
+            };
+
+            let prompt = format!(
+                "You are validating entity type classifications for a knowledge base.\n\n\
+                 Definition of {etype}: {}{}{}\n\n\
+                 For each entity below, answer \"yes\" if it is truly a {etype} based on the \
+                 definition above, or \"no\" if it is misclassified.\n\
+                 Return ONLY a JSON array with one object per entity in order: \
+                 [{{\"name\": \"...\", \"valid\": true/false}}]\n\
+                 Do not include any other text.\n\n\
+                 Entities to validate:\n{entity_list}",
+                schema.description, examples_str, anti_str,
+            );
+
+            let body = serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": false,
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 512,
+                    "num_ctx": 4096,
+                },
+            });
+
+            let resp = match tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                client.post(&url).json(&body).send(),
+            )
+            .await
+            {
+                Ok(Ok(r)) if r.status().is_success() => r,
+                Ok(Ok(r)) => {
+                    warn!("validation request got HTTP {}", r.status());
+                    continue;
+                }
+                Ok(Err(e)) => {
+                    warn!("validation request failed: {e}");
+                    continue;
+                }
+                Err(_) => {
+                    warn!("validation request timed out");
+                    continue;
+                }
+            };
+
+            let raw = match resp.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!("validation response read failed: {e}");
+                    continue;
+                }
+            };
+
+            // Parse non-streaming response: {"message":{"content":"..."}}
+            let content = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| {
+                    v.get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+
+            // Parse the JSON array out of the content.
+            let json_start = content.find('[');
+            let json_end = content.rfind(']');
+            let verdicts: Vec<serde_json::Value> = if let (Some(s), Some(e)) = (json_start, json_end) {
+                serde_json::from_str(&content[s..=e]).unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            // Apply verdicts to the store.
+            for (batch_idx, (eid, _name)) in batch.iter().enumerate() {
+                let valid = verdicts
+                    .get(batch_idx)
+                    .and_then(|v| v.get("valid"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true); // default to keeping when response is malformed
+                let new_conf = if valid { 0.85_f32 } else { 0.1_f32 };
+                // For confirmed entities, only raise confidence (never lower a high existing score).
+                let final_conf = if valid {
+                    store
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_entity(*eid)
+                        .map(|e| e.extraction_confidence.max(new_conf))
+                        .unwrap_or(new_conf)
+                } else {
+                    new_conf
+                };
+                let mut g = store.lock().unwrap_or_else(|e| e.into_inner());
+                if let Err(e) = g.set_extraction_confidence(*eid, final_conf) {
+                    warn!("validation: confidence update failed for entity {eid}: {e}");
+                } else if valid {
+                    confirmed += 1;
+                } else {
+                    rejected += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "  Validation pass: {confirmed} confirmed, {rejected} rejected (→0.1), \
+         {skipped_no_schema} skipped (no schema for type)"
     );
 }

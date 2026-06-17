@@ -1,0 +1,126 @@
+# Entity type definitions for the D6 "Lest We Forget" knowledge base.
+# Used by the two-stage validation pass (--validation-model) to check
+# whether extracted entities are correctly classified.
+#
+# Domain knowledge lives HERE, not in Rust source.
+# To load: kwaainet rag graph schema set --kb D6 --file tests/kwaai-knowledge/d6_entity_schema.yaml
+
+entity_type_schemas:
+
+  - name: Organization
+    description: >-
+      A formal group of people organized for a shared political, professional,
+      or social purpose, with a recognized name and ongoing membership.
+    examples:
+      - NEUM
+      - TLSA
+      - AAC
+      - NEF
+      - ANC
+      - Anti-CAD
+      - Communist Party
+      - TEPA
+      - Western Province Indian Cricket Union
+      - Kismet Cricket Club
+      - Teachers League of South Africa
+      - Non-European Unity Movement
+    anti_examples:
+      - Cape Coloured community
+      - the teachers
+      - the boycotters
+      - the Unity Movement tradition
+      - non-Europeans
+      - the community
+      - Indian community
+
+  - name: Place
+    description: >-
+      A specific, named geographic location: a street address, building,
+      neighbourhood, city, province, or country that can be found on a map.
+    examples:
+      - District Six
+      - Buitencingle Street
+      - Cape Town
+      - Mauritius
+      - India
+      - Durban
+      - Woodstock
+      - Cape Flats
+      - Natal
+      - Hanover Street
+      - Constitution Street
+      - Gujarat
+      - Surat
+    anti_examples:
+      - the south
+      - the community
+      - the ghetto
+      - poor areas
+      - somewhere in India
+      - the Cape area
+
+  - name: Legislation
+    description: >-
+      A law, act, decree, or formal administrative or regulatory system with
+      legal force, enacted by a government or governing body.
+    examples:
+      - Group Areas Act
+      - Population Registration Act
+      - Law 3 of 1885
+      - Bantu Education Act
+      - Separate Amenities Act
+      - Coloured Advisory Council
+      - Mixed Marriages Act
+      - Immorality Act
+    anti_examples:
+      - apartheid
+      - racial policy
+      - segregation
+      - the system
+      - pass laws in general
+      - the government
+      - racial discrimination
+
+  - name: Publication
+    description: >-
+      A named newspaper, journal, book, pamphlet, or other published work
+      with a distinct title and established circulation or authorship.
+    examples:
+      - The Torch
+      - Indian Opinion
+      - The Cape Argus
+      - The Guardian
+      - The Awakening of a People
+      - 300 Years
+      - The Role of the Missionaries in Conquest
+      - Lest We Forget
+    anti_examples:
+      - a letter
+      - a speech
+      - correspondence
+      - a report
+      - an article
+      - a pamphlet distributed at a meeting
+
+  - name: Concept
+    description: >-
+      An abstract idea, social category, racial classification, ideological
+      position, or cultural practice that shapes the text's argument but is
+      not a physical or organizational entity.
+    examples:
+      - non-collaboration
+      - boycott weapon
+      - Herrenvolk
+      - Jaht
+      - Quisling
+      - Coloured identity
+      - Unity Movement tradition
+      - Coloured
+      - Cape Malay
+      - non-European
+    anti_examples:
+      - NEUM
+      - District Six
+      - apartheid law
+      - the government
+      - Group Areas Act

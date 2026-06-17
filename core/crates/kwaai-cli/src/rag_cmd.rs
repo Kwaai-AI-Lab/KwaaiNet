@@ -20,7 +20,7 @@ use kwaai_rag::{
     seed_json,
 };
 
-use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs, TimelineAction};
+use crate::cli::{CacheAction, DreamAction, GraphAction, RagAction, RagArgs, SchemaAction, TimelineAction};
 use crate::config::{KwaaiNetConfig, RagConfig};
 use crate::display::*;
 
@@ -646,6 +646,9 @@ async fn cmd_ingest(
                 ec_refine_threshold: 0.0,
                 ec_refine_budget: 50,
                 ec_refine_only: false,
+                validation_model: None,
+                validation_confidence_floor: 0.7,
+                validation_budget: 200,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -1901,6 +1904,9 @@ async fn cmd_rebuild(
                 ec_refine_threshold: 0.0,
                 ec_refine_budget: 50,
                 ec_refine_only: false,
+                validation_model: None,
+                validation_floor: 0.7,
+                validation_budget: 200,
             },
             kb.clone(),
         )
@@ -2219,6 +2225,9 @@ async fn run_sync_pass(
                     ec_refine_threshold: 0.0,
                     ec_refine_budget: 50,
                     ec_refine_only: false,
+                    validation_model: None,
+                    validation_confidence_floor: 0.7,
+                    validation_budget: 200,
                 });
             }
         }
@@ -2425,6 +2434,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 ec_refine_threshold,
                 ec_refine_budget,
                 ec_refine_only,
+                validation_model,
+                validation_floor,
+                validation_budget,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2559,6 +2571,12 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     kwaai_rag::gliner::GliNERClient::new(url, 0.4)
                 });
 
+                if validation_model.is_some() {
+                    println!("  Validation model:  {}", validation_model.as_deref().unwrap());
+                    println!("  Validation floor:  {validation_floor:.2}");
+                    println!("  Validation budget: {validation_budget}");
+                }
+
                 let graph_cfg = kwaai_rag::ingestion::GraphIngestConfig {
                     store: store.clone(),
                     inference_url: infer_url,
@@ -2574,6 +2592,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     ec_refine_threshold,
                     ec_refine_budget,
                     ec_refine_only,
+                    validation_model,
+                    validation_confidence_floor: validation_floor,
+                    validation_budget,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
@@ -4094,6 +4115,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
             GraphAction::Timeline { action } => {
                 return cmd_graph_timeline(action, &kb).await;
+            }
+
+            GraphAction::Schema { action } => {
+                return cmd_graph_schema(action, &kb).await;
             }
 
             GraphAction::Unmerge {
@@ -7998,6 +8023,73 @@ async fn cmd_summarize(
             nodes.len(),
             elapsed
         ));
+        Ok(())
+    }
+}
+
+async fn cmd_graph_schema(action: SchemaAction, kb: &str) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        let (rag_cfg, tenant_id) = load_rag_config_for(kb)?;
+
+        match action {
+            SchemaAction::Set { file, kb: _ } => {
+                #[derive(serde::Deserialize)]
+                struct SchemaFile {
+                    entity_type_schemas: Vec<kwaai_rag::graph::KBEntityTypeSchema>,
+                }
+                let contents = std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading schema file {}", file.display()))?;
+                let parsed: SchemaFile = serde_yaml::from_str(&contents)
+                    .with_context(|| format!("parsing YAML schema file {}", file.display()))?;
+                let schemas = parsed.entity_type_schemas;
+                let mut store =
+                    kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                        .context("opening graph store")?;
+                let count = schemas.len();
+                store
+                    .set_kb_entity_schemas(&schemas)
+                    .context("storing entity schemas")?;
+                print_success(&format!(
+                    "Stored {count} entity type schema(s) for KB '{kb}'"
+                ));
+                for s in &schemas {
+                    println!(
+                        "  {:16} — {} examples, {} anti-examples",
+                        s.name,
+                        s.examples.len(),
+                        s.anti_examples.len()
+                    );
+                }
+            }
+
+            SchemaAction::Show { kb: _ } => {
+                let store = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                let schemas = store.get_kb_entity_schemas();
+                if schemas.is_empty() {
+                    print_warning(&format!("No entity schemas stored for KB '{kb}'."));
+                    println!("  Load with: kwaainet rag graph schema set --kb {kb} --file <path>");
+                } else {
+                    print_box_header(&format!("Entity Type Schemas ({})", kb));
+                    for s in &schemas {
+                        println!("  Type:          {}", s.name);
+                        println!("  Description:   {}", s.description.trim());
+                        if !s.examples.is_empty() {
+                            println!("  Examples:      {}", s.examples.join(", "));
+                        }
+                        if !s.anti_examples.is_empty() {
+                            println!("  Anti-examples: {}", s.anti_examples.join(", "));
+                        }
+                        println!();
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
