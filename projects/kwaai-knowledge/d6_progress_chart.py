@@ -78,6 +78,7 @@ MILESTONES = [
     ("M63", 76.0, 5, None),
     ("M64", 75.6, 5, None),
     ("M65", 72.9, 5, None),
+    ("M66", 77.3, 5, "HiRAG\ninjection"),
 ]
 
 # Eval set change: from 20q/116kw to 40q/225kw between M35 and M42
