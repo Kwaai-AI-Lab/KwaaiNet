@@ -604,6 +604,21 @@ persons:
       African Convention (AAC), the Teachers League of South Africa (TLSA),
       and the New Era Fellowship (NEF). Yousuf Rassool was an active member.
 
+  - canonical: "Cape Coloured political organisations"
+    entity_type: Organization
+    aliases:
+      - "political organisations Cape Coloured"
+      - "organisations active in the Cape Coloured community"
+      - "political organisations in the Cape"
+    description: >-
+      The main political organisations active in the Cape Coloured community
+      during Yousuf Rassool's lifetime were the Non-European Unity Movement
+      (NEUM), the Teachers League of South Africa (TLSA), the New Era
+      Fellowship (NEF), and the All African Convention (AAC) — collectively
+      known as the Unity Movement tradition. They opposed apartheid through
+      non-collaboration with government racial structures. Yousuf Rassool was
+      actively involved in all four organisations.
+
   - canonical: "Teachers League of South Africa"
     entity_type: Organization
     aliases:
