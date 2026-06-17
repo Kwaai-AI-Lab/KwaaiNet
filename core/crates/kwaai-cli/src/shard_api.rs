@@ -795,7 +795,11 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
                 circuit_id
             ));
         }
-        println!("  Circuit:      {} ({} nodes, skipping DHT)", circuit.id, entries.len());
+        println!(
+            "  Circuit:      {} ({} nodes, skipping DHT)",
+            circuit.id,
+            entries.len()
+        );
         entries
     } else {
         use std::io::Write as _;

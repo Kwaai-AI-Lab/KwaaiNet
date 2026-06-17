@@ -1076,9 +1076,7 @@ async fn cmd_query(
                             };
                             let retrieval_query: std::borrow::Cow<str> = if is_grandparent {
                                 kwaai_rag::retriever::resolve_relative_entity_name(&query, &graph)
-                                    .map(|name| {
-                                        std::borrow::Cow::Owned(format!("Who was {name}?"))
-                                    })
+                                    .map(|name| std::borrow::Cow::Owned(format!("Who was {name}?")))
                                     .unwrap_or(std::borrow::Cow::Borrowed(&query))
                             } else {
                                 std::borrow::Cow::Borrowed(&query)
@@ -7017,9 +7015,7 @@ async fn cmd_eval(
                     };
                     let retrieval_query: std::borrow::Cow<str> = if is_grandparent {
                         kwaai_rag::retriever::resolve_relative_entity_name(&q.question, &graph)
-                            .map(|name| {
-                                std::borrow::Cow::Owned(format!("Who was {name}?"))
-                            })
+                            .map(|name| std::borrow::Cow::Owned(format!("Who was {name}?")))
                             .unwrap_or(std::borrow::Cow::Borrowed(q.question.as_str()))
                     } else {
                         std::borrow::Cow::Borrowed(q.question.as_str())
@@ -7285,9 +7281,7 @@ async fn cmd_eval(
                 format!("{hits_s}/{tot_s}")
             };
             if effective_mode == "iterative" {
-                println!(
-                    "         → {kw_display} keywords{judge_str}  {latency_ms}ms"
-                );
+                println!("         → {kw_display} keywords{judge_str}  {latency_ms}ms");
             } else {
                 println!("{kw_display} keywords{judge_str}  {latency_ms}ms");
             }
@@ -7830,8 +7824,7 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 workers,
                 reset,
             } => {
-                let raw_infer_url =
-                    inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
+                let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
 
                 // Resolve p2p:// / mux:// URLs to local HTTP proxies.
                 let infer_url = {
@@ -7848,8 +7841,7 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                             .context("p2p daemon not running — start with `kwaainet start`")?,
                     );
                     let (mut resolved, _handles) =
-                        crate::ollama_proxy::resolve_inference_urls(&[raw_infer_url], &p2p)
-                            .await?;
+                        crate::ollama_proxy::resolve_inference_urls(&[raw_infer_url], &p2p).await?;
                     resolved.remove(0)
                 };
 
