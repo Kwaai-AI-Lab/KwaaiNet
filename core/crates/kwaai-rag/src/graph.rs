@@ -726,18 +726,24 @@ impl GraphStore {
                 // Recompute description from merged fields, then pick the richest candidate.
                 // Computed-from-fields was previously always preferred, but that caused short
                 // "Name — occupation: X" strings to overwrite rich YAML-seeded prose descriptions.
-                // Rule: pick the longest non-empty candidate across computed, incoming, existing.
-                let computed =
-                    description_from_fields(&existing.name, &existing.entity_type, &merged_fields);
-                let best_desc = [
-                    computed,
-                    node.description.clone(),
-                    existing.description.clone(),
-                ]
-                .into_iter()
-                .filter(|d| !d.is_empty())
-                .max_by_key(|d| d.len())
-                .unwrap_or_default();
+                // Rule: if the incoming node is ground-truth (extraction_confidence == 1.0, i.e.
+                // seeded from YAML) and has a non-empty description, always prefer it — the YAML
+                // author is authoritative. Otherwise pick the longest non-empty candidate.
+                let best_desc = if node.extraction_confidence >= 1.0 && !node.description.is_empty()
+                {
+                    node.description.clone()
+                } else {
+                    let computed = description_from_fields(
+                        &existing.name,
+                        &existing.entity_type,
+                        &merged_fields,
+                    );
+                    [computed, node.description.clone(), existing.description.clone()]
+                        .into_iter()
+                        .filter(|d| !d.is_empty())
+                        .max_by_key(|d| d.len())
+                        .unwrap_or_default()
+                };
                 let best_emb = if best_desc == existing.description {
                     existing.embedding.clone()
                 } else {
