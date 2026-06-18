@@ -4348,7 +4348,11 @@ impl GraphStore {
         // This is a no-op for entities whose fields are empty (prose-only descriptions).
         for id in ids {
             if let Some(node) = self.nodes.get_mut(id) {
-                if !node.fields.is_empty() {
+                // Do NOT overwrite YAML-seeded descriptions (extraction_confidence == 1.0).
+                // Reembed uses description_from_fields() to refresh extraction-derived prose,
+                // but YAML seeds are authoritative ground-truth — overwriting them with short
+                // field-derived strings erases rich context that improves RAG accuracy.
+                if !node.fields.is_empty() && node.extraction_confidence < 1.0 {
                     let fresh =
                         description_from_fields(&node.name, &node.entity_type, &node.fields);
                     if !fresh.is_empty() {

@@ -14,6 +14,8 @@ persons:
     gender: "Male"
     aliases:
       - "J.M.H. Gool"
+      - "J. M. H. Gool"
+      - "J M H Gool"
       - "JMH Gool"
       - "J. Gool"
       - "Joosub Gool"
@@ -26,11 +28,13 @@ persons:
       - "my grandpa"
       - "my grandfather"
       - "Grandpa Gool"
+      - "Grandpa J M H Gool"
+      - "Grandpa J.M.H. Gool"
       - "Gool"
     description: >-
-      Haji Joosub Maulvi Hamid Gool was the author's maternal grandfather, a
-      prosperous merchant from India who arrived at the Cape via Mauritius in
-      1884. His father was a Pushto-speaking Maulvi from the Province of Swat
+      J.M.H. Gool (Haji Joosub Maulvi Hamid Gool) was the author's maternal
+      grandfather, a prosperous merchant from India who arrived at the Cape via
+      Mauritius in 1884. His father was a Pushto-speaking Maulvi from the Province of Swat
       who had moved to Rander in Gujarat. Joosub left behind his
       eleven-year-old bride in India and came to Cape Town where he established
       J.M.H. Gool & Co. at 25 Church Street, supplying spices and becoming a
@@ -38,7 +42,8 @@ persons:
       founded the Hanaffi Quwatul Islam Mosque in Loop Street (completed 1898),
       built the grand 13-room mansion at 7 Buitencingle Street, and knew
       Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw
-      personally. His
+      personally. The Indian Opinion (March 1914) reported on Gandhi's visits
+      to the Gool mansion at Buitencingle. His
       children included Ayesha (Lallie), Mohamed Saaid, and Zohra by his
       first wife Bibi; and Abdul Hamid (B.G.), Goolam, Jane, Minnie, Fatima,
       Mariam, Zobeida, and Mohammed Hanief by his second wife Wahida.
@@ -232,8 +237,10 @@ persons:
     gender: "Male"
     aliases:
       - "Joe Rassool"
+      - "Yousuf Joe Rassool"
       - "Yousuf (Joe) Rassool"
       - "Yusuf Rassool"
+      - "Yousuf J. Rassool"
       - "Y.S. Rassool"
       - "Joe"
       - "I"
@@ -254,7 +261,8 @@ persons:
       representing Western Province in the non-European cricket structure.
       He is married to Professor Nazima Rassool and has three children:
       Feyruz, Reza, and Zarina, and six grandchildren: Joseph, Samuel,
-      Alexander, Leonardo, Dylan, and Lewis.
+      Alexander, Leonardo, Dylan, and Lewis. His siblings are Abdul (Doolie),
+      Fazil, Zain, Rasheda, Berina, Yasmin (Jessie), and Nasim Rassool.
 
   - canonical: "Nazima Rassool"
     gender: "Female"

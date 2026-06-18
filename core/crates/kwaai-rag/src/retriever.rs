@@ -703,14 +703,19 @@ pub(crate) fn inject_entity_descriptions(
                         .count();
                     // Raw path: "J.M.H. Gool" → ["j.m.h", "gool"] — catches abbreviated forms
                     // that normalize_name breaks into single chars below the len>=3 floor.
-                    let raw_count = n
+                    // Abbreviations (tokens containing dots, e.g. "j.m.h") count double
+                    // because they are far more specific than common geographic words like
+                    // "cape" or "town" — prevents "Cape Town-Woodstock P.T.A" from tying
+                    // "Haji Joosub" for queries like "When did J.M.H. Gool arrive…?".
+                    let raw_count: usize = n
                         .split_whitespace()
                         .map(|t| {
                             t.trim_matches(|c: char| !c.is_alphanumeric())
                                 .to_lowercase()
                         })
                         .filter(|t| t.len() >= 2 && q_raw_tokens.contains(t.as_str()))
-                        .count();
+                        .map(|t| if t.contains('.') { 2 } else { 1 })
+                        .sum();
                     norm_count.max(raw_count)
                 })
                 .max()
