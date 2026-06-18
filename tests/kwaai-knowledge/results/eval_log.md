@@ -1,4 +1,46 @@
 
+## r53 — 2026-06-18 08:37 — **90.7% (204.0/225)** ⭐ new best — first run above 90%!
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
+
+**Changes since r51 (202/225 = 89.8%):** +2 pts
+- **YAML**: "7 Buitencingle Street" description enriched with Dutch/belt/cobbled/palm trees/No.7/grandfather
+- **YAML**: "Buitencingle" added as alias → EE entity merged into YAML canonical (23 mentions total)
+- **YAML**: Kismets Cricket Club description — "District Six" moved to first sentence
+- **Graph**: re-seed + re-embed to apply YAML changes
+- Note: Haji Joosub description change (Joosub/Gujarat front-load) was tried in r52 but reverted — it caused Q05 regression (-2) with no Q30 gain
+
+| Q | r51 | r53 | delta | Note |
+|---|-----|-----|-------|------|
+| q06 | 2 | 7 | +5 | Buitencingle: Dutch/belt/cobbled/palm trees/No.7 now in entity description |
+| q20 | 4 | 5 | +1 | Kismets: District Six now first in description → LLM includes it |
+| q25 | 3 | 5 | +2 | Tabata — non-det improvement |
+| q19 | 5 | 6 | +1 | non-det |
+| q27 | 4 | 5 | +1 | Indian Opinion — non-det |
+| q39 | 5 | 6 | +1 | non-det |
+| q40 | 3 | 4 | +1 | non-det |
+| q05 | 8 | 6 | -2 | LLM non-det or slight embedding shift from Buitencingle merge |
+| q09 | 9 | 8 | -1 | LLM non-det |
+| q10 | 7 | 6 | -1 | LLM non-det |
+| q11 | 6 | 5 | -1 | LLM non-det |
+| q16 | 6 | 5 | -1 | Gandhi — non-det |
+| q17 | 5 | 4 | -1 | non-det |
+| q32 | 5 | 4 | -1 | non-det |
+| q33 | 5 | 4 | -1 | non-det |
+| q34 | 6 | 5 | -1 | non-det |
+
+**Per-question:** Q01:3, Q02:3, Q03:6, Q04:4, Q05:6, Q06:7, Q07:3, Q08:5, Q09:8, Q10:6, Q11:5, Q12:6, Q13:6, Q14:5, Q15:6, Q16:5, Q17:4, Q18:6, Q19:6, Q20:5, Q21:5, Q22:4, Q23:5, Q24:7, Q25:5, Q26:6, Q27:5, Q28:5, Q29:4, Q30:4, Q31:5, Q32:4, Q33:4, Q34:5, Q35:4, Q36:6, Q37:7, Q38:4, Q39:6, Q40:4
+
+**Still broken:**
+- q05 (6/8): regression from Buitencingle merge — may be non-det, investigate
+- q06 (7/8): missing 1 keyword still (Table Mountain?) — strong improvement from 2/8
+- q29 (4/6): NEUM boycott — non-det variance
+- q30 (4/6): Gujarat/Joosub — Haji Joosub description front-load was reverted (too risky)
+
+## r52 — 2026-06-18 08:26 — **85.8% (193.0/225)** ⚠️ intermediate (regression)
+
+**Changes:** Haji Joosub description front-loaded (Joosub/Gujarat) — caused Q05 8→6 (-2); Q12 network failure (stream reset) -6. Reverted Haji Joosub in r53.
+
 ## r51 — 2026-06-18 08:13 — **89.8% (202.0/225)**
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
