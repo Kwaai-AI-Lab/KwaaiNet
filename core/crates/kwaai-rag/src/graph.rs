@@ -385,10 +385,6 @@ pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static s
             ("datePublished", "year or date range of publication"),
             ("frequency", "daily / weekly / pamphlet / one-off"),
         ],
-        "Concept" => &[
-            ("definition", "short definition of the concept"),
-            ("domain", "social / political / religious / other"),
-        ],
         _ => &[],
     }
 }

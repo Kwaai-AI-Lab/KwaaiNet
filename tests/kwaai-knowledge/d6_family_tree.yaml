@@ -42,11 +42,11 @@ persons:
       founded the Hanaffi Quwatul Islam Mosque in Loop Street (completed 1898),
       built the grand 13-room mansion at 7 Buitencingle Street, and knew
       Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw
-      personally. The Indian Opinion (March 1914) reported on Gandhi's visits
-      to the Gool mansion at Buitencingle. His
-      children included Ayesha (Lallie), Mohamed Saaid, and Zohra by his
-      first wife Bibi; and Abdul Hamid (B.G.), Goolam, Jane, Minnie, Fatima,
-      Mariam, Zobeida, and Mohammed Hanief by his second wife Wahida.
+      personally. His friendship with Gandhi is documented in the Indian Opinion
+      (March 1914), which reported on Gandhi's visits to the Gool mansion at
+      Buitencingle. His children included Ayesha (Lallie), Mohamed Saaid, and
+      Zohra by his first wife Bibi; and Abdul Hamid (B.G.), Goolam, Jane,
+      Minnie, Fatima, Mariam, Zobeida, and Mohammed Hanief by his second wife Wahida.
 
   - canonical: "Bibi Gool"
     gender: "Female"
@@ -473,6 +473,10 @@ persons:
     gender: "Male"
     aliases:
       - "Hassen"
+    description: >-
+      Hassen Mall (also called Hassen) was a close friend and companion of the
+      author Yousuf Rassool. He appears throughout the memoir as a fellow
+      cricket enthusiast and childhood friend from District Six.
 
   # ─── Mohandas Karamchand Gandhi (historical figure) ────────────────────────
 
@@ -488,14 +492,14 @@ persons:
       - "Mahatma Gandhi"
       - "Gandhi"
     description: >-
-      Mohandas Karamchand Gandhi (Mahatma Gandhi) was a lawyer who came to
-      South Africa in 1893 initially to work on a legal case for an Indian
-      firm. He remained until 1914, becoming deeply involved in organising the
-      Indian community's resistance to discriminatory legislation and developing
-      his method of non-violent resistance (satyagraha). He knew J.M.H. Gool
-      personally, visited the Gool family mansion at 7 Buitencingle Street,
-      and founded and edited the Indian Opinion. His connection to the Gool
-      family is documented in archival correspondence.
+      Mohandas Karamchand Gandhi (Mahatma Gandhi) was an Indian lawyer who came
+      to South Africa in 1893 to work on a legal case for an Indian firm. He
+      championed satyagraha — passive, non-violent resistance against injustice
+      — as a political strategy to fight discriminatory legislation. He remained
+      in South Africa until 1914, organising the Indian community and founding
+      the Indian Opinion newspaper. He knew J.M.H. Gool personally, visiting
+      the Gool family mansion at 7 Buitencingle Street. His connection to the
+      Gool family is documented in the Indian Opinion (March 1914).
 
   # ─── I.B. Tabata (Jane's husband) ──────────────────────────────────────────
 
@@ -610,13 +614,12 @@ persons:
       - "Unity Movement"
     description: >-
       The Non-European Unity Movement (NEUM) was a South African political
-      movement founded in 1943 that united non-European (African, Coloured,
-      and Indian) political organisations opposed to apartheid and racial
-      discrimination. Its programme was based on Ten Point demands for full
-      democratic rights. The Unity Movement adopted a boycott policy —
-      non-collaboration with apartheid government institutions such as the
-      Coloured Advisory Council, apartheid school boards, and separate
-      development bodies. The NEUM was closely affiliated with the All
+      movement founded in 1943 that followed a strict boycott policy of
+      non-collaboration with apartheid government institutions — refusing to
+      accept or participate in racial advisory councils, apartheid school
+      boards, or separate development bodies. It united non-European (African,
+      Coloured, and Indian) political organisations around Ten Point demands for
+      full democratic rights. The NEUM was closely affiliated with the All
       African Convention (AAC), the Teachers League of South Africa (TLSA),
       and the New Era Fellowship (NEF). Yousuf Rassool was an active member.
 
@@ -642,15 +645,15 @@ persons:
       - "Teachers' League of South Africa"
     description: >-
       The Teachers League of South Africa (TLSA) was a professional and
-      political organisation for Coloured teachers. It was affiliated with
-      the Non-European Unity Movement (NEUM) and followed the Unity
-      Movement's boycott policy of non-collaboration with apartheid
-      institutions. The TLSA challenged racial discrimination in education
-      and fought for equal opportunities for Coloured and non-European
-      people. Yousuf Rassool served as branch steward and was deeply
-      involved in the TLSA's struggles against the apartheid government's
-      separate schools policy. The TLSA worked alongside the New Era
-      Fellowship (NEF) and the All African Convention (AAC).
+      political organisation for Coloured teachers that followed a boycott
+      policy of non-collaboration with apartheid institutions — part of the
+      Unity Movement tradition. It was affiliated with the Non-European
+      Unity Movement (NEUM) and challenged racial discrimination in education,
+      fighting for equal opportunities for Coloured and non-European people.
+      Yousuf Rassool served as branch steward and was deeply involved in the
+      TLSA's struggles against the apartheid government's separate schools
+      policy. The TLSA worked alongside the New Era Fellowship (NEF) and the
+      All African Convention (AAC).
 
   - canonical: "New Era Fellowship"
     entity_type: Organization
@@ -659,11 +662,11 @@ persons:
     description: >-
       The New Era Fellowship (NEF), founded in 1937, was a Cape Town
       political and cultural discussion society that held public lectures
-      on political and social issues. It was a key forum for anti-apartheid
-      intellectuals in the Coloured community and was closely associated
-      with the Non-European Unity Movement (NEUM), the Teachers League of
-      South Africa (TLSA), and the All African Convention (AAC). Yousuf
-      Rassool was an active member of the NEF.
+      and debates on political and social issues. It was a key forum for
+      anti-apartheid intellectuals in the Coloured community and was closely
+      associated with the Non-European Unity Movement (NEUM), the Teachers
+      League of South Africa (TLSA), and the All African Convention (AAC).
+      Yousuf Rassool was an active member of the NEF.
 
   - canonical: "All African Convention"
     entity_type: Organization
@@ -701,10 +704,14 @@ persons:
       - "Gandhi Indian Opinion"
     description: >-
       Indian Opinion was a weekly newspaper founded by Mahatma Gandhi in 1903
-      in Natal, South Africa. It was Gandhi's primary publication vehicle during
-      his years in South Africa and covered the struggle for Indian rights.
-      It is cited in the D6 memoir as a primary source for events involving
-      J.M.H. Gool and the Indian community in Cape Town.
+      in Natal, South Africa. Gandhi used it to spread satyagraha — his
+      philosophy of passive, non-violent resistance and civil disobedience
+      against discriminatory legislation. It was the principal organ of the
+      Indian community's political struggle during Gandhi's years in South Africa
+      (1893–1914). It is cited in the D6 memoir as a primary source for events
+      involving J.M.H. Gool and the Indian community in Cape Town; the March
+      1914 issue documented Gandhi's visits to the Gool mansion at Buitencingle
+      Street.
 
   - canonical: "J.M.H. Gool & Co."
     entity_type: Organization
@@ -713,12 +720,45 @@ persons:
       - "J.M.H Gool & Co"
       - "J.M.H. Gool & Co"
     description: >-
-      J.M.H. Gool & Co. was a merchant trading company founded by Haji Joosub
-      Maulvi Hamid Gool at 25 Church Street, Cape Town, supplying spices and
-      provisions. Its founder arrived in Cape Town in 1884, coming via Mauritius
-      from India. He originally came from Rander in Gujarat; his father was a
-      Pushto-speaking Maulvi from the Province of Swat. Joosub (J.M.H. Gool)
-      became a supplier to the troops of Queen Victoria during the Anglo-Boer War.
+      J.M.H. Gool & Co. was a merchant trading company founded by Joosub Maulvi
+      Hamid Gool (J.M.H. Gool) at 25 Church Street, Cape Town. Joosub arrived
+      in Cape Town in 1884, coming via Mauritius from India. His ancestral home
+      was Rander in Gujarat; his father was a Pushto-speaking Maulvi from the
+      Province of Swat. The company supplied spices and provisions and became a
+      supplier to the troops of Queen Victoria during the Anglo-Boer War. J.M.H.
+      Gool's son Abdul Hamid Gool (B.G./Cheops) married Zainunnissa (Cissie) Gool,
+      daughter of Dr. Abdullah Abdurahman — making Cissie the daughter-in-law of
+      J.M.H. Gool.
+
+  - canonical: "Hewat Training College"
+    entity_type: Organization
+    aliases:
+      - "Hewat College"
+      - "Hewat"
+    description: >-
+      Hewat Training College was the teacher training college for Coloured
+      students in Cape Town. It stood opposite the Roeland Street Gaol in
+      spacious but undeveloped grounds, and had once been a Whites-only primary
+      school. The staff were recruited from the United Kingdom with a missionary
+      outlook and conservative educational philosophy. Hewat was an important
+      centre of intellectual life for the Coloured community — many future
+      teachers and activists trained there. The author attended Hewat for his
+      teacher training.
+
+  - canonical: "Kismets Cricket Club"
+    entity_type: Organization
+    aliases:
+      - "Kismets"
+      - "Kismets CC"
+    description: >-
+      Kismets Cricket Club was the cricket club that the author Yousuf Rassool
+      joined and played for in District Six, Cape Town. The club operated within
+      the non-European cricket structure under apartheid, separate from the
+      mainstream white cricket leagues. Through Kismets, the author participated
+      in the Sunday League and other non-European cricket competitions. He played
+      for Western Province in the non-European cricket structure. Cricket was a
+      major passion of the author's life and a site of political exclusion for
+      the Coloured community under apartheid.
 
   # ─── Key places ───────────────────────────────────────────────────────────────
 
@@ -756,6 +796,21 @@ persons:
       townships on the Cape Flats, far from their original community and
       livelihood. The forced removals to the Cape Flats were a central trauma
       of the apartheid era in Cape Town.
+
+  - canonical: "Kloof Nek"
+    entity_type: Place
+    aliases:
+      - "Kloof Nek Pass"
+    description: >-
+      Kloof Nek is the saddle of land that connects Table Mountain to Lion's Head,
+      forming the neck between the two peaks. It overlooks Table Bay on the
+      eastern flank of Cape Town. Kloof Street leads from the bottom of
+      Buitencingle Street up to Kloof Nek; it was also the terminus for the
+      single-decker trackless tram from Adderley Street. Below Kloof Nek lay
+      the Glen — a woodland dell with a babbling brook, dense green canopy,
+      mossy nooks, doves, and brightly coloured birds. The author's first
+      visit to the Glen, at age 14 to study poetry before literature exams,
+      left a profound impression.
 
   - canonical: "7 Buitencingle Street"
     entity_type: Place

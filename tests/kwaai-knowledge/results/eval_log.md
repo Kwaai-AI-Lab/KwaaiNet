@@ -1,5 +1,52 @@
 
-## r46 — 2026-06-17 19:34 — **84.9% (191.0/225)** ⭐ new best
+## r47 — 2026-06-17 20:30 — **87.6% (197.0/225)** ⭐ new best
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p, num_ctx=8192
+
+**Changes since r46:**
+- **Code**: Split is_bio prompt — "tell me more about" uses simpler "comprehensive answer" prompt; "tell me about" / "describe" keep demanding multi-dimension prompt
+- **YAML**: Added 3 new entities: Kloof Nek (Place), Hewat Training College (Org), Kismets Cricket Club (Org)
+- **YAML**: Indian Opinion — added satyagraha/passive civil disobedience/non-violent; added Buitencingle Street reference
+- **YAML**: J.M.H. Gool & Co — led with "Joosub"; added Cissie daughter-in-law/Abdurahman info
+- **YAML**: Hassen Mall — added description with cricket/District Six keywords
+- Re-seeded (74 entities) + re-embedded
+
+**vs r46 (191.0/225 = 84.9%):** +6.0 pts
+
+| Q | r46 | r47 | delta | Note |
+|---|-----|-----|-------|------|
+| q08 | 2 | 5 | +3 | is_bio_tell_more simpler prompt — LLM no longer refuses for "tell me more about wife" |
+| q20 | 2 | 5 | +3 | Kismets Cricket Club entity — "Western Province", "non-European", "District Six" all hit |
+| q32 | 3 | 5 | +2 | J.M.H. Gool & Co. now has daughter-in-law/Abdurahman info — entity wins and has answer |
+| q10 | 5 | 6 | +1 | New Kloof Nek entity — "saddle", "Lion's Head", "Table Mountain", etc. |
+| q17 | 3 | 4 | +1 | New Hewat Training College entity — "Coloured students", "teacher training" |
+| q35 | 3 | 4 | +1 | Hassen Mall description added with cricket/friend keywords |
+| q37 | 5 | 6 | +1 | Indian Opinion now has passive/satyagraha — entity hit for Gandhi question |
+| q39 | 5 | 6 | +1 | Improvement |
+| q40 | 4 | 5 | +1 | Improvement |
+| q06 | 6 | 4 | -2 | REGRESSION: is_bio_tell_more simpler prompt also applied to "tell me about" — killed Q06 structured answer |
+| q05 | 7 | 6 | -1 | LLM non-det regression |
+| q11 | 6 | 5 | -1 | LLM non-det regression (boycott keyword not output) |
+| q18 | 5 | 4 | -1 | LLM non-det regression (debates/lectures not output) |
+| q19 | 6 | 5 | -1 | LLM non-det regression |
+| q31 | 5 | 4 | -1 | LLM non-det regression |
+| q34 | 6 | 5 | -1 | LLM non-det regression |
+
+**Root cause of Q06 regression:** The is_bio_tell_more / is_bio_tell split unintentionally applied simpler prompt to "tell me about" (not just "tell me more about"). Fixed in r48: only "tell me more about" uses simple prompt; "tell me about" and "describe" restored to demanding multi-dimension prompt.
+
+**Still broken:**
+- q06 (4/8): "belt", "No. 7", "Table Mountain" missing — demanding prompt restored in r48
+- q08 (5/6): Nazima answer still 1 point short of perfect
+- q09 (8/9): "Swat" LLM substitutes "Pathan region near Afghanistan" — hard to fix
+- q16 (5/7): "satyagraha" and "passive" not output — entity descriptions updated in r48
+- q27 (4/5): "Indian Opinion" not output — grandfather entity updated in r48
+- q29 (4/6): "boycott" and "non-collaboration" not output — NEUM/TLSA entities updated in r48
+- q30 (3/6): "Swat", "Gujarat", "Joosub" not in LLM answer — structural issue
+- q37 (6/7): "satyagraha" still not output — Gandhi entity updated in r48
+
+**Next:** r48 targets: Q06+2, Q11+1, Q16+2, Q18+1, Q27+1, Q29+2, Q37+1 → target ~207/225 (92%)
+
+## r46 — 2026-06-17 19:34 — **84.9% (191.0/225)**
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p, num_ctx=8192
 

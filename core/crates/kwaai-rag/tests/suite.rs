@@ -917,7 +917,7 @@ fn entity_types_list_contains_all_expected() {
             expected
         );
     }
-    assert_eq!(ENTITY_TYPES.len(), 15);
+    assert_eq!(ENTITY_TYPES.len(), 17);
 }
 
 #[test]

@@ -7154,21 +7154,30 @@ async fn cmd_eval(
             // ("what organisations…") so the LLM lists ALL entities rather than 1-2.
             let answer_question: std::borrow::Cow<str> = if biographical_expansion {
                 let q_lower = q.question.to_lowercase();
-                let is_bio = q_lower.starts_with("who was ")
+                // "who was/is/were" + "tell me about" + "describe" → demanding multi-dimension prompt.
+                // "tell me more about" → simpler prompt (avoids LLM refusal when some dimensions
+                // are absent, e.g. "Tell me more about the author's wife").
+                let is_bio_who = q_lower.starts_with("who was ")
                     || q_lower.starts_with("who is ")
-                    || q_lower.starts_with("who were ")
-                    || q_lower.starts_with("tell me more about ")
-                    || q_lower.starts_with("tell me about ")
+                    || q_lower.starts_with("who were ");
+                let is_bio_tell = q_lower.starts_with("tell me about ")
                     || q_lower.starts_with("describe ");
+                let is_bio_tell_more = q_lower.starts_with("tell me more about ");
                 let is_enum = q_lower.contains("organisation")
                     || q_lower.contains("organization")
                     || q_lower.contains("what political")
                     || q_lower.contains("which organisation")
                     || q_lower.contains("which organization");
-                if is_bio {
+                if is_bio_who || is_bio_tell {
                     std::borrow::Cow::Owned(format!(
                         "{}\n\nPlease give a detailed answer covering background, \
                          origins, family connections, role, and historical significance.",
+                        q.question
+                    ))
+                } else if is_bio_tell_more {
+                    std::borrow::Cow::Owned(format!(
+                        "{}\n\nPlease provide a comprehensive answer based on all \
+                         available information in the provided sources.",
                         q.question
                     ))
                 } else if is_enum {
