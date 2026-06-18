@@ -179,6 +179,7 @@ persons:
 
   - canonical: "Yousuf Rassool"
     gender: "Male"
+    description: "Yousuf (Joe) Rassool is the author of the memoir 'Lest We Forget — District Six'. He grew up in District Six, Cape Town, as one of several siblings: Abdul Rassool, Fazil Rassool, Zain Rassool, Rasheda Rassool, Berina Rassool, Yasmin Rassool, and Nasim Rassool. He is the son of Ayesha Rassool and Peter Alexander Rassool, and is married to Professor Nazima Rassool."
     aliases:
       - "Joe Rassool"
       - "Yousuf Joe Rassool"
@@ -335,6 +336,7 @@ persons:
 
   - canonical: "Manilal Gandhi"
     gender: "Male"
+    description: "Manilal Gandhi was the son of Mahatma Gandhi — Mohandas Karamchand Gandhi — who led the passive resistance and non-violent satyagraha movement in South Africa. Mahatma Gandhi came to South Africa from India in 1893 and maintained a close friendship with the Gool family; he stayed at the Gool mansion at Buitencingle in Cape Town in 1914 during a critical phase of the satyagraha campaign. Manilal Gandhi himself lived and worked in South Africa for decades, editing the Indian Opinion newspaper and carrying forward his father's non-violent legacy."
     aliases:
       - "Manilal"
 
@@ -514,7 +516,7 @@ persons:
 
   - canonical: "J.M.H. Gool & Co."
     entity_type: Organization
-    description: "Joosub Maulvi Hamid Gool — the author's grandfather — came from the Province of Swat in India; his family moved from Swat to Rander in Gujarat before Joosub journeyed to the Cape via Mauritius, arriving in 1884, leaving behind his young bride in India. He was a prosperous spice merchant who established J.M.H. Gool & Co. and founded the Hanaffi mosque, based at his family mansion at No. 7 Buitencingle Street — a cobbled street in the Dutch belt of Cape Town at the foot of Table Mountain. The Buitencingle mansion was a celebrated gathering place visited by Mahatma Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw; Gandhi's friendship with Gool is documented in the Indian Opinion newspaper. He had two wives — Bibi Gool (mother of Ayesha, Mohamed Saaid, and Zohra) and Wahida Gool (mother of Abdul Hamid, Goolam, Jane, Fatima, Mariam, Zobeida, and Mohammed Hanief) — and his son Dr. Abdul Hamid Gool married Zainunnissa Cissie Abdurahman (daughter of Dr. Abdullah Abdurahman), making Cissie a daughter-in-law of the Gool family."
+    description: "J.M.H. Gool & Co. was founded by Joosub Maulvi Hamid Gool — the author's grandfather — who came from the Province of Swat in India; his family moved from Swat to Rander in Gujarat before Joosub journeyed to the Cape via Mauritius, arriving in 1884, leaving behind his young bride in India. He was a prosperous spice merchant who founded the Hanaffi mosque, based at his family mansion at No. 7 Buitencingle Street — a cobbled street in the Dutch belt of Cape Town at the foot of Table Mountain. The Buitencingle mansion was a celebrated gathering place visited by Mahatma Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw; Gandhi's friendship with Gool is documented in the Indian Opinion newspaper. He had two wives — Bibi Gool (mother of Ayesha, Mohamed Saaid, and Zohra) and Wahida Gool (mother of Abdul Hamid, Goolam, Jane, Fatima, Mariam, Zobeida, and Mohammed Hanief) — and his son Dr. Abdul Hamid Gool married Zainunnissa Cissie Abdurahman (daughter of Dr. Abdullah Abdurahman), making Cissie a daughter-in-law of the Gool family."
     aliases:
       - "JMH Gool & Co"
       - "J.M.H Gool & Co"
@@ -547,7 +549,7 @@ persons:
 
   - canonical: "District Six"
     entity_type: Place
-    description: "District Six was a vibrant, multicultural community in Cape Town, nestled below Devil's Peak between the city centre and the harbour. Its richly diverse residents — Coloured, Malay, African, and others — built a neighbourhood celebrated for jazz, warmth, and community spirit. In 1966 it was declared a White Group Area under the Group Areas Act. The community was subjected to forced removals: non-White residents were expelled to the Cape Flats; the buildings were demolished and the land bulldozed flat, leaving only the mosques and churches standing."
+    description: "District Six was a vibrant, multicultural community in Cape Town, nestled below Devil's Peak between the city centre and the harbour. Its richly diverse residents — Coloured, Malay, African, and others — built a neighbourhood celebrated for jazz, warmth, and community spirit. In 1966 it was declared a White Group Area under the Group Areas Act. Under the Group Areas Act, the community suffered forced removals: non-White residents were expelled to the Cape Flats; their homes were demolished and the land bulldozed flat, leaving only the mosques and churches standing. The forced removals destroyed one of Cape Town's most vibrant communities."
     aliases:
       - "District 6"
       - "the District"

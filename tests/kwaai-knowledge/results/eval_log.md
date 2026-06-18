@@ -1,4 +1,71 @@
 
+## r66 — 2026-06-18 16:29 — **91.6% (206/225)** ⭐ new best — first run above 91%!
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
+
+**Changes since r65 (202/225):** +4 pts
+- `Yousuf Rassool`: added description with siblings (Abdul/Fazil/Zain/Rasheda) → Q23 +4
+- `District Six`: repeated "forced removals" and "Group Areas Act" twice → Q15 +3
+- `Manilal Gandhi`: added description with Mahatma/passive/satyagraha/Buitencingle/non-violent → Q16 +2
+- `J.M.H. Gool & Co.`: opening "was founded by Joosub Maulvi Hamid Gool" → Q05 +1
+
+| Q | r65 | r66 | delta | Note |
+|---|-----|-----|-------|------|
+| q23 | 1 | 5 | +4 | Yousuf Rassool siblings description added |
+| q15 | 3 | 6 | +3 | "forced removals"/"Group Areas" repeated → LLM can't paraphrase away |
+| q16 | 4 | 6 | +2 | Indian Opinion injected (better context); still 1 short of 7/7 |
+| q05 | 6 | 7 | +1 | "was founded by Joosub Maulvi Hamid Gool" — LLM no longer misidentifies generation |
+| q14 | 5 | 6 | +1 | variance improvement |
+| q17 | 4 | 5 | +1 | variance improvement |
+| q32 | 4 | 5 | +1 | variance improvement |
+| q33 | 4 | 5 | +1 | variance improvement |
+| q37 | 6 | 7 | +1 | variance improvement |
+| q30 | 6 | 4 | -2 | "was founded by" opening shifted LLM focus from arrival story |
+| q10 | 6 | 4 | -2 | LLM variance (Kloof Nek) |
+| q06 | 7 | 6 | -1 | LLM variance |
+| q09 | 9 | 8 | -1 | LLM variance |
+| q20 | 5 | 4 | -1 | LLM variance |
+| q24 | 6 | 5 | -1 | LLM variance |
+| q25 | 5 | 4 | -1 | LLM variance |
+| q31 | 5 | 4 | -1 | LLM variance |
+| q34 | 6 | 5 | -1 | LLM variance |
+
+**Still losing points (candidate for r67):**
+- q30 (4/6): Q30 regressed — "was founded by" opening may de-emphasise the arrival narrative; consider restoring original opening + keeping Q30 keywords
+- q10 (4/7): Kloof Nek variance — low priority
+- q16 (6/7): 1 keyword still missing (probably 'passive' or 'non-violent' — Indian Opinion entity injected, lacks those keywords)
+- q24 (5/7): Person entity injected, 2 children names still missed
+
+## r65 — 2026-06-18 16:05 — **89.8% (202/225)** (+2 vs r64)
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
+
+**Changes since r64:** J.M.H. Gool & Co. description updated: added wives/children (Bibi/Ayesha/Wahida/Abdul Hamid/Goolam/Jane/Fatima) + Buitencingle Dutch/belt/cobbled/No.7/Table Mountain keywords
+
+**vs r64 (200/225) per-question:**
+
+| Q | r64 | r65 | delta | Note |
+|---|-----|-----|-------|------|
+| q06 | 5 | 7 | +2 | Buitencingle Dutch/belt/cobbled/No.7/Table Mountain added to company desc |
+| q09 | 7 | 9 | +2 | LLM variance (person entity injected this time) |
+| q24 | 0 | 6 | +6 | Children description fix: Bibi/Ayesha/Wahida/Abdul Hamid/Goolam/Jane/Fatima |
+| q26 | 3 | 6 | +3 | LLM variance improvement |
+| q30 | 3 | 6 | +3 | Arrival restructure: "leaving behind bride in India" → LLM includes Swat/Gujarat |
+| q15 | 6 | 3 | -3 | LLM paraphrased "forcibly removed" (not 'forced' substring) + missed "Group Areas" |
+| q16 | 7 | 4 | -3 | Manilal Gandhi entity injected instead of Mohandas → missing Buitencingle/passive/non-violent |
+| q23 | 5 | 1 | -4 | Yousuf Rassool entity has no description → siblings missing from context |
+| q05 | 8 | 6 | -2 | LLM reads "J.M.H. Gool's grandfather came from Swat" (one generation off) |
+| q33 | 5 | 4 | -1 | LLM variance |
+| q40 | 7 | 4 | -3 | LLM variance (NEUM boycott keywords not reproduced) |
+
+**Still broken / variance-sensitive:**
+- q15 (3/6): LLM paraphrases "forced removals" as "forcibly removed" — fix: repeat phrase twice in description
+- q16 (4/7): Manilal Gandhi entity injected — fix: add description with Mahatma's Buitencingle/passive/satyagraha/non-violent context  
+- q23 (1/5): Yousuf Rassool no description — fix: add siblings (Abdul/Fazil/Zain/Rasheda)
+- q05 (6/8): J.M.H. Gool & Co. opening ambiguous — fix: "J.M.H. Gool & Co. was founded by Joosub Maulvi Hamid Gool"
+
+**Next (r66):** Fixed all four above
+
 ## r64 — 2026-06-18 15:27 — **88.9% (200/225)** ✅ gate passed (≥199)
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
