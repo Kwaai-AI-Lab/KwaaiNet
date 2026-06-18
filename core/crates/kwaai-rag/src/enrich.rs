@@ -333,7 +333,9 @@ async fn call_enrich(
     let existing_hint = if !need_desc
         && !current_desc.is_empty()
         && current_desc.len() > 50
-        && !current_desc.to_lowercase().starts_with("there is no mention")
+        && !current_desc
+            .to_lowercase()
+            .starts_with("there is no mention")
     {
         format!("\nExisting summary (may be refined): {current_desc}\n")
     } else {
