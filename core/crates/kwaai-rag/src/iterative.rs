@@ -74,7 +74,7 @@ async fn reformulate_query(
     model: &str,
 ) -> Result<String> {
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
         .build()?;
     let system = "You are a search query expert. Given a question and missing search terms, \
                   write a short targeted search query (under 15 words) to find information \
@@ -90,14 +90,15 @@ async fn reformulate_query(
             {"role": "user", "content": user}
         ],
         "stream": false,
+        "options": { "num_ctx": 4096 },
     });
     let resp = http
-        .post(format!("{inference_url}/v1/chat/completions"))
+        .post(format!("{inference_url}/api/chat"))
         .json(&payload)
         .send()
         .await?;
     let body: serde_json::Value = resp.json().await?;
-    Ok(body["choices"][0]["message"]["content"]
+    Ok(body["message"]["content"]
         .as_str()
         .unwrap_or(original)
         .trim()

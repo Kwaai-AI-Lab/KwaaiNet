@@ -6862,7 +6862,7 @@ async fn cmd_eval(
         let eval_start = std::time::Instant::now();
         let vs = Arc::new(open_local_vs(&rag_cfg.data_dir())?);
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(300))
             .build()?;
 
         // Resolve p2p:// URLs to local HTTP proxies (same pattern as dream/graph build).
@@ -7156,7 +7156,10 @@ async fn cmd_eval(
                 let q_lower = q.question.to_lowercase();
                 let is_bio = q_lower.starts_with("who was ")
                     || q_lower.starts_with("who is ")
-                    || q_lower.starts_with("who were ");
+                    || q_lower.starts_with("who were ")
+                    || q_lower.starts_with("tell me more about ")
+                    || q_lower.starts_with("tell me about ")
+                    || q_lower.starts_with("describe ");
                 let is_enum = q_lower.contains("organisation")
                     || q_lower.contains("organization")
                     || q_lower.contains("what political")
@@ -7195,16 +7198,17 @@ async fn cmd_eval(
                 "messages": messages,
                 "stream": false,
                 "temperature": 0,
+                "options": { "num_ctx": 8192 },
             });
             let answer = match http
-                .post(format!("{inference_url}/v1/chat/completions"))
+                .post(format!("{inference_url}/api/chat"))
                 .json(&payload)
                 .send()
                 .await
             {
                 Ok(resp) => {
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                    body["choices"][0]["message"]["content"]
+                    body["message"]["content"]
                         .as_str()
                         .unwrap_or("(no response)")
                         .to_string()
