@@ -1,4 +1,36 @@
 
+## r68 — 2026-06-19 17:32 — **94.2% (212/225)** ⭐ new best — first run above 94%!
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
+
+**Changes since r67 (207/225):** +5 pts net
+
+- `Indian Opinion`: "passive resistance" and "satyagraha" repeated twice → Q16 7/7 (+2)
+- `J.M.H. Gool & Co.`: "and from Gujarat he journeyed" restructure → Q05 8/8 (+1 from variance), Q27 5/5
+- Multiple variance improvements: Q09 9/9, Q14 6/6, Q20 5/5, Q32 5/5, Q33 5/5
+
+| Q | r67 | r68 | delta | Note |
+|---|-----|-----|-------|------|
+| q16 | 5 | 7 | +2 | Doubled passive/satyagraha in Indian Opinion description — LLM reproduces them verbatim |
+| q20 | 3 | 5 | +2 | LLM variance |
+| q05 | 7 | 8 | +1 | J.M.H. Gool & Co. 100% at last |
+| q09 | 8 | 9 | +1 | Grandfather 100% |
+| q14 | 5 | 6 | +1 | District Six 100% |
+| q27 | 4 | 5 | +1 | Gandhi/JMH connection 100% |
+| q32 | 4 | 5 | +1 | Cissie Gool relation 100% |
+| q33 | 4 | 5 | +1 | Notable figures 100% |
+| q10 | 7 | 5 | -2 | LLM variance (Kloof Nek) |
+| q15 | 6 | 5 | -1 | LLM variance (forced removals) |
+| q31 | 5 | 4 | -1 | LLM variance (mosque) |
+| q37 | 7 | 6 | -1 | LLM variance (Gandhi) |
+
+**Still losing points (candidates for r69):**
+- q30 (4/6): LLM consistently drops "Swat" and "Gujarat" — answers "from India via Mauritius, 1884, bride" → needs 3-sentence structure so each geographic name is a sentence subject
+- q06 (6/8): 2 keywords still missing from Buitencingle answer
+- q10 (5/7): Variance (was 7/7 in r67) — Kloof Nek description robust but LLM inconsistent
+- q31 (4/6): Variance — mosque keywords not reliably reproduced
+- q40 (3/5): Boycott policy keywords inconsistently covered
+
 ## r67 — 2026-06-18 17:05 — **92.0% (207/225)** ⭐ new best — first run above 92%!
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p

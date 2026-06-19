@@ -98,7 +98,8 @@ MILESTONES = [
     ("M83", 90.7, 5, "90% target ✓"),
     ("M84", 88.9, 5, None),
     ("M85", 91.6, 5, "91.6%"),
-    ("M86", 92.0, 5, "92% target ✓\n← BEST"),
+    ("M86", 92.0, 5, "92% target ✓"),
+    ("M87", 94.2, 5, "94.2%\n← BEST"),
 ]
 
 # Eval set change: from 20q/116kw to 40q/225kw between M35 and M42
@@ -108,7 +109,7 @@ EVAL_CHANGE_X = 14.5  # midpoint between M35 (x=13) and M42 (x=14)
 NOISE = 3.5
 
 # Representative points that get error bars (to avoid clutter)
-ERROR_BAR_LABELS = {"M17", "M22", "M35", "M43", "M50", "M51", "M58", "M60", "M74", "M83", "M86"}
+ERROR_BAR_LABELS = {"M17", "M22", "M35", "M43", "M50", "M51", "M58", "M60", "M74", "M83", "M87"}
 
 # ---------------------------------------------------------------------------
 # Build arrays
