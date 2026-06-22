@@ -1712,7 +1712,7 @@ async fn cmd_chat(
                         )
                     }
                 }
-                Err(e) => format!("(inference error: {e})"),
+                Err(_) => "(inference error: peer unreachable — check daemon on remote machine)".to_string(),
             };
 
             println!("\n  Assistant: {answer}");
