@@ -4234,13 +4234,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store")?;
 
-                    let node = if let Some(n) = store.find_by_name(&entity) {
-                        Some((n.id, n.name.clone()))
-                    } else if let Some(n) = store.find_by_name_normalized(&entity) {
-                        Some((n.id, n.name.clone()))
-                    } else {
-                        None
-                    };
+                    let node = store
+                        .find_by_name(&entity)
+                        .or_else(|| store.find_by_name_normalized(&entity))
+                        .map(|n| (n.id, n.name.clone()));
 
                     match node {
                         None => {
