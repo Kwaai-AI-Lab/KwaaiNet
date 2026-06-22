@@ -1,4 +1,14 @@
 
+## r82 — 2026-06-22 — **95.6% (215/225)** — CONFIRMED (p2p://auto, metro-linux, 6s/q avg)
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, **p2p://auto** (auto-selected metro-linux A6000 @ 37.7 tok/s)
+
+**Changes since r81:** v0.4.116 rag chat fixes (model default, cache, crash). p2p://auto routing confirmed working.
+
+**Score unchanged at 215/225 = 95.6%.** p2p://auto correctly selected metro-linux over metro-win (higher throughput). Avg latency 6.0s/question vs 50s on CPU — 8× speedup.
+
+---
+
 ## r81 — 2026-06-18 — **95.6% (215/225)** — NEW ALL-TIME BEST (prev 212)
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, metro-linux p2p
