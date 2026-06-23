@@ -886,6 +886,75 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                                  //   relay reservation that makes the node reachable in the first place.
     let explicit_announce = announce_addr.is_some() || !config.trusted_relays.is_empty();
 
+    // Fast p2pd crash detection: poll every 10 s instead of waiting for the
+    // 300 s re-announce tick. Skips the first tick so we don't immediately
+    // check right after bootstrap completed.
+    let mut p2pd_heartbeat = tokio::time::interval(Duration::from_secs(10));
+    p2pd_heartbeat.tick().await;
+
+    // Relay circuit keepalive: send a trivial identify RPC to p2pd every 60 s.
+    // This keeps the p2pd unix-socket warm and exercises the p2pd ↔ relay TCP
+    // connection, preventing idle NAT mappings from expiring.
+    let mut relay_keepalive = tokio::time::interval(Duration::from_secs(60));
+    relay_keepalive.tick().await;
+
+    // Ollama health watcher: spawn a background task that polls
+    // http://localhost:<port>/api/tags every 15 s. Sends `true` on each recovery
+    // (down→up transition) so the main loop can re-announce immediately.
+    let (ollama_recovery_tx, mut ollama_recovery_rx) = tokio::sync::mpsc::channel::<()>(1);
+    {
+        let ollama_port = config.ollama_port;
+        let ollama_manage = config.ollama_manage;
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_default();
+            let url = format!("http://localhost:{}/api/tags", ollama_port);
+            let mut was_up = true; // assume up at start to avoid spurious recovery signal
+            let mut fail_count: u32 = 0;
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let ok = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false);
+                if ok {
+                    if !was_up {
+                        info!(
+                            "✅ Ollama recovered on port {} — signalling re-announce",
+                            ollama_port
+                        );
+                        let _ = ollama_recovery_tx.try_send(());
+                    }
+                    was_up = true;
+                    fail_count = 0;
+                } else {
+                    fail_count += 1;
+                    if fail_count == 3 {
+                        warn!(
+                            "⚠️  Ollama unreachable on port {} (3 consecutive failures)",
+                            ollama_port
+                        );
+                        if ollama_manage {
+                            info!("ollama_manage=true — attempting to start Ollama…");
+                            let _ = tokio::process::Command::new("ollama").arg("serve").spawn();
+                        }
+                    } else if fail_count > 3 && fail_count.is_multiple_of(12) {
+                        // Log every ~3 min while still down
+                        warn!(
+                            "⚠️  Ollama still unreachable on port {} ({}× checks)",
+                            ollama_port, fail_count
+                        );
+                    }
+                    was_up = false;
+                }
+            }
+        });
+    }
+
     loop {
         tokio::select! {
             // Incoming RPC stream from p2pd
@@ -1120,6 +1189,65 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     // apply the restart once the node is idle.
                     pending_restart = Some(fresh);
                     info!("  p2pd restart deferred until node is idle");
+                }
+            }
+
+            // Fast p2pd crash detection (every 10 s).
+            // Catches crashes much sooner than the 300 s re-announce tick.
+            // Skips the actual announce — that's still done at the 300 s tick.
+            _ = p2pd_heartbeat.tick() => {
+                if !daemon.is_running() {
+                    let stderr = daemon.captured_stderr().await;
+                    if !stderr.is_empty() {
+                        warn!("p2pd crash output:\n{}", stderr.trim());
+                    }
+                    warn!("⚠️  p2pd heartbeat: process died — restarting immediately…");
+                    match restart_p2pd(
+                        &mut daemon, &mut client, &p2pd_path, &config,
+                        &bootstrap_peers, &announce_addr, handler_addr,
+                    ).await {
+                        Ok(()) => {
+                            info!("✅ p2pd restarted (heartbeat) — re-announce in 30 s");
+                            next_announce
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + Duration::from_secs(30));
+                        }
+                        Err(e) => {
+                            warn!("p2pd restart failed: {} — will retry in 120 s", e);
+                            next_announce
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + Duration::from_secs(120));
+                        }
+                    }
+                }
+            }
+
+            // Relay circuit keepalive (every 60 s).
+            // Sends a trivial identify RPC to p2pd to keep the unix socket and
+            // the p2pd ↔ relay TCP connection alive, preventing idle NAT
+            // mappings from expiring between 300 s announces.
+            _ = relay_keepalive.tick() => {
+                if let Err(e) = client.identify().await {
+                    warn!("relay keepalive identify failed: {}", e);
+                }
+            }
+
+            // Ollama recovery: re-announce immediately when Ollama comes back up.
+            // The watcher background task sends on this channel on every down→up
+            // transition so clients learn the host is usable again without
+            // waiting for the next 300 s tick.
+            Some(()) = ollama_recovery_rx.recv() => {
+                info!("Ollama recovered — triggering immediate re-announce");
+                let sb = config.start_block as i32;
+                let eb = config.effective_end_block() as i32;
+                server_info.start_block = sb;
+                server_info.end_block = eb;
+                if let Err(e) = announce(
+                    &mut client, peer_id, &storage, &bootstrap_peers,
+                    &prefix, &repository, config.model_total_blocks(),
+                    sb, eb, &server_info, None,
+                ).await {
+                    warn!("Re-announce after Ollama recovery failed: {}", e);
                 }
             }
 

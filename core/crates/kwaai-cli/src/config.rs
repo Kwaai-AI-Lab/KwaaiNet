@@ -155,6 +155,21 @@ pub struct KwaaiNetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpk_local_port: Option<u16>,
 
+    // ── Ollama supervision ────────────────────────────────────────────────────
+    /// When true, kwaainet supervises Ollama: health-checks every 15 s and
+    /// optionally spawns `ollama serve` on failure (if ollama is in PATH).
+    /// Set via `kwaainet config set ollama_manage true`.
+    #[serde(default)]
+    pub ollama_manage: bool,
+
+    /// Local port Ollama listens on (default: 11434).
+    /// Used by the Ollama health watcher and ollama-proxy handler.
+    #[serde(
+        default = "default_ollama_port",
+        skip_serializing_if = "is_default_ollama_port"
+    )]
+    pub ollama_port: u16,
+
     // ── Storage fabric (Eve role) ──────────────────────────────────────────────
     /// Local storage configuration for Eve role (multi-tenant vector DB).
     /// Set by `kwaainet storage init --pg-url <DSN>`. When present,
@@ -548,6 +563,12 @@ fn default_force_private() -> bool {
 fn default_api_endpoint() -> String {
     "https://map.kwaai.ai/api/v1/state".to_string()
 }
+fn default_ollama_port() -> u16 {
+    11434
+}
+fn is_default_ollama_port(p: &u16) -> bool {
+    *p == 11434
+}
 fn default_check_interval() -> u64 {
     60
 }
@@ -615,6 +636,8 @@ impl Default for KwaaiNetConfig {
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
+            ollama_manage: false,
+            ollama_port: default_ollama_port(),
             vpk_enabled: false,
             vpk_mode: None,
             vpk_local_port: None,

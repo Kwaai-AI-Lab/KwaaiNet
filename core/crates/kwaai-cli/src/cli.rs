@@ -95,6 +95,9 @@ pub enum Command {
     /// Disable health monitoring
     HealthDisable,
 
+    /// Live health check: p2pd, Ollama, and relay circuit status
+    NodeHealth,
+
     /// Manage the auto-start service
     Service(ServiceArgs),
 

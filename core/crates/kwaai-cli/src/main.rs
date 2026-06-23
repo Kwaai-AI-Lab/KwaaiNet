@@ -644,6 +644,76 @@ async fn main() -> Result<()> {
             );
         }
 
+        Command::NodeHealth => {
+            let cfg = KwaaiNetConfig::load_or_create()?;
+            let mgr = DaemonManager::new();
+            print_box_header("🩺 Node Health");
+
+            // kwaainet daemon
+            let daemon_running = mgr.is_running();
+            println!(
+                "  kwaainet daemon : {}",
+                if daemon_running {
+                    "✅ running"
+                } else {
+                    "❌ stopped"
+                }
+            );
+
+            // p2pd — try to connect and identify
+            let p2pd_status = async {
+                use kwaai_p2p_daemon::P2PClient;
+                let addr = std::env::var("KWAAINET_SOCKET")
+                    .unwrap_or_else(|_| kwaai_p2p_daemon::DEFAULT_SOCKET_NAME.to_string());
+                let mut c = P2PClient::connect(&addr).await?;
+                let peer_id = c.identify().await?;
+                let peers = c.list_peers().await.unwrap_or_default();
+                anyhow::Ok((peer_id, peers.len()))
+            }
+            .await;
+            match p2pd_status {
+                Ok((peer_id, peer_count)) => {
+                    println!("  p2pd            : ✅ running");
+                    println!("  peer ID         : {}", peer_id);
+                    println!("  connected peers : {}", peer_count);
+                }
+                Err(_) => println!("  p2pd            : ❌ unreachable"),
+            }
+
+            // Ollama
+            let ollama_port = cfg.ollama_port;
+            let ollama_url = format!("http://localhost:{}/api/tags", ollama_port);
+            let ollama_status = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default()
+                .get(&ollama_url)
+                .send()
+                .await;
+            match ollama_status {
+                Ok(resp) if resp.status().is_success() => {
+                    let body: serde_json::Value =
+                        resp.json().await.unwrap_or(serde_json::Value::Null);
+                    let model_count = body["models"].as_array().map(|a| a.len()).unwrap_or(0);
+                    println!(
+                        "  Ollama (:{})    : ✅ running ({} model(s) loaded)",
+                        ollama_port, model_count
+                    );
+                }
+                _ => println!("  Ollama (:{})    : ❌ unreachable", ollama_port),
+            }
+
+            println!(
+                "  ollama_manage   : {}",
+                if cfg.ollama_manage {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            print_separator();
+        }
+
         // -------------------------------------------------------------------
         // service
         // -------------------------------------------------------------------
