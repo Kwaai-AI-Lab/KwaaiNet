@@ -664,8 +664,9 @@ async fn main() -> Result<()> {
             // p2pd — try to connect and identify
             let p2pd_status = async {
                 use kwaai_p2p_daemon::P2PClient;
-                let addr = std::env::var("KWAAINET_SOCKET")
+                let sock = std::env::var("KWAAINET_SOCKET")
                     .unwrap_or_else(|_| kwaai_p2p_daemon::DEFAULT_SOCKET_NAME.to_string());
+                let addr = format!("/unix/{sock}");
                 let mut c = P2PClient::connect(&addr).await?;
                 let peer_id = c.identify().await?;
                 let peers = c.list_peers().await.unwrap_or_default();
