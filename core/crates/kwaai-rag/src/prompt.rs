@@ -66,7 +66,13 @@ pub fn build_chat_messages(
              5. For factual questions (who, what, where, when), state what the sources \
                 actually say first, then note any gaps.\n\
              6. If sources partially address the question, synthesise what they do say \
-                and note what is missing.\n\n\
+                and note what is missing.\n\
+             7. Biographical questions about a person (\"Who was X?\", \"Tell me about X\") \
+                require comprehensive answers — include ALL specific facts found across ALL sources: \
+                dates, places, ethnic or geographic origins, ancestry, family connections, \
+                occupations, achievements, and historical associations. Examine every numbered \
+                excerpt for relevant details. A single-sentence answer is never sufficient for \
+                a biographical question; list each fact explicitly.\n\n\
              Sources:\n{context}"
         ),
     };

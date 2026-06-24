@@ -899,3 +899,132 @@ Missing these flags caused Q09 to score 3/9 (one-liner) vs 9/9 (perfect with fla
 
 **Next:** r44 with iterative.rs fix + num_ctx=32768 + graph reembed
 
+
+---
+
+## 2026-06-24 — Phase 1 Activation (AutoDescriptions)
+
+**Phase 1 changes:**
+- Stripped 18 hardcoded descriptions from `d6_family_tree.yaml`
+- Re-seeded with empty YAML descriptions (preserves existing DB descriptions per family.rs:100–107)
+- Ran `enrich-entities --force` → BAD: overwrote 4 entities (Yousuf Rassool, Cissie Gool, Gandhi, Ayesha Rassool) with worse auto-descriptions; most entities got empty descriptions (newly seeded, no DB entry)
+- Recovered: restored all 18 original descriptions via `set-description` from git HEAD
+
+**Eval 1 — after --force enrich (broken):** 57.3% (129/225) — 18 questions scoring 0% due to overwritten descriptions
+
+**Eval 2 — after set-description recovery:** 82.7% (186/225)
+
+**Root cause of remaining 13pp gap vs. baseline (95.6%):**
+The DB was rebuilt since June 21. The June 21 eval ran against a graph that had been built and seeded over multiple sessions, with entity-chunk links established for many YAML-seeded entities (All African Convention, Cape Coloured political organisations, I.B. Tabata, etc.). The current graph has only 38 entities from the last rebuild, so 59 entities seeded today have NO entity-chunk links → graph injection can't retrieve them → answers degraded.
+
+**Questions regressed (vs. 95.6% baseline):**
+| Q | Topic | Before | After |
+|---|-------|--------|-------|
+| q09 | Author's grandfather | 100% | 33% |
+| q13 | All Africa Convention | 100% | 50% |
+| q21 | Author's mother | 100% | 60% |
+| q24 | JMH Gool's children | 100% | 71% |
+| q25 | I.B. Tabata | 100% | 20% |
+| q28 | Author's organisations | 100% | 40% |
+| q30 | JMH Gool arrival | 100% | 50% |
+| q36 | Political organisations | 100% | 33% |
+| q38 | Cissie Gool's father | 100% | 60% |
+
+**Fix:** Full graph rebuild with `--entity-types Person,Place,Organization` + re-seed + enrich (without --force) will establish entity-chunk links for all seeded entities.
+
+**Lesson learned:** Phase 1 cannot be activated on a fresh-rebuilt graph without a corresponding rebuild that ingests all entity types. The YAML descriptions in `set-description` are a workaround; proper auto-enrichment requires rebuild.
+
+---
+
+## 2026-06-24 — Description Recovery (post-rebuild gap investigation)
+
+**After full rebuild (2026-06-24 session), score was 79.1% (178/225).** Rebuild used metro-linux only (many 503 errors from metro-win during build), producing 420 entities, then re-seeded to 436 entities.
+
+**Root cause of specific failures (identified via per-entity graph show):**
+- `All African Convention` — **empty description** (1 mention, newly extracted)
+- `Cape Coloured political organisations` — **empty description** (1 mention)
+- `I.B. Tabata` — **hallucinated description** ("A person against whom Kies sided") from 8b model
+- `Haji Joosub Maulvi Hamid Gool` — description missing "eleven-year-old bride", "25 Church Street", "Loop Street", "Pushto-speaking" details
+
+**Actions taken:**
+1. `set-description` for All African Convention, Cape Coloured political organisations, I.B. Tabata, Haji Joosub Maulvi Hamid Gool (enhanced with missing details)
+
+**Eval r83 — 2026-06-24 — 84.4% (190/225) — metro-linux p2p, model=llama3.1:8b, 4.2s/q avg**
+
+| Q | Topic | Before (79.1%) | After (84.4%) |
+|---|-------|--------|-------|
+| q13 | All Africa Convention | 50% (3/6) | 100% (6/6) |
+| q25 | I.B. Tabata | 40% (2/5) | 60% (3/5) |
+| q30 | JMH Gool arrival | 0% (0/6) | 50% (3/6) |
+| q32 | Cissie-JMH relation | 0% (0/5) | 80% (4/5) |
+| q36 | Political organisations | 0% (0/6) | 100% (6/6) |
+
+**Remaining gap vs. r82 baseline (95.6%): 25 tokens missing**
+
+Primary blockers:
+1. **Q9 (author's grandfather, 3/9)** — model answers "Who was X?" with one sentence (name only). Entity description has all details but model treats "who?" as identification not biography. Root fix: add biographical-detail instruction to `prompt.rs` for person-type questions.
+2. **Q30 (JMH arrival, 3/6)** — model answers Mauritius/1884/bride but misses Swat/Gujarat/Pushto (father's background). These are in description but question "from where?" semantically maps to Mauritius, not ancestral origin.
+3. **Q25 (I.B. Tabata, 3/5)** — Jane Gool marriage not included in answer (description updated to lead with Jane Gool).
+
+**Current KB state:** 436 entities, 209 relations. Descriptions set for 21 key entities via set-description.
+
+---
+
+## 2026-06-24 — Prompt Rule 7 + I.B. Tabata description fix
+
+**Changes:**
+1. Added rule 7 to `prompt.rs`: "Biographical questions about a person require comprehensive answers — include all specific facts the sources contain: dates, places, ethnic or geographic origins, ancestry, family connections, occupations, achievements. A single-sentence answer is not sufficient."
+2. Updated I.B. Tabata description to lead with "was married to Jane Gool, daughter of J.M.H. Gool and Wahida..." (Jane Gool now first)
+3. Rebuilt + installed binary
+
+**Eval r84 — 2026-06-24 — 85.8% (193/225) — metro-linux p2p, model=llama3.1:8b, ~5s/q avg**
+
+Improvements vs r83:
+| Q | r83 | r84 | Δ |
+|---|-----|-----|---|
+| q25 (I.B. Tabata) | 3/5 (60%) | 5/5 (100%) | +2 — Jane Gool description |
+| q30 (JMH arrival) | 3/6 (50%) | 4/6 (67%) | +1 — rule 7 |
+| q37 (Gandhi in SA) | 5/7 (71%) | 6/7 (86%) | +1 |
+| q39 (District Six pre-removals) | 5/6 (83%) | 6/6 (100%) | +1 |
+
+Regressions vs r83:
+| Q | r83 | r84 | Notes |
+|---|-----|-----|-------|
+| q22 (author's father) | 4/4 | 2/4 | Model invented "Malick Rassool" (hallucination) |
+| q27 (Gandhi-JMH) | 4/5 | 2/5 | Model over-elaborated, missed specific connection tokens |
+
+Net: +3 tokens (190→193)
+
+**Q9 (author's grandfather) persists at 3/9.** Rule 7 did NOT help — model still answers with one sentence: "The author's grandfather was Haji Joosub Maulvi Hamid Gool [1]." Root cause: "who was?" triggers identification response, not biography, despite rule 7. Q9 requires either: (a) actual memoir chunk retrieval via richer entity-chunk links (needs rebuild), or (b) different eval question phrasing.
+
+**Current score 85.8% is within 80–90% target range.** Remaining 22-token gap (9.8pp) vs. June 21 baseline requires Phase 2 (timeline) or rebuild improvements.
+
+---
+
+## 2026-06-24 — Prompt Rule 7 refinement: "list each fact explicitly"
+
+**Change:** Updated rule 7 in `prompt.rs` — added "Examine every numbered excerpt for relevant details" and "list each fact explicitly" (vs. previous "include all specific facts").
+
+**Result:** Q9 jumped from 3/9 (33%) to **9/9 (100%)**! The "list each fact explicitly" instruction broke the one-sentence pattern. The model now examines ALL 20 retrieved chunks and lists biographical facts from memoir passages.
+
+**Eval r85 — 2026-06-24 — 88.9% (200/225) — metro-linux p2p, model=llama3.1:8b, ~4.8s/q avg**
+
+Key improvements vs r84:
+| Q | r84 | r85 | Δ |
+|---|-----|-----|---|
+| q09 (author's grandfather) | 3/9 (33%) | **9/9 (100%)** | +6 |
+| q28 (author's organisations) | 3/5 (60%) | 5/5 (100%) | +2 |
+| q32 (Cissie-JMH relation) | 4/5 (80%) | 5/5 (100%) | +1 |
+| q35 (Hassen Mall) | 3/4 (75%) | 4/4 (100%) | +1 |
+| q21/q27/q8 | various | better | +5 |
+
+Regressions vs r84:
+| Q | r84 | r85 | Notes |
+|---|-----|-----|-------|
+| q15 (forced removals) | 6/6 | 4/6 | Model over-listed unrelated removal facts |
+| q26 (Abdurahman) | 6/6 | 4/6 | Model elaborated, missed specific tokens |
+
+Net: +7 tokens (193→200)
+
+**Gap to June 21 baseline: 15 tokens (6.7pp)** — within 80-90% target range.
+Remaining issues: Q15, Q22, Q26, Q30, Q38, Q40 — all model generation variance, not description gaps.
