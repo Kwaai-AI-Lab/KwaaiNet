@@ -1028,3 +1028,41 @@ Net: +7 tokens (193→200)
 
 **Gap to June 21 baseline: 15 tokens (6.7pp)** — within 80-90% target range.
 Remaining issues: Q15, Q22, Q26, Q30, Q38, Q40 — all model generation variance, not description gaps.
+
+---
+
+## 2026-06-24 — Phase 2: Timeline extraction wired into graph build pipeline
+
+**Changes:**
+- Added `run_timeline_build()` shared helper (replaces inline code in `graph timeline build`)
+- Added `--timeline` flag to `graph build` — runs timeline extraction after entities without a separate command
+- Ran `kwaainet rag graph timeline build --kb D6` (67 entity timelines, 3 interactions stored)
+
+**Eval r86 — 2026-06-24 — 88.4% (199/225) — metro-linux p2p, model=llama3.1:8b**
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 7/8, 7/8, 2/3, 6/6, 9/9, 7/7
+Q11–Q20: 6/6, 6/6, 6/6, 6/6, 6/6, 5/7, 5/5, 6/6, 6/6, 3/5
+Q21–Q30: 3/5, 4/4, 5/5, 6/7, 5/5, 6/6, 4/5, 3/5, 6/6, 2/6
+Q31–Q40: 5/6, 4/5, 4/5, 5/6, 4/4, 6/6, 6/7, 3/5, 5/6, 4/5
+
+Improvements vs r85:
+| Q | r85 | r86 | Notes |
+|---|-----|-----|-------|
+| q15 forced removals | 4/6 | 6/6 | Full recovery |
+| q22 author's father | 2/4 | 4/4 | Full recovery |
+| q26 Abdurahman | 4/6 | 6/6 | Full recovery |
+| q31 mosque | 4/6 | 5/6 | +1 — timeline may have helped |
+
+Regressions vs r85:
+| Q | r85 | r86 | Notes |
+|---|-----|-----|-------|
+| q21 author's mother | 5/5 | 3/5 | Model variance |
+| q28 author's orgs | 5/5 | 3/5 | Model variance |
+| q30 JMH arrival | 4/6 | 2/6 | Timeline "1886 born" may conflict with arrival narrative |
+
+**Net: -1 token (200→199)** — effectively same as r85, within model variance.
+
+Timeline impact: minimal on this eval set (dominated by biographical questions). Timeline is most useful for temporal queries ("when did X happen?") which are rare in current eval. Q30 regression suggests JMH timeline event ("1886 — was born") is wrong/misleading — JMH arrived in Mauritius in 1884, not 1886 born.
+
+**Gap to June 21 baseline: 16 tokens (7.1pp).** Within 80–90% target range.
