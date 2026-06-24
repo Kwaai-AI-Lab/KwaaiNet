@@ -4125,6 +4125,36 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Remove timeline events for an entity where the predicate returns true.
+    /// Returns the number of events deleted.
+    pub fn delete_timeline_events(
+        &self,
+        entity_id: i64,
+        predicate: &dyn Fn(&crate::sequence::TimelineEvent) -> bool,
+    ) -> Result<usize> {
+        let key = entity_id.to_le_bytes();
+        let wtxn = self.db.begin_write()?;
+        let deleted;
+        {
+            let mut table = wtxn.open_table(TIMELINE_TABLE)?;
+            let existing: Vec<crate::sequence::TimelineEvent> = table
+                .get(key.as_ref())?
+                .and_then(|v| serde_json::from_slice(v.value()).ok())
+                .unwrap_or_default();
+            let before = existing.len();
+            let retained: Vec<_> = existing.into_iter().filter(|e| !predicate(e)).collect();
+            deleted = before - retained.len();
+            if retained.is_empty() {
+                table.remove(key.as_ref())?;
+            } else {
+                let val = serde_json::to_vec(&retained)?;
+                table.insert(key.as_ref(), val.as_slice())?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(deleted)
+    }
+
     /// Return all timeline events for a list of entity IDs.
     pub fn get_timeline_events(&self, entity_ids: &[i64]) -> Vec<crate::sequence::TimelineEvent> {
         let rtxn = match self.db.begin_read() {

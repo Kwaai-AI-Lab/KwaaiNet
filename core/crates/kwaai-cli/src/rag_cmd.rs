@@ -8190,6 +8190,101 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 println!("{mermaid}");
             }
 
+            TimelineAction::DeleteEvent {
+                entity,
+                description,
+                date,
+                yes,
+            } => {
+                let eid = graph
+                    .find_by_name(&entity)
+                    .map(|e| e.id)
+                    .or_else(|| {
+                        let tokens: Vec<String> = entity
+                            .split_whitespace()
+                            .map(|t| t.to_lowercase())
+                            .filter(|t| t.len() >= 2)
+                            .collect();
+                        let mut scores: std::collections::HashMap<i64, usize> =
+                            std::collections::HashMap::new();
+                        for t in &tokens {
+                            for &id in graph.find_ids_by_alias_token(t) {
+                                *scores.entry(id).or_default() += 1;
+                            }
+                        }
+                        scores.into_iter().max_by_key(|(_, s)| *s).map(|(id, _)| id)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("entity '{}' not found in graph", entity))?;
+
+                let entity_name = graph
+                    .get_entity(eid)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_else(|| entity.clone());
+
+                let existing = graph.get_timeline_events(&[eid]);
+                if existing.is_empty() {
+                    print_info(&format!("No timeline events stored for '{entity_name}'."));
+                    return Ok(());
+                }
+
+                let desc_filter = description.as_deref().map(|s| s.to_lowercase());
+                let date_filter = date.as_deref().map(|s| s.to_lowercase());
+
+                let to_delete: Vec<&kwaai_rag::sequence::TimelineEvent> = existing
+                    .iter()
+                    .filter(|ev| {
+                        let desc_ok = desc_filter.as_ref().map_or(true, |f| {
+                            ev.description.to_lowercase().contains(f.as_str())
+                        });
+                        let date_ok = date_filter.as_ref().map_or(true, |f| {
+                            ev.date_raw
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_lowercase()
+                                .contains(f.as_str())
+                        });
+                        desc_ok && date_ok
+                    })
+                    .collect();
+
+                if to_delete.is_empty() {
+                    print_info("No events matched the filter — nothing deleted.");
+                    return Ok(());
+                }
+
+                println!("  Events to delete from '{entity_name}':");
+                for ev in &to_delete {
+                    let date_str = ev.date_raw.as_deref().unwrap_or("(no date)");
+                    println!("    [{:12}] {} — {}", ev.event_class, date_str, ev.description);
+                }
+
+                if !yes {
+                    print!("  Delete {} event(s)? [y/N] ", to_delete.len());
+                    std::io::stdout().flush().ok();
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).ok();
+                    if !input.trim().eq_ignore_ascii_case("y") {
+                        println!("  Aborted.");
+                        return Ok(());
+                    }
+                }
+
+                let deleted = graph.delete_timeline_events(eid, &|ev| {
+                    let desc_ok = desc_filter.as_ref().map_or(true, |f| {
+                        ev.description.to_lowercase().contains(f.as_str())
+                    });
+                    let date_ok = date_filter.as_ref().map_or(true, |f| {
+                        ev.date_raw
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(f.as_str())
+                    });
+                    desc_ok && date_ok
+                })?;
+                print_success(&format!("Deleted {deleted} event(s) from '{entity_name}'."));
+            }
+
             TimelineAction::Build {
                 inference_url,
                 model,

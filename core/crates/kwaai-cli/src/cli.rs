@@ -2237,6 +2237,26 @@ pub enum TimelineAction {
 
     /// Show event and interaction counts stored in the timeline tables
     Stats,
+
+    /// Delete one or more timeline events for a named entity.
+    /// Filters by --description substring and/or --date substring (both must match if both given).
+    DeleteEvent {
+        /// Entity name (case-insensitive)
+        #[arg(long, value_name = "NAME")]
+        entity: String,
+
+        /// Delete events whose description contains this substring (case-insensitive)
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+
+        /// Delete events whose raw date string contains this substring (case-insensitive)
+        #[arg(long, value_name = "DATE")]
+        date: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
