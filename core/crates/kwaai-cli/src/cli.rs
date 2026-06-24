@@ -1763,6 +1763,12 @@ pub enum GraphAction {
         /// Maximum entities to validate per run (cost guard). Default: 200.
         #[arg(long, default_value = "200", value_name = "N")]
         validation_budget: usize,
+
+        /// Also extract and store a temporal event timeline immediately after entity extraction.
+        /// Equivalent to running `graph timeline build` with the same model and inference URL.
+        /// Adds one extra LLM call per entity-linked chunk.
+        #[arg(long)]
+        timeline: bool,
     },
 
     /// Reverse a bad dedup merge: remove an alias from a canonical entity and restore it as its

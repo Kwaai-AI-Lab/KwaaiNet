@@ -2019,6 +2019,7 @@ async fn cmd_rebuild(
                 validation_model: None,
                 validation_floor: 0.7,
                 validation_budget: 200,
+                timeline: false,
             },
             kb.clone(),
         )
@@ -2549,6 +2550,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 validation_model,
                 validation_floor,
                 validation_budget,
+                timeline,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2768,12 +2770,35 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 )
                 .await;
 
-                let final_store = store.lock().unwrap();
-                print_success(&format!(
-                    "Graph built — {} entities, {} relations",
-                    final_store.node_count(),
-                    final_store.relation_count()
-                ));
+                {
+                    let final_store = store.lock().unwrap();
+                    print_success(&format!(
+                        "Graph built — {} entities, {} relations",
+                        final_store.node_count(),
+                        final_store.relation_count()
+                    ));
+                }
+
+                if timeline {
+                    print_box_header(&format!("Timeline Build ({})", kb));
+                    print_info(&format!(
+                        "Model: {}  Workers: {}  Inference: {}",
+                        graph_cfg.model,
+                        graph_cfg.workers,
+                        graph_cfg.inference_url
+                    ));
+                    let (ev_count, ia_count) = run_timeline_build(
+                        store.clone(),
+                        Arc::new(meta),
+                        Arc::new(graph_cfg.inference_url.clone()),
+                        Arc::new(graph_cfg.model.clone()),
+                        graph_cfg.workers,
+                    )
+                    .await;
+                    print_success(&format!(
+                        "Timeline built — {ev_count} events, {ia_count} interactions."
+                    ));
+                }
             }
 
             GraphAction::Dedup {
@@ -7936,6 +7961,119 @@ async fn cmd_import(input_dir: std::path::PathBuf, since: u64, kb: String) -> Re
 
 // ── graph timeline ────────────────────────────────────────────────────────────
 
+/// Core timeline extraction loop shared by `graph build --timeline` and `graph timeline build`.
+///
+/// For each entity-linked chunk: calls the LLM to extract dated events and interactions,
+/// resolves entity names to graph IDs, and stores results. Parallelism is bounded by
+/// `workers` (via semaphore); storage operations serialize through the Mutex.
+/// Returns (event_count, interaction_count).
+async fn run_timeline_build(
+    graph: Arc<Mutex<GraphStore>>,
+    meta: Arc<MetaStore>,
+    infer_url: Arc<String>,
+    model: Arc<String>,
+    workers: usize,
+) -> (usize, usize) {
+    let chunk_ids: Vec<i64> = {
+        let g = graph.lock().unwrap();
+        let mut ids: Vec<i64> = g.all_chunk_entity_pairs().map(|(cid, _)| cid).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+
+    let total = chunk_ids.len();
+    if total == 0 {
+        println!("  No entity-linked chunks found — run `graph build` first.");
+        return (0, 0);
+    }
+    println!("  Processing {total} entity-linked chunks for timeline events…");
+
+    let sem = Arc::new(tokio::sync::Semaphore::new(workers.max(1)));
+    let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let event_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ia_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut handles = Vec::new();
+    for cid in chunk_ids {
+        let graph = graph.clone();
+        let meta = meta.clone();
+        let infer_url = infer_url.clone();
+        let model = model.clone();
+        let sem = sem.clone();
+        let done = done.clone();
+        let ev_total = event_total.clone();
+        let ia_total = ia_total.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok()?;
+            let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
+
+            let entity_names: Vec<String> = {
+                let g = graph.lock().ok()?;
+                g.get_chunk_entities(cid)
+                    .iter()
+                    .filter_map(|&id| g.get_entity(id))
+                    .map(|e| e.name.clone())
+                    .collect()
+            };
+
+            let (raw_events, raw_interactions) =
+                kwaai_rag::sequence::extract_temporal_events(
+                    &chunk.text,
+                    &entity_names,
+                    &infer_url,
+                    &model,
+                )
+                .await
+                .ok()?;
+
+            let (events, interactions) = {
+                let g = graph.lock().ok()?;
+                kwaai_rag::sequence::resolve_extracted(raw_events, raw_interactions, cid, &g)
+            };
+
+            let n_ev = events.len();
+            let n_ia = interactions.len();
+
+            let mut by_entity: std::collections::HashMap<
+                i64,
+                Vec<kwaai_rag::sequence::TimelineEvent>,
+            > = std::collections::HashMap::new();
+            for ev in events {
+                by_entity.entry(ev.entity_id).or_default().push(ev);
+            }
+            {
+                let g = graph.lock().ok()?;
+                for (eid, evs) in &by_entity {
+                    g.store_timeline_events(*eid, evs).ok()?;
+                }
+                for ia in &interactions {
+                    g.store_interaction(ia).ok()?;
+                }
+            }
+
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            ev_total.fetch_add(n_ev, std::sync::atomic::Ordering::Relaxed);
+            ia_total.fetch_add(n_ia, std::sync::atomic::Ordering::Relaxed);
+            if d.is_multiple_of(50) || d == total {
+                let evs = ev_total.load(std::sync::atomic::Ordering::Relaxed);
+                let ias = ia_total.load(std::sync::atomic::Ordering::Relaxed);
+                println!("  [{d}/{total}] events={evs} interactions={ias}");
+            }
+            Some(())
+        });
+        handles.push(handle);
+    }
+    for h in handles {
+        h.await.ok();
+    }
+    (
+        event_total.load(std::sync::atomic::Ordering::Relaxed),
+        ia_total.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -8089,98 +8227,16 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                     "Model: {model}  Workers: {workers}  Inference: {infer_url}"
                 ));
 
-                // Collect all chunks that are linked to at least one entity.
-                let chunk_ids: Vec<i64> =
-                    graph.all_chunk_entity_pairs().map(|(cid, _)| cid).collect();
-
-                let total = chunk_ids.len();
-                println!("  Processing {total} entity-linked chunks…");
-
-                let graph = std::sync::Arc::new(graph);
-                let meta = std::sync::Arc::new(meta);
-                let infer_url = std::sync::Arc::new(infer_url);
-                let model = std::sync::Arc::new(model);
-
-                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(workers));
-                let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let event_total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let ia_total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-                let mut handles = Vec::new();
-                for cid in chunk_ids {
-                    let graph = graph.clone();
-                    let meta = meta.clone();
-                    let infer_url = infer_url.clone();
-                    let model = model.clone();
-                    let sem = sem.clone();
-                    let done = done.clone();
-                    let ev_total = event_total.clone();
-                    let ia_total = ia_total.clone();
-
-                    let handle = tokio::spawn(async move {
-                        let _permit = sem.acquire().await.ok()?;
-                        let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
-                        let entity_ids = graph.get_chunk_entities(cid);
-                        let entity_names: Vec<String> = entity_ids
-                            .iter()
-                            .filter_map(|&id| graph.get_entity(id))
-                            .map(|e| e.name.clone())
-                            .collect();
-
-                        let (raw_events, raw_interactions) =
-                            kwaai_rag::sequence::extract_temporal_events(
-                                &chunk.text,
-                                &entity_names,
-                                &infer_url,
-                                &model,
-                            )
-                            .await
-                            .ok()?;
-
-                        let (events, interactions) = kwaai_rag::sequence::resolve_extracted(
-                            raw_events,
-                            raw_interactions,
-                            cid,
-                            &graph,
-                        );
-
-                        let n_ev = events.len();
-                        let n_ia = interactions.len();
-
-                        // Group events by entity_id and store
-                        let mut by_entity: std::collections::HashMap<
-                            i64,
-                            Vec<kwaai_rag::sequence::TimelineEvent>,
-                        > = std::collections::HashMap::new();
-                        for ev in events {
-                            by_entity.entry(ev.entity_id).or_default().push(ev);
-                        }
-                        for (eid, evs) in &by_entity {
-                            graph.store_timeline_events(*eid, evs).ok()?;
-                        }
-                        for ia in &interactions {
-                            graph.store_interaction(ia).ok()?;
-                        }
-
-                        let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        ev_total.fetch_add(n_ev, std::sync::atomic::Ordering::Relaxed);
-                        ia_total.fetch_add(n_ia, std::sync::atomic::Ordering::Relaxed);
-                        if d.is_multiple_of(50) || d == total {
-                            let evs = ev_total.load(std::sync::atomic::Ordering::Relaxed);
-                            let ias = ia_total.load(std::sync::atomic::Ordering::Relaxed);
-                            println!("  [{d}/{total}] events={evs} interactions={ias}");
-                        }
-                        Some(())
-                    });
-                    handles.push(handle);
-                }
-                for h in handles {
-                    h.await.ok();
-                }
-                let ev_count = event_total.load(std::sync::atomic::Ordering::Relaxed);
-                let ia_count = ia_total.load(std::sync::atomic::Ordering::Relaxed);
+                let (ev_count, ia_count) = run_timeline_build(
+                    Arc::new(Mutex::new(graph)),
+                    Arc::new(meta),
+                    Arc::new(infer_url),
+                    Arc::new(model),
+                    workers,
+                )
+                .await;
                 print_success(&format!(
-                    "Timeline build complete — {ev_count} events, {ia_count} interactions extracted from {total} chunks."
+                    "Timeline build complete — {ev_count} events, {ia_count} interactions extracted."
                 ));
             }
         }
