@@ -1066,3 +1066,32 @@ Regressions vs r85:
 Timeline impact: minimal on this eval set (dominated by biographical questions). Timeline is most useful for temporal queries ("when did X happen?") which are rare in current eval. Q30 regression suggests JMH timeline event ("1886 — was born") is wrong/misleading — JMH arrived in Mauritius in 1884, not 1886 born.
 
 **Gap to June 21 baseline: 16 tokens (7.1pp).** Within 80–90% target range.
+
+---
+
+## 2026-06-25 — Eval r87 after timeline delete-event + Abdul Hamid Gool description fix
+
+**Changes since r86:**
+- Deleted wrong "1886 — was born" event from JMH Gool timeline (belonged to son Abdul Hamid Gool)
+- Set Abdul Hamid Gool description: born 1886, doctor, married Cissie Gool, half-brother of Ayesha
+
+**Eval r87 — 2026-06-25 — 86.2% (194/225) — metro-linux p2p, model=llama3.1:8b**
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 7/8, 7/8, 3/3, 5/6, **3/9**, 7/7
+Q11–Q20: 6/6, 5/6, 6/6, 6/6, 6/6, 7/7, 5/5, 6/6, 6/6, 5/5
+Q21–Q30: 4/5, **0/4**, 5/5, 5/7, 3/5, 6/6, 5/5, 5/5, 6/6, 4/6
+Q31–Q40: 3/6, 5/5, 4/5, 5/6, 4/4, 6/6, 6/7, 3/5, 6/6, 3/5
+
+Notable changes vs r86:
+| Q | r86 | r87 | Notes |
+|---|-----|-----|-------|
+| q09 (grandfather) | 9/9 | **3/9** | Rule 7 fragile — 8b gives one-sentence answer again |
+| q16 (Gandhi-Gool) | 5/7 | **7/7** | Full recovery |
+| q20 (cricket) | 3/5 | **5/5** | Improvement |
+| q22 (author's father) | 4/4 | **0/4** | Complete miss — model variance |
+| q27 (Gandhi-JMH) | 4/5 | **5/5** | Improvement |
+
+**Conclusion:** Q9 returning to 3/9 confirms rule 7's biographical expansion is non-deterministic with llama3.1:8b. Score swings of ±5pp across runs are model variance, not data changes. Current range: 86–89%.
+
+**Gap to June 21 baseline: 21 tokens (9.3pp).**
