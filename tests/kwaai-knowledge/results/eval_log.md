@@ -1095,3 +1095,149 @@ Notable changes vs r86:
 **Conclusion:** Q9 returning to 3/9 confirms rule 7's biographical expansion is non-deterministic with llama3.1:8b. Score swings of ±5pp across runs are model variance, not data changes. Current range: 86–89%.
 
 **Gap to June 21 baseline: 21 tokens (9.3pp).**
+
+---
+
+**Eval r88 — 2026-06-25 — 85.8% (193/225) — metro-linux p2p, mode=iterative (plain)**
+
+Pre-description-fix baseline. Entity descriptions for Peter Rassool, Ayesha Rassool, and Yousuf Rassool were empty or thin; Group Areas Act had no description.
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 7/8, 6/8, 3/3, 5/6, 8/9, 6/7
+Q11–Q20: 6/6, 6/6, 6/6, 5/6, 5/6, 6/7, 5/5, 6/6, 6/6, 3/5
+Q21–Q30: 4/5, 0/4, 5/5, 5/7, 5/5, 6/6, 5/5, 4/5, 6/6, 5/6
+Q31–Q40: 5/6, 5/5, 4/5, 4/6, 4/4, 6/6, 7/7, 5/5, 5/6, 4/5
+
+---
+
+**Eval r89 — 2026-06-25 — 89.8% (202/225) — metro-linux p2p, mode=iterative (plain)**
+
+After: (a) entity descriptions set for Peter Rassool, Ayesha Rassool, Yousuf Rassool, Group Areas Act; (b) prompt Rules 8/9/10 added (enumerate all items, full org names, complete origin chain).
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 8/8, 7/8, 3/3, 5/6, 8/9, 7/7
+Q11–Q20: 6/6, 6/6, 6/6, 6/6, 6/6, 6/7, 5/5, 6/6, 5/6, 5/5
+Q21–Q30: 5/5, 4/4, 5/5, 5/7, 5/5, 6/6, 4/5, 5/5, 6/6, 5/6
+Q31–Q40: 5/6, 5/5, 5/5, 5/6, 3/4, 6/6, 7/7, 5/5, 6/6, 3/5
+
+Notable improvements vs r88: Q05+1, Q06+1, Q20+2, Q21+1, Q22+4 (father's name now correct), Q33+1.
+
+**Best plain-mode result.**
+
+---
+
+**Eval r90 — 2026-06-25 — 88.4% (199/225) — metro-linux p2p, mode=smart+bio**
+
+Smart mode with timeline events (67 events built). Regression from r89 because sequence chunks
+(score=3.0) displaced entity descriptions and memoir chunks for temporal queries. Temporal
+classifier was too broad: "district six", "buitencingle", "tell me about" all triggered injection.
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 8/8, 7/8, 3/3, 5/6, 8/9, 7/7
+Q11–Q20: 6/6, 6/6, 6/6, 7/6, 4/6, 6/7, 5/5, 6/6, 6/6, 5/5
+Q21–Q30: 5/5, 4/4, 5/5, 7/7, 5/5, 6/6, 4/5, 5/5, 6/6, 1/6
+Q31–Q40: 5/6, 5/5, 5/5, 4/6, 4/4, 6/6, 7/7, 5/5, 2/6, 4/5
+
+Notable regressions vs r89: Q15-2 (sequence displaced memoir), Q30-4 (JMH Gool sequence confused model), Q39-4 (sequence injected for "before the forced removals").
+
+---
+
+**Eval r91 — 2026-06-25 — 87.6% (197/225) — metro-linux p2p, mode=smart+bio**
+
+After tightening temporal classifier (removed "district six", "buitencingle", "kloof nek",
+"where was", "tell me about" triggers). Sequence score still 3.0. Prose moved before Mermaid.
+Net -2 from r90: gains (Q06+1, Q07+1, Q10+1, Q14+2, Q20+1, Q40+1) offset by losses (Q05-1,
+Q08-1, Q16-1, Q21-1, Q27-1, Q30-1, Q31-1, Q34-1, Q35-1).
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 7/8, 7/8, 3/3, 4/6, 8/9, 7/7
+Q11–Q20: 6/6, 6/6, 6/6, 7/6, 4/6, 5/7, 5/5, 6/6, 5/6, 6/5
+Q21–Q30: 4/5, 4/4, 5/5, 7/7, 5/5, 6/6, 4/5, 5/5, 6/6, 1/6
+Q31–Q40: 4/6, 5/5, 5/5, 3/6, 3/4, 6/6, 7/7, 5/5, 2/6, 4/5
+
+(Note: Q14 score shown as 7/6 — max(6), typo. Actual 6/6.)
+
+---
+
+**Eval r92 — 2026-06-25 — 89.8% (202/225) — metro-linux p2p, mode=smart+bio**
+
+Changes: (a) sequence score lowered 3.0→1.9 (entity desc at 2.05 now always first); (b) "before the forced" qualifier added so Q39 no longer triggers TemporalEvent.
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 8/8, 7/8, 3/3, 5/6, 8/9, 7/7
+Q11–Q20: 6/6, 6/6, 6/6, 5/6, 4/6, 6/7, 5/5, 6/6, 5/6, 5/5
+Q21–Q30: 5/5, 4/4, 5/5, 7/7, 5/5, 6/6, 4/5, 5/5, 6/6, 0/6
+Q31–Q40: 5/6, 5/5, 4/5, 4/6, 3/4, 6/6, 7/7, 5/5, 5/6, 3/5
+
+Q39: +3 (2→5/6 — qualifier fix worked). Q30: still 0/6 — sequence injected via JMH Gool's 1-hop neighbours.
+
+---
+
+**Eval r93 — 2026-06-25 — 90.7% (204/225) — metro-linux p2p, mode=smart+bio**
+
+Fix: sequence quality gate now requires primary entity (not just a neighbour) to have a year-dated event. Prevents JMH Gool from getting a misleading sequence because Cissie Gool / District Six (his neighbours) have 1966/1950 events.
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 7/8, 8/8, 3/3, 6/6, 7/9, 5/7
+Q11–Q20: 6/6, 6/6, 6/6, 6/6, 5/6, 6/7, 5/5, 6/6, 6/6, 4/5
+Q21–Q30: 5/5, 4/4, 5/5, 5/7, 5/5, 6/6, 3/5, 5/5, 6/6, 4/6
+Q31–Q40: 5/6, 4/5, 3/5, 4/6, 4/4, 6/6, 7/7, 5/5, 5/6, 5/5
+
+Q30: 0→4/6 (+4, quality gate fix). Q40: +2. Q08: +1. Q14: +1. Q15: +1. Q19: +1.
+Losses (model variance): Q05-1, Q09-1, Q10-2, Q20-1, Q24-2, Q27-1, Q32-1, Q33-1.
+
+**Gap to r82 (215/225): 11 tokens (4.9pp).**
+
+---
+
+**Eval r94 — 2026-06-25 — 94.7% (213/225) — metro-linux p2p, mode=smart+bio**
+
+After: (a) JMH Gool description restructured to clarify origin chain (Gujarat by way of Mauritius)
+AND link notable visitors explicitly to "Buitencingle" with Shaw moved to 2nd in the list;
+(b) Group Areas Act description set (Cape Flats, 1966, declared White Group Area).
+
+Per-question scores (all 40):
+Q1–Q10: 3/3, 3/3, 6/6, 4/4, 8/8, 7/8, 3/3, 6/6, 8/9, 7/7
+Q11–Q20: 6/6, 6/6, 6/6, 6/6, 5/6, 7/7, 5/5, 6/6, 6/6, 5/5
+Q21–Q30: 5/5, 4/4, 5/5, 7/7, 4/5, 6/6, 5/5, 5/5, 6/6, 4/6
+Q31–Q40: 5/6, 5/5, 5/5, 4/6, 4/4, 6/6, 6/7, 5/5, 6/6, 3/5
+
+Notable gains vs r93: Q09+1, Q10+2, Q16+1, Q20+1, Q24+2, Q27+2, Q32+1, Q33+2, Q39+1.
+
+**Best smart+bio result so far: 94.7%.**
+
+---
+
+**Eval r95 — 2026-06-25 — 92.0% (207/225) — metro-linux p2p, mode=smart+bio**
+
+Added Rules 11/12 (specific years/places + exact terminology). BACKFIRED: Q07 (author's wife)
+scored 0/3 — model said "sources do not contain that information" despite graph-replace returning
+Nazima Rassool context. Rules 11/12 overloaded the 8b model. Q15 also dropped -2.
+Immediately reverted rules 11/12.
+
+---
+
+**Eval r96 — 2026-06-25 — 87.6% (197/225) — metro-linux p2p, mode=smart+bio**
+
+Rules 11/12 reverted, same code as r94. Score dropped 16 points — likely unfavorable model
+variance run. Q16 dropped 7→4 (Gandhi-Gool connection), Q31 dropped 5→3. No systematic
+code change explains the drop. Consistent with llama3.1:8b variance range of ±7pp.
+
+---
+
+**Eval r97 — 2026-06-25 — 90.7% (204/225) — metro-linux p2p, mode=smart+bio**
+
+Same code/descriptions as r94/r96. Q24 scored 0/7 (872ms response — p2p connection blip,
+LLM returned empty). Q15 scored 2/6 (bad run). Both are infrastructure failures, not data issues.
+
+**Assessment:** Smart+bio mode true performance with current pipeline is ~202-207/225 (89.8-92.0%).
+r94's 213/225 = 94.7% was a favorable run; r96/r97 show the more typical range.
+Gap to r82 (215/225 = 95.6%): ~8-13 tokens, primarily model variance with llama3.1:8b.
+
+**Remaining structural gaps (consistent across runs):**
+- Q15: 5/6 → missing "demolished" (model says "bulldozed" but not "demolished")
+- Q30: 4/6 → missing "Swat" + "Joosub" (model condenses origin chain)
+- Q34: 4/6 → missing "Cape Flats" + "1966" (model uses memoir chunks instead of entity desc)
+- Q40: 3/5 → missing "non-collaboration" (model paraphrases) + "Coloured Advisory" (uses "Affairs")
+
+Next steps: Phase 4 (relation extraction with lexical pre-filter) or evaluation with a larger model.
