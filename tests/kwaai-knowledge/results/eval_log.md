@@ -1,4 +1,44 @@
 
+## r102 — 2026-06-25 — **93.7% (208/222)** — First run at max=222; bio-expansion confirms gains; Q33 enumeration regression
+
+**Flags:** biographical-expansion=true, model=llama3.1:8b, p2p://auto
+
+**Changes since r100:** Q16 "Mahatma" removed from keywords (honorific was conferred by A.H. Gool in farewell address 1914 — not a pre-existing title; model using it generically = training data intrusion). Max 223→222.
+
+**Raw output: 209/223 = 93.7%** (eval launched before JSON fix; Q16 shows 6/6 using "Mahatma" via biographical-expansion — exactly the training-data use the keyword removal was meant to address). **Adjusted for correct keywords: 208/222 = 93.7%**.
+
+**Q07: 0/3 → 3/3, Q09: 3/9 → 9/9** — biographical-expansion fully restores these biographical questions.
+**Q15: 3/5 → 5/5** — forced removals now perfect.
+**Q33: 5/5 → 2/5 (regression)** — biographical-expansion hurts enumeration questions. Model writes detailed biographies for each of 6 notable figures, only covering 4 names (misses Shaw and Prince of Wales). Bio-expansion is a single-subject optimization that degrades list answers.
+**Q31: 6/6, Q37: 7/7** — holding.
+**Q34: 5/6** — "1966" still occasionally missing due to model variance.
+
+**Bio-expansion tradeoff:** +9 from Q07+Q09+Q15, -3 from Q33. Net +6 vs no-bio run. Bio-expansion is still clearly better overall.
+
+| Q | r101 (no bio) | r102 (bio) | delta | Note |
+|---|--------------|------------|-------|------|
+| q07 | 0/3 | 3/3 | +3 | ✓ bio-expansion fixes wife identification |
+| q09 | 3/9 | 9/9 | +6 | ✓ bio-expansion fixes grandfather biography |
+| q15 | 3/5 | 5/5 | +2 | ✓ forced removals now perfect |
+| q27 | 3/5 | 4/5 | +1 | Variance |
+| q33 | 5/5 | 2/5 | -3 | ✗ bio-expansion causes enumeration miss |
+| q40 | 5/5 | 4/5 | -1 | Variance |
+| q20 | 4/5 | 3/5 | -1 | Variance |
+
+---
+
+## r101 — 2026-06-25 — **87.4% (194/222)** — Baseline without biographical-expansion; confirms flag is required
+
+**Flags:** biographical-expansion=false, model=llama3.1:8b
+
+**Note:** Eval ran against the original Q16 keywords (6 groups, Mahatma present). Adjusted to max=222: 194/222 = 87.4%.
+
+**Q07: 0/3** — model says "wife's name not explicitly mentioned" despite Nazima Rassool entity description at [1]. Bio-expansion is required for Q07.
+**Q09: 3/9** — model gives only the name, not the biography. Bio-expansion required.
+**Q16: 5/6 (old keywords) → 5/5 (new keywords)** — model correctly uses "Mohandas Karamchand Gandhi" without "Mahatma"; with corrected keywords this is now perfect.
+
+---
+
 ## r100 — 2026-06-25 — **92.9% (208/224)** — Rule 7 fix stops biographical hallucination; Q31/Q34 perfect
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, p2p://auto
