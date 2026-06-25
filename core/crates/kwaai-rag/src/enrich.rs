@@ -279,6 +279,44 @@ pub async fn enrich_entity_descriptions(
                 continue;
             }
 
+            // ── Neighbor context ───────────────────────────────────────────────────
+            // For Person entities, append descriptions from neighboring Place and
+            // Organization entities. This handles cases where the memoir text
+            // grammatically attributes facts to a place ("Buitencingle became a
+            // gathering place for... Shaw, Rhodes, Gandhi") rather than to the person
+            // who owned or lived at that place — so raw corpus scans for the person's
+            // name miss the passage but the Place entity's description captures it.
+            let neighbor_context: String = if is_person {
+                store
+                    .neighbors_of(node.id)
+                    .into_iter()
+                    .filter_map(|(nid, _rel, _strength)| {
+                        let neighbor = store.get_entity(nid)?;
+                        let ntype = neighbor.entity_type.to_lowercase();
+                        if (ntype == "place" || ntype == "location" || ntype == "organization")
+                            && !neighbor.description.is_empty()
+                            && neighbor.description.len() > 40
+                        {
+                            Some(format!(
+                                "[Neighbor Context: {} ({})]\n{}",
+                                neighbor.name, neighbor.entity_type, neighbor.description
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n---\n")
+            } else {
+                String::new()
+            };
+
+            let evidence_text = if neighbor_context.is_empty() {
+                evidence_text
+            } else {
+                format!("{evidence_text}\n---\n{neighbor_context}")
+            };
+
             let url_idx = items.len() % inference_urls.len().max(1);
             let inference_url = inference_urls.get(url_idx).cloned().unwrap_or_default();
             items.push(WorkItem {
