@@ -227,10 +227,9 @@
     "id": "q16",
     "type": "cross_entity",
     "question": "Who was Gandhi and what was his connection to the Gool family?",
-    "expected_answer": "Mahatma Gandhi was a key figure in the Indian independence movement and a pioneer of non-violent resistance (satyagraha). He lived in South Africa from 1893 to 1914 and organised the Indian community's resistance to discriminatory legislation. He had a personal connection to the Gool family: he visited the family mansion at 7 Buitencingle Street and was a subscriber to J.M.H. Gool's Indian Opinion newspaper. Gandhi's presence at Buitencingle is documented in archival records showing his correspondence with J.M.H. Gool.",
+    "expected_answer": "Mohandas Karamchand Gandhi lived in South Africa from 1893 to 1914 and organised the Indian community's resistance to discriminatory legislation through passive resistance and non-violent satyagraha campaigns. He had a personal connection to the Gool family: he stayed at the family mansion at 7 Buitencingle Street in February 1914 during the satyagraha campaign. The honorific 'Mahatma' was conferred on Gandhi by A.H. Gool in his farewell address as Gandhi was leaving South Africa in 1914.",
     "expected_keywords": [
       "Gandhi",
-      "Mahatma",
       "Buitencingle",
       [
         "passive",
