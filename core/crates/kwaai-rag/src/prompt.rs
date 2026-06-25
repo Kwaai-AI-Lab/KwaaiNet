@@ -57,9 +57,13 @@ pub fn build_chat_messages(
              1. Read ALL excerpts before answering. Names, dates, and facts may appear \
                 in any excerpt, not just the first one.\n\
              2. Every factual claim must cite its source number in brackets, \
-                e.g. \"The author is Joe Rassool [9].\"\n\
-             3. ABSOLUTE RULE — never invent, guess, or fabricate names, places, dates, \
-                or quotes. If a specific name is not written in the excerpts, do not produce it.\n\
+                e.g. \"The author is Joe Rassool [9].\" Only cite numbers that exist: [1]–[{n}]. \
+                Citing a number outside this range means you are fabricating a source.\n\
+             3. ABSOLUTE RULE — your general knowledge is not a valid source for this task. \
+                Every name, date, place, title, or fact you state MUST appear in the numbered \
+                excerpts above. Do not add information from memory or training even if you \
+                believe it is correct. Do not dispute or 'correct' information in the sources — \
+                if a source says 1898, write 1898.\n\
              4. If the answer is clearly present in the excerpts, give it directly — \
                 do not hedge. If it is absent, say exactly: \
                 \"The provided sources do not contain that information.\"\n\

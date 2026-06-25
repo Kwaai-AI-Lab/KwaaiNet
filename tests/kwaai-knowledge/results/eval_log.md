@@ -1,4 +1,40 @@
 
+## r99 — 2026-06-25 — **93.3% (209/224)** — Anti-hallucination prompt + D6 timeline fix
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, p2p://auto
+
+**Changes:**
+- Rule 3 strengthened: training knowledge explicitly forbidden; "don't dispute sources" added (→ "(not 1898 as mentioned)" style overrides stopped)
+- Rule 2 extended: only cite [1]–[N]; citing higher numbers = fabricated source
+- District Six timeline: deleted wrong "1950 — Cape Flats dispersal" event (1950 = Act passage; actual removals 1966–1982); only "1940s" anti-apartheid event remains, which fails year gate → sequence diagram no longer injected for D6
+- Group Areas Act entity: added description with 1966, Cape Flats, White Group Area, demolished (not yet in retrieval — entity embedding not updated by set-description)
+
+**Q31: 4/6 → 5/6** — hallucination stopped. Model now says "Loop Street", "J.M.H. Gool". Still missing "1898" (entity desc has it, model doesn't cite it).
+**Q34: 4/6 → 5/6** — sequence diagram with wrong 1950 date removed; model now says "Cape Flats". Still missing "1966". Still cites non-existent [16] despite Rule 2.
+**Q40: 4/5 → 3/5** — model variance; "non-collaboration" not said this run.
+**Q09: 0/9 → 9/9** — p2p blip fixed (normal run).
+
+**Structural range (synonym-fair /224): ~209±7 = 91–95%.**
+
+| Q | r98 | r99 | delta | Note |
+|---|-----|-----|-------|------|
+| q05 | 8/8 | 7/8 | -1 | Variance |
+| q06 | 6/8 | 7/8 | +1 | Variance |
+| q09 | 0/9 | 9/9 | +9 | p2p blip → normal |
+| q14 | 5/6 | 6/6 | +1 | Variance |
+| q15 | 4/5 | 5/5 | +1 | ✓ Sequence diagram removed; model says "demolished" |
+| q24 | 6/7 | 7/7 | +1 | Variance |
+| q30 | 6/6 | 5/6 | -1 | Variance |
+| q31 | 4/6 | 5/6 | +1 | ✓ Hallucination fixed; Loop St + Gool; missing 1898 |
+| q33 | 4/5 | 5/5 | +1 | Variance |
+| q34 | 4/6 | 5/6 | +1 | ✓ Sequence 1950→removed; Cape Flats now correct; missing 1966 |
+| q35 | 4/4 | 3/4 | -1 | Variance |
+| q37 | 7/7 | 6/7 | -1 | Variance |
+| q39 | 6/6 | 5/6 | -1 | Variance |
+| q40 | 4/5 | 3/5 | -1 | Variance; non-collaboration not said this run |
+
+---
+
 ## r98 — 2026-06-25 — **88.8% (199/224)** — Synonym-fair eval introduced; Q09 p2p blip
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, p2p://auto
