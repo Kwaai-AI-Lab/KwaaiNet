@@ -5,6 +5,7 @@
 //! LLM call produces a JSON payload with `description` and (for Person entities)
 //! `gender`. Existing non-empty values are preserved unless `force` is true.
 
+use std::cmp::Reverse;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -189,7 +190,11 @@ pub async fn enrich_entity_descriptions(
             // This prevents a bare first-name alias from pulling in chunks about unrelated
             // people who share the same first name, which causes the LLM to fabricate
             // relationships between the entity and those unrelated people.
-            let evidence_text: String = chunks
+            //
+            // Sort by named-entity density (uppercase word count) so information-rich
+            // chunks — those listing notable associates, dates, organisations — appear
+            // early and are not crowded out by narrative padding.
+            let mut filtered_chunks: Vec<_> = chunks
                 .iter()
                 .flatten()
                 .filter(|c| {
@@ -199,6 +204,23 @@ pub async fn enrich_entity_descriptions(
                             .iter()
                             .any(|a| text_lower.contains(a.to_lowercase().as_str()))
                 })
+                .collect();
+            filtered_chunks.sort_by_key(|c| {
+                // Higher score = more uppercase words = more named entities = rank first
+                let density: usize = c
+                    .text
+                    .split_whitespace()
+                    .filter(|w| {
+                        w.chars()
+                            .next()
+                            .map(|ch| ch.is_uppercase())
+                            .unwrap_or(false)
+                    })
+                    .count();
+                std::cmp::Reverse(density)
+            });
+            let evidence_text: String = filtered_chunks
+                .into_iter()
                 .take(cfg.fetch_limit)
                 .map(|c| {
                     let mut s = String::new();
@@ -223,7 +245,7 @@ pub async fn enrich_entity_descriptions(
                 );
                 match meta.all_chunks() {
                     Ok(all) => {
-                        let fallback: Vec<String> = all
+                        let mut fallback_chunks: Vec<_> = all
                             .into_iter()
                             .filter_map(|(_id, c)| {
                                 let text_lower = c.text.to_lowercase();
@@ -232,17 +254,33 @@ pub async fn enrich_entity_descriptions(
                                         .iter()
                                         .any(|a| text_lower.contains(a.to_lowercase().as_str()))
                                 {
-                                    let mut s = String::new();
-                                    if let Some(ref sec) = c.section_name {
-                                        s.push_str(&format!("[Section: {sec}]\n"));
-                                    }
-                                    s.push_str(&c.text);
-                                    Some(s)
+                                    Some(c)
                                 } else {
                                     None
                                 }
                             })
+                            .collect();
+                        fallback_chunks.sort_by_key(|c| {
+                            let density: usize = c
+                                .text
+                                .split_whitespace()
+                                .filter(|w| {
+                                    w.chars().next().map(|ch| ch.is_uppercase()).unwrap_or(false)
+                                })
+                                .count();
+                            Reverse(density)
+                        });
+                        let fallback: Vec<String> = fallback_chunks
+                            .into_iter()
                             .take(cfg.fetch_limit)
+                            .map(|c| {
+                                let mut s = String::new();
+                                if let Some(ref sec) = c.section_name {
+                                    s.push_str(&format!("[Section: {sec}]\n"));
+                                }
+                                s.push_str(&c.text);
+                                s
+                            })
                             .collect();
                         fallback.join("\n---\n")
                     }
@@ -434,7 +472,7 @@ async fn call_enrich(
              {evidence_text}\n\n\
              Based ONLY on the excerpts above, return ONLY a JSON object with these two fields \
              (no other text, no markdown fences):\n\
-             {{\n  \"description\": \"<3-5 factual sentences about {name}. \
+             {{\n  \"description\": \"<3-7 factual sentences about {name}. \
              You MUST include every specific fact found in the excerpts: \
              (1) who they are and their primary role or title, \
              (2) any years or dates mentioned (birth, arrival, marriage, death), \
@@ -446,6 +484,9 @@ async fn call_enrich(
              passage — the evidence covers a broad memoir and other named people are usually \
              separate characters, not {name}\\'s relatives. \
              (5) organisations they founded, led, or belonged to. \
+             (6) ALL notable persons explicitly mentioned in the excerpts as having visited, \
+             met, corresponded with, or been personally connected to {name} — list every \
+             full name; do not summarise or say 'and others'. \
              PRIORITISE specific named entities and dates over general characterisations. \
              Do NOT add information absent from the excerpts. \
              CRITICAL: Any aliases listed above are all names for {name} themselves — \
@@ -699,7 +740,7 @@ async fn call_llm_once(prompt: &str, url: &str, model: &str, json_mode: bool) ->
         "stream": false,
         "options": {
             "temperature": 0.1,
-            "num_predict": 600,
+            "num_predict": 1000,
         },
     });
     if json_mode {
