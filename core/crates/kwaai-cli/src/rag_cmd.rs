@@ -7045,11 +7045,30 @@ struct NumericAnswer {
     tolerance: i64,
 }
 
+/// A keyword entry: either a single required token/phrase, or a synonym group where
+/// any one match scores the point. Synonym groups are written as JSON arrays:
+/// `["lawyer", "attorney"]` → 1 point if the answer contains either word.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum KeywordGroup {
+    Single(String),
+    Synonyms(Vec<String>),
+}
+
+impl KeywordGroup {
+    fn hits(&self, answer: &str, toks: &std::collections::HashSet<String>) -> bool {
+        match self {
+            Self::Single(kw) => keyword_hit(kw, answer, toks),
+            Self::Synonyms(syns) => syns.iter().any(|kw| keyword_hit(kw, answer, toks)),
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct EvalQuestion {
     id: String,
     question: String,
-    expected_keywords: Vec<String>,
+    expected_keywords: Vec<KeywordGroup>,
     #[serde(default)]
     expected_answer: Option<String>,
     /// Optional numeric answer for questions where the answer is a quantity
@@ -7528,7 +7547,7 @@ async fn cmd_eval(
             let kw_exact: usize = q
                 .expected_keywords
                 .iter()
-                .filter(|kw| keyword_hit(kw, &answer, &answer_toks))
+                .filter(|group| group.hits(&answer, &answer_toks))
                 .count();
             // Numeric proximity score (e.g. year estimation): adds fractional credit.
             let num_score: f32 = q.numeric_answer.as_ref().map_or(0.0, |na| {

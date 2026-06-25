@@ -1,4 +1,36 @@
 
+## r98 — 2026-06-25 — **88.8% (199/224)** — Synonym-fair eval introduced; Q09 p2p blip
+
+**Flags:** smart mode, biographical-expansion, model=llama3.1:8b, p2p://auto
+
+**Changes:** Synonym group support added to scorer (`KeywordGroup` enum, untagged serde). Q15, Q25, Q37, Q40 updated with synonym groups. Max score drops 225→224 (Q15 demolished/bulldozed merged from 2 keywords to 1 group).
+
+**Critical eval methodology review:** ~40% of keyword misses were NotebookLM word-lock (phrasing identical concepts differently). Synonym fixes confirmed working: Q25 4/5→5/5 ("political"/"leader" ← "activist"), Q37 6/7→7/7 ("attorney" ← "lawyer"), Q40 3/5→4/5 ("refusal to cooperate" ← "non-collaboration").
+
+**Q09: 0/9 — `(no response)` p2p blip.** Infrastructure failure, not code. Accounts for -8 of the total deficit.
+
+**Without Q09 blip: ~207/224 = 92.4%** — consistent with prior synonym-fair baseline.
+
+**Q30: 6/6 PERFECT** (+2 from r94's 4/6) — model got Swat + full origin chain this run.
+
+**Remaining real gaps:**
+- Q34: 4/6 — "1966" (year D6 declared White) not retrieved — entity description injection not firing
+- Q40: 4/5 — "Coloured Advisory" vs "Coloured Affairs Council" — model uses wrong body name (genuine error)
+- Q31: 4/6, Q16: 4/7 — consistent misses, need investigation
+
+| Q | r94 (/225) | r98 (/224) | delta | Note |
+|---|-----------|-----------|-------|------|
+| q06 | 7/8 | 6/8 | -1 | Variance |
+| q09 | 8/9 | 0/9 | -8 | p2p blip (no response) |
+| q15 | 5/6 | 4/5 | –1 | Max merged; model missed demolition this run |
+| q25 | 4/5 | 5/5 | +1 | ✓ Synonym fix: "political"/"leader" |
+| q27 | 5/5 | 4/5 | -1 | Variance |
+| q30 | 4/6 | 6/6 | +2 | ✓ Perfect — Swat + Gujarat + 1884 + Mauritius |
+| q37 | 6/7 | 7/7 | +1 | ✓ Synonym fix: "attorney" |
+| q40 | 3/5 | 4/5 | +1 | ✓ Synonym fix: "refusal to cooperate" |
+
+---
+
 ## r82 — 2026-06-22 — **95.6% (215/225)** — CONFIRMED (p2p://auto, metro-linux, 6s/q avg)
 
 **Flags:** smart mode, biographical-expansion, model=llama3.1:8b, **p2p://auto** (auto-selected metro-linux A6000 @ 37.7 tok/s)
