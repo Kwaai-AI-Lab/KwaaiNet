@@ -540,7 +540,13 @@ fn build_relations_suffix(
     };
     let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
-    for (dst_id, rel_type, _strength, _evid) in rels {
+    for (dst_id, rel_type, _strength, evid) in rels {
+        // Require at least 2 chunks of evidence for LLM-extracted relations.
+        // Single-chunk relations are likely hallucinations from 8B models.
+        // Seeded relations (evidence contains chunk_id == 0) bypass this gate.
+        if evid < 2 && !graph.is_relation_seeded(entity_id, dst_id, &rel_type) {
+            continue;
+        }
         if let Some(dst) = graph.get_entity(dst_id) {
             by_type.entry(rel_type).or_default().push(dst.name.clone());
         }

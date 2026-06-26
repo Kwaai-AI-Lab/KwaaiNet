@@ -4651,6 +4651,42 @@ fn normalize_underscores(s: &str) -> String {
     clean_entity_name(s)
 }
 
+/// Returns `true` when the chunk text contains at least one lexical trigger indicating a
+/// relation worth extracting (kinship, membership, founding, etc.).
+///
+/// Used to skip the expensive relation-extraction prompt on purely descriptive or
+/// narrative chunks where 8B models produce mostly hallucinations.  Seeded relations
+/// (family-tree YAML) are unaffected — this only gates the LLM extraction path.
+pub fn lexical_relation_trigger(text: &str) -> bool {
+    // Build a single lowercased copy so each trigger check is O(n) not O(n×k).
+    let lower = text.to_lowercase();
+    // Family / kinship
+    const FAMILY: &[&str] = &[
+        "son of", "daughter of", "wife of", "husband of", "married to", "married ",
+        "widow", "widower", "sibling", "half-brother", "half-sister", "half brother",
+        "half sister", "brother of", "sister of", "father of", "mother of",
+        "grandparent", "grandfather", "grandmother", "grandson", "granddaughter",
+        "nephew", "niece", "cousin", "uncle ", "aunt ", "foster child", "foster parent",
+        "adopted", "foster-parent", "foster-child",
+    ];
+    // Membership / founding / affiliation
+    const AGENT: &[&str] = &[
+        "member of", "founded", "affiliated", "belong to", "belonged to", "joined ",
+        "chairman", "secretary of", "president of", "founded by", "established by",
+        "co-founder", "works at", "worked at",
+    ];
+    // Spatial / biographical construction
+    const SPATIAL: &[&str] = &[
+        "built by", "constructed by", "lived in", "moved to", "relocated to",
+    ];
+    for &trigger in FAMILY.iter().chain(AGENT).chain(SPATIAL) {
+        if lower.contains(trigger) {
+            return true;
+        }
+    }
+    false
+}
+
 /// ingestion can continue without hard errors.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_from_text(
@@ -4729,6 +4765,12 @@ pub async fn extract_from_text(
         _ => String::new(),
     };
 
+    // Skip relation extraction on chunks with no lexical relation triggers.
+    // On 8B models, unconstrained relation extraction on purely narrative text produces
+    // 0–17% precision.  The trigger check costs ~O(n) string scans on each chunk and
+    // avoids a full second LLM call on non-relational passages.
+    let effective_no_relations = no_relations || !lexical_relation_trigger(text);
+
     // KB-specific type guidance: examples/anti-examples from the loaded schema.
     // Empty string when no schemas are loaded (most KBs, new projects).
     let kb_type_context = if kb_schemas.is_empty() {
@@ -4749,7 +4791,7 @@ pub async fn extract_from_text(
         format!("KB-SPECIFIC ENTITY TYPE GUIDANCE:\n{lines}\n\n")
     };
 
-    let prompt = if no_relations {
+    let prompt = if effective_no_relations {
         format!(
             "{section_context}\
              {pronoun_context}\
@@ -4977,7 +5019,7 @@ entities or omit the fictional one entirely.\n\n\
                     e
                 })
                 .collect();
-            let relations = if no_relations {
+            let relations = if effective_no_relations {
                 vec![]
             } else {
                 p.relations
