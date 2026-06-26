@@ -1325,6 +1325,11 @@ pub enum RagAction {
         #[arg(long)]
         no_relations: bool,
 
+        /// Extract dated events and cross-entity interactions into the timeline tables.
+        /// Runs a second LLM call per chunk — roughly doubles extraction time.
+        #[arg(long)]
+        timeline: bool,
+
         /// Number of adjacent chunks passed as context per extraction call (default: 1).
         #[arg(long, default_value = "1", value_name = "N")]
         graph_window: usize,

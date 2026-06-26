@@ -12,7 +12,6 @@ persons:
 
   - canonical: "Haji Joosub Maulvi Hamid Gool"
     gender: "Male"
-    description: "Haji Joosub Maulvi Hamid Gool was a prosperous spice merchant of Pathan origin from the Province of Swat (via Rander in Gujarat, India) who arrived at the Cape via Mauritius in 1884, establishing J.M.H. Gool & Co. and becoming a supplier to Queen Victoria's troops during the Anglo-Boer War. He had two wives: Bibi Gool (mother of Ayesha, Mohamed Saaid, and Zohra) and Wahida Gool (mother of Abdul Hamid, Goolam, Jane, Fatima, Mariam, Zobeida, and Mohammed Hanief). He seized the golden opportunity to import the spices himself. He founded the Hanaffi Quwatul Islam Mosque and built a grand mansion at 7 Buitencingle Street. Among his notable acquaintances at Buitencingle were Solly Joel, Cecil Rhodes, Mahatma Gandhi, the Prince of Wales, George Bernard Shaw, Sarojini Naidu, and Dr. Abdulla Abdurahman; it was Abdurahman and JMH Gool together who brought Cissie Abdurahman and Dr. Abdul Hamid Gool together — making Cissie Abdurahman a daughter-in-law of the Gool family. His friendship with Gandhi is documented in the Indian Opinion. He died on April 1, 1940."
     aliases:
       - "J.M.H. Gool"
       - "J. M. H. Gool"
@@ -149,7 +148,6 @@ persons:
 
   - canonical: "Dr. Abdulla Abdurahman"
     gender: "Male"
-    description: "Dr. Abdullah Abdurahman (also written Dr. Abdulla Abdurahman) was a pioneering Cape Town doctor and Coloured city councillor — the first member of the community to qualify as a physician from Glasgow University in 1893. He became an influential politician, serving on the Cape Town city council as a leading Non-European representative and advocate for the rights of the Coloured community. He was the father of Zainunnissa Cissie Gool, the renowned Cape Town activist and councillor, and a close associate of J.M.H. Gool."
     aliases:
       - "Abdulla Abdurahman"
       - "Abdullah Abdurahman"
@@ -158,7 +156,6 @@ persons:
 
   - canonical: "Cissie Gool"
     gender: "Female"
-    description: "Zainunnissa Cissie Gool was the daughter of Dr. Abdullah Abdurahman, Cape Town's first Non-European city councillor. She was a renowned Cape Town city councillor and community activist known for her fiery speeches and dedication to non-European rights. She married Dr. Abdul Hamid Gool (son of Haji Joosub Maulvi Hamid Gool), making her a daughter-in-law of the Gool family."
     aliases:
       - "Cissie"
       - "Zainunnisa Cissie Gool"
@@ -179,7 +176,6 @@ persons:
 
   - canonical: "Yousuf Rassool"
     gender: "Male"
-    description: "Yousuf (Joe) Rassool is the author of the memoir 'Lest We Forget — District Six'. He grew up in District Six, Cape Town, as one of several siblings: Abdul Rassool, Fazil Rassool, Zain Rassool, Rasheda Rassool, Berina Rassool, Yasmin Rassool, and Nasim Rassool. He is the son of Ayesha Rassool and Peter Alexander Rassool, and is married to Professor Nazima Rassool. They have three children: Feyruz Rassool, Reza Rassool, and Zarina Rassool; and six grandchildren: Joseph, Samuel, Alexander, Leonardo, Dylan, and Lewis."
     aliases:
       - "Joe Rassool"
       - "Yousuf Joe Rassool"
@@ -197,7 +193,6 @@ persons:
 
   - canonical: "Nazima Rassool"
     gender: "Female"
-    description: "Professor Nazima Rassool is the wife of Yousuf (Joe) Rassool, the author of the District Six memoir. She is an academic researcher and Professor who urged the author to ground his writing in historical research rather than relying on memory alone. Through her guidance, the author conducted research at the British Newspaper Library at Colindale, transforming the memoir into historically grounded scholarship."
     aliases:
       - "Nazima"
       - "Professor Nazima Rassool"
@@ -336,7 +331,6 @@ persons:
 
   - canonical: "Manilal Gandhi"
     gender: "Male"
-    description: "Manilal Gandhi was the son of Mahatma Gandhi — Mohandas Karamchand Gandhi — who led the passive resistance and non-violent satyagraha movement in South Africa. Mahatma Gandhi came to South Africa from India in 1893 and maintained a close friendship with the Gool family; he stayed at the Gool mansion at Buitencingle in Cape Town in 1914 during a critical phase of the satyagraha campaign. Manilal Gandhi himself lived and worked in South Africa for decades, editing the Indian Opinion newspaper and carrying forward his father's non-violent legacy."
     aliases:
       - "Manilal"
 
@@ -386,7 +380,6 @@ persons:
 
   - canonical: "Mohandas Karamchand Gandhi"
     gender: "Male"
-    description: "Mohandas Karamchand Gandhi, known as Mahatma Gandhi, was an Indian leader who came to South Africa in 1893 and championed the rights of Indians through passive resistance and non-violent satyagraha. He stayed at the Gool mansion at 7 Buitencingle Street in Cape Town in February 1914 during a crucial time in the satyagraha campaign. His friendship with Haji Joosub Maulvi Hamid Gool and Gandhi's visits to Buitencingle are documented in the Indian Opinion newspaper. He later returned to India where he led the independence movement through non-violent civil resistance."
     aliases:
       - "MK Gandhi"
       - "M.K. Gandhi"
@@ -463,7 +456,6 @@ persons:
 
   - canonical: "Non-European Unity Movement"
     entity_type: Organization
-    description: "The Non-European Unity Movement (NEUM) was a South African anti-apartheid political movement founded on a Ten Point programme of full democratic rights. Its core principle was non-collaboration — the refusal of non-European people to collaborate with apartheid institutions. The NEUM deployed the boycott as its primary political weapon, most notably the boycott of the Coloured Advisory Council (C.A.C.) in 1943. The Teachers League of South Africa (TLSA), representing Coloured teachers, was closely affiliated with the NEUM and adopted the same boycott and non-collaboration principles; the teachers of the TLSA were among the leading voices in the NEUM's non-European unity campaign. The NEUM was also affiliated with the New Era Fellowship."
     aliases:
       - "NEUM"
       - "Non European Unity Movement"
@@ -478,7 +470,6 @@ persons:
 
   - canonical: "Teachers League of South Africa"
     entity_type: Organization
-    description: "The Teachers League of South Africa (TLSA) was a professional organisation for Coloured teachers that affiliated with the Non-European Unity Movement (NEUM) to resist apartheid education policies. The TLSA employed the boycott weapon against apartheid institutions and championed non-collaboration, advocating for the rights of the Coloured community and non-European people in South Africa."
     aliases:
       - "TLSA"
       - "Teachers' League of South Africa"
@@ -487,7 +478,6 @@ persons:
 
   - canonical: "New Era Fellowship"
     entity_type: Organization
-    description: "The New Era Fellowship (NEF) was a Cape Town political and cultural organisation affiliated with the Non-European Unity Movement (NEUM) that hosted regular public lectures and debates on democracy, non-racialism, and resistance to apartheid. It was a key intellectual forum for developing the ideas of non-collaboration among non-European communities in South Africa."
     aliases:
       - "NEF"
 
@@ -499,7 +489,6 @@ persons:
 
   - canonical: "Hanaffi Quwatul Islam Mosque"
     entity_type: Organization
-    description: "The Hanaffi Quwatul Islam Mosque was founded by J.M.H. Gool (Haji Joosub Maulvi Hamid Gool) as a mosque in Cape Town on Loop Street, completed in 1898. Also called the Loop Street Mosque or Hanaffi Mosque, it was one of Gool's major philanthropic contributions to the Cape Muslim community. A whitewashed structure with a domed minaret, the Hanaffi mosque served as a central religious gathering place for Muslim families of District Six."
     aliases:
       - "Quwatul Islam Mosque"
       - "Loop Street Mosque"
@@ -508,7 +497,6 @@ persons:
 
   - canonical: "Indian Opinion"
     entity_type: Publication
-    description: "The Indian Opinion was Mahatma Gandhi's weekly newspaper documenting passive resistance and non-violent satyagraha campaigns — including his historic visit to Buitencingle Street, Cape Town — that shaped India's freedom movement. Founded in 1903 in Natal, South Africa, it advocated for Indian rights. Gandhi's friendship with the Gool family — particularly his stay at the Buitencingle mansion in February 1914 during a critical phase of the satyagraha campaign — was documented in the Indian Opinion. Gandhi personally visited 7 Buitencingle Street, staying with the Gool family while conducting satyagraha campaigns in Cape Town. Mahatma Gandhi's philosophy of passive resistance and satyagraha shaped his non-violent campaigns in South Africa and later in India. Gandhi at Buitencingle used passive resistance — non-violent protest — as the instrument of India's freedom campaign."
     aliases:
       - "Indian Opinion Dec 29_ 1906 p986"
       - "Indian Opinion Dec 29, 1906 p986"
@@ -517,7 +505,6 @@ persons:
 
   - canonical: "J.M.H. Gool & Co."
     entity_type: Organization
-    description: "Joosub Maulvi Hamid Gool — the author's grandfather, a prosperous spice merchant from India who founded the Hanaffi mosque — hosted Mahatma Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw at his celebrated Buitencingle mansion in Cape Town; his friendship with Gandhi was documented in the Indian Opinion. He came from the Province of Swat in India; his family moved from Swat to Rander in Gujarat, and from Gujarat he journeyed to the Cape via Mauritius, arriving in 1884, leaving behind his young bride in India. He was a prosperous spice merchant who founded the Hanaffi mosque, based at his family mansion at No. 7 Buitencingle Street — a cobbled street in the Dutch belt of Cape Town at the foot of Table Mountain. The Buitencingle mansion was a celebrated gathering place visited by Mahatma Gandhi, Cecil Rhodes, Dr. Abdullah Abdurahman, and George Bernard Shaw; Gandhi's friendship with Gool is documented in the Indian Opinion newspaper. He had two wives — Bibi Gool (mother of Ayesha, Mohamed Saaid, and Zohra) and Wahida Gool (mother of Abdul Hamid, Goolam, Jane, Fatima, Mariam, Zobeida, and Mohammed Hanief) — and his son Dr. Abdul Hamid Gool married Zainunnissa Cissie Abdurahman (daughter of Dr. Abdullah Abdurahman), making Cissie a daughter-in-law of the Gool family. Haji Joosub Maulvi Hamid Gool — the author's grandfather — is remembered as a prosperous merchant who founded the Hanaffi mosque and whose friendship with Gandhi was documented in the Indian Opinion, making him a celebrated figure in Cape Town's history."
     aliases:
       - "JMH Gool & Co"
       - "J.M.H Gool & Co"
@@ -525,14 +512,12 @@ persons:
 
   - canonical: "Hewat Training College"
     entity_type: Organization
-    description: "Hewat Training College was a teacher training college for Coloured students in Cape Town, preparing teachers for Coloured schools. Teachers trained at Hewat gained practical classroom teaching experience during their college years. It was closely connected to the political and cultural life of the Cape Coloured community through its teachers and staff."
     aliases:
       - "Hewat College"
       - "Hewat"
 
   - canonical: "Kismets Cricket Club"
     entity_type: Organization
-    description: "Kismets Cricket Club (Kismets C.C.) was a District Six cricket club competing in the Western Province Indian Cricket Union's non-European cricket competitions. The author Yousuf Rassool played club cricket for the Kismets alongside friends like Hassen Mall. The club championed non-racial cricket in District Six and was instrumental in transforming the Western Province Indian Cricket Union by welcoming players from all communities into the Sunday League."
     aliases:
       - "Kismets"
       - "Kismets CC"
@@ -550,7 +535,6 @@ persons:
 
   - canonical: "District Six"
     entity_type: Place
-    description: "District Six was a multicultural community in Cape Town, nestled below Devil's Peak, celebrated for jazz and community spirit. Below Devil's Peak in Cape Town, this multicultural jazz community — District Six — was home to diverse residents: Coloured, Malay, African, and others. In 1966 it was declared a White Group Area under the Group Areas Act. Under the Group Areas Act, the community suffered forced removals: non-White residents were expelled to the Cape Flats; their homes were demolished and the land bulldozed flat, leaving only the mosques and churches standing. The forced removals destroyed one of Cape Town's most vibrant communities."
     aliases:
       - "District 6"
       - "the District"
@@ -570,13 +554,11 @@ persons:
 
   - canonical: "Kloof Nek"
     entity_type: Place
-    description: "Kloof Nek is a mountain saddle in Cape Town connecting Table Mountain to Lion's Head. Kloof Street leads up from the city through the Glen — a wooded dell of haunting beauty — to the Kloof Nek saddle. The area lies above Buitencingle Street and was a beloved retreat for the author and his friends, who read poetry among its trees."
     aliases:
       - "Kloof Nek Pass"
 
   - canonical: "7 Buitencingle Street"
     entity_type: Place
-    description: "No. 7 Buitencingle Street — a cobbled street built by the author's grandfather — was cobbled in the Cape Dutch tradition, in the Dutch belt of Cape Town at the foot of Table Mountain. The word 'cingle' meant belt in Dutch, and cobbled Buitencingle was the outermost belt of Cape Town at that time. The author's grandfather, Haji Joosub Maulvi Hamid Gool, built his grand 13-room mansion at this cobbled address, which became a celebrated gathering place for notable visitors including Solly Joel, Cecil Rhodes, Mahatma Gandhi, the Prince of Wales, George Bernard Shaw, and Sarojini Naidu."
     aliases:
       - "Buitencingle Street"
       - "Buitencingle"

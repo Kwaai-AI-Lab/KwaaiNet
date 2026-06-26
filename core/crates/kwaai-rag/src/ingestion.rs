@@ -69,6 +69,10 @@ pub struct GraphIngestConfig {
     pub validation_confidence_floor: f32,
     /// Maximum number of entities to validate per run (cost guard). Default 200.
     pub validation_budget: usize,
+    /// When true, extract dated events and cross-entity interactions from each chunk
+    /// and store them in the timeline tables. Runs a second LLM call per chunk.
+    /// Default false (opt-in; enable via `--timeline` on `graph build`).
+    pub extract_timeline: bool,
 }
 
 impl GraphIngestConfig {
@@ -207,6 +211,8 @@ struct ChunkResult {
     entities: Vec<ExtractedEntity>,
     relations: Vec<ExtractedRelation>,
     embeddings: Vec<Vec<f32>>,
+    raw_events: Vec<crate::sequence::RawEvent>,
+    raw_interactions: Vec<crate::sequence::RawInteraction>,
 }
 
 /// Public entry point for the `graph build` command.
@@ -255,6 +261,7 @@ pub async fn extract_and_store_entities_pub(
     let model = Arc::new(graph_cfg.model.clone());
     let entity_types_cfg = Arc::new(graph_cfg.entity_types.clone());
     let no_relations = graph_cfg.no_relations;
+    let extract_timeline = graph_cfg.extract_timeline;
     let context_window = graph_cfg.context_window;
     let chunk_batch = graph_cfg.chunk_batch.max(1);
     let store = graph_cfg.store.clone();
@@ -360,6 +367,32 @@ pub async fn extract_and_store_entities_pub(
                 warn!("link_chunk: {e}");
             }
 
+            // Store timeline events and interactions when present (opt-in via extract_timeline).
+            if !res.raw_events.is_empty() || !res.raw_interactions.is_empty() {
+                let (events, interactions) = crate::sequence::resolve_extracted(
+                    res.raw_events,
+                    res.raw_interactions,
+                    res.chunk_id,
+                    &graph,
+                );
+                // Group events by entity_id for a single write per entity.
+                let mut by_entity: std::collections::HashMap<i64, Vec<_>> =
+                    std::collections::HashMap::new();
+                for ev in events {
+                    by_entity.entry(ev.entity_id).or_default().push(ev);
+                }
+                for (eid, evs) in &by_entity {
+                    if let Err(e) = graph.store_timeline_events(*eid, evs) {
+                        warn!("store_timeline_events: {e}");
+                    }
+                }
+                for ia in &interactions {
+                    if let Err(e) = graph.store_interaction(ia) {
+                        warn!("store_interaction: {e}");
+                    }
+                }
+            }
+
             if let Some(ref prog) = progress {
                 prog(done, total, graph.node_count(), graph.relation_count());
             }
@@ -425,6 +458,7 @@ pub async fn extract_and_store_entities_pub(
         let entity_types_cfg = entity_types_cfg.clone();
         let gender_context = gender_context.clone();
         let gliner = gliner.clone();
+        let extract_timeline = extract_timeline;
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -496,6 +530,8 @@ pub async fn extract_and_store_entities_pub(
                             entities: vec![],
                             relations: vec![],
                             embeddings: vec![],
+                            raw_events: vec![],
+                            raw_interactions: vec![],
                         })
                         .await;
                     return;
@@ -542,12 +578,25 @@ pub async fn extract_and_store_entities_pub(
                 }
             };
 
+            // Extract dated events and interactions when the caller opted in.
+            // Skipped on chunks with no entities (nothing to anchor events to).
+            let (raw_events, raw_interactions) = if extract_timeline && !entities.is_empty() {
+                let entity_names: Vec<String> = entities.iter().map(|e| e.name.clone()).collect();
+                crate::sequence::extract_temporal_events(&text, &entity_names, url, &model)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                (vec![], vec![])
+            };
+
             let _ = tx
                 .send(ChunkResult {
                     chunk_id,
                     entities,
                     relations,
                     embeddings,
+                    raw_events,
+                    raw_interactions,
                 })
                 .await;
         });
@@ -1466,6 +1515,8 @@ async fn extract_entity_centric(
                             entities: vec![],
                             relations: vec![],
                             embeddings: vec![],
+                            raw_events: vec![],
+                            raw_interactions: vec![],
                         })
                         .await;
                     return;
@@ -1494,6 +1545,8 @@ async fn extract_entity_centric(
                     entities,
                     relations: vec![],
                     embeddings,
+                    raw_events: vec![],
+                    raw_interactions: vec![],
                 })
                 .await;
         });

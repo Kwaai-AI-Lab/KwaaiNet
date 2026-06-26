@@ -175,6 +175,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             doc_schema,
             entity_types,
             no_relations,
+            timeline,
             graph_window,
             sample_pct,
             yes,
@@ -192,6 +193,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 doc_schema,
                 entity_types,
                 no_relations,
+                timeline,
                 graph_window,
                 sample_pct,
                 yes,
@@ -653,6 +655,7 @@ async fn cmd_ingest(
                 validation_model: None,
                 validation_confidence_floor: 0.7,
                 validation_budget: 200,
+                extract_timeline: false,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -1942,6 +1945,7 @@ async fn cmd_rebuild(
     doc_schema: Option<std::path::PathBuf>,
     entity_types: Option<String>,
     no_relations: bool,
+    timeline: bool,
     graph_window: usize,
     sample_pct: Option<u8>,
     yes: bool,
@@ -2019,7 +2023,7 @@ async fn cmd_rebuild(
                 validation_model: None,
                 validation_floor: 0.7,
                 validation_budget: 200,
-                timeline: false,
+                timeline,
             },
             kb.clone(),
         )
@@ -2341,6 +2345,7 @@ async fn run_sync_pass(
                     validation_model: None,
                     validation_confidence_floor: 0.7,
                     validation_budget: 200,
+                    extract_timeline: false,
                 });
             }
         }
@@ -2712,6 +2717,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     validation_model,
                     validation_confidence_floor: validation_floor,
                     validation_budget,
+                    extract_timeline: timeline,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
