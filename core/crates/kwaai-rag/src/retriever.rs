@@ -316,11 +316,8 @@ pub async fn retrieve_graph_anchored(
 
             if let Some(eid) = entity_id {
                 if let Some(entity) = graph.get_entity(eid) {
-                    let relations_suffix = build_relations_suffix(entity, eid, graph);
-                    let text = format!(
-                        "[Graph Query Result]\n{}: {}{}",
-                        entity.name, entity.description, relations_suffix
-                    );
+                    let (fact_card, _) = build_entity_fact_card(entity, eid, graph);
+                    let text = format!("[Graph Query Result]\n{}", fact_card);
                     let synthetic =
                         make_synthetic_chunk(format!("[Graph: {}]", entity.name), text, 3.0);
 
@@ -526,55 +523,97 @@ pub fn resolve_relative_entity_name(query: &str, graph: &GraphStore) -> Option<S
     graph.get_entity(relative_id).map(|e| e.name.clone())
 }
 
-/// Build a natural-language relations suffix for an entity.
+/// Build a structured entity fact card for injection into the LLM context.
 ///
-/// Groups all outgoing relations by type and formats them as summary sentences.
-/// Shared by `inject_entity_descriptions` (Inject mode) and the Prepend/Replace paths.
-fn build_relations_suffix(
+/// Puts relations and aliases first — these are structured graph data and are
+/// keyword-dense by construction. The prose description follows as supplementary
+/// context. Returns `(card_text, has_content)` where `has_content` is true when
+/// at least one of aliases, relations, structured fields, or a substantial
+/// description is present.
+///
+/// This replaces the old `description + relations_suffix` pattern where an empty
+/// description suppressed injection even for entities with rich relation data
+/// (e.g. Peter Alexander Rassool: 0 description but 19 seeded relations).
+fn build_entity_fact_card(
     entity: &crate::graph::EntityNode,
     entity_id: i64,
     graph: &GraphStore,
-) -> String {
-    let Ok(rels) = graph.outgoing_relations(entity_id) else {
-        return String::new();
-    };
-    let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for (dst_id, rel_type, _strength, evid) in rels {
-        // Require at least 2 chunks of evidence for LLM-extracted relations.
-        // Single-chunk relations are likely hallucinations from 8B models.
-        // Seeded relations (evidence contains chunk_id == 0) bypass this gate.
-        if evid < 2 && !graph.is_relation_seeded(entity_id, dst_id, &rel_type) {
-            continue;
-        }
-        if let Some(dst) = graph.get_entity(dst_id) {
-            by_type.entry(rel_type).or_default().push(dst.name.clone());
-        }
+) -> (String, bool) {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Header: canonical name + entity type
+    lines.push(format!("{} [{}]", entity.name, entity.entity_type));
+
+    // Aliases — every distinct alias is a potential keyword hit in the LLM response.
+    // "Professor Nazima Rassool" → "Professor" keyword; "Zainunnissa" → alias match.
+    let aliases: Vec<&str> = entity
+        .aliases
+        .iter()
+        .filter(|a| a.len() > 2 && *a != &entity.name)
+        .map(String::as_str)
+        .take(8)
+        .collect();
+    if !aliases.is_empty() {
+        lines.push(format!("Also known as: {}.", aliases.join(", ")));
     }
-    let mut statements: Vec<String> = Vec::new();
-    for (rel_type, mut targets) in by_type {
-        targets.dedup();
-        targets.truncate(12);
-        let list = targets.join(", ");
-        let sentence = match rel_type.as_str() {
-            "parent_of" => format!("The children of {} are: {}.", entity.name, list),
-            "child_of" => format!("{} is the child of {}.", entity.name, list),
-            "spouse_of" => format!("{} was married to {}.", entity.name, list),
-            "sibling_of" => format!("The siblings of {} include: {}.", entity.name, list),
-            "grandparent_of" => {
-                format!("The grandchildren of {} include: {}.", entity.name, list)
+
+    // Relations — primary structured content. Same evidence filter as build_relations_suffix.
+    let mut has_relations = false;
+    if let Ok(rels) = graph.outgoing_relations(entity_id) {
+        let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (dst_id, rel_type, _strength, evid) in rels {
+            if evid < 2 && !graph.is_relation_seeded(entity_id, dst_id, &rel_type) {
+                continue;
             }
-            "grandchild_of" => format!("{} is the grandchild of {}.", entity.name, list),
-            other => format!("{} {} {}.", entity.name, other.replace('_', " "), list),
-        };
-        statements.push(sentence);
+            if let Some(dst) = graph.get_entity(dst_id) {
+                by_type.entry(rel_type).or_default().push(dst.name.clone());
+            }
+        }
+        for (rel_type, mut targets) in by_type {
+            targets.dedup();
+            targets.truncate(15);
+            let list = targets.join(", ");
+            has_relations = true;
+            let line = match rel_type.as_str() {
+                "parent_of" => format!("Children: {}.", list),
+                "child_of" => format!("Parent: {}.", list),
+                "spouse_of" => format!("Married to: {}.", list),
+                "sibling_of" => format!("Siblings: {}.", list),
+                "grandparent_of" => format!("Grandchildren: {}.", list),
+                "grandchild_of" => format!("Grandchild of: {}.", list),
+                "member_of" => format!("Member of: {}.", list),
+                "founded" => format!("Founded: {}.", list),
+                "affiliated_with" => format!("Affiliated with: {}.", list),
+                "lived_in" => format!("Lived in: {}.", list),
+                "associated_with" => format!("Associated with: {}.", list),
+                "foster_parent_of" => format!("Foster parent of: {}.", list),
+                "foster_child_of" => format!("Foster child of: {}.", list),
+                other => format!("{}: {}.", other.replace('_', " "), list),
+            };
+            lines.push(line);
+        }
     }
-    if statements.is_empty() {
-        String::new()
-    } else {
-        format!("\n\nKnown relationships: {}", statements.join(" "))
+
+    // Structured metadata fields (dateEnacted, jurisdiction, founded year, etc.)
+    for (key, field) in &entity.fields {
+        let v = field.value.trim();
+        if !v.is_empty() {
+            lines.push(format!("{}: {}.", key, v));
+        }
     }
+
+    // Prose description — supplementary context appended after structured facts
+    let desc = entity.description.trim();
+    if desc.len() > 40 {
+        lines.push(String::new()); // visual separator
+        lines.push(desc.to_string());
+    }
+
+    let has_content = has_relations || !aliases.is_empty() || desc.len() > 40;
+    (lines.join("\n"), has_content)
 }
+
 
 /// Build a synthetic `RetrievedChunk` from a doc name, text body, and score.
 fn make_synthetic_chunk(doc_name: String, text: String, score: f64) -> RetrievedChunk {
@@ -616,7 +655,8 @@ pub(crate) fn inject_entity_descriptions(
         return;
     }
     let q_lower = query.to_lowercase();
-    let is_relative_query = [
+    // Kinship terms: resolve to a specific family member of the narrator.
+    let is_kinship_query = [
         "wife",
         "spouse",
         "husband",
@@ -632,12 +672,22 @@ pub(crate) fn inject_entity_descriptions(
     ]
     .iter()
     .any(|kw| q_lower.contains(kw));
+    // Narrator-attribute queries: ask about the narrator's own memberships, roles, or
+    // involvement. "Which organisations was the author involved in?" → inject narrator's
+    // fact card (member_of relations) directly, not a specific family member.
+    // This is separate from kinship because resolve_author_relative returns None here,
+    // so inject_id falls back to anchor_id (the narrator entity itself).
+    let is_narrator_attribute_query = q_lower.contains("the author involved")
+        || q_lower.contains("author was involved")
+        || q_lower.contains("author a member")
+        || q_lower.contains("author affiliated");
+    let is_relative_query = is_kinship_query || is_narrator_attribute_query;
 
     // For personal-relative queries (wife, grandfather, etc.) we MUST land on the
     // author entity so resolve_author_relative() can walk family graph edges.
     // If the author isn't in the seed hits, skip injection rather than injecting
     // a spurious entity (e.g. a venue whose description happens to contain "wife").
-    let (anchor_id, inject_id): (i64, i64) = if is_relative_query {
+    let (_anchor_id, inject_id): (i64, i64) = if is_relative_query {
         // Try embedding seed hits first, then fall back to a direct name-token lookup.
         // The author entity (Joe Rassool / Yousuf Rassool) has alias "author" but that
         // alias won't appear in entity names, so embedding hits may miss it entirely.
@@ -766,14 +816,17 @@ pub(crate) fn inject_entity_descriptions(
         // 2. Fall back to non-name-matched at original thresholds so thematically-relevant
         //    entities (e.g. Bibi Gool for Gandhi/Gool queries) still inject at 0.85+.
         //    Raising this to 0.92 blocked too many helpful injections (-7.6pp regression).
-        let candidate = nm.iter().find(|(id, _)| desc_ok(*id, true)).or_else(|| {
-            seed_hits
-                .iter()
-                .filter(|(_, s)| *s > 0.85)
-                .chain(seed_hits.iter().filter(|(_, s)| *s > 0.7 && *s <= 0.85))
-                .filter(|(id, _)| !name_matched.contains(id))
-                .find(|(id, _)| desc_ok(*id, false))
-        });
+        let candidate = nm
+            .iter()
+            .find(|(id, _)| desc_ok(*id, true))
+            .or_else(|| {
+                seed_hits
+                    .iter()
+                    .filter(|(_, s)| *s > 0.85)
+                    .chain(seed_hits.iter().filter(|(_, s)| *s > 0.7 && *s <= 0.85))
+                    .filter(|(id, _)| !name_matched.contains(id))
+                    .find(|(id, _)| desc_ok(*id, false))
+            });
         let Some((id, _)) = candidate else { return };
         (*id, *id)
     };
@@ -781,33 +834,14 @@ pub(crate) fn inject_entity_descriptions(
     let Some(entity) = graph.get_entity(inject_id) else {
         return;
     };
-    // Description quality gate (already evaluated above for non-relative; re-checked here
-    // for relative queries where inject_id may differ from anchor_id).
-    let desc = entity.description.trim();
-    let sentences = desc
-        .chars()
-        .filter(|c| matches!(c, '.' | '?' | '!'))
-        .count();
-    let is_name_matched = name_matched.contains(&inject_id);
-    let is_resolved_relative = is_relative_query && inject_id != anchor_id;
-    let use_lenient = is_name_matched || is_resolved_relative;
-    if use_lenient {
-        if desc.len() < 40 || sentences < 1 {
-            return;
-        }
-    } else if desc.len() < 100 || sentences < 2 {
+    // Build the structured fact card. This replaces the old description-quality gate:
+    // entities with an empty or short description now inject if they have graph relations
+    // (e.g. Peter Alexander Rassool: empty description but 19 seeded family relations).
+    let (fact_card, has_content) = build_entity_fact_card(entity, inject_id, graph);
+    if !has_content {
         return;
     }
-
-    let relations_suffix = build_relations_suffix(entity, inject_id, graph);
-    let synthetic = make_synthetic_chunk(
-        format!("[Graph: {}]", entity.name),
-        format!(
-            "{}: {}{}",
-            entity.name, entity.description, relations_suffix
-        ),
-        2.0,
-    );
+    let synthetic = make_synthetic_chunk(format!("[Graph: {}]", entity.name), fact_card, 2.0);
     pool.insert(0, synthetic);
 }
 

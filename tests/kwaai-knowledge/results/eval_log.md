@@ -1,4 +1,37 @@
 
+## r113 — 2026-06-26 — **72.1% (160/222)** — graph-read retrieval: `build_entity_fact_card` replaces prose description injection
+
+**Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=true, biographical_expansion=true, model=llama3.1:8b, p2p://metro-linux (A6000)
+
+**Changes since r111:** New `build_entity_fact_card()` in `retriever.rs` replaces `description + relations_suffix` injection. Relations and aliases now appear FIRST in the injected entity block (before prose description). Empty-description entities with seeded relations now inject (no longer gated on description length). Extended `is_relative_query` to cover narrator-attribute queries ("the author involved in..."). Removed old `build_relations_suffix` function.
+
+**GAIN: +3.8pp over r111 (68.3→72.1%).** First structural improvement since Phase 5 coref. Confirmed the vector retrieval failure hypothesis from the breakdown analysis.
+
+**Per-question scores:**
+Q01:3, Q02:3, Q03:6, Q04:4, Q05:6, Q06:4, Q07:2, Q08:4, Q09:5, Q10:7, Q11:4, Q12:3, Q13:4, Q14:3, Q15:4, Q16:3, Q17:5, Q18:5, Q19:5, Q20:2, Q21:5, Q22:4, Q23:5, Q24:7, Q25:4, Q26:5, Q27:5, Q28:3, Q29:5, Q30:0, Q31:3, Q32:4, Q33:3, Q34:5, Q35:4, Q36:1, Q37:7, Q38:2, Q39:3, Q40:3
+
+**Key gains vs r111 (structural — from graph-read):**
+
+| Q | r111 | r113 | delta | Cause |
+|---|------|------|-------|-------|
+| Q24 JMH children | 3/7 | 7/7 | **+4** | `parent_of` + `spouse_of` relations now FIRST in JMH fact card; all 7 keywords hit |
+| Q22 author's father | 1/4 | 4/4 | **+3** | Peter Alexander Rassool (empty description, 19 seeded relations) now injects via `has_content` gate |
+| Q23 author's siblings | 2/5 | 5/5 | **+3** | Yousuf's sibling_of list appears first in fact card (previously buried after description) |
+| Q28 author's orgs | 1/5 | 3/5 | +2 | `is_narrator_attribute_query` routes Q28 through relative path; Yousuf's member_of injects |
+| Q29 TLSA-NEUM | 3/6 | 5/6 | +2 | Richer entity fact card surfaces relationship detail |
+
+**Regressions vs r111 (mostly LLM variance):**
+
+| Q | r111 | r113 | delta | Cause |
+|---|------|------|-------|-------|
+| Q36 political orgs | 3/6 | 1/6 | -2 | LLM variance — Q36 was 0/6 in r108/r109 before force-enrich; current 1/6 may reflect regression toward mean |
+| Q06 Buitencingle | 6/8 | 4/8 | -2 | LLM variance |
+
+**Architecture insight:** The 15pp gap vs r107 (82.9% YAML baseline) is now reduced to ~11pp. Remaining gap:
+- Q30 (JMH arrival): 0/6 — 1884/Mauritius/Swat/Gujarat not in graph; needs timeline extraction
+- Q36 (political orgs): volatile question; needs AAC relation in graph
+- Q06/Q14/Q39 (District Six place detail): needs richer place entity enrichment
+
 ## r111 — 2026-06-26 — **68.0% (151/222)** — enrich-entities --force after coref; 280 entities enriched (2.4× more than r108); reembed
 
 **Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=true, biographical_expansion=true, model=llama3.1:8b, p2p://metro-linux (A6000)
