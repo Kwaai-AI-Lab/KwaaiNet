@@ -4169,11 +4169,9 @@ impl GraphStore {
             .values()
             .find(|n| n.name.eq_ignore_ascii_case(name))
             .or_else(|| {
-                self.nodes.values().find(|n| {
-                    n.aliases
-                        .iter()
-                        .any(|a| a.eq_ignore_ascii_case(name))
-                })
+                self.nodes
+                    .values()
+                    .find(|n| n.aliases.iter().any(|a| a.eq_ignore_ascii_case(name)))
             })
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Entity not found: {}", name))?;
@@ -4297,8 +4295,16 @@ impl GraphStore {
                 for rel in &relations_to_rewrite {
                     let old_key = relation_key(rel.src_id, rel.dst_id, &rel.relation_type);
                     t.remove(old_key.as_slice())?;
-                    let new_src = if rel.src_id == old_id { new_id } else { rel.src_id };
-                    let new_dst = if rel.dst_id == old_id { new_id } else { rel.dst_id };
+                    let new_src = if rel.src_id == old_id {
+                        new_id
+                    } else {
+                        rel.src_id
+                    };
+                    let new_dst = if rel.dst_id == old_id {
+                        new_id
+                    } else {
+                        rel.dst_id
+                    };
                     let new_key = relation_key(new_src, new_dst, &rel.relation_type);
                     let updated = RelationRecord {
                         src_id: new_src,

@@ -190,7 +190,12 @@ pub async fn enrich_entity_descriptions(
             let density_key = |text: &str| -> Reverse<usize> {
                 Reverse(
                     text.split_whitespace()
-                        .filter(|w| w.chars().next().map(|ch| ch.is_uppercase()).unwrap_or(false))
+                        .filter(|w| {
+                            w.chars()
+                                .next()
+                                .map(|ch| ch.is_uppercase())
+                                .unwrap_or(false)
+                        })
                         .count(),
                 )
             };
@@ -240,23 +245,22 @@ pub async fn enrich_entity_descriptions(
                     .iter()
                     .map(|c| c.text.chars().take(60).collect::<String>())
                     .collect();
-                let mut corpus: Vec<crate::meta_store::ChunkMeta> =
-                    match meta.all_chunks() {
-                        Ok(all) => all
-                            .into_iter()
-                            .filter_map(|(_id, c)| {
-                                let key: String = c.text.chars().take(60).collect();
-                                if alias_match(&c.text.to_lowercase())
-                                    && !primary_prefixes.contains(&key)
-                                {
-                                    Some(c)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect(),
-                        Err(_) => vec![],
-                    };
+                let mut corpus: Vec<crate::meta_store::ChunkMeta> = match meta.all_chunks() {
+                    Ok(all) => all
+                        .into_iter()
+                        .filter_map(|(_id, c)| {
+                            let key: String = c.text.chars().take(60).collect();
+                            if alias_match(&c.text.to_lowercase())
+                                && !primary_prefixes.contains(&key)
+                            {
+                                Some(c)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![],
+                };
                 corpus.sort_by_key(|c| density_key(&c.text));
                 // Primary linked chunks first (already sorted by density), then corpus extras.
                 let remaining = cfg.fetch_limit.saturating_sub(primary.len());

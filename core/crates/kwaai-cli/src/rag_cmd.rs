@@ -2783,9 +2783,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     print_box_header(&format!("Timeline Build ({})", kb));
                     print_info(&format!(
                         "Model: {}  Workers: {}  Inference: {}",
-                        graph_cfg.model,
-                        graph_cfg.workers,
-                        graph_cfg.inference_url
+                        graph_cfg.model, graph_cfg.workers, graph_cfg.inference_url
                     ));
                     let (ev_count, ia_count) = run_timeline_build(
                         store.clone(),
@@ -4327,10 +4325,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         }
                         Some(n) => {
                             let old_type = &n.entity_type;
-                            println!(
-                                "Retyping '{}': {} → {}",
-                                n.name, old_type, new_type
-                            );
+                            println!("Retyping '{}': {} → {}", n.name, old_type, new_type);
                             if !yes {
                                 print!("Confirm? [y/N] ");
                                 use std::io::Write;
@@ -8112,15 +8107,14 @@ async fn run_timeline_build(
                     .collect()
             };
 
-            let (raw_events, raw_interactions) =
-                kwaai_rag::sequence::extract_temporal_events(
-                    &chunk.text,
-                    &entity_names,
-                    &infer_url,
-                    &model,
-                )
-                .await
-                .ok()?;
+            let (raw_events, raw_interactions) = kwaai_rag::sequence::extract_temporal_events(
+                &chunk.text,
+                &entity_names,
+                &infer_url,
+                &model,
+            )
+            .await
+            .ok()?;
 
             let (events, interactions) = {
                 let g = graph.lock().ok()?;
@@ -8327,9 +8321,9 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 let to_delete: Vec<&kwaai_rag::sequence::TimelineEvent> = existing
                     .iter()
                     .filter(|ev| {
-                        let desc_ok = desc_filter.as_ref().map_or(true, |f| {
-                            ev.description.to_lowercase().contains(f.as_str())
-                        });
+                        let desc_ok = desc_filter
+                            .as_ref()
+                            .map_or(true, |f| ev.description.to_lowercase().contains(f.as_str()));
                         let date_ok = date_filter.as_ref().map_or(true, |f| {
                             ev.date_raw
                                 .as_deref()
@@ -8349,7 +8343,10 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 println!("  Events to delete from '{entity_name}':");
                 for ev in &to_delete {
                     let date_str = ev.date_raw.as_deref().unwrap_or("(no date)");
-                    println!("    [{:12}] {} — {}", ev.event_class, date_str, ev.description);
+                    println!(
+                        "    [{:12}] {} — {}",
+                        ev.event_class, date_str, ev.description
+                    );
                 }
 
                 if !yes {
@@ -8364,9 +8361,9 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 }
 
                 let deleted = graph.delete_timeline_events(eid, &|ev| {
-                    let desc_ok = desc_filter.as_ref().map_or(true, |f| {
-                        ev.description.to_lowercase().contains(f.as_str())
-                    });
+                    let desc_ok = desc_filter
+                        .as_ref()
+                        .map_or(true, |f| ev.description.to_lowercase().contains(f.as_str()));
                     let date_ok = date_filter.as_ref().map_or(true, |f| {
                         ev.date_raw
                             .as_deref()

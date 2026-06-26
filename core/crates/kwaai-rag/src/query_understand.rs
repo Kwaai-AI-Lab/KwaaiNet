@@ -258,7 +258,11 @@ pub fn understand_query_rule(query: &str) -> QueryStructure {
 
     if q.starts_with("when did ")
         || q.starts_with("what happened ")
-        || (q.contains("group areas") && (q.contains("when") || q.contains("how") || q.contains("affect") || q.contains("removal")))
+        || (q.contains("group areas")
+            && (q.contains("when")
+                || q.contains("how")
+                || q.contains("affect")
+                || q.contains("removal")))
         || forced_removal_trigger
     {
         return QueryStructure {
