@@ -1157,10 +1157,20 @@ async fn cmd_query(
                             chunks
                         }
                     } else if effective_mode == "iterative" {
+                        use kwaai_rag::query_understand::{understand_query_rule, QueryIntent};
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store for iterative retrieval")?;
                         drop(spinner.take());
-                        retrieve_iterative(
+                        let qs = understand_query_rule(&query);
+                        let seq_chunk = if matches!(qs.intent, QueryIntent::TemporalEvent) {
+                            let eids = kwaai_rag::sequence::extract_temporal_entity_ids(
+                                &query, &graph,
+                            );
+                            kwaai_rag::sequence::retrieve_sequence(&query, &eids, &graph)
+                        } else {
+                            None
+                        };
+                        let mut chunks = retrieve_iterative(
                             &query,
                             &retrieve_cfg,
                             &embed,
@@ -1184,7 +1194,11 @@ async fn cmd_query(
                             &model,
                             |msg| println!("{msg}"),
                         )
-                        .await?
+                        .await?;
+                        if let Some(seq) = seq_chunk {
+                            chunks.insert(0, seq);
+                        }
+                        chunks
                     } else if effective_mode == "graph" {
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store for graph-anchored retrieval")?;
@@ -7399,9 +7413,18 @@ async fn cmd_eval(
                     chunks
                 }
             } else if effective_mode == "iterative" {
+                use kwaai_rag::query_understand::{understand_query_rule, QueryIntent};
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
-                retrieve_iterative(
+                let qs = understand_query_rule(&q.question);
+                let seq_chunk = if matches!(qs.intent, QueryIntent::TemporalEvent) {
+                    let eids =
+                        kwaai_rag::sequence::extract_temporal_entity_ids(&q.question, &graph);
+                    kwaai_rag::sequence::retrieve_sequence(&q.question, &eids, &graph)
+                } else {
+                    None
+                };
+                let mut chunks = retrieve_iterative(
                     &q.question,
                     &retrieve_cfg,
                     &embed,
@@ -7413,7 +7436,11 @@ async fn cmd_eval(
                     |msg| println!("{msg}"),
                 )
                 .await
-                .unwrap_or_default()
+                .unwrap_or_default();
+                if let Some(seq) = seq_chunk {
+                    chunks.insert(0, seq);
+                }
+                chunks
             } else if effective_mode == "graph" {
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;

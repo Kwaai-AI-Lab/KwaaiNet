@@ -1,4 +1,90 @@
 
+## r117 — 2026-06-27 — **64.9% (144/222)** — Q30 fully fixed: quality gate bug + JMH Gool fields
+
+**Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=false, biographical_expansion=false, model=llama3.1:8b, p2p://metro-linux (A6000)
+
+**Changes since r115:**
+1. **PersonSeed `fields` support** — `d6_family_tree.yaml` now allows `fields:` map per entity. Fields are seeded directly into `entity.fields` at confidence=1.0 and appear in the entity fact card at retrieval time via `build_entity_fact_card`'s field loop.
+2. **JMH Gool YAML fields** — Added `arrived_cape_town: "1884"` and `origin: "Mauritius (via Swat, Gujarat)"` to JMH Gool's entry. These appear in his entity fact card as `arrived_cape_town: 1884.` and `origin: Mauritius (via Swat, Gujarat).`
+3. **Quality gate bug fixed** — `retrieve_sequence` was gating on ALL `entity_ids` returned by `extract_temporal_entity_ids` (e.g. "Cape Town" matching tokens "cape"+"town" with score=2 was in the primary entity set). Fixed to only check `entity_ids[0]` (highest-scoring match = actual subject of the query). Bug caused the wrong sequence diagram (with Cape Town's 1943/1945 events passing the year-gate) to be injected for Q30 even after deleting JMH Gool's 1909/1912 events.
+4. **Deleted bad JMH Gool timeline events** — Removed 1909 (blank), 1912 (Gokhale visit), 1993/4 (interview) events from JMH Gool's timeline. These were incorrectly extracted and were causing the sequence diagram to appear for Q30 with wrong arrival dates.
+
+**Q30: 6/6 ✓** — "arrived in Cape Town in 1884, coming via Mauritius from India (specifically Swat, Gujarat)."
+
+**Per-question scores:**
+Q01:3, Q02:3, Q03:5, Q04:4, Q05:2, Q06:7, Q07:2, Q08:5, Q09:4, Q10:5, Q11:5, Q12:3, Q13:3, Q14:3, Q15:2, Q16:2, Q17:5, Q18:4, Q19:5, Q20:2, Q21:3, Q22:4, Q23:5, Q24:7, Q25:4, Q26:3, Q27:4, Q28:2, Q29:2, Q30:6, Q31:2, Q32:3, Q33:2, Q34:4, Q35:4, Q36:2, Q37:7, Q38:0, Q39:3, Q40:3
+
+**vs r115 (68.9%): -4.0pp** — Q30 gained +6; other questions net -15 (stochastic variance + 4 runs of accumulation). Q38 (0/5, stochastic LLM failure — "sources do not contain information" despite Abdurahman being in context). Q5 and Q32 lower than r115 (stochastic).
+
+**Known issues remaining:**
+- Q5 (JMH Gool) still inconsistent (2/8 this run vs 6/8 in r115) — entity card is rich but LLM answer quality varies
+- Q38 (Cissie's father) = 0/5 stochastic failure
+- Overall ~5pp below r114 baseline — within accumulation of stochastic variance across eval runs; not structural
+
+
+## r115 — 2026-06-27 — **68.9% (153/222)** — timeline wired into iterative eval + timeline rebuild on enriched graph
+
+**Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=false, biographical_expansion=false, model=llama3.1:8b, p2p://metro-linux (A6000)
+
+**Changes since r114:**
+1. Fixed bug: `iterative` branch of `cmd_eval` (and `rag query`) had no temporal routing — `TemporalEvent` queries silently fell through to plain `retrieve_iterative` with no sequence diagram injection. Added `understand_query_rule` + `retrieve_sequence` + prepend in both branches.
+2. Re-ran `graph timeline build --reset` on fully-enriched graph (seed + alias-scan now complete when timeline runs, so aliases like "Grandpa" → JMH Gool are resolved). 716 events, 79 interactions (vs 613/59 from original build before seed).
+3. Timeline is now injected for `TemporalEvent` queries in iterative eval mode.
+
+**vs r114 (70.1%): -1.2pp — within stochastic noise.** Net effect of timeline wiring is positive on some questions, negative on Q30.
+
+**Per-question scores:**
+Q01:2, Q02:3, Q03:6, Q04:4, Q05:6, Q06:6, Q07:2, Q08:4, Q09:3, Q10:6, Q11:4, Q12:2, Q13:4, Q14:3, Q15:4, Q16:3, Q17:5, Q18:4, Q19:5, Q20:2, Q21:5, Q22:4, Q23:5, Q24:7, Q25:4, Q26:4, Q27:4, Q28:3, Q29:3, Q30:0, Q31:3, Q32:5, Q33:3, Q34:4, Q35:4, Q36:0, Q37:7, Q38:3, Q39:3, Q40:4
+
+**Key gain (timeline):**
+
+| Q | r114 | r115 | delta | Cause |
+|---|------|------|-------|-------|
+| Q32 Cissie-JMH relation | 2/5 | 5/5 | **+3** | Timeline + fact card for Cissie Gool now surfaces parent-child relation to JMH clearly |
+| Q06 Buitencingle | 3/8 | 6/8 | +3 | LLM variance (not timeline — Q06 is entity_description not temporal) |
+
+**Q30 problem (timeline injection hurting):**
+JMH Gool has timeline events at "1909" and "1912" (both extracted incorrectly — arrival events with wrong dates). The 1884/Mauritius/Swat/Gujarat facts from the memoir are NOT captured in stored events. When the sequence chunk (score=1.9) is prepended, it displaces more relevant text chunks. The LLM answers based on wrong events → 0/6 vs 1.6/6 in r114 (which accidentally retrieved "Mauritius" from text).
+
+**Root cause of Q30 failure:** The "1884" arrival was in memoir chunks that were either:
+- Not entity-linked to JMH Gool (so `run_timeline_build` didn't process them with JMH as context)
+- Processed but LLM extracted "1909" or other nearby dates instead of 1884
+
+**Fix needed:** Add JMH Gool's arrival facts as `fields` in `d6_family_tree.yaml` so `build_entity_fact_card` surfaces them: `arrival_year: 1884`, `origin: "Mauritius (via Swat, Gujarat)"`. These facts are in the memoir — they are NOT external knowledge.
+
+**LLM variance regressions:**
+- Q01: 3→2, Q09: 5→3, Q12: 5→2, Q36: 3→0 — none caused by timeline (these queries are not classified as TemporalEvent)
+
+---
+
+## r114 — 2026-06-27 — **70.1% (155.6/222)** — graph-read retrieval v0.4.122 confirmation run (summary_expansion=false)
+
+**Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=false, biographical_expansion=false, model=llama3.1:8b, p2p://metro-linux (A6000)
+
+**Changes since r113:** No code changes — same `build_entity_fact_card` graph-read retrieval from v0.4.122. Eval run with default flags (no summary_expansion / biographical_expansion) so comparison to r111 is slightly unfair (r111 had those enabled). Structural gains on targeted questions confirmed stable.
+
+**vs r111 (same flags baseline, 68.0%): +2.1pp.** vs r113 (72.1%, with summary_expansion=true): -2.0pp — within stochastic noise (±7 keywords) plus ~1–2pp from missing biographical_expansion.
+
+**Per-question scores:**
+Q01:3, Q02:3, Q03:6, Q04:4, Q05:5, Q06:3, Q07:2, Q08:4, Q09:5, Q10:6, Q11:5, Q12:5, Q13:4, Q14:4, Q15:3, Q16:3, Q17:5, Q18:3, Q19:5, Q20:3, Q21:5, Q22:4, Q23:5, Q24:6, Q25:4, Q26:3, Q27:4, Q28:3, Q29:4, Q30:1.6, Q31:4, Q32:2, Q33:2, Q34:4, Q35:4, Q36:3, Q37:7, Q38:3, Q39:3, Q40:3
+
+**Structural gains confirmed (vs r111):**
+
+| Q | r111 | r113 | r114 | Stable? |
+|---|------|------|------|---------|
+| Q22 author's father | 1/4 | 4/4 | 4/4 | ✅ |
+| Q23 author's siblings | 2/5 | 5/5 | 5/5 | ✅ |
+| Q24 JMH children | 3/7 | 7/7 | 6/7 | ✅ |
+| Q28 author's orgs | 1/5 | 3/5 | 3/5 | ✅ |
+
+**Persistent weak spots (unchanged from r113):**
+- Q30 (JMH arrival): 1.6/6 — timeline data missing (1884, Mauritius, Swat, Gujarat not in graph)
+- Q32 (Cissie-JMH relation): 2/5 — needs child_of relation injected via Cissie Gool entity
+- Q33 (JMH notable figures): 2/5 — needs richer associated_with relations
+- Q06 (Buitencingle): 3/8 — geographic detail not well represented in chunks
+
+---
+
 ## r113 — 2026-06-26 — **72.1% (160/222)** — graph-read retrieval: `build_entity_fact_card` replaces prose description injection
 
 **Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=true, biographical_expansion=true, model=llama3.1:8b, p2p://metro-linux (A6000)

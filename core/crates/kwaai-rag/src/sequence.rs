@@ -504,16 +504,16 @@ pub fn retrieve_sequence(
         return None;
     }
 
-    // Quality gate: the PRIMARY entity (not just a neighbour) must have at least one
-    // event with a specific year. A 4-digit year not immediately followed by 's' passes.
-    // "1884" → passes. "February 1914" → passes. "1920s" / "decades ago" → fail.
+    // Quality gate: the PRIMARY entity (the first / highest-scoring match) must have at
+    // least one event with a specific year. A 4-digit year not immediately followed by
+    // 's' passes. "1884" → passes. "February 1914" → passes. "1920s" / "decades ago" → fail.
     //
-    // We gate on the primary entity only (not neighbours) so a person with no dated
-    // events doesn't get a misleading sequence just because their relatives do.
-    let primary_entity_event_ids: std::collections::HashSet<i64> =
-        entity_ids.iter().copied().collect();
+    // We gate on entity_ids[0] only — not all matched entities and not neighbours — so
+    // incidental place-name matches ("Cape Town" scoring 2 for "cape"+"town") don't
+    // falsely open the gate for a query whose subject has no dated events.
+    let primary_entity_id: Option<i64> = entity_ids.first().copied();
     let has_specific_year = events.iter().any(|e| {
-        if !primary_entity_event_ids.contains(&e.entity_id) {
+        if Some(e.entity_id) != primary_entity_id {
             return false;
         }
         e.date_raw

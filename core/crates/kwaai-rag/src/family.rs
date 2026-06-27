@@ -37,6 +37,11 @@ pub struct PersonSeed {
     /// Explicit gender override ("Male" / "Female"). When set, takes precedence over any
     /// gender inferred from the entity description, ensuring reliable father/mother resolution.
     pub gender: Option<String>,
+    /// Structured fact fields injected directly into the entity's field map (confidence=1.0).
+    /// These appear in the entity fact card at query time. Use for ground-truth facts that
+    /// LLM extraction is unlikely to capture (e.g. arrival year, origin place).
+    #[serde(default)]
+    pub fields: std::collections::HashMap<String, String>,
 }
 
 fn default_entity_type() -> String {
@@ -151,10 +156,23 @@ pub async fn seed_family_tree(
                 .gender
                 .clone()
                 .or_else(|| existing.as_ref().and_then(|e| e.gender.clone())),
-            fields: existing
-                .as_ref()
-                .map(|e| e.fields.clone())
-                .unwrap_or_default(),
+            fields: {
+                let mut f = existing
+                    .as_ref()
+                    .map(|e| e.fields.clone())
+                    .unwrap_or_default();
+                for (k, v) in &person.fields {
+                    f.insert(
+                        k.clone(),
+                        crate::graph::FieldValue {
+                            value: v.clone(),
+                            evidence_chunk_ids: vec![0],
+                            confidence: 1.0,
+                        },
+                    );
+                }
+                f
+            },
             confidence: existing.as_ref().map(|e| e.confidence).unwrap_or(0.0),
             // Seeded entities are ground-truth — always high confidence.
             extraction_confidence: 1.0,

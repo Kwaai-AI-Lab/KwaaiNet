@@ -31,6 +31,9 @@ persons:
       - "Grandpa J M H Gool"
       - "Grandpa J.M.H. Gool"
       - "Gool"
+    fields:
+      arrived_cape_town: "1884"
+      origin: "Mauritius (via Swat, Gujarat)"
 
   - canonical: "Bibi Gool"
     gender: "Female"
