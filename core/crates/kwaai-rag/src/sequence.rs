@@ -262,6 +262,39 @@ pub async fn extract_temporal_events(
 
 // ── Build helpers ─────────────────────────────────────────────────────────────
 
+/// Knowledge axiom: an entity is "present" in a chunk of text if its canonical
+/// name or any alias appears in the text.
+///
+/// Matching rules:
+/// - Name / alias tokens of length ≥ 4 are matched case-insensitively.
+/// - The special alias "I" triggers a first-person check ("I " or "I'" anywhere
+///   in the text) so the narrator entity is always considered present in
+///   first-person passages without requiring the narrator's full name to appear.
+pub fn entity_present_in_text(name: &str, aliases: &[String], text: &str) -> bool {
+    let text_lower = text.to_lowercase();
+    // Canonical name — match any token with len ≥ 4
+    if name
+        .split_whitespace()
+        .any(|t| t.len() >= 4 && text_lower.contains(&t.to_lowercase()))
+    {
+        return true;
+    }
+    for alias in aliases {
+        if alias.eq_ignore_ascii_case("I") {
+            // First-person narrator: treat as present when text is first-person.
+            if text_lower.contains(" i ")
+                || text_lower.contains(" i'")
+                || text_lower.starts_with("i ")
+            {
+                return true;
+            }
+        } else if alias.len() >= 3 && text_lower.contains(&alias.to_lowercase()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Resolve a raw entity name string to a graph entity ID using the same
 /// multi-tier lookup used elsewhere in the retriever.
 fn resolve_name(name: &str, graph: &GraphStore) -> Option<i64> {
@@ -303,14 +336,41 @@ fn resolve_name(name: &str, graph: &GraphStore) -> Option<i64> {
 
 /// Convert raw LLM events+interactions for a specific chunk into typed structs,
 /// resolving entity names to graph IDs. Returns (events, interactions).
+///
+/// `chunk_text` is used to apply the **co-presence axiom**: an interaction
+/// between A and B is only stored when both A and B are explicitly present in
+/// the chunk text (by canonical name, alias, or first-person pronoun for the
+/// narrator entity). This prevents spurious interactions caused by the LLM
+/// pairing entities that appear in the same chunk for unrelated reasons.
 pub fn resolve_extracted(
     raw_events: Vec<RawEvent>,
     raw_interactions: Vec<RawInteraction>,
     chunk_id: i64,
+    chunk_text: &str,
     graph: &GraphStore,
 ) -> (Vec<TimelineEvent>, Vec<SequenceInteraction>) {
     let mut events = Vec::new();
     for ev in raw_events {
+        // Axiom: date must be present and not a placeholder. The LLM sometimes
+        // returns "not specified", "none", "no date", or null when no temporal
+        // anchor exists — those events are noise; drop them.
+        let date_str = match &ev.date {
+            None => continue,
+            Some(d) => {
+                let d = d.trim().to_lowercase();
+                if d.is_empty()
+                    || d == "none"
+                    || d == "null"
+                    || d.starts_with("not")
+                    || d.starts_with("no ")
+                    || d.starts_with("unknown")
+                    || d.starts_with("unspecified")
+                {
+                    continue;
+                }
+                ev.date.as_deref().unwrap()
+            }
+        };
         let Some(eid) = resolve_name(&ev.entity, graph) else {
             continue;
         };
@@ -318,11 +378,11 @@ pub fn resolve_extracted(
             .get_entity(eid)
             .map(|e| e.name.clone())
             .unwrap_or_else(|| ev.entity.clone());
-        let date_sort = ev
-            .date
-            .as_deref()
-            .map(normalize_date)
-            .unwrap_or_else(|| "9999-12-31".to_string());
+        // Note: no entity-presence check for events — attribution is done via the
+        // coref pronoun_map passed to the LLM, which correctly attributes "my
+        // grandfather came from India" to JMH Gool even when "Gool" doesn't appear
+        // in the chunk text. The co-presence axiom applies to interactions only.
+        let date_sort = normalize_date(date_str);
         events.push(TimelineEvent {
             entity_id: eid,
             entity_name,
@@ -345,12 +405,26 @@ pub fn resolve_extracted(
         if from_id == to_id {
             continue;
         }
-        let from_name = graph
-            .get_entity(from_id)
+        let from_entity = graph.get_entity(from_id);
+        let to_entity = graph.get_entity(to_id);
+        // Co-presence axiom: both entities must be explicitly present in the chunk
+        // text. Interactions fabricated by the LLM between entities that merely
+        // appear in the same chunk for unrelated reasons are dropped here.
+        if let (Some(fe), Some(te)) = (from_entity, to_entity) {
+            if !entity_present_in_text(&fe.name, &fe.aliases, chunk_text)
+                || !entity_present_in_text(&te.name, &te.aliases, chunk_text)
+            {
+                tracing::debug!(
+                    "co-presence axiom: dropping interaction '{}' → '{}' (not both present in chunk {})",
+                    fe.name, te.name, chunk_id
+                );
+                continue;
+            }
+        }
+        let from_name = from_entity
             .map(|e| e.name.clone())
             .unwrap_or_else(|| ia.from.clone());
-        let to_name = graph
-            .get_entity(to_id)
+        let to_name = to_entity
             .map(|e| e.name.clone())
             .unwrap_or_else(|| ia.to.clone());
         let date_sort = ia

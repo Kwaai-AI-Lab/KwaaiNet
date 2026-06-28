@@ -208,6 +208,7 @@ pub async fn ingest_text(
 /// Internal result type carrying one chunk's extraction output back to the drain task.
 struct ChunkResult {
     chunk_id: i64,
+    chunk_text: String,
     entities: Vec<ExtractedEntity>,
     relations: Vec<ExtractedRelation>,
     embeddings: Vec<Vec<f32>>,
@@ -377,6 +378,7 @@ pub async fn extract_and_store_entities_pub(
                     res.raw_events,
                     res.raw_interactions,
                     res.chunk_id,
+                    &res.chunk_text,
                     &graph,
                 );
                 // Group events by entity_id for a single write per entity.
@@ -455,6 +457,7 @@ pub async fn extract_and_store_entities_pub(
             chunk.text.clone()
         };
         let section_note = chunk.section_note.clone();
+        let chunk_text_own = chunk.text.clone();
         let urls = urls.clone();
         let url_counter = url_counter.clone();
         let model = model.clone();
@@ -531,6 +534,7 @@ pub async fn extract_and_store_entities_pub(
                     let _ = tx
                         .send(ChunkResult {
                             chunk_id,
+                            chunk_text: chunk_text_own,
                             entities: vec![],
                             relations: vec![],
                             embeddings: vec![],
@@ -596,6 +600,7 @@ pub async fn extract_and_store_entities_pub(
             let _ = tx
                 .send(ChunkResult {
                     chunk_id,
+                    chunk_text: chunk_text_own,
                     entities,
                     relations,
                     embeddings,
@@ -1518,6 +1523,7 @@ async fn extract_entity_centric(
                     let _ = tx
                         .send(ChunkResult {
                             chunk_id: 0,
+                            chunk_text: String::new(),
                             entities: vec![],
                             relations: vec![],
                             embeddings: vec![],
@@ -1548,6 +1554,7 @@ async fn extract_entity_centric(
             let _ = tx
                 .send(ChunkResult {
                     chunk_id: 0,
+                    chunk_text: String::new(),
                     entities,
                     relations: vec![],
                     embeddings,

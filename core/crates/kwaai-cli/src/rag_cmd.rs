@@ -8147,14 +8147,17 @@ async fn run_timeline_build(
             // resolutions (definite descriptions + gender pronouns) so the LLM
             // can correctly attribute events to "my grandfather" or "he" rather
             // than defaulting to the narrator entity.
+            //
+            // Knowledge axiom (entity filter): only pass entity names to the LLM
+            // that are explicitly present in the chunk text OR resolved by coref.
+            // Graph-window links can pull in entities from adjacent chapters;
+            // passing those to the LLM causes it to fabricate interactions between
+            // entities that appear in the chunk for unrelated reasons (e.g. Gandhi
+            // linked via an adjacent chapter's window appearing in a cricket chunk).
+            // Coref-resolved entities (e.g. "J.M.H. Gool" via "my grandfather") are
+            // whitelisted so the LLM can use the canonical name when attributing events.
             let (entity_names, pronoun_map) = {
                 let g = graph.lock().ok()?;
-                let names: Vec<String> = g
-                    .get_chunk_entities(cid)
-                    .iter()
-                    .filter_map(|&id| g.get_entity(id))
-                    .map(|e| e.name.clone())
-                    .collect();
                 let candidates = g.coref_candidates_for_chunk(cid, &adjacent);
                 // Rule-based Tier 1 only — fast, deterministic, no LLM call needed here.
                 let desc_res =
@@ -8167,6 +8170,25 @@ async fn run_timeline_build(
                     .chain(pronoun_res)
                     .filter(|r| seen.insert(r.entity_name.clone()))
                     .map(|r| (r.surface, r.entity_name))
+                    .collect();
+                // Whitelist: entities that coref resolves to (e.g. JMH Gool via "my grandfather")
+                let coref_names: std::collections::HashSet<&str> =
+                    pmap.iter().map(|(_, n)| n.as_str()).collect();
+                let names: Vec<String> = g
+                    .get_chunk_entities(cid)
+                    .iter()
+                    .filter_map(|&id| g.get_entity(id))
+                    .filter(|e| {
+                        // Keep if explicitly present in chunk text
+                        kwaai_rag::sequence::entity_present_in_text(
+                            &e.name,
+                            &e.aliases,
+                            &chunk.text,
+                        )
+                        // OR if coref resolution points to this entity by name
+                        || coref_names.contains(e.name.as_str())
+                    })
+                    .map(|e| e.name.clone())
                     .collect();
                 (names, pmap)
             };
@@ -8183,7 +8205,13 @@ async fn run_timeline_build(
 
             let (events, interactions) = {
                 let g = graph.lock().ok()?;
-                kwaai_rag::sequence::resolve_extracted(raw_events, raw_interactions, cid, &g)
+                kwaai_rag::sequence::resolve_extracted(
+                    raw_events,
+                    raw_interactions,
+                    cid,
+                    &chunk.text,
+                    &g,
+                )
             };
 
             let n_ev = events.len();
