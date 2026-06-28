@@ -381,12 +381,13 @@ pub fn resolve_extracted(
         if date_sort == "9999-12-31" {
             tracing::debug!(
                 "date-range axiom: dropping unparseable date {:?} in chunk {}",
-                ev.date, chunk_id
+                ev.date,
+                chunk_id
             );
             continue;
         }
         let year: u32 = date_sort[..4].parse().unwrap_or(0);
-        if year < 1700 || year > 2099 {
+        if !(1700..=2099).contains(&year) {
             tracing::debug!(
                 "date-range axiom: dropping out-of-range year {year} in chunk {}",
                 chunk_id
@@ -541,7 +542,7 @@ pub fn extract_kinship_interactions(
     let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
 
     let sentences: Vec<&str> = text
-        .split(|c: char| c == '.' || c == '?' || c == '!' || c == ';')
+        .split(['.', '?', '!', ';'])
         .map(str::trim)
         .filter(|s| s.len() >= 12)
         .collect();
@@ -550,8 +551,7 @@ pub fn extract_kinship_interactions(
         let s_lower = sentence.to_lowercase();
 
         // Quick pre-check: does this sentence contain any kinship keyword?
-        let Some((kw, label)) = KINSHIP_KEYWORDS.iter().find(|(kw, _)| s_lower.contains(kw))
-        else {
+        let Some((kw, label)) = KINSHIP_KEYWORDS.iter().find(|(kw, _)| s_lower.contains(kw)) else {
             continue;
         };
         let kw_pos = match s_lower.find(kw) {
@@ -564,8 +564,8 @@ pub fn extract_kinship_interactions(
         // Map each known entity to its first occurrence position in this sentence.
         let mut positions: Vec<(usize, usize, i64)> = Vec::new(); // (start, end, id)
         for (id, name, aliases) in known_entities {
-            let candidates = std::iter::once(name.as_str())
-                .chain(aliases.iter().map(String::as_str));
+            let candidates =
+                std::iter::once(name.as_str()).chain(aliases.iter().map(String::as_str));
             for tok in candidates {
                 if tok.len() < 3 || tok.eq_ignore_ascii_case("I") {
                     continue;

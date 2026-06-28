@@ -2493,9 +2493,7 @@ fn inference_url_proxy_required_for_p2p_schemes() {
 // ─────────────────────────────────────────────────────────────────────────────
 // sequence: knowledge axioms + rule-based kinship extraction
 
-use kwaai_rag::sequence::{
-    entity_present_in_text, extract_kinship_interactions, normalize_date,
-};
+use kwaai_rag::sequence::{entity_present_in_text, extract_kinship_interactions, normalize_date};
 
 #[test]
 fn normalize_date_handles_common_formats() {
@@ -2512,21 +2510,45 @@ fn normalize_date_handles_common_formats() {
 fn entity_present_first_person_narrator() {
     let aliases = vec!["I".to_string()];
     // First-person text: narrator is considered present.
-    assert!(entity_present_in_text("Yousuf Rassool", &aliases, "I walked to school today."));
-    assert!(entity_present_in_text("Yousuf Rassool", &aliases, "When I was young, I played cricket."));
+    assert!(entity_present_in_text(
+        "Yousuf Rassool",
+        &aliases,
+        "I walked to school today."
+    ));
+    assert!(entity_present_in_text(
+        "Yousuf Rassool",
+        &aliases,
+        "When I was young, I played cricket."
+    ));
     // Third-person text without "I": narrator absent.
-    assert!(!entity_present_in_text("Yousuf Rassool", &[], "He walked to school today."));
+    assert!(!entity_present_in_text(
+        "Yousuf Rassool",
+        &[],
+        "He walked to school today."
+    ));
 }
 
 #[test]
 fn entity_present_canonical_token_match() {
     let aliases: Vec<String> = vec![];
     // Token "Rassool" (len 7) matches.
-    assert!(entity_present_in_text("Yousuf Rassool", &aliases, "Peter Rassool was there."));
+    assert!(entity_present_in_text(
+        "Yousuf Rassool",
+        &aliases,
+        "Peter Rassool was there."
+    ));
     // Token "Gool" (len 4) matches.
-    assert!(entity_present_in_text("JMH Gool", &aliases, "His grandfather Gool arrived from Mauritius."));
+    assert!(entity_present_in_text(
+        "JMH Gool",
+        &aliases,
+        "His grandfather Gool arrived from Mauritius."
+    ));
     // Short token "Jo" (len 2) does NOT match — below 4-char threshold.
-    assert!(!entity_present_in_text("Jo Smith", &aliases, "Jo was there."));
+    assert!(!entity_present_in_text(
+        "Jo Smith",
+        &aliases,
+        "Jo was there."
+    ));
 }
 
 #[test]
@@ -2546,7 +2568,11 @@ fn kinship_extraction_son_of() {
 fn kinship_extraction_member_of() {
     let entities = vec![
         (10i64, "Yousuf Rassool".to_string(), vec!["I".to_string()]),
-        (20i64, "NEUM".to_string(), vec!["Non-European Unity Movement".to_string()]),
+        (
+            20i64,
+            "NEUM".to_string(),
+            vec!["Non-European Unity Movement".to_string()],
+        ),
     ];
     let text = "Yousuf Rassool was a member of NEUM during the 1950s.";
     let result = extract_kinship_interactions(text, &entities);
@@ -2557,9 +2583,7 @@ fn kinship_extraction_member_of() {
 #[test]
 fn kinship_extraction_no_false_positives_without_entities() {
     // Text has keyword but only one known entity → no interaction emitted.
-    let entities = vec![
-        (1i64, "Yousuf Rassool".to_string(), vec![]),
-    ];
+    let entities = vec![(1i64, "Yousuf Rassool".to_string(), vec![])];
     let text = "Yousuf Rassool, son of an unknown man, lived here.";
     let result = extract_kinship_interactions(text, &entities);
     // "unknown man" is not a known entity, so no pair can be formed.
