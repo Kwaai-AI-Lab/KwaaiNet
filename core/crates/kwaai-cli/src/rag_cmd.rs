@@ -8168,7 +8168,10 @@ async fn run_timeline_build(
             // linked via an adjacent chapter's window appearing in a cricket chunk).
             // Coref-resolved entities (e.g. "J.M.H. Gool" via "my grandfather") are
             // whitelisted so the LLM can use the canonical name when attributing events.
-            let (entity_names, pronoun_map) = {
+            // entity_data: (id, name, aliases) for entities present in this chunk
+            // (axiom-filtered). Used both for the LLM prompt and for rule-based
+            // kinship extraction below.
+            let (entity_data, entity_names, pronoun_map) = {
                 let g = graph.lock().ok()?;
                 let candidates = g.coref_candidates_for_chunk(cid, &adjacent);
                 // Rule-based Tier 1 only — fast, deterministic, no LLM call needed here.
@@ -8186,24 +8189,28 @@ async fn run_timeline_build(
                 // Whitelist: entities that coref resolves to (e.g. JMH Gool via "my grandfather")
                 let coref_names: std::collections::HashSet<&str> =
                     pmap.iter().map(|(_, n)| n.as_str()).collect();
-                let names: Vec<String> = g
+                let data: Vec<(i64, String, Vec<String>)> = g
                     .get_chunk_entities(cid)
                     .iter()
-                    .filter_map(|&id| g.get_entity(id))
-                    .filter(|e| {
-                        // Keep if explicitly present in chunk text
+                    .filter_map(|&id| g.get_entity(id).map(|e| (id, e)))
+                    .filter(|(_, e)| {
                         kwaai_rag::sequence::entity_present_in_text(
                             &e.name,
                             &e.aliases,
                             &chunk.text,
-                        )
-                        // OR if coref resolution points to this entity by name
-                        || coref_names.contains(e.name.as_str())
+                        ) || coref_names.contains(e.name.as_str())
                     })
-                    .map(|e| e.name.clone())
+                    .map(|(id, e)| (id, e.name.clone(), e.aliases.clone()))
                     .collect();
-                (names, pmap)
+                let names: Vec<String> = data.iter().map(|(_, n, _)| n.clone()).collect();
+                (data, names, pmap)
             };
+
+            // Rule-based kinship/membership extraction — no LLM call needed.
+            // Runs on the same filtered entity set before the LLM call so that
+            // rule-derived interactions take precedence over LLM-derived ones.
+            let kinship_raw =
+                kwaai_rag::sequence::extract_kinship_interactions(&chunk.text, &entity_data);
 
             let (raw_events, raw_interactions) = kwaai_rag::sequence::extract_temporal_events(
                 &chunk.text,
@@ -8215,7 +8222,7 @@ async fn run_timeline_build(
             .await
             .ok()?;
 
-            let (events, interactions) = {
+            let (events, mut interactions) = {
                 let g = graph.lock().ok()?;
                 kwaai_rag::sequence::resolve_extracted(
                     raw_events,
@@ -8225,6 +8232,39 @@ async fn run_timeline_build(
                     &g,
                 )
             };
+
+            // Merge rule-based kinship interactions (preferred) with LLM interactions.
+            // If both produce the same (from_id, to_id) pair the rule-based one wins
+            // because kinship interactions are added to `interactions` only when the
+            // LLM hasn't already produced the same pair.
+            {
+                let existing_pairs: std::collections::HashSet<(i64, i64)> = interactions
+                    .iter()
+                    .map(|ia| (ia.from_entity_id, ia.to_entity_id))
+                    .collect();
+                let g = graph.lock().ok()?;
+                for (from_id, to_id, label) in kinship_raw {
+                    if from_id == to_id || existing_pairs.contains(&(from_id, to_id)) {
+                        continue;
+                    }
+                    let Some(from_name) = g.get_entity(from_id).map(|e| e.name.clone()) else {
+                        continue;
+                    };
+                    let Some(to_name) = g.get_entity(to_id).map(|e| e.name.clone()) else {
+                        continue;
+                    };
+                    interactions.push(kwaai_rag::sequence::SequenceInteraction {
+                        from_entity_id: from_id,
+                        from_entity_name: from_name,
+                        to_entity_id: to_id,
+                        to_entity_name: to_name,
+                        date_raw: None,
+                        date_sort: "9999-12-31".to_string(),
+                        label,
+                        evidence_chunk_id: cid,
+                    });
+                }
+            }
 
             let n_ev = events.len();
             let n_ia = interactions.len();

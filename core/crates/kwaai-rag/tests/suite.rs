@@ -2489,3 +2489,106 @@ fn inference_url_proxy_required_for_p2p_schemes() {
     assert!(!needs_proxy("http://localhost:11434"));
     assert!(!needs_proxy("http://192.168.1.10:11434"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sequence: knowledge axioms + rule-based kinship extraction
+
+use kwaai_rag::sequence::{
+    entity_present_in_text, extract_kinship_interactions, normalize_date,
+};
+
+#[test]
+fn normalize_date_handles_common_formats() {
+    assert_eq!(normalize_date("1884"), "1884-01-01");
+    assert_eq!(normalize_date("February 1914"), "1914-02-01");
+    assert_eq!(normalize_date("1970s"), "1970-01-01");
+    assert_eq!(normalize_date("1966-11"), "1966-11-01");
+    // Unparseable → sort-last sentinel (Axiom 4 will drop these)
+    assert_eq!(normalize_date("early 20th century"), "9999-12-31");
+    assert_eq!(normalize_date("not specified"), "9999-12-31");
+}
+
+#[test]
+fn entity_present_first_person_narrator() {
+    let aliases = vec!["I".to_string()];
+    // First-person text: narrator is considered present.
+    assert!(entity_present_in_text("Yousuf Rassool", &aliases, "I walked to school today."));
+    assert!(entity_present_in_text("Yousuf Rassool", &aliases, "When I was young, I played cricket."));
+    // Third-person text without "I": narrator absent.
+    assert!(!entity_present_in_text("Yousuf Rassool", &[], "He walked to school today."));
+}
+
+#[test]
+fn entity_present_canonical_token_match() {
+    let aliases: Vec<String> = vec![];
+    // Token "Rassool" (len 7) matches.
+    assert!(entity_present_in_text("Yousuf Rassool", &aliases, "Peter Rassool was there."));
+    // Token "Gool" (len 4) matches.
+    assert!(entity_present_in_text("JMH Gool", &aliases, "His grandfather Gool arrived from Mauritius."));
+    // Short token "Jo" (len 2) does NOT match — below 4-char threshold.
+    assert!(!entity_present_in_text("Jo Smith", &aliases, "Jo was there."));
+}
+
+#[test]
+fn kinship_extraction_son_of() {
+    let entities = vec![
+        (1i64, "Yousuf Rassool".to_string(), vec!["I".to_string()]),
+        (2i64, "Peter Rassool".to_string(), vec![]),
+    ];
+    let text = "Yousuf Rassool, son of Peter Rassool, grew up in District Six.";
+    let result = extract_kinship_interactions(text, &entities);
+    // Should emit (Yousuf=1, Peter=2, "child_of")
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], (1, 2, "child_of".to_string()));
+}
+
+#[test]
+fn kinship_extraction_member_of() {
+    let entities = vec![
+        (10i64, "Yousuf Rassool".to_string(), vec!["I".to_string()]),
+        (20i64, "NEUM".to_string(), vec!["Non-European Unity Movement".to_string()]),
+    ];
+    let text = "Yousuf Rassool was a member of NEUM during the 1950s.";
+    let result = extract_kinship_interactions(text, &entities);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], (10, 20, "member_of".to_string()));
+}
+
+#[test]
+fn kinship_extraction_no_false_positives_without_entities() {
+    // Text has keyword but only one known entity → no interaction emitted.
+    let entities = vec![
+        (1i64, "Yousuf Rassool".to_string(), vec![]),
+    ];
+    let text = "Yousuf Rassool, son of an unknown man, lived here.";
+    let result = extract_kinship_interactions(text, &entities);
+    // "unknown man" is not a known entity, so no pair can be formed.
+    assert!(result.is_empty());
+}
+
+#[test]
+fn kinship_extraction_deduplicates_same_pair() {
+    let entities = vec![
+        (1i64, "Yousuf Rassool".to_string(), vec![]),
+        (2i64, "Peter Rassool".to_string(), vec![]),
+    ];
+    // Two sentences with same kinship pattern → only one interaction emitted.
+    let text = "Yousuf Rassool, son of Peter Rassool. Yousuf Rassool was son of Peter Rassool.";
+    let result = extract_kinship_interactions(text, &entities);
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn kinship_extraction_founded_by_is_reversed() {
+    let entities = vec![
+        (1i64, "Hanaffi Mosque".to_string(), vec![]),
+        (2i64, "JMH Gool".to_string(), vec!["Gool".to_string()]),
+    ];
+    // "founded by" is reversed: Gool (after keyword) founds Mosque (before keyword).
+    let text = "The Hanaffi Mosque was founded by Gool in 1898.";
+    let result = extract_kinship_interactions(text, &entities);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0, 2); // Gool is the subject (founder)
+    assert_eq!(result[0].1, 1); // Mosque is the object
+    assert_eq!(result[0].2, "founded_by");
+}

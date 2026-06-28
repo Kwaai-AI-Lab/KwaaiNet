@@ -79,13 +79,14 @@ struct TemporalPayload {
 /// Convert fuzzy date strings to ISO "YYYY-MM-DD" for sort-stable comparison.
 pub fn normalize_date(raw: &str) -> String {
     let s = raw.trim();
-    // 4-digit year only
-    if let Some(y) = parse_4digit_year(s) {
-        return format!("{y:04}-01-01");
-    }
-    // "Month YYYY"
+    // "Month YYYY" first — must be checked before bare-year so that
+    // "February 1914" isn't collapsed to "1914" by parse_4digit_year.
     if let Some((m, y)) = parse_month_year(s) {
         return format!("{y:04}-{m:02}-01");
+    }
+    // Bare 4-digit year (digits-only filter; also catches "circa 1920", etc.)
+    if let Some(y) = parse_4digit_year(s) {
+        return format!("{y:04}-01-01");
     }
     // "YYYY-MM" or "YYYY-MM-DD"
     if s.len() >= 7
@@ -337,11 +338,12 @@ fn resolve_name(name: &str, graph: &GraphStore) -> Option<i64> {
 /// Convert raw LLM events+interactions for a specific chunk into typed structs,
 /// resolving entity names to graph IDs. Returns (events, interactions).
 ///
-/// `chunk_text` is used to apply the **co-presence axiom**: an interaction
-/// between A and B is only stored when both A and B are explicitly present in
-/// the chunk text (by canonical name, alias, or first-person pronoun for the
-/// narrator entity). This prevents spurious interactions caused by the LLM
-/// pairing entities that appear in the same chunk for unrelated reasons.
+/// Applied axioms (in order):
+/// 1. **Date-presence**: events with null or placeholder dates are dropped.
+/// 2. **Date-range**: events with unparseable dates or years outside [1700, 2099] are dropped.
+/// 3. **Event dedup**: same (entity_id, event_class, year) pair within a chunk → keep first.
+/// 4. **Co-presence**: interactions where either entity is absent from chunk text are dropped.
+/// 5. **Interaction dedup**: same (from_id, to_id) pair within a chunk → keep first.
 pub fn resolve_extracted(
     raw_events: Vec<RawEvent>,
     raw_interactions: Vec<RawInteraction>,
@@ -350,10 +352,12 @@ pub fn resolve_extracted(
     graph: &GraphStore,
 ) -> (Vec<TimelineEvent>, Vec<SequenceInteraction>) {
     let mut events = Vec::new();
+    // Dedup key: (entity_id, event_class, year_str)
+    let mut seen_events: std::collections::HashSet<(i64, String, String)> =
+        std::collections::HashSet::new();
+
     for ev in raw_events {
-        // Axiom: date must be present and not a placeholder. The LLM sometimes
-        // returns "not specified", "none", "no date", or null when no temporal
-        // anchor exists — those events are noise; drop them.
+        // Axiom 1: date must be present and not a placeholder.
         let date_str = match &ev.date {
             None => continue,
             Some(d) => {
@@ -371,6 +375,24 @@ pub fn resolve_extracted(
                 ev.date.as_deref().unwrap()
             }
         };
+        let date_sort = normalize_date(date_str);
+        // Axiom 2: unparseable dates normalise to "9999-12-31" (fallback); drop them.
+        // Also drop any year outside the plausible historical range for any modern document.
+        if date_sort == "9999-12-31" {
+            tracing::debug!(
+                "date-range axiom: dropping unparseable date {:?} in chunk {}",
+                ev.date, chunk_id
+            );
+            continue;
+        }
+        let year: u32 = date_sort[..4].parse().unwrap_or(0);
+        if year < 1700 || year > 2099 {
+            tracing::debug!(
+                "date-range axiom: dropping out-of-range year {year} in chunk {}",
+                chunk_id
+            );
+            continue;
+        }
         let Some(eid) = resolve_name(&ev.entity, graph) else {
             continue;
         };
@@ -378,23 +400,36 @@ pub fn resolve_extracted(
             .get_entity(eid)
             .map(|e| e.name.clone())
             .unwrap_or_else(|| ev.entity.clone());
+        // Axiom 3: deduplicate events with same (entity, class, year) in this chunk.
+        // The LLM sometimes emits two slightly different descriptions of the same event.
+        let event_class = ev.class.as_deref().unwrap_or("other").to_string();
+        let dedup_key = (eid, event_class.clone(), date_sort[..4].to_string());
+        if !seen_events.insert(dedup_key) {
+            tracing::debug!(
+                "event-dedup axiom: dropping duplicate ({entity_name}, {event_class}, {year}) in chunk {chunk_id}"
+            );
+            continue;
+        }
         // Note: no entity-presence check for events — attribution is done via the
-        // coref pronoun_map passed to the LLM, which correctly attributes "my
-        // grandfather came from India" to JMH Gool even when "Gool" doesn't appear
-        // in the chunk text. The co-presence axiom applies to interactions only.
-        let date_sort = normalize_date(date_str);
+        // coref pronoun_map passed to the LLM. The co-presence axiom applies only
+        // to interactions because coref-attributed events (e.g. "my grandfather
+        // came from Mauritius" → JMH Gool) are valid even when the canonical name
+        // doesn't appear in the chunk text.
         events.push(TimelineEvent {
             entity_id: eid,
             entity_name,
             date_raw: ev.date,
             date_sort,
             description: ev.description,
-            event_class: ev.class.unwrap_or_else(|| "other".to_string()),
+            event_class,
             evidence_chunk_id: chunk_id,
         });
     }
 
     let mut interactions = Vec::new();
+    let mut seen_interactions: std::collections::HashSet<(i64, i64)> =
+        std::collections::HashSet::new();
+
     for ia in raw_interactions {
         let Some(from_id) = resolve_name(&ia.from, graph) else {
             continue;
@@ -407,7 +442,7 @@ pub fn resolve_extracted(
         }
         let from_entity = graph.get_entity(from_id);
         let to_entity = graph.get_entity(to_id);
-        // Co-presence axiom: both entities must be explicitly present in the chunk
+        // Axiom 4 (co-presence): both entities must be explicitly present in the chunk
         // text. Interactions fabricated by the LLM between entities that merely
         // appear in the same chunk for unrelated reasons are dropped here.
         if let (Some(fe), Some(te)) = (from_entity, to_entity) {
@@ -420,6 +455,10 @@ pub fn resolve_extracted(
                 );
                 continue;
             }
+        }
+        // Axiom 5 (interaction dedup): same (from_id, to_id) pair within a chunk → keep first.
+        if !seen_interactions.insert((from_id, to_id)) {
+            continue;
         }
         let from_name = from_entity
             .map(|e| e.name.clone())
@@ -445,6 +484,129 @@ pub fn resolve_extracted(
     }
 
     (events, interactions)
+}
+
+// ── Rule-based kinship extraction ─────────────────────────────────────────────
+
+/// Kinship and membership keywords used for rule-based interaction extraction.
+/// Each entry is `(keyword, relation_label)`. The entity whose name appears
+/// BEFORE the keyword is the subject; the entity AFTER is the object.
+///
+/// "founded by" / "born to" are reversed: subject (founder/parent) comes after.
+const KINSHIP_KEYWORDS: &[(&str, &str)] = &[
+    ("son of", "child_of"),
+    ("daughter of", "child_of"),
+    ("wife of", "spouse_of"),
+    ("husband of", "spouse_of"),
+    ("married to", "spouse_of"),
+    ("father of", "parent_of"),
+    ("mother of", "parent_of"),
+    ("brother of", "sibling_of"),
+    ("sister of", "sibling_of"),
+    ("grandfather of", "grandparent_of"),
+    ("grandmother of", "grandparent_of"),
+    ("grandson of", "grandchild_of"),
+    ("granddaughter of", "grandchild_of"),
+    ("foster son of", "foster_child_of"),
+    ("foster daughter of", "foster_child_of"),
+    ("foster father of", "foster_parent_of"),
+    ("foster mother of", "foster_parent_of"),
+    ("member of", "member_of"),
+    ("founded by", "founded_by"),
+    ("born to", "child_of"),
+];
+
+/// Keywords where the agent (subject) appears AFTER the keyword, not before.
+/// E.g., "X founded by Y" → Y founds X; "X born to Y" → X is child of Y.
+fn kinship_is_reversed(kw: &str) -> bool {
+    matches!(kw, "founded by" | "born to")
+}
+
+/// Rule-based kinship/membership interaction extraction. **No LLM required.**
+///
+/// Scans each sentence in `text` for kinship keywords. When a keyword is found
+/// and two distinct known entities flank it — one before, one after — an
+/// interaction triple `(subject_id, object_id, label)` is emitted.
+///
+/// `known_entities` is `(entity_id, canonical_name, aliases)`. Tokens shorter
+/// than 3 characters or equal to "I" are skipped to avoid spurious matches.
+///
+/// Deduplication: only the first occurrence of each `(subject_id, object_id)`
+/// pair is kept (within the same chunk call).
+pub fn extract_kinship_interactions(
+    text: &str,
+    known_entities: &[(i64, String, Vec<String>)],
+) -> Vec<(i64, i64, String)> {
+    let mut results: Vec<(i64, i64, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+
+    let sentences: Vec<&str> = text
+        .split(|c: char| c == '.' || c == '?' || c == '!' || c == ';')
+        .map(str::trim)
+        .filter(|s| s.len() >= 12)
+        .collect();
+
+    for sentence in sentences {
+        let s_lower = sentence.to_lowercase();
+
+        // Quick pre-check: does this sentence contain any kinship keyword?
+        let Some((kw, label)) = KINSHIP_KEYWORDS.iter().find(|(kw, _)| s_lower.contains(kw))
+        else {
+            continue;
+        };
+        let kw_pos = match s_lower.find(kw) {
+            Some(p) => p,
+            None => continue,
+        };
+        let kw_end = kw_pos + kw.len();
+        let reversed = kinship_is_reversed(kw);
+
+        // Map each known entity to its first occurrence position in this sentence.
+        let mut positions: Vec<(usize, usize, i64)> = Vec::new(); // (start, end, id)
+        for (id, name, aliases) in known_entities {
+            let candidates = std::iter::once(name.as_str())
+                .chain(aliases.iter().map(String::as_str));
+            for tok in candidates {
+                if tok.len() < 3 || tok.eq_ignore_ascii_case("I") {
+                    continue;
+                }
+                if let Some(pos) = s_lower.find(&tok.to_lowercase()) {
+                    positions.push((pos, pos + tok.len(), *id));
+                    break;
+                }
+            }
+        }
+
+        if positions.len() < 2 {
+            continue;
+        }
+
+        // Before keyword → subject; after keyword → object (unless reversed).
+        let before = positions
+            .iter()
+            .filter(|(_, end, _)| *end <= kw_pos)
+            .max_by_key(|(start, _, _)| *start);
+        let after = positions
+            .iter()
+            .filter(|(start, _, _)| *start >= kw_end)
+            .min_by_key(|(start, _, _)| *start);
+
+        if let (Some((_, _, a_id)), Some((_, _, b_id))) = (before, after) {
+            if a_id == b_id {
+                continue;
+            }
+            let (sub_id, obj_id) = if reversed {
+                (*b_id, *a_id)
+            } else {
+                (*a_id, *b_id)
+            };
+            if seen.insert((sub_id, obj_id)) {
+                results.push((sub_id, obj_id, label.to_string()));
+            }
+        }
+    }
+
+    results
 }
 
 // ── Mermaid rendering ─────────────────────────────────────────────────────────

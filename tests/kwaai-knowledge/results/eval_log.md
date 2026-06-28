@@ -1,4 +1,22 @@
 
+## Timeline rebuild — 2026-06-28 — **v0.4.125 knowledge axioms** — CPU baseline (GPU rebuild pending)
+
+**Axioms applied:**
+1. Entity-filter: only pass entities present in chunk text (or coref-resolved) to LLM
+2. Co-presence: drop interactions where either entity not in chunk text
+3. Date-presence: drop events with null/placeholder dates
+
+**Results vs v0.4.124 (same CPU, localhost:11434):**
+- Events: 893 → 669 (−25% — date-presence axiom removing undated noise)
+- Interactions: 125 → 93 (−26% — co-presence axiom removing spurious pairs)
+- **Gandhi fix confirmed**: all 6 spurious Gandhi↔Yousuf Rassool interactions eliminated
+- Gandhi now has only historically accurate interactions (1906 Gool correspondence, 1911 surgery, 1914 farewell)
+
+**GPU rebuild pending** — metro-linux not DHT-discoverable at rebuild time; will re-run when available.
+No eval run yet — GPU rebuild needed first for quality assessment.
+
+---
+
 ## r119 — 2026-06-27 — **64.9% (144/222)** — regression confirmed structural: 2× identical score vs r114 (70.1%)
 
 **Flags:** mode=iterative, graph_mode=inject, query_classify=rule, summary_expansion=false, biographical_expansion=false, model=llama3.1:8b, localhost:11434 (CPU, ~27s/question)
