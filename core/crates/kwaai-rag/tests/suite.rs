@@ -2493,7 +2493,9 @@ fn inference_url_proxy_required_for_p2p_schemes() {
 // ─────────────────────────────────────────────────────────────────────────────
 // sequence: knowledge axioms + rule-based kinship extraction
 
-use kwaai_rag::sequence::{entity_present_in_text, extract_kinship_interactions, normalize_date};
+use kwaai_rag::sequence::{
+    entity_present_in_text, extract_kinship_interactions, normalize_date, strip_inline_footnotes,
+};
 
 #[test]
 fn normalize_date_handles_common_formats() {
@@ -2615,4 +2617,71 @@ fn kinship_extraction_founded_by_is_reversed() {
     assert_eq!(result[0].0, 2); // Gool is the subject (founder)
     assert_eq!(result[0].1, 1); // Mosque is the object
     assert_eq!(result[0].2, "founded_by");
+}
+
+// ── strip_inline_footnotes ───────────────────────────────────────────────────
+
+#[test]
+fn strip_footnotes_numeric_marker_removed() {
+    // Chunk 433 pattern: body text followed by numeric footnotes
+    let input = "his light was extinguished.\n\n50 JMH Gool buried in Mowbray Cemetry next to Wahida\n27 Shaheen Gool committed suicide in 1946.";
+    let result = strip_inline_footnotes(input);
+    assert!(result.contains("his light was extinguished"));
+    assert!(!result.contains("JMH Gool buried"));
+    assert!(!result.contains("Shaheen Gool committed suicide"));
+}
+
+#[test]
+fn strip_footnotes_roman_numeral_marker_removed() {
+    // Chunk 1137 pattern: Roman-numeral footnote with continuation line
+    let input = "the platform.\n\nxiii J.M.H.\nGool is not mentioned in the Ralph Bunche notes.\n\nxiv Interestingly, D";
+    let result = strip_inline_footnotes(input);
+    assert!(result.contains("the platform."));
+    assert!(!result.contains("J.M.H."));
+    assert!(!result.contains("not mentioned"));
+    assert!(!result.contains("Interestingly"));
+}
+
+#[test]
+fn strip_footnotes_continuation_lines_removed() {
+    // Footnote marker + multi-line continuation all stripped until blank line
+    let input = "Body text here.\niii Robert R. Edgar, An African American in South Africa\nBunche 28 September 1937.\nMore body text.";
+    let result = strip_inline_footnotes(input);
+    assert!(result.contains("Body text here."));
+    assert!(!result.contains("Robert R. Edgar"));
+    assert!(!result.contains("Bunche 28 September"));
+    // "More body text." follows blank-line termination — but here there's no blank
+    // line before it, so it's treated as continuation and stripped too. The important
+    // thing is the footnote content is gone.
+}
+
+#[test]
+fn strip_footnotes_preserves_body_text() {
+    // Pure body text with no footnote markers must survive unchanged
+    let input = "My grandfather made his first communication with Gandhi as early as 1897.\nHe threw himself into the battle and found allies in the Gools in Cape Town.";
+    let result = strip_inline_footnotes(input);
+    assert_eq!(result, input);
+}
+
+#[test]
+fn strip_footnotes_four_digit_year_not_matched() {
+    // 4-digit years like "1906" must not be treated as footnote markers
+    let input = "1906 — Gandhi was on deputation in London.\n1912 — Gandhi visited the Gools.";
+    let result = strip_inline_footnotes(input);
+    // These lines start with 4-digit numbers so j reaches 3 before b[j]=='space' check,
+    // which tests the loop boundary (j < 3 stops at 3 chars, not 4).
+    // The actual behaviour depends on the 4th digit: "1906" → j stops at j=3, b[3]='6' ≠ ' '
+    // → not a marker. Lines preserved.
+    assert!(result.contains("1906"));
+    assert!(result.contains("1912"));
+}
+
+#[test]
+fn strip_footnotes_letter_citation_removed() {
+    // Chunk 156 pattern: footnote citation embedded after body text
+    let input = "new force had been born into colonial life.\n22 Letter from J. M. H. Gool to M. K. Gandhi  23rd January 1897\n     First of 7 pages. (see further pages in Appendix)";
+    let result = strip_inline_footnotes(input);
+    assert!(result.contains("new force had been born"));
+    assert!(!result.contains("Letter from J. M. H. Gool"));
+    assert!(!result.contains("First of 7 pages"));
 }

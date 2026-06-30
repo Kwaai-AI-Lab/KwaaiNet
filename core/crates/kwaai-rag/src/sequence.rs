@@ -527,6 +527,95 @@ fn kinship_is_reversed(kw: &str) -> bool {
 ///
 /// Scans each sentence in `text` for kinship keywords. When a keyword is found
 /// and two distinct known entities flank it — one before, one after — an
+/// Strip inline footnote text from a chunk before passing it to any LLM call.
+///
+/// PDF parsers interleave per-page footnote text with body text. The ENDNOTES
+/// section skip in the doc schema handles the end-of-book section, but footnotes
+/// at the bottom of each page appear inline in the body chunk stream. These are
+/// stripped to prevent the LLM from treating footnote assertions as first-class
+/// claims (e.g., "xiii J.M.H. Gool is not mentioned in Bunche's notes" becoming
+/// a visited-by event, or "50 JMH Gool buried in Mowbray" polluting death extraction).
+///
+/// A footnote marker line starts with 1–3 ASCII digits OR lowercase Roman numerals
+/// ([ivxlc]+), followed by a space, followed by an uppercase letter. Continuation
+/// lines (non-blank lines immediately after the marker with no new marker) are also
+/// stripped because footnotes wrap across lines in narrow page-bottom columns.
+pub fn strip_inline_footnotes(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let n = lines.len();
+    let mut keep = vec![true; n];
+    let mut i = 0;
+    while i < n {
+        if is_footnote_marker_line(lines[i]) {
+            keep[i] = false;
+            // Strip continuation lines until blank line or next marker.
+            let mut j = i + 1;
+            while j < n {
+                let next = lines[j].trim();
+                if next.is_empty() || is_footnote_marker_line(lines[j]) {
+                    break;
+                }
+                keep[j] = false;
+                j += 1;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    lines
+        .iter()
+        .zip(keep.iter())
+        .filter(|(_, &k)| k)
+        .map(|(line, _)| *line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Returns true when a line opens a footnote block.
+///
+/// Heuristics:
+/// - 1–3 ASCII digits followed by a space and an uppercase letter.
+///   (4-digit years like "1906" are NOT matched because we stop at j < 3.)
+/// - Lowercase Roman-numeral sequence ([ivxlc]+, 1–8 chars) followed by a
+///   space and an uppercase letter.
+fn is_footnote_marker_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let b = trimmed.as_bytes();
+
+    // Numeric marker: 1–3 digits then space then uppercase
+    let mut j = 0;
+    while j < b.len() && j < 3 && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j >= 1 && j < b.len() && b[j] == b' ' {
+        let rest = trimmed[j..].trim_start();
+        if rest.starts_with(|c: char| c.is_uppercase()) {
+            return true;
+        }
+    }
+
+    // Roman numeral marker (lowercase only): [ivxlc]+ then space then uppercase
+    let roman: &[u8] = b"ivxlc";
+    let mut k = 0;
+    while k < b.len() && k < 8 && roman.contains(&b[k]) {
+        k += 1;
+    }
+    if k >= 2 && k < b.len() && b[k] == b' ' {
+        // Require ≥2 chars to avoid matching a standalone "i" or "v" that could
+        // be a sentence-initial word (rare in memoir body text, but possible).
+        let rest = trimmed[k..].trim_start();
+        if rest.starts_with(|c: char| c.is_uppercase()) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// interaction triple `(subject_id, object_id, label)` is emitted.
 ///
 /// `known_entities` is `(entity_id, canonical_name, aliases)`. Tokens shorter

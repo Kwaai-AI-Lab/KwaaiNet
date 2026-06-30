@@ -8155,6 +8155,13 @@ async fn run_timeline_build(
             };
             let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
 
+            // Strip inline footnotes before any LLM-facing call.
+            // PDF parsers mix per-page footnotes into body chunks; these are numeric
+            // or Roman-numeral markers (e.g. "50 JMH Gool buried…", "xiii J.M.H. Gool
+            // is not mentioned…") that the LLM would otherwise treat as first-class
+            // claims. The original chunk.text is preserved in the DB for retrieval.
+            let clean_text = kwaai_rag::sequence::strip_inline_footnotes(&chunk.text);
+
             // Get entity names linked to this chunk AND derive rule-based coref
             // resolutions (definite descriptions + gender pronouns) so the LLM
             // can correctly attribute events to "my grandfather" or "he" rather
@@ -8176,9 +8183,9 @@ async fn run_timeline_build(
                 let candidates = g.coref_candidates_for_chunk(cid, &adjacent);
                 // Rule-based Tier 1 only — fast, deterministic, no LLM call needed here.
                 let desc_res =
-                    kwaai_rag::ner::resolve_definite_descriptions(&chunk.text, &candidates);
+                    kwaai_rag::ner::resolve_definite_descriptions(&clean_text, &candidates);
                 let pronoun_res =
-                    kwaai_rag::ner::resolve_pronouns_from_candidates(&chunk.text, &candidates);
+                    kwaai_rag::ner::resolve_pronouns_from_candidates(&clean_text, &candidates);
                 let mut seen = std::collections::HashSet::new();
                 let pmap: Vec<(String, String)> = desc_res
                     .into_iter()
@@ -8197,7 +8204,7 @@ async fn run_timeline_build(
                         kwaai_rag::sequence::entity_present_in_text(
                             &e.name,
                             &e.aliases,
-                            &chunk.text,
+                            &clean_text,
                         ) || coref_names.contains(e.name.as_str())
                     })
                     .map(|(id, e)| (id, e.name.clone(), e.aliases.clone()))
@@ -8210,10 +8217,10 @@ async fn run_timeline_build(
             // Runs on the same filtered entity set before the LLM call so that
             // rule-derived interactions take precedence over LLM-derived ones.
             let kinship_raw =
-                kwaai_rag::sequence::extract_kinship_interactions(&chunk.text, &entity_data);
+                kwaai_rag::sequence::extract_kinship_interactions(&clean_text, &entity_data);
 
             let (raw_events, raw_interactions) = kwaai_rag::sequence::extract_temporal_events(
-                &chunk.text,
+                &clean_text,
                 &entity_names,
                 &pronoun_map,
                 &infer_url,
@@ -8228,7 +8235,7 @@ async fn run_timeline_build(
                     raw_events,
                     raw_interactions,
                     cid,
-                    &chunk.text,
+                    &clean_text,
                     &g,
                 )
             };
