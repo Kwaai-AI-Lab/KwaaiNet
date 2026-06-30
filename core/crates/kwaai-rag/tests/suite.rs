@@ -2687,6 +2687,18 @@ fn strip_footnotes_letter_citation_removed() {
     assert!(!result.contains("First of 7 pages"));
 }
 
+#[test]
+fn strip_footnotes_single_digit_chapter_number_preserved() {
+    // "3 The Group Areas Act" is a section heading, NOT a footnote marker.
+    // Single-digit prefix is now required to have ≥2 digits to avoid stripping chapter titles.
+    let input = "3 The Group Areas Act was enacted in 1950 to enable the government to define areas for specific racial groups.";
+    let result = strip_inline_footnotes(input);
+    assert!(
+        result.contains("Group Areas Act"),
+        "section heading must not be stripped by footnote detector"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // narrator_kinship_map — Fix 2
 // ─────────────────────────────────────────────────────────────────────────────

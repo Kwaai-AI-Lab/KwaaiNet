@@ -586,12 +586,15 @@ fn is_footnote_marker_line(line: &str) -> bool {
     }
     let b = trimmed.as_bytes();
 
-    // Numeric marker: 1–3 digits then space then uppercase
+    // Numeric marker: 2–3 digits then space then uppercase.
+    // Require ≥2 digits to avoid matching single-digit chapter/section numbers
+    // like "3 The Group Areas Act" or "1 Introduction" which appear in chunked PDFs
+    // when section headings lack a leading zero. Inline footnotes in D6 are all ≥10.
     let mut j = 0;
     while j < b.len() && j < 3 && b[j].is_ascii_digit() {
         j += 1;
     }
-    if j >= 1 && j < b.len() && b[j] == b' ' {
+    if j >= 2 && j < b.len() && b[j] == b' ' {
         let rest = trimmed[j..].trim_start();
         if rest.starts_with(|c: char| c.is_uppercase()) {
             return true;
