@@ -8248,7 +8248,7 @@ async fn run_timeline_build(
                 // Whitelist: entities that coref resolves to (e.g. JMH Gool via "my grandfather")
                 let coref_names: std::collections::HashSet<&str> =
                     pmap.iter().map(|(_, n)| n.as_str()).collect();
-                let data: Vec<(i64, String, Vec<String>)> = g
+                let mut data: Vec<(i64, String, Vec<String>)> = g
                     .get_chunk_entities(cid)
                     .iter()
                     .filter_map(|&id| g.get_entity(id).map(|e| (id, e)))
@@ -8261,6 +8261,24 @@ async fn run_timeline_build(
                     })
                     .map(|(id, e)| (id, e.name.clone(), e.aliases.clone()))
                     .collect();
+                // Fix 3 — Kinship entity injection into entity_list.
+                // When "my grandfather" → JMH Gool is in narrator_kinship and the chunk
+                // contains "grandfather", JMH must appear in entity_names so the LLM
+                // can assign events to him. Without this, pmap has the coref resolution
+                // but Rule 2 ("only use names from known list") prevents the LLM from
+                // emitting JMH — he's not in get_chunk_entities() for chunks that only
+                // say "my grandfather" without JMH's canonical name.
+                {
+                    let existing_ids: std::collections::HashSet<i64> =
+                        data.iter().map(|(id, _, _)| *id).collect();
+                    for (phrase, (eid, _)) in narrator_kinship.as_ref() {
+                        if clean_lower.contains(phrase.as_str()) && !existing_ids.contains(eid) {
+                            if let Some(e) = g.get_entity(*eid) {
+                                data.push((*eid, e.name.clone(), e.aliases.clone()));
+                            }
+                        }
+                    }
+                }
                 let names: Vec<String> = data.iter().map(|(_, n, _)| n.clone()).collect();
                 (data, names, pmap)
             };
