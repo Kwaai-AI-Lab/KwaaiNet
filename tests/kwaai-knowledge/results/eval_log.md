@@ -1,4 +1,25 @@
 
+## v0.4.134 — 2026-07-01 — **61.3% (136/222)** — GPU rebuild (2 GPUs; jerome offline)
+
+**Change:** Narrowed NARRATOR rule to narrator entity only (fix for v0.4.133 over-suppression)
+
+**Timeline result:** 62 events, 13 interactions (better than 37/5 in v0.4.133, still below 197/56 target)
+
+**Eval score: 61.3% — further regression from 70.1% baseline**
+
+**Root cause of remaining regression:**
+- JMH Gool timeline still empty (0 events). The bug: kinship-resolved entities (JMH via "my grandfather") are added to `pmap` (coref context) but NOT to `data`/`entity_names` (the LLM's entity_list). Rule 2 ("only use names from known list") then prevents the LLM from emitting JMH events even when the coref context correctly maps "my grandfather" → JMH. `get_chunk_entities(cid)` only returns directly-linked entities; chunks that only say "my grandfather" don't link JMH.
+- Entity routing stochasticity: q30 (JMH arrival, 0%) routed to Abdul Hamid Gool; q16 (Gandhi-Gool, 0%) routed to Manilal Gandhi — different dedup merges between runs
+
+**Next fix (v0.4.135):** Fix 3 — inject kinship-resolved entities into `data`/`entity_names` directly, not just `pmap`. When "my grandfather" matches in a chunk, look up JMH's entity ID from narrator_kinship and add him to the LLM's entity list even if he's not in `get_chunk_entities`.
+
+Per-question notable failures:
+- q16 Gandhi-Gool: 0% (vs 60% v0.4.133) — wrong entity (Manilal Gandhi)
+- q24 JMH children: 14% (vs 57% v0.4.133) — wrong entity
+- q30 JMH arrival: 0% (vs 83% v0.4.133) — wrong entity (Abdul Hamid Gool)
+
+---
+
 ## v0.4.133 — 2026-07-01 — **66.2% (147/222)** — GPU rebuild (2 GPUs: metro-linux A6000 + metro-win A5000; jerome offline)
 
 **Changes:** Temporal extraction prompt refinements + Axiom 6 (biographical temporal bounds)
