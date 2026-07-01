@@ -1,4 +1,35 @@
 
+## v0.4.133 — 2026-07-01 — **66.2% (147/222)** — GPU rebuild (2 GPUs: metro-linux A6000 + metro-win A5000; jerome offline)
+
+**Changes:** Temporal extraction prompt refinements + Axiom 6 (biographical temporal bounds)
+- Rule 4 (NARRATOR): narrator describing historical events is not a participant
+- Rule 5 (BIRTH/DEATH): require explicit birth/death language
+- Rule 6 (INTERACTION DIRECTION): from=actor, to=patient; possessive → possessor is "to"
+- Rule 7 (LABEL): verb phrase only, no entity names in label
+- Axiom 6: drop events outside entity's known lifetime (birthDate/deathDate ±1yr)
+
+**Timeline result:** 37 events, 5 interactions (down from 197/56 in v0.4.132) — **REGRESSION**
+
+**Root cause of over-filtering:** Rule 4's phrase "only assign if directly doing/experiencing" was interpreted by the 8B model to suppress events for ALL entities in narrator-voice text, not just the narrator entity. JMH Gool and Gandhi timelines went completely empty. The model refused to extract historical events for any entity when the narrator's "I" was present in the chunk.
+
+**Eval score: 66.2% — regression from 70.1% baseline (r114)**
+
+Per-question highlights vs baseline:
+- q02 grandchildren 100% ✅, q04 dedication 100% ✅, q11 TLSA 100% ✅, q15 removals 100% ✅
+- q22 father 100% ✅, q23 siblings 100% ✅, q25 Tabata 100% ✅, q27 Gandhi-JMH 100% ✅
+- q28 orgs 100% ✅, q35 Hassen Mall 100% ✅
+- q12 Cissie Gool 33% ❌ (entity retrieval confusion — Zohra Abdurahman matched instead)
+- q13 AAC 33% ❌, q14 District Six 33% ❌, q36 political orgs 17% ❌
+- q38 Cissie's father 40% ❌ (answered with Peter Rassool — wrong entity)
+
+**Yousuf timeline (wrong):** death=1996, meeting/reading 2002/2007 (editorial notes, not memoir events)
+**JMH timeline (empty):** All arrivals, testimonies, Hajj, death — gone
+**Gandhi timeline (empty):** All D6-relevant events — gone
+
+**Next fix (v0.4.134):** Narrow Rule 4 — scope it explicitly to narrator entity only; add counter-statement that events for other entities (JMH, Gandhi) MUST still be extracted even from narrator-voice text. The "directly doing/experiencing" clause was too broad.
+
+---
+
 ## Timeline rebuild — 2026-07-01 — **v0.4.132 Fix 1b + Fix 2** — metro-linux A6000 (jerome offline)
 
 **Fixes in this rebuild:**
