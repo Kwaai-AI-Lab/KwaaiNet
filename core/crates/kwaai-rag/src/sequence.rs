@@ -365,6 +365,9 @@ fn resolve_name(name: &str, graph: &GraphStore) -> Option<i64> {
 /// 5. **Interaction dedup**: same (from_id, to_id) pair within a chunk → keep first.
 /// 6. **Temporal bounds**: events whose year falls outside an entity's known lifetime
 ///    (birthDate/deathDate fields, ±1 year margin) are dropped.
+/// 7. **Cross-entity floor**: for entities with no seeded birthDate, the earliest known
+///    presence year of any seeded parent (birthDate/arrived_cape_town/foundingDate) acts as
+///    a temporal floor — events before it are impossible (child can't predate parent's arrival).
 pub fn resolve_extracted(
     raw_events: Vec<RawEvent>,
     raw_interactions: Vec<RawInteraction>,
@@ -461,6 +464,33 @@ pub fn resolve_extracted(
                         "temporal-bounds axiom: dropping event year {year} for {entity_name} (died ~{dy}) in chunk {chunk_id}"
                     );
                     continue;
+                }
+            }
+            // Axiom 7: cross-entity temporal floor — if no birthDate is seeded for this
+            // entity, use the earliest known presence year of any seeded parent.
+            // A child entity cannot have events before their parent arrived/was born.
+            if birth_year.is_none() {
+                let parent_ids = graph.trusted_parent_ids(eid);
+                let parent_floor: Option<u32> = parent_ids
+                    .iter()
+                    .filter_map(|pid| graph.get_entity(*pid))
+                    .filter_map(|parent| {
+                        parent
+                            .fields
+                            .get("birthDate")
+                            .or_else(|| parent.fields.get("arrived_cape_town"))
+                            .or_else(|| parent.fields.get("foundingDate"))
+                            .and_then(|f| extract_year_from_field(&f.value))
+                    })
+                    .min();
+                if let Some(floor) = parent_floor {
+                    if year + 1 < floor {
+                        tracing::debug!(
+                            "cross-entity axiom: dropping event year {year} for {entity_name} \
+                             (parent active from ~{floor}) in chunk {chunk_id}"
+                        );
+                        continue;
+                    }
                 }
             }
         }

@@ -46,6 +46,7 @@ persons:
     fields:
       arrived_cape_town: "1884"
       origin: "Mauritius (via Swat, Gujarat)"
+      deathDate: "1940-04-01"
 
   - canonical: "Bibi Gool"
     gender: "Female"
@@ -97,6 +98,8 @@ persons:
 
   - canonical: "Abdul Hamid Gool"
     gender: "Male"
+    fields:
+      birthDate: "1886"
     aliases:
       - "A.H. Gool"
       - "AH Gool"
@@ -163,6 +166,9 @@ persons:
 
   - canonical: "Dr. Abdulla Abdurahman"
     gender: "Male"
+    fields:
+      birthDate: "1872-09-08"
+      deathDate: "1940-02-20"
     aliases:
       - "Abdulla Abdurahman"
       - "Abdullah Abdurahman"
@@ -171,6 +177,9 @@ persons:
 
   - canonical: "Cissie Gool"
     gender: "Female"
+    fields:
+      birthDate: "1897-02-14"
+      deathDate: "1963-12-02"
     aliases:
       - "Cissie"
       - "Zainunnisa Cissie Gool"
@@ -395,6 +404,9 @@ persons:
 
   - canonical: "Mohandas Karamchand Gandhi"
     gender: "Male"
+    fields:
+      birthDate: "1869-10-02"
+      deathDate: "1948-01-30"
     aliases:
       - "MK Gandhi"
       - "M.K. Gandhi"
