@@ -2495,7 +2495,7 @@ fn inference_url_proxy_required_for_p2p_schemes() {
 
 use kwaai_rag::sequence::{
     entity_present_in_text, extract_kinship_interactions, narrator_kinship_map, normalize_date,
-    strip_inline_footnotes,
+    resolve_extracted, strip_inline_footnotes, RawEvent, RawInteraction,
 };
 
 #[test]
@@ -2848,4 +2848,129 @@ fn narrator_kinship_empty_when_no_narrator_in_graph() {
     // Narrator ID that doesn't exist in the graph
     let map = narrator_kinship_map(i64::MAX, &g);
     assert!(map.is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolve_extracted: Axiom 6 — biographical temporal bounds
+
+fn make_raw_event(entity: &str, date: &str, class: &str) -> RawEvent {
+    RawEvent {
+        entity: entity.to_string(),
+        date: Some(date.to_string()),
+        description: "test event".to_string(),
+        class: Some(class.to_string()),
+    }
+}
+
+#[test]
+fn axiom6_drops_event_before_birth_year() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    // Person born 1900 — event in 1795 should be dropped.
+    let mut e = make_entity("TestPerson", "Person");
+    e.fields
+        .insert("birthDate".to_string(), FieldValue::new("1900", 0));
+    g.upsert_entity(e).unwrap();
+    let chunk_text = "In 1795 something happened to TestPerson.";
+    let (events, _) = resolve_extracted(
+        vec![make_raw_event("TestPerson", "1795", "other")],
+        vec![],
+        1,
+        chunk_text,
+        &g,
+    );
+    assert!(
+        events.is_empty(),
+        "expected Axiom 6 to drop the pre-birth event; got {events:?}"
+    );
+}
+
+#[test]
+fn axiom6_keeps_event_within_lifetime() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    let mut e = make_entity("TestPerson", "Person");
+    e.fields
+        .insert("birthDate".to_string(), FieldValue::new("1900", 0));
+    e.fields
+        .insert("deathDate".to_string(), FieldValue::new("1960", 0));
+    g.upsert_entity(e).unwrap();
+    let chunk_text = "In 1930 TestPerson married.";
+    let (events, _) = resolve_extracted(
+        vec![make_raw_event("TestPerson", "1930", "other")],
+        vec![],
+        1,
+        chunk_text,
+        &g,
+    );
+    assert_eq!(events.len(), 1, "expected event within lifetime to be kept");
+}
+
+#[test]
+fn axiom6_drops_event_after_death_year() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    let mut e = make_entity("TestPerson", "Person");
+    e.fields
+        .insert("deathDate".to_string(), FieldValue::new("1940", 0));
+    g.upsert_entity(e).unwrap();
+    // Event in 1974 (> 1940+1) — should be dropped.
+    let chunk_text = "In 1974 TestPerson attended grammar school.";
+    let (events, _) = resolve_extracted(
+        vec![make_raw_event("TestPerson", "1974", "other")],
+        vec![],
+        1,
+        chunk_text,
+        &g,
+    );
+    assert!(
+        events.is_empty(),
+        "expected Axiom 6 to drop the post-death event; got {events:?}"
+    );
+}
+
+#[test]
+fn axiom6_margin_one_year_kept() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    let mut e = make_entity("TestPerson", "Person");
+    e.fields
+        .insert("deathDate".to_string(), FieldValue::new("1940", 0));
+    g.upsert_entity(e).unwrap();
+    // 1941 = death+1 — within margin, should be kept.
+    let chunk_text = "In 1941 TestPerson was commemorated.";
+    let (events, _) = resolve_extracted(
+        vec![make_raw_event("TestPerson", "1941", "other")],
+        vec![],
+        1,
+        chunk_text,
+        &g,
+    );
+    assert_eq!(
+        events.len(),
+        1,
+        "expected 1-year margin event to be kept (death+1)"
+    );
+}
+
+#[test]
+fn axiom6_no_fields_no_filter() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    // Entity with no birth/death fields — Axiom 6 should not filter anything.
+    let e = make_entity("UnknownPerson", "Person");
+    g.upsert_entity(e).unwrap();
+    let chunk_text = "In 1795 UnknownPerson was present.";
+    let (events, _) = resolve_extracted(
+        vec![make_raw_event("UnknownPerson", "1795", "other")],
+        vec![],
+        1,
+        chunk_text,
+        &g,
+    );
+    assert_eq!(
+        events.len(),
+        1,
+        "expected no filter when entity has no birth/death fields"
+    );
 }

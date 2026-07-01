@@ -155,6 +155,21 @@ fn parse_month_year(s: &str) -> Option<(u32, u32)> {
     None
 }
 
+/// Extract a 4-digit year from an entity field value like "1886", "1886-03-15",
+/// "c.1884", or "April 1940". Returns None if no plausible year is found.
+fn extract_year_from_field(value: &str) -> Option<u32> {
+    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+    // Look for the first run of exactly 4 consecutive digits representing a year.
+    for i in 0..digits.len().saturating_sub(3) {
+        if let Ok(y) = digits[i..i + 4].parse::<u32>() {
+            if (1700..=2099).contains(&y) {
+                return Some(y);
+            }
+        }
+    }
+    None
+}
+
 // ── LLM extraction ────────────────────────────────────────────────────────────
 
 /// Call the LLM to extract dated events and interactions from a chunk of text.
@@ -204,11 +219,15 @@ pub async fn extract_temporal_events(
            ]\n\
          }}\n\n\
          Rules:\n\
-         - Only extract events that have a clear temporal anchor (year, decade, or relative order).\n\
-         - Only use entity names from the known list above.\n\
-         - Use the coreference resolutions to determine WHO an event belongs to. If the text says \"I arrived\" and 'I' → Yousuf Rassool, the event entity is \"Yousuf Rassool\". If the text says \"my grandfather came from Mauritius\" and 'my grandfather' → J.M.H. Gool, the event entity is \"J.M.H. Gool\" — not the narrator.\n\
-         - \"interactions\" are between exactly two different entities; \"events\" attach to exactly one entity.\n\
-         - If no temporal events are present, return {{\"events\": [], \"interactions\": []}}.\n\n\
+         1. Only extract events that have a clear temporal anchor (year, decade, or relative order).\n\
+         2. Only use entity names from the known list above.\n\
+         3. COREFERENCE: Use the coreference resolutions to determine WHO an event belongs to. If the text says \"I arrived\" and 'I' → Yousuf Rassool, the event entity is \"Yousuf Rassool\". If the text says \"my grandfather came from Mauritius\" and 'my grandfather' → J.M.H. Gool, the event entity is \"J.M.H. Gool\" — not the narrator.\n\
+         4. NARRATOR RULE: A narrator *describing* historical events is NOT a participant in those events. If a first-person narrator recounts events that predate their birth (e.g. \"In 1795 the Dutch arrived...\", \"In 1900 the Congress declared...\"), do NOT assign those events to the narrator. Only assign an event to an entity if they are directly doing, experiencing, or present at the event.\n\
+         5. BIRTH/DEATH: Only use class \"birth\" when the text contains explicit birth language (\"was born\", \"born in\", \"birth of\", \"b.\"). Do not infer a birth year from a date that merely appears near an entity's name. Only use class \"death\" when the text contains explicit death language (\"died\", \"passed away\", \"death of\", \"d.\").\n\
+         6. INTERACTION DIRECTION: \"from\" = the entity performing the action (the agent). \"to\" = the entity receiving or benefiting from it (the patient/destination). When a location or object is described possessively (\"his surgery\", \"her house\"), the possessor is the \"to\" entity — they receive the benefit. Example: \"Gandhi helped refurbish AH Gool's surgery\" → from=Gandhi, to=AH Gool.\n\
+         7. LABEL: The \"label\" field must be a short verb phrase (3–6 words). Do not include entity names in the label. Wrong: \"Gandhi helped refurbish surgery\". Right: \"helped refurbish surgery\".\n\
+         8. \"interactions\" are between exactly two different entities; \"events\" attach to exactly one entity.\n\
+         9. If no temporal events are present, return {{\"events\": [], \"interactions\": []}}.\n\n\
          Text:\n{text}"
     );
 
@@ -344,6 +363,8 @@ fn resolve_name(name: &str, graph: &GraphStore) -> Option<i64> {
 /// 3. **Event dedup**: same (entity_id, event_class, year) pair within a chunk → keep first.
 /// 4. **Co-presence**: interactions where either entity is absent from chunk text are dropped.
 /// 5. **Interaction dedup**: same (from_id, to_id) pair within a chunk → keep first.
+/// 6. **Temporal bounds**: events whose year falls outside an entity's known lifetime
+///    (birthDate/deathDate fields, ±1 year margin) are dropped.
 pub fn resolve_extracted(
     raw_events: Vec<RawEvent>,
     raw_interactions: Vec<RawInteraction>,
@@ -410,6 +431,38 @@ pub fn resolve_extracted(
                 "event-dedup axiom: dropping duplicate ({entity_name}, {event_class}, {year}) in chunk {chunk_id}"
             );
             continue;
+        }
+        // Axiom 6: biographical temporal bounds — drop events whose year falls outside
+        // the entity's known lifetime. Birth year comes from the "birthDate" or
+        // "foundingDate" field; death/end year from "deathDate" or "dissolutionDate".
+        // A ±1 margin is applied so announcements/obituaries in adjacent years survive.
+        if let Some(entity) = graph.get_entity(eid) {
+            let birth_year = entity
+                .fields
+                .get("birthDate")
+                .or_else(|| entity.fields.get("foundingDate"))
+                .and_then(|f| extract_year_from_field(&f.value));
+            let death_year = entity
+                .fields
+                .get("deathDate")
+                .or_else(|| entity.fields.get("dissolutionDate"))
+                .and_then(|f| extract_year_from_field(&f.value));
+            if let Some(by) = birth_year {
+                if year + 1 < by {
+                    tracing::debug!(
+                        "temporal-bounds axiom: dropping event year {year} for {entity_name} (born ~{by}) in chunk {chunk_id}"
+                    );
+                    continue;
+                }
+            }
+            if let Some(dy) = death_year {
+                if year > dy + 1 {
+                    tracing::debug!(
+                        "temporal-bounds axiom: dropping event year {year} for {entity_name} (died ~{dy}) in chunk {chunk_id}"
+                    );
+                    continue;
+                }
+            }
         }
         // Note: no entity-presence check for events — attribution is done via the
         // coref pronoun_map passed to the LLM. The co-presence axiom applies only
