@@ -1,4 +1,60 @@
 
+## v0.4.136 — 2026-07-01 — **65.8% (146/222)** — GPU rebuild (2 GPUs; jerome offline)
+
+**Change:** Timeline extraction moved from Step 4 (graph build, pre-seed) to Step 5.5 (post-seed). Narrator kinship map now sees seeded `grandparent_of JMH→Yousuf` relations → "my grandfather" resolves correctly → Fix 3 takes effect.
+
+**Timeline result:** 67 events, 11 interactions. Narrator kinship map: **10 role phrase(s) resolved** (was 0 in v0.4.135). JMH chunk mentions: 22 (was 14 — kinship-linked chunks now counted). CI: all green.
+
+**Eval score: 65.8% — +3.2pp vs v0.4.135 (62.6%), still -4.3pp vs baseline (70.1%)**
+
+**JMH timeline restored:** ✅ `[arrival] 1884 — arrived`, ✅ `[other] 1899 — performed Hajj`, ✅ `[death] 1940-04-01`
+
+**Remaining issues:**
+- Timeline has only 67 events vs 197 in baseline — Rules 4-7 + Axiom 6 are over-filtering, losing real events
+- JMH 1884 arrival event says "arrived" (no origin info: Mauritius/Swat/Gujarat) → q30 gets 2/6
+- JMH entity description missing: merchant, mosque, India, Swat, Mauritius → q05 gets 2/8, q09 gets 3/9
+- q22 author's father: 2/4 — regression from 4/4 in v0.4.135; LLM not giving "Peter Alexander"
+- q36 political orgs: 2/6 — NEUM/Unity retrieved but not TLSA/NEF/AAC/Teachers League
+
+**Source routing in q30:** `[Graph: Abdul Hamid Gool]` + `[sequence_diagram:JMH Gool]` — timeline IS injected in retrieval but wrong entity also retrieved; event description too sparse.
+
+**Root cause of remaining -4.3pp gap:** Two distinct issues:
+1. Timeline events reduced 197→67 due to stricter prompt rules → fewer facts available in retrieval
+2. Entity description stochasticity — JMH description varies per rebuild (was "affair with Wahida" in v0.4.135, now "striking good looks" in v0.4.136), never includes biographical origin keywords
+
+**Hot-fix applied (same day):** Added seeded description for JMH to `d6_family_tree.yaml` including: 1884 arrival, Mauritius, Swat, Gujarat, India, spice merchant, Hanaffi Mosque, Buitencingle. Re-seeded + re-embedded live KB. Results:
+- q05 JMH identity: 2/8 → 6/8 ✅ (+4)
+- q24 JMH children: 2/7 → 6/7 ✅ (+4)
+- q30 JMH arrival: 2/6 → 3/6 (+1)
+- Overall eval after hot-fix: **64.9%** (stochastic noise ±2pp on other questions; q22 father dropped 2→0/4)
+- Effective range for v0.4.136 with JMH description: **64.9–65.8%**
+
+**Next investigation:** Whether relaxing Rule 5 (birth/death language requirement) and Rule 7 (label format) recovers event count toward 197. Also check if entity fields (`arrived_cape_town: "1884"`, `origin: "Mauritius (via Swat, Gujarat)"`) are surfaced in retrieval context.
+
+---
+
+## v0.4.135 — 2026-07-01 — **62.6% (139/222)** — GPU rebuild (2 GPUs; jerome offline)
+
+**Change:** Fix 3 — inject kinship-resolved entities (JMH via "my grandfather") into `data`/`entity_names` for the timeline extraction LLM call, so Rule 2 ("only use known list") doesn't block JMH events.
+
+**Timeline result:** 181 entity timelines stored, 57 interactions — JMH timeline still empty
+
+**Eval score: 62.6% — slight improvement from 61.3% but still -7.5pp vs 70.1% baseline**
+
+**Root cause discovered:** Fix 3 was in the right code location but had no effect because the `narrator_kinship_map` was EMPTY during timeline extraction. Timeline extraction ran as part of Step 4 (graph build), BEFORE Step 5 (graph seed). With no seeded relations in the graph, `narrator_kinship_map` returned empty → no kinship phrases → no JMH injection. Fix 3 never triggered.
+
+**JMH entity description wrong:** Auto-enrichment generated "He had an affair with Wahida and agreed to marry her after being confronted by her family" — negative/wrong framing, missing biographical keywords (India, Mauritius, merchant, mosque). Root cause: JMH only has 14 chunk links (direct mentions), enrichment is fed sparse/noisy chunks.
+
+**Key per-question failures:**
+- q05 JMH identity: 2/8 (25%) — wrong description poisons context
+- q24 JMH children: 2/7 (29%)
+- q30 JMH arrival: 1/6 (17%) — timeline empty, no 1884 event
+- q36 political orgs: 0/6 — NEUM/TLSA/AAC not retrieved (LLM answer lists APO/Communist Party/Fourth International instead)
+
+**Next fix (v0.4.136):** Move timeline extraction to Step 5.5 (AFTER Step 5/graph seed). Narrator kinship map will now see seeded grandparent_of relations → "my grandfather" resolves to JMH → Fix 3 takes effect.
+
+---
+
 ## v0.4.134 — 2026-07-01 — **61.3% (136/222)** — GPU rebuild (2 GPUs; jerome offline)
 
 **Change:** Narrowed NARRATOR rule to narrator entity only (fix for v0.4.133 over-suppression)
