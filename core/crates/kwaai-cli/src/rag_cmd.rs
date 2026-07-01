@@ -1984,7 +1984,14 @@ async fn cmd_rebuild(
 
         // ── Step 1: Destroy ───────────────────────────────────────────────
         println!("  ▶ Step 1/8  destroy");
-        cmd_destroy(yes, kb.clone()).await?;
+        // Treat "not initialised" as a no-op — KB may already be absent.
+        match cmd_destroy(yes, kb.clone()).await {
+            Ok(()) => {}
+            Err(e) if e.to_string().contains("not initialised") => {
+                println!("  (KB not found — skipping destroy)");
+            }
+            Err(e) => return Err(e),
+        }
 
         // ── Step 2: Init ──────────────────────────────────────────────────
         println!();
