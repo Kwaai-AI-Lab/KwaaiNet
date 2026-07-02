@@ -2092,6 +2092,7 @@ async fn cmd_rebuild(
                         model: timeline_model,
                         workers,
                         reset: true,
+                        confidence_threshold: 0.6,
                     },
                 },
                 kb.clone(),
@@ -2856,6 +2857,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         Arc::new(timeline_urls),
                         Arc::new(graph_cfg.model.clone()),
                         graph_cfg.workers,
+                        0.6,
                     )
                     .await;
                     print_success(&format!(
@@ -8140,6 +8142,7 @@ async fn run_timeline_build(
     infer_urls: Arc<Vec<String>>,
     model: Arc<String>,
     workers: usize,
+    confidence_threshold: f32,
 ) -> (usize, usize) {
     let chunk_ids: Vec<i64> = {
         let g = graph.lock().unwrap();
@@ -8323,21 +8326,54 @@ async fn run_timeline_build(
             let kinship_raw =
                 kwaai_rag::sequence::extract_kinship_interactions(&clean_text, &entity_data);
 
-            let (raw_events, raw_interactions) = kwaai_rag::sequence::extract_temporal_events(
-                &clean_text,
-                &entity_names,
-                &pronoun_map,
-                &infer_url,
-                &model,
-            )
-            .await
-            .ok()?;
+            // ── 4-phase event extraction ──────────────────────────────────────
+            // Phase 1: deterministic date scan (no LLM)
+            let date_mentions =
+                kwaai_rag::sequence::scan_chunk_for_dates(&clean_text, cid);
 
+            // Phase 2: attribute to entities with confidence scoring
+            let (attributed, low_conf) = kwaai_rag::sequence::attribute_dates_to_entities(
+                date_mentions,
+                &entity_data,
+                &narrator_kinship,
+                &clean_text,
+                confidence_threshold,
+            );
+
+            // Phase 4: selective LLM only for low-confidence mentions
+            let llm_raw_events = if !low_conf.is_empty() && !entity_names.is_empty() {
+                kwaai_rag::sequence::extract_events_for_uncertain(
+                    low_conf,
+                    &clean_text,
+                    &entity_names,
+                    &pronoun_map,
+                    &infer_url,
+                    &model,
+                )
+                .await
+                .unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            // Convert attributed events to RawEvent for Phase 3 (axioms)
+            let raw_events: Vec<kwaai_rag::sequence::RawEvent> = attributed
+                .into_iter()
+                .map(|ae| kwaai_rag::sequence::RawEvent {
+                    entity: ae.entity_name,
+                    date: Some(ae.date_mention.date_raw),
+                    description: ae.description,
+                    class: Some(ae.event_class),
+                })
+                .chain(llm_raw_events)
+                .collect();
+
+            // Phase 3: apply existing Axioms 1–7 (resolve_extracted unchanged)
             let (events, mut interactions) = {
                 let g = graph.lock().ok()?;
                 kwaai_rag::sequence::resolve_extracted(
                     raw_events,
-                    raw_interactions,
+                    vec![], // interactions handled by extract_kinship_interactions above
                     cid,
                     &clean_text,
                     &g,
@@ -8683,6 +8719,7 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                 model,
                 workers,
                 reset,
+                confidence_threshold,
             } => {
                 let raw_urls: Vec<String> = if inference_urls.is_empty() {
                     vec![rag_cfg.inference_url.clone()]
@@ -8726,6 +8763,7 @@ async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {
                     Arc::new(resolved_urls),
                     Arc::new(model),
                     workers,
+                    confidence_threshold,
                 )
                 .await;
                 print_success(&format!(

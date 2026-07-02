@@ -74,6 +74,51 @@ struct TemporalPayload {
     interactions: Vec<RawInteraction>,
 }
 
+// ── Deterministic date scanning types ────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum DateMentionType {
+    ExplicitYear,
+    MonthYear,
+    Decade,
+    RelativePhrase,
+}
+
+/// A date reference found deterministically in chunk text (no LLM).
+#[derive(Debug, Clone)]
+pub struct DateMention {
+    pub chunk_id: i64,
+    pub date_raw: String,
+    pub date_sort: String,
+    pub date_confidence: f32,
+    pub char_offset: usize,
+    /// Full sentence containing the date (≤300 chars).
+    pub sentence: String,
+    pub mention_type: DateMentionType,
+}
+
+#[derive(Debug, Clone)]
+pub enum AttributionMethod {
+    ProximityHigh,
+    ProximitySentence,
+    SoleEntity,
+    KinshipMap,
+    LlmFallback,
+}
+
+/// A date mention attributed to a specific entity, with a composite confidence score.
+#[derive(Debug, Clone)]
+pub struct AttributedEvent {
+    pub date_mention: DateMention,
+    pub entity_id: i64,
+    pub entity_name: String,
+    pub description: String,
+    pub event_class: String,
+    /// date_confidence × attribution_confidence
+    pub confidence: f32,
+    pub attribution_method: AttributionMethod,
+}
+
 // ── Date normalization ────────────────────────────────────────────────────────
 
 /// Convert fuzzy date strings to ISO "YYYY-MM-DD" for sort-stable comparison.
@@ -1144,4 +1189,530 @@ pub fn narrator_kinship_map(
     }
 
     map
+}
+
+// ── Deterministic date scanning ───────────────────────────────────────────────
+
+/// Relative date phrases mapped to approximate years for D6 memoir context.
+/// Year 0 = too vague to emit — these are recognised but skipped.
+const RELATIVE_DATE_PHRASES: &[(&str, u32)] = &[
+    ("at the turn of the century", 1900),
+    ("turn of the century", 1900),
+    ("the war years", 1941),
+    ("during the war", 1941),
+    ("war time", 1941),
+    ("wartime", 1941),
+    ("before the removals", 1960),
+    ("during the removals", 1970),
+    ("after the removals", 1985),
+    ("after independence", 1962),
+    ("since independence", 1962),
+    ("before independence", 1959),
+    // vague — skip
+    ("in the early days", 0),
+    ("at that time", 0),
+    ("in those days", 0),
+];
+
+/// Extract the sentence (or ≤300-char window) that contains `char_offset`.
+fn extract_sentence_at(text: &str, char_offset: usize) -> String {
+    let safe_offset = char_offset.min(text.len());
+    let before = &text[..safe_offset];
+    let start = before
+        .rfind(". ")
+        .or_else(|| before.rfind("! "))
+        .or_else(|| before.rfind("? "))
+        .or_else(|| before.rfind('\n'))
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let after = &text[safe_offset..];
+    let end = after
+        .find(". ")
+        .or_else(|| after.find("! "))
+        .or_else(|| after.find("? "))
+        .or_else(|| after.find('\n'))
+        .map(|p| p + safe_offset + 2)
+        .unwrap_or(text.len());
+    let sentence = text[start..end.min(text.len())].trim().to_string();
+    if sentence.len() <= 300 {
+        sentence
+    } else {
+        let center = safe_offset.saturating_sub(start);
+        let lo = center.saturating_sub(150);
+        let hi = (lo + 300).min(sentence.len());
+        // snap to char boundary
+        let lo = sentence
+            .char_indices()
+            .map(|(i, _)| i)
+            .filter(|&i| i <= lo)
+            .last()
+            .unwrap_or(0);
+        sentence[lo..hi].trim().to_string()
+    }
+}
+
+/// Infer the event class from a sentence using keyword matching.
+fn infer_event_class(sentence: &str) -> String {
+    let s = sentence.to_lowercase();
+    if s.contains("was born") || s.contains("born in") || s.contains("birth of") || s.contains(" b.") {
+        return "birth".to_string();
+    }
+    if s.contains("died") || s.contains("passed away") || s.contains("death of") || s.contains(" d.") {
+        return "death".to_string();
+    }
+    if s.contains("arrived") || s.contains("came to") || s.contains("moved to") || s.contains("settled in") {
+        return "arrival".to_string();
+    }
+    if s.contains("founded") || s.contains("established") || s.contains("built") || s.contains("opened") {
+        return "founding".to_string();
+    }
+    if s.contains("removed") || s.contains("evicted") || s.contains("demolished") || s.contains("forced out") {
+        return "removal".to_string();
+    }
+    if s.contains("married") || s.contains("wedded") {
+        return "marriage".to_string();
+    }
+    "other".to_string()
+}
+
+/// Scan a chunk of text for date references deterministically (no LLM).
+///
+/// Detects:
+/// - Bare 4-digit years [1700, 2099] — confidence 0.90
+/// - Month + year ("February 1914") — confidence 0.75
+/// - Decades ("the 1880s") — confidence 0.50
+/// - Relative phrases from RELATIVE_DATE_PHRASES — confidence 0.30
+///
+/// Each mention records the surrounding sentence for context and the byte
+/// offset for proximity scoring during entity attribution.
+pub fn scan_chunk_for_dates(text: &str, chunk_id: i64) -> Vec<DateMention> {
+    let mut mentions: Vec<DateMention> = Vec::new();
+    // Track (start_byte, end_byte) spans already claimed to avoid duplicate matches.
+    let mut covered: Vec<(usize, usize)> = Vec::new();
+
+    let is_covered = |covered: &[(usize, usize)], offset: usize| {
+        covered.iter().any(|&(s, e)| offset >= s && offset < e)
+    };
+
+    // Pass 1 — relative phrases (longest first to prevent substring clobber).
+    let text_lower = text.to_lowercase();
+    let mut phrases: Vec<(&str, u32)> = RELATIVE_DATE_PHRASES.to_vec();
+    phrases.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    for (phrase, approx_year) in &phrases {
+        if *approx_year == 0 {
+            continue;
+        }
+        let mut search = 0usize;
+        while let Some(rel) = text_lower[search..].find(phrase) {
+            let off = search + rel;
+            let end = off + phrase.len();
+            if !is_covered(&covered, off) {
+                covered.push((off, end));
+                mentions.push(DateMention {
+                    chunk_id,
+                    date_raw: phrase.to_string(),
+                    date_sort: format!("{:04}-01-01", approx_year),
+                    date_confidence: 0.30,
+                    char_offset: off,
+                    sentence: extract_sentence_at(text, off),
+                    mention_type: DateMentionType::RelativePhrase,
+                });
+            }
+            search = end;
+        }
+    }
+
+    // Pass 2 — scan for 4-digit years at word boundaries.
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        // Measure the digit run starting at i
+        let digit_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let digit_end = i;
+        if digit_end - digit_start != 4 {
+            continue;
+        }
+        // Word-boundary check: not preceded or followed by a digit
+        if digit_start > 0 && bytes[digit_start - 1].is_ascii_digit() {
+            continue;
+        }
+        if i < bytes.len() && bytes[i].is_ascii_digit() {
+            continue;
+        }
+        let year_str = &text[digit_start..digit_end];
+        let Ok(year) = year_str.parse::<u32>() else {
+            continue;
+        };
+        if !(1700..=2099).contains(&year) {
+            continue;
+        }
+        if is_covered(&covered, digit_start) {
+            continue;
+        }
+
+        // Check for decade: year divisible by 10 and followed by 's' or "'s"
+        let is_decade = year % 10 == 0 && {
+            let rest = &text[digit_end..];
+            rest.starts_with('s') || rest.starts_with("'s")
+        };
+
+        // Check for month prefix: scan up to 25 bytes before the year for a month name
+        let look_back_start = digit_start.saturating_sub(25);
+        let preceding = &text[look_back_start..digit_start];
+        let preceding_with_year = format!("{preceding}{year_str}");
+        let month_prefix = parse_month_year(&preceding_with_year);
+
+        let (date_raw, date_sort, date_confidence, mention_type, effective_offset) =
+            if let Some((m, _y)) = month_prefix {
+                // Find the month name in the preceding text to get its offset
+                const MONTH_NAMES: &[&str] = &[
+                    "january", "february", "march", "april", "may", "june", "july",
+                    "august", "september", "october", "november", "december",
+                    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+                ];
+                let preceding_lower = preceding.to_lowercase();
+                let month_word = MONTH_NAMES
+                    .iter()
+                    .filter_map(|mn| preceding_lower.rfind(mn).map(|p| (*mn, p)))
+                    .max_by_key(|(_, p)| *p);
+                if let Some((mn, rel_pos)) = month_word {
+                    let abs_month_off = look_back_start + rel_pos;
+                    // Recover the original casing from text
+                    let raw_month = &text[abs_month_off..abs_month_off + mn.len()];
+                    let raw = format!("{raw_month} {year_str}");
+                    // Mark the month span as covered too
+                    covered.push((abs_month_off, digit_end));
+                    (
+                        raw,
+                        format!("{year:04}-{m:02}-01"),
+                        0.75f32,
+                        DateMentionType::MonthYear,
+                        abs_month_off,
+                    )
+                } else {
+                    // parse_month_year succeeded but we can't locate the word — fall back
+                    (
+                        year_str.to_string(),
+                        format!("{year:04}-01-01"),
+                        0.90f32,
+                        DateMentionType::ExplicitYear,
+                        digit_start,
+                    )
+                }
+            } else if is_decade {
+                covered.push((digit_start, digit_end + 1));
+                (
+                    format!("{year_str}s"),
+                    format!("{year:04}-01-01"),
+                    0.50f32,
+                    DateMentionType::Decade,
+                    digit_start,
+                )
+            } else {
+                covered.push((digit_start, digit_end));
+                (
+                    year_str.to_string(),
+                    format!("{year:04}-01-01"),
+                    0.90f32,
+                    DateMentionType::ExplicitYear,
+                    digit_start,
+                )
+            };
+
+        mentions.push(DateMention {
+            chunk_id,
+            date_raw,
+            date_sort,
+            date_confidence,
+            char_offset: effective_offset,
+            sentence: extract_sentence_at(text, effective_offset),
+            mention_type,
+        });
+    }
+
+    mentions.sort_by_key(|m| m.char_offset);
+    mentions
+}
+
+/// Attribute each DateMention to a chunk entity using heuristic confidence scoring.
+///
+/// Scoring (per mention):
+/// 1. Kinship phrase in sentence → 0.85 (KinshipMap)
+/// 2. Sole entity in chunk → 0.75 (SoleEntity)
+/// 3. Entity within ~100 chars of date offset → 0.85 (ProximityHigh)
+/// 4. Entity elsewhere in same sentence → 0.60 (ProximitySentence)
+/// 5. Entity in chunk but not sentence → 0.35 → goes to LLM queue
+///
+/// composite = date_confidence × attribution_confidence.
+/// Mentions with composite ≥ `confidence_threshold` are returned as AttributedEvents;
+/// the remainder are returned as DateMentions for the selective LLM fallback.
+pub fn attribute_dates_to_entities(
+    mentions: Vec<DateMention>,
+    chunk_entities: &[(i64, String, Vec<String>)],
+    narrator_kinship: &std::collections::HashMap<String, (i64, String)>,
+    chunk_text: &str,
+    confidence_threshold: f32,
+) -> (Vec<AttributedEvent>, Vec<DateMention>) {
+    let mut high_conf: Vec<AttributedEvent> = Vec::new();
+    let mut low_conf: Vec<DateMention> = Vec::new();
+
+    if chunk_entities.is_empty() {
+        low_conf.extend(mentions);
+        return (high_conf, low_conf);
+    }
+
+    for mention in mentions {
+        let sentence = mention.sentence.clone();
+        let sentence_lower = sentence.to_lowercase();
+
+        // Step 1 — kinship map: narrator kinship phrases resolve unambiguously
+        if let Some((_, (eid, ename))) = narrator_kinship
+            .iter()
+            .find(|(phrase, _)| sentence_lower.contains(phrase.as_str()))
+        {
+            // Prefer the chunk-entity entry if it exists (has the right aliases).
+            let (final_id, final_name) = chunk_entities
+                .iter()
+                .find(|(id, _, _)| id == eid)
+                .map(|(id, name, _)| (*id, name.clone()))
+                .unwrap_or((*eid, ename.clone()));
+            let attr_conf = 0.85f32;
+            let composite = mention.date_confidence * attr_conf;
+            let ae = AttributedEvent {
+                description: sentence.clone(),
+                event_class: infer_event_class(&sentence),
+                entity_id: final_id,
+                entity_name: final_name,
+                confidence: composite,
+                attribution_method: AttributionMethod::KinshipMap,
+                date_mention: mention,
+            };
+            if composite >= confidence_threshold {
+                high_conf.push(ae);
+            } else {
+                low_conf.push(ae.date_mention);
+            }
+            continue;
+        }
+
+        // Step 2 — sole entity in chunk
+        if chunk_entities.len() == 1 {
+            let (id, name, aliases) = &chunk_entities[0];
+            if entity_present_in_text(name, aliases, chunk_text) {
+                let attr_conf = 0.75f32;
+                let composite = mention.date_confidence * attr_conf;
+                let ae = AttributedEvent {
+                    description: sentence.clone(),
+                    event_class: infer_event_class(&sentence),
+                    entity_id: *id,
+                    entity_name: name.clone(),
+                    confidence: composite,
+                    attribution_method: AttributionMethod::SoleEntity,
+                    date_mention: mention,
+                };
+                if composite >= confidence_threshold {
+                    high_conf.push(ae);
+                } else {
+                    low_conf.push(ae.date_mention);
+                }
+                continue;
+            }
+        }
+
+        // Step 3 — proximity scoring (multiple entities)
+        // Find where the date_raw appears in the sentence to anchor proximity.
+        let date_pos_in_sentence = sentence.find(&mention.date_raw).unwrap_or(0);
+
+        let mut best: Option<(i64, String, f32, AttributionMethod)> = None;
+
+        for (id, name, aliases) in chunk_entities {
+            // Find entity's earliest position in the sentence
+            let ent_pos_in_sentence = {
+                let by_name = sentence_lower.find(&name.to_lowercase());
+                let by_alias = aliases
+                    .iter()
+                    .filter(|a| a.len() >= 3 && !a.eq_ignore_ascii_case("I"))
+                    .filter_map(|a| sentence_lower.find(&a.to_lowercase()))
+                    .min();
+                match (by_name, by_alias) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                }
+            };
+
+            let (attr_conf, method) = if let Some(ep) = ent_pos_in_sentence {
+                let dist = (ep as isize - date_pos_in_sentence as isize).unsigned_abs();
+                if dist <= 120 {
+                    // roughly ±20 tokens @ 6 chars/token
+                    (0.85f32, AttributionMethod::ProximityHigh)
+                } else {
+                    (0.60f32, AttributionMethod::ProximitySentence)
+                }
+            } else if entity_present_in_text(name, aliases, chunk_text) {
+                (0.35f32, AttributionMethod::ProximitySentence)
+            } else {
+                continue;
+            };
+
+            let is_better = best
+                .as_ref()
+                .map(|(_, _, bc, _)| attr_conf > *bc)
+                .unwrap_or(true);
+            if is_better {
+                best = Some((*id, name.clone(), attr_conf, method));
+            }
+        }
+
+        if let Some((id, name, attr_conf, method)) = best {
+            let composite = mention.date_confidence * attr_conf;
+            let ae = AttributedEvent {
+                description: sentence.clone(),
+                event_class: infer_event_class(&sentence),
+                entity_id: id,
+                entity_name: name,
+                confidence: composite,
+                attribution_method: method,
+                date_mention: mention,
+            };
+            if composite >= confidence_threshold {
+                high_conf.push(ae);
+            } else {
+                low_conf.push(ae.date_mention);
+            }
+        } else {
+            low_conf.push(mention);
+        }
+    }
+
+    (high_conf, low_conf)
+}
+
+/// Selective LLM fallback for low-confidence DateMentions.
+///
+/// Batches all unresolved mentions for a single chunk into one LLM call using a
+/// focused attribution prompt — no 9-rule machinery, just ask which entity and
+/// what happened. Null-entity responses are discarded.
+pub async fn extract_events_for_uncertain(
+    mentions: Vec<DateMention>,
+    chunk_text: &str,
+    entity_names: &[String],
+    pronoun_map: &[(String, String)],
+    inference_url: &str,
+    model: &str,
+) -> Result<Vec<RawEvent>> {
+    if mentions.is_empty() || entity_names.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+
+    let entity_list = entity_names.join(", ");
+    let coref_context = if pronoun_map.is_empty() {
+        String::new()
+    } else {
+        let pairs = pronoun_map
+            .iter()
+            .map(|(s, e)| format!("'{s}' → {e}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("Coreference: {pairs}\n")
+    };
+    let date_refs = mentions
+        .iter()
+        .map(|m| format!("- \"{}\": {}", m.date_raw, m.sentence))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "You are a historical event extractor.\n\
+         PASSAGE:\n{chunk_text}\n\n\
+         DATE REFERENCES (each line: date_raw: sentence containing it):\n{date_refs}\n\n\
+         ENTITIES IN THIS PASSAGE: {entity_list}\n\
+         {coref_context}\n\
+         For each date reference output one JSON object per line:\n\
+         {{\"date\": \"<date_raw>\", \"entity\": \"<entity name from list above>\", \
+         \"description\": \"<what happened in one sentence>\", \
+         \"class\": \"<birth|death|arrival|founding|removal|meeting|other>\"}}\n\
+         If no entity clearly matches, output {{\"date\": \"...\", \"entity\": null}}.\n\
+         Do not invent events not supported by the passage.\n\
+         Output only JSON objects, one per line — no explanation, no markdown."
+    );
+
+    let url = format!("{}/api/chat", inference_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": true,
+        "options": {"temperature": 0.0, "num_predict": 512, "num_ctx": 8192},
+    });
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("uncertain event extraction request failed")?;
+    let raw_text = resp
+        .text()
+        .await
+        .context("uncertain event extraction body read failed")?;
+
+    let mut content_buf = String::new();
+    for line in raw_text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(c) = v["message"]["content"].as_str() {
+                content_buf.push_str(c);
+            }
+        }
+    }
+
+    let mut events = Vec::new();
+    for line in content_buf.lines() {
+        let line = line
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if v["entity"].is_null() {
+                continue;
+            }
+            let entity = v["entity"].as_str().unwrap_or("").to_string();
+            if entity.is_empty() {
+                continue;
+            }
+            events.push(RawEvent {
+                entity,
+                date: v["date"].as_str().map(|s| s.to_string()),
+                description: v["description"].as_str().unwrap_or("").to_string(),
+                class: v["class"].as_str().map(|s| s.to_string()),
+            });
+        }
+    }
+
+    tracing::debug!(
+        "uncertain extraction: {} mentions → {} events",
+        mentions.len(),
+        events.len()
+    );
+    Ok(events)
 }

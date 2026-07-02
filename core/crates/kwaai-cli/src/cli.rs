@@ -2243,6 +2243,13 @@ pub enum TimelineAction {
         /// Drop all existing timeline data before building
         #[arg(long)]
         reset: bool,
+
+        /// Composite confidence threshold (0.0–1.0) below which a date mention is sent to the
+        /// LLM for entity attribution instead of using heuristic proximity scoring.
+        /// Lower = more LLM calls (higher coverage); higher = fewer LLM calls (faster but misses
+        /// ambiguous cases). Default 0.6 passes explicit-year + proximate-entity events directly.
+        #[arg(long, default_value = "0.6", value_name = "THRESHOLD")]
+        confidence_threshold: f32,
     },
 
     /// Show the event lifeline for a named entity
