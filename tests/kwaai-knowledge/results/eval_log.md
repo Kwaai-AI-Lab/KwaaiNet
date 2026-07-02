@@ -1,4 +1,33 @@
 
+## v0.4.147 post-seed5 — 2026-07-02 — **87.2% (182.2/209)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** seed5 entity descriptions — Ayesha Rassool (gender="Female" + desc "known as Lallie, mother of the memoir's author" + aliases), Peter Alexander Rassool (gender="Male" + desc), JMH Gool (Indian Opinion + full children list from both wives), Gool family (satyagraha/India/Gandhi visited Buitencingle), NEUM (added "TLSA affiliated with NEUM, shared boycott programme"), 7 Buitencingle Street (added "grandfather of the memoir's author"), Yousuf Rassool (gender="Male").
+
+**Key gains vs seed4 (82.8%):** +4.4pp net.
+- q16 2→5/5 (+3, Gandhi/Gool: satyagraha + India keywords from Gool family description)
+- q06 5→7/8 (+2, Buitencingle: "grandfather" reference in 7 Buitencingle description)
+- q10 5→7/7 (+2, Kloof Nek: entity card injection improved)
+- q29 2→4/4 (+2, TLSA/NEUM: "affiliated" and "boycott" now in NEUM entity card)
+- q09 7→8/9 (+1), q12 5→6/6 (+1, Cissie Gool)
+- q24 6→7/7 (+1, JMH children), q31 5→6/6 (+1), q33 4→5/5 (+1), q34 4→5/6 (+1), q40 4→5/5 (+1)
+
+**Regressions (LLM variance, CPU non-determinism):**
+- q38 5→1/5 (-4, Cissie's father — Cissie's entity card IS correct, massive CPU variance)
+- q13 5→4/5 (-1), q14 6→5/6 (-1), q15 3→2/5 (-1, forced removals)
+- q26 6→5/6 (-1), q21 2→1/5 (-1, mother — entity card still NOT injected)
+- q30 1→0.2/6 (-0.8, JMH arrival — persistent, needs GPU rebuild)
+
+**Still failing:**
+- q21 1/5 (mother): entity card NOT injected despite gender="Female" seeded to Ayesha. Root cause unknown — debug tracing added to retriever.rs, investigating after rebuild. Entity has correct aliases/description but "1 document" appears in output.
+- q30 0.2/6: JMH arrival year/place — LLM ignores entity card, gives hallucinated 1901/Bombay. Needs GPU rebuild for reliable results.
+- q38 1/5: LLM CPU variance — Cissie's card is injected (description correct) but LLM gave wrong answer on this run.
+
+**Root cause of q21 injection failure (ongoing investigation):** Gender field IS set in YAML (gender:"Female" for Ayesha). DB stores 928 entities / 221 relations. `inject_entity_descriptions` kinship path should find author_id via `is_author_entity` (Yousuf has "author" alias) and call `resolve_author_relative` → `trusted_parent_ids(yousuf_id)` → check gender. Debug tracing added to identify exact failure point.
+
+**Next:** Fix q21 injection bug (code fix after diagnosis), re-run seed6 eval to confirm fix + see if q38 variance resolves.
+
+---
+
 ## v0.4.147 post-seed4 — 2026-07-02 — **82.8% (173.0/209)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** (1) v0.4.147: kinship name_stop fix — added kinship terms to name_stop so they no longer match entity aliases → has_named_non_author stays false for narrator kinship queries. (2) seed3: Cissie Gool + Kloof Nek + Hewat + Cape Coloured orgs descriptions. (3) seed4: District Six description updated with explicit "forced removals" / "Cape Flats" / "bulldozing" language.
