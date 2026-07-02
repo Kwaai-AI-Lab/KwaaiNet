@@ -1,4 +1,30 @@
 
+## v0.4.148 timeline — 2026-07-02 — **DETERMINISM FAILED (local Ollama non-deterministic at ALL thresholds)**
+
+**Key finding: local Ollama on Apple Silicon Metal is non-deterministic regardless of threshold.**
+
+| Run | threshold | inference | events |
+|-----|-----------|-----------|--------|
+| biswpptis (04:59 UTC) | 0.4 | localhost:11434 | **40** |
+| bqtfm1qts (10:18 UTC) | 0.4 | localhost:11434 | **194** |
+| bhp4ond5y (10:18 UTC) | 0.6 | localhost:11434 | **64** |
+| prior sessions (relay offline) | 0.6 | p2p:// (all fail) | **30** |
+
+The "30 deterministic events" from prior context were achieved with `p2p://` relay URLs that were OFFLINE → LLM fallback calls all failed → purely heuristic results. With `http://localhost:11434`, the LLM runs and contributes non-deterministically at every threshold.
+
+**4-phase pipeline IS deterministic for Phases 1-3 (regex + heuristics + axioms).** Only Phase 4 (LLM fallback) introduces variance. To get deterministic results:
+- Use p2p:// relay URLs when GPU relay comes back (temperature=0.0 + GPU → reproducible)
+- OR add `--no-llm-fallback` flag to skip Phase 4 entirely
+
+**Current DB state:** 64 events (threshold=0.6, local LLM). Not evaluated.
+
+**Next steps when GPU relay online:**
+1. Run `timeline build --confidence-threshold 0.4` with p2p:// URLs (temperature=0.0, GPU)
+2. Run twice — verify determinism (both must give same count)
+3. Run eval to measure timeline contribution to D6 score
+
+---
+
 ## v0.4.148 seed6 — 2026-07-02 — **88.9% (185.8/209)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** kinship role words added to `iterative.rs` name_stop — fixes EE-extracted role-name entities (e.g. "his mother") from blocking the narrator-relative kinship injection path.
