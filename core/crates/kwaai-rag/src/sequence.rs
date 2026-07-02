@@ -1441,18 +1441,24 @@ pub fn scan_chunk_for_dates(text: &str, chunk_id: i64) -> Vec<DateMention> {
     mentions
 }
 
-/// Attribute each DateMention to a chunk entity using heuristic confidence scoring.
+/// Attribute each DateMention to chunk entities using heuristic confidence scoring.
 ///
-/// Scoring (per mention):
+/// A single date mention may be attributed to MULTIPLE entities when several meet the
+/// confidence threshold. This matches the LLM-first behaviour which naturally emits multiple
+/// events per date, and prevents "winner-takes-all" from silencing place entities (e.g.
+/// District Six) whenever a person entity also appears near the same date mention.
+///
+/// Scoring tiers (attribution_confidence):
 /// 1. Kinship phrase in sentence → 0.85 (KinshipMap)
-/// 2. Sole entity in chunk → 0.75 (SoleEntity)
-/// 3. Entity within ~100 chars of date offset → 0.85 (ProximityHigh)
+/// 2. Sole entity in chunk → 0.85 (SoleEntity)
+/// 3. Entity within ~120 chars of date in sentence → 0.85 (ProximityHigh)
 /// 4. Entity elsewhere in same sentence → 0.60 (ProximitySentence)
-/// 5. Entity in chunk but not sentence → 0.35 → goes to LLM queue
+/// 5. Narrator via first-person pronouns in sentence → 0.60 (ProximitySentence)
+/// 6. Entity in ±400-char context window (adjacent sentence) → 0.55
+/// 7. Entity in chunk but not context window → 0.35 → LLM queue
 ///
 /// composite = date_confidence × attribution_confidence.
-/// Mentions with composite ≥ `confidence_threshold` are returned as AttributedEvents;
-/// the remainder are returned as DateMentions for the selective LLM fallback.
+/// Only sends to LLM when NO entity meets `confidence_threshold`.
 pub fn attribute_dates_to_entities(
     mentions: Vec<DateMention>,
     chunk_entities: &[(i64, String, Vec<String>)],
@@ -1468,72 +1474,92 @@ pub fn attribute_dates_to_entities(
         return (high_conf, low_conf);
     }
 
+    let sole_entity = chunk_entities.len() == 1;
+
     for mention in mentions {
         let sentence = mention.sentence.clone();
         let sentence_lower = sentence.to_lowercase();
+        let date_pos_in_sentence = sentence.find(&mention.date_raw).unwrap_or(0);
 
-        // Step 1 — kinship map: narrator kinship phrases resolve unambiguously
-        if let Some((_, (eid, ename))) = narrator_kinship
-            .iter()
-            .find(|(phrase, _)| sentence_lower.contains(phrase.as_str()))
-        {
-            // Prefer the chunk-entity entry if it exists (has the right aliases).
+        // ±400-char context window for adjacent-sentence entity detection.
+        let ctx_start = mention.char_offset.saturating_sub(400);
+        let ctx_end = (mention.char_offset + 400).min(chunk_text.len());
+        let ctx_window_lower = chunk_text[ctx_start..ctx_end].to_lowercase();
+
+        // First-person narrator detection.
+        let sentence_is_first_person = sentence_lower.contains(" i ")
+            || sentence_lower.starts_with("i ")
+            || sentence_lower.contains(" my ")
+            || sentence_lower.contains(" me ")
+            || sentence_lower.contains("'ve ")
+            || sentence_lower.contains("'d ")
+            || sentence_lower.contains("'m ");
+
+        // Entities already attributed for this mention (by id) — deduplicate multi-path hits.
+        let mut attributed_ids: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
+        let mut attributed: Vec<AttributedEvent> = Vec::new();
+
+        // ── Step 1: kinship map (highest priority) ────────────────────────────────────
+        for (phrase, (eid, ename)) in narrator_kinship {
+            if !sentence_lower.contains(phrase.as_str()) {
+                continue;
+            }
             let (final_id, final_name) = chunk_entities
                 .iter()
                 .find(|(id, _, _)| id == eid)
                 .map(|(id, name, _)| (*id, name.clone()))
                 .unwrap_or((*eid, ename.clone()));
-            let attr_conf = 0.85f32;
-            let composite = mention.date_confidence * attr_conf;
-            let ae = AttributedEvent {
-                description: sentence.clone(),
-                event_class: infer_event_class(&sentence),
-                entity_id: final_id,
-                entity_name: final_name,
-                confidence: composite,
-                attribution_method: AttributionMethod::KinshipMap,
-                date_mention: mention,
-            };
-            if composite >= confidence_threshold {
-                high_conf.push(ae);
+            let composite = mention.date_confidence * 0.85;
+            if composite >= confidence_threshold && attributed_ids.insert(final_id) {
+                attributed.push(AttributedEvent {
+                    description: sentence.clone(),
+                    event_class: infer_event_class(&sentence),
+                    entity_id: final_id,
+                    entity_name: final_name,
+                    confidence: composite,
+                    attribution_method: AttributionMethod::KinshipMap,
+                    date_mention: mention.clone(),
+                });
+            }
+        }
+
+        // ── Step 2: sole entity (fast path) ──────────────────────────────────────────
+        if sole_entity {
+            let (id, name, aliases) = &chunk_entities[0];
+            if entity_present_in_text(name, aliases, chunk_text) {
+                let composite = mention.date_confidence * 0.85;
+                if composite >= confidence_threshold && attributed_ids.insert(*id) {
+                    attributed.push(AttributedEvent {
+                        description: sentence.clone(),
+                        event_class: infer_event_class(&sentence),
+                        entity_id: *id,
+                        entity_name: name.clone(),
+                        confidence: composite,
+                        attribution_method: AttributionMethod::SoleEntity,
+                        date_mention: mention.clone(),
+                    });
+                }
+            }
+            // With exactly one entity, only that entity can receive this mention.
+            if !attributed.is_empty() {
+                high_conf.extend(attributed);
             } else {
-                low_conf.push(ae.date_mention);
+                low_conf.push(mention);
             }
             continue;
         }
 
-        // Step 2 — sole entity in chunk
-        if chunk_entities.len() == 1 {
-            let (id, name, aliases) = &chunk_entities[0];
-            if entity_present_in_text(name, aliases, chunk_text) {
-                let attr_conf = 0.75f32;
-                let composite = mention.date_confidence * attr_conf;
-                let ae = AttributedEvent {
-                    description: sentence.clone(),
-                    event_class: infer_event_class(&sentence),
-                    entity_id: *id,
-                    entity_name: name.clone(),
-                    confidence: composite,
-                    attribution_method: AttributionMethod::SoleEntity,
-                    date_mention: mention,
-                };
-                if composite >= confidence_threshold {
-                    high_conf.push(ae);
-                } else {
-                    low_conf.push(ae.date_mention);
-                }
+        // ── Step 3: proximity / context scoring (multiple entities) ───────────────────
+        // Emit for ALL entities that meet the threshold, not just the single best.
+        // A dated sentence can validly involve multiple entities (person + place, etc.).
+        for (id, name, aliases) in chunk_entities {
+            // Skip entities already emitted via kinship map.
+            if attributed_ids.contains(id) {
                 continue;
             }
-        }
 
-        // Step 3 — proximity scoring (multiple entities)
-        // Find where the date_raw appears in the sentence to anchor proximity.
-        let date_pos_in_sentence = sentence.find(&mention.date_raw).unwrap_or(0);
-
-        let mut best: Option<(i64, String, f32, AttributionMethod)> = None;
-
-        for (id, name, aliases) in chunk_entities {
-            // Find entity's earliest position in the sentence
+            // Entity position in the sentence.
             let ent_pos_in_sentence = {
                 let by_name = sentence_lower.find(&name.to_lowercase());
                 let by_alias = aliases
@@ -1549,46 +1575,55 @@ pub fn attribute_dates_to_entities(
                 }
             };
 
+            // Entity in ±400-char context window (adjacent sentence check).
+            let ent_in_context = name
+                .split_whitespace()
+                .filter(|t| t.len() >= 4)
+                .any(|t| ctx_window_lower.contains(&t.to_lowercase()))
+                || aliases
+                    .iter()
+                    .filter(|a| a.len() >= 3 && !a.eq_ignore_ascii_case("I"))
+                    .any(|a| ctx_window_lower.contains(&a.to_lowercase()));
+
+            let is_narrator = aliases.iter().any(|a| a.eq_ignore_ascii_case("I"));
+
             let (attr_conf, method) = if let Some(ep) = ent_pos_in_sentence {
                 let dist = (ep as isize - date_pos_in_sentence as isize).unsigned_abs();
                 if dist <= 120 {
-                    // roughly ±20 tokens @ 6 chars/token
                     (0.85f32, AttributionMethod::ProximityHigh)
                 } else {
                     (0.60f32, AttributionMethod::ProximitySentence)
                 }
+            } else if is_narrator && sentence_is_first_person {
+                // Narrator via first-person pronouns. Axiom 6 filters pre-birth events.
+                (0.60f32, AttributionMethod::ProximitySentence)
+            } else if ent_in_context {
+                // Entity in adjacent sentence — common memoir prose pattern.
+                (0.55f32, AttributionMethod::ProximitySentence)
             } else if entity_present_in_text(name, aliases, chunk_text) {
                 (0.35f32, AttributionMethod::ProximitySentence)
             } else {
                 continue;
             };
 
-            let is_better = best
-                .as_ref()
-                .map(|(_, _, bc, _)| attr_conf > *bc)
-                .unwrap_or(true);
-            if is_better {
-                best = Some((*id, name.clone(), attr_conf, method));
+            let composite = mention.date_confidence * attr_conf;
+            if composite >= confidence_threshold && attributed_ids.insert(*id) {
+                attributed.push(AttributedEvent {
+                    description: sentence.clone(),
+                    event_class: infer_event_class(&sentence),
+                    entity_id: *id,
+                    entity_name: name.clone(),
+                    confidence: composite,
+                    attribution_method: method,
+                    date_mention: mention.clone(),
+                });
             }
         }
 
-        if let Some((id, name, attr_conf, method)) = best {
-            let composite = mention.date_confidence * attr_conf;
-            let ae = AttributedEvent {
-                description: sentence.clone(),
-                event_class: infer_event_class(&sentence),
-                entity_id: id,
-                entity_name: name,
-                confidence: composite,
-                attribution_method: method,
-                date_mention: mention,
-            };
-            if composite >= confidence_threshold {
-                high_conf.push(ae);
-            } else {
-                low_conf.push(ae.date_mention);
-            }
+        if !attributed.is_empty() {
+            high_conf.extend(attributed);
         } else {
+            // No entity above threshold — send to LLM fallback.
             low_conf.push(mention);
         }
     }

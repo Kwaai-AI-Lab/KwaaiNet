@@ -1,4 +1,55 @@
 
+## v0.4.142 — 2026-07-02 — **66.6% (147.8/222)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** 4-phase deterministic event extraction — multi-attribution approach (single-winner → all entities above threshold), SoleEntity confidence 0.75→0.85, narrator first-person detection (0.60), adjacent context window (±400 chars, 0.55). Timeline events: 173 (vs 40 prior, vs 26–55 LLM-first baseline). `--confidence-threshold 0.4`.
+
+**Key finding:** Multi-attribution (emitting events for ALL entities above threshold per date mention, not just winner-takes-all) drove 4× increase in timeline events (43→173) and +2.2pp eval score vs local Ollama baseline. District Six and other place entities now receive timeline events.
+
+**Determinism:** Fully deterministic — LLM only called for low-confidence mentions (<0.4 composite). GPU relay offline; local Ollama handled LLM fallback.
+
+---
+
+## v0.4.140 — 2026-07-02 — **64.4% (143/222)** — local Ollama (Apple Silicon Metal, avg 24768ms/q)
+
+**Changes:** Prompt experiments (v0.4.138–140) reverted; net change from v0.4.137 is version bump only.
+
+**Prompt experiment findings (v0.4.138–140):**
+- **R4 simplified** (v0.4.138): 55→20 events. 8B model requires full worked examples; abstract "never assign X" without examples collapses extraction.
+- **R4 (a)/(b) split + R5 relaxed** (v0.4.139): 20→0 events. The `(a)/(b)` labeling confused the model catastrophically — zero events extracted.
+- **R4 reverted + R5 reverted** (v0.4.140): Same prompt as v0.4.137 → only 26 events (vs 55 in v0.4.137). **Multi-GPU non-determinism confirmed**: temperature=0.0 is NOT deterministic across different GPU hardware (A6000 vs A5000 vs CPU). Event count varies ±50% between identical rebuilds.
+
+**Key finding — timeline event count is non-deterministic:**
+The same prompt on the same data produces 26–55 events depending on which GPU handles which chunk. This means prompt changes cannot be isolated by observing event count alone. Prompt tuning with llama3.1:8b on multi-GPU async workers is not a reliable approach.
+
+**Eval score: 64.4% (local Ollama) — not directly comparable to prior GPU-relay scores (65.8%)**
+The inference backend matters: different GPUs + different endpoint routing produce different answer quality. All prior evals used `http://localhost:8080` (kwaainet p2p relay → GPU nodes, avg ~4475ms). p2p relay offline overnight; local Ollama used as fallback (avg 24768ms).
+
+**Conclusion:** v0.4.137 is the stable reference. Meaningful eval comparisons require consistent inference backend. Prompt tuning is a dead end for this model — event count ceiling (~26–55) is a model/architecture limit.
+
+---
+
+## v0.4.137 — 2026-07-01 — **65.8% (146/222)** — timeline rebuild only (GPU, 3 nodes)
+
+**Change:** Axiom 7 (cross-entity temporal floor) + seeded `birthDate`/`deathDate` for 5 key entities.
+
+**Axiom 7:** For entities without a seeded `birthDate`, the earliest known presence year of any seeded parent (`birthDate`/`arrived_cape_town`/`foundingDate`) acts as a temporal floor — child events before parent's arrival are dropped.
+
+**YAML date seeds added:**
+- JMH Gool: `deathDate: "1940-04-01"` — Axiom 6 now blocks post-1941 events at extraction
+- Abdul Hamid Gool: `birthDate: "1886"` — confirms birth after JMH arrival 1884 (cross-entity order validated ✅)
+- Gandhi: `birthDate: "1869-10-02"`, `deathDate: "1948-01-30"` — 1956 ghost event dropped by Axiom 6 ✅
+- Cissie Gool: `birthDate: "1897-02-14"`, `deathDate: "1963-12-02"`
+- Dr. Abdulla Abdurahman: `birthDate: "1872-09-08"`, `deathDate: "1940-02-20"`
+
+**Timeline result:** 55 events (was 67) — reduced by Axiom 6 now filtering with seeded date bounds. Gandhi 1956 ghost event gone. New legit events: JMH 1892 Supreme Court testimony, JMH 1906 British Indian League meeting, Gandhi 1903-1914 Indian Opinion.
+
+**Eval score: 65.8% — no regression; timeline quality improvements are correctness fixes (not recall-targeted)**
+
+**Cross-entity ordering confirmed:**
+- JMH arrival 1884 → AH Gool birth 1886 → JMH 1892 → AH Gool 1899 (Hajj) ✅
+
+---
+
 ## v0.4.136 — 2026-07-01 — **65.8% (146/222)** — GPU rebuild (2 GPUs; jerome offline)
 
 **Change:** Timeline extraction moved from Step 4 (graph build, pre-seed) to Step 5.5 (post-seed). Narrator kinship map now sees seeded `grandparent_of JMH→Yousuf` relations → "my grandfather" resolves correctly → Fix 3 takes effect.
