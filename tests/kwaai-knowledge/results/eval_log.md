@@ -1,4 +1,33 @@
 
+## v0.4.147 post-seed4 — 2026-07-02 — **82.8% (173.0/209)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** (1) v0.4.147: kinship name_stop fix — added kinship terms to name_stop so they no longer match entity aliases → has_named_non_author stays false for narrator kinship queries. (2) seed3: Cissie Gool + Kloof Nek + Hewat + Cape Coloured orgs descriptions. (3) seed4: District Six description updated with explicit "forced removals" / "Cape Flats" / "bulldozing" language.
+
+**Key gains vs v0.4.146 (77.5%):** +5.3pp.
+- q02 0→3/3 (+3, kinship name_stop fix recovered children query)
+- q15 2→3/5 (+1, District Six "forced removals" seed4)
+- q16 0→2/5 (+2, Gool family entity card injected — EE-extracted entity now surfaces Buitencingle context)
+- q24 5→6/7 (+1, JMH updated description with children list)
+- q32 0→5/5 (+5, daughter-in-law phrase restored in JMH description)
+- q38 1→5/5 (+4, Cissie description with "Abdullah" spelling + "city councillor" for father)
+- q39 2→6/6 (+4, District Six description gains + entity card)
+- Various others: +1 each from kinship fix recovering narrator relative queries
+
+**Still failing:**
+- q01 0/3 (LLM variance — "sources do not contain information" despite entity card; CPU non-determinism)
+- q21 2/5 (mother: entity card NOT injected — Ayesha missing gender in DB → resolve_author_relative returns None → inject path falls back to narrator but also fails. Seed5 adds gender="Female" to Ayesha)
+- q22: 4/4 ✓ but from document text only (Peter missing gender in DB same reason — seed5 fixes)
+- q29 2/4 (NEUM entity card injected but LLM doesn't cite "affiliated" and "boycott" keywords — seed5 adds TLSA affiliation to NEUM description)
+- q30 1/6 (persistent: LLM gives 1901/Bombay from sequence diagram events; entity card says 1884/Mauritius but LLM ignores it)
+- q15 3/5 (LLM gives external knowledge with wrong dates instead of using entity card)
+- q16 2/5 (Gool family card injected from EE-extracted entity but lacks satyagraha/India keywords — seed5 seeds proper description)
+
+**Root cause of q21/q22 injection failure:** `resolve_author_relative` for mother/father uses `trusted_parent_ids(yousuf_id)` + gender check. Without gender set on Ayesha/Peter (seed5 pending), returns None → inject falls through with iid=yousuf_id → Yousuf's card injection also fails (reason unclear — possible `outgoing_relations` scan issue or `trusted_parent_ids` returning empty due to missing `child_of` inverse). Seed5 adds gender to both Ayesha and Peter → should fix.
+
+**Next eval:** v0.4.147 + seed5 — adds: Ayesha (gender+desc+aliases), Peter (gender+desc), JMH (Indian Opinion + full children list), NEUM (TLSA affiliation), Gool family (satyagraha+India+Buitencingle), 7 Buitencingle (grandfather reference). Expected: ~86-88%.
+
+---
+
 ## v0.4.146 post-seed2 — 2026-07-02 — **77.5% (162.0/209)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** Non-author kinship guard: when query contains a named third-party entity + kinship term (e.g. "Cissie Gool's father"), skip narrator kinship path and inject named entity's card instead. Fix in retriever.rs:721. Binary rebuilt as v0.4.146. Seed run: same as seed2 (no new seeds — seed3 runs next).

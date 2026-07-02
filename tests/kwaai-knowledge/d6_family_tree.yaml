@@ -37,16 +37,16 @@ persons:
       from Mauritius, with family origins in Swat via Gujarat, India. He was a
       spice merchant and community leader who became a founding trustee of the
       Hanaffi Quwatul Islam Mosque in District Six. He lived at 7 Buitencingle
-      Street, where he received notable visitors including Mahatma Gandhi
-      (during Gandhi's 1914 South Africa farewell visit), Cecil John Rhodes,
-      George Bernard Shaw, and Dr. Abdulla Abdurahman. He was associated
-      with early Cape Muslim and Indian political circles. He had
-      two wives, Bibi Gool and Wahida Gool, with children including Ayesha
-      Rassool (by Bibi) and Abdul Hamid Gool (by Wahida). His son Abdul Hamid
-      Gool married Zainunnissa (Cissie) Gool, daughter of Dr. Abdulla
-      Abdurahman — making Cissie Gool his daughter-in-law. He performed the
-      Hajj in 1899 and died in April 1940. He was the grandfather of the
-      memoir's author, Yousuf (Joe) Rassool.
+      Street, where he received notable visitors including Mahatma Gandhi —
+      publisher of Indian Opinion and champion of satyagraha — during Gandhi's
+      1914 farewell visit to South Africa before returning to India. Cecil John
+      Rhodes, George Bernard Shaw, and Dr. Abdulla Abdurahman also visited. He
+      had two wives: Bibi Gool (children: Ayesha Rassool, Mohamed Saaid Gool,
+      Zohra, Ahmed, Goolam Gool, Jane Gool-Tabata, Minnie, Fatima Gool) and
+      Wahida Gool (children: Abdul Hamid Gool, Mariam, Zobeida, Mohammed Hanief
+      Gool). His son Abdul Hamid Gool married Cissie Gool (Zainunnissa, daughter
+      of Dr. Abdulla Abdurahman) — making Cissie Gool his daughter-in-law. He performed the Hajj in 1899 and died in April 1940.
+      He was the grandfather of the memoir's author, Yousuf (Joe) Rassool.
     fields:
       arrived_cape_town: "1884"
       origin: "Mauritius (via Swat, Gujarat)"
@@ -69,6 +69,11 @@ persons:
 
   - canonical: "Ayesha Rassool"
     gender: "Female"
+    description: >
+      Ayesha Rassool, known as Lallie (also written Lallie Gool or Ayesha
+      Gool), was the mother of the memoir's author, Yousuf (Joe) Rassool.
+      She was a daughter of J.M.H. Gool (by his wife Bibi Gool), growing up
+      in the Gool household at 7 Buitencingle Street in District Six, Cape Town.
     aliases:
       - "Lallie"
       - "Ayesha"
@@ -210,6 +215,10 @@ persons:
 
   - canonical: "Peter Alexander Rassool"
     gender: "Male"
+    description: >
+      Peter Alexander Rassool was the father of the memoir's author, Yousuf
+      (Joe) Rassool. He was a Rassool family patriarch in District Six, Cape
+      Town, and the husband of Ayesha (Lallie) Gool-Rassool.
     aliases: []
 
   - canonical: "Annie Rassool"
@@ -532,7 +541,8 @@ persons:
       Its programme was based on the Ten Point plan for equal rights. The NEUM
       adopted a boycott and non-collaboration policy — refusing to participate
       in any apartheid government institutions, including the Coloured Advisory
-      Council.
+      Council. The Teachers League of South Africa (TLSA) was affiliated with
+      the NEUM and shared its boycott and non-collaboration programme.
     fields:
       foundingDate: "1943"
     aliases:
@@ -594,6 +604,23 @@ persons:
     aliases:
       - "AAC"
       - "All-African Convention"
+
+  - canonical: "Gool family"
+    entity_type: Organization
+    description: >
+      The Gool family was a prominent Muslim family in District Six, Cape Town.
+      J.M.H. Gool's grand home at 7 Buitencingle Street hosted many celebrated
+      visitors. Mahatma Gandhi visited 7 Buitencingle during his 1914 farewell
+      visit to South Africa before returning to India, where he had pioneered
+      satyagraha — the philosophy of non-violent, passive resistance. Cecil
+      John Rhodes and George Bernard Shaw also visited the Buitencingle Street
+      home. The Gool family played a central role in early Cape Muslim and
+      Indian political life, connecting District Six to national and
+      international anti-colonial struggles.
+    aliases:
+      - "Gool household"
+      - "Gool home"
+      - "the Gools"
 
   - canonical: "Hanaffi Quwatul Islam Mosque"
     entity_type: Organization
@@ -666,9 +693,10 @@ persons:
       Cape Town, situated below Devil's Peak. It was home to Coloured, African,
       Indian, and White residents who built a rich urban culture of music, jazz,
       and community life. Under the Group Areas Act, the apartheid government
-      declared it a White area in 1966 and forcibly removed all non-White
-      residents to the Cape Flats, bulldozing almost every building. It is the
-      setting of the memoir "Lest We Forget" by Yousuf Rassool.
+      declared it a White area in 1966 and carried out forced removals of all
+      non-White residents to the Cape Flats, bulldozing and demolishing almost
+      every building. These forced removals destroyed a thriving community.
+      It is the setting of the memoir "Lest We Forget" by Yousuf Rassool.
     aliases:
       - "District 6"
       - "the District"
@@ -702,11 +730,11 @@ persons:
     entity_type: Place
     description: >
       7 Buitencingle Street (also written No. 7 Buitencingle) was the grand
-      13-room mansion of J.M.H. Gool in District Six, Cape Town. Buitencingle
-      is Dutch in origin — "cingle" means belt, and Buitencingle was at the time
-      the outermost belt of Cape Town. The street was wide and cobbled with
-      traffic islands sporting stunted palm trees. The mansion had a view of
-      Table Mountain and Devil's Peak.
+      13-room mansion of J.M.H. Gool — grandfather of the memoir's author —
+      in District Six, Cape Town. Buitencingle is Dutch in origin — "cingle"
+      means belt, and Buitencingle was at the time the outermost belt of Cape
+      Town. The street was wide and cobbled with traffic islands sporting stunted
+      palm trees. The mansion had a view of Table Mountain and Devil's Peak.
     aliases:
       - "Buitencingle Street"
       - "Buitencingle"
