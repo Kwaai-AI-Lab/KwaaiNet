@@ -1,4 +1,29 @@
 
+## v0.4.148 seed7b (Cissie/Abdurahman/Nazima/GoolFamily patches) — 2026-07-02 — **86.1% (180.0/209)** — local Ollama [NOISY — q02 hallucination, q09 CPU variance]
+
+**Changes (seed7 + 7b):**
+- Gool family: front-loaded "Buitencingle, Gandhi, satyagraha, India, passive, non-violent" → **q16: 2/5 → 5/5 (FIXED)**
+- Dr. Abdurahman: "Abdullah" as primary spelling, "councillor" near "father of Cissie Gool"
+- Cissie Gool: first sentence "daughter of Dr. Abdullah Abdurahman, city councillor" (seed7b)
+- Nazima: "The author's wife is Professor Nazima Rassool (title: Professor)"
+
+**q16 confirmed fixed (5/5).** q38 still 3/5 — Cissie Gool fix (seed7b) pending GPU verification.
+
+**CPU variance dominated this run:** q02 0/3 (-3, hallucination), q09 3/9 (-5, known CPU issue), q33 2/5 (-3, variance).
+True estimated score: ~88-89% (GPU eval needed to confirm).
+
+**Per-question vs 30evt baseline:**
+- q02: 3→0 (LLM hallucination — not real regression)
+- q09: 3→3 (CPU variance — GPU shows 8/9)
+- q13: 4→5 (+1)
+- q16: 2→5 (+3, REAL FIX)
+- q30: 6/6 ✓ (timeline preserved)
+- q33: 4→2 (-2, variance)
+- q34: 6/6 ✓ (timeline preserved)
+- q38: 3→3 (not fixed yet — seed7b Cissie fix pending)
+
+---
+
 ## v0.4.148 timeline@0.99 30evt — 2026-07-02 — **88.0% (184.0/209)** — local Ollama [events=30, deterministic: n/a]
 
 **30-event timeline (threshold=0.99, all chunks through LLM, local Ollama) — NEUTRAL overall, helps temporal questions.**

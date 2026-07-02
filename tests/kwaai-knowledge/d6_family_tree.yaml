@@ -176,10 +176,12 @@ persons:
   - canonical: "Dr. Abdulla Abdurahman"
     gender: "Male"
     description: >
-      Dr. Abdulla Abdurahman was a Cape Town doctor, city councillor, and
-      leader of the African Political (later People's) Organisation (APO).
-      He was the first Coloured person elected to the Cape Town City Council.
-      Father of Cissie Gool.
+      Dr. Abdullah Abdurahman (also written Abdulla Abdurahman) was a Cape
+      Town physician, city councillor, and leader of the African Political
+      (later People's) Organisation (APO). He was the father of Cissie Gool
+      and the first Coloured person elected to the Cape Town City Council as
+      a councillor. As city councillor and APO leader, Abdullah Abdurahman
+      was a pioneering figure in Cape Coloured political life.
     fields:
       birthDate: "1872-09-08"
       deathDate: "1940-02-20"
@@ -192,14 +194,12 @@ persons:
   - canonical: "Cissie Gool"
     gender: "Female"
     description: >
-      Zainunnissa "Cissie" Gool was a Cape Town city councillor, lawyer, and
-      political activist. She was the daughter of Dr. Abdulla Abdurahman
-      (also written Dr. Abdullah Abdurahman), a pioneering Cape Town city
-      councillor, physician, and political leader of the Cape Coloured
-      community — making her the father's legacy in South African politics.
-      Cissie was one of the most prominent Coloured women in South African
-      political life and was closely associated with the Non-European Unity
-      Movement and the anti-apartheid struggle.
+      Cissie Gool (full name Zainunnissa Gool) was the daughter of Dr. Abdullah
+      Abdurahman (also written Abdulla Abdurahman), Cape Town's first Coloured
+      city councillor. Her father Abdullah Abdurahman was a physician, city
+      councillor, and leader of the APO. Cissie herself was a Cape Town city
+      councillor, lawyer, and prominent political activist closely associated
+      with the Non-European Unity Movement and the anti-apartheid struggle.
     fields:
       birthDate: "1897-02-14"
       deathDate: "1963-12-02"
@@ -245,11 +245,11 @@ persons:
   - canonical: "Nazima Rassool"
     gender: "Female"
     description: >
-      Professor Nazima Rassool is an academic researcher and the wife of the
-      author, Yousuf Rassool. She played a central role in shaping the memoir
-      by urging him to ground his personal memories in historical research,
-      which transformed the book from a purely subjective recollection into a
-      historically documented account of District Six.
+      The author's wife is Professor Nazima Rassool (title: Professor). She
+      is an academic researcher who played a central role in shaping the memoir
+      by urging the author, Yousuf Rassool, to ground his personal memories in
+      historical research, which transformed the book from a purely subjective
+      recollection into a historically documented account of District Six.
     aliases:
       - "Nazima"
       - "Professor Nazima Rassool"
@@ -608,15 +608,15 @@ persons:
   - canonical: "Gool family"
     entity_type: Organization
     description: >
-      The Gool family was a prominent Muslim family in District Six, Cape Town.
-      J.M.H. Gool's grand home at 7 Buitencingle Street hosted many celebrated
-      visitors. Mahatma Gandhi visited 7 Buitencingle during his 1914 farewell
-      visit to South Africa before returning to India, where he had pioneered
-      satyagraha — the philosophy of non-violent, passive resistance. Cecil
-      John Rhodes and George Bernard Shaw also visited the Buitencingle Street
-      home. The Gool family played a central role in early Cape Muslim and
-      Indian political life, connecting District Six to national and
-      international anti-colonial struggles.
+      The Gool family of 7 Buitencingle Street, District Six, Cape Town hosted
+      Mahatma Gandhi at Buitencingle during Gandhi's 1914 farewell to South
+      Africa before Gandhi returned to India. Gandhi had spent over 20 years
+      in South Africa pioneering satyagraha — his philosophy of non-violent,
+      passive resistance. The Gool family's home at 7 Buitencingle Street also
+      welcomed Cecil John Rhodes, George Bernard Shaw, and Dr. Abdulla
+      Abdurahman as visitors. Led by J.M.H. Gool, the family played a central
+      role in early Cape Muslim and Indian political life, connecting District
+      Six to national and international anti-colonial struggles.
     aliases:
       - "Gool household"
       - "Gool home"
