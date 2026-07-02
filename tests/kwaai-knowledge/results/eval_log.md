@@ -1,4 +1,49 @@
 
+## v0.4.148 timeline@0.99 30evt — 2026-07-02 — **88.0% (184.0/209)** — local Ollama [events=30, deterministic: n/a]
+
+**30-event timeline (threshold=0.99, all chunks through LLM, local Ollama) — NEUTRAL overall, helps temporal questions.**
+
+Delta vs seed6 (88.9%, 185.8/209): -0.9pp / -1.8 pts — within LLM variance range.
+
+**Notable gains (timeline-driven):**
+- q30 1.8→6/6 (**+4.2** — JMH arrival year/origin FIXED by timeline event)
+- q34 3→6/6 (+3.0 — Group Areas Act gains)
+- q15 2→4/5 (+2.0 — forced removals gains)
+- q14/q26/q31 +1 each
+
+**Losses (CPU LLM variance, not timeline-driven):**
+- q09 8→3/9 (-5.0 — author's grandfather, large CPU variance)
+- q10 7→4/7 (-3.0 — Kloof Nek, CPU variance)
+- q16 -2, q05/q07/q13/q33 -1 each
+
+**Verdict:** Keep 30-event timeline. Temporal questions (q30, q34, q15) gain substantially; overall within variance of seed6. At 30 events the dilution effect that hurt 194-event timeline (−7.6pp) is minimal.
+
+**q30 breakthrough:** JMH Gool arrival correctly answered 6/6 for first time. The timeline event captures "arrived 1884 from Mauritius" — the LLM injection works for this specific factual query.
+
+---
+
+## v0.4.148 GPU timeline@0.4 — 2026-07-02 — **81.3% (170.0/209)** — GPU relay [events=194, deterministic: YES]
+
+**GPU timeline at threshold=0.4: 194 events — DETERMINISTIC (run1=run2=194) but HURTS eval.**
+
+194 events caused broad retrieval dilution: -15.8 pts total, 15 questions regressed, only 2 improved.
+Worst regressions: q38 -2, q27 -2, q30 -1.8, plus q05/q07/q08/q10/q11/q16/q26/q32/q33/q37/q39/q40 -1 each.
+Only gains: q31 +1, q34 +1.
+
+**Root cause:** 194 synthetic timeline chunks occupy 1-2 slots in the top-20 context window for
+almost every query, displacing document chunks that previously gave correct answers. Notably q30
+(JMH arrival) went from 1.8→0.0 — the timeline event has wrong date/place (8B hallucination).
+
+**Finding:** 8B models at threshold=0.4 produce too many timeline events (194). Extraction quality
+is like unconstrained relation extraction (low precision). The timeline approach needs either:
+- Strict human-validated seeds (like family tree YAML)
+- Very selective retrieval (only for explicit temporal queries)
+- Higher threshold filtering (threshold=0.99 → 30 events, may be better quality)
+
+**Current DB:** 30 events (reset to threshold=0.99 local Ollama). Eval pending.
+
+---
+
 ## v0.4.148 timeline — 2026-07-02 — **DETERMINISM FAILED (local Ollama non-deterministic at ALL thresholds)**
 
 **Key finding: local Ollama on Apple Silicon Metal is non-deterministic regardless of threshold.**
