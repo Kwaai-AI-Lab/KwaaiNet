@@ -1,8 +1,28 @@
 
-## v0.4.148 seed8 (Cissie+Abdurahman doctor fix) — 2026-07-02 — **pending GPU eval**
+## v0.4.148 seed9 (Cissie dual-purpose) — 2026-07-02 — **pending GPU eval**
 
-**Changes:** Cissie Gool: "Cissie Gool's father was Dr. Abdullah Abdurahman, a Cape Town city councillor and doctor" (removes parenthetical, forces Abdullah+councillor+doctor in first clause). Dr. Abdurahman: "doctor" added alongside "physician" for q26.
-Expected: q38 3/5 → 5/5, q26 5/6 → 6/6 (+3 pts → ~91-92%).
+**Changes (seed9 = seed8 Dr.Abdurahman fix + revised Cissie):**
+Cissie Gool: "Zainunnissa Gool, was a Cape Town city councillor, lawyer, and political activist...
+Her father was Dr. Abdullah Abdurahman — a Cape Town doctor and city councillor, the first Coloured
+person elected to the Cape Town City Council."
+Design: leads with Cissie's identity (q12: Zainunnissa✓, councillor✓, activist✓, Cape Town✓) then father sentence (q38: Abdullah✓, Abdurahman✓, father✓, councillor✓, Cissie✓).
+Expected: q12 6/6 restored, q38 5/5, q26 6/6 → ~91%.
+
+---
+
+## v0.4.148 seed8 (Cissie+Abdurahman doctor fix) — 2026-07-02 — **metro-win A5000: 88.5% (185/209) — REGRESSION**
+
+**Changes:** Cissie Gool description rewritten to lead with father. Dr. Abdurahman: "doctor" added.
+
+**vs seed7b metro-win (90.0%):**
+- q26: +1 ✅ (5/6 → 6/6, "doctor" keyword confirmed fixed)
+- q38: +1 (3/5 → 4/5, partial improvement — still missing one keyword)
+- q09: +4 (5/9 → 9/9, model variance A5000 — not reproducible)
+- q12: -1 (6/6 → 5/6) ← Cissie description led with father, LLM dropped "Zainunnissa"
+- q16, q27, q33, q39: -2 each (model variance, unrelated to seed changes)
+
+**Lesson:** Leading Cissie's description with the father sentence broke q12. Fix: lead with Cissie's own identity (Zainunnissa, councillor, activist), then add father sentence (seed9).
+**Best still:** seed7b metro-win at 90.0% (188/209).
 
 ---
 
