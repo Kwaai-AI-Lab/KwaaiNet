@@ -1510,6 +1510,19 @@ pub fn attribute_dates_to_entities(
             || sentence_lower.contains("'d ")
             || sentence_lower.contains("'m ");
 
+        // If the sentence is a hypothetical/imaginative reference (narrator recounting
+        // historical events rather than experiencing them), skip entirely — do NOT send
+        // to LLM fallback either, as the LLM would re-attribute the historical date to
+        // the narrator even though it's not a personal event.
+        let is_hypothetical_sentence = sentence_lower.contains("in my imagination")
+            || sentence_lower.contains("the way the")
+            || sentence_lower.contains("had done in")
+            || (sentence_lower.contains("could see") && !sentence_lower.contains("could see that"))
+            || sentence_lower.contains("could imagine");
+        if is_hypothetical_sentence {
+            continue; // skip mention entirely — neither high_conf nor low_conf
+        }
+
         // Entities already attributed for this mention (by id) — deduplicate multi-path hits.
         let mut attributed_ids: std::collections::HashSet<i64> =
             std::collections::HashSet::new();
@@ -1611,20 +1624,7 @@ pub fn attribute_dates_to_entities(
                 }
             } else if is_narrator && sentence_is_first_person {
                 // Narrator via first-person pronouns. Axiom 6 filters pre-birth events.
-                // Skip if the sentence is clearly a historical reference the narrator is
-                // recounting rather than a personal event (e.g. "the way the British had
-                // done in 1795" — the year appears in a subordinate historical clause).
-                let is_hypothetical = sentence_lower.contains("in my imagination")
-                    || sentence_lower.contains("could see")
-                    || sentence_lower.contains("could imagine")
-                    || sentence_lower.contains("the way the")
-                    || sentence_lower.contains("as they had")
-                    || sentence_lower.contains("as had been done")
-                    || sentence_lower.contains("had done in")
-                    || sentence_lower.contains("had been in");
-                if is_hypothetical {
-                    continue;
-                }
+                // Hypothetical sentences already dropped at mention level (above).
                 (0.60f32, AttributionMethod::ProximitySentence)
             } else if ent_in_context {
                 // Entity in adjacent sentence — common memoir prose pattern.
