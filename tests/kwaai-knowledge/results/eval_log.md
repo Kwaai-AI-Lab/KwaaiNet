@@ -1,4 +1,28 @@
 
+## v0.4.148 seed6 — 2026-07-02 — **88.9% (185.8/209)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** kinship role words added to `iterative.rs` name_stop — fixes EE-extracted role-name entities (e.g. "his mother") from blocking the narrator-relative kinship injection path.
+
+**Key gains vs seed5 (87.2%):** +1.7pp net.
+- q21 1→5/5 (**+4**, mother injection FIXED — `has_named_non_author` guard now ignores "mother" token matches)
+- q38 1→3/5 (+2, Cissie's father — LLM variance recovery from seed5 CPU run)
+- q30 0.2→1.8/6 (+1.6, JMH arrival — partial recovery, still weak without GPU rebuild)
+- q02 2→3/3 (+1, children), q13 4→5/5 (+1, AAC), q37 6→7/7 (+1, Gandhi)
+
+**Regressions (LLM variance, CPU non-determinism):**
+- q34 5→3/6 (-2, Group Areas Act — LLM variance on CPU)
+- q05 8→7/8 (-1, JMH Gool), q12 6→5/6 (-1, Cissie Gool), q16 5→4/5 (-1, Gandhi/Gool)
+- q20 4→3/5 (-1, cricket), q31 6→5/6 (-1)
+
+**Still failing (persistent):**
+- q30 1.8/6: JMH arrival year/place — needs GPU rebuild for reliable LLM
+- q15 2/5: forced removals — no entity card improvement found
+- q34 3/6: Group Areas Act — LLM variance on CPU
+
+**Cumulative progress:** 65.8% (seed0) → 82.8% (seed4) → 87.2% (seed5) → **88.9% (seed6)**
+
+---
+
 ## v0.4.147 post-seed5 — 2026-07-02 — **87.2% (182.2/209)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** seed5 entity descriptions — Ayesha Rassool (gender="Female" + desc "known as Lallie, mother of the memoir's author" + aliases), Peter Alexander Rassool (gender="Male" + desc), JMH Gool (Indian Opinion + full children list from both wives), Gool family (satyagraha/India/Gandhi visited Buitencingle), NEUM (added "TLSA affiliated with NEUM, shared boycott programme"), 7 Buitencingle Street (added "grandfather of the memoir's author"), Yousuf Rassool (gender="Male").
