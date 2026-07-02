@@ -1260,17 +1260,32 @@ fn infer_event_class(sentence: &str) -> String {
     if s.contains("died") || s.contains("passed away") || s.contains("death of") || s.contains(" d.") {
         return "death".to_string();
     }
-    if s.contains("arrived") || s.contains("came to") || s.contains("moved to") || s.contains("settled in") {
-        return "arrival".to_string();
+    if s.contains("married") || s.contains("wedded") || s.contains("marriage") || s.contains("wed to") {
+        return "marriage".to_string();
     }
-    if s.contains("founded") || s.contains("established") || s.contains("built") || s.contains("opened") {
-        return "founding".to_string();
-    }
-    if s.contains("removed") || s.contains("evicted") || s.contains("demolished") || s.contains("forced out") {
+    if s.contains("removed") || s.contains("evicted") || s.contains("demolished") || s.contains("forced out") || s.contains("bulldozed") || s.contains("displaced") {
         return "removal".to_string();
     }
-    if s.contains("married") || s.contains("wedded") {
-        return "marriage".to_string();
+    if s.contains("declared") || s.contains("declaration") || s.contains("announced") || s.contains("proclamation") || s.contains("enacted") || s.contains("passed into law") {
+        return "declaration".to_string();
+    }
+    if s.contains("spoke at") || s.contains("addressed") || s.contains("conference") || s.contains("congress") || s.contains("convention") || s.contains("meeting of") || s.contains("gathering of") {
+        return "meeting".to_string();
+    }
+    if s.contains("founded") || s.contains("established") || s.contains("built") || s.contains("opened") || s.contains("formed the") || s.contains("created the") {
+        return "founding".to_string();
+    }
+    if s.contains("appointed") || s.contains("elected") || s.contains("became president") || s.contains("became chair") || s.contains("assumed the role") || s.contains("served as") {
+        return "appointment".to_string();
+    }
+    if s.contains("attended") || s.contains("enrolled at") || s.contains("graduated") || s.contains("studied at") || s.contains("matriculated") || s.contains("training college") {
+        return "education".to_string();
+    }
+    if s.contains("published") || s.contains("wrote the") || s.contains("appeared in") || s.contains("printed in") {
+        return "publication".to_string();
+    }
+    if s.contains("arrived") || s.contains("came to") || s.contains("moved to") || s.contains("settled in") || s.contains("returned to") || s.contains("went to live") {
+        return "arrival".to_string();
     }
     "other".to_string()
 }
@@ -1596,6 +1611,20 @@ pub fn attribute_dates_to_entities(
                 }
             } else if is_narrator && sentence_is_first_person {
                 // Narrator via first-person pronouns. Axiom 6 filters pre-birth events.
+                // Skip if the sentence is clearly a historical reference the narrator is
+                // recounting rather than a personal event (e.g. "the way the British had
+                // done in 1795" — the year appears in a subordinate historical clause).
+                let is_hypothetical = sentence_lower.contains("in my imagination")
+                    || sentence_lower.contains("could see")
+                    || sentence_lower.contains("could imagine")
+                    || sentence_lower.contains("the way the")
+                    || sentence_lower.contains("as they had")
+                    || sentence_lower.contains("as had been done")
+                    || sentence_lower.contains("had done in")
+                    || sentence_lower.contains("had been in");
+                if is_hypothetical {
+                    continue;
+                }
                 (0.60f32, AttributionMethod::ProximitySentence)
             } else if ent_in_context {
                 // Entity in adjacent sentence — common memoir prose pattern.
@@ -1678,7 +1707,7 @@ pub async fn extract_events_for_uncertain(
          For each date reference output one JSON object per line:\n\
          {{\"date\": \"<date_raw>\", \"entity\": \"<entity name from list above>\", \
          \"description\": \"<what happened in one sentence>\", \
-         \"class\": \"<birth|death|arrival|founding|removal|meeting|other>\"}}\n\
+         \"class\": \"<birth|death|arrival|founding|removal|meeting|declaration|appointment|education|publication|other>\"}}\n\
          If no entity clearly matches, output {{\"date\": \"...\", \"entity\": null}}.\n\
          Do not invent events not supported by the passage.\n\
          Output only JSON objects, one per line — no explanation, no markdown."

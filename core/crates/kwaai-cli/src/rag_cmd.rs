@@ -8163,23 +8163,30 @@ async fn run_timeline_build(
     // This walks the narrator entity's graph edges to produce a phrase → (id, name) map
     // (e.g. "my grandfather" → JMH Gool) used to augment per-chunk coref candidates so that
     // kinship phrases resolve to canonical entity names even when no canonical name appears verbatim.
-    let narrator_kinship: Arc<std::collections::HashMap<String, (i64, String)>> = {
+    // narrator_entity: (id, name, aliases) captured so first-person chunks can inject the
+    // narrator into entity_data even when the canonical name doesn't appear in the text.
+    let (narrator_kinship, narrator_entity): (
+        Arc<std::collections::HashMap<String, (i64, String)>>,
+        Arc<Option<(i64, String, Vec<String>)>>,
+    ) = {
         let g = graph.lock().unwrap();
         // Find the narrator entity by looking for an entity whose aliases include "narrator",
         // "author", "I", or "the narrator". The doc schema default_narrator field can also supply
         // the canonical name; fall back to scanning alias tokens when not seeded.
-        let narrator_id = g
-            .all_entities()
-            .find(|e| {
-                let n = e.name.to_lowercase();
-                n == "narrator"
-                    || n == "author"
-                    || e.aliases.iter().any(|a| {
-                        let al = a.to_lowercase();
-                        al == "narrator" || al == "author" || al == "i" || al == "the narrator"
-                    })
-            })
-            .map(|e| e.id);
+        let narrator_ent = g.all_entities().find(|e| {
+            let n = e.name.to_lowercase();
+            n == "narrator"
+                || n == "author"
+                || e.aliases.iter().any(|a| {
+                    let al = a.to_lowercase();
+                    al == "narrator" || al == "author" || al == "i" || al == "the narrator"
+                })
+        });
+        let narrator_id = narrator_ent.map(|e| e.id);
+        let narrator_triple = narrator_id.and_then(|nid| {
+            g.get_entity(nid)
+                .map(|e| (nid, e.name.clone(), e.aliases.clone()))
+        });
         let map = narrator_id
             .map(|nid| kwaai_rag::sequence::narrator_kinship_map(nid, &g))
             .unwrap_or_default();
@@ -8189,7 +8196,7 @@ async fn run_timeline_build(
                 map.len()
             );
         }
-        Arc::new(map)
+        (Arc::new(map), Arc::new(narrator_triple))
     };
 
     // Wrap chunk_ids in an Arc so each task can look up its position for adjacent-chunk coref.
@@ -8223,6 +8230,7 @@ async fn run_timeline_build(
         let ev_total = event_total.clone();
         let ia_total = ia_total.clone();
         let narrator_kinship = narrator_kinship.clone();
+        let narrator_entity = narrator_entity.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.ok()?;
@@ -8313,6 +8321,26 @@ async fn run_timeline_build(
                             if let Some(e) = g.get_entity(*eid) {
                                 data.push((*eid, e.name.clone(), e.aliases.clone()));
                             }
+                        }
+                    }
+                }
+                // Fix 4 — Narrator self-injection: when the narrator entity isn't in
+                // entity_data (their canonical name doesn't appear verbatim) but the chunk
+                // is clearly first-person, inject the narrator so attribute_dates_to_entities()
+                // can fire the NarratorFirstPerson branch. Without this, first-person memoir
+                // passages yield no narrator events even when the narrator is the sole subject.
+                if let Some((nid, nname, naliases)) = narrator_entity.as_ref() {
+                    let already_present = data.iter().any(|(id, _, _)| id == nid);
+                    if !already_present {
+                        let chunk_is_first_person = clean_lower.contains(" i ")
+                            || clean_lower.starts_with("i ")
+                            || clean_lower.contains(" my ")
+                            || clean_lower.contains(" me ")
+                            || clean_lower.contains("'ve ")
+                            || clean_lower.contains("'d ")
+                            || clean_lower.contains("'m ");
+                        if chunk_is_first_person {
+                            data.push((*nid, nname.clone(), naliases.clone()));
                         }
                     }
                 }

@@ -1,4 +1,12 @@
 
+## v0.4.143 — 2026-07-02 — **68.4% (151.8/222)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** Narrator entity injection — when narrator's canonical name doesn't appear in a first-person chunk, inject narrator into entity_data so attribute_dates_to_entities() can fire the NarratorFirstPerson branch. Fix 4 in rag_cmd.rs. Timeline events: 192 (vs 173 in v0.4.142).
+
+**Key finding:** Narrator injection drove +1.8pp eval score (66.6→68.4%). Narrator (Yousuf Rassool) now has 13 events vs 2 before (1938 move, 1945 medicine hopes, 1952 TLSA conference, 1956 departure, etc.). Sequence diagram now contributes to q30 (JMH arrival), q34 (District Six/Group Areas), q15 (forced removals). Best score to date: +2.6pp vs GPU baseline (65.8%).
+
+---
+
 ## v0.4.142 — 2026-07-02 — **66.6% (147.8/222)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** 4-phase deterministic event extraction — multi-attribution approach (single-winner → all entities above threshold), SoleEntity confidence 0.75→0.85, narrator first-person detection (0.60), adjacent context window (±400 chars, 0.55). Timeline events: 173 (vs 40 prior, vs 26–55 LLM-first baseline). `--confidence-threshold 0.4`.
