@@ -742,7 +742,9 @@ pub(crate) fn inject_entity_descriptions(
                     .into_iter()
                     .find(|id| is_author_entity(*id, graph))
             });
-        let Some(aid) = author_id else { return };
+        let Some(aid) = author_id else {
+            return;
+        };
         let iid = resolve_author_relative(query, aid, graph).unwrap_or(aid);
         (aid, iid)
     } else {
