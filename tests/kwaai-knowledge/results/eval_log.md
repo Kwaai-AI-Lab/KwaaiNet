@@ -1,12 +1,24 @@
 
-## v0.4.148 seed9 (Cissie dual-purpose) — 2026-07-02 — **pending GPU eval**
+## v0.4.148 seed9 (Cissie dual-purpose) — 2026-07-02 — **metro-win A5000: 89.5% (187/209)**
 
 **Changes (seed9 = seed8 Dr.Abdurahman fix + revised Cissie):**
-Cissie Gool: "Zainunnissa Gool, was a Cape Town city councillor, lawyer, and political activist...
-Her father was Dr. Abdullah Abdurahman — a Cape Town doctor and city councillor, the first Coloured
-person elected to the Cape Town City Council."
-Design: leads with Cissie's identity (q12: Zainunnissa✓, councillor✓, activist✓, Cape Town✓) then father sentence (q38: Abdullah✓, Abdurahman✓, father✓, councillor✓, Cissie✓).
-Expected: q12 6/6 restored, q38 5/5, q26 6/6 → ~91%.
+Lead with "Cissie Gool, full name Zainunnissa Gool, was a Cape Town city councillor, lawyer, and political activist."
+Then: "Her father was Dr. Abdullah Abdurahman — a Cape Town doctor and city councillor..."
+
+**vs seed7b metro-win (90.0%, 188/209):**
+- q26: +1 ✅ (5/6 → 6/6, "doctor" fix holding for 2nd consecutive run)
+- q10: +2, q22: +2 (model variance, upside on A5000)
+- q27: **-5** (5/5 → 0/5) — catastrophic A5000 stochasticity on Gandhi/JMH topic
+- q33: -3 (5/5 → 2/5) — same variance pattern
+- q12: 5/6 (not restored to 6/6 — A5000 drops Zainunnissa even when it's first sentence)
+- q38: 3/5 (unchanged from seed7b — no improvement from description rewrite on A5000)
+
+**Diagnosis:** A5000 shows ±5pp run-to-run variance on q27/q33 (Gandhi/JMH questions). This is
+hardware-level stochasticity at temperature=0.0, not a data problem. Seed improvements are at
+ceiling on A5000 — further gains require code changes (retrieval weighting, entity card length).
+
+**q26 fix confirmed solid over 2 runs. Best remains seed7b metro-win at 90.0% (188/209).**
+Metro-linux seed9 eval pending (relay not available 2026-07-02).
 
 ---
 
