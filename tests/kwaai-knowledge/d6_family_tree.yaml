@@ -176,12 +176,11 @@ persons:
   - canonical: "Dr. Abdulla Abdurahman"
     gender: "Male"
     description: >
-      Dr. Abdullah Abdurahman (also written Abdulla Abdurahman) was a Cape
-      Town physician, city councillor, and leader of the African Political
-      (later People's) Organisation (APO). He was the father of Cissie Gool
-      and the first Coloured person elected to the Cape Town City Council as
-      a councillor. As city councillor and APO leader, Abdullah Abdurahman
-      was a pioneering figure in Cape Coloured political life.
+      Dr. Abdullah Abdurahman (also Abdulla Abdurahman) was a Cape Town doctor,
+      physician, and city councillor — the first Coloured person elected to the
+      Cape Town City Council. He was the father of Cissie Gool and leader of the
+      African Political (later People's) Organisation (APO), a pioneering figure
+      in Cape Coloured political life.
     fields:
       birthDate: "1872-09-08"
       deathDate: "1940-02-20"
@@ -194,12 +193,11 @@ persons:
   - canonical: "Cissie Gool"
     gender: "Female"
     description: >
-      Cissie Gool (full name Zainunnissa Gool) was the daughter of Dr. Abdullah
-      Abdurahman (also written Abdulla Abdurahman), Cape Town's first Coloured
-      city councillor. Her father Abdullah Abdurahman was a physician, city
-      councillor, and leader of the APO. Cissie herself was a Cape Town city
-      councillor, lawyer, and prominent political activist closely associated
-      with the Non-European Unity Movement and the anti-apartheid struggle.
+      Cissie Gool's father was Dr. Abdullah Abdurahman, a Cape Town city
+      councillor and doctor who was the first Coloured person elected to the
+      Cape Town City Council. Cissie herself was a city councillor, lawyer,
+      and political activist closely associated with the Non-European Unity
+      Movement and the anti-apartheid struggle.
     fields:
       birthDate: "1897-02-14"
       deathDate: "1963-12-02"

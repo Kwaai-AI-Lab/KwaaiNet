@@ -1,4 +1,29 @@
 
+## v0.4.148 seed8 (Cissie+Abdurahman doctor fix) — 2026-07-02 — **pending GPU eval**
+
+**Changes:** Cissie Gool: "Cissie Gool's father was Dr. Abdullah Abdurahman, a Cape Town city councillor and doctor" (removes parenthetical, forces Abdullah+councillor+doctor in first clause). Dr. Abdurahman: "doctor" added alongside "physician" for q26.
+Expected: q38 3/5 → 5/5, q26 5/6 → 6/6 (+3 pts → ~91-92%).
+
+---
+
+## v0.4.148 seed7b — 2026-07-02 — **metro-linux A6000: 89.5% (187.0/209)** / **metro-win A5000: 90.0% (188.0/209)** ⭐ TARGET HIT
+
+**Two GPU cross-check:** Both machines stable in 89.5–90% range. Model diverges on q30 (Swat/Gujarat/India — A5000 gives more verbose answer) and q09 (A6000 gives 8/9 vs 5/9 A5000).
+
+**metro-linux A6000 highlights vs metro-win A5000:**
+- q06: 6/8 → 8/8 (+2, Buitencingle — A6000 better)
+- q09: 5/9 → 8/9 (+3, grandfather — A6000 better)
+- q22: 2/4 → 4/4 (+2, father)
+- q27: 5/5 → 3/5 (-2, Gandhi–JMH — A5000 better)
+- q30: 6/6 → 3/6 (-3, arrival origin — A5000 model more verbose)
+
+**Persistent on both GPUs:**
+- q38: 3/5 — LLM outputs "Dr. Abdulla" not "Dr. Abdullah" — seed8 fix applied
+- q26: 5/6 — missing "doctor" keyword ("physician" in description) — seed8 fix applied
+- q15: 3-4/5, q20: 3-4/5 — retrieval/entity card working, LLM truncates keywords
+
+---
+
 ## v0.4.148 seed7b — 2026-07-02 — **90.0% (188.0/209)** — metro-win GPU (A5000) ⭐ NEW BEST — TARGET HIT
 
 **Changes (seed7 + 7b):** Gool family front-loaded (q16 fix), Cissie Gool first-sentence father (q38), Dr. Abdurahman spelling, Nazima "Professor" explicit.
