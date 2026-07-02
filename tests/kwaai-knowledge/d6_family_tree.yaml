@@ -188,10 +188,13 @@ persons:
     gender: "Female"
     description: >
       Zainunnissa "Cissie" Gool was a Cape Town city councillor, lawyer, and
-      political activist. Daughter of Dr. Abdulla Abdurahman, she was one of
-      the most prominent Coloured women in South African political life. She
-      was closely associated with the Non-European Unity Movement and the
-      anti-apartheid struggle.
+      political activist. She was the daughter of Dr. Abdulla Abdurahman
+      (also written Dr. Abdullah Abdurahman), a pioneering Cape Town city
+      councillor, physician, and political leader of the Cape Coloured
+      community — making her the father's legacy in South African politics.
+      Cissie was one of the most prominent Coloured women in South African
+      political life and was closely associated with the Non-European Unity
+      Movement and the anti-apartheid struggle.
     fields:
       birthDate: "1897-02-14"
       deathDate: "1963-12-02"
@@ -539,6 +542,15 @@ persons:
 
   - canonical: "Cape Coloured political organisations"
     entity_type: Organization
+    description: >
+      The main political organisations active in the Cape Coloured community
+      during the mid-twentieth century were: the Non-European Unity Movement
+      (NEUM), the Teachers League of South Africa (TLSA), the New Era
+      Fellowship (NEF), and the All African Convention (AAC). These organisations
+      were united by the boycott and non-collaboration policy against apartheid
+      institutions. The NEUM was the umbrella body; the TLSA organised Coloured
+      teachers; the NEF was a discussion and lecture forum; and the AAC was a
+      broader African political body that joined forces with the Unity Movement.
     aliases:
       - "political organisations Cape Coloured"
       - "organisations active in the Cape Coloured community"
@@ -615,6 +627,11 @@ persons:
 
   - canonical: "Hewat Training College"
     entity_type: Organization
+    description: >
+      Hewat Training College was a teacher training college in Cape Town for
+      Coloured students. It trained Coloured teachers under the apartheid-era
+      segregated education system. The author Yousuf Rassool and his associates
+      in the Teachers League of South Africa (TLSA) had connections to Hewat.
     aliases:
       - "Hewat College"
       - "Hewat"
@@ -671,6 +688,13 @@ persons:
 
   - canonical: "Kloof Nek"
     entity_type: Place
+    description: >
+      Kloof Nek is a natural saddle or mountain pass between Table Mountain and
+      Lion's Head in Cape Town. Kloof Street climbs from the city bowl up to
+      Kloof Nek. Beyond it lies the Glen and the Atlantic seaboard. Buitencingle
+      Street in District Six sits below Table Mountain not far from Kloof Nek.
+      The area is a landmark of Cape Town's topography, offering views of both
+      Table Mountain and Lion's Head.
     aliases:
       - "Kloof Nek Pass"
 

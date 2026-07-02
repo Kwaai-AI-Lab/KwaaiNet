@@ -209,6 +209,13 @@ pub async fn retrieve_graph_anchored(
     let name_stop: &[&str] = &[
         "who", "what", "was", "were", "the", "tell", "about", "and", "for", "did", "how", "where",
         "when", "describe", "more", "kind", "place",
+        // Kinship terms: exclude from name-token entity matching.
+        // Family entities carry these as aliases ("father", "mother", etc.); matching them
+        // would spuriously set has_named_non_author=true and prevent the narrator kinship
+        // resolver from firing for queries like "Who was the author's father?".
+        "wife", "husband", "mother", "father", "grandfather", "grandmother",
+        "brother", "sister", "sibling", "child", "children", "son", "daughter",
+        "grandchild", "grandchildren", "spouse",
     ];
     let emb_seed_ids: std::collections::HashSet<i64> =
         seed_hits.iter().map(|(id, _)| *id).collect();

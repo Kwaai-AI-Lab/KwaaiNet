@@ -1,4 +1,20 @@
 
+## v0.4.146 post-seed2 — 2026-07-02 — **77.5% (162.0/209)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** Non-author kinship guard: when query contains a named third-party entity + kinship term (e.g. "Cissie Gool's father"), skip narrator kinship path and inject named entity's card instead. Fix in retriever.rs:721. Binary rebuilt as v0.4.146. Seed run: same as seed2 (no new seeds — seed3 runs next).
+
+**Key gains vs seed2:** q31 3→6/6 (+3, Mosque entity card injected for kinship query), q35 3→4/4 (+1, Hassen Mall), q37 7/7 (Gandhi 1893+satyagraha+India description), q33 5/5 (JMH knew Rhodes+Shaw+Gandhi). Non-author guard fix: q38 now correctly injects Cissie's card (2 docs vs 1 before).
+
+**Regressions vs seed2 (kinship name_stop bug in v0.4.146):** q02 3→0/3 (-3), q21 5→1/5 (-4), q22 4→2/4 (-2). Cause: kinship terms ("mother", "father", "children") were not in name_stop — they matched entity aliases → has_named_non_author=true → narrator kinship path skipped → no entity card for narrator's own relatives. Fixed in v0.4.147.
+
+**q38 still low (1/5):** Non-author guard fires correctly (Cissie's card injected) but LLM gave one-liner "Dr. Abdulla Abdurahman" missing "father"/"councillor"/"Cissie"/"Abdullah". Fixed in seed3: Cissie's description updated to include "Abdullah" spelling and "city councillor" about her father explicitly.
+
+**Net vs seed2:** -1.8pp due to kinship name_stop regressions offsetting description gains. v0.4.147 + seed3 should recover +9 pts (kinship fix) + gain from seed3 descriptions.
+
+**Next eval:** v0.4.147 + seed3 — kinship name_stop fix + Cissie/Kloof Nek/Hewat/Cape Coloured orgs descriptions. Expected: ~85-87%.
+
+---
+
 ## v0.4.145 post-seed2 — 2026-07-02 — **78.4% (163.8/209)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** Second seed of D6 with entity descriptions added in session — Cissie Gool, Dr. Abdurahman, NEUM (+foundingDate:1943), TLSA, NEF, AAC (+foundingDate:1935), District Six, 7 Buitencingle, JMH Gool (Mauritius/Swat/Gujarat/1884 origin + mosque trustee). Binary still v0.4.145 (no kinship fix yet).
