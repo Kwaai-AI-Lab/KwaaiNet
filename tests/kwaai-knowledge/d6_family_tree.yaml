@@ -37,12 +37,16 @@ persons:
       from Mauritius, with family origins in Swat via Gujarat, India. He was a
       spice merchant and community leader who became a founding trustee of the
       Hanaffi Quwatul Islam Mosque in District Six. He lived at 7 Buitencingle
-      Street, was acquainted with Mahatma Gandhi during Gandhi's 1914 visit, and
-      was associated with early Cape Muslim and Indian political circles. He had
+      Street, where he received notable visitors including Mahatma Gandhi
+      (during Gandhi's 1914 South Africa farewell visit), Cecil John Rhodes,
+      George Bernard Shaw, and Dr. Abdulla Abdurahman. He was associated
+      with early Cape Muslim and Indian political circles. He had
       two wives, Bibi Gool and Wahida Gool, with children including Ayesha
-      Rassool (by Bibi) and Abdul Hamid Gool (by Wahida). He performed the Hajj
-      in 1899 and died in April 1940. He was the grandfather of the memoir's
-      author, Yousuf (Joe) Rassool.
+      Rassool (by Bibi) and Abdul Hamid Gool (by Wahida). His son Abdul Hamid
+      Gool married Zainunnissa (Cissie) Gool, daughter of Dr. Abdulla
+      Abdurahman — making Cissie Gool his daughter-in-law. He performed the
+      Hajj in 1899 and died in April 1940. He was the grandfather of the
+      memoir's author, Yousuf (Joe) Rassool.
     fields:
       arrived_cape_town: "1884"
       origin: "Mauritius (via Swat, Gujarat)"
@@ -228,6 +232,12 @@ persons:
 
   - canonical: "Nazima Rassool"
     gender: "Female"
+    description: >
+      Professor Nazima Rassool is an academic researcher and the wife of the
+      author, Yousuf Rassool. She played a central role in shaping the memoir
+      by urging him to ground his personal memories in historical research,
+      which transformed the book from a purely subjective recollection into a
+      historically documented account of District Six.
     aliases:
       - "Nazima"
       - "Professor Nazima Rassool"
@@ -408,6 +418,10 @@ persons:
 
   - canonical: "Hassen Mall"
     gender: "Male"
+    description: >
+      Hassen Mall was a close friend of the author Yousuf Rassool and a fellow
+      cricket player from District Six. He is warmly remembered in the memoir
+      as a companion and teammate.
     aliases:
       - "Hassen"
 
@@ -415,6 +429,16 @@ persons:
 
   - canonical: "Mohandas Karamchand Gandhi"
     gender: "Male"
+    description: >
+      Mohandas Karamchand Gandhi, known as Mahatma Gandhi (Mahatma meaning
+      "Great Soul"), came to South Africa in 1893 as a lawyer to work on a
+      legal case. He lived and worked in South Africa for over 20 years,
+      developing his philosophy of satyagraha (non-violent resistance, or
+      passive resistance) as a tool of political struggle. He founded the
+      newspaper Indian Opinion to advocate for non-European rights in South
+      Africa. He was connected to the Gool family in Cape Town, staying at
+      their home at 7 Buitencingle Street during his 1914 South Africa farewell
+      visit. Gandhi returned to India in 1914.
     fields:
       birthDate: "1869-10-02"
       deathDate: "1948-01-30"
@@ -438,6 +462,11 @@ persons:
 
   - canonical: "I.B. Tabata"
     gender: "Male"
+    description: >
+      I.B. Tabata was a prominent political activist and leader in the
+      Non-European Unity Movement (Unity Movement). He married Jane Gool,
+      daughter of J.M.H. Gool, and was deeply involved in the anti-apartheid
+      struggle and the Unity Movement's non-collaboration policy.
     aliases:
       - "Tabata"
       - "I. Tabata"
@@ -499,7 +528,8 @@ persons:
       African, Coloured, and Indian people against apartheid and colonialism.
       Its programme was based on the Ten Point plan for equal rights. The NEUM
       adopted a boycott and non-collaboration policy — refusing to participate
-      in any apartheid government institutions.
+      in any apartheid government institutions, including the Coloured Advisory
+      Council.
     fields:
       foundingDate: "1943"
     aliases:
@@ -555,6 +585,13 @@ persons:
 
   - canonical: "Hanaffi Quwatul Islam Mosque"
     entity_type: Organization
+    description: >
+      The Hanaffi Quwatul Islam Mosque on Loop Street, Cape Town, was founded
+      in 1898 and is one of the oldest mosques in the Cape Muslim community.
+      J.M.H. Gool was a founding trustee. The mosque is central to the history
+      of the Gool family and the Cape Muslim community in District Six.
+    fields:
+      foundingDate: "1898"
     aliases:
       - "Quwatul Islam Mosque"
       - "Loop Street Mosque"
@@ -584,6 +621,12 @@ persons:
 
   - canonical: "Kismets Cricket Club"
     entity_type: Organization
+    description: >
+      Kismets Cricket Club was a non-European cricket club in District Six,
+      Cape Town, associated with the Western Province Indian Cricket Union.
+      The author, Yousuf Rassool, was actively involved in cricket through
+      this club and non-European cricket more broadly, playing and
+      administering club cricket in the Cape.
     aliases:
       - "Kismets"
       - "Kismets CC"

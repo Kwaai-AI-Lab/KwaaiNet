@@ -1,4 +1,16 @@
 
+## v0.4.145 post-seed2 — 2026-07-02 — **78.4% (163.8/209)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** Second seed of D6 with entity descriptions added in session — Cissie Gool, Dr. Abdurahman, NEUM (+foundingDate:1943), TLSA, NEF, AAC (+foundingDate:1935), District Six, 7 Buitencingle, JMH Gool (Mauritius/Swat/Gujarat/1884 origin + mosque trustee). Binary still v0.4.145 (no kinship fix yet).
+
+**Key gains (vs pre-seed 72.2%):** q06 5→8/8 (+3, Buitencingle), q11 3→4/4 (+1, TLSA), q12 3→6/6 (+3, Cissie), q13 2→5/5 (+3, AAC), q14 3→5/6 (+2, District Six), q26 newly added Abdurahman 6/6. +12.8pp total gain from entity descriptions alone.
+
+**Still failing (targets for next eval):** q30 (0.8/6 anomaly — "Mauritius/India/Swat/Gujarat/Joosub" keywords in description but LLM confused; sequence diagram noise), q31 (3/6, Mosque description not in first seed), q32 (2/5, JMH daughter-in-law not in first seed), q33 (2/5, Rhodes+Shaw not in first seed), q38 (2/5, kinship bug — injects narrator's father instead of Cissie's entity card).
+
+**Next eval:** v0.4.146 post-seed3 — second re-seed adding: Mosque, Nazima Rassool, Tabata, Kismets CC, Gandhi (Indian Opinion), updated JMH (Rhodes+Shaw+daughter-in-law), Hassen Mall, updated NEUM (Coloured Advisory). Plus kinship fix (v0.4.146 binary). Expected: ~87-90%.
+
+---
+
 ## v0.4.145 — 2026-07-02 — **72.2% (151/209)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** (1) Human-readable field key labels ("arrived_cape_town" → "Arrived in Cape Town", "birthDate" → "Born", etc.) in entity fact cards. (2) Axiom 4b: narrator entity cannot receive "death" class timeline events — takes effect on next rebuild. (3) Eval keyword synonym groups for acronym org names (TLSA/NEUM/NEF/AAC) — denominator changed from 222 to 209 as q28 was reduced from 5 to 3 synonym groups.

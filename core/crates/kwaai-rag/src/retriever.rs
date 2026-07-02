@@ -714,9 +714,14 @@ pub(crate) fn inject_entity_descriptions(
 
     // For personal-relative queries (wife, grandfather, etc.) we MUST land on the
     // author entity so resolve_author_relative() can walk family graph edges.
-    // If the author isn't in the seed hits, skip injection rather than injecting
-    // a spurious entity (e.g. a venue whose description happens to contain "wife").
-    let (_anchor_id, inject_id): (i64, i64) = if is_relative_query {
+    // EXCEPTION: if the query contains a third-party named entity (non-author), the kinship
+    // term refers to THAT entity's relative, not the narrator's. "Who was Cissie Gool's father?"
+    // should inject Cissie Gool's card, not Peter Alexander Rassool (the narrator's father).
+    // Detect this by checking whether name_matched has a non-author entity.
+    let has_named_non_author = name_matched
+        .iter()
+        .any(|id| !is_author_entity(*id, graph));
+    let (_anchor_id, inject_id): (i64, i64) = if is_relative_query && !has_named_non_author {
         // Try embedding seed hits first, then fall back to a direct name-token lookup.
         // The author entity (Joe Rassool / Yousuf Rassool) has alias "author" but that
         // alias won't appear in entity names, so embedding hits may miss it entirely.
