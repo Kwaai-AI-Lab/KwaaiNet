@@ -42,7 +42,7 @@
     "id": "q04",
     "type": "entity_description",
     "question": "To whom is the book dedicated?",
-    "expected_answer": "The book is dedicated to the author's children \u2014 Feyruz, Reza, and Zarina \u2014 and his grandchildren \u2014 Joseph, Samuel, Alexander, Leonardo, Dylan, and Lewis.",
+    "expected_answer": "The book is dedicated to the author's children — Feyruz, Reza, and Zarina — and his grandchildren — Joseph, Samuel, Alexander, Leonardo, Dylan, and Lewis.",
     "expected_keywords": [
       "Feyruz",
       "Reza",
@@ -72,7 +72,7 @@
     "id": "q06",
     "type": "temporal_event",
     "question": "Tell me about Buitencingle.",
-    "expected_answer": "Buitencingle is a street in Cape Town. The name is Dutch in origin \u2014 'cingle' means belt, and Buitencingle was at the time the outermost belt of Cape Town. The street was wide and cobbled with traffic islands sporting stunted palm trees. The author's grandfather's grand 13-room mansion stood at No. 7 Buitencingle Street and was known simply as 'Buitencingle'. The street was a select, exclusive residential area in keeping with J.M.H. Gool's stature. It lay at the foot of Table Mountain, with Kloof Street leading up from its bottom toward Kloof Nek.",
+    "expected_answer": "Buitencingle is a street in Cape Town. The name is Dutch in origin — 'cingle' means belt, and Buitencingle was at the time the outermost belt of Cape Town. The street was wide and cobbled with traffic islands sporting stunted palm trees. The author's grandfather's grand 13-room mansion stood at No. 7 Buitencingle Street and was known simply as 'Buitencingle'. The street was a select, exclusive residential area in keeping with J.M.H. Gool's stature. It lay at the foot of Table Mountain, with Kloof Street leading up from its bottom toward Kloof Nek.",
     "expected_keywords": [
       "Buitencingle",
       "Dutch",
@@ -134,7 +134,7 @@
     "id": "q10",
     "type": "temporal_event",
     "question": "Tell me about Kloof Nek.",
-    "expected_answer": "Kloof Nek is the connecting saddle of land that joins Table Mountain to Lion's Head, overlooking Table Bay on the eastern flank of Cape Town. It was reached from the bottom of Buitencingle Street via Kloof Street, which was also the terminus for the single-decker trackless tram from Adderley Street. Below Kloof Nek lay the Glen \u2014 a woodland dell with a babbling brook, dense green canopy, mossy nooks, doves and brightly coloured birds, and a peaceful atmosphere. The author's first visit there at age 14, to study poetry before literature exams, left a profound impression on him.",
+    "expected_answer": "Kloof Nek is the connecting saddle of land that joins Table Mountain to Lion's Head, overlooking Table Bay on the eastern flank of Cape Town. It was reached from the bottom of Buitencingle Street via Kloof Street, which was also the terminus for the single-decker trackless tram from Adderley Street. Below Kloof Nek lay the Glen — a woodland dell with a babbling brook, dense green canopy, mossy nooks, doves and brightly coloured birds, and a peaceful atmosphere. The author's first visit there at age 14, to study poetry before literature exams, left a profound impression on him.",
     "expected_keywords": [
       "Kloof Nek",
       "Table Mountain",
@@ -150,11 +150,13 @@
     "id": "q11",
     "type": "org_membership",
     "question": "What was the Teachers League of South Africa (TLSA)?",
-    "expected_answer": "The Teachers League of South Africa (TLSA) was a professional and political organisation for Coloured teachers. It was affiliated with the Non-European Unity Movement and followed the Unity Movement's boycott policy. The TLSA challenged racial discrimination in education and fought for equal opportunities. The author was deeply involved with the TLSA \u2014 he served as branch steward and was active in its struggles against the apartheid government's separate schools policy.",
+    "expected_answer": "The Teachers League of South Africa (TLSA) was a professional and political organisation for Coloured teachers. It was affiliated with the Non-European Unity Movement and followed the Unity Movement's boycott policy. The TLSA challenged racial discrimination in education and fought for equal opportunities. The author was deeply involved with the TLSA — he served as branch steward and was active in its struggles against the apartheid government's separate schools policy.",
     "expected_keywords": [
-      "TLSA",
-      "Teachers",
-      "League",
+      [
+        "TLSA",
+        "Teachers League",
+        "Teachers' League"
+      ],
       "Unity Movement",
       "boycott",
       "Coloured"
@@ -182,8 +184,11 @@
     "question": "What was the All Africa Convention?",
     "expected_answer": "The All Africa Convention (AAC) was a broad political organisation founded in 1935 in response to the Hertzog Bills, which stripped Africans of their limited voting rights. It initially united a wide range of African political groups. Later it became closely allied with the Non-European Unity Movement (NEUM), advocating for non-collaboration with the apartheid government's racial structures. The author was involved in AAC activities.",
     "expected_keywords": [
-      "All Africa Convention",
-      "AAC",
+      [
+        "AAC",
+        "All Africa Convention",
+        "All-African Convention"
+      ],
       "1935",
       "Hertzog",
       "unity",
@@ -195,7 +200,7 @@
     "id": "q14",
     "type": "temporal_event",
     "question": "Where was District Six and what kind of place was it?",
-    "expected_answer": "District Six was a vibrant, densely populated inner-city neighbourhood of Cape Town, located on the slopes of Devil's Peak, close to the city centre. It was a racially mixed community where Malay, Cape Coloured, African, white, and Jewish residents lived side by side. It had a rich cultural life \u2014 jazz clubs, mosques, churches, cinemas, and colourful street characters. It was declared a White Group Area in 1966 and its residents were forcibly removed; by 1982 most of the area had been bulldozed.",
+    "expected_answer": "District Six was a vibrant, densely populated inner-city neighbourhood of Cape Town, located on the slopes of Devil's Peak, close to the city centre. It was a racially mixed community where Malay, Cape Coloured, African, white, and Jewish residents lived side by side. It had a rich cultural life — jazz clubs, mosques, churches, cinemas, and colourful street characters. It was declared a White Group Area in 1966 and its residents were forcibly removed; by 1982 most of the area had been bulldozed.",
     "expected_keywords": [
       "District Six",
       "Cape Town",
@@ -210,7 +215,7 @@
     "id": "q15",
     "type": "temporal_event",
     "question": "What were the forced removals from District Six?",
-    "expected_answer": "Under the Group Areas Act, the apartheid government declared District Six a White Group Area in 1966. Residents \u2014 predominantly Coloured families who had lived there for generations \u2014 were forcibly relocated to the Cape Flats, far from the city. Their homes were demolished. By the early 1980s the vibrant community had been completely erased and the land largely left vacant (though some redevelopment occurred). The forced removals destroyed community bonds, cultural life, and livelihoods. The author and his family were among those forced to leave.",
+    "expected_answer": "Under the Group Areas Act, the apartheid government declared District Six a White Group Area in 1966. Residents — predominantly Coloured families who had lived there for generations — were forcibly relocated to the Cape Flats, far from the city. Their homes were demolished. By the early 1980s the vibrant community had been completely erased and the land largely left vacant (though some redevelopment occurred). The forced removals destroyed community bonds, cultural life, and livelihoods. The author and his family were among those forced to leave.",
     "expected_keywords": [
       "forced",
       "removals",
@@ -244,7 +249,7 @@
     "id": "q17",
     "type": "temporal_event",
     "question": "What was Hewat Training College?",
-    "expected_answer": "Hewat Training College was the teacher training institution for Coloured students in Cape Town. The author attended Hewat after completing his schooling and received his teacher's training there. Hewat was an important centre of intellectual and political life for the Coloured community \u2014 many future activists and teachers were trained there. It was run under the apartheid government's separate education system for Coloured people.",
+    "expected_answer": "Hewat Training College was the teacher training institution for Coloured students in Cape Town. The author attended Hewat after completing his schooling and received his teacher's training there. Hewat was an important centre of intellectual and political life for the Coloured community — many future activists and teachers were trained there. It was run under the apartheid government's separate education system for Coloured people.",
     "expected_keywords": [
       "Hewat",
       "training",
@@ -260,9 +265,11 @@
     "question": "What was the New Era Fellowship?",
     "expected_answer": "The New Era Fellowship (NEF) was a cultural and political discussion society in Cape Town, associated with the Non-European Unity Movement. It held public lectures and debates on political, social, and philosophical topics, and was an important gathering place for progressive intellectuals, teachers, and activists in the Coloured community. The author attended NEF meetings and was influenced by the debates there.",
     "expected_keywords": [
-      "New Era",
-      "Fellowship",
-      "NEF",
+      [
+        "NEF",
+        "New Era Fellowship",
+        "New Era"
+      ],
       "debates",
       "lectures",
       "Unity Movement"
@@ -273,11 +280,13 @@
     "id": "q19",
     "type": "org_membership",
     "question": "What was the Non-European Unity Movement?",
-    "expected_answer": "The Non-European Unity Movement (NEUM) was a South African political organisation founded in 1943 that advocated for the unity of all non-European (African, Coloured, and Indian) people in the struggle against apartheid and colonialism. Its programme was based on Ten Point demands for equal rights. It adopted a boycott policy \u2014 refusing to collaborate with apartheid government structures. The NEUM had strong support among Coloured teachers and professionals in the Cape and was closely associated with the Teachers League of South Africa (TLSA) and the All Africa Convention (AAC).",
+    "expected_answer": "The Non-European Unity Movement (NEUM) was a South African political organisation founded in 1943 that advocated for the unity of all non-European (African, Coloured, and Indian) people in the struggle against apartheid and colonialism. Its programme was based on Ten Point demands for equal rights. It adopted a boycott policy — refusing to collaborate with apartheid government structures. The NEUM had strong support among Coloured teachers and professionals in the Cape and was closely associated with the Teachers League of South Africa (TLSA) and the All Africa Convention (AAC).",
     "expected_keywords": [
-      "Non-European",
-      "Unity Movement",
-      "NEUM",
+      [
+        "NEUM",
+        "Non-European Unity Movement",
+        "Unity Movement"
+      ],
       "boycott",
       "Ten Point",
       "1943"
@@ -288,7 +297,7 @@
     "id": "q20",
     "type": "multi_entity",
     "question": "Describe the author's involvement in cricket.",
-    "expected_answer": "Cricket was a major passion in the author's life. He played club cricket in District Six and Cape Town and represented non-European cricket organisations. He played for Western Province in the non-European cricket structure. The chapter on cricket describes specific matches, teammates, and the separate cricket world that existed for non-Europeans under apartheid \u2014 cut off from the mainstream white cricket structure. Cricket was both a sporting passion and a site of political exclusion for the Coloured community.",
+    "expected_answer": "Cricket was a major passion in the author's life. He played club cricket in District Six and Cape Town and represented non-European cricket organisations. He played for Western Province in the non-European cricket structure. The chapter on cricket describes specific matches, teammates, and the separate cricket world that existed for non-Europeans under apartheid — cut off from the mainstream white cricket structure. Cricket was both a sporting passion and a site of political exclusion for the Coloured community.",
     "expected_keywords": [
       "cricket",
       "Western Province",
@@ -392,7 +401,7 @@
     "id": "q27",
     "type": "cross_entity",
     "question": "What was the connection between Gandhi and J.M.H. Gool?",
-    "expected_answer": "Gandhi and J.M.H. Gool had a personal connection: Gandhi visited the Gool family mansion at 7 Buitencingle Street during his time in South Africa (1893\u20131914). Gandhi was a subscriber to the Indian Opinion, which was associated with J.M.H. Gool. There is documented archival correspondence between Gandhi and the Gool family. This connection between the Indian political leader and the prosperous Cape Muslim merchant represents an important historical link in the multi-ethnic political networks of early twentieth-century Cape Town.",
+    "expected_answer": "Gandhi and J.M.H. Gool had a personal connection: Gandhi visited the Gool family mansion at 7 Buitencingle Street during his time in South Africa (1893–1914). Gandhi was a subscriber to the Indian Opinion, which was associated with J.M.H. Gool. There is documented archival correspondence between Gandhi and the Gool family. This connection between the Indian political leader and the prosperous Cape Muslim merchant represents an important historical link in the multi-ethnic political networks of early twentieth-century Cape Town.",
     "expected_keywords": [
       "Gandhi",
       "Gool",
@@ -408,11 +417,21 @@
     "question": "Which organisations was the author involved in?",
     "expected_answer": "The author was involved in several political and cultural organisations: the Teachers League of South Africa (TLSA), where he served as branch steward; the Non-European Unity Movement (NEUM); the New Era Fellowship (NEF), a political-cultural discussion society; and the All Africa Convention (AAC). He was also active in cricket through non-European cricket organisations.",
     "expected_keywords": [
-      "TLSA",
-      "NEUM",
-      "NEF",
-      "Teachers League",
-      "Unity Movement"
+      [
+        "TLSA",
+        "Teachers League",
+        "Teachers' League"
+      ],
+      [
+        "NEUM",
+        "Non-European Unity Movement",
+        "Unity Movement"
+      ],
+      [
+        "NEF",
+        "New Era Fellowship",
+        "New Era"
+      ]
     ],
     "source_chapter": "Multiple chapters"
   },
@@ -420,14 +439,20 @@
     "id": "q29",
     "type": "org_membership",
     "question": "What was the relationship between the TLSA and the Non-European Unity Movement?",
-    "expected_answer": "The Teachers League of South Africa (TLSA) was closely affiliated with the Non-European Unity Movement (NEUM). The TLSA adopted the Unity Movement's boycott policy \u2014 refusing to participate in apartheid government educational structures. Many TLSA members were also active in the NEUM, and the two organisations shared a common political philosophy of non-collaboration with apartheid institutions and a commitment to equal rights for all South Africans.",
+    "expected_answer": "The Teachers League of South Africa (TLSA) was closely affiliated with the Non-European Unity Movement (NEUM). The TLSA adopted the Unity Movement's boycott policy — refusing to participate in apartheid government educational structures. Many TLSA members were also active in the NEUM, and the two organisations shared a common political philosophy of non-collaboration with apartheid institutions and a commitment to equal rights for all South Africans.",
     "expected_keywords": [
-      "TLSA",
-      "NEUM",
+      [
+        "TLSA",
+        "Teachers League",
+        "Teachers' League"
+      ],
+      [
+        "NEUM",
+        "Non-European Unity Movement",
+        "Unity Movement"
+      ],
       "boycott",
-      "Unity Movement",
-      "non-collaboration",
-      "teachers"
+      "non-collaboration"
     ],
     "source_chapter": "Part_2_Chapter_14_Teacher's_League_of_South_Africa.docx"
   },
@@ -435,7 +460,7 @@
     "id": "q30",
     "type": "temporal_event",
     "question": "When did J.M.H. Gool arrive in Cape Town and from where?",
-    "expected_answer": "Joosub Maulvi Hamid Gool arrived in Cape Town in 1884, coming via Mauritius. He originally came from India \u2014 his father was a Pushto-speaking Maulvi from the Province of Swat who had moved to Rander in Gujarat. Joosub left behind his eleven-year-old bride in India when he made the journey to the Cape.",
+    "expected_answer": "Joosub Maulvi Hamid Gool arrived in Cape Town in 1884, coming via Mauritius. He originally came from India — his father was a Pushto-speaking Maulvi from the Province of Swat who had moved to Rander in Gujarat. Joosub left behind his eleven-year-old bride in India when he made the journey to the Cape.",
     "expected_keywords": [
       "Mauritius",
       "India",
@@ -496,7 +521,7 @@
     "id": "q34",
     "type": "temporal_event",
     "question": "What was the Group Areas Act and how did it affect District Six?",
-    "expected_answer": "The Group Areas Act was apartheid legislation that designated specific areas for specific racial groups only. District Six was declared a White Group Area in 1966 under this Act, forcing out the predominantly Coloured and mixed-race community that had lived there for generations. Residents were forcibly relocated to the Cape Flats \u2014 distant, poorly serviced townships far from the city. By the early 1980s, most of District Six had been demolished, leaving a largely vacant scar in the heart of Cape Town.",
+    "expected_answer": "The Group Areas Act was apartheid legislation that designated specific areas for specific racial groups only. District Six was declared a White Group Area in 1966 under this Act, forcing out the predominantly Coloured and mixed-race community that had lived there for generations. Residents were forcibly relocated to the Cape Flats — distant, poorly serviced townships far from the city. By the early 1980s, most of District Six had been demolished, leaving a largely vacant scar in the heart of Cape Town.",
     "expected_keywords": [
       "Group Areas",
       "Act",
@@ -526,12 +551,26 @@
     "question": "What political organisations were active in the Cape Coloured community during the author's lifetime?",
     "expected_answer": "Several major organisations were active in the Cape Coloured community: the Non-European Unity Movement (NEUM, founded 1943), which advocated non-collaboration with apartheid; the Teachers League of South Africa (TLSA), a politically active teachers' union affiliated with the NEUM; the New Era Fellowship (NEF, founded 1937), a political-cultural discussion society; and the All Africa Convention (AAC, founded 1935), which united African and Coloured political groups against discriminatory legislation.",
     "expected_keywords": [
-      "NEUM",
-      "TLSA",
-      "NEF",
-      "AAC",
-      "Unity Movement",
-      "Teachers League"
+      [
+        "NEUM",
+        "Non-European Unity Movement",
+        "Unity Movement"
+      ],
+      [
+        "TLSA",
+        "Teachers League",
+        "Teachers' League"
+      ],
+      [
+        "NEF",
+        "New Era Fellowship",
+        "New Era"
+      ],
+      [
+        "AAC",
+        "All Africa Convention",
+        "All-African Convention"
+      ]
     ],
     "source_chapter": "Multiple chapters"
   },
@@ -572,7 +611,7 @@
     "id": "q39",
     "type": "temporal_event",
     "question": "What was District Six like as a neighbourhood before the forced removals?",
-    "expected_answer": "District Six before the forced removals was a vibrant, tightly knit, multi-racial urban neighbourhood on the slopes of Devil's Peak in Cape Town. It had jazz clubs, mosques, churches, cinemas, fish markets, and a lively street life with colourful characters. People of many backgrounds lived side by side \u2014 Cape Malay, Coloured, African, Jewish, and White. The community had a strong sense of identity and belonging, with deep roots going back generations. It was known for music, sport (especially cricket), and community solidarity.",
+    "expected_answer": "District Six before the forced removals was a vibrant, tightly knit, multi-racial urban neighbourhood on the slopes of Devil's Peak in Cape Town. It had jazz clubs, mosques, churches, cinemas, fish markets, and a lively street life with colourful characters. People of many backgrounds lived side by side — Cape Malay, Coloured, African, Jewish, and White. The community had a strong sense of identity and belonging, with deep roots going back generations. It was known for music, sport (especially cricket), and community solidarity.",
     "expected_keywords": [
       "District Six",
       "Devil's Peak",

@@ -575,13 +575,30 @@ fn build_entity_fact_card(
             targets.truncate(15);
             let list = targets.join(", ");
             has_relations = true;
+            let gender = entity.gender.as_deref().unwrap_or("");
             let line = match rel_type.as_str() {
-                "parent_of" => format!("Children: {}.", list),
-                "child_of" => format!("Parent: {}.", list),
+                "parent_of" => match gender {
+                    "Female" => format!("Mother of: {}.", list),
+                    "Male" => format!("Father of: {}.", list),
+                    _ => format!("Parent of: {}.", list),
+                },
+                "child_of" => match gender {
+                    "Female" => format!("Daughter of: {}.", list),
+                    "Male" => format!("Son of: {}.", list),
+                    _ => format!("Child of: {}.", list),
+                },
                 "spouse_of" => format!("Married to: {}.", list),
                 "sibling_of" => format!("Siblings: {}.", list),
-                "grandparent_of" => format!("Grandchildren: {}.", list),
-                "grandchild_of" => format!("Grandchild of: {}.", list),
+                "grandparent_of" => match gender {
+                    "Female" => format!("Grandmother of: {}.", list),
+                    "Male" => format!("Grandfather of: {}.", list),
+                    _ => format!("Grandparent of: {}.", list),
+                },
+                "grandchild_of" => match gender {
+                    "Female" => format!("Granddaughter of: {}.", list),
+                    "Male" => format!("Grandson of: {}.", list),
+                    _ => format!("Grandchild of: {}.", list),
+                },
                 "member_of" => format!("Member of: {}.", list),
                 "founded" => format!("Founded: {}.", list),
                 "affiliated_with" => format!("Affiliated with: {}.", list),
@@ -596,11 +613,24 @@ fn build_entity_fact_card(
     }
 
     // Structured metadata fields (dateEnacted, jurisdiction, founded year, etc.)
+    // Map internal snake_case keys to human-readable labels for LLM clarity.
     for (key, field) in &entity.fields {
         let v = field.value.trim();
-        if !v.is_empty() {
-            lines.push(format!("{}: {}.", key, v));
+        if v.is_empty() {
+            continue;
         }
+        let label = match key.as_str() {
+            "arrived_cape_town" => "Arrived in Cape Town",
+            "birthDate" => "Born",
+            "deathDate" => "Died",
+            "foundingDate" => "Founded",
+            "dissolutionDate" => "Dissolved",
+            "origin" => "Origin",
+            "jurisdiction" => "Jurisdiction",
+            "dateEnacted" => "Date enacted",
+            other => other,
+        };
+        lines.push(format!("{}: {}.", label, v));
     }
 
     // Prose description — supplementary context appended after structured facts

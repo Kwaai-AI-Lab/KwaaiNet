@@ -480,6 +480,26 @@ pub fn resolve_extracted(
             );
             continue;
         }
+        // Axiom 4b: The narrator entity cannot have a "death" class event.
+        // A memoir author cannot have died before writing the book. Any death sentence
+        // in a first-person chunk refers to someone else — not the narrator.
+        if event_class == "death" {
+            if let Some(entity) = graph.get_entity(eid) {
+                let is_narrator = entity.name.to_lowercase().contains("narrator")
+                    || entity.name.to_lowercase().contains("author")
+                    || entity.aliases.iter().any(|a| {
+                        let al = a.to_lowercase();
+                        al == "i" || al == "narrator" || al == "author" || al == "the narrator"
+                    });
+                if is_narrator {
+                    tracing::debug!(
+                        "narrator-death axiom: dropping death event year {year} for narrator \
+                         entity {entity_name} in chunk {chunk_id}"
+                    );
+                    continue;
+                }
+            }
+        }
         // Axiom 6: biographical temporal bounds — drop events whose year falls outside
         // the entity's known lifetime. Birth year comes from the "birthDate" or
         // "foundingDate" field; death/end year from "deathDate" or "dissolutionDate".

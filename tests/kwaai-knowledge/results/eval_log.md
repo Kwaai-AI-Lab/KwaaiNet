@@ -1,4 +1,26 @@
 
+## v0.4.145 — 2026-07-02 — **72.2% (151/209)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** (1) Human-readable field key labels ("arrived_cape_town" → "Arrived in Cape Town", "birthDate" → "Born", etc.) in entity fact cards. (2) Axiom 4b: narrator entity cannot receive "death" class timeline events — takes effect on next rebuild. (3) Eval keyword synonym groups for acronym org names (TLSA/NEUM/NEF/AAC) — denominator changed from 222 to 209 as q28 was reduced from 5 to 3 synonym groups.
+
+**Key finding:** q21 (mother) jumped from 1/5 (v0.4.143) to 5/5 — gender-aware labels + aliases ("Mother of: Yousuf Rassool", "Also known as: Lallie Gool") now fully effective. q28 (organisations) improved from 2/5 to 3/3 with synonym groups. Synonym groups correctly avoided penalizing correct full-name org answers for not using exact acronyms.
+
+**Note on denominator:** Keyword synonym groups reduced denominator from 222 → 209. On a comparable basis: 151/209 = 72.2% vs 151.8/222 = 68.4% (v0.4.143). True gain is primarily from q21 improvement. Comparison on same denominator is impossible without re-running v0.4.143 with the new keyword groups.
+
+**Critical failures:** q30 (0/6) — "When did JMH Gool arrive in Cape Town?" — 61s response suggests LLM confusion from timeline sequence diagram in context. Entity card has correct "Arrived in Cape Town: 1884", "Origin: Mauritius (via Swat, Gujarat)" but model failed to use it. q36 (2/4) — LLM listed minor orgs (APO, Communist Party) instead of NEUM/TLSA/NEF/AAC even though entity cards for all four were retrieved.
+
+**Next eval:** v0.4.145 post-seed — re-seed with enriched entity descriptions for NEUM, TLSA, NEF, AAC, Cissie Gool, Dr. Abdurahman, District Six, Buitencingle. No code change, no rebuild needed.
+
+---
+
+## v0.4.144 — 2026-07-02 — **66.2% (147/222)** — local Ollama (Apple Silicon Metal)
+
+**Changes:** Gender-aware relation labels in entity fact cards — parent_of → "Mother of:" / "Father of:" / "Parent of:" based on entity gender. Ayesha Rassool card now says "Mother of: Yousuf Rassool" (q21). Cissie Gool card says "Daughter of: Dr. Abdulla Abdurahman" (q38). JMH Gool card says "Father of: [children]".
+
+**Key finding:** LLM variance with local Ollama (Apple Silicon Metal, no GPU) is significant enough to obscure retrieval improvements. Direct improvements: q21 (1→2/5), q24 (5→7/7), q28 (2→4/5), q32 (3→4/5). But variance regressions in q30 (2.8→0/6), q31 (5→2/6), q34 (5→3/6) cancelled the gains. Net: -2.2pp vs v0.4.143, within single-run variance. GPU validation needed.
+
+---
+
 ## v0.4.143 — 2026-07-02 — **68.4% (151.8/222)** — local Ollama (Apple Silicon Metal)
 
 **Changes:** Narrator entity injection — when narrator's canonical name doesn't appear in a first-person chunk, inject narrator into entity_data so attribute_dates_to_entities() can fire the NarratorFirstPerson branch. Fix 4 in rag_cmd.rs. Timeline events: 192 (vs 173 in v0.4.142).

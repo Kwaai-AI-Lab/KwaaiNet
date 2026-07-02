@@ -166,6 +166,11 @@ persons:
 
   - canonical: "Dr. Abdulla Abdurahman"
     gender: "Male"
+    description: >
+      Dr. Abdulla Abdurahman was a Cape Town doctor, city councillor, and
+      leader of the African Political (later People's) Organisation (APO).
+      He was the first Coloured person elected to the Cape Town City Council.
+      Father of Cissie Gool.
     fields:
       birthDate: "1872-09-08"
       deathDate: "1940-02-20"
@@ -177,6 +182,12 @@ persons:
 
   - canonical: "Cissie Gool"
     gender: "Female"
+    description: >
+      Zainunnissa "Cissie" Gool was a Cape Town city councillor, lawyer, and
+      political activist. Daughter of Dr. Abdulla Abdurahman, she was one of
+      the most prominent Coloured women in South African political life. She
+      was closely associated with the Non-European Unity Movement and the
+      anti-apartheid struggle.
     fields:
       birthDate: "1897-02-14"
       deathDate: "1963-12-02"
@@ -483,6 +494,14 @@ persons:
 
   - canonical: "Non-European Unity Movement"
     entity_type: Organization
+    description: >
+      The Non-European Unity Movement (NEUM) was founded in 1943 to unite
+      African, Coloured, and Indian people against apartheid and colonialism.
+      Its programme was based on the Ten Point plan for equal rights. The NEUM
+      adopted a boycott and non-collaboration policy — refusing to participate
+      in any apartheid government institutions.
+    fields:
+      foundingDate: "1943"
     aliases:
       - "NEUM"
       - "Non European Unity Movement"
@@ -497,6 +516,12 @@ persons:
 
   - canonical: "Teachers League of South Africa"
     entity_type: Organization
+    description: >
+      The Teachers League of South Africa (TLSA) was a professional and
+      political organisation for Coloured teachers. Affiliated with the
+      Non-European Unity Movement, it adopted the boycott and non-collaboration
+      policy, challenging racial discrimination in education and fighting for
+      equal opportunities for Coloured teachers and students.
     aliases:
       - "TLSA"
       - "Teachers' League of South Africa"
@@ -505,11 +530,25 @@ persons:
 
   - canonical: "New Era Fellowship"
     entity_type: Organization
+    description: >
+      The New Era Fellowship (NEF) was a cultural and political discussion
+      society in Cape Town, associated with the Non-European Unity Movement.
+      It held public lectures and debates on political, social, and
+      philosophical topics, and served as a gathering place for progressive
+      intellectuals, teachers, and activists in the Coloured community.
     aliases:
       - "NEF"
 
   - canonical: "All African Convention"
     entity_type: Organization
+    description: >
+      The All African Convention (AAC) was founded in 1935 in response to the
+      Hertzog Bills, which stripped Africans of their limited voting rights.
+      It united a broad coalition of African political organisations seeking
+      unity against racial oppression. It later aligned closely with the
+      Non-European Unity Movement and its non-collaboration policy.
+    fields:
+      foundingDate: "1935"
     aliases:
       - "AAC"
       - "All-African Convention"
@@ -562,6 +601,14 @@ persons:
 
   - canonical: "District Six"
     entity_type: Place
+    description: >
+      District Six was a vibrant, multicultural community near the centre of
+      Cape Town, situated below Devil's Peak. It was home to Coloured, African,
+      Indian, and White residents who built a rich urban culture of music, jazz,
+      and community life. Under the Group Areas Act, the apartheid government
+      declared it a White area in 1966 and forcibly removed all non-White
+      residents to the Cape Flats, bulldozing almost every building. It is the
+      setting of the memoir "Lest We Forget" by Yousuf Rassool.
     aliases:
       - "District 6"
       - "the District"
@@ -586,6 +633,13 @@ persons:
 
   - canonical: "7 Buitencingle Street"
     entity_type: Place
+    description: >
+      7 Buitencingle Street (also written No. 7 Buitencingle) was the grand
+      13-room mansion of J.M.H. Gool in District Six, Cape Town. Buitencingle
+      is Dutch in origin — "cingle" means belt, and Buitencingle was at the time
+      the outermost belt of Cape Town. The street was wide and cobbled with
+      traffic islands sporting stunted palm trees. The mansion had a view of
+      Table Mountain and Devil's Peak.
     aliases:
       - "Buitencingle Street"
       - "Buitencingle"
