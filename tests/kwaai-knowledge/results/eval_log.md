@@ -1,4 +1,28 @@
 
+## v0.4.148 seed7b — 2026-07-02 — **90.0% (188.0/209)** — metro-win GPU (A5000) ⭐ NEW BEST — TARGET HIT
+
+**Changes (seed7 + 7b):** Gool family front-loaded (q16 fix), Cissie Gool first-sentence father (q38), Dr. Abdurahman spelling, Nazima "Professor" explicit.
+
+**Breakthrough:** First time crossing the 80–90% target ceiling.
+
+**Key results vs seed6 (88.9%):**
+- q07: 2/3 → **3/3** (Professor Nazima fix works on GPU)
+- q16: 2/5 → **5/5** (Gool family description front-load)
+- q12: 5/6 → **6/6** (Cissie Gool description improved)
+- q27: 4/5 → **5/5** (Gandhi–JMH connection)
+- q30: 6/6 ✓ (30-event timeline preserved)
+- q33: variable → **5/5** (stable on GPU)
+
+**Still weak on metro-win A5000:**
+- q09: 5/9 (56%) — A5000 gives weaker result; metro-linux A6000 got 8/9
+- q10: 4/7 (57%) — Kloof Nek, Ollama model variance between GPUs
+- q22: 2/4 (50%) — author's father (unexpected on A5000)
+- q38: 3/5 (60%) — Cissie Gool father fix partial (Abdurahman ✓, father ✓, Cissie ✓; Abdullah ✗, councillor ✗)
+
+**metro-linux eval failed:** NO_RESERVATION (204) after cold restart — relay not yet established.
+
+---
+
 ## v0.4.148 seed7b (Cissie/Abdurahman/Nazima/GoolFamily patches) — 2026-07-02 — **86.1% (180.0/209)** — local Ollama [NOISY — q02 hallucination, q09 CPU variance]
 
 **Changes (seed7 + 7b):**
