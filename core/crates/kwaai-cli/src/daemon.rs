@@ -404,22 +404,30 @@ impl ShardManager {
         #[cfg(unix)]
         {
             use nix::sys::signal::{kill, Signal};
+            use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
             use nix::unistd::Pid as NixPid;
-            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGTERM);
+            let nix_pid = NixPid::from_raw(pid as i32);
+            let _ = kill(nix_pid, Signal::SIGTERM);
             for _ in 0..10 {
                 std::thread::sleep(Duration::from_millis(500));
-                let mut sys = System::new();
-                sys.refresh_process(Pid::from_u32(pid));
-                if sys.process(Pid::from_u32(pid)).is_none() {
-                    self.remove_pid();
-                    return;
+                // Use waitpid(WNOHANG) rather than sysinfo — sysinfo sees zombies as
+                // still-running, causing the loop to exhaust and SIGKILL a dead process.
+                match waitpid(nix_pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::StillAlive) => {} // still running, keep waiting
+                    _ => {
+                        // Exited cleanly (or ECHILD — already reaped).
+                        self.remove_pid();
+                        return;
+                    }
                 }
             }
             warn!(
                 "Shard process {} did not exit after SIGTERM — sending SIGKILL",
                 pid
             );
-            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGKILL);
+            let _ = kill(nix_pid, Signal::SIGKILL);
+            // Reap the zombie; without this the child stays defunct until run-node exits.
+            let _ = waitpid(nix_pid, None);
         }
         #[cfg(not(unix))]
         {

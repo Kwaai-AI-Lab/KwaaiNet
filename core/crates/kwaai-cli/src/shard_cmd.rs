@@ -374,10 +374,32 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         .await;
 
     // Inference mux — concurrent multiplexed inference via persistent stream.
-    let _mux_handle = crate::inference_mux::start_inference_mux_server(&mut client)
-        .await
-        .map_err(|e| tracing::warn!("inference-mux server failed to start: {e}"))
-        .ok();
+    // Retry with backoff: p2pd may still be reconnecting to the relay on startup.
+    let _mux_handle = {
+        let mut handle = None;
+        for attempt in 0..5u32 {
+            match crate::inference_mux::start_inference_mux_server(&mut client).await {
+                Ok(h) => {
+                    handle = Some(h);
+                    break;
+                }
+                Err(e) => {
+                    let delay = std::time::Duration::from_millis(500 * (1u64 << attempt));
+                    if attempt < 4 {
+                        tracing::warn!(
+                            "inference-mux server failed to start: {e} — retrying in {delay:?}"
+                        );
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        tracing::warn!(
+                            "inference-mux server failed to start after 5 attempts: {e}"
+                        );
+                    }
+                }
+            }
+        }
+        handle
+    };
 
     print_box_header("🧩 KwaaiNet Shard Server");
     println!("  Blocks:      [{}, {})", start_block, end_block);
