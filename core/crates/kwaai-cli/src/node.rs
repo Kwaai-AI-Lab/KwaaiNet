@@ -1749,6 +1749,52 @@ async fn restart_p2pd_with_addrs(
 
     Ok(())
 }
+
+/// Write confirmed relay/announce addresses to disk so the next cold start
+/// can skip the IDENTIFY phase entirely. AutoRelay needs ~7 minutes to
+/// establish a fresh reservation — the cache eliminates that gap.
+fn save_relay_addr_cache(addrs: &[String]) {
+    let run = crate::config::run_dir();
+    let _ = std::fs::create_dir_all(&run);
+    let path = run.join("relay_addr_cache.json");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let json = serde_json::json!({ "addrs": addrs, "confirmed_at": now });
+    if let Ok(bytes) = serde_json::to_vec(&json) {
+        let _ = std::fs::write(&path, bytes);
+    }
+}
+
+/// Load cached relay addresses confirmed within `max_age_secs`.
+/// Returns an empty `Vec` when the cache is absent, unreadable, or stale.
+fn load_relay_addr_cache(max_age_secs: u64) -> Vec<String> {
+    let path = crate::config::run_dir().join("relay_addr_cache.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return vec![],
+    };
+    let val: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let confirmed_at = val["confirmed_at"].as_u64().unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now.saturating_sub(confirmed_at) > max_age_secs {
+        return vec![];
+    }
+    val["addrs"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+        .collect()
+}
+
 /// Discover observed addresses via IDENTIFY and restart p2pd with them.
 ///
 /// When no explicit `announce_addr` or `public_ip` is configured, we rely on the
@@ -1777,6 +1823,30 @@ async fn discover_and_restart_with_announce(
     kwaai_p2p_daemon::P2PClient,
     Vec<String>,
 )> {
+    // Fast path: reuse relay addresses cached from the previous session.
+    // AutoRelay takes ~7 minutes to establish a fresh reservation; the cache
+    // eliminates that gap on every cold restart. TTL is 2 hours.
+    let cached = load_relay_addr_cache(7200);
+    if !cached.is_empty() {
+        info!("Using cached relay addresses from previous session (skipping IDENTIFY):");
+        for addr in &cached {
+            info!("  - {}", addr);
+        }
+        restart_p2pd_with_addrs(
+            &mut daemon,
+            &mut client,
+            &cached,
+            host_addr,
+            bootstrap_peers,
+            identity_key_path,
+            p2pd_path,
+            handler_addr,
+            no_relay,
+        )
+        .await?;
+        return Ok((daemon, client, cached));
+    }
+
     info!("No explicit announce address — discovering addresses via IDENTIFY...");
 
     // Give bootstrap peer(s) a moment to complete the IDENTIFY exchange before
@@ -1804,6 +1874,7 @@ async fn discover_and_restart_with_announce(
     for addr in &discovered_addrs {
         info!("  - {}", addr);
     }
+    save_relay_addr_cache(&discovered_addrs);
 
     restart_p2pd_with_addrs(
         &mut daemon,
