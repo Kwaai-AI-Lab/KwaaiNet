@@ -2092,7 +2092,7 @@ async fn cmd_rebuild(
                         model: timeline_model,
                         workers,
                         reset: true,
-                        confidence_threshold: 0.6,
+                        confidence_threshold: 0.85,
                     },
                 },
                 kb.clone(),

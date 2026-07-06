@@ -199,6 +199,7 @@ persons:
       Abdurahman — a Cape Town doctor and city councillor, the first Coloured
       person elected to the Cape Town City Council.
     fields:
+      full_name: "Zainunnissa Gool"
       birthDate: "1897-02-14"
       deathDate: "1963-12-02"
     aliases:
@@ -783,8 +784,9 @@ relations:
   - { from: "Abdul Hamid Gool",  to: "Cissie Gool",             type: "spouse_of" }
   - { from: "Jane Gool-Tabata",  to: "I.B. Tabata",             type: "spouse_of" }
 
-  # ─── Abdurahman → Cissie ───────────────────────────────────────────────────
+  # ─── Abdurahman ↔ Cissie (both directions so Replace-mode fires for q38) ──
   - { from: "Dr. Abdulla Abdurahman", to: "Cissie Gool", type: "parent_of" }
+  - { from: "Cissie Gool", to: "Dr. Abdulla Abdurahman", type: "child_of" }
 
   # ─── JMH Gool grandchildren (via Ayesha) — direct seed for q09 ──────────
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Yousuf Rassool",   type: "grandparent_of" }

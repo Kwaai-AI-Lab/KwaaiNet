@@ -635,6 +635,7 @@ fn build_entity_fact_card(
             "origin" => "Origin",
             "jurisdiction" => "Jurisdiction",
             "dateEnacted" => "Date enacted",
+            "full_name" => "Full name",
             other => other,
         };
         lines.push(format!("{}: {}.", label, v));
