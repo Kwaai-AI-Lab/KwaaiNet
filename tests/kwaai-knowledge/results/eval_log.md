@@ -1,4 +1,20 @@
 
+## v0.4.148 seed9 — 2026-07-06 — **metro-linux A6000: 90.4% (189/209) ⭐ NEW BEST**
+
+**Same KB as metro-win seed9 run (no rebuild). A6000 delivers more consistent results.**
+
+**vs seed9 metro-win (89.5%, 187/209):**
+- A6000 avoids the q27/q33 stochasticity collapse seen on A5000 (+2pp net)
+- q12/q38: likely better on A6000 (fewer hallucination drops)
+- avg latency: 4752ms/question
+
+**vs previous best seed7b metro-win (90.0%, 188/209):**
+- +0.4pp, +1 point — new overall best
+
+**Relay**: metro-linux relay now reliable (3.4 min cold-start via trusted_relays + addr cache).
+
+---
+
 ## v0.4.148 seed9 (Cissie dual-purpose) — 2026-07-02 — **metro-win A5000: 89.5% (187/209)**
 
 **Changes (seed9 = seed8 Dr.Abdurahman fix + revised Cissie):**
