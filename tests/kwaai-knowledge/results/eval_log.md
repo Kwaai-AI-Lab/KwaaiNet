@@ -1,4 +1,24 @@
 
+## v0.4.148 seed9 + fresh rebuild + timeline event fixes — 2026-07-06 — **metro-linux A6000: 90.9% (190/209)**
+
+**Full overnight rebuild (fresh graph) + q12/q38/q30 code fixes:**
+- q12 "Who was Cissie Gool?": 5/6 → **6/6** — full_name structured field forces "Zainunnissa" into entity card
+- q30 "When did JMH arrive?": 0/6 → **5/6** — deleted misattributed 1886 birth event from JMH timeline (was "his firstborn's birth" attributed to JMH); entity card fields now surface 1884/Mauritius cleanly
+- q38 "Cissie Gool's father": 3/5 unchanged — child_of relation seeded (entity card injected first) but LLM drops "Abdullah"/"councillor"; Replace mode not firing (inner query classify may override rule-based intent)
+- Rebuild confidence_threshold hardcode changed: 0.6 → 0.85 in rag_cmd.rs
+
+**Remaining known gaps vs previous best (91.4–91.9%):**
+- q05 (JMH biographical): 5/8 — fresh graph's auto-enrichment weaker than previous cumulative DB
+- q09 (grandfather): 6/9 — same cause
+- q16, q40: 3/5 this run — GPU stochasticity (were 5/5 in first run)
+- 19 timeline events (vs 31 in previous build) — fewer entity-linked chunks in fresh graph
+
+**Per-question scores (notable changes from 85.6% run 1):**
+- q22 (author's father): 2/4 → 4/4; q24 (JMH children): 4/7 → 7/7; q28 (org involvement): 2/3 → 3/3
+- q31/32/34/37: all improved to 100%
+
+---
+
 ## v0.4.148 seed9 + 4-phase timeline — 2026-07-06 — **metro-linux A6000: 91.4–91.9% (191–192/209) ⭐ NEW BEST**
 
 **4-phase timeline pipeline (ImprovedEventExtraction):**
