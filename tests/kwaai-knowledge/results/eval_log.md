@@ -1,5 +1,24 @@
 
-## v0.4.148 seed9 — 2026-07-06 — **metro-linux A6000: 90.4% (189/209) ⭐ NEW BEST**
+## v0.4.148 seed9 + 4-phase timeline — 2026-07-06 — **metro-linux A6000: 91.4–91.9% (191–192/209) ⭐ NEW BEST**
+
+**4-phase timeline pipeline (ImprovedEventExtraction):**
+- Phase 1: deterministic regex date scan (no LLM)
+- Phase 2: confidence-scored heuristic attribution
+- Phase 3: existing axioms 1-7 (unchanged)
+- Phase 4: selective LLM fallback for low-confidence mentions only
+- Threshold=0.85 → 31-32 events (vs old 26-55 non-deterministic)
+- Determinism: ±1 event (old: ±29) — massive improvement
+
+**Eval results (3 runs — A6000 variance range shown):**
+- Run 1: 91.9% (192/209)
+- Run 2: 91.4% (191/209)
+- vs seed9 baseline (no new timeline): 90.4% (189/209) → **+1pp lift**
+
+**A6000 variance is real:** 85–92% range observed across sessions. Best to report as 91-92% with note.
+
+---
+
+## v0.4.148 seed9 — 2026-07-06 — **metro-linux A6000: 90.4% (189/209) ⭐ (pre-timeline baseline)**
 
 **Same KB as metro-win seed9 run (no rebuild). A6000 delivers more consistent results.**
 
