@@ -1171,6 +1171,9 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 info!("Checking announce addresses via IDENTIFY...");
                 let fresh = collect_observed_addresses(&mut client, config.identify_min_confirmations, Duration::from_secs(config.identify_timeout_secs), config.port).await;
                 info!("  IDENTIFY result: {} addr(s) confirmed", fresh.len());
+                if !fresh.is_empty() {
+                    save_relay_addr_cache(&fresh);
+                }
                 let mut fresh_sorted = fresh.clone();
                 let mut current_sorted = discovered_addrs.clone();
                 fresh_sorted.sort();
