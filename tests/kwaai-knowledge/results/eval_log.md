@@ -1,4 +1,65 @@
 
+## v0.4.148 seed9 + full fresh rebuild — 2026-07-08 — **metro-linux A6000: 89.5% (187/209)**
+
+**Full scratch rebuild** (destroy → init → ingest → graph build → seed → timeline → alias-scan → re-embed → dedup → eval):
+- 1152 chunks ingested, 958 entities (after 143 dedup merges), 209 relations
+- 27 timeline events extracted at confidence_threshold=0.85 — **0 misattributions** (JMH 1886 and Manilal Gandhi 1945 absent for first time on fresh build)
+- GPU fleet: metro-linux A6000 + metro-win A5000 (jerome offline, 216 consecutive failures)
+- Graph build: ~3h total
+
+**Per-question scores (40 questions, 209 points):**
+| Q | Score | Notes |
+|---|-------|-------|
+| q1 | 2/3 | author — lost 1 |
+| q2 | 3/3 | ✓ |
+| q3 | 6/6 | ✓ |
+| q4 | 4/4 | ✓ |
+| q5 | 8/8 | ✓ JMH biographical — full marks (vs 5/8 last fresh rebuild) |
+| q6 | 7/8 | Buitencingle — lost 1 |
+| q7 | 3/3 | ✓ |
+| q8 | 6/6 | ✓ |
+| q9 | 9/9 | ✓ grandfather — full marks (vs 6/9 last fresh rebuild) |
+| q10 | 6/7 | Kloof Nek — lost 1 |
+| q11 | 4/4 | ✓ |
+| q12 | 5/6 | Cissie Gool — Zainunnissa fix working but still 5/6 |
+| q13 | 4/5 | All Africa Convention — lost 1 |
+| q14 | 5/6 | District Six — lost 1 |
+| q15 | 4/5 | forced removals — lost 1 |
+| q16 | 5/5 | ✓ |
+| q17 | 5/5 | ✓ |
+| q18 | 4/4 | ✓ |
+| q19 | 4/4 | ✓ |
+| q20 | 3/5 | cricket — lost 2 (stochastic) |
+| q21 | 5/5 | ✓ |
+| q22 | 4/4 | ✓ |
+| q23 | 5/5 | ✓ |
+| q24 | 7/7 | ✓ |
+| q25 | 5/5 | ✓ |
+| q26 | 6/6 | ✓ Abdurahman — full marks |
+| q27 | 2/5 | Gandhi/JMH connection — lost 3 (stochastic, A6000) |
+| q28 | 3/3 | ✓ |
+| q29 | 4/4 | ✓ |
+| q30 | 6/6 | ✓ JMH arrival — full marks, no bad timeline events |
+| q31 | 6/6 | ✓ |
+| q32 | 4/5 | Cissie/JMH relation — lost 1 |
+| q33 | 5/5 | ✓ |
+| q34 | 4/6 | Group Areas Act — lost 2 (stochastic) |
+| q35 | 4/4 | ✓ |
+| q36 | 4/4 | ✓ |
+| q37 | 5/7 | Gandhi — lost 2 (stochastic) |
+| q38 | 1/5 | Cissie's father — lost 4, Replace mode still not firing |
+| q39 | 6/6 | ✓ |
+| q40 | 4/5 | Unity Movement boycott — lost 1 |
+
+**Key observations vs previous fresh rebuild (90.9%):**
+- q5 and q9 recovered to full marks (fresh graph entity linkage better this run)
+- q30 full marks without needing manual event deletion — 4-phase pipeline avoided misattributions
+- q27 collapsed to 2/5 (A6000 stochasticity — was 5/5 in best run)
+- q38 still 1/5 — Replace mode not firing; needs code fix
+- 2pp gap from previous fresh rebuild (90.9%) within A6000 ±5pp variance range
+
+---
+
 ## v0.4.148 seed9 + fresh rebuild + timeline event fixes — 2026-07-06 — **metro-linux A6000: 90.9% (190/209)**
 
 **Full overnight rebuild (fresh graph) + q12/q38/q30 code fixes:**
