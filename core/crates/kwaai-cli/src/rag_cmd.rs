@@ -1641,7 +1641,7 @@ async fn cmd_chat(
                         search_fn,
                         &inference_url,
                         &model,
-                        |msg| println!("{msg}"),
+                        |msg| eprintln!("{msg}"),
                     )
                     .await?
                 } else if effective_mode_chat == "graph" {
