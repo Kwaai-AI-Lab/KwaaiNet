@@ -2851,7 +2851,6 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     ));
                 }
 
-
                 if timeline {
                     print_box_header(&format!("Timeline Build ({})", kb));
                     print_info(&format!(
@@ -8368,8 +8367,7 @@ async fn run_timeline_build(
 
             // ── 4-phase event extraction ──────────────────────────────────────
             // Phase 1: deterministic date scan (no LLM)
-            let date_mentions =
-                kwaai_rag::sequence::scan_chunk_for_dates(&clean_text, cid);
+            let date_mentions = kwaai_rag::sequence::scan_chunk_for_dates(&clean_text, cid);
 
             // Phase 2: attribute to entities with confidence scoring
             let (attributed, low_conf) = kwaai_rag::sequence::attribute_dates_to_entities(

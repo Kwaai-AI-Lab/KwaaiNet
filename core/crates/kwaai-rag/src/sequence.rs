@@ -1274,37 +1274,96 @@ fn extract_sentence_at(text: &str, char_offset: usize) -> String {
 /// Infer the event class from a sentence using keyword matching.
 fn infer_event_class(sentence: &str) -> String {
     let s = sentence.to_lowercase();
-    if s.contains("was born") || s.contains("born in") || s.contains("birth of") || s.contains(" b.") {
+    if s.contains("was born")
+        || s.contains("born in")
+        || s.contains("birth of")
+        || s.contains(" b.")
+    {
         return "birth".to_string();
     }
-    if s.contains("died") || s.contains("passed away") || s.contains("death of") || s.contains(" d.") {
+    if s.contains("died")
+        || s.contains("passed away")
+        || s.contains("death of")
+        || s.contains(" d.")
+    {
         return "death".to_string();
     }
-    if s.contains("married") || s.contains("wedded") || s.contains("marriage") || s.contains("wed to") {
+    if s.contains("married")
+        || s.contains("wedded")
+        || s.contains("marriage")
+        || s.contains("wed to")
+    {
         return "marriage".to_string();
     }
-    if s.contains("removed") || s.contains("evicted") || s.contains("demolished") || s.contains("forced out") || s.contains("bulldozed") || s.contains("displaced") {
+    if s.contains("removed")
+        || s.contains("evicted")
+        || s.contains("demolished")
+        || s.contains("forced out")
+        || s.contains("bulldozed")
+        || s.contains("displaced")
+    {
         return "removal".to_string();
     }
-    if s.contains("declared") || s.contains("declaration") || s.contains("announced") || s.contains("proclamation") || s.contains("enacted") || s.contains("passed into law") {
+    if s.contains("declared")
+        || s.contains("declaration")
+        || s.contains("announced")
+        || s.contains("proclamation")
+        || s.contains("enacted")
+        || s.contains("passed into law")
+    {
         return "declaration".to_string();
     }
-    if s.contains("spoke at") || s.contains("addressed") || s.contains("conference") || s.contains("congress") || s.contains("convention") || s.contains("meeting of") || s.contains("gathering of") {
+    if s.contains("spoke at")
+        || s.contains("addressed")
+        || s.contains("conference")
+        || s.contains("congress")
+        || s.contains("convention")
+        || s.contains("meeting of")
+        || s.contains("gathering of")
+    {
         return "meeting".to_string();
     }
-    if s.contains("founded") || s.contains("established") || s.contains("built") || s.contains("opened") || s.contains("formed the") || s.contains("created the") {
+    if s.contains("founded")
+        || s.contains("established")
+        || s.contains("built")
+        || s.contains("opened")
+        || s.contains("formed the")
+        || s.contains("created the")
+    {
         return "founding".to_string();
     }
-    if s.contains("appointed") || s.contains("elected") || s.contains("became president") || s.contains("became chair") || s.contains("assumed the role") || s.contains("served as") {
+    if s.contains("appointed")
+        || s.contains("elected")
+        || s.contains("became president")
+        || s.contains("became chair")
+        || s.contains("assumed the role")
+        || s.contains("served as")
+    {
         return "appointment".to_string();
     }
-    if s.contains("attended") || s.contains("enrolled at") || s.contains("graduated") || s.contains("studied at") || s.contains("matriculated") || s.contains("training college") {
+    if s.contains("attended")
+        || s.contains("enrolled at")
+        || s.contains("graduated")
+        || s.contains("studied at")
+        || s.contains("matriculated")
+        || s.contains("training college")
+    {
         return "education".to_string();
     }
-    if s.contains("published") || s.contains("wrote the") || s.contains("appeared in") || s.contains("printed in") {
+    if s.contains("published")
+        || s.contains("wrote the")
+        || s.contains("appeared in")
+        || s.contains("printed in")
+    {
         return "publication".to_string();
     }
-    if s.contains("arrived") || s.contains("came to") || s.contains("moved to") || s.contains("settled in") || s.contains("returned to") || s.contains("went to live") {
+    if s.contains("arrived")
+        || s.contains("came to")
+        || s.contains("moved to")
+        || s.contains("settled in")
+        || s.contains("returned to")
+        || s.contains("went to live")
+    {
         return "arrival".to_string();
     }
     "other".to_string()
@@ -1408,9 +1467,29 @@ pub fn scan_chunk_for_dates(text: &str, chunk_id: i64) -> Vec<DateMention> {
             if let Some((m, _y)) = month_prefix {
                 // Find the month name in the preceding text to get its offset
                 const MONTH_NAMES: &[&str] = &[
-                    "january", "february", "march", "april", "may", "june", "july",
-                    "august", "september", "october", "november", "december",
-                    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+                    "january",
+                    "february",
+                    "march",
+                    "april",
+                    "may",
+                    "june",
+                    "july",
+                    "august",
+                    "september",
+                    "october",
+                    "november",
+                    "december",
+                    "jan",
+                    "feb",
+                    "mar",
+                    "apr",
+                    "jun",
+                    "jul",
+                    "aug",
+                    "sep",
+                    "oct",
+                    "nov",
+                    "dec",
                 ];
                 let preceding_lower = preceding.to_lowercase();
                 let month_word = MONTH_NAMES
@@ -1544,8 +1623,7 @@ pub fn attribute_dates_to_entities(
         }
 
         // Entities already attributed for this mention (by id) — deduplicate multi-path hits.
-        let mut attributed_ids: std::collections::HashSet<i64> =
-            std::collections::HashSet::new();
+        let mut attributed_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut attributed: Vec<AttributedEvent> = Vec::new();
 
         // ── Step 1: kinship map (highest priority) ────────────────────────────────────

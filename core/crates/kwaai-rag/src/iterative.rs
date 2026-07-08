@@ -143,14 +143,43 @@ where
 
     let mut seed_hits = graph.search_entities(&embedding, 5);
     let name_stop: &[&str] = &[
-        "who", "what", "was", "were", "the", "tell", "about", "and", "for", "did", "how", "where",
-        "when", "describe", "more", "kind", "place",
+        "who",
+        "what",
+        "was",
+        "were",
+        "the",
+        "tell",
+        "about",
+        "and",
+        "for",
+        "did",
+        "how",
+        "where",
+        "when",
+        "describe",
+        "more",
+        "kind",
+        "place",
         // kinship role words — prevent EE-extracted role-name entities from populating
         // name_matched_ids and triggering has_named_non_author, which would bypass the
         // narrator-relative kinship injection path in inject_entity_descriptions
-        "mother", "father", "grandfather", "grandmother", "wife", "husband",
-        "sibling", "brother", "sister", "son", "daughter", "child", "children",
-        "spouse", "parent", "grandchild", "grandchildren",
+        "mother",
+        "father",
+        "grandfather",
+        "grandmother",
+        "wife",
+        "husband",
+        "sibling",
+        "brother",
+        "sister",
+        "son",
+        "daughter",
+        "child",
+        "children",
+        "spouse",
+        "parent",
+        "grandchild",
+        "grandchildren",
     ];
     let emb_seed_ids: std::collections::HashSet<i64> =
         seed_hits.iter().map(|(id, _)| *id).collect();

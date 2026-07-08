@@ -62,41 +62,71 @@ pub struct TypedCandidate {
 // ---------------------------------------------------------------------------
 
 const HONORIFIC_PREFIXES: &[&str] = &[
-    "dr", "dr.", "prof", "prof.", "rev", "rev.", "haji", "sheikh", "imam",
-    "cllr", "cllr.", "adv", "adv.", "sgt", "sgt.", "capt", "capt.", "sir",
-    "mr", "mr.", "mrs", "mrs.", "miss", "ms", "ms.", "brig", "brig.", "col",
-    "col.", "gen", "gen.", "lt", "lt.",
+    "dr", "dr.", "prof", "prof.", "rev", "rev.", "haji", "sheikh", "imam", "cllr", "cllr.", "adv",
+    "adv.", "sgt", "sgt.", "capt", "capt.", "sir", "mr", "mr.", "mrs", "mrs.", "miss", "ms", "ms.",
+    "brig", "brig.", "col", "col.", "gen", "gen.", "lt", "lt.",
 ];
 
 const HONORIFIC_SUFFIXES: &[&str] = &["junior", "senior", "jr", "jr.", "sr", "sr."];
 
 // Checked against the LAST word of the candidate phrase.
 const ORG_MARKERS_LAST: &[&str] = &[
-    "council", "league", "movement", "party", "congress", "institute",
-    "society", "association", "brotherhood", "federation", "union",
-    "committee", "board", "club", "order", "guild", "branch", "bureau",
-    "commission", "corps",
+    "council",
+    "league",
+    "movement",
+    "party",
+    "congress",
+    "institute",
+    "society",
+    "association",
+    "brotherhood",
+    "federation",
+    "union",
+    "committee",
+    "board",
+    "club",
+    "order",
+    "guild",
+    "branch",
+    "bureau",
+    "commission",
+    "corps",
 ];
 
 // Checked against the LAST word of the candidate phrase.
 const LEGISLATION_MARKERS_LAST: &[&str] = &[
-    "act", "ordinance", "regulation", "bill", "amendment", "proclamation",
+    "act",
+    "ordinance",
+    "regulation",
+    "bill",
+    "amendment",
+    "proclamation",
 ];
 
 // Checked anywhere in the candidate phrase.
 const PUBLICATION_MARKERS_ANY: &[&str] = &[
-    "newspaper", "gazette", "times", "argus", "herald", "journal",
-    "review", "magazine", "opinion", "chronicle", "press", "daily",
-    "weekly", "monthly",
+    "newspaper",
+    "gazette",
+    "times",
+    "argus",
+    "herald",
+    "journal",
+    "review",
+    "magazine",
+    "opinion",
+    "chronicle",
+    "press",
+    "daily",
+    "weekly",
+    "monthly",
 ];
 
 // Checked anywhere in the candidate phrase.
 const GEO_MARKERS_ANY: &[&str] = &[
-    "cape", "district", "street", "road", "avenue", "nek", "bay",
-    "mountain", "town", "city", "valley", "flats", "island", "hill",
-    "square", "lane", "drive", "park", "village", "quarter",
-    "location", "suburb", "heights", "gardens", "point", "beach",
-    "harbour", "river", "grove", "terrace", "estate", "court",
+    "cape", "district", "street", "road", "avenue", "nek", "bay", "mountain", "town", "city",
+    "valley", "flats", "island", "hill", "square", "lane", "drive", "park", "village", "quarter",
+    "location", "suburb", "heights", "gardens", "point", "beach", "harbour", "river", "grove",
+    "terrace", "estate", "court",
 ];
 
 // ---------------------------------------------------------------------------
@@ -138,9 +168,7 @@ fn classify_one(
     if let Some(first) = words.first() {
         let fl = first.to_lowercase();
         let fl_stripped = fl.trim_end_matches('.');
-        if HONORIFIC_PREFIXES.contains(&fl.as_str())
-            || HONORIFIC_PREFIXES.contains(&fl_stripped)
-        {
+        if HONORIFIC_PREFIXES.contains(&fl.as_str()) || HONORIFIC_PREFIXES.contains(&fl_stripped) {
             if words.len() > 1 {
                 let stripped = words[1..].join(" ").to_lowercase();
                 if let Some(entity_type) = entity_snapshot.get(&stripped) {
@@ -154,9 +182,7 @@ fn classify_one(
     if let Some(first) = words.first() {
         let fl = first.to_lowercase();
         let fl_stripped = fl.trim_end_matches('.');
-        if HONORIFIC_PREFIXES.contains(&fl.as_str())
-            || HONORIFIC_PREFIXES.contains(&fl_stripped)
-        {
+        if HONORIFIC_PREFIXES.contains(&fl.as_str()) || HONORIFIC_PREFIXES.contains(&fl_stripped) {
             let mut fields = HashMap::new();
             if let Some(occ) = honorific_to_occupation(fl_stripped) {
                 fields.insert("occupation".to_string(), occ.to_string());
@@ -554,8 +580,7 @@ impl AxiomaticRunMetrics {
             "  Skipped LLM     : {} ({:.1}%)  ← no LLM call",
             self.chunks_skipped_llm, self.llm_skip_pct
         );
-        let partial_pct =
-            self.chunks_partial_llm as f64 / self.total_chunks.max(1) as f64 * 100.0;
+        let partial_pct = self.chunks_partial_llm as f64 / self.total_chunks.max(1) as f64 * 100.0;
         println!(
             "  Focused prompt  : {} ({:.1}%)  ← partial LLM",
             self.chunks_partial_llm, partial_pct
@@ -656,7 +681,13 @@ mod tests {
         assert_eq!(result[0].entity_type.as_deref(), Some("Person"));
         assert_eq!(result[0].method, ClassificationMethod::HonorificPrefix);
         assert!(result[0].composite_confidence > 0.8);
-        assert_eq!(result[0].axiomatic_fields.get("occupation").map(|s| s.as_str()), Some("doctor"));
+        assert_eq!(
+            result[0]
+                .axiomatic_fields
+                .get("occupation")
+                .map(|s| s.as_str()),
+            Some("doctor")
+        );
     }
 
     #[test]
@@ -678,7 +709,9 @@ mod tests {
     fn geo_marker_any_word() {
         let candidates = vec!["District Six".to_string(), "Hanover Street".to_string()];
         let result = classify_candidates_axiomatic(&candidates, &empty_snapshot(), &[]);
-        assert!(result.iter().all(|c| c.entity_type.as_deref() == Some("Place")));
+        assert!(result
+            .iter()
+            .all(|c| c.entity_type.as_deref() == Some("Place")));
     }
 
     #[test]
@@ -775,7 +808,10 @@ mod tests {
             },
         ];
         let validated = validate_with_axioms(candidates, "Teachers League of South Africa met");
-        let shorter = validated.iter().find(|c| c.name == "Teachers League").unwrap();
+        let shorter = validated
+            .iter()
+            .find(|c| c.name == "Teachers League")
+            .unwrap();
         assert_eq!(shorter.composite_confidence, 0.0);
         let longer = validated
             .iter()

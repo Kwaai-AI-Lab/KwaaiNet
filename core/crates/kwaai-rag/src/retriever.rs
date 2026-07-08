@@ -207,15 +207,43 @@ pub async fn retrieve_graph_anchored(
     //    significant query word as a whole token.
     let mut seed_hits = graph.search_entities(&embedding, 5);
     let name_stop: &[&str] = &[
-        "who", "what", "was", "were", "the", "tell", "about", "and", "for", "did", "how", "where",
-        "when", "describe", "more", "kind", "place",
+        "who",
+        "what",
+        "was",
+        "were",
+        "the",
+        "tell",
+        "about",
+        "and",
+        "for",
+        "did",
+        "how",
+        "where",
+        "when",
+        "describe",
+        "more",
+        "kind",
+        "place",
         // Kinship terms: exclude from name-token entity matching.
         // Family entities carry these as aliases ("father", "mother", etc.); matching them
         // would spuriously set has_named_non_author=true and prevent the narrator kinship
         // resolver from firing for queries like "Who was the author's father?".
-        "wife", "husband", "mother", "father", "grandfather", "grandmother",
-        "brother", "sister", "sibling", "child", "children", "son", "daughter",
-        "grandchild", "grandchildren", "spouse",
+        "wife",
+        "husband",
+        "mother",
+        "father",
+        "grandfather",
+        "grandmother",
+        "brother",
+        "sister",
+        "sibling",
+        "child",
+        "children",
+        "son",
+        "daughter",
+        "grandchild",
+        "grandchildren",
+        "spouse",
     ];
     let emb_seed_ids: std::collections::HashSet<i64> =
         seed_hits.iter().map(|(id, _)| *id).collect();
@@ -726,9 +754,7 @@ pub(crate) fn inject_entity_descriptions(
     // term refers to THAT entity's relative, not the narrator's. "Who was Cissie Gool's father?"
     // should inject Cissie Gool's card, not Peter Alexander Rassool (the narrator's father).
     // Detect this by checking whether name_matched has a non-author entity.
-    let has_named_non_author = name_matched
-        .iter()
-        .any(|id| !is_author_entity(*id, graph));
+    let has_named_non_author = name_matched.iter().any(|id| !is_author_entity(*id, graph));
     let (_anchor_id, inject_id): (i64, i64) = if is_relative_query && !has_named_non_author {
         // Try embedding seed hits first, then fall back to a direct name-token lookup.
         // The author entity (Joe Rassool / Yousuf Rassool) has alias "author" but that
