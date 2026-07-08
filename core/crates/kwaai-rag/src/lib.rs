@@ -1,3 +1,4 @@
+pub mod axiom_extract;
 pub mod bm25;
 pub mod cache;
 pub mod chunker;

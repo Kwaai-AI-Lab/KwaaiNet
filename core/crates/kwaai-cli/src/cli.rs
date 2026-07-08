@@ -1343,6 +1343,11 @@ pub enum RagAction {
         /// Skip the destroy confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
+
+        /// Axiomatic pre-classification threshold (0.0 = disabled, default).
+        /// See `graph build --axiomatic-threshold` for details.
+        #[arg(long, default_value = "0.0", value_name = "FLOAT")]
+        axiomatic_threshold: f32,
     },
 
     /// Serve an OpenAI-compatible RAG API (port 9090 by default)
@@ -1774,6 +1779,14 @@ pub enum GraphAction {
         /// Adds one extra LLM call per entity-linked chunk.
         #[arg(long)]
         timeline: bool,
+
+        /// Axiomatic pre-classification threshold (0.0 = disabled, default).
+        /// Candidates with composite_confidence >= threshold are resolved by rule-based
+        /// methods (honorifics, org/geo/legislation markers, graph-snapshot lookup) without
+        /// any LLM call. Only the low-confidence residual goes to the LLM.
+        /// Recommended starting value: 0.70. Higher = fewer LLM calls, lower recall safety margin.
+        #[arg(long, default_value = "0.0", value_name = "FLOAT")]
+        axiomatic_threshold: f32,
     },
 
     /// Reverse a bad dedup merge: remove an alias from a canonical entity and restore it as its

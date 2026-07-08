@@ -179,6 +179,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             graph_window,
             sample_pct,
             yes,
+            axiomatic_threshold,
         } => {
             cmd_rebuild(
                 file,
@@ -197,6 +198,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 graph_window,
                 sample_pct,
                 yes,
+                axiomatic_threshold,
             )
             .await
         }
@@ -656,6 +658,7 @@ async fn cmd_ingest(
                 validation_confidence_floor: 0.7,
                 validation_budget: 200,
                 extract_timeline: false,
+                axiomatic_threshold: 0.0,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -1962,6 +1965,7 @@ async fn cmd_rebuild(
     graph_window: usize,
     sample_pct: Option<u8>,
     yes: bool,
+    axiomatic_threshold: f32,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -2056,6 +2060,7 @@ async fn cmd_rebuild(
                 validation_floor: 0.7,
                 validation_budget: 200,
                 timeline: false,
+                axiomatic_threshold,
             },
             kb.clone(),
         )
@@ -2401,6 +2406,7 @@ async fn run_sync_pass(
                     validation_confidence_floor: 0.7,
                     validation_budget: 200,
                     extract_timeline: false,
+                    axiomatic_threshold: 0.0,
                 });
             }
         }
@@ -2611,6 +2617,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 validation_floor,
                 validation_budget,
                 timeline,
+                axiomatic_threshold,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2754,6 +2761,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     println!("  Validation budget: {validation_budget}");
                 }
 
+                if axiomatic_threshold > 0.0 {
+                    println!("  Axiomatic threshold: {axiomatic_threshold:.2}  (phases 1–3 pre-classification enabled)");
+                }
                 let graph_cfg = kwaai_rag::ingestion::GraphIngestConfig {
                     store: store.clone(),
                     inference_url: infer_url,
@@ -2773,6 +2783,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     validation_confidence_floor: validation_floor,
                     validation_budget,
                     extract_timeline: timeline,
+                    axiomatic_threshold,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
@@ -2839,6 +2850,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         final_store.relation_count()
                     ));
                 }
+
 
                 if timeline {
                     print_box_header(&format!("Timeline Build ({})", kb));

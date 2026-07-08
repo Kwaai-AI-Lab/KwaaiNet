@@ -73,6 +73,12 @@ pub struct GraphIngestConfig {
     /// and store them in the timeline tables. Runs a second LLM call per chunk.
     /// Default false (opt-in; enable via `--timeline` on `graph build`).
     pub extract_timeline: bool,
+    /// Confidence threshold for axiomatic entity pre-classification (0.0 = disabled, default).
+    /// When > 0, candidates are classified by deterministic rules (honorifics, org markers,
+    /// geo markers, graph-snapshot lookup) before the LLM call. Candidates with
+    /// composite_confidence >= threshold are resolved without LLM; only the low-confidence
+    /// residual goes to `extract_from_text()`. Values 0.6–0.8 are the effective operating range.
+    pub axiomatic_threshold: f32,
 }
 
 impl GraphIngestConfig {
@@ -231,10 +237,10 @@ pub async fn extract_and_store_entities_pub(
     embed: &EmbedClient,
     graph_cfg: &GraphIngestConfig,
     progress: Option<Arc<dyn Fn(usize, usize, usize, usize) + Send + Sync>>,
-) {
+) -> Option<crate::axiom_extract::AxiomaticRunMetrics> {
     if graph_cfg.entity_centric {
         extract_entity_centric(chunks, chunk_ids, embed, graph_cfg, progress).await;
-        return;
+        return None;
     }
 
     // EC-refine-only: skip CC extraction, just re-score and run refinement pass.
@@ -253,9 +259,10 @@ pub async fn extract_and_store_entities_pub(
         if graph_cfg.ec_refine_threshold > 0.0 {
             refine_low_confidence_entities(chunks, chunk_ids, embed, graph_cfg).await;
         }
-        return;
+        return None;
     }
     let total = chunks.len();
+    let build_start = std::time::Instant::now();
     let urls = Arc::new(graph_cfg.effective_urls());
     let url_counter = Arc::new(AtomicUsize::new(0));
     let workers = graph_cfg.workers.max(1);
@@ -265,12 +272,41 @@ pub async fn extract_and_store_entities_pub(
     let extract_timeline = graph_cfg.extract_timeline;
     let context_window = graph_cfg.context_window;
     let chunk_batch = graph_cfg.chunk_batch.max(1);
+    let axiomatic_threshold = graph_cfg.axiomatic_threshold;
     let store = graph_cfg.store.clone();
     let gliner = Arc::new(graph_cfg.gliner_client.clone());
     let kb_schemas = Arc::new({
         let g = store.lock().unwrap_or_else(|e| e.into_inner());
         g.get_kb_entity_schemas()
     });
+
+    // Snapshot entity names and aliases for axiomatic KnownEntity lookup.
+    // Taken once so async tasks never need to hold the graph lock.
+    let entity_snapshot: Arc<HashMap<String, String>> = Arc::new({
+        let g = store.lock().unwrap_or_else(|e| {
+            warn!("graph store mutex was poisoned; recovering inner value");
+            e.into_inner()
+        });
+        let mut map = HashMap::new();
+        for e in g.all_entities() {
+            map.insert(e.name.to_lowercase(), e.entity_type.clone());
+            for alias in &e.aliases {
+                map.insert(alias.to_lowercase(), e.entity_type.clone());
+            }
+        }
+        map
+    });
+
+    // Shared metrics accumulator (guarded by Mutex so worker tasks can update it).
+    // None when axiomatic_threshold == 0.0 (feature disabled).
+    let axio_accum: Option<Arc<std::sync::Mutex<crate::axiom_extract::AxiomaticMetricsAccum>>> =
+        if axiomatic_threshold > 0.0 {
+            Some(Arc::new(std::sync::Mutex::new(
+                crate::axiom_extract::AxiomaticMetricsAccum::new(axiomatic_threshold, total),
+            )))
+        } else {
+            None
+        };
 
     // Channel capacity must be large enough that spawned tasks never block waiting
     // to send while the spawn loop holds the only tokio task slot.  Using a
@@ -466,6 +502,8 @@ pub async fn extract_and_store_entities_pub(
         let gender_context = gender_context.clone();
         let gliner = gliner.clone();
         let kb_schemas = kb_schemas.clone();
+        let entity_snapshot = entity_snapshot.clone();
+        let axio_accum = axio_accum.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len();
@@ -514,37 +552,146 @@ pub async fn extract_and_store_entities_pub(
                 Some(&gliner_hints)
             };
 
-            let (mut entities, relations) = match extract_from_text(
-                &text,
-                &candidates,
-                &pronoun_map,
-                section_note.as_deref(),
-                url,
-                &model,
-                &et,
-                no_relations,
-                hints_opt,
-                &kb_schemas,
-            )
-            .await
+            // ── Phases 1–3: axiomatic pre-classification ─────────────────────────
+            // When enabled (threshold > 0), classify candidates by deterministic rules.
+            // High-confidence ones are converted to ExtractedEntity directly; only the
+            // low-confidence residual goes to the LLM (Phase 4).
+            let chunk_timer = std::time::Instant::now();
+            let (axio_entities, llm_candidates, chunk_path) = if axiomatic_threshold > 0.0
+                && !candidates.is_empty()
             {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!("entity extraction error for chunk {chunk_id}: {e}");
-                    let _ = tx
-                        .send(ChunkResult {
-                            chunk_id,
-                            chunk_text: chunk_text_own,
-                            entities: vec![],
-                            relations: vec![],
-                            embeddings: vec![],
-                            raw_events: vec![],
-                            raw_interactions: vec![],
+                use crate::axiom_extract::{
+                    classify_candidates_axiomatic, split_by_confidence, validate_with_axioms,
+                    ChunkPath,
+                };
+                use crate::graph::ExtractedEntity;
+
+                // Phase 1: lexical + graph-snapshot classification
+                let typed =
+                    classify_candidates_axiomatic(&candidates, &entity_snapshot, &gliner_hints);
+
+                // Phase 3 (axiom 1): blocklist filter — reuse existing name cleaner
+                let typed: Vec<_> = typed
+                    .into_iter()
+                    .filter(|tc| clean_extracted_name(&tc.name).is_some())
+                    .collect();
+
+                // Phase 3 (axioms 2–6): consistency checks
+                let typed = validate_with_axioms(typed, &text);
+
+                // Phase 2: split by confidence threshold
+                let (high, low) = split_by_confidence(typed, axiomatic_threshold);
+
+                if low.is_empty() {
+                    // All candidates resolved axiomatically — skip LLM entirely.
+                    let methods: Vec<_> = high.iter().map(|tc| tc.method.clone()).collect();
+                    let n_axio = high.len();
+                    let axio_ents: Vec<ExtractedEntity> = high
+                        .into_iter()
+                        .filter_map(|tc| {
+                            let entity_type = tc.entity_type?;
+                            Some(ExtractedEntity {
+                                name: tc.name,
+                                entity_type,
+                                description: String::new(),
+                                fields: tc.axiomatic_fields,
+                                extraction_confidence: tc.composite_confidence,
+                            })
                         })
-                        .await;
-                    return;
+                        .collect();
+                    let elapsed_ms = chunk_timer.elapsed().as_secs_f64() * 1000.0;
+                    if let Some(ref acc) = axio_accum {
+                        if let Ok(mut a) = acc.lock() {
+                            a.record_chunk(ChunkPath::FullAxiomatic, elapsed_ms, n_axio, 0, &methods);
+                        }
+                    }
+                    (axio_ents, vec![], ChunkPath::FullAxiomatic)
+                } else if high.is_empty() {
+                    // All candidates low-confidence — full LLM call (legacy path).
+                    (vec![], candidates, ChunkPath::FullLlm)
+                } else {
+                    // Mixed: extract axiomatic entities now, LLM gets only low-conf names.
+                    let methods: Vec<_> = high.iter().map(|tc| tc.method.clone()).collect();
+                    let n_axio = high.len();
+                    let axio_ents: Vec<ExtractedEntity> = high
+                        .into_iter()
+                        .filter_map(|tc| {
+                            let entity_type = tc.entity_type?;
+                            Some(ExtractedEntity {
+                                name: tc.name,
+                                entity_type,
+                                description: String::new(),
+                                fields: tc.axiomatic_fields,
+                                extraction_confidence: tc.composite_confidence,
+                            })
+                        })
+                        .collect();
+                    let focus: Vec<String> = low.iter().map(|tc| tc.name.clone()).collect();
+                    // Don't record metrics yet — will record after LLM completes with total time.
+                    let _ = (n_axio, methods); // captured below after LLM
+                    (axio_ents, focus, ChunkPath::FocusedLlm)
+                }
+            } else {
+                // Axiomatic disabled — full LLM path (original behaviour).
+                (vec![], candidates, crate::axiom_extract::ChunkPath::FullLlm)
+            };
+
+            // ── Phase 4: LLM fallback for low-confidence candidates ───────────────
+            let (mut llm_entities, relations) = if llm_candidates.is_empty() {
+                (vec![], vec![])
+            } else {
+                match extract_from_text(
+                    &text,
+                    &llm_candidates,
+                    &pronoun_map,
+                    section_note.as_deref(),
+                    url,
+                    &model,
+                    &et,
+                    no_relations,
+                    hints_opt,
+                    &kb_schemas,
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!("entity extraction error for chunk {chunk_id}: {e}");
+                        let _ = tx
+                            .send(ChunkResult {
+                                chunk_id,
+                                chunk_text: chunk_text_own,
+                                entities: axio_entities,
+                                relations: vec![],
+                                embeddings: vec![],
+                                raw_events: vec![],
+                                raw_interactions: vec![],
+                            })
+                            .await;
+                        return;
+                    }
                 }
             };
+
+            // Record chunk metrics for non-FullAxiomatic paths (after LLM completes).
+            if axiomatic_threshold > 0.0 && chunk_path != crate::axiom_extract::ChunkPath::FullAxiomatic {
+                let elapsed_ms = chunk_timer.elapsed().as_secs_f64() * 1000.0;
+                if let Some(ref acc) = axio_accum {
+                    if let Ok(mut a) = acc.lock() {
+                        a.record_chunk(
+                            chunk_path,
+                            elapsed_ms,
+                            axio_entities.len(),
+                            llm_entities.len(),
+                            &[],
+                        );
+                    }
+                }
+            }
+
+            // Merge axiomatic and LLM-extracted entities.
+            let mut entities = axio_entities;
+            entities.append(&mut llm_entities);
 
             // Drop entities whose type the LLM returned outside the allowed list.
             if !et.is_empty() {
@@ -659,6 +806,26 @@ pub async fn extract_and_store_entities_pub(
             info!("validation_model set but KB has no entity schemas — skipping validation pass");
         }
     }
+
+    // Finalise axiomatic metrics, print summary, and write JSON (when threshold > 0).
+    let result_metrics = axio_accum.and_then(|arc| {
+        Arc::try_unwrap(arc)
+            .ok()
+            .and_then(|m| m.into_inner().ok())
+            .map(|accum| accum.finalise(build_start.elapsed().as_secs_f64()))
+    });
+    if let Some(ref m) = result_metrics {
+        m.print_summary();
+        // Write JSON alongside the standard graph-build-progress.json in the tmp dir.
+        let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let json_path = std::env::temp_dir().join(format!("kwaai_axiomatic_metrics_{ts}.json"));
+        if let Ok(json) = serde_json::to_string_pretty(m) {
+            if std::fs::write(&json_path, json).is_ok() {
+                println!("  Metrics saved: {}", json_path.display());
+            }
+        }
+    }
+    result_metrics
 }
 
 /// Extract entities from all chunks and persist them to the GraphStore.
