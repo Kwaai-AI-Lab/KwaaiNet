@@ -8147,6 +8147,7 @@ async fn cmd_import(input_dir: std::path::PathBuf, since: u64, kb: String) -> Re
 /// resolves entity names to graph IDs, and stores results. Parallelism is bounded by
 /// `workers` (via semaphore); storage operations serialize through the Mutex.
 /// Returns (event_count, interaction_count).
+#[allow(clippy::type_complexity)]
 async fn run_timeline_build(
     graph: Arc<Mutex<GraphStore>>,
     meta: Arc<MetaStore>,

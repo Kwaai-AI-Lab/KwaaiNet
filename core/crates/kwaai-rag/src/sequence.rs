@@ -1264,8 +1264,7 @@ fn extract_sentence_at(text: &str, char_offset: usize) -> String {
         let lo = sentence
             .char_indices()
             .map(|(i, _)| i)
-            .filter(|&i| i <= lo)
-            .last()
+            .rfind(|&i| i <= lo)
             .unwrap_or(0);
         sentence[lo..hi].trim().to_string()
     }

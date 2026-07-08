@@ -168,12 +168,12 @@ fn classify_one(
     if let Some(first) = words.first() {
         let fl = first.to_lowercase();
         let fl_stripped = fl.trim_end_matches('.');
-        if HONORIFIC_PREFIXES.contains(&fl.as_str()) || HONORIFIC_PREFIXES.contains(&fl_stripped) {
-            if words.len() > 1 {
-                let stripped = words[1..].join(" ").to_lowercase();
-                if let Some(entity_type) = entity_snapshot.get(&stripped) {
-                    return known_entity(name, entity_type);
-                }
+        if (HONORIFIC_PREFIXES.contains(&fl.as_str()) || HONORIFIC_PREFIXES.contains(&fl_stripped))
+            && words.len() > 1
+        {
+            let stripped = words[1..].join(" ").to_lowercase();
+            if let Some(entity_type) = entity_snapshot.get(&stripped) {
+                return known_entity(name, entity_type);
             }
         }
     }
