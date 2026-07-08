@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-07-08T16:04:50.618628+00:00",
+  "threshold": 0.7,
+  "total_chunks": 1152,
+  "chunks_skipped_llm": 0,
+  "chunks_partial_llm": 1090,
+  "chunks_full_llm": 62,
+  "entities_axiomatic": 2672,
+  "entities_llm": 3540,
+  "total_wall_secs": 3637.417189917,
+  "mean_ms_per_chunk_axio": 0.0,
+  "p95_ms_per_chunk_axio": 0.0,
+  "mean_ms_per_chunk_llm": 12425.54935246702,
+  "p95_ms_per_chunk_llm": 32710.258083,
+  "llm_skip_pct": 0.0,
+  "axiomatic_entity_pct": 43.01352221506761,
+  "method_breakdown": {
+    "OrgMarker": 862,
+    "KnownEntity": 969,
+    "HonorificPrefix": 767,
+    "LegislationMarker": 74
+  }
+}

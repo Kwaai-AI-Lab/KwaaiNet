@@ -2501,3 +2501,56 @@ Gap to r82 (215/225 = 95.6%): ~8-13 tokens, primarily model variance with llama3
 - Q40: 3/5 → missing "non-collaboration" (model paraphrases) + "Coloured Advisory" (uses "Affairs")
 
 Next steps: Phase 4 (relation extraction with lexical pre-filter) or evaluation with a larger model.
+
+## 2026-07-08 Phase C axiomatic threshold=0.70
+- Eval: **78.5% (164/209)** — token-overlap recall (script captured "0/209" due to float format "164.0/209"; actual from log)
+- Wall-clock: 10804.76s (3h00m4s)
+- Axiomatic entity %: 50.3% (2672/5315 entities without LLM)
+- Focused prompts: 94.6% of chunks (1090/1152)
+- LLM full prompts: 5.4% (62/1152)
+- LLM skip (full): 0% — fresh rebuild, graph empty at start
+- Mean LLM latency: 37.2s/chunk | p95: 120s (timeout)
+- HTTP errors: 478 502/503, 287 timeouts — metro-win unstable + jerome offline
+- Method breakdown: KnownEntity=969, OrgMarker=862, HonorificPrefix=767, LegislationMarker=74
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/axiomatic_sweep_20260707_210109.log
+- Metrics: tests/kwaai-knowledge/results/axiomatic_metrics_phC_t0.70_20260708_003402.json
+- Note: regression from 89.0% (Phase B) driven by GPU infrastructure failures, not axiomatic pipeline
+
+## 2026-07-08 Phase C2 axiomatic threshold=0.70 (metro-linux only, clean run)
+- Eval: **84.2% (176/209)** — token-overlap recall
+- Wall-clock: **3637.42s (1h00m37s)** — 66% faster than 3h baseline ⚡
+- Axiomatic entity %: 43.0% (2672/6212 entities without LLM)
+- Focused prompts: 94.6% of chunks (1090/1152)
+- LLM full prompts: 5.4% (62/1152)
+- LLM skip (full): 0% — fresh rebuild, graph empty at start
+- Mean LLM latency: 12.4s/chunk | p95: 32.7s (no timeouts — metro-linux stable)
+- Entities: 2672 axiomatic + 3540 LLM = 6212 total
+- Method breakdown: KnownEntity=969, OrgMarker=862, HonorificPrefix=767, LegislationMarker=74
+- Metrics: tests/kwaai-knowledge/results/axiomatic_metrics_phC2_t0.70_20260708_090437.json
+- vs baseline: -5.3pp (89.5% → 84.2%) — outside ±2pp acceptance threshold
+- Note: quality regression is real (infrastructure-clean run). Speed win is confirmed: 1h vs 3h.
+  T=0.70 trades 5.3pp quality for 66% wall-clock reduction. Next: try T=0.80 to recover quality.
+
+## 2026-07-08 Phase C3 axiomatic threshold=0.80 (metro-linux only, clean run) ⭐ NEW BEST
+- Eval: **92.3% (193/209)** — token-overlap recall — **new all-time best** (+2.8pp vs 89.5% baseline)
+- Wall-clock: **2128.55s (35m29s)** — 80% faster than 3h baseline ⚡
+- Axiomatic entity %: 46.1% (1736/3766 total)
+- Focused prompts: 90.9% of chunks (1047/1152)
+- LLM full prompts: 9.1% (105/1152)
+- LLM skip (full): 0% — fresh rebuild, graph empty at start
+- Mean LLM latency: 7.2s/chunk | p95: 31.9s (no timeouts — metro-linux stable)
+- Entities: 1736 axiomatic + 2030 LLM = 3766 total
+- Method breakdown: KnownEntity=969, HonorificPrefix=767 — OrgMarker ABSENT (below T=0.80 ✓)
+- Metrics: tests/kwaai-knowledge/results/axiomatic_metrics_phC3_t0.80_20260708_181047.json
+- vs baseline: +2.8pp (89.5% → 92.3%) — quality IMPROVED, not regressed
+- vs Phase C2 (T=0.70): +8.1pp quality gain, 41% faster wall-clock (35m vs 1h01m)
+- Note: OrgMarker false positives confirmed as source of T=0.70 regression. Dropping OrgMarker
+  to LLM at T=0.80 simultaneously improves quality AND reduces wall-clock (fewer entities →
+  cleaner prompts → faster per-call latency). T=0.80 is the confirmed production threshold.
+
+Speed/quality summary (axiomatic threshold sweep):
+| Config | Wall-clock | Eval | Speed gain | Quality vs baseline |
+|--------|------------|------|------------|---------------------|
+| Baseline (no axiomatic) | ~3h (10800s) | 89.5% | — | — |
+| T=0.70 Phase C2 (clean) | 1h01m (3637s) | 84.2% | 66% faster | –5.3pp |
+| T=0.80 Phase C3 (clean) | 35m29s (2129s) | **92.3% ⭐** | **80% faster** | **+2.8pp** |

@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-07-08T18:10:47.670733+00:00",
+  "threshold": 0.8,
+  "total_chunks": 1152,
+  "chunks_skipped_llm": 0,
+  "chunks_partial_llm": 1047,
+  "chunks_full_llm": 105,
+  "entities_axiomatic": 1736,
+  "entities_llm": 2030,
+  "total_wall_secs": 2128.549046833,
+  "mean_ms_per_chunk_axio": 0.0,
+  "p95_ms_per_chunk_axio": 0.0,
+  "mean_ms_per_chunk_llm": 7202.772616168406,
+  "p95_ms_per_chunk_llm": 31942.346333,
+  "llm_skip_pct": 0.0,
+  "axiomatic_entity_pct": 46.09665427509294,
+  "method_breakdown": {
+    "KnownEntity": 969,
+    "HonorificPrefix": 767
+  }
+}

@@ -557,6 +557,8 @@ pub async fn extract_and_store_entities_pub(
             // High-confidence ones are converted to ExtractedEntity directly; only the
             // low-confidence residual goes to the LLM (Phase 4).
             let chunk_timer = std::time::Instant::now();
+            let mut axio_methods_for_record: Vec<crate::axiom_extract::ClassificationMethod> =
+                vec![];
             let (axio_entities, llm_candidates, chunk_path) = if axiomatic_threshold > 0.0
                 && !candidates.is_empty()
             {
@@ -627,8 +629,9 @@ pub async fn extract_and_store_entities_pub(
                         })
                         .collect();
                     let focus: Vec<String> = low.iter().map(|tc| tc.name.clone()).collect();
-                    // Don't record metrics yet — will record after LLM completes with total time.
-                    let _ = (n_axio, methods); // captured below after LLM
+                    // Hold methods until after LLM so record_chunk captures full wall-clock.
+                    axio_methods_for_record = methods;
+                    let _ = n_axio; // used via axio_ents.len() below
                     (axio_ents, focus, ChunkPath::FocusedLlm)
                 }
             } else {
@@ -683,7 +686,7 @@ pub async fn extract_and_store_entities_pub(
                             elapsed_ms,
                             axio_entities.len(),
                             llm_entities.len(),
-                            &[],
+                            &axio_methods_for_record,
                         );
                     }
                 }

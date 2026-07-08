@@ -21,7 +21,7 @@ default-members = ["crates/kwaai-cli"]
 # Root package for examples
 [package]
 name = "kwaai-core"
-version = "0.4.148"
+version = "0.5.0"
 edition = "2021"
 publish = false
 
@@ -127,7 +127,7 @@ name = "query_dht_state"
 path = "examples/query_dht_state.rs"
 
 [workspace.package]
-version = "0.4.148"
+version = "0.5.0"
 
 edition = "2021"
 authors = ["Kwaai AI Lab <dev@kwaai.ai>"]
@@ -138,18 +138,18 @@ keywords = ["ai", "decentralized", "p2p", "wasm", "inference"]
 categories = ["network-programming", "wasm", "science"]
 
 [workspace.dependencies]
-kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.4.2" }
-kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.4.2" }
-kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.4.2" }
-kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.4.2" }
-kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.4.2" }
-kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.4.2" }
-kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.4.2" }
-kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.4.94" }
-kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.4.2" }
-kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.1.0" }
-kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.4.95" }
-kwaai-rpc          = { path = "crates/kwaai-rpc",          version = "0.4.94" }
+kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.5.0" }
+kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.5.0" }
+kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.5.0" }
+kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.5.0" }
+kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.5.0" }
+kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.5.0" }
+kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.5.0" }
+kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.5.0" }
+kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.5.0" }
+kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.5.0" }
+kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.5.0" }
+kwaai-rpc          = { path = "crates/kwaai-rpc",          version = "0.5.0" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
