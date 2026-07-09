@@ -280,6 +280,9 @@ pub async fn run(args: RagArgs) -> Result<()> {
             query_classify,
             summary_expansion,
             biographical_expansion,
+            semantic_score,
+            semantic_low,
+            semantic_high,
         } => {
             cmd_eval(
                 questions,
@@ -300,6 +303,9 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 query_classify,
                 summary_expansion,
                 biographical_expansion,
+                semantic_score,
+                semantic_low,
+                semantic_high,
             )
             .await
         }
@@ -7110,6 +7116,54 @@ fn keyword_hit(kw: &str, answer: &str, answer_toks: &std::collections::HashSet<S
     answer.to_lowercase().contains(&kw.to_lowercase())
 }
 
+/// Cosine similarity between two embedding vectors. Returns 0.0 for mismatched lengths.
+fn eval_cosine_sim(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(&x, &y)| x as f64 * y as f64).sum();
+    let na: f64 = a.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+    let nb: f64 = b.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    (dot / (na * nb)).clamp(-1.0, 1.0) as f32
+}
+
+/// Maps cosine similarity linearly from [low, high] → [0.0, 1.0], clamped.
+fn scale_cosine(cos: f32, low: f32, high: f32) -> f32 {
+    ((cos - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+/// Score a single KeywordGroup as a float in [0.0, 1.0].
+/// Token-overlap binary result wins (1.0) when it fires; otherwise semantic similarity
+/// provides partial credit via cosine distance between keyword and answer embeddings.
+fn keyword_group_score(
+    group: &KeywordGroup,
+    answer: &str,
+    answer_toks: &std::collections::HashSet<String>,
+    answer_emb: Option<&[f32]>,
+    keyword_embs: &std::collections::HashMap<String, Vec<f32>>,
+    low: f32,
+    high: f32,
+) -> f32 {
+    let keywords: Vec<&String> = match group {
+        KeywordGroup::Single(s) => vec![s],
+        KeywordGroup::Synonyms(v) => v.iter().collect(),
+    };
+    keywords
+        .iter()
+        .map(|kw| {
+            let tok = if keyword_hit(kw, answer, answer_toks) { 1.0_f32 } else { 0.0 };
+            let sem = match (answer_emb, keyword_embs.get(*kw)) {
+                (Some(ae), Some(ke)) => scale_cosine(eval_cosine_sim(ae, ke), low, high),
+                _ => 0.0,
+            };
+            tok.max(sem)
+        })
+        .fold(0.0_f32, f32::max)
+}
+
 #[derive(serde::Deserialize)]
 struct NumericAnswer {
     /// The correct numeric value (e.g. 1884 for a year).
@@ -7128,14 +7182,6 @@ enum KeywordGroup {
     Synonyms(Vec<String>),
 }
 
-impl KeywordGroup {
-    fn hits(&self, answer: &str, toks: &std::collections::HashSet<String>) -> bool {
-        match self {
-            Self::Single(kw) => keyword_hit(kw, answer, toks),
-            Self::Synonyms(syns) => syns.iter().any(|kw| keyword_hit(kw, answer, toks)),
-        }
-    }
-}
 
 #[derive(serde::Deserialize)]
 struct EvalQuestion {
@@ -7170,6 +7216,9 @@ async fn cmd_eval(
     query_classify: String,
     summary_expansion: bool,
     biographical_expansion: bool,
+    semantic_score: bool,
+    semantic_low: f32,
+    semantic_high: f32,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -7353,6 +7402,36 @@ async fn cmd_eval(
             latency_ms: u128,
             judge_score: Option<u8>,
         }
+
+        // Pre-embed all unique keyword strings once for semantic scoring.
+        let keyword_embs: std::collections::HashMap<String, Vec<f32>> = if semantic_score {
+            use std::collections::HashSet;
+            let unique: Vec<String> = questions
+                .iter()
+                .flat_map(|q| {
+                    q.expected_keywords.iter().flat_map(|g| match g {
+                        KeywordGroup::Single(s) => vec![s.clone()],
+                        KeywordGroup::Synonyms(v) => v.clone(),
+                    })
+                })
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            if unique.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                let refs: Vec<&str> = unique.iter().map(|s| s.as_str()).collect();
+                match embed.embed_batch(&refs).await {
+                    Ok(vecs) => unique.into_iter().zip(vecs).collect(),
+                    Err(e) => {
+                        eprintln!("⚠️  semantic scoring: embed_batch failed ({e}) — falling back to token-overlap only");
+                        std::collections::HashMap::new()
+                    }
+                }
+            }
+        } else {
+            std::collections::HashMap::new()
+        };
 
         let mut rows: Vec<Row> = Vec::new();
 
@@ -7628,18 +7707,33 @@ async fn cmd_eval(
 
             let latency_ms = t0.elapsed().as_millis();
 
-            // Score keywords (token-overlap recall, substring fallback).
+            // Score keywords (token-overlap recall, with optional semantic fallback).
             let answer_toks = eval_tokens(&answer);
-            let kw_exact: usize = q
+            let answer_emb: Option<Vec<f32>> = if semantic_score && !answer.is_empty() {
+                embed.embed_one(&answer).await.ok()
+            } else {
+                None
+            };
+            let kw_hits: f32 = q
                 .expected_keywords
                 .iter()
-                .filter(|group| group.hits(&answer, &answer_toks))
-                .count();
+                .map(|group| {
+                    keyword_group_score(
+                        group,
+                        &answer,
+                        &answer_toks,
+                        answer_emb.as_deref(),
+                        &keyword_embs,
+                        semantic_low,
+                        semantic_high,
+                    )
+                })
+                .sum();
             // Numeric proximity score (e.g. year estimation): adds fractional credit.
             let num_score: f32 = q.numeric_answer.as_ref().map_or(0.0, |na| {
                 numeric_proximity_score(&answer, na.correct, na.tolerance)
             });
-            let keyword_hits: f32 = kw_exact as f32 + num_score;
+            let keyword_hits: f32 = kw_hits + num_score;
             let total_keywords: f32 =
                 q.expected_keywords.len() as f32 + q.numeric_answer.is_some() as u8 as f32;
 
@@ -7806,12 +7900,25 @@ async fn cmd_eval(
         } else {
             String::new()
         };
+        let scoring_mode_row = if semantic_score {
+            format!(
+                "| Scoring mode | token-overlap + semantic embedding (low={semantic_low:.2}, high={semantic_high:.2}) |\n"
+            )
+        } else {
+            String::new()
+        };
+        let recall_label = if semantic_score {
+            "Overall recall (token-overlap + semantic)"
+        } else {
+            "Overall recall (token-overlap)"
+        };
         report.push_str(&format!(
             "## Summary\n\n\
              | Metric | Value |\n\
              |--------|-------|\n\
              | Questions | {} |\n\
-             | Overall recall (token-overlap) | {:.1}% ({:.1}/{:.0}) |\n\
+             | {recall_label} | {:.1}% ({:.1}/{:.0}) |\n\
+             {scoring_mode_row}\
              {judge_summary}\
              | Avg latency | {avg_latency_ms}ms |\n\n",
             rows.len(),

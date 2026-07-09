@@ -1541,6 +1541,20 @@ pub enum RagAction {
         /// than a one-liner identity response.
         #[arg(long)]
         biographical_expansion: bool,
+
+        /// Score keywords using embedding cosine similarity as a soft fallback when
+        /// token-overlap misses. Requires Ollama embed model to be running.
+        /// score = max(token_overlap, scaled_cosine(keyword_emb, answer_emb))
+        #[arg(long)]
+        semantic_score: bool,
+
+        /// Lower cosine threshold for semantic scoring: cosine below this = 0.0 credit.
+        #[arg(long, default_value_t = 0.55, value_name = "FLOAT")]
+        semantic_low: f32,
+
+        /// Upper cosine threshold for semantic scoring: cosine at or above this = full credit.
+        #[arg(long, default_value_t = 0.85, value_name = "FLOAT")]
+        semantic_high: f32,
     },
 
     /// Autonomous knowledge graph completion (Dream RAG)
