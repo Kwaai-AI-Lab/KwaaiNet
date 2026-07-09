@@ -3023,9 +3023,8 @@ fn ner_sentence_start_the_filtered() {
 
 #[test]
 fn ner_multiple_proper_nouns_extracted() {
-    let result = extract_proper_noun_candidates(
-        "Joe Rassool visited Cape Town and met with Walied.",
-    );
+    let result =
+        extract_proper_noun_candidates("Joe Rassool visited Cape Town and met with Walied.");
     assert!(
         result.len() >= 2,
         "expected at least two proper noun candidates, got: {result:?}"
@@ -3245,15 +3244,24 @@ fn graph_doc_metadata_roundtrip() {
     g.set_doc_metadata(&meta).unwrap();
 
     let retrieved = g.get_doc_metadata();
-    assert_eq!(retrieved.get("isbn").map(String::as_str), Some("978-0-620-12345-6"));
-    assert_eq!(retrieved.get("publisher").map(String::as_str), Some("Recall Press"));
+    assert_eq!(
+        retrieved.get("isbn").map(String::as_str),
+        Some("978-0-620-12345-6")
+    );
+    assert_eq!(
+        retrieved.get("publisher").map(String::as_str),
+        Some("Recall Press")
+    );
 }
 
 #[test]
 fn graph_doc_metadata_empty_before_set() {
     let dir = TempDir::new().unwrap();
     let g = GraphStore::open(dir.path(), test_tid()).unwrap();
-    assert!(g.get_doc_metadata().is_empty(), "fresh graph should have empty doc metadata");
+    assert!(
+        g.get_doc_metadata().is_empty(),
+        "fresh graph should have empty doc metadata"
+    );
 }
 
 #[test]
@@ -3273,7 +3281,10 @@ fn graph_document_titles_roundtrip() {
 fn graph_document_titles_empty_before_set() {
     let dir = TempDir::new().unwrap();
     let g = GraphStore::open(dir.path(), test_tid()).unwrap();
-    assert!(g.get_document_titles().is_empty(), "fresh graph should have no titles");
+    assert!(
+        g.get_document_titles().is_empty(),
+        "fresh graph should have no titles"
+    );
 }
 
 #[test]
@@ -3286,7 +3297,10 @@ fn graph_all_entities_returns_all_upserted() {
     }
 
     let count = g.all_entities().count();
-    assert_eq!(count, 5, "all_entities() should return all 5 upserted entities");
+    assert_eq!(
+        count, 5,
+        "all_entities() should return all 5 upserted entities"
+    );
 }
 
 #[test]
@@ -3328,8 +3342,10 @@ fn graph_set_description_persists() {
     let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
 
     let id = entity_id("TestPerson", "Person");
-    g.upsert_entity(make_entity("TestPerson", "Person")).unwrap();
-    g.set_description(id, "An important historical figure.").unwrap();
+    g.upsert_entity(make_entity("TestPerson", "Person"))
+        .unwrap();
+    g.set_description(id, "An important historical figure.")
+        .unwrap();
 
     let node = g.get_entity(id).expect("entity should exist");
     assert_eq!(node.description, "An important historical figure.");
@@ -3393,7 +3409,9 @@ fn scan_chunk_for_dates_finds_decade_reference() {
         "expected at least one date mention for '1960s', got: {result:?}"
     );
     assert!(
-        result.iter().any(|d| matches!(d.mention_type, DateMentionType::Decade)),
+        result
+            .iter()
+            .any(|d| matches!(d.mention_type, DateMentionType::Decade)),
         "expected Decade mention type, got: {result:?}"
     );
 }
@@ -3411,7 +3429,10 @@ fn scan_chunk_for_dates_no_dates_returns_empty() {
 fn scan_chunk_for_dates_chunk_id_propagated() {
     let result = scan_chunk_for_dates("This occurred in 1910 near the harbour.", 42);
     for m in &result {
-        assert_eq!(m.chunk_id, 42, "chunk_id should be propagated to DateMention");
+        assert_eq!(
+            m.chunk_id, 42,
+            "chunk_id should be propagated to DateMention"
+        );
     }
 }
 
@@ -3419,7 +3440,10 @@ fn scan_chunk_for_dates_chunk_id_propagated() {
 fn render_mermaid_empty_events_produces_valid_output() {
     let output = render_mermaid("Joe Rassool", &[], &[]);
     // Should not panic and should produce some output (even if minimal)
-    assert!(!output.is_empty(), "render_mermaid should produce non-empty output");
+    assert!(
+        !output.is_empty(),
+        "render_mermaid should produce non-empty output"
+    );
 }
 
 #[test]

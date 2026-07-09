@@ -93,10 +93,16 @@ fn pipeline_delete_doc_removes_from_meta_store() {
     let ids: Vec<i64> = chunks.iter().map(|c| c.id).collect();
     meta.put_chunks(&metas, &ids).unwrap();
 
-    assert!(meta.list_docs().unwrap().contains(&"ancient.txt".to_string()));
+    assert!(meta
+        .list_docs()
+        .unwrap()
+        .contains(&"ancient.txt".to_string()));
 
     meta.delete_doc("ancient.txt").unwrap();
-    assert!(!meta.list_docs().unwrap().contains(&"ancient.txt".to_string()));
+    assert!(!meta
+        .list_docs()
+        .unwrap()
+        .contains(&"ancient.txt".to_string()));
 
     // The chunk records should also be gone
     let retrieved = meta.get_chunks(&ids).unwrap();
@@ -115,12 +121,17 @@ fn pipeline_bm25_indexes_chunk_text_and_returns_hit() {
 
     let text = "District Six was a vibrant community in Cape Town before forced removals.";
     let chunks = split_text(text, "d6.txt", &default_cfg(), None);
-    let bm25_chunks: Vec<(i64, &str, &str)> =
-        chunks.iter().map(|c| (c.id, c.doc_name.as_str(), c.text.as_str())).collect();
+    let bm25_chunks: Vec<(i64, &str, &str)> = chunks
+        .iter()
+        .map(|c| (c.id, c.doc_name.as_str(), c.text.as_str()))
+        .collect();
     index.build_from_chunks(&bm25_chunks).unwrap();
 
     let results = index.search("District Six", 5);
-    assert!(!results.is_empty(), "BM25 search should return at least one result");
+    assert!(
+        !results.is_empty(),
+        "BM25 search should return at least one result"
+    );
     let found_ids: Vec<i64> = results.iter().map(|(id, _)| *id).collect();
     let chunk_ids: Vec<i64> = chunks.iter().map(|c| c.id).collect();
     assert!(
@@ -136,13 +147,18 @@ fn pipeline_bm25_search_miss_for_absent_term() {
 
     let text = "Alice went to the park and fed the ducks by the pond.";
     let chunks = split_text(text, "park.txt", &default_cfg(), None);
-    let bm25_chunks: Vec<(i64, &str, &str)> =
-        chunks.iter().map(|c| (c.id, c.doc_name.as_str(), c.text.as_str())).collect();
+    let bm25_chunks: Vec<(i64, &str, &str)> = chunks
+        .iter()
+        .map(|c| (c.id, c.doc_name.as_str(), c.text.as_str()))
+        .collect();
     index.build_from_chunks(&bm25_chunks).unwrap();
 
     // Search for a term that doesn't appear in the text
     let results = index.search("quantum physics superposition", 5);
-    assert!(results.is_empty(), "BM25 should return empty for absent term");
+    assert!(
+        results.is_empty(),
+        "BM25 should return empty for absent term"
+    );
 }
 
 #[test]
@@ -152,12 +168,17 @@ fn pipeline_bm25_delete_doc_removes_from_index() {
 
     let text = "Walied Rassool was born in Cape Town and attended local schools.";
     let chunks = split_text(text, "walied.txt", &default_cfg(), None);
-    let bm25_chunks: Vec<(i64, &str, &str)> =
-        chunks.iter().map(|c| (c.id, c.doc_name.as_str(), c.text.as_str())).collect();
+    let bm25_chunks: Vec<(i64, &str, &str)> = chunks
+        .iter()
+        .map(|c| (c.id, c.doc_name.as_str(), c.text.as_str()))
+        .collect();
     index.build_from_chunks(&bm25_chunks).unwrap();
 
     // Confirm it's found before deletion
-    assert!(!index.search("Walied", 5).is_empty(), "should be found before delete");
+    assert!(
+        !index.search("Walied", 5).is_empty(),
+        "should be found before delete"
+    );
 
     index.delete_doc("walied.txt").unwrap();
 
@@ -185,7 +206,11 @@ fn pipeline_chunk_id_helper_matches_split_output() {
     let chunks = split_text(text, "test.txt", &default_cfg(), None);
     for c in &chunks {
         let expected = chunk_id("test.txt", c.chunk_index);
-        assert_eq!(c.id, expected, "chunk_id() must match id on Chunk struct for index {}", c.chunk_index);
+        assert_eq!(
+            c.id, expected,
+            "chunk_id() must match id on Chunk struct for index {}",
+            c.chunk_index
+        );
     }
 }
 
@@ -197,5 +222,9 @@ fn pipeline_large_doc_produces_multiple_chunks() {
     let sentence = "The history of District Six is long and complex. ";
     let text: String = sentence.repeat(20);
     let chunks = split_text(&text, "long.txt", &default_cfg(), None);
-    assert!(chunks.len() >= 3, "expected multiple chunks for long text, got {}", chunks.len());
+    assert!(
+        chunks.len() >= 3,
+        "expected multiple chunks for long text, got {}",
+        chunks.len()
+    );
 }

@@ -15,7 +15,10 @@ fn empty_snap() -> HashMap<String, String> {
     HashMap::new()
 }
 
-fn classify_one(name: &str, snap: &HashMap<String, String>) -> kwaai_rag::axiom_extract::TypedCandidate {
+fn classify_one(
+    name: &str,
+    snap: &HashMap<String, String>,
+) -> kwaai_rag::axiom_extract::TypedCandidate {
     let mut r = classify_candidates_axiomatic(&[name.to_string()], snap, &[]);
     assert!(!r.is_empty(), "classify returned empty for {name:?}");
     r.remove(0)
@@ -26,7 +29,12 @@ fn classify_one(name: &str, snap: &HashMap<String, String>) -> kwaai_rag::axiom_
 #[test]
 fn classify_honorific_dr_is_person() {
     let c = classify_one("Dr. Smith", &empty_snap());
-    assert_eq!(c.entity_type.as_deref(), Some("Person"), "method={:?}", c.method);
+    assert_eq!(
+        c.entity_type.as_deref(),
+        Some("Person"),
+        "method={:?}",
+        c.method
+    );
     assert!(
         matches!(c.method, ClassificationMethod::HonorificPrefix),
         "expected HonorificPrefix, got {:?}",
@@ -72,7 +80,12 @@ fn classify_honorific_sheikh_is_person() {
 #[test]
 fn classify_org_marker_council_is_organization() {
     let c = classify_one("Cape Town Council", &empty_snap());
-    assert_eq!(c.entity_type.as_deref(), Some("Organization"), "method={:?}", c.method);
+    assert_eq!(
+        c.entity_type.as_deref(),
+        Some("Organization"),
+        "method={:?}",
+        c.method
+    );
     assert!(matches!(c.method, ClassificationMethod::OrgMarker));
 }
 
@@ -95,7 +108,12 @@ fn classify_org_marker_congress_is_organization() {
 #[test]
 fn classify_geo_marker_mountain_is_place() {
     let c = classify_one("Table Mountain", &empty_snap());
-    assert_eq!(c.entity_type.as_deref(), Some("Place"), "method={:?}", c.method);
+    assert_eq!(
+        c.entity_type.as_deref(),
+        Some("Place"),
+        "method={:?}",
+        c.method
+    );
     assert!(matches!(c.method, ClassificationMethod::GeoMarker));
 }
 
@@ -111,7 +129,12 @@ fn classify_geo_marker_district_is_place() {
 #[test]
 fn classify_legislation_act_at_end_is_legislation() {
     let c = classify_one("Group Areas Act", &empty_snap());
-    assert_eq!(c.entity_type.as_deref(), Some("Legislation"), "method={:?}", c.method);
+    assert_eq!(
+        c.entity_type.as_deref(),
+        Some("Legislation"),
+        "method={:?}",
+        c.method
+    );
     assert!(matches!(c.method, ClassificationMethod::LegislationMarker));
 }
 
@@ -127,7 +150,12 @@ fn classify_legislation_ordinance_is_legislation() {
 #[test]
 fn classify_publication_times_is_publication() {
     let c = classify_one("Cape Times", &empty_snap());
-    assert_eq!(c.entity_type.as_deref(), Some("Publication"), "method={:?}", c.method);
+    assert_eq!(
+        c.entity_type.as_deref(),
+        Some("Publication"),
+        "method={:?}",
+        c.method
+    );
     assert!(matches!(c.method, ClassificationMethod::PublicationMarker));
 }
 
@@ -160,7 +188,11 @@ fn classify_known_entity_beats_other_rules() {
     let mut snap = HashMap::new();
     snap.insert("cape town council".to_string(), "Organization".to_string());
     let c = classify_one("Cape Town Council", &snap);
-    assert!(matches!(c.method, ClassificationMethod::KnownEntity), "got {:?}", c.method);
+    assert!(
+        matches!(c.method, ClassificationMethod::KnownEntity),
+        "got {:?}",
+        c.method
+    );
 }
 
 // ── classification: unknown fallthrough ───────────────────────────────────────
@@ -206,7 +238,11 @@ fn split_t080_honorific_goes_high() {
     // HonorificPrefix composite (0.81) is ≥ T=0.80 → high_conf
     let candidates = classify_candidates_axiomatic(&["Dr. Smith".to_string()], &empty_snap(), &[]);
     let (hi, lo) = split_by_confidence(candidates, 0.80);
-    assert_eq!(hi.len(), 1, "HonorificPrefix should be high-conf at T=0.80; lo={lo:?}");
+    assert_eq!(
+        hi.len(),
+        1,
+        "HonorificPrefix should be high-conf at T=0.80; lo={lo:?}"
+    );
     assert!(lo.is_empty());
 }
 
@@ -216,7 +252,11 @@ fn split_t080_org_marker_goes_low() {
     let candidates =
         classify_candidates_axiomatic(&["Cape Town Council".to_string()], &empty_snap(), &[]);
     let (hi, lo) = split_by_confidence(candidates, 0.80);
-    assert_eq!(lo.len(), 1, "OrgMarker should be low-conf at T=0.80; hi={hi:?}");
+    assert_eq!(
+        lo.len(),
+        1,
+        "OrgMarker should be low-conf at T=0.80; hi={hi:?}"
+    );
     assert!(hi.is_empty());
 }
 
@@ -224,10 +264,13 @@ fn split_t080_org_marker_goes_low() {
 fn split_known_entity_always_high_at_t080() {
     let mut snap = HashMap::new();
     snap.insert("joe rassool".to_string(), "Person".to_string());
-    let candidates =
-        classify_candidates_axiomatic(&["Joe Rassool".to_string()], &snap, &[]);
+    let candidates = classify_candidates_axiomatic(&["Joe Rassool".to_string()], &snap, &[]);
     let (hi, lo) = split_by_confidence(candidates, 0.80);
-    assert_eq!(hi.len(), 1, "KnownEntity should be high-conf at T=0.80; lo={lo:?}");
+    assert_eq!(
+        hi.len(),
+        1,
+        "KnownEntity should be high-conf at T=0.80; lo={lo:?}"
+    );
     assert!(lo.is_empty());
 }
 
@@ -235,7 +278,10 @@ fn split_known_entity_always_high_at_t080() {
 fn split_unknown_goes_low() {
     let candidates = classify_candidates_axiomatic(&["George".to_string()], &empty_snap(), &[]);
     let (hi, lo) = split_by_confidence(candidates, 0.80);
-    assert!(hi.is_empty(), "Unknown candidate should not be high-conf at T=0.80");
+    assert!(
+        hi.is_empty(),
+        "Unknown candidate should not be high-conf at T=0.80"
+    );
     assert_eq!(lo.len(), 1);
 }
 
@@ -260,7 +306,11 @@ fn split_at_t060_org_marker_goes_high() {
     let candidates =
         classify_candidates_axiomatic(&["Cape Town Council".to_string()], &empty_snap(), &[]);
     let (hi, lo) = split_by_confidence(candidates, 0.60);
-    assert_eq!(hi.len(), 1, "OrgMarker should be high-conf at T=0.60; lo={lo:?}");
+    assert_eq!(
+        hi.len(),
+        1,
+        "OrgMarker should be high-conf at T=0.60; lo={lo:?}"
+    );
     assert!(lo.is_empty());
 }
 
@@ -293,18 +343,20 @@ fn validate_empty_candidates_returns_empty() {
 fn validate_known_entity_passes_through() {
     let mut snap = HashMap::new();
     snap.insert("joe rassool".to_string(), "Person".to_string());
-    let candidates =
-        classify_candidates_axiomatic(&["Joe Rassool".to_string()], &snap, &[]);
+    let candidates = classify_candidates_axiomatic(&["Joe Rassool".to_string()], &snap, &[]);
     let validated = validate_with_axioms(candidates, "Joe Rassool was present at the meeting.");
     assert_eq!(validated.len(), 1, "KnownEntity should survive validation");
 }
 
 #[test]
 fn validate_honorific_person_passes_through() {
-    let candidates =
-        classify_candidates_axiomatic(&["Dr. Smith".to_string()], &empty_snap(), &[]);
+    let candidates = classify_candidates_axiomatic(&["Dr. Smith".to_string()], &empty_snap(), &[]);
     let validated = validate_with_axioms(candidates, "Dr. Smith attended the event.");
-    assert_eq!(validated.len(), 1, "HonorificPrefix should survive validation");
+    assert_eq!(
+        validated.len(),
+        1,
+        "HonorificPrefix should survive validation"
+    );
 }
 
 #[test]
