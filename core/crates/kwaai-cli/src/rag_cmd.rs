@@ -7135,6 +7135,37 @@ fn scale_cosine(cos: f32, low: f32, high: f32) -> f32 {
     ((cos - low) / (high - low)).clamp(0.0, 1.0)
 }
 
+/// Retrieval-side score for a KeywordGroup: max score across all retrieved chunk embeddings.
+/// Token overlap is checked against the concatenated chunk text; semantic falls back to
+/// max cosine over all chunk embeddings when `--semantic-score` is active.
+fn keyword_group_retrieval_score(
+    group: &KeywordGroup,
+    context_text: &str,
+    context_toks: &std::collections::HashSet<String>,
+    chunk_embs: &[Vec<f32>],
+    keyword_embs: &std::collections::HashMap<String, Vec<f32>>,
+    low: f32,
+    high: f32,
+) -> f32 {
+    let keywords: Vec<&String> = match group {
+        KeywordGroup::Single(s) => vec![s],
+        KeywordGroup::Synonyms(v) => v.iter().collect(),
+    };
+    keywords
+        .iter()
+        .map(|kw| {
+            let tok = if keyword_hit(kw, context_text, context_toks) { 1.0_f32 } else { 0.0 };
+            let sem = keyword_embs.get(*kw).map_or(0.0, |ke| {
+                chunk_embs
+                    .iter()
+                    .map(|ce| scale_cosine(eval_cosine_sim(ke, ce), low, high))
+                    .fold(0.0_f32, f32::max)
+            });
+            tok.max(sem)
+        })
+        .fold(0.0_f32, f32::max)
+}
+
 /// Score a single KeywordGroup as a float in [0.0, 1.0].
 /// Token-overlap binary result wins (1.0) when it fires; otherwise semantic similarity
 /// provides partial credit via cosine distance between keyword and answer embeddings.
@@ -7397,7 +7428,8 @@ async fn cmd_eval(
             question: String,
             answer: String,
             retrieved_docs: Vec<String>,
-            keyword_hits: f32, // f32 to accommodate numeric proximity partial credit
+            keyword_hits: f32,      // generation score (f32 for numeric proximity partial credit)
+            retrieval_hits: f32,    // retrieval score: keyword recall over retrieved chunks
             total_keywords: f32,
             latency_ms: u128,
             judge_score: Option<u8>,
@@ -7628,6 +7660,42 @@ async fn cmd_eval(
                 .into_iter()
                 .collect();
 
+            // Retrieval scoring: embed chunk texts (when --semantic-score), then score
+            // each keyword group against the retrieved content before the LLM call.
+            // This separates retrieval failures from generation failures.
+            let chunk_embs: Vec<Vec<f32>> = if semantic_score && !chunks.is_empty() {
+                let texts: Vec<&str> =
+                    chunks.iter().map(|c| c.chunk_meta.text.as_str()).collect();
+                embed.embed_batch(&texts).await.unwrap_or_default()
+            } else {
+                vec![]
+            };
+            let context_text: String = chunks
+                .iter()
+                .map(|c| c.chunk_meta.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let context_toks = eval_tokens(&context_text);
+            let ret_kw_hits: f32 = q
+                .expected_keywords
+                .iter()
+                .map(|group| {
+                    keyword_group_retrieval_score(
+                        group,
+                        &context_text,
+                        &context_toks,
+                        &chunk_embs,
+                        &keyword_embs,
+                        semantic_low,
+                        semantic_high,
+                    )
+                })
+                .sum::<f32>();
+            let ret_num_score: f32 = q.numeric_answer.as_ref().map_or(0.0, |na| {
+                numeric_proximity_score(&context_text, na.correct, na.tolerance)
+            });
+            let retrieval_hits: f32 = ret_kw_hits + ret_num_score;
+
             // For biographical "who was / who is" questions with --biographical-expansion,
             // append a detailed-answer instruction so the LLM gives a full biography
             // instead of a one-liner identity response. Also handles enumeration questions
@@ -7800,20 +7868,30 @@ async fn cmd_eval(
                 Some(s) => format!("  judge={s}/2"),
                 None => String::new(),
             };
-            let kw_display = {
-                let hits_s = if keyword_hits == keyword_hits.floor() {
-                    format!("{:.0}", keyword_hits)
+            let fmt_hits = |hits: f32, total: f32| -> String {
+                let hits_s = if hits == hits.floor() {
+                    format!("{:.0}", hits)
                 } else {
-                    format!("{:.1}", keyword_hits)
+                    format!("{:.1}", hits)
                 };
-                let tot_s = if total_keywords == total_keywords.floor() {
-                    format!("{:.0}", total_keywords)
+                let tot_s = if total == total.floor() {
+                    format!("{:.0}", total)
                 } else {
-                    format!("{:.1}", total_keywords)
+                    format!("{:.1}", total)
                 };
                 format!("{hits_s}/{tot_s}")
             };
-            if effective_mode == "iterative" {
+            let kw_display = fmt_hits(keyword_hits, total_keywords);
+            let ret_display = fmt_hits(retrieval_hits, total_keywords);
+            if semantic_score {
+                if effective_mode == "iterative" {
+                    println!(
+                        "         → ret={ret_display}  gen={kw_display}{judge_str}  {latency_ms}ms"
+                    );
+                } else {
+                    println!("ret={ret_display}  gen={kw_display}{judge_str}  {latency_ms}ms");
+                }
+            } else if effective_mode == "iterative" {
                 println!("         → {kw_display} keywords{judge_str}  {latency_ms}ms");
             } else {
                 println!("{kw_display} keywords{judge_str}  {latency_ms}ms");
@@ -7825,6 +7903,7 @@ async fn cmd_eval(
                 answer,
                 retrieved_docs,
                 keyword_hits,
+                retrieval_hits,
                 total_keywords,
                 latency_ms,
                 judge_score,
@@ -7867,9 +7946,15 @@ async fn cmd_eval(
 
         // Build report.
         let total_hits: f64 = rows.iter().map(|r| r.keyword_hits as f64).sum();
+        let total_ret_hits: f64 = rows.iter().map(|r| r.retrieval_hits as f64).sum();
         let total_kw: f64 = rows.iter().map(|r| r.total_keywords as f64).sum();
         let overall_score = if total_kw > 0.0 {
             total_hits / total_kw
+        } else {
+            0.0
+        };
+        let overall_retrieval_score = if total_kw > 0.0 {
+            total_ret_hits / total_kw
         } else {
             0.0
         };
@@ -7907,60 +7992,112 @@ async fn cmd_eval(
         } else {
             String::new()
         };
-        let recall_label = if semantic_score {
-            "Overall recall (token-overlap + semantic)"
+        let recall_rows = if semantic_score {
+            format!(
+                "| Retrieval recall (token-overlap + semantic) | {:.1}% ({:.1}/{:.0}) |\n\
+                 | Generation recall (token-overlap + semantic) | {:.1}% ({:.1}/{:.0}) |\n",
+                overall_retrieval_score * 100.0,
+                total_ret_hits,
+                total_kw,
+                overall_score * 100.0,
+                total_hits,
+                total_kw,
+            )
         } else {
-            "Overall recall (token-overlap)"
+            format!(
+                "| Overall recall (token-overlap) | {:.1}% ({:.1}/{:.0}) |\n",
+                overall_score * 100.0,
+                total_hits,
+                total_kw,
+            )
         };
         report.push_str(&format!(
             "## Summary\n\n\
              | Metric | Value |\n\
              |--------|-------|\n\
              | Questions | {} |\n\
-             | {recall_label} | {:.1}% ({:.1}/{:.0}) |\n\
+             {recall_rows}\
              {scoring_mode_row}\
              {judge_summary}\
              | Avg latency | {avg_latency_ms}ms |\n\n",
             rows.len(),
-            overall_score * 100.0,
-            total_hits,
-            total_kw,
         ));
         report.push_str("## Per-question results\n\n");
         let has_judge = rows.iter().any(|r| r.judge_score.is_some());
-        if has_judge {
+        if semantic_score {
+            if has_judge {
+                report.push_str(
+                    "| ID | Question | Retrieval | Generation | Judge | Sources | Latency |\n",
+                );
+                report.push_str(
+                    "|----|----------|-----------|------------|-------|---------|--------|\n",
+                );
+            } else {
+                report.push_str(
+                    "| ID | Question | Retrieval | Generation | Sources | Latency |\n",
+                );
+                report.push_str(
+                    "|----|----------|-----------|------------|---------|--------|\n",
+                );
+            }
+        } else if has_judge {
             report.push_str("| ID | Question | Hit rate | Judge | Sources | Latency |\n");
             report.push_str("|----|----------|----------|-------|---------|--------|\n");
         } else {
             report.push_str("| ID | Question | Hit rate | Sources | Latency |\n");
             report.push_str("|----|----------|----------|---------|--------|\n");
         }
-        for r in &rows {
-            let pct = if r.total_keywords > 0.0 {
-                let hits_s = if r.keyword_hits == r.keyword_hits.floor() {
-                    format!("{:.0}", r.keyword_hits)
+        let fmt_pct = |hits: f32, total: f32| -> String {
+            if total > 0.0 {
+                let hits_s = if hits == hits.floor() {
+                    format!("{:.0}", hits)
                 } else {
-                    format!("{:.1}", r.keyword_hits)
+                    format!("{:.1}", hits)
                 };
-                let tot_s = if r.total_keywords == r.total_keywords.floor() {
-                    format!("{:.0}", r.total_keywords)
+                let tot_s = if total == total.floor() {
+                    format!("{:.0}", total)
                 } else {
-                    format!("{:.1}", r.total_keywords)
+                    format!("{:.1}", total)
                 };
-                format!(
-                    "{hits_s}/{tot_s} ({:.0}%)",
-                    r.keyword_hits as f64 / r.total_keywords as f64 * 100.0
-                )
+                format!("{hits_s}/{tot_s} ({:.0}%)", hits as f64 / total as f64 * 100.0)
             } else {
                 "n/a".to_string()
-            };
-            if has_judge {
+            }
+        };
+        for r in &rows {
+            let gen_pct = fmt_pct(r.keyword_hits, r.total_keywords);
+            let ret_pct = fmt_pct(r.retrieval_hits, r.total_keywords);
+            if semantic_score {
+                if has_judge {
+                    let j = r.judge_score.map_or("—".to_string(), |s| format!("{s}/2"));
+                    report.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {}ms |\n",
+                        r.id,
+                        r.question.replace('|', "\\|"),
+                        ret_pct,
+                        gen_pct,
+                        j,
+                        r.retrieved_docs.join(", "),
+                        r.latency_ms,
+                    ));
+                } else {
+                    report.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {}ms |\n",
+                        r.id,
+                        r.question.replace('|', "\\|"),
+                        ret_pct,
+                        gen_pct,
+                        r.retrieved_docs.join(", "),
+                        r.latency_ms,
+                    ));
+                }
+            } else if has_judge {
                 let j = r.judge_score.map_or("—".to_string(), |s| format!("{s}/2"));
                 report.push_str(&format!(
                     "| {} | {} | {} | {} | {} | {}ms |\n",
                     r.id,
                     r.question.replace('|', "\\|"),
-                    pct,
+                    gen_pct,
                     j,
                     r.retrieved_docs.join(", "),
                     r.latency_ms,
@@ -7970,7 +8107,7 @@ async fn cmd_eval(
                     "| {} | {} | {} | {} | {}ms |\n",
                     r.id,
                     r.question.replace('|', "\\|"),
-                    pct,
+                    gen_pct,
                     r.retrieved_docs.join(", "),
                     r.latency_ms,
                 ));
@@ -7996,12 +8133,22 @@ async fn cmd_eval(
             ));
         } else {
             println!("\n{report}");
-            print_success(&format!(
-                "Overall: {:.1}% recall (token-overlap){judge_note}  ({:.1}/{:.0})  avg {avg_latency_ms}ms",
-                overall_score * 100.0,
-                total_hits,
-                total_kw,
-            ));
+            if semantic_score {
+                print_success(&format!(
+                    "Retrieval: {:.1}%  Generation: {:.1}%{judge_note}  ({:.1}/{:.0})  avg {avg_latency_ms}ms",
+                    overall_retrieval_score * 100.0,
+                    overall_score * 100.0,
+                    total_hits,
+                    total_kw,
+                ));
+            } else {
+                print_success(&format!(
+                    "Overall: {:.1}% recall (token-overlap){judge_note}  ({:.1}/{:.0})  avg {avg_latency_ms}ms",
+                    overall_score * 100.0,
+                    total_hits,
+                    total_kw,
+                ));
+            }
         }
         Ok(())
     }
