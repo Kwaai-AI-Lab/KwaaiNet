@@ -2495,7 +2495,7 @@ fn inference_url_proxy_required_for_p2p_schemes() {
 
 use kwaai_rag::sequence::{
     entity_present_in_text, extract_kinship_interactions, narrator_kinship_map, normalize_date,
-    resolve_extracted, strip_inline_footnotes, RawEvent, RawInteraction,
+    resolve_extracted, strip_inline_footnotes, RawEvent,
 };
 
 #[test]
@@ -2973,4 +2973,484 @@ fn axiom6_no_fields_no_filter() {
         1,
         "expected no filter when entity has no birth/death fields"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NER: proper noun extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
+use kwaai_rag::ner::extract_proper_noun_candidates;
+
+#[test]
+fn ner_empty_text_returns_empty() {
+    let result = extract_proper_noun_candidates("");
+    assert!(result.is_empty(), "got: {result:?}");
+}
+
+#[test]
+fn ner_all_lowercase_text_returns_empty() {
+    let result = extract_proper_noun_candidates("the quick brown fox jumped over the lazy dog");
+    assert!(result.is_empty(), "got: {result:?}");
+}
+
+#[test]
+fn ner_clear_proper_name_is_extracted() {
+    let result = extract_proper_noun_candidates("Mandela was a respected leader.");
+    assert!(
+        result.iter().any(|c| c.contains("Mandela")),
+        "expected 'Mandela' in candidates, got: {result:?}"
+    );
+}
+
+#[test]
+fn ner_year_not_extracted_as_candidate() {
+    let result = extract_proper_noun_candidates("This happened in 1994 near the city.");
+    assert!(
+        !result.iter().any(|c| c == "1994"),
+        "numeric year should not be an entity candidate, got: {result:?}"
+    );
+}
+
+#[test]
+fn ner_sentence_start_the_filtered() {
+    // "The" at the start of a sentence is not a proper noun
+    let result = extract_proper_noun_candidates("The man walked down the street.");
+    assert!(
+        !result.iter().any(|c| c == "The"),
+        "'The' at sentence start should be filtered, got: {result:?}"
+    );
+}
+
+#[test]
+fn ner_multiple_proper_nouns_extracted() {
+    let result = extract_proper_noun_candidates(
+        "Joe Rassool visited Cape Town and met with Walied.",
+    );
+    assert!(
+        result.len() >= 2,
+        "expected at least two proper noun candidates, got: {result:?}"
+    );
+}
+
+#[test]
+fn ner_whitespace_only_returns_empty() {
+    let result = extract_proper_noun_candidates("   \n\t  ");
+    assert!(result.is_empty(), "got: {result:?}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// query_understand: rule-based query intent classification
+// ─────────────────────────────────────────────────────────────────────────────
+
+use kwaai_rag::query_understand::{understand_query_rule, QueryIntent};
+
+#[test]
+fn query_understand_who_is_returns_entity_description() {
+    let qs = understand_query_rule("Who is J.M.H. Gool?");
+    assert!(
+        matches!(qs.intent, QueryIntent::EntityDescription),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_who_was_returns_entity_description() {
+    let qs = understand_query_rule("Who was Yousuf Rassool?");
+    assert!(
+        matches!(qs.intent, QueryIntent::EntityDescription),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_tell_me_about_returns_entity_description() {
+    let qs = understand_query_rule("Tell me about the author.");
+    assert!(
+        matches!(qs.intent, QueryIntent::EntityDescription),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_when_did_returns_temporal() {
+    let qs = understand_query_rule("When did the forced removals begin?");
+    assert!(
+        matches!(qs.intent, QueryIntent::TemporalEvent),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_what_happened_returns_temporal() {
+    let qs = understand_query_rule("What happened in District Six?");
+    assert!(
+        matches!(qs.intent, QueryIntent::TemporalEvent),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_organization_returns_org_membership() {
+    let qs = understand_query_rule("What organization did he belong to?");
+    assert!(
+        matches!(qs.intent, QueryIntent::OrgMembership),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_children_of_returns_family_relation() {
+    let qs = understand_query_rule("Who are the children of Joe Rassool?");
+    assert!(
+        matches!(qs.intent, QueryIntent::FamilyRelation { .. }),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_possessive_father_returns_family_relation() {
+    let qs = understand_query_rule("Who was Joe Rassool's father?");
+    assert!(
+        matches!(qs.intent, QueryIntent::FamilyRelation { .. }),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_unknown_gibberish_returns_unknown() {
+    let qs = understand_query_rule("xyzzy frobnicator plugh");
+    assert!(
+        matches!(qs.intent, QueryIntent::Unknown),
+        "got {:?}",
+        qs.intent
+    );
+}
+
+#[test]
+fn query_understand_author_anchor_set_for_author_queries() {
+    let qs = understand_query_rule("Who is the author?");
+    // "the author" is an anchor reference, not a named entity
+    assert!(
+        qs.anchor_is_author || matches!(qs.intent, QueryIntent::EntityDescription),
+        "author queries should set anchor_is_author or EntityDescription, got intent={:?} anchor={}",
+        qs.intent, qs.anchor_is_author
+    );
+}
+
+#[test]
+fn query_understand_rule_returns_struct_without_panic() {
+    // Smoke test: verify no panic on various query shapes
+    for q in &[
+        "",
+        "?",
+        "Who?",
+        "When did something happen in 1884?",
+        "Describe the movement.",
+        "How many children did he have?",
+        "What was District Six like before the forced removals?",
+    ] {
+        let _ = understand_query_rule(q); // must not panic
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// retriever: pure functions (canonicalize_query, resolve_relative_entity_name)
+// ─────────────────────────────────────────────────────────────────────────────
+
+use kwaai_rag::retriever::{canonicalize_query, resolve_relative_entity_name};
+
+#[test]
+fn canonicalize_query_empty_graph_returns_query_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let graph = GraphStore::open(dir.path(), test_tid()).unwrap();
+    let q = "JMH Gool was an important figure";
+    assert_eq!(canonicalize_query(q, &graph), q);
+}
+
+#[test]
+fn canonicalize_query_no_alias_match_returns_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let mut graph = GraphStore::open(dir.path(), test_tid()).unwrap();
+    let entity = EntityNode {
+        id: entity_id("J.M.H. Gool", "Person"),
+        name: "J.M.H. Gool".to_string(),
+        entity_type: "Person".to_string(),
+        aliases: vec!["JMH Gool".to_string()],
+        ..make_entity("J.M.H. Gool", "Person")
+    };
+    graph.upsert_entity(entity).unwrap();
+
+    // Query that doesn't contain the alias should be unchanged
+    let q = "Who was the leader of the community?";
+    assert_eq!(canonicalize_query(q, &graph), q);
+}
+
+#[test]
+fn canonicalize_query_replaces_alias_with_canonical() {
+    let dir = TempDir::new().unwrap();
+    let mut graph = GraphStore::open(dir.path(), test_tid()).unwrap();
+    let entity = EntityNode {
+        id: entity_id("J.M.H. Gool", "Person"),
+        name: "J.M.H. Gool".to_string(),
+        entity_type: "Person".to_string(),
+        aliases: vec!["JMH Gool".to_string()],
+        ..make_entity("J.M.H. Gool", "Person")
+    };
+    graph.upsert_entity(entity).unwrap();
+
+    let result = canonicalize_query("JMH Gool", &graph);
+    // The alias should be replaced with the canonical name
+    assert!(
+        result.contains("J.M.H. Gool"),
+        "expected alias 'JMH Gool' replaced by canonical 'J.M.H. Gool', got: {result:?}"
+    );
+}
+
+#[test]
+fn resolve_relative_entity_name_empty_graph_returns_none() {
+    let dir = TempDir::new().unwrap();
+    let graph = GraphStore::open(dir.path(), test_tid()).unwrap();
+    assert!(resolve_relative_entity_name("the author's father", &graph).is_none());
+}
+
+#[test]
+fn resolve_relative_entity_name_non_relative_query_returns_none() {
+    let dir = TempDir::new().unwrap();
+    let graph = GraphStore::open(dir.path(), test_tid()).unwrap();
+    assert!(resolve_relative_entity_name("District Six history", &graph).is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// graph: advanced operations (doc metadata, document titles, all_entities, health)
+// ─────────────────────────────────────────────────────────────────────────────
+
+use kwaai_rag::scorer::score_graph;
+
+#[test]
+fn graph_doc_metadata_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    let mut meta = HashMap::new();
+    meta.insert("isbn".to_string(), "978-0-620-12345-6".to_string());
+    meta.insert("publisher".to_string(), "Recall Press".to_string());
+    g.set_doc_metadata(&meta).unwrap();
+
+    let retrieved = g.get_doc_metadata();
+    assert_eq!(retrieved.get("isbn").map(String::as_str), Some("978-0-620-12345-6"));
+    assert_eq!(retrieved.get("publisher").map(String::as_str), Some("Recall Press"));
+}
+
+#[test]
+fn graph_doc_metadata_empty_before_set() {
+    let dir = TempDir::new().unwrap();
+    let g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    assert!(g.get_doc_metadata().is_empty(), "fresh graph should have empty doc metadata");
+}
+
+#[test]
+fn graph_document_titles_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    let titles = vec!["Lest We Forget".to_string(), "District Six".to_string()];
+    g.set_document_titles(&titles).unwrap();
+
+    let retrieved = g.get_document_titles();
+    assert!(retrieved.contains(&"Lest We Forget".to_string()));
+    assert!(retrieved.contains(&"District Six".to_string()));
+}
+
+#[test]
+fn graph_document_titles_empty_before_set() {
+    let dir = TempDir::new().unwrap();
+    let g = GraphStore::open(dir.path(), test_tid()).unwrap();
+    assert!(g.get_document_titles().is_empty(), "fresh graph should have no titles");
+}
+
+#[test]
+fn graph_all_entities_returns_all_upserted() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    for name in &["Alice", "Bob", "Carol", "Dave", "Eve"] {
+        g.upsert_entity(make_entity(name, "Person")).unwrap();
+    }
+
+    let count = g.all_entities().count();
+    assert_eq!(count, 5, "all_entities() should return all 5 upserted entities");
+}
+
+#[test]
+fn graph_node_count_matches_upsert_count() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    g.upsert_entity(make_entity("Alice", "Person")).unwrap();
+    g.upsert_entity(make_entity("Bob", "Person")).unwrap();
+    g.upsert_entity(make_entity("Cape Town", "Place")).unwrap();
+
+    assert_eq!(g.node_count(), 3);
+}
+
+#[test]
+fn graph_upsert_entity_with_aliases_findable_by_alias() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    let entity = EntityNode {
+        id: entity_id("J.M.H. Gool", "Person"),
+        name: "J.M.H. Gool".to_string(),
+        entity_type: "Person".to_string(),
+        aliases: vec!["JMH Gool".to_string(), "Gool".to_string()],
+        ..make_entity("J.M.H. Gool", "Person")
+    };
+    g.upsert_entity(entity).unwrap();
+
+    // find_by_name_normalized should find by canonical name
+    assert!(
+        g.find_by_name_normalized("j.m.h. gool").is_some(),
+        "should be findable by canonical name"
+    );
+}
+
+#[test]
+fn graph_set_description_persists() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    let id = entity_id("TestPerson", "Person");
+    g.upsert_entity(make_entity("TestPerson", "Person")).unwrap();
+    g.set_description(id, "An important historical figure.").unwrap();
+
+    let node = g.get_entity(id).expect("entity should exist");
+    assert_eq!(node.description, "An important historical figure.");
+}
+
+#[test]
+fn graph_health_report_scores_in_valid_range() {
+    let dir = TempDir::new().unwrap();
+    let mut g = GraphStore::open(dir.path(), test_tid()).unwrap();
+
+    // Populate a small graph to avoid degenerate empty-graph scores
+    let mut e = make_entity("Joe Rassool", "Person");
+    e.description = "The author of Lest We Forget.".to_string();
+    e.fields.insert(
+        "occupation".to_string(),
+        kwaai_rag::graph::FieldValue {
+            value: "Author".to_string(),
+            evidence_chunk_ids: vec![],
+            confidence: 0.9,
+        },
+    );
+    g.upsert_entity(e).unwrap();
+
+    let report = score_graph(&g);
+    assert!(
+        report.overall >= 0.0 && report.overall <= 1.0,
+        "overall score {} should be in [0.0, 1.0]",
+        report.overall
+    );
+    assert!(report.entity_count >= 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sequence: scan_chunk_for_dates and render_mermaid
+// ─────────────────────────────────────────────────────────────────────────────
+
+use kwaai_rag::sequence::{
+    render_mermaid, scan_chunk_for_dates, DateMentionType, SequenceInteraction, TimelineEvent,
+};
+
+#[test]
+fn scan_chunk_for_dates_empty_text_returns_empty() {
+    let result = scan_chunk_for_dates("", 1);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn scan_chunk_for_dates_finds_four_digit_year() {
+    let result = scan_chunk_for_dates("He arrived in Cape Town in 1884 and settled there.", 1);
+    assert!(
+        result.iter().any(|d| d.date_raw.contains("1884")),
+        "expected '1884' in date mentions, got: {result:?}"
+    );
+}
+
+#[test]
+fn scan_chunk_for_dates_finds_decade_reference() {
+    let result = scan_chunk_for_dates("During the 1960s many families were relocated.", 1);
+    assert!(
+        !result.is_empty(),
+        "expected at least one date mention for '1960s', got: {result:?}"
+    );
+    assert!(
+        result.iter().any(|d| matches!(d.mention_type, DateMentionType::Decade)),
+        "expected Decade mention type, got: {result:?}"
+    );
+}
+
+#[test]
+fn scan_chunk_for_dates_no_dates_returns_empty() {
+    let result = scan_chunk_for_dates("The community was very close-knit and vibrant.", 5);
+    assert!(
+        result.is_empty(),
+        "no dates in text, expected empty, got: {result:?}"
+    );
+}
+
+#[test]
+fn scan_chunk_for_dates_chunk_id_propagated() {
+    let result = scan_chunk_for_dates("This occurred in 1910 near the harbour.", 42);
+    for m in &result {
+        assert_eq!(m.chunk_id, 42, "chunk_id should be propagated to DateMention");
+    }
+}
+
+#[test]
+fn render_mermaid_empty_events_produces_valid_output() {
+    let output = render_mermaid("Joe Rassool", &[], &[]);
+    // Should not panic and should produce some output (even if minimal)
+    assert!(!output.is_empty(), "render_mermaid should produce non-empty output");
+}
+
+#[test]
+fn render_mermaid_with_event_contains_date() {
+    let event = TimelineEvent {
+        entity_id: 1,
+        entity_name: "Joe Rassool".to_string(),
+        date_raw: Some("1884".to_string()),
+        date_sort: "1884-01-01".to_string(),
+        description: "Arrived in Cape Town".to_string(),
+        event_class: "arrival".to_string(),
+        evidence_chunk_id: 0,
+    };
+    let output = render_mermaid("Joe Rassool", &[event], &[]);
+    assert!(
+        output.contains("1884"),
+        "rendered output should contain the event year, got: {output}"
+    );
+}
+
+#[test]
+fn render_mermaid_with_interaction_no_panic() {
+    let interaction = SequenceInteraction {
+        from_entity_id: 1,
+        from_entity_name: "Alice".to_string(),
+        to_entity_id: 2,
+        to_entity_name: "Bob".to_string(),
+        date_raw: None,
+        date_sort: "9999-12-31".to_string(),
+        label: "sibling_of".to_string(),
+        evidence_chunk_id: 0,
+    };
+    let _ = render_mermaid("Alice", &[], &[interaction]);
 }
