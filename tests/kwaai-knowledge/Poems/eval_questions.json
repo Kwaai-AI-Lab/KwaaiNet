@@ -1,0 +1,238 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What poetic form and style is most associated with William Blake's Songs of Innocence and Experience, and what central thematic contrast does that title suggest?",
+    "expected_keywords": [
+      "William Blake",
+      "Songs",
+      "Innocence",
+      "Experience"
+    ],
+    "expected_answer": "According to the provided context [1], William Blake's \"Songs of Innocence and Experience\" is a collection of poems. The text suggests that these songs are characterized by originality and profound insight into nature and life, with words and phrases exhibiting extraordinary vividness of descriptive and imaginative power [1].\n\nThe title \"Songs of Innocence and Experience\" implies a contrast between two states or stages of human life. \"Songs of Innocence\" may represent an idealized, uncorrupted view of the world, while \"Songs of Experience\" might symbolize a more realistic, often disillusioned perspective gained through life's trials [1]."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "What central Romantic aesthetic is Keats most known for in his poetry?",
+    "expected_keywords": [
+      "Keats",
+      "Romantic",
+      "Negative Capability"
+    ],
+    "expected_answer": "Keats is most known for the Romantic aesthetic of Negative Capability, which he defined as \"when a man is capable of being in uncertainties, mysteries, doubts, without any irritable reaching after fact and reason.\" This idea emphasizes the acceptance of ambiguity and the ability to exist in the realm of imagination, which is a significant aspect of his poetry [1]."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "Compare Whitman's free verse style in Leaves of Grass to Dickinson's compressed, slant-rhymed style \u2014 what formal element most sharply distinguishes the two?",
+    "expected_keywords": [
+      "Walt Whitman",
+      "Leaves",
+      "Grass",
+      "Emily Dickinson"
+    ],
+    "expected_answer": "The formal element that most sharply distinguishes Walt Whitman's free verse style in \"Leaves of Grass\" from Emily Dickinson's compressed, slant-rhymed style is the use of rhythm and meter. While Whitman uses a loose, irregular rhythm with no set rhyme scheme, Dickinson employs a more structured format, utilizing slant rhymes and compact verse [1].\n\n[1] \"It seemed to me that this might be done by calling in the assistance of Lyrical and rapid Metre. It was necessary that the Poem, to be natural, should in reality move slowly; yet I hoped, that, by the aid of the metre, to those who should at all enter into the spirit of the Poem, it would appear to move quickly.\" [2]"
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What subject matter does Whitman's Drum-Taps specifically address, and how does this differ thematically from the broader Leaves of Grass?",
+    "expected_keywords": [
+      "Drum",
+      "Taps",
+      "Walt Whitman",
+      "Project Gutenberg"
+    ],
+    "expected_answer": "According to the provided context, \"Drum-Taps\" is a specific eBook by Walt Whitman, which is part of Project Gutenberg. The subject matter addressed in \"Drum-Taps\" is not explicitly specified in the context you've provided. However, based on its title, it can be inferred that the book might focus on themes related to war or drums, potentially reflecting a more somber and patriotic tone compared to Whitman's broader work \"Leaves of Grass.\"\n\nOn the other hand, \"Leaves of Grass\" is another eBook by Whitman, which also forms part of Project Gutenberg. This work is known for its exploration of themes such as democracy, humanity, and individuality. Unlike \"Drum-Taps,\" it does not seem to have a specific focus on war or drums [2]."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "Pair: Both Blake and Wordsworth wrote within visionary/Romantic nature traditions \u2014 how does Blake's symbolic, mystical approach to nature differ from Wordsworth's plain-style approach?",
+    "expected_keywords": [
+      "William Blake",
+      "However",
+      "Blake",
+      "Wordsworth"
+    ],
+    "expected_answer": "According to the provided context [1], the poetry of William Blake is characterized by \"flashes of wholly original and profound insight into nature and life,\" with a unique descriptive and imaginative power. However, it also mentions that Blake's work often appears in a seemingly whimsical or even rugged frame, which suggests a more symbolic and mystical approach to nature compared to Wordsworth's.\n\nOn the other hand, as described in the context [2], Wordsworth's poetry, particularly An Evening Walk, shows \"minute observation of Nature\u2014not only in her external form and color, but also in her suggestiveness\" but without symbolism, focusing more on the plain aspects of nature. As you can see, Blake's approach to nature is more mystical and symbolic, while Wordsworth's is more grounded and observational.\n\n[1]: <source id=\"1\" resource-type=\"collection\" resource-id=\"d122b8af-84c6-454d-9862-d5804fcba127\">\n[2]: <source id=\"2\" resource-type=\"collection\" resource-id=\"d122b8af-84c6-454d-9862-d5804fcba127\">"
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "Pair: Keats and Byron were both major Romantic poets of the same generation \u2014 how does Keats's sensuous aestheticism differ from Byron's satirical, dramatic voice?",
+    "expected_keywords": [
+      "Keats",
+      "Byron",
+      "Romantic",
+      "Come"
+    ],
+    "expected_answer": "According to the provided context, while both Keats and Byron were significant Romantic poets of the same generation [1], their styles differed significantly. Keats is often associated with a sensuous aestheticism, characterized by his focus on beauty, emotion, and the sublime. This can be seen in lines like \"Come, rest in this bosom, my own stricken deer\" [1].\n\nOn the other hand, Byron's poetry is characterized by its satirical and dramatic voice. His work often addresses social issues, political commentary, and personal experiences with a sharp wit and intense emotion. An example of Byron's satirical and dramatic style can be found in the lines \"Though the day of my destiny's over, / And the star of my fate bath declined\" [1].\n\n[1] The source is a collection that includes various poems from both Keats and Byron."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "Pair: Whitman and Longfellow were both major 19th-century American poets \u2014 how does Whitman's radical free verse differ from Longfellow's formal narrative meter?",
+    "expected_keywords": [
+      "Walt Whitman",
+      "Henry Wadsworth Longfellow",
+      "American",
+      "Whitman"
+    ],
+    "expected_answer": "According to the provided context, while both Walt Whitman and Henry Wadsworth Longfellow were significant 19th-century American poets, their writing styles differed considerably. Whitman is known for his radical free verse style, as evidenced by this passage from the context: \"Whitman had no very tender regard for the Germany of his time. He fancied that the Germans were like the Chinese, only less graceful and refined and more brutish.\" In contrast, Longfellow's poetry was characterized by formal narrative meter as shown in a different part of the context discussing Wordsworth's poetry: \"While I am lying on the grass, Thy loud note smites my ear!\u2014From hill to hill it seems to pass, At once far off and near!\" [2] This indicates that Longfellow's work was more structured and metered, while Whitman's poetry was free-flowing and less constrained by traditional poetic forms."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "Pair: Dickinson and Poe were both American poets preoccupied with death \u2014 how does Dickinson's compressed, metaphysical style differ from Poe's Gothic, musical style?",
+    "expected_keywords": [
+      "Emily Dickinson",
+      "Edgar Allan Poe",
+      "Gothic",
+      "While Poe"
+    ],
+    "expected_answer": "According to the provided context [1], Emily Dickinson's style is characterized as compressed and metaphysical. In contrast, Edgar Allan Poe is known for his Gothic and musically intricate style. The difference lies in their approaches to themes and use of language. While Poe often employed a dark, dramatic, and musical style to explore death and the supernatural, Dickinson's style is characterized by daringly constructed lines, a focus on thought-rhyme, and an unconventional approach to expression that reflects her unique perspective on life and death [1]."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "Pair: Rossetti and Elizabeth Barrett Browning were both major Victorian women poets \u2014 how does Rossetti's devotional, sensuous poetry differ from Browning's political, passionate poetry?",
+    "expected_keywords": [
+      "Elizabeth Barrett Browning",
+      "Seraphim",
+      "Rossetti",
+      "However"
+    ],
+    "expected_answer": "According to the provided context [1], Elizabeth Barrett Browning's poetry is characterized as political and passionate. For instance, her work includes \"Seraphim\" and poems written between its publication and 1844, which express her life experiences. On the other hand, the context does not provide explicit information about Rossetti's devotional, sensuous poetry. However, it is generally known that Dante Gabriel Rossetti was also a significant Victorian poet, whose work often featured themes of spirituality and sensuality [2]. To compare their poetry in detail, further research or additional context may be necessary.\n\n[1] The Project Gutenberg eBook of The Poetical Works of Elizabeth Barrett Browning, by Elizabeth Barrett Browning\n[2] https://www.poetryfoundation.org/poets/dante-gabriel-rossetti"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "Pair: Robert Browning and Tennyson were the two dominant male voices of Victorian poetry \u2014 how does Browning's dramatic-monologue psychological realism differ from Tennyson's elegiac, formal Poet Laureate style?",
+    "expected_keywords": [
+      "Robert Browning",
+      "Alfred Tennyson",
+      "Victorian",
+      "Browning"
+    ],
+    "expected_answer": "According to the provided context, while both Robert Browning and Alfred Tennyson were significant figures in Victorian poetry, their styles differ significantly. Browning is noted for his use of dramatic monologues, a form that allows the speaker's psychological depth to be explored [1]. In contrast, Tennyson, as Poet Laureate, was known for his elegiac and formal style, often addressing themes of history, morality, and the human condition in a more traditional manner [2].\n\n[1] \"From Alfred Tennyson, although in perfect sincerity I regard him as the noblest poet that ever lived, I have left myself time to cite only a very brief specimen. I call him, and think him the noblest of poets, not\" [2] \"The collection here offered to the public consists of Poems which have been written in the interim between the period of the publication of my 'Seraphim' and the present; variously coloured, or perhaps shadowed, by the life of which they are the natural expression,\u2014and, with the exception of a few contributions to English or\" [1] \"The Project Gutenberg eBook of The Poetical Works of Elizabeth Barrett Browning, by Elizabeth Barrett Browning. The Project Gutenberg EBook of The Poetical Works of Elizabeth Barrett Browning, Vol. I, by Elizabeth  Barrett Browning\"\n[2] \"From the wreck of the past, which bath perished, Thus much I at least may recall, It bath taught me that which I most cherished Deserved to be dearest of all: In the desert a fountain is springing, In the wide waste there still is a tree, And a bird in the solitude singing, Which speaks to my spirit of thee. Although the rhythm here is one of the most difficult, the versification could scarcely be improved. No nobler theme ever engaged the pen of poet.\""
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "Bonus pair: Robert Browning and Elizabeth Barrett Browning were a real married couple \u2014 what stylistic differences distinguish their individual poetic voices despite their personal relationship?",
+    "expected_keywords": [
+      "Elizabeth Barrett Browning",
+      "English",
+      "However",
+      "Robert Browning"
+    ],
+    "expected_answer": "The provided context contains two sources about the works of Elizabeth Barrett Browning, a prominent English poet. However, it does not contain information on the stylistic differences between her poetry and that of her husband, Robert Browning.\n\nRobert Browning's poetry is characterized by its dramatic monologues, where the speaker often presents complex and ambiguous perspectives, while Elizabeth Barrett Browning's poetry showcases a more conventional style with themes like love, nature, and social issues [1]. In terms of structure, Robert Browning's works are known for their free verse, whereas Elizabeth Barrett Browning's poems often follow traditional rhyme and meter patterns [2].\n\n[1] Source not provided in context.\n[2] Source not provided in context."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What does the \"Index of Project Gutenberg Works\" format (used for Tennyson and Byron in this cluster) provide, as distinct from a single poetry-collection volume?",
+    "expected_keywords": [
+      "Index",
+      "Project Gutenberg Works",
+      "Alfred Lord Tennyson",
+      "George Gordon"
+    ],
+    "expected_answer": "The \"Index of Project Gutenberg Works\" format provides a collection of digital texts, in this case, the works of Alfred Lord Tennyson and George Gordon No\u00ebl Byron. It is different from a single poetry-collection volume because it offers multiple works by these authors in various formats, making them easily accessible online [1]. The Project Gutenberg License allows users to copy, give away, or re-use the eBooks with few restrictions, promoting free and wide distribution of literature [2]."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "Which poet in this cluster is most associated with dramatic monologue as a technique, and what does that technique formally involve?",
+    "expected_keywords": [
+      "Lord Byron",
+      "Dramatic",
+      "Whitman",
+      "Walt"
+    ],
+    "expected_answer": "The poet who is most associated with the dramatic monologue as a technique is Lord Byron [1]. Dramatic monologue is a form of poetry where a speaker addresses someone else or speaks to themselves, usually revealing their character, thoughts, or emotions through a first-person perspective. This technique is characterized by the absence of the poet's voice and the presence of a fictional narrator, often expressing a conflicting or complex viewpoint [2].\n\n[1] Whitman, Walt. The Works of Lord Byron. Vol. V. Poetry. (1830) Contents of Vol. V of the Poems\n[2] Cairns, David A. \"Dramatic Monologue.\" Oxford Bibliographies, 27 Feb. 2014, <https://www.oxfordbibliographies.com/view/document/obo-9780199756810/obo-9780199756810-0003.xml>."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Cross-era: How does the plainness valued by Wordsworth's Romantic nature poetry differ from the more self-conscious irony of a Victorian poet like Tennyson or Browning?",
+    "expected_keywords": [
+      "William Wordsworth",
+      "Romantic",
+      "Ossian",
+      "However"
+    ],
+    "expected_answer": "The context provided discusses William Wordsworth, a Romantic poet, and his preference for simplicity and natural imagery in his poetry compared to a contemporary critic who questions the worthiness of other works, such as those attributed to Ossian. However, it doesn't directly compare Wordsworth's style with that of Victorian poets like Tennyson or Browning regarding plainness versus self-conscious irony.\n\nIn terms of difference between Romantic and Victorian poetry in this aspect, Tennyson and Browning are known for employing more self-conscious irony than Wordsworth. According to a study by Wellek and Warren [2], the Victorian era saw a shift from the Romantics' emphasis on emotion and nature towards an increased focus on technique, structure, and self-awareness in poetry. This change can be observed in the works of Tennyson and Browning, who often used irony as a means to explore complex themes and to create a sense of distance between themselves and their subjects.\n\nIn contrast, Wordsworth's poetry is characterized by its simplicity, directness, and emphasis on emotion and nature. As mentioned in the provided context [1], Wordsworth criticizes another poet for using more elaborate imagery than what he considers necessary or appropriate. This preference for plainness over self-conscious irony can be seen throughout his works, such as \"I Wandered Lonely as a Cloud\" and \"Tintern Abbey.\"\n\nReferences:\n[1] <https://archive.org/stream/pointofgeniusbook00murkiala#page/n793/mode/2up>\n[2] Wellek, R., & Warren, A. C. (1949). Theory of literature. Harcourt, Brace."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Near-miss: Poe and Dickinson are both American and both preoccupied with mortality \u2014 what specific formal feature would most reliably distinguish a Poe poem from a Dickinson poem even without an author byline?",
+    "expected_keywords": [
+      "Emily Dickinson",
+      "Edgar Allan Poe",
+      "However",
+      "Form"
+    ],
+    "expected_answer": "The context provided does not offer detailed information on the formal features that distinguish Emily Dickinson's poems from those of Edgar Allan Poe. However, based on my general knowledge, some noticeable differences can be observed:\n\n1. Form and Structure: Dickinson's poems often have a unique and irregular stanza structure, while Poe's poems tend to follow more traditional forms such as sonnets or quatrains with an ABAB or ABCB rhyme scheme.\n2. Length of Lines and Stanzas: Dickinson's lines are usually short and concise, often consisting of only a few words. In contrast, Poe's lines can be longer and more elaborate.\n3. Use of Dashes: Dickinson frequently uses dashes to create pauses in her work, while Poe does not use them as extensively or consistently.\n4. Tone and Style: Although both writers often explore themes of mortality, Dickinson's poems tend to have a more introspective, philosophical, and spiritual tone, whereas Poe's works are characterized by a darker, brooding, and gothic atmosphere.\n\nFor a definitive answer based on the provided context, further information or research would be needed to identify Dickinson's unique formal features in her poems.\n[No citation available]"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Near-miss: Byron and Robert Browning are both known for a theatrical poetic persona \u2014 how does Byron's Romantic-era \"Byronic hero\" differ from Browning's Victorian dramatic-monologue speaker?",
+    "expected_keywords": [
+      "Lord Byron",
+      "Byronic",
+      "Romantic",
+      "Robert Browning"
+    ],
+    "expected_answer": "According to the provided context, the works of Lord Byron [1] feature a character known as the Byronic hero, which is characteristic of the Romantic era. This hero often exhibits qualities such as melancholy, cynicism, and a rebellious nature. On the other hand, Robert Browning's poetic persona primarily consists of dramatic monologues, where the speaker is often self-centered, introspective, and complex, representing the Victorian era [2]. While both characters share an element of dramatic and emotional depth, their specific characteristics differ significantly due to the distinct eras they represent.\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"d122b8af-84c6-454d-9862-d5804fcba127\">626...CONTENTS OF VOL. VI.</source>\n[2] <source id=\"2\" resource-type=\"collection\" resource-id=\"d122b8af-84c6-454d-9862-d5804fcba127\">The Project Gutenberg eBook of The Poetical Works of Elizabeth Barrett Browning, by Elizabeth Barrett Browning.</source>"
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "What common Victorian-era social or religious tension does Christina Rossetti's devotional poetry often engage with?",
+    "expected_keywords": [
+      "Christina Rossetti",
+      "Victorian"
+    ],
+    "expected_answer": "Christina Rossetti's devotional poetry often engages with the tension between faith and doubt, a common theme in Victorian-era literature [1]."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: Of the poets in this cluster, which two are most likely to be confused by a retrieval system due to overlapping themes of death and mortality across different eras?",
+    "expected_keywords": [
+      "Travels",
+      "Fireside",
+      "Therefore"
+    ],
+    "expected_answer": "In the provided context, both \"The maker of poems settles justice, reality, immortality\" [1] and \"VI.\" from the poem \"Travels by the Fireside\" [3] discuss themes related to death and mortality. Therefore, a retrieval system might confuse these two works by the same author when they are presented out of context."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Edge case: Longfellow was America's most popular 19th-century poet in his lifetime, while Whitman was initially controversial \u2014 what does this contrast suggest about the relationship between formal conventionality and contemporary popularity?",
+    "expected_keywords": [
+      "Longfellow",
+      "America",
+      "Whitman",
+      "When"
+    ],
+    "expected_answer": "The contrast suggests that during the 19th century, formal conventionality did not necessarily hinder contemporary popularity. Longfellow, who adhered to traditional poetic forms, was America's most popular poet in his lifetime [1]. On the other hand, Whitman's works, which were initially considered controversial due to their free verse style and unconventional themes, gained popularity over time [2]. This indicates that both formal and unconventional styles could attract audiences, depending on the era and cultural context.\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"d122b8af-84c6-454d-9862-d5804fcba127\">It might be urged that these considerations would warrant the interference of an editor, and justify him in selecting the text which he thought the best upon the whole; but this must be left to posterity. When editors can escape the bias of contemporary thought and feeling, when their judgments are refined by distance and mellowed by the new literary standards of the intervening years,\u2014when in fact Wordsworth is</source>\n\n[2] <source id=\"1\" resource-type=\"collection\" resource-id=\"d122b8af-84c6-454d-9862-d5804fcba127\">From 1815 to 1843, both poems were placed by Wordsworth among those \"of Sentiment and Reflection.\" In 1845 they were transferred to \"Poems written in Youth.\"\u2014Ed.\nThe Poem\ntext\nvariant\nline number\nHow richly glows the water's breast\nBefore us, tinged with evening hues,\nWhile, facing thus the crimson west,\nThe boat her silent course pursues!\nAnd see how dark the backward stream!\nA little moment past so smiling!\nAnd still, perhaps, with faithless gleam,\nSome other loiterers beguiling.\nSuch views the youthful Bard allure;\nBut, heedless of the following gloom,\nHe deems their colours shall endure\nTill peace go with him to the tomb.\n\u2014And let him nurse his fond deceit,\nAnd what if he must die in sorrow!\nWho would not cherish dreams so sweet,\nThough grief and pain may come to-morrow?\n1\n2\n3\n5\n10\n15\nVariant 1:\n1815\nHow rich the wave, in front, imprest\nWith evening-twilight's summer hues,\n1798\nreturn\nVariant 2:\n1802\n... path ...\n1798\nreturn\nVariant 3:</source>"
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "What distinguishes Elizabeth Barrett Browning's \"Poetical Works\" thematically from the devotional focus found in Christina Rossetti's poems?",
+    "expected_keywords": [
+      "Based",
+      "Elizabeth Barrett Browning",
+      "Poetical Works",
+      "Christina"
+    ],
+    "expected_answer": "Based on the provided context, Elizabeth Barrett Browning's \"Poetical Works,\" specifically the volume I, primarily focuses on a variety of themes including love, nature, and social issues [1]. On the other hand, Christina G. Rossetti's poems, as shown in Poems, have a more pronounced devotional focus, which is evident in the dedication to her mother and the inclusion of religious imagery such as lilies and roses within the text [2]."
+  }
+]

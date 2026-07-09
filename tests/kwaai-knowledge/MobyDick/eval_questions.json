@@ -1,0 +1,240 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What is the central plot and thematic obsession of Melville's Moby-Dick?",
+    "expected_keywords": [
+      "Melville",
+      "Moby",
+      "Dick",
+      "Pequod"
+    ],
+    "expected_answer": "According to the essay, the central plot and thematic obsession of Melville's \"Moby-Dick\" revolves around the Pequod, its monomaniac captain Ahab, and the crew, which are considered symbolic representatives of Melville's genius [1]. Each character is deliberately symbolic of a complete and separate element. The allegory explores themes such as obsession, revenge, fate, and the human struggle against nature."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "What is Bartleby, the Scrivener about, and how does its tone and scale differ dramatically from Moby-Dick's?",
+    "expected_keywords": [
+      "Bartleby",
+      "The Scrivener",
+      "Herman Melville",
+      "The Piazza Tales"
+    ],
+    "expected_answer": "\"Bartleby, The Scrivener\" is a short story written by Herman Melville, published in 1856 as part of \"The Piazza Tales.\" The story revolves around the life of Bartleby, a strange and peculiar scrivener who works for the narrator in his Wall Street office. In contrast to Moby-Dick, Bartleby, The Scrivener is significantly shorter and focuses on a single narrative rather than an epic adventure at sea. The tone of Bartleby, The Scrivener is more introspective and philosophical, with a greater emphasis on the human condition, while Moby-Dick is characterized by its expansive scope, rich symbolism, and deep exploration of themes such as obsession, morality, and the human struggle against nature. [1]"
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "What is Billy Budd about, and what moral/legal dilemma does it center on?",
+    "expected_keywords": [
+      "Billy Budd",
+      "Herman Melville",
+      "HMS Indomitable",
+      "Billy"
+    ],
+    "expected_answer": "\"Billy Budd\" is a novel by Herman Melville. The story centers around the eponymous character, a young sailor who works aboard the HMS Indomitable. The moral and legal dilemma that the novel explores revolves around Billy's unintentional actions leading to the death of Claggart, the ship's master-at-arms, and the subsequent trial and execution of Billy for mutiny [1]. Despite his innocence and admirable character, Billy is found guilty due to ambiguous circumstances and a complex chain of events."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What is Typee, and how does it relate to Melville's own biographical experience, per Weaver's critical biography?",
+    "expected_keywords": [
+      "Typee",
+      "Herman Melville",
+      "Melville",
+      "However"
+    ],
+    "expected_answer": "Typee is a novel written by Herman Melville, published in 1846. According to the context provided, Typee is one of the works by Melville that this specific bibliography includes [1]. However, the context does not provide information on how Typee relates to Melville's own biographical experience, per Weaver's critical biography. For a detailed analysis of how Typee connects to Melville's life experiences and Weaver's critical biography, further research would be necessary."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What historical event does Melville's Battle-Pieces and Aspects of the War address, and how does this differ subject-wise from his sea narratives?",
+    "expected_keywords": [
+      "Battle",
+      "Pieces",
+      "Aspects",
+      "War"
+    ],
+    "expected_answer": "The context doesn't explicitly state the specific historical event that \"Battle-Pieces and Aspects of the War\" by Herman Melville addresses. However, it is known that this collection of poetry was published in 1866 and it reflects Melville's views on the American Civil War [1].\n\nIn contrast to his sea narratives such as \"Moby-Dick,\" \"Typee,\" and \"Omoo,\" which focus mainly on maritime adventures and life at sea, \"Battle-Pieces and Aspects of the War\" is centered around the American Civil War and expresses Melville's anti-war sentiments [2].\n\n[1] Some Personal Letters of Herman Melville and a Bibliography\n[2] SOME PERSONAL LETTERS OF HERMAN MELVILLE AND A BIBLIOGRAPHY"
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "What real 1820 historical event does the whaling-industry literature in this cluster provide context for, that directly inspired Moby-Dick's plot?",
+    "expected_keywords": [
+      "However",
+      "Moby",
+      "Dick",
+      "Early"
+    ],
+    "expected_answer": "The provided context mentions a series of unfortunate events occurring in the whaling industry around the early 1740s. However, the specific real-life event that directly inspired Moby-Dick's plot is not explicitly stated in this part of the text.\n\nAccording to [1], there were two successive poor seasons for the whaling industry, causing many people to be in straitened circumstances and much distressed. Early in 1741, French and Spanish privateers began their depredations upon the English commerce, resulting in losses for the whaling vessels as well.\n\nThese events might have contributed to the creation of a narrative that highlights the struggles and dangers faced by whalers during this time period, but it is not definitive proof of a single historical event inspiring Moby-Dick's plot. To find more concrete evidence about the real-life event that inspired Moby-Dick's plot, further research may be required."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What does the Book of Job (KJV) concern, and what thematic parallels does it have with Moby-Dick, such as confrontation with an unknowable natural force?",
+    "expected_keywords": [
+      "Book",
+      "Job",
+      "King James Version",
+      "However"
+    ],
+    "expected_answer": "The context provided does not explicitly discuss the Book of Job from the King James Version. However, both Moby-Dick and the Book of Job share themes of confrontation with an unknowable natural force. In Moby-Dick, the whale represents such a force, while in the Book of Job, the character Job faces various trials and tribulations sent by God to test his faith [1].\n\nIn the context provided, there is a mention of allegorical characters in Moby-Dick, with each character symbolizing separate elements. This can be compared to how the Book of Job features various characters such as Job, Satan, and God, all symbolically representing different aspects [2]. However, it's important to note that the context does not directly discuss these thematic parallels between Moby-Dick and the Book of Job.\n\n[1] - \"Because of the prodigal richness of material in Moby-Dick\" (from the first source with id \"1\")\n[2] - \"Like Bunyan, or Swift, Melville has enforced his moral by giving an independent and ideal verisimilitude to its innocent and unconscious exponents.\" (from the first source with id \"1\")"
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "According to Weaver's \"Herman Melville: Mariner and Mystic,\" what dual character does the biography's title suggest about Melville?",
+    "expected_keywords": [
+      "Herman Melville",
+      "Mariner",
+      "Mystic"
+    ],
+    "expected_answer": "The title of Herman Melville's biography, \"Mariner and Mystic,\" suggests that he had a dual character as both a sailor and a mystic [1]."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "What does D.H. Lawrence's Studies in Classic American Literature argue about Moby-Dick, based on its inclusion as literary criticism in this cluster?",
+    "expected_keywords": [
+      "Lawrence",
+      "Studies",
+      "Classic American Literature",
+      "Moby"
+    ],
+    "expected_answer": "D.H. Lawrence's essay in Studies in Classic American Literature argues that Moby-Dick is a representative of Melville's genius and that each character in the novel is symbolic of a complete and separate element. He also notes that due to the prodigious amount of material in Moby-Dick, it has lost sight of its psychological synthesis and high quality as an allegory [1]."
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "What does Browne's Etchings of a Whaling Cruise document, and how does its firsthand account compare to Melville's fictionalized depiction in Moby-Dick?",
+    "expected_keywords": [
+      "Browne",
+      "Etchings",
+      "Whaling Cruise",
+      "Zanzibar"
+    ],
+    "expected_answer": "Browne's \"Etchings of a Whaling Cruise\" documents his personal experiences during a whaling voyage and a sojourn on the island of Zanzibar. According to the context, Melville may have learned a technique from Defoe, but he owes no debt to J. Ross Browne in terms of their writing about whaling [1].\n\nWhile Browne provides a firsthand account of his travels, Melville's depiction in \"Moby-Dick\" is more fictionalized and glorifies the romance of whales, often employing rhetorical extravagance and characterization that Browne does not use [2]."
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What does Minnigerode's work compile regarding Melville, and what two types of material does its title indicate?",
+    "expected_keywords": [
+      "Minnigerode",
+      "SOME PERSONAL LETTERS OF HERMAN",
+      "MELVILLE AND",
+      "BIBLIOGRAPHY"
+    ],
+    "expected_answer": "Minnigerode's work, titled \"SOME PERSONAL LETTERS OF HERMAN MELVILLE AND A BIBLIOGRAPHY,\" compiles personal letters of Herman Melville and a bibliography. The title suggests that the work consists of both primary sources (letters) and secondary sources (bibliography). [1]"
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "To whom did Melville dedicate Moby-Dick, and what work by that author is included in this cluster as contemporary context?",
+    "expected_keywords": [
+      "Moby",
+      "Dick",
+      "However",
+      "Herman Melville"
+    ],
+    "expected_answer": "According to the provided context [1], Moby-Dick was not dedicated to anyone specifically. However, it's mentioned that Herman Melville wrote Moby-Dick and another novel, Pierre, in a specific house [2]. In addition to Moby-Dick, SOME PERSONAL LETTERS OF HERMAN MELVILLE is also included in this context cluster."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "Cross-document: How does Hawthorne's The Scarlet Letter compare stylistically and thematically to Moby-Dick, given the two authors were contemporaries and friends?",
+    "expected_keywords": [
+      "Hawthorne",
+      "The Scarlet Letter",
+      "Melville",
+      "Moby"
+    ],
+    "expected_answer": "The provided context doesn't offer a direct comparison of the stylistic or thematic similarities between Hawthorne's \"The Scarlet Letter\" and Melville's \"Moby-Dick.\" However, it is mentioned that both works are among the few notable literary achievements in American literature [1]. E. L. Grant Watson wrote an essay on Moby-Dick that is considered beautiful and profound [1].\n\nAs for a comparison, I'd recommend exploring further by reading critical analyses of both novels to understand their similarities and differences in terms of style and themes. A scholarly article titled \"Melville's 'Moby-Dick': An Analytical Essay\" (The American Scholar, Vol. 15, No. 3, 1926) might provide insight into Moby-Dick, while a book like \"The Scarlet Letter: A Casebook\" (edited by Sacvan Bercovitch, 1984) could offer perspectives on The Scarlet Letter."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Cross-document: How does Starbuck's History of the American Whale Fishery provide factual and industrial context that Melville draws on for Moby-Dick's whaling-industry digressions?",
+    "expected_keywords": [
+      "Alexander Starbuck",
+      "History",
+      "American Whale Fishery",
+      "Herman Melville"
+    ],
+    "expected_answer": "According to the provided context, Alexander Starbuck's \"History of the American Whale Fishery\" is a valuable resource that provides extensive facts and details about the whaling industry. This work appears to have been drawn upon by Herman Melville for the industrial context in his novel Moby-Dick [1]. The specifics about the ship Acushnet, which Melville sailed on, are also found in Starbuck's work [2]."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Near-miss: Both Typee and Moby-Dick are sea narratives by Melville, but Typee is largely autobiographical while Moby-Dick is fully fictionalized \u2014 what does this distinction suggest about Melville's development as a writer?",
+    "expected_keywords": [
+      "Melville",
+      "Typee",
+      "Moby",
+      "Dick"
+    ],
+    "expected_answer": "According to the provided context [1], Melville published ten novels and five volumes of poetry, including the novels Typee and Moby-Dick. While Typee is largely autobiographical, Moby-Dick is fully fictionalized. This distinction suggests that Melville progressed from writing semi-autobiographical works to creating entirely imagined narratives as he developed his writing career."
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Near-miss: Both Bartleby and Billy Budd deal with authority and refusal, but in an office setting versus a naval setting respectively \u2014 how does each setting shape its exploration of institutional power?",
+    "expected_keywords": [
+      "Billy Budd",
+      "Herman Melville",
+      "Bartleby",
+      "Melville"
+    ],
+    "expected_answer": "The provided context primarily focuses on the naval officer Billy Budd from Herman Melville's novel \"Billy Budd,\" whereas Bartleby appears in Melville's short story \"Bartleby, the Scrivener.\" Although both characters deal with authority and refusal, their settings do shape their explorations of institutional power.\n\nIn the naval setting of \"Billy Budd,\" Billy, a sailor with an intellectual disability, is caught between two forms of authority: Captain Vere, the ship's commander, and John Claggart, the master-at-arms who falsely accuses Billy of mutiny [1]. The novel explores the complexities of obedience, duty, and morality within a hierarchical military structure.\n\nOn the other hand, \"Bartleby, the Scrivener\" takes place in an office setting, where Bartleby, a copyist, refuses to perform his work and eventually moves into the office as a transient guest. The story examines power dynamics within a bureaucratic environment, focusing on issues like individualism, conformity, and the dehumanization of workers [2].\n\nWhile both works delve into themes related to authority and refusal, their settings allow for distinct analyses of institutional power structures in different professional contexts.\n\n[1] Melville, Herman M. Billy Budd, Sailor: An Inside Narrative. (1924).\n[2] Melville, Herman M. Bartleby, the Scrivener. (1853)."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Cross-document: How might Weaver's critical biography and Minnigerode's letters/bibliography compilation serve different scholarly purposes for someone studying Melville?",
+    "expected_keywords": [
+      "Weaver",
+      "Minnigerode",
+      "Herman Melville",
+      "Melville"
+    ],
+    "expected_answer": "The works of Weaver's critical biography and Minnigerode's letters/bibliography compilation could serve distinct scholarly purposes for someone studying Herman Melville.\n\nWeaver's critical biography, [1], provides a detailed account of Melville's life and career, offering insights into his personal experiences and their potential impact on his works. This can help scholars understand the context in which Melville wrote and gain a deeper understanding of his literary style and themes.\n\nOn the other hand, Minnigerode's letters/bibliography compilation offers a comprehensive list of Melville's personal letters, both American and English, as well as subsequent reprintings of his works [1]. This can be useful for scholars who are interested in examining Melville's correspondence or tracing the evolution of his published works over time. Additionally, Minnigerode's work includes a list of Melville's lectures, magazine contributions, and other related works, which may shed light on less-explored aspects of Melville's career [1].\n\nBy combining these two resources, scholars can gain a more holistic understanding of Herman Melville's life and works."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: What thematic throughline connects the Book of Job's confrontation with an overwhelming natural force to Ahab's confrontation with the white whale in Moby-Dick?",
+    "expected_keywords": [
+      "Book",
+      "Job",
+      "Ahab",
+      "Moby"
+    ],
+    "expected_answer": "The thematic throughline connecting the Book of Job's confrontation with an overwhelming natural force and Ahab's confrontation with the white whale in Moby-Dick revolves around the exploration of human struggle against a superior, uncontrollable force.\n\nIn the Book of Job, Job is subjected to various calamities and tests by God, as Satan challenges Job's faith and devotion. Despite Job's suffering, he remains steadfast in his belief in God [1].\n\nSimilarly, in Moby-Dick, Captain Ahab's obsession with hunting the white whale leads to an intense struggle against the powerful sperm whale. Ahab's pursuit of the white whale ultimately leads to his downfall and death. Both Job and Ahab face adversity beyond their control, but maintain a sense of perseverance and determination [2].\n\n[1] Watson, Charles R. \"The Representative Characters in Moby-Dick.\" Moby-Dick (London  Mercury,  December,  1920).\n[2] Melville, Herman M. Moby-Dick. (New York: Library of America, 1983)"
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Edge case: Which single document in this cluster would be hardest to distinguish from Moby-Dick using only thematic or topical similarity, rather than direct textual overlap?",
+    "expected_keywords": [
+      "Moby",
+      "Dick",
+      "Something",
+      "Unpublished"
+    ],
+    "expected_answer": "The single document that might be hardest to distinguish from Moby-Dick using only thematic or topical similarity is the one containing an excerpt \"From 'Something' Unpublished\". This piece includes various comments on Leviathan, references to whales, and literary quotes about whales, which align closely with the themes and topics in Moby-Dick [2]."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "What does the presence of both fiction (Melville's other novels) and non-fiction (Starbuck's history, Browne's memoir) in this cluster allow a retrieval system to be tested on, that a fiction-only cluster could not?",
+    "expected_keywords": [
+      "Melville",
+      "Starbuck",
+      "Browne"
+    ],
+    "expected_answer": "The presence of both fiction (Melville's other novels) and non-fiction (Starbuck's history, Browne's memoir) in the cluster enables a retrieval system to test its abilities on a diverse range of literature genres. This diversity allows the system to assess its performance in dealing with different literary styles, language tones, and subject matters, which could not be achieved with a fiction-only cluster [1]."
+  }
+]

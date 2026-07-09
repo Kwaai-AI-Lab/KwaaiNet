@@ -1,0 +1,234 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "According to the CSI AI Data Security guidance, which agencies co-authored the document, and how many major AI lifecycle stages does the NIST AI RMF define within it?",
+    "expected_keywords": [
+      "Cybersecurity Information Sheet",
+      "CSI",
+      "Regarding",
+      "NIST AI RMF"
+    ],
+    "expected_answer": "According to the provided context [3], this Cybersecurity Information Sheet (CSI) was authored by multiple agencies but specific names are not given. Regarding the number of AI lifecycle stages defined by the NIST AI RMF, Fig. 3 in the same source provides a diagram that shows different stages across the AI lifecycle, including Data Collection, Model Training and Validation, Deployment and Operation, and Continuous Monitoring and Maintenance [1]. However, for a detailed description of these tasks, you can refer to Appendix A mentioned in the context."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "What is the CSI AI Data Security document's Traffic Light Protocol (TLP) marking, and what does that marking mean for distribution?",
+    "expected_keywords": [
+      "The CSI AI Data Security",
+      "TLP",
+      "CLEAR",
+      "Traffic Light Protocol"
+    ],
+    "expected_answer": "The CSI AI Data Security document is marked TLP:CLEAR. This marking indicates that this information may be distributed without restriction [1]. For more information on the Traffic Light Protocol, you can visit cisa.gov/tlp/."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "Which three significant areas of data security risk does the CSI AI Data Security document examine in depth?",
+    "expected_keywords": [
+      "The CSI AI Data Security",
+      "Data",
+      "Maliciously"
+    ],
+    "expected_answer": "The CSI AI Data Security document examines three significant areas of data security risks in AI systems in detail. These are:\n\n1. Data supply chain [1]\n2. Maliciously modified (\"poisoned\") data [1]\n3. Data drift [1]\n\n[1]: This information is found in the source with id \"1\" in the provided context."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What organization published NIST AI 800-1 (\"Managing Misuse Risk for Dual-Use Foundation Models\"), and what draft stage was the version in this corpus?",
+    "expected_keywords": [
+      "NIST AI",
+      "Managing Misuse Risk",
+      "Dual",
+      "Use Foundation Models"
+    ],
+    "expected_answer": "The document \"NIST AI 800-1 ('Managing Misuse Risk for Dual-Use Foundation Models')\" was published by the U.S. AI Safety Institute at NIST [2]. In the provided context, it is a second public draft [2]."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What are the four core functions of the NIST AI Risk Management Framework (AI RMF 1.0), as defined in NIST AI 100-1?",
+    "expected_keywords": [
+      "The NIST AI Risk Management",
+      "Framework",
+      "AI RMF",
+      "NIST AI"
+    ],
+    "expected_answer": "The NIST AI Risk Management Framework (AI RMF 1.0) defines four core functions, according to the document NIST AI 100-1 [1]. These are:\n\n1. Initial Risk Assessment: Identifying and understanding the potential risks associated with the use of artificial intelligence (AI).\n2. Risk Management Strategy Development: Developing a strategy to manage the identified risks in alignment with the organization's risk management objectives.\n3. Risk Implementation: Applying the risk management strategy to AI systems, including selecting and implementing appropriate controls to mitigate risks.\n4. Continuous Monitoring: Regularly monitoring the effectiveness of the implemented controls and adapting them as necessary to address evolving risks. [1]\n\n[1] NIST, January 2023. \"AI Risk Management Framework (AI RMF).\" NIST, <https://www.nist.gov/itl/ai-risk-management-framework>"
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "According to NIST AI 100-1, which trustworthiness characteristic is described as a necessary condition that forms the base for the others?",
+    "expected_keywords": [
+      "Valid",
+      "Reliable"
+    ],
+    "expected_answer": "The characterstic described as a necessary condition that forms the base for other trustworthiness characteristics is \"Valid and Reliable.\" [1]"
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What is the publication date and purpose of NIST.AI.600-1, and what does \"GenAI Profile\" refer to?",
+    "expected_keywords": [
+      "NIST",
+      "NIST Editorial Review Board",
+      "However",
+      "About AI"
+    ],
+    "expected_answer": "The publication NIST.AI.600-1 was approved by the NIST Editorial Review Board on 07-25-2024 [1]. According to the context, the purpose of this publication is not explicitly stated. However, it appears that NIST.AI.600-1 is related to artificial intelligence (AI) as it is part of a collection titled \"About AI at NIST: The National Institute of Standards and Technology (NIST) develops measurements, technology, tools, and standards to advance reliable, safe, transparent, explainable, privacy-enhanced, and fair artificial intelligence\" [1].\n\nRegarding the term \"GenAI Profile\", it is not mentioned explicitly in the provided context. However, given that the context discusses AI-related topics, it might be a reference to a profile or characterization of a specific type of AI system or model. To confirm this, further information or additional context would be required.\n\n[1] from the community, including the NIST Generative AI Public Working Group, and NIST staff and guest: Chloe Autio, Jesse Dunietz, Patrick Hall, Shomik Jain, Kamie Roberts, Reva Schwartz, Martin Stanley, and Elham Tabassi. NIST Technical Series Policies Copyright, Use, and Licensing Statements NIST Technical Series Publication Identifier Syntax Publication History Approved by the NIST Editorial Review Board on 07-25-2024 Contact Information ai-inquiries@nist.gov National Institute of Standards and Technology Attn: NIST AI Innovation Lab, Information Technology Laboratory 100 Bureau Drive (Mail Stop 8900) Gaithersburg, MD 20899-8900 Additional Information Additional information about this publication and other NIST AI publications are available at https://airc.nist.gov/Home. Disclaimer: Certain commercial entities, equipment, or materials may be identified in this document in"
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "In the OWASP Top 10 for LLM Applications 2025, what is LLM01, and how does OWASP distinguish prompt injection from jailbreaking?",
+    "expected_keywords": [
+      "OWASP Top",
+      "LLM Applications",
+      "However",
+      "ML Training Data Quality"
+    ],
+    "expected_answer": "In the OWASP Top 10 for LLM Applications 2025, the first item on the list is not explicitly mentioned in the provided context. However, according to the list available at [this link](https://genai.owasp.org/llm-top-10/), it seems that LLM01 might refer to \"AI/ML Training Data Quality.\"\n\nRegarding your question about how OWASP distinguishes prompt injection from jailbreaking, according to the context provided:\n\n* Prompt injection involves manipulating model responses through specific inputs to alter its behavior. This can include bypassing safety measures [1].\n* Jailbreaking is a form of prompt injection where the attacker provides inputs that cause the model to disregard its safety protocols entirely [1]. In other words, prompt injection is a broader term that encompasses various techniques aimed at manipulating an LLM's behavior, while jailbreaking is a specific type of prompt injection that bypasses all safety measures."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "According to the OWASP document, what specific research finding is noted about RAG and fine-tuning's ability to mitigate prompt injection?",
+    "expected_keywords": [
+      "Retrieval Augmented Generation",
+      "RAG",
+      "However"
+    ],
+    "expected_answer": "The provided context does not explicitly mention a specific research finding about Retrieval Augmented Generation (RAG) and fine-tuning's ability to mitigate prompt injection. However, it states that these techniques do not fully mitigate prompt injection vulnerabilities [2]."
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "Name two of the six prevention/mitigation strategies OWASP lists for prompt injection vulnerabilities.",
+    "expected_keywords": [
+      "Two",
+      "OWASP",
+      "Treating",
+      "Following"
+    ],
+    "expected_answer": "Two prevention and mitigation strategies OWASP lists for prompt injection vulnerabilities are:\n1. Treating the model as any other user, adopting a zero-trust approach, and applying proper input validation on responses coming from the model to backend functions [1].\n2. Following the OWASP ASVS (Application Security Verification Standard) guidelines to ensure effective input validation and sanitization [2]."
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What is MITRE ATLAS modeled after, and what version of ATLAS is represented in this corpus's export?",
+    "expected_keywords": [
+      "MITRE ATLAS",
+      "MITRE ATT",
+      "ATLAS"
+    ],
+    "expected_answer": "According to the context [1], MITRE ATLAS is based on the MITRE ATT&CK architecture. The version of ATLAS that is represented in this corpus isn't explicitly specified in the provided information."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What is the first tactic listed in the MITRE ATLAS tactics section, and what is its stated adversary goal?",
+    "expected_keywords": [
+      "MITRE ATLAS",
+      "Initial Access",
+      "Reference",
+      "MITRE ATLAS MITRE ATLAS"
+    ],
+    "expected_answer": "The first tactic listed in the MITRE ATLAS tactics section is \"Initial Access\" [1]. Its stated adversary goal is to gain an initial foothold into a system or network.\n\nReference(s):\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"0319a8e5-d593-4e97-b856-07f3680fceba\">MITRE ATLAS MITRE ATLAS (Adversarial Threat Landscape for Artificial-Intelligence Systems) is a knowledge base of adversary tactics, techniques, and case studies for machine learning (ML) systems based on real-world observations, demonstrations from ML red teams and security groups, and the state of the possible from academic research. Use it to map known ML vulnerabilities and map checks and controls for proposed projects or existing systems.</source>"
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "Who are the listed authors of NIST AI 100-2e2025 (\"Adversarial Machine Learning: A Taxonomy and Terminology of Attacks and Mitigations\")?",
+    "expected_keywords": [
+      "NIST AI",
+      "Adversarial Machine Learning",
+      "Taxonomy",
+      "Terminology"
+    ],
+    "expected_answer": "The listed authors of NIST AI 100-2e2025 (\"Adversarial Machine Learning: A Taxonomy and Terminology of Attacks and Mitigations\") are:\n1. Apostol Vassilev\n2. Alina Oprea\n3. Alie Fordyce\n4. Hyrum Anderson\n5. Xander Davies\n6. Maia Hamin [1]"
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "What does NIST AI 100-4 primarily address regarding synthetic content?",
+    "expected_keywords": [
+      "NIST AI"
+    ],
+    "expected_answer": "According to the provided context [1], NIST AI 100-4 primarily addresses reducing risks posed by synthetic content, providing an overview of technical approaches to digital content transparency."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "What is the purpose of NIST SP 800-218A, and how does it relate to the base Secure Software Development Framework (SSDF)?",
+    "expected_keywords": [
+      "NIST SP",
+      "SSDF",
+      "The SSDF Community Profile",
+      "Secure Software Development Framework"
+    ],
+    "expected_answer": "The purpose of NIST SP 800-218A is to provide a common language for describing secure software development practices, particularly in relation to generative AI and dual-use foundation model development. This document augments the practices and tasks defined in SSDF version 1.1 by adding recommendations, considerations, notes, and informative references that are specific to these types of development [1].\n\nThe SSDF Community Profile created for NIST SP 800-218A is intended to be used in conjunction with the base Secure Software Development Framework (SSDF) version 1.1 [1]. This Profile supplements what SSDF version 1.1 already includes and aims to help AI model producers, AI system producers, AI system acquirers, and others communicate effectively regarding secure AI model development throughout the software development life cycle."
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Cross-document: How does the CSI AI Data Security document's guidance on data supply chain risk relate to the \"poisoning\" attack category described in NIST AI 100-2e2025 (Vassilev et al.)?",
+    "expected_keywords": [
+      "The CSI AI Data Security",
+      "Specifically",
+      "NIST AI",
+      "Vassilev"
+    ],
+    "expected_answer": "The CSI AI Data Security document emphasizes the importance of managing risks associated with the AI data supply chain [1]. Specifically, it encourages organizations to adopt best practices for securing AI data, including third-party-developed models and plugins.\n\nIn the context of \"poisoning\" attacks, NIST AI 100-2e2025 (Vassilev et al.) describes a category of security vulnerabilities that exploit the statistical properties of Machine Learning (ML) systems [370]. These attacks rely on manipulating training data to alter the behavior or output of an ML model.\n\nBy addressing data supply chain risks comprehensively, as suggested in both documents, organizations can help mitigate the threats posed by \"poisoning\" attacks and enhance the overall security of their AI systems."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Cross-document: How do NIST AI 800-1 and the OWASP LLM Top 10 2025 differ in what population of AI systems they scope (foundation models vs. LLM applications)?",
+    "expected_keywords": [
+      "The NIST AI",
+      "OWASP LLM Top",
+      "While",
+      "References"
+    ],
+    "expected_answer": "The NIST AI 800-1 framework and the OWASP LLM Top 10 2025 have different scopes when it comes to the population of AI systems they address.\n\nThe NIST AI 800-1 framework [1] primarily focuses on AI actors, which are defined as organizations and individuals that deploy or operate AI. It does not explicitly mention foundation models but rather emphasizes secure software development practices for AI model development.\n\nOn the other hand, the OWASP LLM Top 10 2025 is a list of security risks applicable to machine learning applications [3]. While it doesn't focus exclusively on foundation models, they are included within the scope of machine learning applications.\n\nReferences:\n[1] OECD (2019) Artificial Intelligence in Society\u2014OECD iLibrary\n[3] Information not found in provided context, but can be inferred from the context of OWASP LLM Top 10 2025."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: NIST.AI.600-1 (GenAI Profile) and NIST AI 100-1 (AI RMF 1.0) come from the same overall framework initiative \u2014 what is the relationship between the base AI RMF and a \"profile\" document like AI 600-1?",
+    "expected_keywords": [
+      "NIST AI",
+      "AI Risk Management Framework",
+      "AI RMF",
+      "Artificial Intelligence"
+    ],
+    "expected_answer": "The provided context indicates that the \"NIST AI 100-1 AI Risk Management Framework (AI RMF 1.0)\" serves as the foundation for managing risks associated with Artificial Intelligence systems [1]. A \"profile\" document such as NIST.AI.600-1 (GenAI Profile) likely represents a specific application or implementation of the base AI RMF 1.0 tailored to address the unique requirements and characteristics of a particular AI system or domain. This profile would help organizations apply the general principles and functions outlined in the base framework more effectively within their context, thus enhancing risk management practices for their AI systems [1]."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Edge case: NIST AI 100-1 and NIST.AI.600-1 are numbered differently (100-1 vs 600-1) \u2014 what distinguishes a numbered \"AI RMF core\" document from a \"profile\" in NIST's AI publication series?",
+    "expected_keywords": [
+      "AI RMF",
+      "NIST",
+      "However",
+      "AI Risk Management Framework"
+    ],
+    "expected_answer": "The context provided doesn't explicitly indicate the difference between an \"AI RMF core\" document and a \"profile\" within NIST's AI publication series based on their numbers. However, I can provide you with information about what each type represents.\n\nAn \"AI Risk Management Framework (RMF)\" document appears to be a comprehensive guide for managing the risks associated with AI systems. In contrast, an \"AI RMF Profile\" seems to be a specific implementation of the AI RMF functions, categories, and subcategories tailored to a particular setting or application.\n\nUnfortunately, without more context that specifically discusses the difference between the two based on their numbering, it's challenging to accurately distinguish them solely based on the provided context."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: MITRE ATLAS is explicitly modeled after another well-known MITRE framework \u2014 name it, and explain what conceptual structure (tactics/techniques) it borrows from that framework.",
+    "expected_keywords": [
+      "Based",
+      "MITRE ATLAS",
+      "MITRE ATT",
+      "The ATT"
+    ],
+    "expected_answer": "Based on the provided context, it appears that MITRE ATLAS borrows its conceptual structure of tactics and techniques from the MITRE ATT&CK framework [1]. The ATT&CK framework is a globally-accessible knowledge base of adversary tactics and techniques used to achieve specific goals in cyber attacks [1]. This structure is used to classify objectives as tactics and outline them in an attack order, starting with reconnaissance and progressing to the final goal of exfiltration or impact.\n\n[1] MITRE Resource Description Why It Is Recommended & Where To Use It - <https://d3bcd97t3vh8fs.cloudfront.net/mitre-atlas/documentation/MITRE%20ATLAS%20-%20Resource%20Description%20Why%20It%20Is%20Recommended%20&%20Where%20To%20Use%20It.pdf>"
+  }
+]

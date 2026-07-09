@@ -1,0 +1,234 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What is a \"Changeset\" in OpenStreetMap, and what purpose does it serve when editing map data?",
+    "expected_keywords": [
+      "Changeset",
+      "OpenStreetMap",
+      "Changesets"
+    ],
+    "expected_answer": "A \"Changeset\" in OpenStreetMap refers to a group of edits made by a single user over a short period of time during the process of editing map data [1]. For example, if you want to add new houses to the map, you can use a single changeset to add a new way (e.g., a residential road), delete an area (e.g., forest removed for the houses), or change the tags on an existing element (e.g., adding a new speed limit on an existing road). Changesets also carry tags and it is possible to discuss changesets with multiple mappers [2]. The purpose of a changeset is to group similar changes together, making it easier to manage and track edits made to the map data [1]."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to the Elements page, what are the three fundamental data primitives used to represent geographic data in OpenStreetMap?",
+    "expected_keywords": [
+      "OpenStreetMap",
+      "However",
+      "Geometries",
+      "Tags"
+    ],
+    "expected_answer": "The context you provided does not explicitly mention the three fundamental data primitives for representing geographic data in OpenStreetMap. However, according to my knowledge and understanding of OpenStreetMap, these are:\n\n1. Geometries (coordinates)\n2. Tags (semantical meaning)\n3. Meta Data (attributes the sources to the data)\n\nThis information can be inferred from the provided context, but it is not explicitly stated there. [Source not available]"
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "What is a \"Node\" in OpenStreetMap's data model, and what does it represent?",
+    "expected_keywords": [
+      "Node",
+      "OpenStreetMap",
+      "World Geodetic System",
+      "Each"
+    ],
+    "expected_answer": "A Node in OpenStreetMap's data model represents a specific point on the earth's surface defined by its latitude and longitude, referred to the World Geodetic System 1984 [2]. Each node comprises at least an id number and a pair of coordinates. Nodes can be used to define standalone point features, such as a park bench or a water well [3]."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What is a \"Way\" in OpenStreetMap, and how does it relate to nodes?",
+    "expected_keywords": [
+      "Way",
+      "OpenStreetMap",
+      "Technically",
+      "Nodes"
+    ],
+    "expected_answer": "A \"Way\" in OpenStreetMap represents a linear feature on the ground, such as a road, wall, or river. Technically, a way is an ordered list of nodes [1]. It normally starts at one node and ends at another, with the first and last node not being identical [3]. Nodes, on the other hand, are used to define the shape or \"path\" of a way [2]. As of August 2025, OpenStreetMap contains over 1.1 billion ways and over 10 billion nodes [1][2]."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What is a \"Relation\" in OpenStreetMap, and what problem does it solve that ways and nodes alone cannot?",
+    "expected_keywords": [
+      "Relation",
+      "OpenStreetMap",
+      "OSM",
+      "Relations"
+    ],
+    "expected_answer": "A \"Relation\" in OpenStreetMap (OSM) is a structured collection of objects - nodes, ways, and other relations. It is one of the three core data elements of the OSM data model, along with nodes and ways [1]. Relations are used to define logical or geographic relationships between these different objects, such as a lake and its island, or several roads forming a bus route [1].\n\nIn contrast, ways and nodes alone cannot fully capture complex relationships that exist in the real world. For example, a relation may be necessary when a way does not suffice for an area due to holes, disjoint parts, or other complexities [2].\n\n[1] OpenStreetMap: Relation - <https://wiki.openstreetmap.org/w/index.php?title=Relation&oldid=2979372>\n[2] OpenStreetMap: Relations on top of relations - <https://wiki.openstreetmap.org/w/index.php?title=Relations_on_top_of_relations&oldid=34615601>"
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "What is a \"Tag\" (key-value pair) in OpenStreetMap, and how is it used to describe the meaning of map elements?",
+    "expected_keywords": [
+      "Tag",
+      "OpenStreetMap",
+      "Tags",
+      "Each"
+    ],
+    "expected_answer": "A \"Tag\" in OpenStreetMap refers to an attribute associated with map elements such as nodes, ways, or relations. Tags describe specific properties of map features represented by these elements. Each tag consists of a key and a value separated by an equals sign (=). OpenStreetMap's free tagging system allows the map to include an unlimited number of attributes describing each feature [2].\n\nTags are used to provide additional information about the meaning of map elements, helping to make the map more comprehensive and accurate. The community agrees on certain key and value combinations for the most commonly used feature tags, which act as informal standards [2]. Users can also create new tags to improve the style of the map or support analyses that rely on previously unmapped attributes of the features [1].\n\nReferences:\n[1] Tags - OpenStreetMap Wiki\n[2] Map features - OpenStreetMap Wiki"
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "According to the Key documentation, what role does a tag's key play as distinct from its value?",
+    "expected_keywords": [
+      "Jeff Memorial Highway"
+    ],
+    "expected_answer": "The key in a tag plays a role of describing a topic, category, or type of feature (e.g., highway or name), while the value provides specific properties of map features represented by the corresponding element [1]."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What does \"Good practice\" recommend for contributors when editing OpenStreetMap data?",
+    "expected_keywords": [
+      "Good",
+      "OpenStreetMap",
+      "Reflect",
+      "Avoid"
+    ],
+    "expected_answer": "Good practices recommend that contributors to OpenStreetMap should:\n\n1. Reflect current situations by being bold in editing the map, but also preserving history by modifying existing elements instead of deleting them and redrawing from scratch [1].\n2. Be respectful to the work done by other mappers and consider consulting them when existing data is tagged with unclear or undocumented methods or tags [1].\n3. Avoid using inaccurate tags or distorting data to influence routing navigation [1].\n4. Familiarize themselves with best practices instead of copying from other maps, as contributions must not infringe the intellectual property rights of anyone else [1].\n5. Write concise and adequate changeset comments out of courtesy to fellow mappers, to avoid misunderstandings, and get mistakes fixed quickly [1]."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "What is OSM XML, and what is its purpose in the OpenStreetMap ecosystem?",
+    "expected_keywords": [
+      "OSM XML",
+      "OpenStreetMap Exchange Markup Language",
+      "OpenStreetMap",
+      "OSM"
+    ],
+    "expected_answer": "OSM XML stands for OpenStreetMap Exchange Markup Language, which is used as a meta format to provide human-readable data interchange formats. It serves as a foundation for various file formats within the OpenStreetMap (OSM) universe [1]. The purpose of OSM XML in the OpenStreetMap ecosystem is to facilitate the exchange and processing of geospatial data by offering a clear structure, machine independence due to exact definitions, and compatibility with ready-to-use parsers that can be customized for specific file formats [1].\n\nReferences:\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"b23cd865-6600-4241-bdd2-a0ce64099f0a\">OSM XML Basics</source>"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "According to \"The Data Model of OpenStreetMap,\" how do nodes, ways, and relations together form the complete data model?",
+    "expected_keywords": [
+      "Nodes",
+      "OpenStreetMap",
+      "Ways",
+      "References"
+    ],
+    "expected_answer": "Nodes, ways, and relations together form the complete data model in OpenStreetMap as described in [1]. Nodes are one of the core elements and consist of a single point in space. Ways are used to define the shape or \"path\" of a feature, and relations are used to define logical or geographic relationships between nodes, ways, and other relations. The relation element must have at least the type=* tag, and a group of members which is an ordered list of one or more nodes, ways, and/or relations. This structure allows for complex features such as roads, buildings, and islands to be accurately represented in the OpenStreetMap data model [1].\n\nReferences:\n[1] Relation. (n.d.). In OpenStreetMap Wiki. Retrieved from https://wiki.openstreetmap.org/wiki/Relation"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What does the Map Features page catalog, and how does it relate to the tagging system described in Key and Tags?",
+    "expected_keywords": [
+      "The Map Features",
+      "Tagging System",
+      "Keys",
+      "Tags"
+    ],
+    "expected_answer": "The Map Features page catalogs short descriptions of tags that are related to specific topics or interests. This is in line with the Tagging System described in Keys and Tags, where tags are attributes associated with map elements (nodes, ways, or relations) that describe specific properties of map features [1]. These tags serve to add an unlimited number of attributes to each feature, allowing for the inclusion of various details about the physical features on the ground represented by OpenStreetMap [2]. The Map Features page can be used to find tag descriptions more easily using its search functionality. However, it's important to note that there may be multiple ways to tag a given feature, and it's best to use the most common approach [3]."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "According to History of OpenStreetMap, when and why was the project founded?",
+    "expected_keywords": [
+      "The OpenStreetMap",
+      "August",
+      "Steve Coast",
+      "OSM"
+    ],
+    "expected_answer": "The OpenStreetMap project was founded on 9th August 2004, as per the domain openstreetmap.org being registered by Steve Coast [1]. This date is celebrated as OSM's birthday. For more details about the founding and early history of OpenStreetMap, you can refer to the timeline provided in the context [1]."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What does the Editing page describe regarding how contributors can modify OpenStreetMap data?",
+    "expected_keywords": [
+      "The Editing",
+      "OpenStreetMap",
+      "However",
+      "OSM"
+    ],
+    "expected_answer": "The Editing page suggests that contributors should be bold and edit the OpenStreetMap data to reflect current situations [1]. It encourages adding new data, which can be refined or reverted as needed. However, it advises respecting the work done by other mappers and consulting them when existing data is tagged with unclear or undocumented methods or tags. The page also emphasizes the importance of verifiability, meaning the OSM data should be able to be verified by another mapper [1]. Additionally, contributors are advised to keep the history of edits, make one feature, one OSM element, and align aerial imagery before tracing [1]."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Cross-document: How does a Changeset relate to the Editing process \u2014 is every edit grouped into a changeset?",
+    "expected_keywords": [
+      "Changeset",
+      "However",
+      "Source"
+    ],
+    "expected_answer": "In the provided context, it appears that a Changeset is a group of edits made by a single user over a short period of time [1]. For example, when adding new houses to the map, all associated edits (such as adding a new way, deleting an area, or changing tags) are grouped into a single Changeset [2]. This structure helps in organizing and managing edits more efficiently. However, the context does not provide information on whether every edit is grouped into a Changeset or if there's flexibility in that regard. If you have more specific questions regarding this topic, please let me know!\n\n[1] Source: <https://wiki.openstreetmap.org/w/index.php?title=Changeset&oldid=2309785#Geographical_size_of_changesets>\n[2] Source: <https://wiki.openstreetmap.org/w/index.php?title=Changeset&oldid=2309785#A_changeset_is_a_group_of_edits_to_the_database_by_a_single_user_over_a_short_period_of_time_(see_also_editing)>"
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: How do Elements (Node, Way, Relation) relate to Tags \u2014 can any element type be tagged, or only some?",
+    "expected_keywords": [
+      "In OpenStreetMap",
+      "However"
+    ],
+    "expected_answer": "In OpenStreetMap, all types of elements - nodes, ways, and relations - can have tags. These tags help describe the meaning of a particular element. For instance, a way could be tagged as 'highway=residential' to indicate that it is a road primarily for residential use [1]. However, each collection may only contain a key once [2]."
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Near-miss: Both a Way and a Relation can represent complex geographic features \u2014 what's the key structural difference between how each represents a feature?",
+    "expected_keywords": [
+      "In OpenStreetMap",
+      "Ways",
+      "Relations",
+      "Way"
+    ],
+    "expected_answer": "In OpenStreetMap, both Ways and Relations are used to represent complex geographic features, but they have distinct structural differences.\n\nA Way is an ordered list of nodes that typically represents a linear feature on the ground such as roads, walls, or rivers [1]. A Way can be open or closed, with open ways having their first and last node not identical, while closed ways have their first and last nodes pointing to the same node. As of August 2025, OpenStreetMap contains over 1.1 billion ways [1].\n\nOn the other hand, Relations are structured collections of objects \u2013 nodes, ways, and other relations [3]. They are used to define logical or geographic relationships between these different objects. A relation element must have at least the type=* tag, and a group of members which is an ordered list of one or more nodes, ways, and/or relations [3].\n\nIn summary, while Ways primarily represent linear features, Relations are used to define relationships among multiple elements (nodes, ways, and other relations) [2][3].\n\nReferences:\n[1] <https://www.openstreetmap.org/wiki/Way>\n[2] <https://www.openstreetmap.org/wiki/Relation#On_top_of_relations_are_technically_possible.2C_but_have_little_practical_relevance>\n[3] <https://www.openstreetmap.org/wiki/Relation>"
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Cross-document: How does the Map Features catalog relate to Good Practice guidance \u2014 does good practice recommend using standardized tags from the Map Features list?",
+    "expected_keywords": [
+      "Map Features",
+      "OpenStreetMap",
+      "However",
+      "Good Practices"
+    ],
+    "expected_answer": "According to the provided context, the Map Features page provides a catalog of tags used for describing various geographic attributes of features on OpenStreetMap [2]. However, it is not explicitly stated that the Good Practices recommend using only these standardized tags from the Map Features list. The Good Practices are guidelines that aim to increase the quality and value of map data without any additional effort, but they do not force anybody to obey them [1]. Therefore, it's possible that users can create new tags to improve the style of the map or support analyses that rely on previously unmapped attributes of the features [2]. If you need more specific information about the relationship between Good Practice and Map Features, I would recommend consulting a more comprehensive resource or asking someone with expertise in this area."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: How does OSM XML (the data format) relate to The Data Model of OpenStreetMap (the conceptual structure)?",
+    "expected_keywords": [
+      "The OSM XML",
+      "OpenStreetMap",
+      "The Data Model",
+      "XML"
+    ],
+    "expected_answer": "The OSM XML is the data format used in OpenStreetMap, while The Data Model of OpenStreetMap represents the conceptual structure of the physical world. The OSM XML follows an XML schema definition that includes instances of nodes, ways, and relations, which are the basic components of OpenStreetMap's data model [2].\n\n[2] Elements, <source id=\"2\" resource-type=\"collection\" resource-id=\"b23cd865-6600-4241-bdd2-a0ce64099f0a\">Elements are the basic components of OpenStreetMap's conceptual data model of the physical world. There are three types of elements: nodes, ways, and relations..."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Edge case: A Relation is described as solving a problem that Ways and Nodes alone cannot \u2014 give a concrete example of a real-world geographic feature that would require a Relation.",
+    "expected_keywords": [
+      "OpenStreetMap",
+      "Each",
+      "References",
+      "Relation"
+    ],
+    "expected_answer": "According to the provided context, relations in OpenStreetMap are used to define logical or geographic relationships between nodes, ways, and other relations when they cannot be defined using nodes and ways alone [1].\n\nFor instance, consider a bus route that traverses multiple roads. Each individual road would be represented as a way, but the entire route would require a relation to be created for it since it involves a series of connected ways forming a specific transportation route. This bus route example demonstrates how relations are used in real-world geographic features to create a logical relationship between different objects [1].\n\nReferences:\n[1] Relation, OpenStreetMap Wiki. Retrieved from \"https://wiki.openstreetmap.org/w/index.php?title=Relation&oldid=2979372\""
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: How does the history of OpenStreetMap's founding relate to its current data model design?",
+    "expected_keywords": [
+      "Based",
+      "OpenStreetMap",
+      "However"
+    ],
+    "expected_answer": "Based on the provided context, there is no explicit information about how the history of OpenStreetMap's founding relates to its current data model design. However, one can infer that the history of OpenStreetMap might have influenced its development and eventually led to the creation of the current data model. [2] mentions the early beginnings of OpenStreetMap, but it does not directly discuss its relationship with the data model. For a more detailed understanding of this connection, additional resources or research may be necessary. [1] provides an introduction to the OpenStreetMap data model, which might help in gaining a better understanding of its design principles and evolution over time."
+  }
+]

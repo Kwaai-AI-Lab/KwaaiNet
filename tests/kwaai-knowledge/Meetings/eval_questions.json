@@ -1,0 +1,221 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What drawing tool did Reza introduce to the interns in the May 26 standup, and what was it used for?",
+    "expected_keywords": [
+      "May",
+      "Reza",
+      "Lucid"
+    ],
+    "expected_answer": "In the May 26 standup, Reza introduced the tool Lucid to the interns. It was used for creating interactive content"
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to Reza's analogy in the May 26 standup, what is \"the missing piece\" in current AI systems compared to the human brain?",
+    "expected_keywords": [
+      "Reza",
+      "May"
+    ],
+    "expected_answer": "According to Reza's analogy in the May 26 standup, the missing piece in current AI systems compared to the human brain is the ability to store and recall memories in a compressed form, rather than at the same resolution they were originally experienced"
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "Who is Mitch Travers, and what phrase did Reza attribute to him regarding Kwai?",
+    "expected_keywords": [
+      "Mitch Travers",
+      "Reza",
+      "Kwai"
+    ],
+    "expected_answer": "Mitch Travers is not mentioned explicitly in the transcripts, but Reza attributed to him the phrase \"Kwai is where the action is\""
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What personal event did Reza mention happened on his birthday, and where did he go?",
+    "expected_keywords": [
+      "May",
+      "Reza"
+    ],
+    "expected_answer": "In the May 26 standup, Reza mentioned that on his birthday, he went to a concert"
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "Who is Solomon Satari, and what was Reza doing with him over the prior weekend according to the May 26 standup?",
+    "expected_keywords": [
+      "May",
+      "Reza",
+      "Solomon Satari"
+    ],
+    "expected_answer": "According to the May 26 standup, Reza spent the prior weekend with Solomon Satari, but the details of their activities were not disclosed"
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "Who is \"Doc Searles\" as referenced in the May 26 standup, and how does Reza describe his role?",
+    "expected_keywords": [
+      "Doc Searles",
+      "Reza",
+      "Doc Searls"
+    ],
+    "expected_answer": "\"Doc Searles\" is not explicitly mentioned in the transcripts, but Reza might have been referring to Doc Searls, a well-known cyberlibertarian, digital media theorist, and author"
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "Who is Professor Ruth Rasul, what is her academic background, and what topic did she cover as a guest lecturer on June 2?",
+    "expected_keywords": [
+      "Professor Ruth Rasul",
+      "There",
+      "Ruth Rasul",
+      "Assistant Professor"
+    ],
+    "expected_answer": "Professor Ruth Rasul is not mentioned explicitly in the transcripts. There is a Ruth Rasul who is an Assistant Professor of Computer Science and Engineering at the University of Washington, but it's unclear if she is the same person"
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What was the title and approximate length of the book Ruth Rasul gave to Reza, according to the June 2 standup?",
+    "expected_keywords": [
+      "Ruth Rasul",
+      "Reza",
+      "June"
+    ],
+    "expected_answer": "The title and approximate length of the book Ruth Rasul gave to Reza were not mentioned in the June 2 standup"
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "In the June 2 standup, what programming/language background did Chris Mayfield report having?",
+    "expected_keywords": [
+      "June",
+      "Chris Mayfield"
+    ],
+    "expected_answer": "In the June 2 standup, Chris Mayfield did not disclose his academic and professional background"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "According to the June 17 standup, what is Chris Mayfield's academic and professional background?",
+    "expected_keywords": [
+      "June",
+      "Aman Avinash",
+      "Computer Science",
+      "University"
+    ],
+    "expected_answer": "According to the June 17 standup, Aman Avinash is studying Computer Science at the University of Illinois"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "According to the June 17 standup, what is Aman Avinash studying and at what university?",
+    "expected_keywords": [
+      "Aman Avinash",
+      "Computer Engineering",
+      "UCSC",
+      "University"
+    ],
+    "expected_answer": "Aman Avinash is studying Computer Engineering at UCSC (University of California, Santa Cruz)"
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "In the June 17 standup, what methodological question did Annika raise to Aman about varying document lengths in their test set, and what concern motivated it?",
+    "expected_keywords": [
+      "June",
+      "Annika",
+      "Aman"
+    ],
+    "expected_answer": "In the June 17 standup, Annika raised a methodological question to Aman about varying document lengths in their test set, concerned that varying lengths might affect the generalizability of the results"
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What personal document did Chris Mayfield use as his test set/corpus for his code, according to the June 15 standup?",
+    "expected_keywords": [
+      "June",
+      "Chris Mayfield"
+    ],
+    "expected_answer": "In the June 15 standup, Chris Mayfield used his personal notes as his test set/corpus for his code"
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "What soccer/football tournament topic came up in casual conversation during the June 15 standup, and what specific rule enforcement did Reza comment on?",
+    "expected_keywords": [
+      "June",
+      "World Cup",
+      "Reza"
+    ],
+    "expected_answer": "In casual conversation during the June 15 standup, a World Cup football tournament came up, and Reza commented on the enforcement of offside rules"
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "What was Reza's explanation in the May 26 standup for why current human memory recall is described as \"compressed\"?",
+    "expected_keywords": [
+      "Reza",
+      "May"
+    ],
+    "expected_answer": "Reza's explanation in the May 26 standup for why current human memory recall is described as \"compressed\" is that we don't have the same amount of memory storage capacity as computers, so we're continuously compacting and compressing our memories"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "According to the May 26 standup, what was the first vanilla RAG tool the interns had been using before moving into the experimentation phase, and what week of the program was this?",
+    "expected_keywords": [
+      "May",
+      "RAG",
+      "TigerGraph"
+    ],
+    "expected_answer": "In the May 26 standup, the first vanilla RAG tool the interns had been using before moving into the experimentation phase was the RAG tool from TigerGraph, and this occurred in week 5 of the program"
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "In the May 26 standup, what specific query example did Reza use to illustrate how a user query flows through a RAG system, and who did he attribute it to?",
+    "expected_keywords": [
+      "May",
+      "Reza",
+      "RAG",
+      "TigerGraph"
+    ],
+    "expected_answer": "In the May 26 standup, Reza used a specific query example to illustrate how a user query flows through a RAG system. He attributed it to a TigerGraph engineer named Tom"
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "What did Annika ask Reza regarding installation requirements for Lucid in the May 26 standup, and what was Reza's answer?",
+    "expected_keywords": [
+      "May",
+      "Reza",
+      "Lucid",
+      "Docker"
+    ],
+    "expected_answer": "In the May 26 standup, Reza was asked about installation requirements for Lucid, and he responded that they would need to use Docker for installation"
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "According to the June 17 standup, why does Chris Mayfield say many of his undergraduate courses didn't transfer toward his master's degree?",
+    "expected_keywords": [
+      "June",
+      "Chris Mayfield"
+    ],
+    "expected_answer": "In the June 17 standup, Chris Mayfield mentioned that many of his undergraduate courses didn't transfer toward his master's degree because the prerequisites were different"
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "In the June 17 standup, what statistical/measurement theory did Chris Mayfield bring up in conversation, and what example did he use to explain the difference between interval and ratio data?",
+    "expected_keywords": [
+      "June",
+      "Chris Mayfield",
+      "Bayesian"
+    ],
+    "expected_answer": "In the June 17 standup, Chris Mayfield brought up the statistical/measurement theory of Bayesian inference and used an example of updating probabilities based on new evidence to explain the difference between interval and ratio data"
+  }
+]

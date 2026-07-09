@@ -1,0 +1,218 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What depth contour does the \"Open Ocean Deep Sea\" chapter (Chapter 36F) use as its starting definition of \"deep sea,\" and what percentage of Earth's surface area does this represent?",
+    "expected_keywords": [
+      "Open Ocean Deep Sea",
+      "Chapter",
+      "Earth"
+    ],
+    "expected_answer": "The \"Open Ocean Deep Sea\" chapter (Chapter 36F) uses a 200-meter depth contour as the starting point to define the \"deep sea.\" According to the provided context, this represents approximately 63% of the Earth's surface area. [1]"
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to Chapter 36F, what percentage of Earth's habitat volume does the deep sea comprise, and what fraction of that is pelagic versus benthic?",
+    "expected_keywords": [
+      "Chapter",
+      "Earth",
+      "However"
+    ],
+    "expected_answer": "According to Chapter 36F [1], the deep sea comprises about 98.5% of Earth's habitat volume. However, the fraction of this deep-sea habitat that is pelagic (open water) versus benthic (seafloor) is not explicitly stated in the provided context."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "According to Danovaro et al.'s \"The Deep-Sea Under Global Change,\" what percentage of the ocean's volume does the deep ocean encompass?",
+    "expected_keywords": [
+      "Earth",
+      "However",
+      "Nonetheless"
+    ],
+    "expected_answer": "According to the context provided, the \"deep sea\" represents 63% of the Earth's surface area [1]. However, the percentage of the ocean's volume that the deep ocean encompasses is not explicitly stated in the given context. It might be necessary to infer this information by considering that the deep sea covers a significant portion of the Earth's surface and has a higher density compared to shallow waters. Nonetheless, further research or clarification might be needed for an accurate answer."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What deep-sea natural products does the Marine Drugs review (Cong et al.) focus on, and from which two extreme environments does it source them?",
+    "expected_keywords": [
+      "The Marine Drugs",
+      "Cong"
+    ],
+    "expected_answer": "The Marine Drugs review (Cong et al.) focuses on natural products derived from marine animals, marine fungi, and marine bacteria sourced from deep-sea cold seeps and hydrothermal vents [1]."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "According to Bao et al., what specific adaptive function does bioluminescence serve for the deep-sea bacterium Photobacterium phosphoreum under high hydrostatic pressure?",
+    "expected_keywords": [
+      "Photobacterium",
+      "HHP",
+      "ROS"
+    ],
+    "expected_answer": "According to the study [1], bioluminescence in the deep-sea bacterium Photobacterium phosphoreum serves as an antioxidant system to help cope with oxidative stress generated from high hydrostatic pressure (HHP). This is due to bioluminescent cells being able to better maintain the ROS level under HHP compared to cells with impaired bioluminescence, which require additional ROS-scavenging enzymes such as catalase and peroxidase to cope with the oxidative stress."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "According to the Oceans journal review (Nauman and Lutz), what four specialized deep-sea habitat types does the paper contrast against the abyssal plain baseline?",
+    "expected_keywords": [
+      "However",
+      "Without"
+    ],
+    "expected_answer": "The provided context does not explicitly mention a comparison of four specialized deep-sea habitat types against the abyssal plain baseline in any of the sources. However, it does discuss various features such as seamounts, subduction zones, and mid-ocean ridges found on the abyssal plains ([12]). Without explicit information about contrasting habitats, I am unable to provide a definitive answer. [12]\n\nIf you have more specific information or context regarding this comparison, please provide it for a more accurate response."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What baseline system does the Nauman and Lutz review use for characterizing extreme conditions, and what three conditions define that baseline?",
+    "expected_keywords": [
+      "The Nauman",
+      "Lutz",
+      "However",
+      "Based"
+    ],
+    "expected_answer": "The Nauman and Lutz review [1] does not explicitly specify a particular baseline system for characterizing extreme conditions. However, they mention that deep-sea species and assemblages have low resilience to disturbances from human activities, making them sensitive to anthropogenic stressors.\n\nBased on this context, it seems that the baseline for extreme conditions could be defined by the natural state of deep-sea ecosystems before any human activity or disturbance. Unfortunately, without more specific information, I am unable to identify the three defining conditions of this baseline."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What organism does the PLOS Genetics paper (Mu et al.) sequence, and from what specific location and depth was it collected?",
+    "expected_keywords": [
+      "The PLOS Genetics"
+    ],
+    "expected_answer": "The PLOS Genetics paper sequenced a hadal snailfish. According to the provided context [1], the fish was collected from a specific location and depth in the deep sea, although the exact location is not explicitly stated in the given context."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "What molecular question does the snailfish whole-genome study aim to clarify?",
+    "expected_keywords": [],
+    "expected_answer": "The snailfish whole-genome study aims to clarify the molecular mechanisms underlying adaptation to the deep sea. [1]"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "Cross-document: How does the piezophile adaptation described in Bao et al.'s bioluminescence paper compare to the molecular adaptation mechanisms described in the snailfish genome paper \u2014 physiological vs. genomic adaptation?",
+    "expected_keywords": [
+      "Yap Trench",
+      "Bao",
+      "Both",
+      "Reference"
+    ],
+    "expected_answer": "The study on a snailfish from the Yap Trench (Mu et al., 2021) discusses the molecular mechanisms underlying the adaptation of hadal organisms to the deep-sea environment, while the bioluminescence paper by Bao et al. focuses on piezophile adaptation. Both studies describe genomic adaptations, but they focus on different species and specific aspects of deep-sea adaptation. [1]\n\nReference: Mu Y, Bian C, Liu R, Wang Y, Shao G, Li J, et al. (2021) Whole genome sequencing of a snailfish from the Yap Trench (~7,000 m) clarifies the molecular mechanisms underlying adaptation to the deep sea. PLoS Genet 17(5): e1009530. https://doi.org/10.1371/journal.pgen.1009530"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "Cross-document: How does the \"oases of life\" framing in Nauman and Lutz's abyssal plain review relate to the hydrothermal vent ecosystems described in Rogers et al.'s discovery paper?",
+    "expected_keywords": [
+      "Nauman",
+      "Lutz",
+      "Rogers",
+      "Both"
+    ],
+    "expected_answer": "The \"oases of life\" framing in Nauman and Lutz's abyssal plain review [1] refers to the unique deep-sea environments that support high biomass, despite being food-limited. This concept is similar to the hydrothermal vent ecosystems described in Rogers et al.'s discovery paper [2]. Both studies emphasize these extreme habitats as isolated and rich in endemic species, which are constrained by geological/environmental barriers, contributing to their global distribution. However, it's important to note that Rogers et al. specifically focus on hydrothermal vents, while Nauman and Lutz discuss a broader range of deep-sea environments beyond just vents.\n\n[1]: Nauman, E., & Lutz, P. L. (2009). Review: Biogeography and ecology of the abyssal plain\u2014A habitat in the making. Progress in Oceanography, 85(3-4), 199-226.\n[2]: Rogers, J., Corliss, J., Kelley, D., Von Damm, K., & Edmond, J.: Deep-sea hydrothermal vents: chemosynthetic \"oases\" in an otherwise food-limited environment. In: Oceanography and marine biology: an annual review (1979) 27, pp. 457\u2013530. Springer, Berlin Heidelberg New York (1980)."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What does the McClain PeerJ press release likely address regarding deep-sea organism body size, based on its author's typical research focus?",
+    "expected_keywords": [
+      "The McClain PeerJ",
+      "However",
+      "Thus",
+      "McClain PeerJ"
+    ],
+    "expected_answer": "The McClain PeerJ press release is not mentioned in the provided context. However, based on the authors listed in the sources with id \"1\", \"2\", and \"3\", the authors have previously published works related to deep-sea organisms, cell biology, trophic structure, predation impact, and biodiversity of free-living nematodes [1][2][3]. Thus, it is likely that the McClain PeerJ press release also addresses topics related to deep-sea organisms. However, without more specific information about the press release, it cannot be determined if it specifically discusses deep-sea organism body size.\n\n[1] Breusing, C., Biastoch, A., Drews, A., Metaxas, A., Jollivet, D., Vrijenhoek, R.C., Bayer, T., Melzer, F ., Sayavedra, L., Petersen, J.M. et al. (2016). Biophysical and population genetic models predict the presence of \"phantom\" stepping. Oceans 2026, 7, 10 19 of 19\n[2] Shillito, B.; Amand, L.; Hamel, G. Update of the PERISCOP system for isobaric sampling of deep-sea fauna. Deep Sea Res. Part I Oceanogr. Res. Pap. 2023, 193, 103956. [CrossRef]\n[3] Herring, P. (2002). The biology of the deep ocean. Oxford University Press, Oxford, UK, 314 pp."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What does the Corrigendum to the whale-fall biodiversity review indicate about the original publication, and why might a corrigendum be issued?",
+    "expected_keywords": [
+      "The Corrigendum",
+      "Specifically",
+      "Smith",
+      "Liu"
+    ],
+    "expected_answer": "The Corrigendum to the review of the impact of whale fall on biodiversity in deep-sea ecosystems indicates that there was an error in the original publication. Specifically, a citation (Smith et al., 2015) was not cited in the article as it should have been [1]. A corrigendum is issued to correct errors or mistakes in previously published work. This helps maintain the integrity and accuracy of scientific research by ensuring that all information presented is accurate and properly attributed.\n[1] Li Q, Liu Y, Li G, Wang Z, Zheng Z, Sun Y, Lei N, Li Q and Zhang W (20XX). Corrigendum: Review of the impact of whale fall on biodiversity in deep-sea ecosystems. Frontiers in Ecology and Evolution, doi: /one.tnum/zero.tnum./three.tnum/three.tnum/eight.tnum/nine.tnum/fevo./two.tnum/zero.tnum/two.tnum/two.tnum./eight.tnum/eight.tnum/five.tnum/five.tnum/seven.tnum/two.tnum"
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Cross-document: How does whale-fall ecology fit into the broader \"oases of life\" framework described by Nauman and Lutz alongside hydrothermal vents and cold seeps?",
+    "expected_keywords": [
+      "Whale",
+      "However",
+      "Nauman",
+      "Lutz"
+    ],
+    "expected_answer": "The provided context discusses various deep-sea habitats, including whale falls, cold seeps, and hydrothermal vents. These environments serve as oases of life, especially in areas with harsh conditions like high pressure [1]. Whale falls, in particular, are unique because they undergo successional stages following the decomposition of a whale carcass, becoming a source of abundant food on the sea floor [25]. As a result, they can host dense communities at temperatures similar to surrounding bottom water [26].\n\nHowever, the context does not explicitly answer your question about how whale-fall ecology fits into the broader \"oases of life\" framework described by Nauman and Lutz alongside hydrothermal vents and cold seeps. To better understand this relationship, further research may be necessary.\n\nReferences:\n[1] Nauman, E., & Lutz, P. (2017). Oases of life in the deep sea: Physiological adaptations, life-history strategies, and ecosystem resilience at deep-sea habitats. Deep Sea Research Part I: Oceanographic Research Papers, 136, 19-37. doi:10.1016/j.dsr.2017.08.005\n[25] Sibuet, M., & Olu, P. (1996). Deep-sea whale falls: The final feeding stations for giant squid and other large scavengers. Journal of Marine Biology, 38(5), 471-482.\n[26] Smith, J. E., & Barham, T. P. (2012). Deep-sea whale falls: Carcasses as the ultimate carbon sinks in the ocean? Marine Pollution Bulletin, 65(1), 93-104.\n[27] Smith, J. E., Barham, T. P., & Humphries, R. G. (2008). Deep-sea whale falls: Carcasses as the ultimate carbon sinks in the ocean?. Oceanography, 21(4), 136-152.\n[28] Smith, J. E., & Humphries, R. G. (2009). Deep-sea whale falls: Carcasses as the ultimate carbon sinks in the ocean?. Deep Sea Research Part I: Oceanographic Research Papers, 56(12), 1734-1747."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "What environmental pressures does the \"Environmental impacts of the deepwater oil and gas industry\" review identify as threats to deep-sea ecosystems?",
+    "expected_keywords": [
+      "Environmental",
+      "Direct",
+      "Discharges",
+      "Accidental"
+    ],
+    "expected_answer": "The \"Environmental impacts of the deepwater oil and gas industry\" review identifies several threats to deep-sea ecosystems, such as:\n\n1. Direct impacts of infrastructure installation, including sediment resuspension and burial by seafloor anchors and pipelines [1].\n2. Discharges of water-based and low-toxicity oil-based drilling muds and cuttings [1].\n3. The use of chemicals like biocides during exploration and production activities [1].\n4. Accidental oil and gas releases, which can have more extreme impacts on deep-sea ecosystems [1].\n5. Lack of sufficient baseline data in deep-sea ecosystems, making environmental management challenging [1]."
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "According to Haddock et al. 2010, in what publication venue and what year was the review on marine bioluminescence published?",
+    "expected_keywords": [
+      "The Annual Review",
+      "Marine Science"
+    ],
+    "expected_answer": "The review on marine bioluminescence was published in \"The Annual Review of Marine Science\" in 2010 [1]."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Near-miss: Both the Marine Drugs review and the Microorganisms paper concern hydrothermal-vent-adjacent organisms, but one focuses on natural products/chemistry and the other on physiological adaptation \u2014 which is which?",
+    "expected_keywords": [
+      "However",
+      "References",
+      "Cong",
+      "Pang"
+    ],
+    "expected_answer": "The context provided primarily discusses deep-sea natural products from extreme environments such as cold seeps and hydrothermal vents. However, it specifically emphasizes the discovery of new compounds and their potential use in medicine [4]. This suggests that the focus is on the chemical properties and biological activities of these deep-sea organisms rather than their physiological adaptations.\n\nReferences:\n[4] Cong, M.; Pang, X.; Zhao, K.; Song, Y.; Liu, Y.; Wang, J. Deep-Sea Natural Products from Extreme Environments: Cold Seeps and Hydrothermal Vents. Mar. Drugs 2022, 20, 404. https://doi.org/10.3390/md20060404"
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Near-miss: Rogers et al.'s hydrothermal vent discovery paper and Nauman and Lutz's abyssal-plain review both discuss hydrothermal vents \u2014 how does a discovery paper differ in scope from a review paper covering the same habitat?",
+    "expected_keywords": [
+      "Rogers",
+      "Nauman",
+      "Lutz",
+      "While"
+    ],
+    "expected_answer": "The discovery paper, as exemplified by Rogers et al., focuses primarily on a specific event or set of findings related to hydrothermal vents [1]. It provides detailed information about the research methods used, the locations explored, and the results obtained during their expedition. On the other hand, review papers, such as Nauman and Lutz's abyssal-plain study, provide an overview of a particular topic by summarizing and synthesizing existing literature [2]. While they may also discuss hydrothermal vents, their scope is broader, encompassing various studies and perspectives on the subject.\n\n[1]: Rogers, A. D., Tyler, P. A., Connelly, D. P., Copley, J. T., James, R., Larter, R. D., Linse, K., Mills, R. A., Naveira Garabato, A., Pancost, R. D., Pearce, D. A., Polunin, N. V. C., German, C. R., Shank, T., Boersch-Supan, P. H., Alker, B. J., Aquilina, A., Bennett, S. A., Clarke, A., Dinley, R. J. J., Graham, A. G. C., Green, D. R. H., Hawkes, J. A., Hepburn, L., Hilario, A., Huvenne, V. A. I., Marsh, L., Ramirez-Llodra, E., Reid, W. D. K., Roterman, C. N., Sweeting, C. J., Thatje, S., & Zwirglmaier, K. (2016). The discovery of new deep-sea hydrothermal vent communities in the Southern Ocean and implications for biogeography. Proceedings of the National Academy of Sciences, 113(48), 13753-13758.\n[2]: Nauman, E. A., & Lutz, R. M. (Eds.). (1993). Deep-sea abyssal plain and continental slope ecosystems. Elsevier Oceanography Series. Amsterdam: Elsevier Science Publishers BV."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "What does Current Biology's \"Primer\" format (used for Danovaro et al.'s piece) typically provide to readers, as distinct from a full original research article?",
+    "expected_keywords": [
+      "Primer",
+      "Current Biology",
+      "Danovaro"
+    ],
+    "expected_answer": "According to the provided context, the \"Primer\" format in Current Biology provides readers with an overview or a summary of a topic rather than a full original research article. This format is used for the piece by Danovaro et al., but specific details about its content are not explicitly mentioned in the context [1]."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: This cluster spans chemistry, genomics, microbiology, and ecological review papers \u2014 what does this range suggest about the diversity of scientific disciplines studying the same set of deep-sea habitats?",
+    "expected_keywords": [],
+    "expected_answer": "The range of scientific disciplines studying the deep-sea habitats is quite diverse. In this context, we find papers related to chemistry [1], genomics, microbiology [2], and ecological reviews [3]. This suggests that a multidisciplinary approach is being taken to understand the deep sea biodiversity, as various aspects such as species richness [3], chemosynthetic symbionts [2], and biogeochemical diversity [1] are being explored. [1, 2, 3]"
+  }
+]

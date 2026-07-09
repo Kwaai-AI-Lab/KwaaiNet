@@ -1,0 +1,237 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What is the Voyager Golden Record, and what does the \"Golden Record Decoded\" transcript describe about its purpose?",
+    "expected_keywords": [
+      "The Voyager Golden Record",
+      "Voyager",
+      "NASA",
+      "Golden Record Decoded"
+    ],
+    "expected_answer": "The Voyager Golden Record is a phonograph record that was included on the Voyager spacecrafts launched by NASA in 1977 to explore and document our solar system and the interstellar space beyond. The record carries a message from humanity to any intelligent extraterrestrial life that may discover it [1].\n\nThe \"Golden Record Decoded\" transcript describes that the Voyager Golden Record contains instructions written in universal languages of science for decoding its contents. It includes a map showing our solar system's position relative to 14 nearest neutron stars, and time is measured by the speed at which a hydrogen atom transitions between its two lowest states [2]. The transcript also mentions that the record requires approximately an hour to be played, and sound waves from the record can be decoded into binary numbers forming pixels, which are arranged into images [2]."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to the Wikipedia summary of \"Contents of the Voyager Golden Record,\" what categories of content were included?",
+    "expected_keywords": [
+      "The Voyager Golden Record",
+      "Additionally",
+      "Earth"
+    ],
+    "expected_answer": "The Voyager Golden Record includes various categories of content such as greetings in 55 languages, natural sounds, music from different cultures, and representations of human anatomy and diversity [1]. Additionally, it contains recordings of a variety of animals, including birds, whales, and even a man-made sound like a train [2]. The record also includes physical constants, such as the speed of light and the rotation rate of Earth, to provide information about our solar system [3]."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "What does Ertel's \"The Apollo Spacecraft Volume IV\" document, as part of the official NASA history series?",
+    "expected_keywords": [
+      "Ertel",
+      "The Apollo Spacecraft Volume IV",
+      "NASA",
+      "January"
+    ],
+    "expected_answer": "According to the provided context [1], \"Ertel's 'The Apollo Spacecraft Volume IV'\" is a document that forms part of the official NASA historical series. This particular volume covers the period from January 21, 1966-July 13, 1974 in the history of the Apollo spacecraft [1]."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What did the Event Horizon Telescope Collaboration's first M87 results demonstrate, and what specifically did they image?",
+    "expected_keywords": [
+      "The Event Horizon Telescope Collaboration",
+      "Specifically",
+      "Reference",
+      "First"
+    ],
+    "expected_answer": "The Event Horizon Telescope Collaboration's first M87 results demonstrated the resolution of a symmetric bright emission ring with a diameter of 42 \u00b13 micro-arcseconds around the supermassive black hole candidate in the center of the giant elliptical galaxy M87. Specifically, they imaged and studied the shadow of this black hole [1].\n\nReference: [1] The Event Horizon Telescope Collaboration (2019). First M87 Event Horizon Telescope Results. I. The Shadow of the Supermassive Black Hole. arXiv:1904.10934 [gr-qc]. URL: https://arxiv.org/abs/1904.10934"
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What did LIGO and Virgo Collaborations observe in their gravitational wave detection paper, and what astronomical event produced the signal?",
+    "expected_keywords": [
+      "The LIGO",
+      "Virgo Collaborations",
+      "References",
+      "Abbott"
+    ],
+    "expected_answer": "The LIGO and Virgo Collaborations observed a direct detection of gravitational waves from the merger of two stellar-mass black holes [17]. According to the provided context, the astronomical event that produced this signal is believed to be the coalescence of two orbiting masses [46].\n\nReferences:\n[17] B. P. Abbott et al., Living Rev. Relativity 19, 1 (2016)."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "According to Launius's \"Apollo: A Retrospective Analysis,\" what overall assessment does the paper offer of the Apollo program's significance?",
+    "expected_keywords": [
+      "Apollo",
+      "Launius",
+      "Retrospective Analysis",
+      "However"
+    ],
+    "expected_answer": "The context provided does not include specific information about an overall assessment of the Apollo program's significance as per Launius's \"Apollo: A Retrospective Analysis.\" The context primarily focuses on some issues within the Apollo program, such as concerns about contractors and the need for a team to address potential delays in the LM program. However, without further information or additional context, I cannot provide an accurate response to your query. [No citation available]"
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What incident does the \"Apollo 204 Review Board Final Report Summary\" investigate, and what happened during that incident?",
+    "expected_keywords": [
+      "Apollo",
+      "Review Board Final Report Summary",
+      "However"
+    ],
+    "expected_answer": "The \"Apollo 204 Review Board Final Report Summary\" investigates an incident related to the Apollo program, specifically referring to Apollo 204. However, the context does not provide detailed information about what exactly happened during this incident. For a comprehensive understanding, you may want to refer to the full report itself. [1]"
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What did the Planck Collaboration's 2018 results determine about cosmological parameters, and what satellite mission produced this data?",
+    "expected_keywords": [
+      "The Planck Collaboration",
+      "Dark Energy Survey",
+      "DES",
+      "However"
+    ],
+    "expected_answer": "The Planck Collaboration's 2018 results determined that there is moderate percent-level tension between their findings on cosmological parameters and those obtained by the Dark Energy Survey (DES). This information can be found in [3]. However, it should be noted that the exact nature of this tension - whether it's due to statistical fluctuations, systematics, or new physics - remains unclear [3]. The data for these analyses was produced by the Planck satellite mission."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "According to Roos, what lines of evidence support the existence of dark matter across astronomy, astrophysics, and cosmology?",
+    "expected_keywords": [
+      "However",
+      "Cosmic Microwave Background",
+      "Roos",
+      "Matts"
+    ],
+    "expected_answer": "The provided context does not explicitly list all the lines of evidence supporting the existence of dark matter across astronomy, astrophysics, and cosmology. However, the abstract and table of contents suggest that the review discusses various pieces of evidence such as rotation curves of spiral galaxies, mass to luminosity ratios, strong and weak lensing, Cosmic Microwave Background, baryonic acoustic oscillations, galaxy formation in purely baryonic matter, large scale structures simulated, dark matter from overall fits, merging galaxy clusters [1]. For a more detailed explanation, it is recommended to read the full text of the paper.\n\n[1] Roos, Matts. \"Dark Matter: The evidence from astronomy, astrophysics and cosmology.\" arXiv:1001.0316v2  [astro-ph.CO], 18 Oct 2010."
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "What were the JWST Early Release Observations, and what was their purpose following the telescope's launch?",
+    "expected_keywords": [
+      "The JWST Early Release Observations",
+      "EROs",
+      "James Webb Space Telescope",
+      "JWST"
+    ],
+    "expected_answer": "The JWST Early Release Observations (EROs) refer to a set of public outreach products created to mark the end of commissioning and the beginning of science operations for the James Webb Space Telescope (JWST). These products, also known as the \"Webb First Images and Spectra,\" were intended to demonstrate to the worldwide public that JWST is ready for science and is capable of producing spectacular results [1]. The EROs highlight key science areas where JWST is most likely to make transformational contributions to astrophysics: Early galaxies, interacting galaxies, stellar birth and death, and other worlds (i.e., exoplanets) [1]. The scientific data underlying the First Images and Spectra were publicly released on the Mikulski Archive for Space Telescopes (MAST) on July 13th, 2022 [1].\n\nReferences:\n[1] This paper presents the JWST First Images and Spectra data, describes their observational design, processing, and visualization steps carried out to support the press event. We do not present any scientific analysis of the data set, and leave this to the astronomical community. All the public outreach products resulting from this set of observations can be found on webbtelescope.org. arXiv:2207.13067v2  [astro-ph.IM]  11 Sep 2022"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What did the US Senate's Apollo 13 Mission Review investigate, and what went wrong during that mission?",
+    "expected_keywords": [
+      "The US Senate",
+      "Apollo",
+      "Mission Review",
+      "Review Board"
+    ],
+    "expected_answer": "The US Senate's Apollo 13 Mission Review investigated the cause of the failure that necessitated aborting the Apollo 13 mission [1]. According to the findings from several weeks of intense investigation by the Apollo 13 Review Board, a malfunction occurred during the mission [1]. The details of this malfunction are not explicitly stated in the provided context."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What is the National Aeronautics and Space Act of 1958, and what agency did it establish?",
+    "expected_keywords": [
+      "The National Aeronautics",
+      "Space Act",
+      "National Aeronautics",
+      "Space Administration"
+    ],
+    "expected_answer": "The National Aeronautics and Space Act of 1958 established the National Aeronautics and Space Administration (NASA) [2]. This act was enacted to promote a strong national space program aimed at achieving a balanced space effort that could be devoted to peaceful purposes for the benefit of all mankind. The Act also provided for international cooperation in space exploration."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What does White House Space Policy Directive 1 direct NASA to prioritize?",
+    "expected_keywords": [
+      "White House Space Policy Directive",
+      "December",
+      "NASA",
+      "Earth"
+    ],
+    "expected_answer": "According to White House Space Policy Directive-1 of December 11, 2017, the policy directs NASA to prioritize leading an innovative and sustainable program of exploration with commercial and international partners to enable human expansion across the solar system and to bring back to Earth new knowledge and opportunities [1]. The United States is directed to begin this with missions beyond low-Earth orbit, aiming for the return of humans to the Moon for long-term exploration and utilization, followed by human missions to Mars and other destinations [1]."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "According to Wright and Gaudi, what methods are used to detect exoplanets? Name at least two.",
+    "expected_keywords": [
+      "Jason",
+      "Wright",
+      "Scott Gaudi"
+    ],
+    "expected_answer": "According to the article by Jason T. Wright and B. Scott Gaudi [1], the methods used to detect exoplanets include radial velocities and direct imaging."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: How does the Apollo 204 (Apollo 1) fire investigation relate to the Apollo 13 Mission Review \u2014 are both examples of NASA safety/accident investigations?",
+    "expected_keywords": [
+      "The Apollo",
+      "Apollo",
+      "NASA",
+      "Although"
+    ],
+    "expected_answer": "The Apollo 204 (also known as Apollo 1) and Apollo 13 incidents were indeed both significant safety issues in NASA's Apollo program. Although the provided context primarily focuses on the investigation of the Apollo 204 fire, it does suggest that there are similarities between the two events [1].\n\nThe Apollo 204 Review Board's findings and recommendations were presented as a preliminary report to the Apollo 204 Review Board by Irving Pinkel of Lewis Research Center and the Fire Propagation Panel on February 7, 1967 [2]. The context does not provide specific information about the Apollo 13 Mission Review or any direct connections between the two incidents. However, it is well-documented that the Apollo 13 incident occurred in April 1970 and was also a result of an onboard fire and subsequent life-threatening technical problems during flight [3].\n\n[1] 1st sess., pt. i, Feb. 7, 1967. Irving Pinkel, of Lewis Research Center and the Fire Propagation Panel, presented a preliminary report to the Apollo 204 Review Board. The report described the areas of the command module most damaged by the January 27 fire, the most probable fire paths, and the combustible materials in the 72 (source id:1)\n[2] The Board noted that the underlying design approach in Apollo was to control the known risk of fire--on the pad or in orbit--by isolating and rendering safe all possible ignition sources. The experience in flight and in tests prior to the accident had suggested that the probability of a spacecraft fire was low. (source id:2)\n[3] Apollo 13 - Wikipedia, the free encyclopedia (https://en.wikipedia.org/wiki/Apollo_13)"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Cross-document: How does the National Aeronautics and Space Act of 1958 relate to Space Policy Directive 1, given both concern the same agency's mandate but from different eras?",
+    "expected_keywords": [
+      "National Aeronautics",
+      "Space Act",
+      "Space Policy Directive",
+      "However"
+    ],
+    "expected_answer": "According to the context provided, neither the National Aeronautics and Space Act of 1958 nor Space Policy Directive 1 (2010) directly discuss each other. However, both documents are related as they both pertain to the mandate of NASA, the National Aeronautics and Space Administration. The Act established NASA [3] and its primary purpose was to \"provide for research into the problems of flight within and outside the earth's atmosphere and for other purposes\" [3]. On the other hand, Space Policy Directive 1 sets forth a new national space policy that emphasizes human expansion across the solar system with commercial and international partners [2]. In this directive, it is mentioned that the United States will lead the return of humans to the Moon for long-term exploration and utilization, followed by human missions to Mars and other destinations [2]. This suggests a continuation and evolution of NASA's mandate from the National Aeronautics and Space Act of 1958."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Cross-document: How do the Event Horizon Telescope's black hole imaging and LIGO's gravitational wave detection both provide evidence related to black holes, despite using completely different observational methods?",
+    "expected_keywords": [
+      "The Event Horizon Telescope",
+      "EHT",
+      "Laser Interferometer Gravitational",
+      "Observatory"
+    ],
+    "expected_answer": "The Event Horizon Telescope (EHT) and Laser Interferometer Gravitational-wave Observatory (LIGO) provide complementary evidence about black holes, even though they use distinct observational methods.\n\nThe EHT captures images of the shadows cast by black hole event horizons [1], offering a direct visual confirmation of their existence. On the other hand, LIGO detects gravitational waves emitted during the merger of two compact objects, such as black holes, and confirms the existence of binary black hole systems [2].\n\nTogether, these observations support the predictions of general relativity for black holes and provide insights into their properties.\n\nReferences:\n[1] https://www.eventhorizontelescope.org/pages/news-releases\n[2] \"The LIGO detectors have observed gravitational waves from the merger of two stellar-mass black holes\" [1] in the provided context."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: How does Planck's cosmological parameter data relate to Roos's dark matter evidence review \u2014 does Planck's CMB data serve as one of the lines of evidence Roos discusses?",
+    "expected_keywords": [
+      "Planck",
+      "WMAP",
+      "CMB",
+      "Hubble"
+    ],
+    "expected_answer": "According to the provided context [1], Planck's cosmological parameter data is combined with other data such as WMAP-5 year CMB data and Hubble constant value to testify about the existence of dark matter. However, the context does not directly mention Roos's dark matter evidence review or specifically state that Planck's CMB data serves as one of the lines of evidence discussed by Roos. For a more specific connection between Planck's CMB data and Roos's review, it would be beneficial to reference the source where Roos's review is published."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Near-miss: Both exoplanet detection and dark matter evidence involve inferring the existence of something indirectly rather than observing it directly \u2014 what's the key methodological difference between how each is detected?",
+    "expected_keywords": [
+      "Exoplanet",
+      "Instead"
+    ],
+    "expected_answer": "The key methodological difference between the detection of exoplanets and dark matter lies in the nature of the evidence gathered.\n\nExoplanet detection primarily involves direct and indirect methods, such as radial velocities, transit, microlensing, timing, and imaging [1]. These methods allow for the observation of stars' slight movements due to the presence of orbiting planets, the dimming or brightening of stars during planetary transits, or the gravitational lensing effect on distant background stars.\n\nOn the other hand, dark matter is not directly observable as it does not interact with electromagnetic radiation. Instead, scientists infer its existence by observing its effects on visible matter, such as the gravitational lensing of light and the rotation speeds of galaxies [2]. In summary, while exoplanets can be detected through various methods that observe their direct or indirect effects on stars, dark matter is primarily inferred from its gravitational effects on visible matter.\n\n[1] https://ui.adsabs.harvard.edu/abs/2018PASA...35...69C/abstract\n[2] https://ui.adsabs.harvard.edu/abs/2007PhR...443..181B/abstract"
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: This cluster spans human spaceflight history, policy/legislative documents, and pure astrophysics research \u2014 what does this range suggest about the boundary between \"space exploration\" and \"astrophysics\" as a single topic cluster?",
+    "expected_keywords": [
+      "Based",
+      "National Space Policy",
+      "However",
+      "Kennedy"
+    ],
+    "expected_answer": "Based on the provided context, it seems that \"space exploration\" encompasses various aspects such as policy directives for human spaceflight, technological advancements, and scientific research. The policy document you've shared is about amending the National Space Policy, focusing on human expansion across the solar system, which suggests a broader scope beyond just astronomy or astrophysics research. However, it's important to note that scientific satellite probes and weather observation satellites are part of the plan, indicating an overlap between space exploration and astrophysics in some areas. The concern raised by Kennedy about ensuring a scientifically-viable Project Apollo also points towards the importance of scientific research in space exploration. In conclusion, while there is an overlap, \"space exploration\" appears to be a broader topic that includes aspects beyond pure astrophysics research.\n\n[1] Presidential Policy Directive\u20134 of June 28, 2010 (National Space Policy)\n[3] Partly in response to this concern, Johnson asked NASA... (no specific id provided, but contextually relevant)"
+  }
+]

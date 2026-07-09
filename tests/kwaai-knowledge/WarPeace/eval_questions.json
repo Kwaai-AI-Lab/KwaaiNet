@@ -1,0 +1,242 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What real historical figure and diplomat wrote \"With Napoleon in Russia,\" and what was his role in Napoleon's 1812 campaign?",
+    "expected_keywords": [
+      "With Napoleon",
+      "Russia",
+      "Edward Foord",
+      "Napoleon"
+    ],
+    "expected_answer": "The author who wrote \"With Napoleon in Russia\" was Edward Foord [1]. According to the text, he was a man of letters who played a significant role in promoting the study of history. In the context of the given text, it is not explicitly stated what his role was during Napoleon's 1812 campaign, but as the author of the book, it can be inferred that he documented and shared details about Napoleon's Russian campaign [2]."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to Clausewitz's On War, what does he argue is the essential nature of war in relation to politics?",
+    "expected_keywords": [
+      "Clausewitz",
+      "On War",
+      "However",
+      "Thus"
+    ],
+    "expected_answer": "According to Clausewitz's \"On War\", he argues that war has its root in a political object and that this original motive should continue as the first and highest consideration in its conduct. However, policy must accommodate itself to the nature of the means, and while changes in these means may involve modification in the political objective, the latter always retains a prior right to consideration [1]. Thus, war is not merely a political act but also a real political instrument, a continuation of political commerce, a carrying out of the same by other means. All beyond this which is strictly peculiar to War is considered beyond the scope of the provided context [2, 3]."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "In Homer's Iliad, what is the central conflict that drives the narrative, and how does it relate to a warrior's personal honor?",
+    "expected_keywords": [
+      "Homer",
+      "Iliad",
+      "Greek",
+      "Agamemnon"
+    ],
+    "expected_answer": "The central conflict in Homer's \"Iliad\" revolves around the quarrel between the Greek leaders Agamemnon and Achilles. This conflict arises when Agamemnon takes Briseis, Achilles' captive woman, as a prize for himself [1]. This act angers Achilles, who withdraws from the battlefield in protest, causing a significant decline in the Greek forces' morale and strength.\n\nThe conflict is deeply rooted in the concept of personal honor. In ancient Greek society, a warrior's honor was closely tied to his status and reputation. Taking another warrior's prize (in this case, Briseis) was considered an affront to that warrior's honor, which is why Achilles decides to withdraw from the war. This conflict and its resolution play a pivotal role in the narrative of \"The Iliad.\"\n[1] Homer, The Iliad, \"Therefore turn, and charge at the foe, to stand or fall as is the game of war; whoever shall bring Patroclus, dead though he be, into the hands of the Trojans, and shall make Ajax give way before him, I will give him one half of the spoils while I keep the other.\""
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What historical event does Edward Foord's account cover, and how does it connect to the events depicted in War and Peace?",
+    "expected_keywords": [
+      "Based",
+      "Edward Foord",
+      "However",
+      "War"
+    ],
+    "expected_answer": "Based on the provided context [1], Edward Foord's account appears to discuss various perspectives on war and its implications. However, the connection between this account and War and Peace by Leo Tolstoy is not immediately clear from the provided excerpt. The events or historical context discussed in Foord's account might influence or provide a background for the themes in War and Peace, but without further information, it's challenging to establish a direct link [1].\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">consider war as an inevitable phenomenon, beneficial in its effects and therefore desirable. Men look at the subject from different points of view, but all alike talk of war as though it were something absolutely independent of the will of those who take part in it. And consequently they do not even admit the natural question which presents itself to every simple man: \"How about me\u2014ought I to take any part in it?\" In their view no question of this kind even exists, and every man, however he may regard war from a personal standpoint, must slavishly submit to the requirements of the authorities on the subject. The attitude of the first section of thinkers, those who see a way out of war in international diplomatic measures, is well expressed in the report of the last Peace Congress in London, and the articles and letters upon war that appeared in No. 8 of the Revue des Revues, 1891. The congress after gathering together from various quarters the verbal and</source>"
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "According to L. Winstanley's critical biography, which chapter is specifically devoted to War and Peace, and which other Tolstoy work does the following chapter cover?",
+    "expected_keywords": [
+      "War",
+      "Peace",
+      "Chapter IV",
+      "Chapter"
+    ],
+    "expected_answer": "According to the provided context [1], the chapter \"War and Peace\" is covered in Chapter IV, while Chapter V discusses Anna Kar\u00e9nina."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "What is Anna Karenina's central plot concern, and how does its narrative scope differ from War and Peace's?",
+    "expected_keywords": [
+      "Anna Karenina",
+      "Anna",
+      "War",
+      "Peace"
+    ],
+    "expected_answer": "The central plot concern of Anna Karenina is a domestic tragedy revolving around the life of Anna Kar\u00e9nina, a mature woman who experiences emotional turmoil and infidelity, ultimately leading to her tragic death. In contrast, War and Peace has a broader narrative scope that encompasses the impact of the Napoleonic Wars on Russian society and individual lives [1]. The scope of Anna Karenina is less gigantic than War and Peace, allowing for clearer and more concentrated storytelling, with everything directed towards Anna's tragic end [1]."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "In The Kingdom of God Is Within You, what worldview does Tolstoy argue for, and how does it relate to the perspective on history and war in War and Peace?",
+    "expected_keywords": [
+      "The Kingdom",
+      "God Is Within You",
+      "Leo Tolstoy",
+      "Christianity"
+    ],
+    "expected_answer": "In \"The Kingdom of God Is Within You,\" Leo Tolstoy argues for a religious and social philosophy that emphasizes the importance of non-violence, love, and simplicity [1]. This worldview is rooted in his interpretation of Christianity and is aimed at providing a moral framework for individual and societal behavior.\n\nRegarding its relationship with \"War and Peace,\" Tolstoy's perspective on history and war can be seen as evolving between the two works. In \"War and Peace,\" he depicts the historical events of the Napoleonic Wars from an objective, almost detached standpoint [2]. However, in \"The Kingdom of God Is Within You,\" his view of war becomes more critical, considering it a source of human suffering and arguing that violence is not a solution to societal problems [1]. Therefore, while both works discuss history and war, the philosophical approach towards them diverges significantly.\n\n[1] From The Project Gutenberg eBook 43302 \"TRANSLATOR'S PREFACE\" (<source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">The Project Gutenberg eBook of The Kingdom of God Is Within You, by Leo Tolstoy, translated by Constance Garnett.</source>)\n[2] From the context it is inferred that \"War and Peace\" is not directly mentioned but can be implied as Tolstoy's previous work."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "Cross-document: How does Stendhal's Charterhouse of Parma depict a soldier's confusion at the Battle of Waterloo, and how does this compare to Tolstoy's approach to depicting chaos in battle scenes?",
+    "expected_keywords": [
+      "Nikolai Rostov",
+      "Leo Tolstoy",
+      "War",
+      "Peace"
+    ],
+    "expected_answer": "The context provided primarily discusses Nikolai Rostov from Leo Tolstoy's War and Peace, focusing on his emotions during war. However, it does not directly compare Tolstoy's approach to Stendhal's Charterhouse of Parma regarding the depiction of chaos in battle scenes, including a soldier's confusion at the Battle of Waterloo.\n\nFor a comparison between these two works, I would recommend researching both texts separately and then comparing their approaches. Here is some context about Stendhal's Charterhouse of Parma:\n\n- Stendhal's novel, The Charterhouse of Parma, focuses on the life of Fabrizio del Dongo, an Italian aristocrat who becomes a soldier during the Napoleonic Wars and experiences confusion at the Battle of Waterloo.\n- Stendhal's battle scenes are known for their chaotic and realistic portrayals, which contrast with the more orderly depictions common in Romantic literature [2].\n\nFor Tolstoy's War and Peace, the novel delves into the psychological impact of war on various characters, including Nikolai Rostov. However, the context provided does not detail specific battle scenes or compare them to Stendhal's Charterhouse of Parma.\n\n[2] - Source: \"The Cambridge Companion to Stendhal\" (edited by Michael Sheringham)"
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "Cross-document: Victor Hugo's Les Miserables also contains a famous Waterloo digression \u2014 how does Hugo's authorial tone differ from Tolstoy's stated view (in his epilogues) on \"great man\" history?",
+    "expected_keywords": [
+      "Victor Hugo",
+      "Les Miserables",
+      "Tolstoy",
+      "Hugo"
+    ],
+    "expected_answer": "According to the provided context, Victor Hugo's authorial tone in \"Les Miserables\" is described as being more theatrical and rhetorical compared to Tolstoy [1]. On the other hand, Tolstoy's view on \"great man\" history is that it may oversimplify historical events. This difference in authorial tone can be inferred from Tolstoy's epilogues, but no specific comparison between Hugo and Tolstoy regarding their views on \"great man\" history is provided in the context [1].\n\n[1] The source of this information can be found at: <source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">of a human soul is, in somewhat similar method, described; but Victor Hugo does not penetrate to the foundations of human life in the same manner as Dosto\u00efevsky; he\u2014the petted idol of the French public\u2014had had that first-hand acquaintance with the terrible realities of oppression; there is something theatrical and rhetorical, almost insincere, about Hugo if we compare him with the great Russian.</source>"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "Cross-document: Compare Thackeray's Vanity Fair's satirical treatment of the Napoleonic era with Tolstoy's earnest realist treatment of the same period.",
+    "expected_keywords": [
+      "Tolstoy",
+      "French",
+      "Russia",
+      "Napoleonic"
+    ],
+    "expected_answer": "According to the provided context [1], Tolstoy aimed at giving a picture of the whole epoch, specifically the conflict between the French and Russia during the Napoleonic era, in his book \"War and Peace\". This work is described as his longest and most important single work. On the other hand, Thackeray's \"Vanity Fair\" is a satirical novel set during the same period. Although the two works share the same historical setting, their approaches are quite different: while Tolstoy presents an earnest realist treatment, Thackeray uses satire [1 does not provide specific information on Thackeray's work regarding this matter].\n\n[1] War and Peace (Tolstoy, 1864-9) & Vanity Fair (Thackeray, 1847-8) in \"Tolstoy, Leo Nikolaevich,\" in Encyclopaedia Britannica Online. Accessed February 01, 2023. https://www.britannica.com/biography/Leo-Nikolaevich-Tolstoy"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "Cross-document: How does Stephen Crane's The Red Badge of Courage compare to Tolstoy's psychological approach to depicting a soldier's inner experience of combat, despite the different war and nationality?",
+    "expected_keywords": [
+      "Stephen Crane",
+      "The Red Badge",
+      "Courage",
+      "Leo Tolstoy"
+    ],
+    "expected_answer": "According to the provided context, both Stephen Crane's \"The Red Badge of Courage\" and Leo Tolstoy's War and Peace exhibit a deep interest in portraying a soldier's inner experience of combat. However, while Crane focuses on the fear and anxiety experienced by an American Civil War soldier, Tolstoy delves into the psychological effects of war on Russian soldiers during the Napoleonic Wars [1]. Despite the differences in setting and nationality, both authors demonstrate a unique insight into the human psyche under pressure, making their works valuable contributions to understanding the psychological impact of combat.\n\n[1] Characteristic attitude to war, which is peculiar because it unites such a great appreciation of war as a school of heroic virtue with such a whole-hearted condemnation. (Tolstoy describes the actual moment of death in battle with such imaginative vividness that it seems almost impossible a man could so realise it without a personal experience.) [1]"
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "Tolstoy's epilogues to War and Peace explicitly argue against military-theory/\"great man\" accounts of history \u2014 which author in this cluster represents the theoretical position Tolstoy is arguing against, and what is that position?",
+    "expected_keywords": [
+      "Tolstoy",
+      "War",
+      "Peace",
+      "However"
+    ],
+    "expected_answer": "In the provided context, there isn't a specific author mentioned as being against whom Tolstoy argues in his epilogues to \"War and Peace.\" However, it can be inferred that he might be criticizing the conventional military-theory or \"great man\" approach to history, which is often associated with thinkers like Thucydides, Clausewitz, or Jomini [1].\n\nHowever, please note that the context does not explicitly state this, and it's an inference based on Tolstoy's arguments against such theories. For a more accurate answer, you may want to refer to other sources dedicated to interpreting Tolstoy's works.\n\n[1] The provided context does not include specific citations; however, these figures are commonly associated with military-theory or \"great man\" accounts of history."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What does the Index of Project Gutenberg Works of Leon Tolstoy catalog, and how is it organized?",
+    "expected_keywords": [
+      "The Index",
+      "Project Gutenberg Works",
+      "Leon Tolstoy",
+      "Russian"
+    ],
+    "expected_answer": "The Index of Project Gutenberg Works of Leon Tolstoy catalogs a collection of works by the Russian author Leo Tolstoy. It is organized with titles listed before many entries, which when clicked on lead to a linked table of contents for that volume. Titles themselves open the original online file [1]. Additionally, there's another work titled \"The Project Gutenberg E-text of Tolstoy\" by L. Winstanley that discusses Tolstoy's life and works, as well as providing a brief introduction to several of his major books [2]."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Near-miss: According to Winstanley's biography, what specific comparison does she draw between Tolstoy and Homer?",
+    "expected_keywords": [
+      "Tolstoy",
+      "Homer",
+      "Winstanley",
+      "However"
+    ],
+    "expected_answer": "The context does not provide a direct comparison between Tolstoy and Homer in terms of a specific aspect, as stated by Winstanley. However, the text mentions that there is a considerable similarity between them in their heroism, understanding of war, vast and crowded canvas, tragic view of human destiny, and lovely compassion [1]. The text also notes that Tolstoy read much in Homer and was greatly influenced by him in writing his War and Peace."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Near-miss: What distinguishes the battle-chaos narrative technique used by Stendhal at Waterloo from the technique used by Tolstoy, even though both are cited as pioneers of \"fog of war\" realism?",
+    "expected_keywords": [
+      "Stendhal",
+      "Tolstoy",
+      "However",
+      "The Red"
+    ],
+    "expected_answer": "The provided context does not explicitly discuss the differences between Stendhal's and Tolstoy's approaches to depicting battle-chaos narrative techniques. However, it is generally known that both authors are recognized for their pioneering contributions to the genre often referred to as \"fog of war\" realism.\n\nStendhal, in his novel \"The Red and the Black,\" uses a subjective narrative style to portray the chaos and confusion of battle from the perspective of his protagonist, Julien Sorel [1]. On the other hand, Tolstoy's approach, as depicted in \"War and Peace,\" involves an omniscient narrator that delves into the thoughts and emotions of multiple characters during the Battle of Borodino, creating a sense of disorder and unpredictability [2].\n\nReferences:\n[1] Stendhal, M. (1830). The Red and the Black. London: J.M. Dent & Sons Ltd.\n[2] Tolstoy, L. N. (1869). War and Peace. New York: Random House LLC."
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "What years does Caulaincourt's memoir cover, and what specific role gave him firsthand access to Napoleon during the retreat from Russia?",
+    "expected_keywords": [
+      "Caulaincourt",
+      "Russian",
+      "Napoleon",
+      "Russia"
+    ],
+    "expected_answer": "According to the context [1], Caulaincourt's memoir covers the events from 1805 and the Russian campaign, as well as the events from the spring of 1813 through Napoleon's first abdication. As for his specific role that gave him firsthand access to Napoleon during the retreat from Russia, he was an aide-de-camp (assistant military officer) who rode into battle with Emperor Napoleon and managed the transportation service and planning of schedules that made possible Napoleon's sudden appearances where he was least expected [1]."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "According to Foord's history, what climate and logistics factors are cited as decisive in the failure of Napoleon's 1812 campaign?",
+    "expected_keywords": [
+      "Foord",
+      "Napoleon",
+      "Russians",
+      "French"
+    ],
+    "expected_answer": "According to Foord [1], the climate and logistics factors that were decisive in the failure of Napoleon's 1812 campaign include a lack of natural obstacles, the Russians' reluctance to attack French cantonments, and the harsh Russian winter. The text mentions that the loss of a few miles of ground would have decided nothing, and there was no natural obstacle in any feature of the country near enough up to which the Russians could pursue their success [2]. Additionally, the war of 1812 was not a campaign of that kind, which suggests that logistical challenges may have been significant factors in Napoleon's eventual defeat."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: Does Caulaincourt's firsthand, Napoleon-centered memoir support or complicate Tolstoy's thesis that history is driven by broad social forces rather than \"great men\"?",
+    "expected_keywords": [
+      "War",
+      "Peace",
+      "Leo Tolstoy",
+      "France"
+    ],
+    "expected_answer": "According to the provided context, War and Peace by Leo Tolstoy focuses on the conflict between France and Prussia from 1805 to 1812 [1]. The book gives a picture of a whole epoch and provides insights into the main events through the perspectives of private individuals participating in them. However, the provided context does not include Caulaincourt's memoir or any information that directly compares it with Tolstoy's thesis about history being driven by broad social forces rather than \"great men.\" For a more accurate response, I would need additional context that includes Caulaincourt's memoir and its relation to Tolstoy's work."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "What does Tolstoy's later work in this cluster (The Kingdom of God Is Within You) reveal about his eventual repudiation of the worldview embedded in War and Peace?",
+    "expected_keywords": [
+      "Tolstoy",
+      "The Kingdom",
+      "God Is Within You",
+      "Gospel"
+    ],
+    "expected_answer": "According to the source, Tolstoy's later work, \"The Kingdom of God Is Within You,\" reveals that he eventually emerged from his darkness and was convinced that the true faith lay in a literal obedience to the precepts of the Gospel and especially to the Sermon on the Mount [1]. He criticized the present social and political regime and his destructive criticism is expected to become a powerful force in the work of disintegration and social reconstruction [2]."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: Anna Karenina and War and Peace are both by Tolstoy but treat very different subject matter \u2014 what does this contrast suggest about testing whether a system can distinguish \"same author, different scope\" from \"different author, same thematic scope\" (e.g., vs. Homer's Iliad)?",
+    "expected_keywords": [
+      "Anna Karenina",
+      "War",
+      "Peace",
+      "Leo Tolstoy"
+    ],
+    "expected_answer": "The provided context discusses two novels, Anna Karenina and War and Peace, both written by Leo Tolstoy [1]. While both novels are considered great works of literature, they exhibit distinct differences in their thematic scopes and national focus. Anna Karenina is more focused on a domestic tragedy and exhibits French influences, while War and Peace has a broader scope that encompasses the Napoleonic Wars and Russian society [1]. This contrast suggests that the system can distinguish \"same author, different scope\" from \"different author, same thematic scope.\" However, it's important to note that the evaluation of literary works is subjective and depends on various factors such as cultural context, personal interpretation, and critical analysis.\n\nReferences:\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"5815142a-7b6e-4070-b6c1-34dfded4246a\">"
+  }
+]

@@ -1,0 +1,224 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "According to Armstrong McKay et al., how many degrees of global warming could trigger multiple climate tipping points, and what does \"tipping point\" mean in this context?",
+    "expected_keywords": [
+      "Armstrong McKay",
+      "Earth"
+    ],
+    "expected_answer": "According to Armstrong McKay et al. [1], if the world continues on its current trajectory, it is heading toward 2 to 3 degrees of global warming. This could potentially trigger multiple climate tipping points. In this context, a tipping point refers to a change in a part of the climate system that becomes self-perpetuating beyond a warming threshold, leading to substantial Earth system impacts."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "What is CMIP6, according to Eyring et al., and what is its stated purpose in climate science?",
+    "expected_keywords": [
+      "Eyring",
+      "Coupled Model Intercomparison Project",
+      "CMIP",
+      "DECK"
+    ],
+    "expected_answer": "According to Eyring et al. [1], CMIP6 refers to the sixth phase of the Coupled Model Intercomparison Project (CMIP). The stated purpose of CMIP6 in climate science is to continue the tradition of major scientific advances by addressing various scientific questions related to climate variability and change, such as the influence of terrestrial biosphere on CO2 uptake, predictability of future climate changes, interdependence and differences in model performance, distribution of tropospheric ozone, and impact of land-use changes on water availability. The last three years have been dedicated to conceiving and planning CMIP6, with the first modeling centers expected to start performing DECK experiments in 2016."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "According to the IPCC AR6 Synthesis Report Summary for Policymakers, what is the overall assessment regarding human influence on the climate system?",
+    "expected_keywords": [
+      "IPCC",
+      "Synthesis Report Summary",
+      "Policymakers",
+      "However"
+    ],
+    "expected_answer": "The context does not provide explicit information about the overall assessment regarding human influence on the climate system from the IPCC AR6 Synthesis Report Summary for Policymakers. However, based on the broader understanding of the AR6 report [1], it assesses that it is \"unequivocal\" that human influence has warmed the atmosphere, ocean, and land over the past century [2].\n\n[1] The three Working Group contributions to AR6 are: AR6 Climate Change 2021: The Physical Science Basis; AR6 Climate Change 2022: Impacts, Adaptation and Vulnerability; and AR6 Climate Change 2022: Mitigation of Climate Change. Their assessments cover scientific literature accepted for publication respectively by 31 January 2021, 1 September 2021 and 11 October 2021.\n[2] The three Special Reports are: Global Warming of 1.5\u00b0C (2018): an IPCC Special Report on the impacts of global warming of 1.5\u00b0C above pre-industrial levels and related global greenhouse gas emission pathways, in the context of strengthening the global response to the threat of climate change, sustainable"
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "According to Kroeker et al., what specific effects does ocean acidification have on marine organisms?",
+    "expected_keywords": [
+      "Kroeker"
+    ],
+    "expected_answer": "According to the study by Kroeker et al. [1], widespread biological impacts of human-driven ocean acidification have been posited, ranging from changes in organism physiology and population dynamics to altered communities and ecosystems."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What is GISTEMP, per Lenssen et al., and what does the paper's \"observational uncertainty ensemble\" attempt to quantify?",
+    "expected_keywords": [
+      "Lenssen",
+      "GISTEMP",
+      "Goddard Institute",
+      "Space Studies Temperature Monitoring"
+    ],
+    "expected_answer": "According to Lenssen et al. [1], GISTEMP (Goddard Institute for Space Studies Temperature Monitoring) is a method used to quantify surface temperature reconstruction. The paper's \"observational uncertainty ensemble\" aims to quantify the uncertainty in the reconstructed surface temperature through multiple realizations of the uncertainty distribution, using a Monte Carlo approach [1]. This approach helps to represent uncertainties that are not well-represented by parametric probability distributions and time series that are not well described by autoregressive statistical models [1]."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "According to Miller et al., what region-specific sea level rise projections does the paper provide, and for which U.S. state?",
+    "expected_keywords": [
+      "Washington State",
+      "Specifically",
+      "Washington"
+    ],
+    "expected_answer": "The paper provides new regional sea level rise projections for Washington State [1]. Specifically, the projections are developed for 171 locations distributed along Washington's coastline, addressing variations in the rate of vertical land movement across the state."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What does the NOAA Mauna Loa CO2 Record document, and why is Mauna Loa historically significant as a measurement site?",
+    "expected_keywords": [
+      "The NOAA Mauna Loa",
+      "Record",
+      "Earth",
+      "Mauna Loa Observatory"
+    ],
+    "expected_answer": "The NOAA Mauna Loa CO2 Record documents the measurements of carbon dioxide (CO2) concentrations in Earth's atmosphere, specifically at the Mauna Loa Observatory in Hawaii.\n\nMauna Loa is historically significant as a measurement site because it provides one of the longest continuous records of atmospheric CO2 levels [1]. It's located remotely and high above sea level (approximately 3,400 meters), which minimizes local influences on CO2 concentration [2]. As such, data from Mauna Loa Observatory has contributed significantly to our understanding of global CO2 trends and the impact of human activities on the atmosphere."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "According to the National Academies report, what is \"extreme weather event attribution,\" and what scientific challenge does it address?",
+    "expected_keywords": [
+      "National Academies"
+    ],
+    "expected_answer": "The term \"extreme weather event attribution\" refers to a field of science that aims to understand and explain extreme weather events in the context of climate change [1]. According to the report, one of the main scientific challenges addressed by this field is the need for continued research to increase the reliability of event attribution results, particularly for event types that are currently poorly understood. This challenge arises as there is increasing public, policymaker, and practitioner inquiry about the relationship between specific weather events and climate change."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "According to the Ocean and Climate Platform document, what mechanism causes coral bleaching, and why is it described as an imminent threat?",
+    "expected_keywords": [
+      "Coral"
+    ],
+    "expected_answer": "Coral bleaching occurs when corals lose their symbionts (usually microscopic algae called zooxanthellae) and/or associated photosynthetic pigments [5]. This phenomenon is referred to as \"bleaching\" because the coral progressively whitens. It is described as an imminent threat to marine biodiversity due to its potential for massive mortality in reef ecosystems worldwide, resulting from the loss of photosynthetic symbionts, which are the primary food source for the coral [6]."
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "According to Roessger et al., what is driving the seasonal increase in methane emissions from Siberian tundra?",
+    "expected_keywords": [
+      "Roessger",
+      "Siberian",
+      "June",
+      "Arctic"
+    ],
+    "expected_answer": "According to Roessger et al. [1], the seasonal increase in methane emissions from Siberian tundra is driven by a strong air temperature rise, particularly in June, which corresponds to an earlier warming of 11 days. This increase in early summer methane emissions shows that atmospheric warming has begun to affect the methane flux dynamics of permafrost-affected ecosystems in the Arctic."
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "According to Thomas and Twyman, how does climate change vulnerability intersect with social justice concerns?",
+    "expected_keywords": [
+      "Thomas",
+      "Twyman",
+      "Roger",
+      "Kasperson"
+    ],
+    "expected_answer": "I'm sorry for any inconvenience, but the provided context doesn't seem to include information on Thomas and Twyman. The sources only reference Roger E. Kasperson and Jeanne X. Kasperson. If you have another source or more specific details about Thomas and Twyman, I would be able to help better with that information."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "According to Turetsky et al., what carbon release mechanism is associated with permafrost collapse, and how does it differ from gradual permafrost thaw?",
+    "expected_keywords": [
+      "Turetsky"
+    ],
+    "expected_answer": "According to Turetsky et al. [1], permafrost collapse releases more carbon per square metre because it disrupts stockpiles deep in frozen layers compared to gradual thawing, which affects the surface of frozen ground and slowly penetrates downwards."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "According to Vihma, what effects does Arctic sea ice decline have on weather patterns beyond the Arctic region?",
+    "expected_keywords": [
+      "Vihma",
+      "Eurasia",
+      "North Atlantic Oscillation",
+      "Arctic Oscillation"
+    ],
+    "expected_answer": "According to Vihma's review [1], several studies suggest that the sea ice decline, together with increased snow cover in Eurasia, favors circulation patterns resembling the negative phase of the North Atlantic Oscillation and Arctic Oscillation. However, it is noted that the atmospheric response to sea ice decline strongly depends on the state of the atmosphere [1]. One of the strongest conclusions was presented by Park et al., stating that \"diminishing Arctic sea ice may lead to changes in the mid-latitude weather regimes\" [2]."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "According to Zhang et al., what is the climate-carbon cycle feedback, and how significant is its amplifying effect according to the paper's title?",
+    "expected_keywords": [
+      "Earth"
+    ],
+    "expected_answer": "The climate-carbon cycle feedback refers to one of the most important climate-amplifying feedbacks of the Earth system, quantified as a function of carbon-concentration feedback parameter (\u03b2) and carbon-climate feedback parameter (\u03b3). According to the paper's title, \"A small climate-amplifying effect of climate-carbon cycle feedback\" suggests that the amplifying effect from this feedback loop is relatively smaller [1]."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: How does Turetsky et al.'s permafrost collapse mechanism relate to Roessger et al.'s Siberian tundra methane emissions findings \u2014 are they describing the same underlying process?",
+    "expected_keywords": [
+      "Based",
+      "Turetsky",
+      "Roessger",
+      "Arctic"
+    ],
+    "expected_answer": "Based on the provided context, it appears that both Turetsky et al. and Roessger et al. are discussing methane emissions in the Arctic region, particularly in relation to permafrost degradation and warming [1]. However, their focus seems different:\n\nTuretsky et al.'s study (implicitly) discusses the mechanism of permafrost collapse, which could potentially lead to increased methane emissions. They do not provide specific findings about the increase in methane emissions.\n\nOn the other hand, Roessger et al. present observational evidence for an increasing trend in methane emissions from a permafrost site in the Lena River Delta since 2004 [1]. Their study does not explicitly address the mechanism of permafrost collapse.\n\nWhile both studies are related and discuss methane emissions in the context of permafrost degradation and warming, they do not seem to be describing the same underlying process directly. For a more detailed comparison between Turetsky et al.'s and Roessger et al.'s findings, it would be beneficial to have access to their specific studies or readings.\n\n[1] Nature Climate Change | Volume 12 | November 2022 | 1031\u20131036\n<https://doi.org/10.1038/s41558-022-01512-4>"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Cross-document: How does Armstrong McKay et al.'s tipping-points framework relate to Zhang et al.'s carbon-cycle feedback \u2014 could a carbon-cycle feedback loop constitute or contribute to a tipping point?",
+    "expected_keywords": [
+      "Armstrong McKay",
+      "Zhang",
+      "However",
+      "Earth"
+    ],
+    "expected_answer": "The relationship between Armstrong McKay et al.'s tipping-points framework and Zhang et al.'s carbon-cycle feedback is not explicitly stated in the provided context. However, both concepts deal with feedback mechanisms in the Earth's system. A carbon-cycle feedback loop could potentially contribute to a tipping point, as it is one of the most important climate-amplifying feedbacks [1]. Carbon cycle feedbacks refer to the responses of the global carbon cycle to changes in climate and atmospheric CO2 concentration, which can influence future climate change [46].\n\nA tipping point, according to Armstrong McKay et al.'s framework, refers to a threshold beyond which a system's behavior undergoes a rapid and irreversible transition. If the carbon-cycle feedback causes significant changes in atmospheric CO2 concentration or global climate that exceed certain thresholds, it could potentially contribute to tipping points [24].\n\nUnfortunately, the provided context does not offer specific details on how Zhang et al.'s carbon-cycle feedback directly relates to Armstrong McKay et al.'s tipping-points framework. For a more detailed understanding of this relationship, I would recommend consulting relevant literature or research articles that compare these two concepts explicitly [46].\n\n[1] Zhang, X., Wang, Y.-P., Rayner, P. J., Ciais, P., Huang, K., Luo, Y., ... & Zhang, Y. (2021). A small climate-amplifying effect of climate-carbon cycle feedback. Communications Earth & Environment, 1(1), 1-9.\n[46] Huntzinger, D. N., Schwalm, C. R., Ciais, P., King, A. W., Sitch, S., and Michalak, A. M. (2017). Uncertainty in the response of terrestrial carbon sink to environmental drivers undermines carbon-climate feedback predictions. Scientific Reports, 7(1), 4765."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Cross-document: How does Kroeker et al.'s ocean acidification research relate to the coral bleaching mechanism described by the Ocean and Climate Platform \u2014 are acidification and bleaching driven by the same or different stressors?",
+    "expected_keywords": [
+      "Regarding",
+      "Kroeker",
+      "However",
+      "While"
+    ],
+    "expected_answer": "The context provided discusses coral bleaching, which occurs when corals lose their symbionts and associated photosynthetic pigments due to increased ocean temperatures [5]. This phenomenon is primarily attributed to global warming causing an abnormal rise in mean ocean temperature over the past thirty years [6].\n\nRegarding your question about Kroeker et al.'s ocean acidification research, I'm unable to find any direct information about it in the provided context. However, it's worth noting that ocean acidification is another significant environmental stressor affecting coral reefs. While the primary cause of coral bleaching discussed here is temperature-related, ocean acidification could potentially exacerbate its impact on corals by altering their ability to build calcium carbonate skeletons [3].\n\nHere are some sources that discuss ocean acidification in relation to coral reefs:\n\n* CORAL.AQUARIUM-ADVENTURES.COM \u2013 Glynn P.M., S.D. Holcomb, M.P. Kohn, and A.J. Schmitt, 2018 \u2013 Ocean acidification and coral reefs: An update on the state of knowledge. Rev. Fish Biol. Fish, 28(3), 547\u2013566.\n* SCIENCE.SMITHSONIAN.COM \u2013 M. Gershuny, 2019 \u2013 The Other Climate Change Crisis: Ocean Acidification. Accessed on April 30th, 2022 from https://ocean.si.edu/ocean-life/ocean-acidification\n\nI hope this helps clarify the connection between coral bleaching and ocean acidification!\n[1,2]"
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: How does the CMIP6 model framework (Eyring et al.) relate methodologically to the IPCC AR6 Synthesis Report's conclusions?",
+    "expected_keywords": [
+      "However",
+      "IPCC",
+      "Synthesis Report",
+      "Unfortunately"
+    ],
+    "expected_answer": "The provided context discusses the CMIP6 experimental design and organization, which involves common standards, coordination, infrastructure, and documentation for modeling climate [1]. However, it does not directly compare this with the IPCC AR6 Synthesis Report's conclusions. To answer your question, I would need additional information or sources that establish a relationship between CMIP6 and the IPCC AR6 Synthesis Report methodologically. Unfortunately, the context provided does not include such details."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Near-miss: Both Lenssen et al.'s GISTEMP paper and the NOAA Mauna Loa CO2 record are long-running observational datasets \u2014 what's the key difference in what each dataset actually measures?",
+    "expected_keywords": [
+      "Lenssen",
+      "GISTEMP",
+      "NOAA Mauna Loa",
+      "The GISTEMP"
+    ],
+    "expected_answer": "The key difference between the datasets by Lenssen et al. (GISTEMP) [3] and the NOAA Mauna Loa CO2 record lies in their measurement focus. The GISTEMP paper primarily focuses on global surface temperature data, while the NOAA Mauna Loa CO2 record specifically measures atmospheric carbon dioxide levels at the Mauna Loa Observatory [1]."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: Thomas and Twyman's paper on climate vulnerability and social justice is the only explicitly social-science paper in an otherwise physical-science cluster \u2014 how does its inclusion change what kinds of questions this cluster can test?",
+    "expected_keywords": [
+      "Thomas",
+      "Twyman",
+      "Climate Change",
+      "Vulnerability"
+    ],
+    "expected_answer": "The inclusion of Thomas and Twyman's paper on climate vulnerability and social justice [1] in a predominantly physical-science cluster broadens the scope of questions this cluster can test. This interdisciplinary approach allows for an examination of the social dimensions of climate change, such as vulnerability and justice, which are often overlooked in physical-science studies. As a result, questions related to human impacts, societal responses, and equity considerations can now be addressed within this context.\n\n[1] Climate Change, Vulnerability, and Social Justice - Roger E. Kasperson and Jeanne X. Kasperson, Stockholm Environment Institute, May, 2001."
+  }
+]

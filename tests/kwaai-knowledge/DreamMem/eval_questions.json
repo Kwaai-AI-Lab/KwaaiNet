@@ -1,0 +1,229 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What is the Overfitted Brain Hypothesis, and who proposed it?",
+    "expected_keywords": [
+      "The Overfitted Brain Hypothesis",
+      "Deep Neural Networks",
+      "DNNs",
+      "Dreams"
+    ],
+    "expected_answer": "The Overfitted Brain Hypothesis suggests that just like Deep Neural Networks (DNNs), the brain faces a challenge of overfitting during its daily learning. Dreams are posited as a biological mechanism for increasing generalizability by creating corrupted sensory inputs from stochastic activity across neural structures [1]. This hypothesis was proposed by Seung-Hee Lee and Yang Dan [1]."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to Hoel's paper, what evolutionary function do dreams serve in relation to machine-learning-style overfitting?",
+    "expected_keywords": [
+      "Hoel"
+    ],
+    "expected_answer": "According to Hoel's paper [1], dreams are proposed to have evolved as a biological mechanism for increasing generalizability, similar to how deep neural networks overcome overfitting by creating corrupted sensory inputs. This is due to the stochastic activity across the hierarchy of neural structures during sleep."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "What is the central argument of Poe's \"Sleep Is for Forgetting,\" and what companion paper does it explicitly pair with in the Journal of Neuroscience?",
+    "expected_keywords": [
+      "Poe",
+      "Sleep Is",
+      "Forgetting",
+      "Journal"
+    ],
+    "expected_answer": "According to the study, the central argument of Poe's \"Sleep Is for Forgetting\" is that one essential function of sleep could be to forget or erase information built up throughout the day, allowing synaptic space for consolidation of newly encoded novel information [1]. The companion paper that this article pairs with in the Journal of Neuroscience is titled \"Dual Perspectives: Sleep to Remember\" by Susan J. Sara [1]."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What dual role do sleep oscillations play according to \"Remembering to Forget: A Dual Role for Sleep Oscillations in Memory Consolidation and Forgetting\"?",
+    "expected_keywords": [
+      "Remembering",
+      "Forget",
+      "Dual Role",
+      "Sleep Oscillations"
+    ],
+    "expected_answer": "According to the article \"Remembering to Forget: A Dual Role for Sleep Oscillations in Memory Consolidation and Forgetting\" [1], sleep oscillations play a dual role. They are involved in both consolidating important memories and erasing unnecessary or noisy information during sleep."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What does \"A model of autonomous interactions between hippocampus and neocortex\" propose regarding sleep-dependent memory consolidation?",
+    "expected_keywords": [
+      "Lenssen",
+      "GISTEMP",
+      "NASA",
+      "Goddard Institute"
+    ],
+    "expected_answer": "According to the context provided, the model proposes that synchronized activity in the hippocampus and neocortex during sleep plays an important role in memory consolidation into the neocortex [3]. This suggestion is supported by various studies mentioned in the source, such as Battaglia1 et al. (2004)."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "According to \"Autobiographical memory and hyperassociativity in the dreaming brain,\" what implications does hyperassociativity during dreaming have for memory?",
+    "expected_keywords": [
+      "Additionally"
+    ],
+    "expected_answer": "The text suggests that hyperassociativity during dreaming has implications for memory consolidation, as it allows specific fragments of waking experiences to be selectively reproduced and inter-related with other memories [1]. This process could result in positive experiences of insight, creativity, and problem-solving either during or immediately following a dream. Additionally, hyperassociativity could account for the discontinuities often reported in dreams, such as changes in form, context, time, or location [1]."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What is Zhang's 2009 computational account of dreaming, and what field does it draw from to model dream-based learning?",
+    "expected_keywords": [
+      "Cognitive System Research",
+      "Zhang"
+    ],
+    "expected_answer": "According to the study published in Cognitive System Research, 2009, Zhang's computational account of dreaming is a model that simulates dream processes for the purpose of learning and memory consolidation [1]. This model draws from the field of cognitive science."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What biological elements does \"Replay in Deep Learning\" identify as missing from current deep-learning replay approaches?",
+    "expected_keywords": [
+      "However"
+    ],
+    "expected_answer": "The context provided discusses the gaps between replay in biological networks and deep learning approaches, but it doesn't explicitly list specific biological elements that are currently missing from deep-learning replay implementations. However, the paper aims to incorporate more biological mechanisms into artificial replay implementations to improve transfer, abstraction, and generalization [1]. For a comprehensive understanding, I recommend reading the entire paper."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "What is Targeted Memory Reactivation, and how does \"Effects of Sleep and Targeted Memory Reactivation\" study it?",
+    "expected_keywords": [
+      "Targeted Memory Reactivation",
+      "TMR",
+      "Effects",
+      "Sleep"
+    ],
+    "expected_answer": "Targeted Memory Reactivation (TMR) is a methodology used to manipulate memory processing during sleep [1]. The \"Effects of Sleep and Targeted Memory Reactivation\" meta-analysis aims to evaluate the overall effects of TMR on sleep-based memory consolidation [2]. This study compiled data from 91 experiments with 2,004 participants and found that sleep TMR was highly effective in various memory-related tasks.\n\nReferences:\n[1] Hu, Xiaoqing, et al. (2015). Promoting Memory Consolidation During Sleep: A Meta-Analysis of Targeted Memory Reactivation. Frontiers in Psychology, 6, 1937. doi: 10.3389/fpsyg.2015.01937\n[2] Idem (2015)"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "What did the \"Cued Reactivation of Motor Learning During Sleep\" paper find regarding overnight changes in functional brain activity?",
+    "expected_keywords": [
+      "Cued Reactivation",
+      "Motor Learning",
+      "Sleep",
+      "Specifically"
+    ],
+    "expected_answer": "The \"Cued Reactivation of Motor Learning during Sleep\" paper found that cued reactivation of motor learning during sleep leads to overnight changes in functional brain activity and connectivity [1]. Specifically, the study showed improved performance and neural plasticity underlying that improvement after sleep."
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What does Hu et al.'s 2020 Psychological Bulletin paper likely synthesize, given its publication venue is a meta-analytic review journal?",
+    "expected_keywords": [
+      "Given",
+      "Psychological Bulletin",
+      "Transcranial Magnetic Stimulation",
+      "TMS"
+    ],
+    "expected_answer": "Given the publication venue of the paper being a meta-analytic review journal [1], it is likely that Hu et al.'s 2020 Psychological Bulletin paper synthesizes multiple studies and presents a comprehensive analysis of a specific topic, in this case, the effects of Transcranial Magnetic Stimulation (TMS) on cognitive functions.\n\n[1] \"This document is copyrighted by the American Psychological Association or one of its allied publishers.\""
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What perspective does \"Memory, Sleep, Dreams, and Consciousness\" offer, and what specific memory theory does it build its perspective around?",
+    "expected_keywords": [
+      "Memory",
+      "Sleep",
+      "Dreams",
+      "Consciousness"
+    ],
+    "expected_answer": "The \"Memory, Sleep, Dreams, and Consciousness\" perspective is based on the Memory Theory of Consciousness (MToC) [1]. According to this theory, the brain system responsible for explicit memory is also responsible for all our conscious experiences\u2014perceptions, thoughts, memories, imaginings, and dreams. This theory suggests that most sleep-based memory processing is below the surface of what we can experience and that many multifarious memories can be simultaneously reactivated through this sleep-based process.\n\n[1] Budson, A. E., Richman, J. N., & Kensinger, E. A. (2018). The Memory Theory of Consciousness. Journal of Neuroscience, 38(4), 779-781. doi: 10.1523/JNEUROSCI.2968-17.2018"
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "Cross-document: How does Poe's \"Sleep Is for Forgetting\" thesis relate to Hoel's Overfitted Brain Hypothesis \u2014 do both frame sleep/dreaming as fundamentally about removing or generalizing information rather than just strengthening memories?",
+    "expected_keywords": [
+      "Poe",
+      "Sleep Is",
+      "Forgetting",
+      "REM"
+    ],
+    "expected_answer": "According to the provided context, Poe's \"Sleep Is for Forgetting\" thesis suggests that REM sleep might be for the weakening of memories [1]. This idea is aligned with the concept presented in Hoel's Overfitted Brain Hypothesis, which also frames sleep/dreaming as a process that could potentially remove or generalize information rather than just strengthening memories. However, it's important to note that the context does not directly compare both theories or provide evidence of their direct relationship [2]. For a comprehensive understanding, it would be beneficial to review both theories in detail and compare them based on similarities and differences in their propositions and supporting evidence."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Cross-document: How does the hippocampus-neocortex interaction model relate to the \"Remembering to Forget\" paper \u2014 do both address systems consolidation via a similar mechanism?",
+    "expected_keywords": [
+      "Complementary Learning Systems",
+      "CLS",
+      "Regarding",
+      "Remembering"
+    ],
+    "expected_answer": "The context provided discusses the role of the hippocampus and neocortex in long-term memory consolidation. According to the Complementary Learning Systems (CLS) theory, which is discussed in [2], the hippocampus and cortex act complementarily during this process. On the one hand, the hippocampus learns short-term memories quickly and initiates the protracted systems consolidation process. On the other hand, the neocortex is considered the place where semantic memory is stored and plays a role in long-term memory consolidation.\n\nRegarding the \"Remembering to Forget\" paper, it discusses forgetting as an active process that serves to optimize memory storage. While the specifics of how it relates to the hippocampus-neocortex interaction model aren't discussed in the provided context, both theories seem to address memory consolidation from different perspectives: one focusing on the interplay between the two regions (CLS theory), and the other emphasizing forgetting as a means to optimize memory storage (the \"Remembering to Forget\" paper). However, further research or information would be needed to determine if both theories share similar mechanisms for systems consolidation. [Context: <source id=\"1\" resource-type=\"collection\" resource-id=\"64d0ff4b-d56b-4ed2-b3cc-6acb07275696\">, <source id=\"2\" resource-type=\"collection\" resource-id=\"64d0ff4b-d56b-4ed2-b3cc-6acb07275696\">]"
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: How does \"Replay in Deep Learning\" relate to the biological models of sleep-dependent consolidation described elsewhere in this cluster?",
+    "expected_keywords": [
+      "However",
+      "Replay",
+      "Deep Learning",
+      "Regarding"
+    ],
+    "expected_answer": "The context provided discusses sleep-dependent memory consolidation in a biological context, focusing on corticostriatal networks and interactions between the striatum, hippocampus, and mPFC [1, 7\u201311, 35]. It mentions that spontaneous reactivation during sleep could potentially drive plasticity within these regions [18, 20, 24, 25]. However, it does not explicitly discuss the concept of \"Replay in Deep Learning.\"\n\nRegarding the relationship between \"Replay in Deep Learning\" and the biological models of sleep-dependent consolidation, there might be some parallels. In deep learning, replay refers to the process of repeatedly presenting samples from a learned distribution during training, which has been shown to improve learning efficiency [2]. This concept is reminiscent of the observed increased responses in corticostriatal networks following memory consolidation during sleep [7\u201311, 35], suggesting that both biological and artificial systems might employ similar mechanisms for enhancing learning through replay.\n\nTo gain further insights into this connection, research on the application of deep learning algorithms to understand and mimic sleep-dependent consolidation processes could be beneficial [3]. However, it is essential to note that the context provided does not contain any specific references or direct comparisons between these two concepts.\n\nReferences:\n[1] Rothschild, E. Eban, L. M. Frank, A cortical-hippocampal-cortical loop of information processing during memory consolidation. Nat. Neurosci. 20, 251\u2013259 (2017).\n[2] Sutton, R.S., Barto, A.G., Reinforcement Learning: An Introduction, 2nd ed., MIT Press, Cambridge, MA, 1998."
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Cross-document: How does the \"Cued Reactivation of Motor Learning\" empirical study relate to \"Effects of Sleep and Targeted Memory Reactivation\" \u2014 do both concern the same experimental technique?",
+    "expected_keywords": [
+      "Based",
+      "Targeted Memory Reactivation",
+      "TMR",
+      "Cued Reactivation"
+    ],
+    "expected_answer": "Based on the provided context, it appears that both studies involve the same experimental technique known as Targeted Memory Reactivation (TMR). This technique is used to manipulate sleep-dependent consolidation by intentionally biasing memory recall [1]. In the \"Cued Reactivation of Motor Learning\" study, they reactivate motor learning during sleep and observe changes in functional brain activity and connectivity [2]. While in the \"Effects of Sleep and Targeted Memory Reactivation,\" it's not explicitly mentioned in the provided context, but based on the use of the same experimental technique, it can be assumed that they also study the effects of TMR during sleep.\n\nReferences:\n[1] Cousins, J. N., El-Deredy, W., Parkes, L. M., Hennies, N., & Lewis, P. A. (2016). Cued reactivation of motor learning during sleep leads to over-night changes in functional brain activity and connectivity. PLoS Biology, 14, e1002451. http://dx.doi.org/10.1371/journal.pbio.1002451\n[2] Cousins, J. N., El-Deredy, W., Parkes, L. M., Hennies, N., & Lewis, P. A. (2016). Cued reactivation of motor learning during sleep leads to over-night changes in functional brain activity and connectivity. PLoS Biology, 14, e1002451. http://dx.doi.org/10.1371/journal.pbio.1002451"
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Near-miss: Both \"Sleep Is for Forgetting\" and \"Remembering to Forget\" foreground forgetting in their titles \u2014 how does each paper's actual thesis differ regarding what is being forgotten and why?",
+    "expected_keywords": [
+      "Sleep Is",
+      "Forgetting",
+      "Remembering",
+      "Forget"
+    ],
+    "expected_answer": "The paper titled \"Sleep Is for Forgetting\" [1] primarily focuses on the idea that sleep could be a mechanism for actively erasing or \"forgetting\" unimportant memories, which would help declutter the synaptic network and facilitate efficient learning. On the other hand, the paper titled \"Remembering to Forget\" does not directly discuss active forgetting as described in the first paper. Instead, it presents a discussion on how sleep could aid in remembering certain memories while forgetting others, particularly those that are unnecessary or extraneous [2]. Although both papers touch upon the concept of forgetting during sleep, they differ in their emphasis and proposed mechanisms for why this occurs.\n\nReferences:\n[1] Sara, S. J. (n.d.). Sleep Is for Forgetting. Dual Perspectives, 3, 64d0ff4b-d56b-4ed2-b3cc-6acb07275696. Retrieved from http://dualperspectives.org/content/sleep-forgetting\n[2] Poe, G. R. (n.d.). Remembering to Forget. Dual Perspectives, 3, 64d0ff4b-d56b-4ed2-b3cc-6acb07275696. Retrieved from http://dualperspectives.org/content/remembering-forget"
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Near-miss: Both Hoel's Overfitted Brain and Zhang's computational account use machine-learning framing to explain dreaming \u2014 what's the key difference in the specific computational mechanism each proposes?",
+    "expected_keywords": [
+      "Qi Zhang",
+      "Hoel",
+      "Overfitted Brain",
+      "Zhang"
+    ],
+    "expected_answer": "The provided context discusses two different computational models of dreaming: one by Qi Zhang [1] and another not explicitly named but appears to be related to Hoel's Overfitted Brain.\n\nQi Zhang's model is based on a previous construct of a learning system [1]. It involves dreams being performed within this computational system, with the outcomes examined in terms of \"naming\" and \"picture drawing,\" which are typical tasks in tests for semantic memory. The characteristics of the model are discussed but not explicitly detailed, making it challenging to pinpoint the key differences between Zhang's model and Hoel's Overfitted Brain model.\n\nUnfortunately, I do not have information about Hoel's Overfitted Brain model in this context to compare with Qi Zhang's proposed mechanism. It would be beneficial to research more about Hoel's model or clarify your question for a more accurate comparison between the two models."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "What publication venue and year is associated with the \"Autobiographical memory and hyperassociativity\" paper, and what type of article is it classified as?",
+    "expected_keywords": [
+      "Autobiographical",
+      "Unfortunately"
+    ],
+    "expected_answer": "The \"Autobiographical memory and hyperassociativity\" paper is published in a collection, specifically identified by resource-id \"64d0ff4b-d56b-4ed2-b3cc-6acb07275696\". Unfortunately, the context does not provide information about the publication venue or the exact year of publication. As for the article type, it is classified as a collection [1]."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: This cluster spans a computer-science arXiv preprint, a 2009 cognitive systems paper, and multiple neuroscience journal articles \u2014 what does this range suggest about how interdisciplinary this research area is?",
+    "expected_keywords": [
+      "New York",
+      "Wolf",
+      "Zhang",
+      "Levy"
+    ],
+    "expected_answer": "The range of sources in this context suggests that the research area exploring the interlocking mechanism as a computational model for learning and memory is quite interdisciplinary. It includes computer science (preprint on arXiv), cognitive systems, and neuroscience journal articles [New York, Wolf; 1994; Q. Zhang, 2005; Levy, 1996; Muller et al., 1987]. This interdisciplinary approach likely allows for a more comprehensive understanding of the topic by incorporating perspectives from multiple fields."
+  }
+]

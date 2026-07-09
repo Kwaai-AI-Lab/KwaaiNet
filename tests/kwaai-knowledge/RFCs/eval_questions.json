@@ -1,0 +1,240 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What core function does RFC 9293 (TCP) define, and how does it differ fundamentally from RFC 768 (UDP) in terms of delivery guarantees?",
+    "expected_keywords": [
+      "The Transmission Control Protocol",
+      "TCP",
+      "RFC",
+      "User Datagram Protocol"
+    ],
+    "expected_answer": "The Transmission Control Protocol (TCP), as defined by RFC 9293 (which is an obsolete reference, the correct one should be RFC 793), is a connection-oriented protocol that provides reliable data transfer across the internet. It establishes a connection between two devices before sending data, maintains the order of packets, and offers error checking [1].\n\nOn the other hand, the User Datagram Protocol (UDP), as defined by RFC 768, is a connectionless protocol that does not establish a connection prior to data transfer. UDP does not guarantee delivery, ordering, or error checking of the packets sent. It simply sends them out and hopes they reach their destination [2].\n\nIn summary, the fundamental difference between TCP and UDP lies in their approach to delivering data: while TCP offers reliable, ordered, and checked data delivery, UDP provides best-effort datagram transmission without any guarantees.\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"a3c13d75-d665-4505-9800-483e47f8dd7f\">In 1981, RFC 793 [16] was released, documenting the Transmission Control Protocol (TCP) and replacing earlier published specifications for TCP.</source>\n[2] <source id=\"1\" resource-type=\"collection\" resource-id=\"a3c13d75-d665-4505-9800-483e47f8dd7f\">For several decades, RFC 793 plus a number of other documents have combined to serve as the core specification for TCP [49]. Over time, a number of errata have been filed against RFC 793. There have also been deficiencies found and resolved in security, performance, and many other aspects.</source>"
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "What layer of the network stack does RFC 8200 (IPv6) operate at, and what key improvement does it offer over IPv4?",
+    "expected_keywords": [
+      "RFC",
+      "Internet Protocol",
+      "Version",
+      "Specification"
+    ],
+    "expected_answer": "According to RFC 8200 [1], also known as \"Internet Protocol, Version 6 (IPv6) Specification,\" it operates at the Internet Layer of the network stack. One key improvement that IPv6 offers over IPv4 is the use of larger addresses, which makes it harder to scan the address space across the Internet and even on a single network link [1]. This improved addressing scheme allows for more devices to be connected to the internet without running out of available addresses, a problem known as IPv4 address exhaustion."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "What is the difference in purpose between RFC 1034 and RFC 1035, both concerning DNS?",
+    "expected_keywords": [
+      "RFC",
+      "Domain Name System",
+      "DNS"
+    ],
+    "expected_answer": "According to RFC 1034 [1], this document provides an introduction to the Domain Name System (DNS), presenting concepts and facilities. On the other hand, RFC 1035 assumes that the reader is familiar with the concepts discussed in RFC 1034 and describes the implementation and specification of DNS [1]. In summary, while RFC 1034 focuses on the general concepts and purposes of DNS, RFC 1035 provides detailed information about its implementation and specifications."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What core protocol does RFC 9000 (QUIC) define, and what transport-layer protocol does it build on top of?",
+    "expected_keywords": [
+      "RFC",
+      "QUIC",
+      "User Datagram Protocol",
+      "UDP"
+    ],
+    "expected_answer": "RFC 9000 (QUIC) defines a core transport protocol. It builds upon User Datagram Protocol (UDP) as its underlying transport layer. [1]"
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "Cross-document: How does QUIC (RFC 9000) attempt to solve limitations in TCP (RFC 9293) with respect to connection setup latency?",
+    "expected_keywords": [
+      "QUIC",
+      "TCP",
+      "However",
+      "RFC"
+    ],
+    "expected_answer": "According to the context provided, QUIC attempts to solve limitations in TCP regarding connection setup latency by implementing a process that allows for faster establishment of connections. However, the context does not explicitly detail how this is achieved.\n\nFor more specific information about QUIC's approach to addressing connection setup latency compared to TCP, it would be beneficial to consult RFC 9000 (QUIC: A UDP-Based Multiplexed and Secure Transport) and RFC 9293 (TCP Fast Open).\n\n[RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000), [RFC 9293](https://datatracker.ietf.org/doc/html/rfc9293)"
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "What does RFC 8446 (TLS 1.3) define, and what security properties does it aim to guarantee for data in transit?",
+    "expected_keywords": [
+      "RFC",
+      "TLS",
+      "Transport Layer Security",
+      "Reference"
+    ],
+    "expected_answer": "According to RFC 8446 (TLS 1.3), it defines version 1.3 of the Transport Layer Security (TLS) protocol [1]. TLS is a cryptographic protocol designed to provide secure communication over the internet, ensuring that data transmitted between two parties remains confidential and integral [1]. TLS aims to prevent eavesdropping, tampering, and message forgery during data transmission [1].\n\nReference(s):\n[1] RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3, <https://rfc-editor.org/info/rfc8446>"
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What is the relationship between RFC 9110 (HTTP Semantics) and RFC 9112 (HTTP/1.1) \u2014 which defines protocol-version-specific syntax and which defines version-independent semantics?",
+    "expected_keywords": [
+      "RFC",
+      "HTTP",
+      "However",
+      "HTTP Semantics"
+    ],
+    "expected_answer": "According to the provided context, RFC 9112 (HTTP/1.1) defines protocol-version-specific syntax, while RFC 9110 is not mentioned in the context. However, RFC 9112 states that it specifies the HTTP/1.1 message syntax and related security concerns, which could be considered as version-independent semantics, but there's no direct relationship between RFC 9110 (HTTP Semantics) and RFC 9112 (HTTP/1.1) in the provided context [1].\n\n[1] June 1, 2022, RFC 9112: STD 99: HTTP/1.1, rfc-editor.org/info/rfc9112"
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What does RFC 6455 define, and how does the WebSocket protocol differ from a standard HTTP request/response cycle?",
+    "expected_keywords": [
+      "RFC",
+      "WebSocket Protocol",
+      "TCP",
+      "Unlike"
+    ],
+    "expected_answer": "RFC 6455 defines the WebSocket Protocol, which is a computer communications protocol that provides full-duplex communication channels over a single TCP connection. It allows for real-time data transfer between web browsers and servers without the need for constant polling [1].\n\nUnlike a standard HTTP request/response cycle, where each interaction requires a new connection, the WebSocket Protocol establishes a persistent connection between the client (web browser) and server. This enables more efficient, real-time data transfer, making it particularly useful for applications like live chat, real-time gaming, and streaming [2].\n\n[1] DOI 10.17487/RFC6455, , <https://www.rfc-editor.org/info/rfc6455>\n[2] traffic in both directions. This is what the WebSocket Protocol provides. Combined with the WebSocket API [WSAPI], it provides an alternative to HTTP polling for two-way communication from a web page to a remote server. The same technique can be used for a variety of web applications: games, stock tickers, multiuser applications with simultaneous editing, user interfaces exposing server-side services in real time, etc. The WebSocket Protocol is designed to supersede existing bidirectional communication technologies that use HTTP as a transport layer to benefit from existing infrastructure (proxies, filtering, authentication). Such technologies were implemented as trade-offs between efficiency and reliability because HTTP was not initially meant to be used for bidirectional communication. The WebSocket Protocol attempts to address the goals of existing bidirectional HTTP technologies in the context of..."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "What does RFC 6749 (OAuth 2.0) define, and what problem does it solve for third-party application access to user resources?",
+    "expected_keywords": [
+      "RFC",
+      "OAuth",
+      "Authorization Framework",
+      "HTTP"
+    ],
+    "expected_answer": "According to RFC 6749 [1], the OAuth 2.0 Authorization Framework defines a method that enables a third-party application to obtain limited access to an HTTP service, either on behalf of a resource owner or by allowing the third-party application to obtain access on its own behalf. This framework addresses the issue of securely granting third-party applications access to user resources without exposing the user's credentials [1]. The problem it solves is providing a standardized and flexible way for third-party applications to access user resources while maintaining security and privacy.\n\n[1] RFC 6749: The OAuth 2.0 Authorization Framework, rfc-editor.org/info/rfc6749"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "What does RFC 7519 (JWT) define, and how does a JSON Web Token typically relate to an OAuth 2.0 authorization flow (RFC 6749)?",
+    "expected_keywords": [
+      "RFC",
+      "JSON Web Token",
+      "JWT",
+      "URL"
+    ],
+    "expected_answer": "RFC 7519 defines the JSON Web Token (JWT) standard, which is a compact, URL-safe means of transmitting information as a JSON object between parties. JWTs consist of three parts: header, payload, and signature, allowing them to be easily transmitted via URL, HTTP's authorization header, or in the body of an HTTP POST request [1].\n\nThe JSON Web Token (JWT) is not directly related to the OAuth 2.0 authorization flow defined by RFC 6749. However, JWTs can be used as a method for carrying information within OAuth 2.0 access tokens [1][3]. For example, an OAuth 2.0 server may return an access token that includes additional claims about the user or resource being accessed. This access token would still need to be validated and exchanged with the appropriate client by following the OAuth 2.0 authorization flow as defined in RFC 6749 [2].\n\nReferences:\n[1] Jones, M., Bradley, J., Ed., Dietrich, S., Fett, D., Kaliski, B., Kemp, J., Kurtz, G., McIntosh, P., and Zhong, W. (May 2015). JSON Web Token (JWT). IETF. Retrieved from https://datatracker.ietf.org/doc/html/rfc7519\n[2] Hardt, R., Taylor, B., and Jones, M. (October 2012). OAuth 2.0 Authorization Framework: Bearer Token Usage. IETF. Retrieved from https://datatracker.ietf.org/doc/html/rfc6750\n[3] Jones, M., Bradley, J., Ed., Dietrich, S., Fett, D., Kaliski, B., Kemp, J., Kurtz, G., McIntosh, P., and Zhong, W. (May 2015). JSON Web Token (JWT) Profile for OAuth 2.0 Client Authentication and Authorization Grants. IETF. Retrieved from https://datatracker.ietf.org/doc/html/rfc7662"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "Cross-document: How do OAuth 2.0 (RFC 6749) and JWT (RFC 7519) work together in a typical authentication/authorization architecture, even though each RFC defines a distinct standard?",
+    "expected_keywords": [
+      "OAuth",
+      "RFC",
+      "JSON Web Tokens",
+      "JWT"
+    ],
+    "expected_answer": "In a typical authentication/authorization architecture, OAuth 2.0 (RFC 6749) and JSON Web Tokens (JWT, RFC 7519) can work together to provide secure access control for web applications.\n\nOAuth 2.0 is a protocol that allows third-party services to access resources hosted by another party without sharing the original credentials. It provides a framework for requesting, granting, and revoking authorization [1]. On the other hand, JWT is a compact and self-contained way to securely transmit information between parties as a JSON object [2].\n\nIn this scenario, OAuth 2.0 can be used to obtain access tokens from an authorization server, while JWT can be employed for transmitting these access tokens securely in the requests made to the resource server. When a client application needs access to protected resources, it initiates an OAuth 2.0 flow to request an access token. Once obtained, the client includes this access token in each subsequent request, typically by embedding it into the JWT [3].\n\n[1] Hardt, Simon, et al. \"OAuth 2.0\". RFC 6749. October 2012.\n[2] Jones, John Bradley, and Jeff Hodges. \"JSON Web Token (JWT)\". RFC 7519. May 2015.\n[3] Hardt, Simon, et al. \"OAuth 2.0\". RFC 6749. October 2012. Page 18: \"Access Tokens can be transmitted to the resource server in the Authorization header using Bearer (RFC 2617) authentication.\""
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What does RFC 8259 define, and what data format does it standardize?",
+    "expected_keywords": [
+      "RFC",
+      "JSON",
+      "JavaScript Object Notation"
+    ],
+    "expected_answer": "RFC 8259 defines JSON (JavaScript Object Notation), a lightweight data interchange format that is easy for humans to read and write and easy for machines to parse and generate. It standardizes the exchange of data as attribute-value pairs in a text format, which can be used for various types of data including objects, arrays, numbers, strings, booleans, null values, and more [1].\n\n[1] <https://www.rfc-editor.org/info/rfc8259>"
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What does RFC 4648 define? Name the three encoding schemes it covers.",
+    "expected_keywords": [
+      "RFC",
+      "Base",
+      "Encodings",
+      "ASCII"
+    ],
+    "expected_answer": "According to RFC 4648 [1], Base-N Encodings, this standard defines a set of base encoding schemes for data storage and transfer in environments that are restricted to US-ASCII [USASCII]. The document covers three encoding schemes: Basic Encoding Rules (BER), Canonical Encoding Rules (CER), and Distinguished Encoding Rules (DER) [X690]."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Near-miss: JSON (RFC 8259) and JWT (RFC 7519) are related but distinct \u2014 how does a JWT actually use JSON internally, and what does JWT add on top of plain JSON?",
+    "expected_keywords": [
+      "JSON Web Token",
+      "JWT",
+      "JSON",
+      "Message Authentication Code"
+    ],
+    "expected_answer": "A JSON Web Token (JWT) uses JSON internally as its payload, which carries the claims (a set of key-value pairs). JWT adds an additional layer of security by digitally signing or integrity protecting the claims with a Message Authentication Code (MAC) and/or encrypting them using JSON Web Encryption (JWE). The JWT is represented as a sequence of URL-safe parts separated by periods. [1]\n\nRFC 7519: JSON Web Token (JWT) defines JWT as \"a compact, URL-safe means of representing claims to be transferred between two parties.\" It enables the claims to be digitally signed or integrity protected with a MAC and/or encrypted. [1]"
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: Organize RFC 768 (UDP), RFC 9293 (TCP), and RFC 9000 (QUIC) by which network layer each protocol operates at.",
+    "expected_keywords": [
+      "The Transmission Control Protocol",
+      "TCP",
+      "RFC",
+      "Internet"
+    ],
+    "expected_answer": "The Transmission Control Protocol (TCP) specified in RFC 9293 [1] operates at the Internet's transport layer, while User Datagram Protocol (UDP) described in RFC 768 operates at the same layer. In contrast, QUIC, detailed in RFC 9000, is designed to operate at a slightly lower level, the user datagram protocol layer, which acts as an intermediary between the transport and network layers [2].\n\nReferences:\n[1] W. Eddy, Ed. (September 1, 1981). RFC 9293: STD 7: Transmission Control Protocol (TCP). Retrieved from rfc-editor.org/info/rfc9293\n[2] IETF (n.d.). QUIC Transport Overview and Requirements. Retrieved from tools.ietf.org/html/draft-ietf-quic-transport-14#section-5"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Cross-document: How does DNS's (RFC 1034/1035) request/response model differ from HTTP's (RFC 9110/9112), and from WebSocket's (RFC 6455) persistent bidirectional model?",
+    "expected_keywords": [
+      "The DNS",
+      "RFC",
+      "HTTP",
+      "WebSocket"
+    ],
+    "expected_answer": "The DNS's request/response model [RFC 1034/1035] is designed for the resolution of domain names into IP addresses, which is a one-time event at the start of communication between a client and a server. In contrast, HTTP's request/response model [RFC 9110/9112] is used for data exchange during web browsing sessions, where multiple requests and responses are sent back and forth between the client (web browser) and server.\n\nWebSocket's persistent bidirectional model [RFC 6455], on the other hand, is designed to provide an alternative to HTTP polling for two-way communication from a web page to a remote server. Unlike DNS and HTTP, it allows for continuous, real-time data exchange between the client (web browser or dedicated client) and the server over a single connection [1]. This approach improves efficiency by eliminating the need for frequent request/response cycles."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Which RFC in this cluster defines a security protocol rather than a data-transport or data-format protocol?",
+    "expected_keywords": [
+      "The RFC",
+      "AEAD",
+      "McGrew",
+      "An Interface"
+    ],
+    "expected_answer": "The RFC that defines a security protocol in this cluster is [AEAD] (McGrew, D., \"An Interface and Algorithms for Authenticated Encryption\", RFC 5116, DOI 10.17487/RFC5116, <https://www.rfc-editor.org/info/rfc5116>)."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Edge case: RFC 9110 and RFC 9112 were both published to replace older combined HTTP/1.1 RFCs \u2014 why might a standards body choose to split \"semantics\" from \"wire format\" into separate documents?",
+    "expected_keywords": [
+      "Hypertext Transfer Protocol",
+      "HTTP",
+      "RFC",
+      "STD"
+    ],
+    "expected_answer": "The provided context suggests that the Hypertext Transfer Protocol (HTTP) document, RFC 9112: STD 99: HTTP/1.1, was designed to refine the protocol's features while retaining compatibility with the existing text-based messaging syntax and improving its interoperability, scalability, and robustness across the Internet [1]. The document obsoletes portions of RFC 7230, which might imply that splitting \"semantics\" from \"wire format\" into separate documents could allow for more focused updates and improvements to specific aspects of HTTP without affecting other parts.\n\nMoreover, the context also indicates that this document builds on past contributions, including previous versions of HTTP specifications such as RFC 2616, RFC 7230, and others [2]. This further supports the idea that splitting documents may help manage changes to complex protocols like HTTP more efficiently.\n\n[1] June 1, 2022, RFC 9112: STD 99: HTTP/1.1, rfc-editor.org/info/rfc9112\n[2] June 1, 2022, RFC 9112: STD 99: HTTP/1.1, rfc-editor.org/info/rfc9112"
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Which two RFCs in this cluster are most likely to be used together to secure a WebSocket connection (RFC 6455) in production?",
+    "expected_keywords": [
+      "WebSocket",
+      "RFC",
+      "Internet Protocol",
+      "Version"
+    ],
+    "expected_answer": "To secure a WebSocket connection (RFC 6455) in production, the Internet Protocol, Version 6 (IPv6) Specification and Security Architecture for the Internet Protocol are likely to be used together. These RFCs provide the foundation for securing network communication and can be applied to WebSockets by extending them as specified in RFC 6455 [1].\n\n[1] IETF (Internet Engineering Task Force). (December 2011). The WebSocket Protocol. rfc-editor.org/info/rfc6455"
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: Both RFC 768 (UDP) and RFC 9000 (QUIC) can carry data without TCP's guaranteed ordering \u2014 what does QUIC add on top of UDP's bare functionality to make it suitable for modern web transport?",
+    "expected_keywords": [
+      "QUIC",
+      "RFC",
+      "UDP",
+      "Application"
+    ],
+    "expected_answer": "QUIC, as described in RFC 9000 [1], adds several features on top of UDP's bare functionality to make it suitable for modern web transport.\n\nQUIC provides applications with flow-controlled streams for structured communication and low-latency connection establishment. It includes security measures that ensure confidentiality, integrity, and availability in various deployment circumstances [1]. QUIC authenticates the entirety of each packet and encrypts as much of each packet as is practical. The protocol also uses UDP datagrams to facilitate deployment in existing systems and networks [1].\n\nApplication protocols exchange information over a QUIC connection via streams, which are ordered sequences of bytes. It uses a credit-based scheme to limit stream creation and data transmission [1]. Furthermore, QUIC provides the necessary feedback for reliable delivery and congestion control [1].\n\n[1] May 1, 2000, RFC 9000: QUIC: A UDP-Based Multiplexed and Secure Transport, rfc-editor.org/info/rfc9000"
+  }
+]

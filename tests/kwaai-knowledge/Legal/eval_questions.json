@@ -1,0 +1,242 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What was the central legal question in Marbury v. Madison, and what doctrine did it establish?",
+    "expected_keywords": [
+      "Marbury",
+      "Madison",
+      "Secretary",
+      "State"
+    ],
+    "expected_answer": "The central legal question in Marbury v. Madison was whether the courts have the power to issue a writ of mandamus compelling the Secretary of State to deliver a commission to William Marbury. This case established the principle of judicial review, which gives the Supreme Court the power to declare acts of Congress or executive actions unconstitutional [1].\n\n[1] U.S. Supreme Court, Marbury v. Madison, 5 U.S. (1 Cranch) 137 (1803)"
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "In Miranda v. Arizona, what specific procedural warnings did the Court require police to give suspects?",
+    "expected_keywords": [
+      "The Supreme Court",
+      "Miranda",
+      "Arizona",
+      "Fifth Amendment"
+    ],
+    "expected_answer": "The Supreme Court in Miranda v. Arizona required that police provide certain procedural warnings to suspects during custodial interrogation. According to the court opinion [1], these warnings include the privilege under the Fifth Amendment not to be compelled to incriminate oneself, and the specific procedures necessary to ensure that the individual is accorded this right. However, the context does not specify the exact wording of the warnings required by the Court."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "What was the primary holding of Roe v. Wade regarding a woman's right to abortion?",
+    "expected_keywords": [
+      "Roe",
+      "Wade",
+      "Fourteenth Amendment",
+      "The Court"
+    ],
+    "expected_answer": "The primary holding of Roe v. Wade [1] was that a woman's right to an abortion falls within the zone of privacy protected by the due process clause of the Fourteenth Amendment, with certain restrictions. The Court established trimester-based guidelines for state regulation of abortions: pre-viability (first trimester), states can regulate but not prohibit; during viability (second and third trimesters), states may regulate to protect maternal health and the potentiality of life, except where it imposes an undue burden on the woman; post-viability (third trimester), abortions are generally prohibited unless necessary to preserve the woman's life or health. [1] \"Roe v. Wade, 410 U.S. 113 (1973)\""
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "What racial doctrine did Plessy v. Ferguson establish, and how did Brown v. Board of Education explicitly overturn it decades later?",
+    "expected_keywords": [
+      "Plessy",
+      "Ferguson",
+      "African American",
+      "Brown"
+    ],
+    "expected_answer": "Plessy v. Ferguson established the \"separate but equal\" doctrine, which allowed for separate public facilities for white and African American people as long as the facilities were equal. Brown v. Board of Education overturned this doctrine decades later by stating that separate educational facilities are inherently unequal and violated the Equal Protection Clause of the Fourteenth Amendment [1]. The court found that segregation with the sanction of law had a detrimental effect on African American children, retarding their educational and mental development [2]. This finding rejected any language in Plessy v. Ferguson contrary to this conclusion [3]."
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "What did Dred Scott v. Sandford hold regarding the citizenship rights of enslaved and formerly enslaved people, and how does it function as a doctrinal ancestor of Plessy v. Ferguson?",
+    "expected_keywords": [
+      "Dred Scott",
+      "Sandford",
+      "Plessy",
+      "Ferguson"
+    ],
+    "expected_answer": "The case Dred Scott v. Sandford held that former slaves did not have standing in federal courts because they lacked U.S. citizenship, even after they were freed [1]. This decision was significant in its denial of citizenship rights to enslaved and formerly enslaved people.\n\nPlessy v. Ferguson, decided nearly 50 years later, functioned as a doctrinal ancestor of Dred Scott v. Sandford. Both cases upheld the principle of \"separate but equal,\" which justified racial segregation [2]. However, unlike Dred Scott v. Sandford, Plessy v. Ferguson did not explicitly address citizenship rights but rather focused on the constitutionality of racial segregation in public facilities.\n\n[1] <https://supreme.justia.com/cases/federal/us/60/393/>\n[2] Griswold, Melvin I. (1998). The Sources of Separate but Equal: Plessy v. Ferguson and the Rise of Jim Crow. Louisiana Law Review, 54(1), 29-76."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "Trace the doctrinal chain from Dred Scott through Plessy to Brown v. Board \u2014 what common legal question connects all three, and how did the outcome flip?",
+    "expected_keywords": [
+      "Dred Scott",
+      "Plessy",
+      "Ferguson",
+      "Brown"
+    ],
+    "expected_answer": "The common legal question that connects the cases of Dred Scott [1], Plessy v. Ferguson [not present in context], and Brown v. Board of Education [not present in context] is the issue of racial segregation, specifically in public schools.\n\nIn Dred Scott, the U.S. Supreme Court ruled that people of African descent, whether enslaved or free, could not be considered citizens of the United States and therefore had no rights under the U.S. Constitution [1]. This effectively upheld racial segregation and discrimination against African Americans.\n\nIn Plessy v. Ferguson [not present in context], the Supreme Court created the \"separate but equal\" doctrine, which allowed for racial segregation as long as the facilities provided to different races were considered equal.\n\nHowever, in Brown v. Board of Education [not present in context], the Supreme Court overturned the \"separate but equal\" doctrine and ruled that segregated schools are inherently unequal, effectively ending legalized racial segregation in public schools.\n\nRegarding how the outcome flipped, it's important to note that social and political changes took place between Dred Scott and Brown v. Board of Education, including the civil rights movement, increased awareness about racial inequality, and growing pressure on the courts to address these issues. The shift in court rulings reflected these broader societal changes.\n\nUnfortunately, I don't have access to information about Plessy v. Ferguson or Brown v. Board of Education within your provided context."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What did Lochner v. New York hold about a state's ability to regulate labor contracts under the \"freedom of contract\" doctrine, and how did West Coast Hotel Co. v. Parrish explicitly reject that doctrine?",
+    "expected_keywords": [
+      "Lochner",
+      "New York",
+      "Fourteenth Amendment",
+      "However"
+    ],
+    "expected_answer": "Lochner v. New York [1] held that the general right to make a contract in relation to his business is part of the liberty protected by the Fourteenth Amendment, which includes the right to purchase and sell labor. However, this ruling was based on the \"freedom of contract\" doctrine, which allows individuals to enter into contracts without undue government interference.\n\nOn the other hand, West Coast Hotel Co. v. Parrish [2] explicitly rejected the \"freedom of contract\" doctrine by stating that restraint or regulation of this liberty is due process if it is reasonable in relation to its subject and adopted for the protection of the community against evils menacing the health, safety, morals, and welfare of the people. This decision marked a shift in the Supreme Court's interpretation of the Fourteenth Amendment's liberty provisions."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What New Deal-era pressures are commonly cited as context for the doctrinal shift from Lochner to West Coast Hotel?",
+    "expected_keywords": [
+      "The New Deal",
+      "Lochner",
+      "New York",
+      "West Coast Hotel Co"
+    ],
+    "expected_answer": "The New Deal-era pressures that are commonly cited as context for the doctrinal shift from Lochner v. New York (1905) to West Coast Hotel Co. v. Parrish (1937) include the Great Depression and the government's efforts to address economic hardship through regulatory measures [2]. During this period, the Supreme Court underwent a significant shift in its interpretation of the due process clause, moving away from the laissez-faire economics that characterized the Lochner era and towards greater deference to government regulation. The case of West Coast Hotel Co. v. Parrish marked a crucial turning point in this shift as it upheld a minimum wage law for women in Washington state."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "In Korematsu v. United States, what wartime measure did the Court uphold, and how does Ex parte Milligan's earlier holding on military trials of civilians stand in tension with it?",
+    "expected_keywords": [
+      "In Korematsu",
+      "United States",
+      "Supreme Court",
+      "American"
+    ],
+    "expected_answer": "In Korematsu v. United States [1], the U.S. Supreme Court upheld an executive order that interned American citizens of Japanese descent and removed many of their constitutional protections during World War II. This decision is largely discredited and repudiated today.\n\nRegarding your question about Ex parte Milligan's earlier holding on military trials of civilians, it is worth noting that these two cases present a tension. In Ex parte Milligan [2], the Supreme Court held that military tribunals cannot try civilians in areas not under martial law during wartime. However, in Korematsu v. United States, the Court seemed to suggest that military orders could criminalize certain conduct by civilians even outside of areas under martial law [1]. This apparent contradiction has been a subject of debate among legal scholars.\n\n[1] Korematsu v. United States, 323 U.S. 214 (1944)\n<https://supreme.justia.com/cases/federal/us/323/214>\n\n[2] Ex parte Milligan, 71 U.S. 2 (1866)"
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "Which case, Korematsu or Ex parte Milligan, was decided first, and how might that timing affect deference to military authority in each?",
+    "expected_keywords": [
+      "Korematsu",
+      "United States",
+      "December",
+      "In Korematsu"
+    ],
+    "expected_answer": "The case of Korematsu v. United States was decided first, on December 18, 1944 [1]. The timing of this decision may have influenced the deference given to military authority in each case. In Korematsu, the Supreme Court upheld the constitutionality of an executive order authorizing the internment of Japanese Americans during World War II. This ruling could have emboldened the military's authority to make similar decisions during times of conflict.\n\nHowever, it is important to note that Ex parte Milligan, decided in 1866 [2], dealt with the issue of whether a civilian could be tried by a military tribunal during peacetime. The ruling in Ex parte Milligan established that the writ of habeas corpus should not be suspended except during periods of actual war, and military tribunals should only be used when civil courts are unable to function due to military necessity. This decision could have set a precedent limiting the scope of military authority during peacetime.\n\n[1] <https://www.oyez.org/cases/court/justices/case-detail/443/22>\n[2] <https://supreme.justia.com/cases/federal/us/71/2>"
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What campaign-finance restriction did McConnell v. FEC uphold, and how did Citizens United v. FEC later strike down a related restriction?",
+    "expected_keywords": [
+      "McConnell",
+      "FEC",
+      "Federal Election Campaign Act",
+      "Specifically"
+    ],
+    "expected_answer": "McConnell v. FEC (2003) upheld the inclusion of electioneering communications in the Federal Election Campaign Act's disclosure regime [1]. Specifically, it upheld BCRA \u00a7311, which expanded FECA \u00a7318(a) to include disclosure of disbursements for electioneering communications.\n\nHowever, Citizens United v. FEC (2010) later struck down a related restriction. In this case, the court ruled that the prohibition on corporations and unions using general treasury funds for political advertisements close to an election was unconstitutional [not present in the provided context]. This decision effectively overturned parts of the McCain-Feingold Act, including BCRA \u00a7203, which was upheld in McConnell v. FEC."
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "What is the core First Amendment question that connects McConnell v. FEC and Citizens United v. FEC?",
+    "expected_keywords": [
+      "First Amendment",
+      "McConnell",
+      "FEC",
+      "Citizens United"
+    ],
+    "expected_answer": "The core First Amendment question that connects McConnell v. FEC and Citizens United v. FEC revolves around the regulation of political campaign finance, specifically the constitutionality of limiting corporate spending on electioneering communications [1, 2]. These cases address the balance between free speech rights and government's interest in preventing corruption or its appearance in the political process."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "What did Bowers v. Hardwick hold regarding the criminalization of same-sex intimate conduct?",
+    "expected_keywords": [
+      "Bowers",
+      "Hardwick",
+      "Fourteenth Amendment",
+      "Lawrence"
+    ],
+    "expected_answer": "According to the decision in Bowers v. Hardwick, the Fourteenth Amendment does not prevent a state from criminalizing private sexual conduct involving same-sex couples [1]. This decision was later overruled by Lawrence v. Texas."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Near-miss: Bowers v. Hardwick and Roe v. Wade both concern privacy-related liberty interests \u2014 how does the Court's reasoning in each case differ in its willingness to extend a constitutional right to privacy?",
+    "expected_keywords": [
+      "The Court",
+      "Bowers",
+      "Hardwick",
+      "Roe"
+    ],
+    "expected_answer": "The Court's reasoning in Bowers v. Hardwick (1986) [2] and Roe v. Wade (1973) [1] differs significantly in terms of the extent to which they recognize and protect a constitutional right to privacy.\n\nIn Roe v. Wade, the Court recognized a woman's privacy interest in making decisions related to her own body, specifically with regard to abortion by a licensed physician [1]. However, in Bowers v. Hardwick, the Court upheld a Georgia law criminalizing private homosexual acts between consenting adults, arguing that no constitutional right to engage in such conduct existed [2].\n\nThis difference in decision-making can be attributed to the Court's interpretation of privacy rights and their application to different contexts. While Roe v. Wade recognized a broad right to privacy rooted in personal autonomy and bodily integrity, Bowers v. Hardwick narrowed this right, refusing to extend it to private consensual sexual behavior between adults [2]."
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: Miranda v. Arizona and Ex parte Milligan both concern procedural protections owed to individuals facing government power \u2014 how does the context (ordinary criminal suspect vs. wartime military detainee) affect the scope of protection in each?",
+    "expected_keywords": [
+      "Miranda",
+      "Arizona",
+      "Milligan",
+      "Supreme Court\nMiranda"
+    ],
+    "expected_answer": "In the provided context, Miranda v. Arizona [1] primarily deals with the rights of an ordinary criminal suspect during police interrogation. The case establishes that before any questioning initiated by law enforcement officers after a person has been taken into custody or deprived of his freedom in any significant way, he must be informed of certain rights including the right to remain silent and the right to have an attorney present [1].\n\nOn the other hand, Ex parte Milligan, not included in the provided context, is another landmark case that addresses the issue of due process during wartime. It asserts that the writ of habeas corpus can be suspended only when law and war merge into one single power or when the courts are completely suspended by the military authorities [2]. This case, however, provides a different perspective compared to Miranda v. Arizona as it involves a wartime military detainee rather than an ordinary criminal suspect.\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"872fd4f9-c45a-4a5e-9466-a5da36641142\">U.S. Supreme Court\nMiranda v. Arizona, 384 U.S. 436 (1966)</source>\n[2] <source id=\"1\" resource-type=\"collection\" resource-id=\"628c6502-fbbd-4e9a-a2b9-027c03ab68da\">Ex parte Milligan, 71 U.S. (4 Wall.) 2 (1866)</source>"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "What is the significance of Marbury v. Madison to every other case in this cluster, given the power it establishes for the Supreme Court?",
+    "expected_keywords": [
+      "Marbury",
+      "Madison",
+      "Supreme Court",
+      "Congress"
+    ],
+    "expected_answer": "According to the provided context, Marbury v. Madison established the principle of judicial review, giving the U.S. Supreme Court the authority to invalidate acts of Congress and government actions that violate the Constitution [1]. This decision is significant as it underpins the balance of power between the three branches of the federal government in the United States, with the judiciary playing a crucial role in ensuring constitutionality.\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"872fd4f9-c45a-4a5e-9466-a5da36641142\">U.S. Supreme Court Marbury v. Madison, 5 U.S. 1 Cranch 137 137 (1803)</source>"
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Edge case: Both Lochner v. New York and Dred Scott v. Sandford are decisions the Supreme Court has since widely repudiated \u2014 what does each decision's specific reasoning (not just its outcome) reveal about how legal doctrines become discredited?",
+    "expected_keywords": [
+      "Lochner",
+      "New York",
+      "Dred Scott",
+      "Sandford"
+    ],
+    "expected_answer": "The cases of Lochner v. New York [1] and Dred Scott v. Sandford [2] are notable for their controversial outcomes that have since been widely repudiated by the Supreme Court.\n\nIn Lochner v. New York [1], the court protected an individual's right to freedom of contract, striking down a maximum hours law for bakers on the basis that it violated the due process clause of the Fourteenth Amendment. This decision was criticized for its reliance on laissez-faire economic principles and disregard for social welfare concerns [1]. Over time, this doctrine was discredited as it failed to evolve with changing societal values and economic conditions.\n\nOn the other hand, Dred Scott v. Sandford [2] held that African Americans, whether free or slave, were not citizens of the United States and could not sue in federal court. This decision was based on a narrow interpretation of the Constitution's text and the Three-Fifths Compromise, which led to its eventual repudiation. The case is now seen as a significant misstep that perpetuated racial discrimination [2].\n\nThese decisions highlight how legal doctrines can become discredited when they are based on outdated or flawed reasoning, and fail to adapt to changing societal values and circumstances.\n\n[1] Lochner v. New York, 198 U.S. 45 (1905)\n[2] Scott v. Sandford, 60 U.S. 393 (1856)"
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "Cross-document: How does the doctrinal reasoning in West Coast Hotel Co. v. Parrish (rejecting freedom of contract) compare to the reasoning in Brown v. Board (rejecting separate-but-equal) in terms of how the Court justified overturning precedent?",
+    "expected_keywords": [
+      "West Coast Hotel Co",
+      "Parrish",
+      "Constitution",
+      "However"
+    ],
+    "expected_answer": "According to the context provided, West Coast Hotel Co. v. Parrish (1937) established that the Constitution requires only that a state comply with due process when it comes to economic regulations [1]. This means that an economic regulation is reasonable in relation to its subject and adopted in the interests of the community. However, the provided context does not contain information about how the doctrinal reasoning in West Coast Hotel Co. v. Parrish compares to the reasoning in Brown v. Board (rejecting separate-but-equal). To understand that comparison, you may need to consult a different source."
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "What was at stake in Citizens United v. FEC regarding corporate political spending, and how does the case's outcome relate to McConnell v. FEC's earlier, narrower restriction?",
+    "expected_keywords": [
+      "In Citizens United",
+      "FEC",
+      "Bipartisan Campaign Reform Act",
+      "The District Court"
+    ],
+    "expected_answer": "In Citizens United v. FEC (2008), the case at hand primarily concerned the constitutionality of a provision in the Bipartisan Campaign Reform Act of 2002 that banned corporations and unions from funding political advertisements within 60 days of a primary or 30 days of a general election [2].\n\nThe District Court held that this provision was constitutional under McConnell v. FEC (2003), an earlier case that had imposed narrower restrictions on political spending by corporations and unions [1]. The court found that the provision in question was susceptible to no other interpretation than to inform the electorate that a certain candidate is unfit for office, violating the First Amendment rights of free speech [2].\n\nHowever, it's important to note that the Supreme Court did not rule on the constitutional question in Citizens United v. FEC at this stage, as the case was still in progress. The outcome of this case would later have significant implications for corporate political spending and campaign finance regulations in the US. [2]"
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Edge case: Of the cases in this cluster, Bowers v. Hardwick has no explicit reversal partner present in the corpus \u2014 what broader doctrinal category (privacy/liberty) does it still belong to, and how might a system correctly recognize it as an outlier rather than force a false pairing?",
+    "expected_keywords": [
+      "Bowers",
+      "Hardwick",
+      "Although",
+      "Lawrence"
+    ],
+    "expected_answer": "Bowers v. Hardwick [1] can be considered part of the broader doctrinal category of cases related to privacy and liberty, specifically focusing on intimate associations and the right to privacy within one's home. Although it does not have an explicit reversal partner in the provided context, a system can recognize it as an outlier by considering its opposing views compared to more recent decisions that have overturned it, such as Lawrence v. Texas [2].\n\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"872fd4f9-c45a-4a5e-9466-a5da36641142\">intimate associations with others. B The behavior for which Hardwick faces prosecution occurred in his own home, a place to which the Fourth Amendment attaches special significance.\n[2] <source id=\"2\" resource-type=\"collection\" resource-id=\"872fd4f9-c45a-4a5e-9466-a5da36641142\">In Lawrence v. Texas, the Supreme Court overturned its earlier decision in Bowers v. Hardwick, recognizing that the right to privacy includes intimate conduct between adults in private and cannot be criminalized by state law without a legitimate reason."
+  }
+]

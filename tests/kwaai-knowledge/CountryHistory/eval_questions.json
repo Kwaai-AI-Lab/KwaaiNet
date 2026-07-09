@@ -1,0 +1,239 @@
+[
+  {
+    "id": "q01",
+    "type": "factual",
+    "question": "What does the Constitution of India establish as the fundamental structure of India's government?",
+    "expected_keywords": [
+      "Constitution",
+      "India",
+      "The Government",
+      "Parliament"
+    ],
+    "expected_answer": "According to the provided context, the Constitution of India establishes India as a sovereign, socialist, secular, and democratic republic [2]. It also assures its citizens justice, equality, and liberty, and endeavors to promote fraternity [28]. The Government and Parliament of India, as well as the Government and Legislature of each State, are included in the definition of \"the State\" [1]. However, the context does not explicitly state that it establishes the fundamental structure of the government in terms of its branches or separation of powers. For more detailed information about the structure of the Indian government, you may need to refer to additional sources."
+  },
+  {
+    "id": "q02",
+    "type": "factual",
+    "question": "According to the British Raj Wikipedia article, what period does the term \"British Raj\" refer to, and how did it begin?",
+    "expected_keywords": [
+      "The British Raj",
+      "British Empire",
+      "India",
+      "Indian Rebellion"
+    ],
+    "expected_answer": "The British Raj refers to the rule of the British Empire over India from 1858 until 1947. It began after the Indian Rebellion of 1857, which resulted in the dissolution of the East India Company's rule and the British Crown taking direct control of India [1]."
+  },
+  {
+    "id": "q03",
+    "type": "factual",
+    "question": "According to the Culture of India article, what are some major religious and linguistic traditions that shape Indian culture?",
+    "expected_keywords": [
+      "Indian",
+      "Hinduism",
+      "Islam",
+      "Christianity"
+    ],
+    "expected_answer": "The provided context mentions several major religious and linguistic traditions that shape Indian culture. These include Hinduism, Islam, Christianity, Sikhism, Buddhism, Jainism, tribal religions like Sarnaism, and others such as Jainism, Zoroastrianism, Judaism, and the Bah\u00e1'\u00ed Faith [1]. Additionally, the English language was widely introduced during the British Raj, influencing other Indian languages [4]. As for linguistic diversity, India is home to numerous languages, including Hindi, Bengali, Telugu, Marathi, Tamil, Urdu, Gujarati, Malayalam, Kannada, Oriya, Punjabi, Assamese, Maithili, and many more [not directly mentioned in the provided context]."
+  },
+  {
+    "id": "q04",
+    "type": "factual",
+    "question": "According to the Britannica article on India's economy, what major economic changes has India undergone since independence?",
+    "expected_keywords": [
+      "India",
+      "Britannica",
+      "Inc",
+      "March"
+    ],
+    "expected_answer": "India's economy has undergone profound shifts since gaining independence in 1947. According to the Britannica article [1], these changes include transitioning from a largely agrarian system to one that harbors high technology in certain sectors. The initial economic structure was shaped by state-led industrialization, but later, free market reforms were embraced that opened avenues for private enterprise and foreign investment.\n\n[1] Encyclop\u00e6dia Britannica, Inc., \"economy of India\", https://www.britannica.com/topic/economy-of-India (accessed March 26, 2023)"
+  },
+  {
+    "id": "q05",
+    "type": "factual",
+    "question": "According to \"History of India (1947-present),\" what major political and economic developments define India's post-independence history?",
+    "expected_keywords": [
+      "Britannica",
+      "India",
+      "Initially",
+      "Later"
+    ],
+    "expected_answer": "According to the Encyclop\u00e6dia Britannica, there have been significant political and economic developments in India since its independence in 1947 [1]. Initially, the country was shaped by state-led industrialization. Later, free market reforms were embraced that opened avenues for private enterprise and foreign investment. Agricultural advancements, technological innovation, and policy reforms have driven growth. However, persistent challenges such as inequality, inflation, and slow industrial progress continue to pose problems [1]. Additionally, India's economic position can be understood by the fact that it is projected to become the world's third largest economy by 2027, with a GDP exceeding $5 trillion. Yet, despite this rapid ascent, India's GDP per capita remains low [1]. For more detailed information, you may refer to the sources provided in the context [2]."
+  },
+  {
+    "id": "q06",
+    "type": "factual",
+    "question": "What event does Independence Day (India) commemorate, and on what date does India celebrate it?",
+    "expected_keywords": [
+      "Independence Day",
+      "India",
+      "British",
+      "Indian Independence Act"
+    ],
+    "expected_answer": "Independence Day (India) commemorates the end of the British raj in 1947, which was brought about by the Indian Independence Act of July 18, 1947 [1]. India celebrates this national holiday annually on August 15.\n\nReferences:\n[1] <source id=\"1\" resource-type=\"collection\" resource-id=\"0ea8847c-1e85-40a9-a416-0ab16d6ebeab\">Independence Day, in India, national holiday celebrated annually on August 15. Independence Day marks the end of the British raj in 1947, brought about by the Indian Independence Act of July 18 that year, and the establishment of a free and independent Indian nation following the long struggle of the Indian Independence Movement. It also marks the anniversary of the partition of India into two countries, India and Pakistan, which occurred at midnight on August 14\u201315, 1947.\n[2] <source id=\"1\" resource-type=\"collection\" resource-id=\"0ea8847c-1e85-40a9-a416-0ab16d6ebeab\">Independence Day, in India, national holiday celebrated annually on August 15. Independence Day marks the end of the British raj in 1947, brought about by the Indian Independence Act of July 18 that year, and the establishment of a free and independent Indian nation following the long struggle of the Indian Independence Movement. It also marks the anniversary of the partition of India into two countries, India and Pakistan, which occurred at midnight on August 14\u201315, 1947."
+  },
+  {
+    "id": "q07",
+    "type": "factual",
+    "question": "What dishes or culinary traditions are highlighted in the Indian Cuisine article, and how does regional diversity shape Indian cuisine?",
+    "expected_keywords": [
+      "Indian Cuisine",
+      "Some",
+      "Kerala Sadya",
+      "Hyderabadi"
+    ],
+    "expected_answer": "The context discusses several dishes and culinary traditions that are prominent in Indian Cuisine. Some examples mentioned include Kerala Sadya, Hyderabadi biryani, Andhra Bhojanam [1]. Regional diversity plays a significant role in shaping Indian cuisine, as the dishes vary greatly from region to region. This is due to factors such as local produce, cultural differences, and varied demographics across India [89]. The context also mentions that the use of numerous ingredients, cooking techniques, and culinary presentations contribute to the complexity of Indian cuisine."
+  },
+  {
+    "id": "q08",
+    "type": "factual",
+    "question": "What role did Jawaharlal Nehru play in India's independence movement and its early government?",
+    "expected_keywords": [
+      "Jawaharlal Nehru",
+      "Indian",
+      "British",
+      "Early"
+    ],
+    "expected_answer": "According to the provided context [1], Jawaharlal Nehru was a significant figure of the Indian independence movement that successfully ended British rule over the Indian subcontinent. He played a crucial role in various stages of the movement as mentioned:\n\n* Early life and career (1889\u20131912)\n* Nationalist movement (1912\u20131939):\n  + Civil rights and home rule: 1912\u20131919\n  + Non-cooperation and afterwards: 1919\u20131929\n  + Declaration of independence\n  + Salt March: 1930\n  + In prison 1930\u20131935\n  + Congress president, provincial elections: 1935\u20131939\n\nAfter India's independence in 1947, Nehru became the first Prime Minister of independent India [1]."
+  },
+  {
+    "id": "q09",
+    "type": "factual",
+    "question": "According to the Languages of India article, how many officially recognized languages does India have, and what does this suggest about linguistic diversity?",
+    "expected_keywords": [
+      "India"
+    ],
+    "expected_answer": "According to the provided context [1], over 780 languages are in use in India. This suggests a high level of linguistic diversity within the country."
+  },
+  {
+    "id": "q10",
+    "type": "factual",
+    "question": "What philosophy and methods is Mahatma Gandhi most associated with in India's independence movement?",
+    "expected_keywords": [
+      "Mahatma Gandhi",
+      "India",
+      "Independence",
+      "Jawaharlal Nehru"
+    ],
+    "expected_answer": "Mahatma Gandhi is most associated with non-violence and civil disobedience in India's independence movement. These philosophies were instrumental in leading the Independence struggle during the 1920s, as described in [1]. The leadership of figures like Jawaharlal Nehru, Vallabhbhai Patel, Abdul Ghaffar Khan, Maulana Azad, Rabindranath Tagore, Subramania Bharati, Bankim Chandra Chattopadhyay, Sarojini Naidu, Vijaya Lakshmi Pandit, Pritilata Waddedar, and Kasturba Gandhi also played significant roles in this movement."
+  },
+  {
+    "id": "q11",
+    "type": "factual",
+    "question": "What was the Partition of India, and what were its major consequences according to the Britannica summary?",
+    "expected_keywords": [
+      "The Partition",
+      "India",
+      "British India",
+      "Pakistan"
+    ],
+    "expected_answer": "The Partition of India refers to the division of British India into two independent dominions: India and Pakistan, which occurred on August 15, 1947 [1]. According to the Britannica summary, the partition resulted in large-scale loss of life and an unprecedented migration between the two dominions [16]. The migrations took place hastily and with little warning, leading to estimates that between 14 million and 18 million people moved, and perhaps more. Excess mortality during the period of the partition is usually estimated to have been around one million [18]. Additionally, the violent nature of the partition created an atmosphere of hostility and suspicion between India and Pakistan that continues to affect their relationship today.\n\nCitations:\n[1] CITATION INFORMATION ARTICLE TITLE: partition of India WEBSITE NAME: Encyclopaedia Britannica PUBLISHER: Encyclopaedia Britannica, Inc. DATE PUBLISHED: 13 February 2026 URL: https://www.britannica.com/event/Partition-of-India ACCESS DATE: June 25, 2026\n[16] The partition caused large-scale loss of life and an unprecedented migration between the two dominions.[16] Among refugees who survived, it solidified the belief that safety lay among co-religionists. In the instance of Pakistan, it made palpable a hitherto only-imagined refuge for the Muslims of British India.[17] The migrations took place hastily and with little warning. It is thought that between 14 million and 18 million people moved, and perhaps more. Excess mortality during the period of the partition is usually estimated to have been around one million.[18]\n[18] Excess mortality during the period of the partition is usually estimated to have been around one million.[18]"
+  },
+  {
+    "id": "q12",
+    "type": "factual",
+    "question": "Cross-document: How do the Britannica and Wikipedia articles on the Indian Independence Movement differ in coverage or emphasis, given they cover the same historical topic?",
+    "expected_keywords": [
+      "The Britannica",
+      "Indian Independence Movement",
+      "Mahatma Gandhi",
+      "India"
+    ],
+    "expected_answer": "The Britannica article on the Indian Independence Movement [1] provides a comprehensive overview of the movement, its origins, key figures, major events, and aftermath. It is written in an encyclopedic style and includes various sections like the nationalist struggle, the role of Mahatma Gandhi, the partition of India, and the impact of independence.\n\nOn the other hand, the Wikipedia article on the same topic [2] offers a more detailed account with extensive references to primary sources, external links, further reading materials, and quotes related to the Indian independence movement. It also includes sections such as timeline, causes, key individuals, methods of protest, and legacies, providing a broader perspective on the subject.\n\nIn summary, while both articles cover the same historical topic, they differ in their level of detail, referencing, and style of presentation. The Britannica article offers a concise, encyclopedic overview, whereas the Wikipedia article provides a more detailed account with additional resources for further study."
+  },
+  {
+    "id": "q13",
+    "type": "factual",
+    "question": "Cross-document: How did Gandhi's and Nehru's respective roles in the independence movement differ, based on their individual biographical articles?",
+    "expected_keywords": [
+      "Based",
+      "Gandhi",
+      "Nehru",
+      "India"
+    ],
+    "expected_answer": "Based on the provided context, both Gandhi and Nehru played significant roles in India's independence movement. However, they had distinct approaches and focuses.\n\nGandhi, often referred to as the \"Father of the Nation,\" is best known for his nonviolent civil disobedience tactics such as peaceful protests, fasting, and boycotts [1]. His approach was deeply rooted in Hindu philosophy and spirituality, making him a strong moral leader who inspired millions.\n\nJawaharlal Nehru, on the other hand, was a prominent leader next to Gandhi [2][3]. He was instrumental in shaping India's foreign policy and is often credited for his contribution to India's peaceful transition to independence through negotiations and diplomacy [4][5].\n\n[1] Yadav, B.D. (1992). M.P.T. Acharya: Reminiscences of an Indian Revolutionary. New Delhi: Anmol. ISBN81-7041-470-9.\n[2] Wiatr, J.J. (2022). Political Leadership Between Democracy and Authoritarianism: Comparative and Historical Perspectives. Verlag Barbara Budrich. p.71. ISBN978-3-8474-1693-7.\n[3] Patil, V.T. (1987). Studies on Nehru. Facet Books International. p.117. ISBN978-0-932377-14-2.\n[4] Shukla, K.R.G.V. (2009). Foreign Policy of India. Atlantic Publishers & Distributors. p.99. ISBN978-81-269-1030-4.\n[5] Lorne John Kavic. \"In search of peace and security \u2013 A study of Indian foreign policy in the Cold War\". University of British Columbia. Archived from the original on 23 April 2024. Retrieved 23 April 2024."
+  },
+  {
+    "id": "q14",
+    "type": "factual",
+    "question": "Cross-document: How does the Partition of India (1947) relate temporally and causally to Indian Independence Day?",
+    "expected_keywords": [
+      "The Partition",
+      "India",
+      "Indian",
+      "British"
+    ],
+    "expected_answer": "The Partition of India, which took place in 1947, was a direct result of Indian independence from British rule [3]. The partition occurred after the Indian Independence Act was passed by the British Parliament on July 18, 1947, and it led to the creation of two independent countries: India and Pakistan [3]. This event significantly affected millions of people, causing a large-scale migration and unprecedented violence [1,2]. August 15 is celebrated as Indian Independence Day, marking the date when India gained independence from British rule in 1947, which coincides with the implementation of the Partition [3].\n\nReferences:\n[1] Khan, Yasmin (2007). The Great Partition: The Making of India and Pakistan. Yale University Press. p.1. ISBN978-0-300-12078-3. Retrieved 1 September 2013.\n[2] Shashi (1996), p.13.\n[3] TABLE OF CONTENTS"
+  },
+  {
+    "id": "q15",
+    "type": "factual",
+    "question": "Cross-document: How does the Constitution of India's establishment relate to the post-independence political developments described in \"History of India (1947-present)\"?",
+    "expected_keywords": [
+      "The Constitution",
+      "India",
+      "January",
+      "Government"
+    ],
+    "expected_answer": "The Constitution of India was established on 26 January 1950, replacing the Government of India Act 1935 as the country's fundamental governing document [2]. This event marked the transition from the Dominion of India to the Republic of India. The constitutional changes described were part of the post-independence political developments in India, as detailed in \"History of India (1947-present)\" [25].\n\n[2] - The Constitution of India was adopted by the Constituent Assembly on 26 November 1949 and became effective on 26 January 1950. (The Constitution of India)"
+  },
+  {
+    "id": "q16",
+    "type": "factual",
+    "question": "Near-miss: Both \"Independence Day (India)\" and \"Partition of India\" concern the same 1947 historical moment \u2014 what's the key distinction between what each article covers?",
+    "expected_keywords": [
+      "Independence Day",
+      "India",
+      "Partition",
+      "While Independence Day"
+    ],
+    "expected_answer": "The key distinction between the two articles, Independence Day (India) [1] and Partition of India [2], lies in their focus. While Independence Day (India) primarily discusses the celebrations and events surrounding the attainment of independence by India from British rule on August 15, 1947, Partition of India delves into the historical context of the partition that occurred at the same time, resulting in the creation of two independent nations, India and Pakistan."
+  },
+  {
+    "id": "q17",
+    "type": "factual",
+    "question": "Cross-document: How might the linguistic diversity described in \"Languages of India\" relate to the cultural diversity described in \"Culture of India\"?",
+    "expected_keywords": [
+      "India",
+      "Languages",
+      "Hinduism",
+      "Jainism"
+    ],
+    "expected_answer": "The linguistic diversity in India, as detailed in the \"Languages of India\" source [1], is significant with over 780 languages and several language families represented. This diversity mirrors the cultural richness of India, which includes various religious cultures such as Hinduism, Jainism, Buddhism, and Sikhism, as discussed in the \"Culture of India\" context. The coexistence and intermingling of these linguistic and cultural traditions over millennia have contributed to the profound impact Indian culture has had across the Indosphere and the world [1]."
+  },
+  {
+    "id": "q18",
+    "type": "factual",
+    "question": "What is the relationship between the British Raj period and the events leading up to the Indian Independence Movement?",
+    "expected_keywords": [
+      "The British Raj",
+      "Indian Rebellion",
+      "Crown",
+      "India"
+    ],
+    "expected_answer": "The British Raj period, which began in 1858 after the suppression of the Indian Rebellion of 1857 [1], was a time of direct Crown rule in India. This era lasted until India's independence in 1947. However, the events leading up to the Indian Independence Movement can be traced back to the British Raj period itself, as it marked the beginning of widespread discontent with colonial rule [3]. The first organized mass resistance in the independence struggle was the Swadeshi Movement, which was launched in 1905 to protest the partition of Bengal during the British Raj [3].\n\n[1] Steinback, Susie L. (2012), Understanding the Victorians: Politics, Culture and Society in Nineteenth-Century Britain, London and New York: Routledge, p.68, ISBN978-0-415-77408-6\n[3] <source id=\"3\" resource-type=\"collection\" resource-id=\"0ea8847c-1e85-40a9-a416-0ab16d6ebeab\">End of the British rajIndians celebrating the first Independence Day in 1947.\nBritish rule in India began in 1757 when, following the British victory at the Battle of\nPlassey, the British East India Company transitioned from a mercantile presence\ninto a dominant military and political power inthe country. The East India Company\nruled India for 100 years, until it was replaced by direct British rule (often referred\nto as the British raj) in the wake of the Indian Rebellion of 1857 (also called the\nSepoy Mutiny). Although the rebellion was suppressed, it was the beginning of\nwidespread discontent with colonial rule.\nThe independence movement was largely mobilized by the Indian National\nCongress (Congress Party), which was founded in 1885. The first organized mass\nresistance in the independence struggle was the Swadeshi Movement, which was\nlaunched in 1905 to protest the partition of Bengal.</source>"
+  },
+  {
+    "id": "q19",
+    "type": "factual",
+    "question": "Edge case: The Constitution of India appears twice in this cluster, as both an HTML government source and a PDF \u2014 what's the value of having both a primary legal source and secondary contextual sources on the same topic?",
+    "expected_keywords": [
+      "Having",
+      "Constitution",
+      "India",
+      "Indian"
+    ],
+    "expected_answer": "Having both a primary legal source (the official Constitution document) and secondary contextual sources (articles about the Constitution from various publications) provides a comprehensive understanding of the topic. The primary legal source, in this case, the Constitution of India, serves as the definitive text that outlines the laws and principles governing India. On the other hand, the secondary sources offer interpretations, historical context, and insights into the Constitution's implementation and its impact on Indian society. Having both types of sources enhances the research value and provides a more holistic view of the topic for readers or researchers interested in understanding the Constitution of India.\n[1] Roychowdhury, Adrija (17 August 2017). \"Five states that refused to join India after Independence\". The Indian Express. Archived from the original on 13 January 2022. Retrieved 15 August 2021.\n[2] Bhaskar, Anurag (25 November 2022). \"Republic at 70: Preamble embodies Constitution's vision\". Hindustan Times. Archived from the original on 11 March 2024. Retrieved 12 March 2024."
+  },
+  {
+    "id": "q20",
+    "type": "factual",
+    "question": "Cross-document: How does India's post-independence economic development relate to the political framework established by the Constitution of India?",
+    "expected_keywords": [
+      "India",
+      "Initially",
+      "However",
+      "Constitution"
+    ],
+    "expected_answer": "According to the provided context [1], India's economy has evolved significantly since independence. Initially shaped by state-led industrialization, it later embraced free market reforms that opened avenues for private enterprise and foreign investment. However, the text does not provide specific details about the relationship between India's post-independence economic development and the political framework established by the Constitution of India [1]. For a more detailed analysis, further research or resources might be necessary.\n\n[1] Encyclop\u00e6dia Britannica, Inc. (n.d.). Economy of India. Retrieved from https://www.britannica.com/topic/economy-of-India"
+  }
+]
