@@ -600,7 +600,7 @@ async fn cmd_ingest(
             ));
             Some(schema)
         } else {
-            let preview = &text[..text.len().min(4000)];
+            let preview = &text[..text.floor_char_boundary(text.len().min(4000))];
             let detected = kwaai_rag::doc_schema::auto_detect_schema(preview);
             if detected.schema_type.is_some() || !detected.metadata.is_empty() {
                 print_info(&format!(

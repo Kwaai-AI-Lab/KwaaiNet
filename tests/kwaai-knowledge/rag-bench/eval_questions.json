@@ -1,0 +1,228 @@
+[
+  {
+    "id": "Q01",
+    "type": "factoid",
+    "question": "What does TLSA stand for?",
+    "expected_keywords": [
+      "Teachers' League of South Africa",
+      "TLSA"
+    ],
+    "expected_answer": "Teachers' League of South Africa"
+  },
+  {
+    "id": "Q02",
+    "type": "factoid",
+    "question": "What district in Cape Town features prominently in Part 2 of the book?",
+    "expected_keywords": [
+      "District Six"
+    ],
+    "expected_answer": "District Six"
+  },
+  {
+    "id": "Q03",
+    "type": "factoid",
+    "question": "What street does the family move to at the start of Part 2?",
+    "expected_keywords": [
+      "Caledon Street"
+    ],
+    "expected_answer": "Caledon Street"
+  },
+  {
+    "id": "Q04",
+    "type": "factoid",
+    "question": "What does AAC stand for in the book?",
+    "expected_keywords": [
+      "All Africa Convention",
+      "AAC"
+    ],
+    "expected_answer": "All Africa Convention"
+  },
+  {
+    "id": "Q05",
+    "type": "factoid",
+    "question": "What sport does Chapter 12 of Part 2 focus on?",
+    "expected_keywords": [
+      "Cricket"
+    ],
+    "expected_answer": "Cricket"
+  },
+  {
+    "id": "Q06",
+    "type": "factoid",
+    "question": "What educational institution is described in Part 2, Chapter 13?",
+    "expected_keywords": [
+      "Hewat"
+    ],
+    "expected_answer": "Hewat"
+  },
+  {
+    "id": "Q07",
+    "type": "factoid",
+    "question": "What does the chapter title 'Per Angusta; Ad Augusta' mean in context?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q08",
+    "type": "factoid",
+    "question": "What chapter covers the author's time at university?",
+    "expected_keywords": [
+      "University"
+    ],
+    "expected_answer": "University"
+  },
+  {
+    "id": "Q09",
+    "type": "factoid",
+    "question": "What was the New Era Fellowship?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q10",
+    "type": "factoid",
+    "question": "What does the chapter 'White Flight' describe?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q11",
+    "type": "factoid",
+    "question": "What does 'Anti-CAD' refer to in the book?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q12",
+    "type": "factoid",
+    "question": "Who is Gandhi and how is he connected to the narrative in Part 1?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q13",
+    "type": "factoid",
+    "question": "What happened when the author left District Six?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q14",
+    "type": "factoid",
+    "question": "What place is called Buitencingle in the book?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q15",
+    "type": "factoid",
+    "question": "What split in a political movement is described in Part 2, Chapter 20?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q16",
+    "type": "inferential",
+    "question": "How did the apartheid system affect education as described in the book?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q17",
+    "type": "inferential",
+    "question": "What was the political significance of the Teachers' League of South Africa?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q18",
+    "type": "inferential",
+    "question": "How did the author's family circumstances change between Part 1 and Part 2?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q19",
+    "type": "inferential",
+    "question": "What does the book reveal about race relations in South Africa during the mid-20th century?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q20",
+    "type": "inferential",
+    "question": "How did World War Two affect the community described in the book?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q21",
+    "type": "inferential",
+    "question": "What role did organized religion or chapel play in the community's life?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q22",
+    "type": "inferential",
+    "question": "What does the author's description of 'senior year' suggest about educational aspirations in his community?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q23",
+    "type": "inferential",
+    "question": "How does the setting 'in time and place' described in Part 1, Chapter 1 shape the rest of the narrative?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q24",
+    "type": "inferential",
+    "question": "What patterns of family progress are described across the chapters?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q25",
+    "type": "inferential",
+    "question": "How does the book portray the relationship between political activism and everyday life?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q26",
+    "type": "out_of_scope",
+    "question": "What is the current population of Cape Town?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q27",
+    "type": "out_of_scope",
+    "question": "Who won the FIFA World Cup in 1998?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q28",
+    "type": "out_of_scope",
+    "question": "What is the chemical formula for water?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q29",
+    "type": "out_of_scope",
+    "question": "Who is the current president of South Africa?",
+    "expected_keywords": [],
+    "expected_answer": null
+  },
+  {
+    "id": "Q30",
+    "type": "out_of_scope",
+    "question": "What programming language is Rust most similar to?",
+    "expected_keywords": [],
+    "expected_answer": null
+  }
+]
