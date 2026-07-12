@@ -7121,7 +7121,11 @@ fn eval_cosine_sim(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let dot: f64 = a.iter().zip(b.iter()).map(|(&x, &y)| x as f64 * y as f64).sum();
+    let dot: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| x as f64 * y as f64)
+        .sum();
     let na: f64 = a.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
     let nb: f64 = b.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
     if na == 0.0 || nb == 0.0 {
@@ -7154,7 +7158,11 @@ fn keyword_group_retrieval_score(
     keywords
         .iter()
         .map(|kw| {
-            let tok = if keyword_hit(kw, context_text, context_toks) { 1.0_f32 } else { 0.0 };
+            let tok = if keyword_hit(kw, context_text, context_toks) {
+                1.0_f32
+            } else {
+                0.0
+            };
             let sem = keyword_embs.get(*kw).map_or(0.0, |ke| {
                 chunk_embs
                     .iter()
@@ -7185,7 +7193,11 @@ fn keyword_group_score(
     keywords
         .iter()
         .map(|kw| {
-            let tok = if keyword_hit(kw, answer, answer_toks) { 1.0_f32 } else { 0.0 };
+            let tok = if keyword_hit(kw, answer, answer_toks) {
+                1.0_f32
+            } else {
+                0.0
+            };
             let sem = match (answer_emb, keyword_embs.get(*kw)) {
                 (Some(ae), Some(ke)) => scale_cosine(eval_cosine_sim(ae, ke), low, high),
                 _ => 0.0,
@@ -7212,7 +7224,6 @@ enum KeywordGroup {
     Single(String),
     Synonyms(Vec<String>),
 }
-
 
 #[derive(serde::Deserialize)]
 struct EvalQuestion {
@@ -7428,8 +7439,8 @@ async fn cmd_eval(
             question: String,
             answer: String,
             retrieved_docs: Vec<String>,
-            keyword_hits: f32,      // generation score (f32 for numeric proximity partial credit)
-            retrieval_hits: f32,    // retrieval score: keyword recall over retrieved chunks
+            keyword_hits: f32, // generation score (f32 for numeric proximity partial credit)
+            retrieval_hits: f32, // retrieval score: keyword recall over retrieved chunks
             total_keywords: f32,
             latency_ms: u128,
             judge_score: Option<u8>,
@@ -7664,8 +7675,7 @@ async fn cmd_eval(
             // each keyword group against the retrieved content before the LLM call.
             // This separates retrieval failures from generation failures.
             let chunk_embs: Vec<Vec<f32>> = if semantic_score && !chunks.is_empty() {
-                let texts: Vec<&str> =
-                    chunks.iter().map(|c| c.chunk_meta.text.as_str()).collect();
+                let texts: Vec<&str> = chunks.iter().map(|c| c.chunk_meta.text.as_str()).collect();
                 embed.embed_batch(&texts).await.unwrap_or_default()
             } else {
                 vec![]
@@ -8033,12 +8043,8 @@ async fn cmd_eval(
                     "|----|----------|-----------|------------|-------|---------|--------|\n",
                 );
             } else {
-                report.push_str(
-                    "| ID | Question | Retrieval | Generation | Sources | Latency |\n",
-                );
-                report.push_str(
-                    "|----|----------|-----------|------------|---------|--------|\n",
-                );
+                report.push_str("| ID | Question | Retrieval | Generation | Sources | Latency |\n");
+                report.push_str("|----|----------|-----------|------------|---------|--------|\n");
             }
         } else if has_judge {
             report.push_str("| ID | Question | Hit rate | Judge | Sources | Latency |\n");
@@ -8059,7 +8065,10 @@ async fn cmd_eval(
                 } else {
                     format!("{:.1}", total)
                 };
-                format!("{hits_s}/{tot_s} ({:.0}%)", hits as f64 / total as f64 * 100.0)
+                format!(
+                    "{hits_s}/{tot_s} ({:.0}%)",
+                    hits as f64 / total as f64 * 100.0
+                )
             } else {
                 "n/a".to_string()
             }

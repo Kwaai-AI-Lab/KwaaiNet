@@ -632,7 +632,9 @@ impl GraphStore {
         // Load entities
         {
             let mut stmt = self.conn.prepare("SELECT value FROM entities")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             for v in rows {
                 let node: EntityNode = serde_json::from_slice(&v)?;
                 self.nodes.insert(node.id, node);
@@ -641,19 +643,35 @@ impl GraphStore {
         // Load relations → adj
         {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             for v in rows {
                 let rel: RelationRecord = serde_json::from_slice(&v)?;
-                self.adj.entry(rel.src_id).or_default().push((rel.dst_id, rel.relation_type.clone(), rel.strength));
-                self.adj.entry(rel.dst_id).or_default().push((rel.src_id, rel.relation_type.clone(), rel.strength));
+                self.adj.entry(rel.src_id).or_default().push((
+                    rel.dst_id,
+                    rel.relation_type.clone(),
+                    rel.strength,
+                ));
+                self.adj.entry(rel.dst_id).or_default().push((
+                    rel.src_id,
+                    rel.relation_type.clone(),
+                    rel.strength,
+                ));
             }
         }
         // Load chunk_entity
         {
             let mut stmt = self.conn.prepare("SELECT key, value FROM chunk_entity")?;
-            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt.query_map([], |r| Ok((r.get::<_,Vec<u8>>(0)?, r.get::<_,Vec<u8>>(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
             for (k, v) in rows {
-                if k.len() != 8 { continue; }
+                if k.len() != 8 {
+                    continue;
+                }
                 let cid = i64::from_le_bytes(k.try_into().unwrap());
                 let eids: Vec<i64> = serde_json::from_slice(&v).unwrap_or_default();
                 self.chunk_to_entities.insert(cid, eids);
@@ -662,9 +680,15 @@ impl GraphStore {
         // Load entity_chunk
         {
             let mut stmt = self.conn.prepare("SELECT key, value FROM entity_chunk")?;
-            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt.query_map([], |r| Ok((r.get::<_,Vec<u8>>(0)?, r.get::<_,Vec<u8>>(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
             for (k, v) in rows {
-                if k.len() != 8 { continue; }
+                if k.len() != 8 {
+                    continue;
+                }
                 let eid = i64::from_le_bytes(k.try_into().unwrap());
                 let cids: Vec<i64> = serde_json::from_slice(&v).unwrap_or_default();
                 self.entity_to_chunks.insert(eid, cids);
@@ -853,11 +877,17 @@ impl GraphStore {
         let txn = self.conn.unchecked_transaction()?;
         txn.execute(
             "INSERT OR REPLACE INTO entities (key, value) VALUES (?1, ?2)",
-            params![&canonical_id.to_le_bytes()[..], serde_json::to_vec(&updated_canonical)?.as_slice()],
+            params![
+                &canonical_id.to_le_bytes()[..],
+                serde_json::to_vec(&updated_canonical)?.as_slice()
+            ],
         )?;
         txn.execute(
             "INSERT OR REPLACE INTO entities (key, value) VALUES (?1, ?2)",
-            params![&alias_id.to_le_bytes()[..], serde_json::to_vec(&alias_node)?.as_slice()],
+            params![
+                &alias_id.to_le_bytes()[..],
+                serde_json::to_vec(&alias_node)?.as_slice()
+            ],
         )?;
         txn.commit()?;
 
@@ -939,26 +969,28 @@ impl GraphStore {
         let key = relation_key(src_id, dst_id, relation_type);
 
         let merged = {
-            self.conn.query_row(
-                "SELECT value FROM relations WHERE key = ?1",
-                params![key.as_slice()],
-                |r| r.get::<_, Vec<u8>>(0),
-            ).optional()?
-            .and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
-            .map(|mut r| {
-                if !r.evidence_chunk_ids.contains(&evidence_chunk_id) {
-                    r.evidence_chunk_ids.push(evidence_chunk_id);
-                    r.strength = (r.evidence_chunk_ids.len() as f32 / 10.0).min(1.0);
-                }
-                r
-            })
-            .unwrap_or_else(|| RelationRecord {
-                src_id,
-                dst_id,
-                relation_type: relation_type.to_string(),
-                strength: 0.1,
-                evidence_chunk_ids: vec![evidence_chunk_id],
-            })
+            self.conn
+                .query_row(
+                    "SELECT value FROM relations WHERE key = ?1",
+                    params![key.as_slice()],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?
+                .and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+                .map(|mut r| {
+                    if !r.evidence_chunk_ids.contains(&evidence_chunk_id) {
+                        r.evidence_chunk_ids.push(evidence_chunk_id);
+                        r.strength = (r.evidence_chunk_ids.len() as f32 / 10.0).min(1.0);
+                    }
+                    r
+                })
+                .unwrap_or_else(|| RelationRecord {
+                    src_id,
+                    dst_id,
+                    relation_type: relation_type.to_string(),
+                    strength: 0.1,
+                    evidence_chunk_ids: vec![evidence_chunk_id],
+                })
         };
 
         let val = serde_json::to_vec(&merged)?;
@@ -993,11 +1025,15 @@ impl GraphStore {
         let txn = self.conn.unchecked_transaction()?;
         {
             let ck = chunk_id.to_le_bytes();
-            let mut eids: Vec<i64> = txn.query_row(
-                "SELECT value FROM chunk_entity WHERE key = ?1",
-                params![ck.as_ref()],
-                |r| r.get::<_, Vec<u8>>(0),
-            ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+            let mut eids: Vec<i64> = txn
+                .query_row(
+                    "SELECT value FROM chunk_entity WHERE key = ?1",
+                    params![ck.as_ref()],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?
+                .and_then(|v| serde_json::from_slice(&v).ok())
+                .unwrap_or_default();
             for &eid in entity_ids {
                 if !eids.contains(&eid) {
                     eids.push(eid);
@@ -1010,11 +1046,15 @@ impl GraphStore {
 
             for &eid in entity_ids {
                 let ek = eid.to_le_bytes();
-                let mut cids: Vec<i64> = txn.query_row(
-                    "SELECT value FROM entity_chunk WHERE key = ?1",
-                    params![ek.as_ref()],
-                    |r| r.get::<_, Vec<u8>>(0),
-                ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+                let mut cids: Vec<i64> = txn
+                    .query_row(
+                        "SELECT value FROM entity_chunk WHERE key = ?1",
+                        params![ek.as_ref()],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    )
+                    .optional()?
+                    .and_then(|v| serde_json::from_slice(&v).ok())
+                    .unwrap_or_default();
                 if !cids.contains(&chunk_id) {
                     cids.push(chunk_id);
                 }
@@ -1170,15 +1210,19 @@ impl GraphStore {
     /// Used by the Obsidian exporter for semantically-correct directed relation display.
     pub fn outgoing_relations(&self, entity_id: i64) -> Result<Vec<(i64, String, f32, usize)>> {
         let prefix: Vec<u8> = entity_id.to_le_bytes().to_vec();
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value FROM relations WHERE key >= ?1 ORDER BY key"
-        )?;
-        let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt.query_map(params![prefix.as_slice()], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })?.collect::<rusqlite::Result<_>>()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value FROM relations WHERE key >= ?1 ORDER BY key")?;
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+            .query_map(params![prefix.as_slice()], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
         let mut out = Vec::new();
         for (k, v) in rows {
-            if !k.starts_with(&prefix) { break; }
+            if !k.starts_with(&prefix) {
+                break;
+            }
             if let Ok(rel) = serde_json::from_slice::<RelationRecord>(&v) {
                 let evid = rel.evidence_chunk_ids.len();
                 out.push((rel.dst_id, rel.relation_type, rel.strength, evid));
@@ -1191,14 +1235,18 @@ impl GraphStore {
     /// LLM-extracted-only relations have real chunk IDs; seeded relations always include 0.
     pub fn is_relation_seeded(&self, src_id: i64, dst_id: i64, rel_type: &str) -> bool {
         let key = relation_key(src_id, dst_id, rel_type);
-        self.conn.query_row(
-            "SELECT value FROM relations WHERE key = ?1",
-            params![key.as_slice()],
-            |r| r.get::<_, Vec<u8>>(0),
-        ).optional().ok().flatten()
-        .and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
-        .map(|r| r.evidence_chunk_ids.contains(&0))
-        .unwrap_or(false)
+        self.conn
+            .query_row(
+                "SELECT value FROM relations WHERE key = ?1",
+                params![key.as_slice()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+            .map(|r| r.evidence_chunk_ids.contains(&0))
+            .unwrap_or(false)
     }
 
     /// For each `spouse_of` pair, identify the female entity (by gender field) and search
@@ -1210,7 +1258,9 @@ impl GraphStore {
     pub fn infer_maiden_name_candidates(&self) -> Result<Vec<(i64, i64, String)>> {
         let spouse_rels: Vec<RelationRecord> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
                 .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
                 .filter(|r| r.relation_type == "spouse_of")
@@ -1358,7 +1408,10 @@ impl GraphStore {
         let mut removed = false;
         let txn = self.conn.unchecked_transaction()?;
         {
-            let n = txn.execute("DELETE FROM relations WHERE key = ?1", params![key.as_slice()])?;
+            let n = txn.execute(
+                "DELETE FROM relations WHERE key = ?1",
+                params![key.as_slice()],
+            )?;
             if n > 0 {
                 removed = true;
             }
@@ -1369,7 +1422,10 @@ impl GraphStore {
                 .map(|(_, i)| i)
             {
                 let inv_key = relation_key(dst_id, src_id, inv);
-                txn.execute("DELETE FROM relations WHERE key = ?1", params![inv_key.as_slice()])?;
+                txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![inv_key.as_slice()],
+                )?;
             }
             // Also remove symmetric reverse (e.g. sibling_of, spouse_of stored both directions)
             if matches!(
@@ -1377,7 +1433,10 @@ impl GraphStore {
                 "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
             ) {
                 let sym_key = relation_key(dst_id, src_id, rel_type);
-                txn.execute("DELETE FROM relations WHERE key = ?1", params![sym_key.as_slice()])?;
+                txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![sym_key.as_slice()],
+                )?;
             }
         }
         txn.commit()?;
@@ -1578,7 +1637,9 @@ impl GraphStore {
         let mut to_rewrite: Vec<RelationRecord> = vec![];
         {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             for v in rows {
                 let rel: RelationRecord = serde_json::from_slice(&v)?;
                 if rel.src_id == alias_id || rel.dst_id == alias_id {
@@ -1593,35 +1654,49 @@ impl GraphStore {
             let txn = self.conn.unchecked_transaction()?;
             for rel in &to_rewrite {
                 let old_key = relation_key(rel.src_id, rel.dst_id, &rel.relation_type);
-                txn.execute("DELETE FROM relations WHERE key = ?1", params![old_key.as_slice()])?;
+                txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![old_key.as_slice()],
+                )?;
 
-                let new_src = if rel.src_id == alias_id { canonical_id } else { rel.src_id };
-                let new_dst = if rel.dst_id == alias_id { canonical_id } else { rel.dst_id };
+                let new_src = if rel.src_id == alias_id {
+                    canonical_id
+                } else {
+                    rel.src_id
+                };
+                let new_dst = if rel.dst_id == alias_id {
+                    canonical_id
+                } else {
+                    rel.dst_id
+                };
                 if new_src == new_dst {
                     continue; // skip self-loops
                 }
                 let new_key = relation_key(new_src, new_dst, &rel.relation_type);
-                let merged = txn.query_row(
-                    "SELECT value FROM relations WHERE key = ?1",
-                    params![new_key.as_slice()],
-                    |r| r.get::<_, Vec<u8>>(0),
-                ).optional()?.and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
-                .map(|mut e| {
-                    for cid in &rel.evidence_chunk_ids {
-                        if !e.evidence_chunk_ids.contains(cid) {
-                            e.evidence_chunk_ids.push(*cid);
+                let merged = txn
+                    .query_row(
+                        "SELECT value FROM relations WHERE key = ?1",
+                        params![new_key.as_slice()],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    )
+                    .optional()?
+                    .and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+                    .map(|mut e| {
+                        for cid in &rel.evidence_chunk_ids {
+                            if !e.evidence_chunk_ids.contains(cid) {
+                                e.evidence_chunk_ids.push(*cid);
+                            }
                         }
-                    }
-                    e.strength = (e.evidence_chunk_ids.len() as f32 / 10.0).min(1.0);
-                    e
-                })
-                .unwrap_or_else(|| RelationRecord {
-                    src_id: new_src,
-                    dst_id: new_dst,
-                    relation_type: rel.relation_type.clone(),
-                    strength: rel.strength,
-                    evidence_chunk_ids: rel.evidence_chunk_ids.clone(),
-                });
+                        e.strength = (e.evidence_chunk_ids.len() as f32 / 10.0).min(1.0);
+                        e
+                    })
+                    .unwrap_or_else(|| RelationRecord {
+                        src_id: new_src,
+                        dst_id: new_dst,
+                        relation_type: rel.relation_type.clone(),
+                        strength: rel.strength,
+                        evidence_chunk_ids: rel.evidence_chunk_ids.clone(),
+                    });
                 txn.execute(
                     "INSERT OR REPLACE INTO relations (key, value) VALUES (?1, ?2)",
                     params![new_key.as_slice(), serde_json::to_vec(&merged)?.as_slice()],
@@ -1641,16 +1716,23 @@ impl GraphStore {
                     "SELECT value FROM entity_chunk WHERE key = ?1",
                     params![ek.as_ref()],
                     |r| r.get::<_, Vec<u8>>(0),
-                ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default()
+                )
+                .optional()?
+                .and_then(|v| serde_json::from_slice(&v).ok())
+                .unwrap_or_default()
             };
             if !alias_chunk_ids.is_empty() {
                 // Extend canonical's chunk list
                 let canonical_ek = canonical_id.to_le_bytes();
-                let mut canonical_cids: Vec<i64> = txn.query_row(
-                    "SELECT value FROM entity_chunk WHERE key = ?1",
-                    params![canonical_ek.as_ref()],
-                    |r| r.get::<_, Vec<u8>>(0),
-                ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+                let mut canonical_cids: Vec<i64> = txn
+                    .query_row(
+                        "SELECT value FROM entity_chunk WHERE key = ?1",
+                        params![canonical_ek.as_ref()],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    )
+                    .optional()?
+                    .and_then(|v| serde_json::from_slice(&v).ok())
+                    .unwrap_or_default();
                 for &cid in &alias_chunk_ids {
                     if !canonical_cids.contains(&cid) {
                         canonical_cids.push(cid);
@@ -1658,16 +1740,23 @@ impl GraphStore {
                 }
                 txn.execute(
                     "INSERT OR REPLACE INTO entity_chunk (key, value) VALUES (?1, ?2)",
-                    params![canonical_ek.as_ref(), serde_json::to_vec(&canonical_cids)?.as_slice()],
+                    params![
+                        canonical_ek.as_ref(),
+                        serde_json::to_vec(&canonical_cids)?.as_slice()
+                    ],
                 )?;
                 // Replace alias_id with canonical_id in each chunk's entity list
                 for &cid in &alias_chunk_ids {
                     let ck = cid.to_le_bytes();
-                    let mut eids: Vec<i64> = txn.query_row(
-                        "SELECT value FROM chunk_entity WHERE key = ?1",
-                        params![ck.as_ref()],
-                        |r| r.get::<_, Vec<u8>>(0),
-                    ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+                    let mut eids: Vec<i64> = txn
+                        .query_row(
+                            "SELECT value FROM chunk_entity WHERE key = ?1",
+                            params![ck.as_ref()],
+                            |r| r.get::<_, Vec<u8>>(0),
+                        )
+                        .optional()?
+                        .and_then(|v| serde_json::from_slice(&v).ok())
+                        .unwrap_or_default();
                     eids.retain(|&id| id != alias_id);
                     if !eids.contains(&canonical_id) {
                         eids.push(canonical_id);
@@ -1679,10 +1768,16 @@ impl GraphStore {
                 }
             }
             // Remove alias from entity-chunk index
-            txn.execute("DELETE FROM entity_chunk WHERE key = ?1", params![&alias_id.to_le_bytes()[..]])?;
+            txn.execute(
+                "DELETE FROM entity_chunk WHERE key = ?1",
+                params![&alias_id.to_le_bytes()[..]],
+            )?;
 
             // Remove alias entity and update canonical
-            txn.execute("DELETE FROM entities WHERE key = ?1", params![&alias_id.to_le_bytes()[..]])?;
+            txn.execute(
+                "DELETE FROM entities WHERE key = ?1",
+                params![&alias_id.to_le_bytes()[..]],
+            )?;
             if let Some(canonical) = self.nodes.get(&canonical_id).cloned() {
                 let mut new_aliases = canonical.aliases.clone();
                 if let Some(ref aname) = alias_name {
@@ -1695,12 +1790,11 @@ impl GraphStore {
                         new_aliases.push(a.clone());
                     }
                 }
-                let merged_description =
-                    if alias_description.len() > canonical.description.len() {
-                        alias_description.clone()
-                    } else {
-                        canonical.description.clone()
-                    };
+                let merged_description = if alias_description.len() > canonical.description.len() {
+                    alias_description.clone()
+                } else {
+                    canonical.description.clone()
+                };
                 let updated = EntityNode {
                     mention_count: canonical.mention_count + alias_mention_count,
                     aliases: new_aliases,
@@ -1709,7 +1803,10 @@ impl GraphStore {
                 };
                 txn.execute(
                     "INSERT OR REPLACE INTO entities (key, value) VALUES (?1, ?2)",
-                    params![&canonical_id.to_le_bytes()[..], serde_json::to_vec(&updated)?.as_slice()],
+                    params![
+                        &canonical_id.to_le_bytes()[..],
+                        serde_json::to_vec(&updated)?.as_slice()
+                    ],
                 )?;
             }
             txn.commit()?;
@@ -1783,8 +1880,12 @@ impl GraphStore {
         // ── Step 1: Collect all current relations from DB ──
         let all_rels: Vec<RelationRecord> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            rows.into_iter().filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok()).collect()
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows.into_iter()
+                .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+                .collect()
         };
 
         // ── Step 2: Remove type-invalid familial relations ──
@@ -1814,7 +1915,10 @@ impl GraphStore {
         if !to_delete.is_empty() {
             let txn = self.conn.unchecked_transaction()?;
             for k in &to_delete {
-                txn.execute("DELETE FROM relations WHERE key = ?1", params![k.as_slice()])?;
+                txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![k.as_slice()],
+                )?;
             }
             txn.commit()?;
         }
@@ -1863,8 +1967,12 @@ impl GraphStore {
         // number of chunks that mention BOTH the src and dst entity.
         let all_rels_fresh: Vec<RelationRecord> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            rows.into_iter().filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok()).collect()
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows.into_iter()
+                .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+                .collect()
         };
 
         let mut strength_updates: Vec<(Vec<u8>, RelationRecord)> = Vec::new();
@@ -1926,7 +2034,9 @@ impl GraphStore {
         // or "met" for "married to".  Pairs where gender is unknown on either side are kept.
         let spouse_rels: Vec<RelationRecord> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
                 .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
                 .filter(|r| r.relation_type == "spouse_of")
@@ -1987,10 +2097,14 @@ impl GraphStore {
         {
             let all_sibling_rels: Vec<RelationRecord> = {
                 let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-                let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+                let rows: Vec<Vec<u8>> = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
                 rows.into_iter()
                     .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
-                    .filter(|r| r.relation_type == "sibling_of" || r.relation_type == "half_sibling_of")
+                    .filter(|r| {
+                        r.relation_type == "sibling_of" || r.relation_type == "half_sibling_of"
+                    })
                     .collect()
             };
             let sibling_pairs: std::collections::HashSet<(i64, i64)> = all_sibling_rels
@@ -2012,7 +2126,10 @@ impl GraphStore {
         if !suspect_keys.is_empty() {
             let txn = self.conn.unchecked_transaction()?;
             for k in &suspect_keys {
-                let _ = txn.execute("DELETE FROM relations WHERE key = ?1", params![k.as_slice()]);
+                let _ = txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![k.as_slice()],
+                );
             }
             txn.commit()?;
             removed += spouses_purged * 2;
@@ -2028,7 +2145,9 @@ impl GraphStore {
         // is more likely the main subject whose relations were written correctly).
         let all_parent_rels: Vec<(i64, i64)> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
                 .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
                 .filter(|r| r.relation_type == "parent_of")
@@ -2128,7 +2247,10 @@ impl GraphStore {
         if !paradox_deletes.is_empty() {
             let txn = self.conn.unchecked_transaction()?;
             for k in &paradox_deletes {
-                let _ = txn.execute("DELETE FROM relations WHERE key = ?1", params![k.as_slice()]);
+                let _ = txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![k.as_slice()],
+                );
             }
             txn.commit()?;
             removed += paradoxes_fixed * 2;
@@ -2160,8 +2282,12 @@ impl GraphStore {
 
             let all_fresh: Vec<RelationRecord> = {
                 let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-                let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-                rows.into_iter().filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok()).collect()
+                let rows: Vec<Vec<u8>> = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                rows.into_iter()
+                    .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+                    .collect()
             };
 
             let mut type_mismatch_keys: Vec<Vec<u8>> = Vec::new();
@@ -2230,7 +2356,10 @@ impl GraphStore {
             if !type_mismatch_keys.is_empty() {
                 let txn = self.conn.unchecked_transaction()?;
                 for k in &type_mismatch_keys {
-                    let _ = txn.execute("DELETE FROM relations WHERE key = ?1", params![k.as_slice()]);
+                    let _ = txn.execute(
+                        "DELETE FROM relations WHERE key = ?1",
+                        params![k.as_slice()],
+                    );
                 }
                 txn.commit()?;
             }
@@ -2258,7 +2387,9 @@ impl GraphStore {
             if !stub_ids.is_empty() {
                 let all_rels_for_stubs: Vec<RelationRecord> = {
                     let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-                    let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+                    let rows: Vec<Vec<u8>> = stmt
+                        .query_map([], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?;
                     rows.into_iter()
                         .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
                         .filter(|r| stub_ids.contains(&r.src_id) || stub_ids.contains(&r.dst_id))
@@ -2277,7 +2408,10 @@ impl GraphStore {
                     if let Some(node) = self.nodes.get(&id) {
                         tracing::warn!("pruning honorific stub entity: '{}'", node.name);
                     }
-                    txn.execute("DELETE FROM entities WHERE key = ?1", params![&id.to_le_bytes()[..]])?;
+                    txn.execute(
+                        "DELETE FROM entities WHERE key = ?1",
+                        params![&id.to_le_bytes()[..]],
+                    )?;
                 }
                 txn.commit()?;
 
@@ -3218,7 +3352,10 @@ impl GraphStore {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)) {
                 for row in rows.flatten() {
                     if let Ok(rel) = serde_json::from_slice::<RelationRecord>(&row) {
-                        if rel.src_id == id && rel.relation_type == "child_of" && rel.strength >= 0.1 {
+                        if rel.src_id == id
+                            && rel.relation_type == "child_of"
+                            && rel.strength >= 0.1
+                        {
                             parents.insert(rel.dst_id);
                         }
                     }
@@ -3239,7 +3376,9 @@ impl GraphStore {
     pub fn purge_unseeded_parent_relations(&mut self) -> Result<usize> {
         let all_rels: Vec<RelationRecord> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
                 .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
                 .filter(|r| r.relation_type == "child_of" || r.relation_type == "parent_of")
@@ -3291,7 +3430,10 @@ impl GraphStore {
         if !keys_to_delete.is_empty() {
             let txn = self.conn.unchecked_transaction()?;
             for k in &keys_to_delete {
-                let _ = txn.execute("DELETE FROM relations WHERE key = ?1", params![k.as_slice()]);
+                let _ = txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![k.as_slice()],
+                );
             }
             txn.commit()?;
             self.rebuild_in_memory()?;
@@ -3802,7 +3944,8 @@ impl GraphStore {
     /// batch of deletes.
     pub fn delete_entity(&mut self, entity_id: i64) -> Result<()> {
         let key = entity_id.to_le_bytes();
-        self.conn.execute("DELETE FROM entities WHERE key = ?1", params![key.as_ref()])?;
+        self.conn
+            .execute("DELETE FROM entities WHERE key = ?1", params![key.as_ref()])?;
         self.nodes.remove(&entity_id);
         self.entity_to_chunks.remove(&entity_id);
         self.adj.remove(&entity_id);
@@ -3815,8 +3958,12 @@ impl GraphStore {
     pub fn prune_dangling_relations(&mut self) -> Result<usize> {
         let all_rels: Vec<RelationRecord> = {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            rows.into_iter().filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok()).collect()
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows.into_iter()
+                .filter_map(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+                .collect()
         };
 
         let mut to_delete: Vec<Vec<u8>> = Vec::new();
@@ -3837,7 +3984,10 @@ impl GraphStore {
         if !to_delete.is_empty() {
             let txn = self.conn.unchecked_transaction()?;
             for k in &to_delete {
-                txn.execute("DELETE FROM relations WHERE key = ?1", params![k.as_slice()])?;
+                txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![k.as_slice()],
+                )?;
             }
             txn.commit()?;
         }
@@ -3905,24 +4055,32 @@ impl GraphStore {
 
     /// Retrieve persisted document metadata. Returns empty map if none stored.
     pub fn get_doc_metadata(&self) -> std::collections::HashMap<String, String> {
-        self.conn.query_row(
-            "SELECT value FROM metadata WHERE key = 'doc_metadata'",
-            [],
-            |r| r.get::<_, String>(0),
-        ).optional().ok().flatten()
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
+        self.conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'doc_metadata'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
     }
 
     /// Retrieve the stored document titles. Returns an empty vec if none are stored.
     pub fn get_document_titles(&self) -> Vec<String> {
-        self.conn.query_row(
-            "SELECT value FROM metadata WHERE key = 'document_titles'",
-            [],
-            |r| r.get::<_, String>(0),
-        ).optional().ok().flatten()
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
+        self.conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'document_titles'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
     }
 
     /// Update an entity's extraction_confidence and persist the change.
@@ -3954,13 +4112,17 @@ impl GraphStore {
 
     /// Retrieve per-KB entity type schemas. Returns empty vec if none stored.
     pub fn get_kb_entity_schemas(&self) -> Vec<KBEntityTypeSchema> {
-        self.conn.query_row(
-            "SELECT value FROM metadata WHERE key = 'kb_entity_schemas'",
-            [],
-            |r| r.get::<_, String>(0),
-        ).optional().ok().flatten()
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
+        self.conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'kb_entity_schemas'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
     }
 
     /// Expose chunk→entity mapping for cross-link discovery in the dream loop.
@@ -3988,11 +4150,16 @@ impl GraphStore {
             return Ok(());
         }
         let key = entity_id.to_le_bytes();
-        let existing: Vec<crate::sequence::TimelineEvent> = self.conn.query_row(
-            "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
-            params![key.as_ref()],
-            |r| r.get::<_, Vec<u8>>(0),
-        ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+        let existing: Vec<crate::sequence::TimelineEvent> = self
+            .conn
+            .query_row(
+                "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
+                params![key.as_ref()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default();
         let mut merged = existing;
         merged.extend_from_slice(new_events);
         // Axiom 6 (global event dedup): same (event_class, date_sort) for this
@@ -4019,16 +4186,24 @@ impl GraphStore {
         predicate: &dyn Fn(&crate::sequence::TimelineEvent) -> bool,
     ) -> Result<usize> {
         let key = entity_id.to_le_bytes();
-        let existing: Vec<crate::sequence::TimelineEvent> = self.conn.query_row(
-            "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
-            params![key.as_ref()],
-            |r| r.get::<_, Vec<u8>>(0),
-        ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+        let existing: Vec<crate::sequence::TimelineEvent> = self
+            .conn
+            .query_row(
+                "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
+                params![key.as_ref()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default();
         let before = existing.len();
         let retained: Vec<_> = existing.into_iter().filter(|e| !predicate(e)).collect();
         let deleted = before - retained.len();
         if retained.is_empty() {
-            self.conn.execute("DELETE FROM entity_timeline_v1 WHERE key = ?1", params![key.as_ref()])?;
+            self.conn.execute(
+                "DELETE FROM entity_timeline_v1 WHERE key = ?1",
+                params![key.as_ref()],
+            )?;
         } else {
             let val = serde_json::to_vec(&retained)?;
             self.conn.execute(
@@ -4079,7 +4254,9 @@ impl GraphStore {
         let mut relations_to_rewrite: Vec<RelationRecord> = vec![];
         {
             let mut stmt = self.conn.prepare("SELECT value FROM relations")?;
-            let rows: Vec<Vec<u8>> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             for v in rows {
                 let rel: RelationRecord = serde_json::from_slice(&v)?;
                 if rel.src_id == old_id || rel.dst_id == old_id {
@@ -4091,19 +4268,25 @@ impl GraphStore {
         // ── 2. Collect timeline events and interactions for old_id ──────────
         let timeline_events: Vec<crate::sequence::TimelineEvent> = {
             let key = old_id.to_le_bytes();
-            self.conn.query_row(
-                "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
-                params![key.as_ref()],
-                |r| r.get::<_, Vec<u8>>(0),
-            ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default()
+            self.conn
+                .query_row(
+                    "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
+                    params![key.as_ref()],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?
+                .and_then(|v| serde_json::from_slice(&v).ok())
+                .unwrap_or_default()
         };
 
         let interactions_old: Vec<(Vec<u8>, Vec<crate::sequence::SequenceInteraction>)> = {
             let old_bytes = old_id.to_le_bytes();
             let mut stmt = self.conn.prepare("SELECT key, value FROM interactions")?;
-            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt.query_map([], |r| {
-                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })?.collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
                 .filter(|(k, _)| {
                     k.len() == 16
@@ -4132,11 +4315,16 @@ impl GraphStore {
         }
 
         // ── 4. Migrate chunk links ──────────────────────────────────────────
-        let old_chunk_ids: Vec<i64> = self.conn.query_row(
-            "SELECT value FROM entity_chunk WHERE key = ?1",
-            params![&old_id.to_le_bytes()[..]],
-            |r| r.get::<_, Vec<u8>>(0),
-        ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+        let old_chunk_ids: Vec<i64> = self
+            .conn
+            .query_row(
+                "SELECT value FROM entity_chunk WHERE key = ?1",
+                params![&old_id.to_le_bytes()[..]],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default();
         {
             let txn = self.conn.unchecked_transaction()?;
             // Write new entity's chunk list
@@ -4146,15 +4334,22 @@ impl GraphStore {
                 params![&new_id.to_le_bytes()[..], val.as_slice()],
             )?;
             // Remove old entry
-            txn.execute("DELETE FROM entity_chunk WHERE key = ?1", params![&old_id.to_le_bytes()[..]])?;
+            txn.execute(
+                "DELETE FROM entity_chunk WHERE key = ?1",
+                params![&old_id.to_le_bytes()[..]],
+            )?;
             // In each chunk's entity list, replace old_id with new_id
             for &cid in &old_chunk_ids {
                 let ck = cid.to_le_bytes();
-                let mut eids: Vec<i64> = txn.query_row(
-                    "SELECT value FROM chunk_entity WHERE key = ?1",
-                    params![ck.as_ref()],
-                    |r| r.get::<_, Vec<u8>>(0),
-                ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+                let mut eids: Vec<i64> = txn
+                    .query_row(
+                        "SELECT value FROM chunk_entity WHERE key = ?1",
+                        params![ck.as_ref()],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    )
+                    .optional()?
+                    .and_then(|v| serde_json::from_slice(&v).ok())
+                    .unwrap_or_default();
                 eids.retain(|&id| id != old_id);
                 if !eids.contains(&new_id) {
                     eids.push(new_id);
@@ -4172,9 +4367,20 @@ impl GraphStore {
             let txn = self.conn.unchecked_transaction()?;
             for rel in &relations_to_rewrite {
                 let old_key = relation_key(rel.src_id, rel.dst_id, &rel.relation_type);
-                txn.execute("DELETE FROM relations WHERE key = ?1", params![old_key.as_slice()])?;
-                let new_src = if rel.src_id == old_id { new_id } else { rel.src_id };
-                let new_dst = if rel.dst_id == old_id { new_id } else { rel.dst_id };
+                txn.execute(
+                    "DELETE FROM relations WHERE key = ?1",
+                    params![old_key.as_slice()],
+                )?;
+                let new_src = if rel.src_id == old_id {
+                    new_id
+                } else {
+                    rel.src_id
+                };
+                let new_dst = if rel.dst_id == old_id {
+                    new_id
+                } else {
+                    rel.dst_id
+                };
                 let new_key = relation_key(new_src, new_dst, &rel.relation_type);
                 let updated = RelationRecord {
                     src_id: new_src,
@@ -4193,7 +4399,10 @@ impl GraphStore {
 
         // ── 6. Migrate timeline events ──────────────────────────────────────
         if !timeline_events.is_empty() {
-            self.conn.execute("DELETE FROM entity_timeline_v1 WHERE key = ?1", params![&old_id.to_le_bytes()[..]])?;
+            self.conn.execute(
+                "DELETE FROM entity_timeline_v1 WHERE key = ?1",
+                params![&old_id.to_le_bytes()[..]],
+            )?;
             let val = serde_json::to_vec(&timeline_events)?;
             self.conn.execute(
                 "INSERT OR REPLACE INTO entity_timeline_v1 (key, value) VALUES (?1, ?2)",
@@ -4207,7 +4416,10 @@ impl GraphStore {
             let old_bytes = old_id.to_le_bytes();
             let new_bytes = new_id.to_le_bytes();
             for (old_key, interactions) in &interactions_old {
-                txn.execute("DELETE FROM interactions WHERE key = ?1", params![old_key.as_slice()])?;
+                txn.execute(
+                    "DELETE FROM interactions WHERE key = ?1",
+                    params![old_key.as_slice()],
+                )?;
                 let mut new_key = old_key.clone();
                 if &new_key[..8] == old_bytes.as_ref() {
                     new_key[..8].copy_from_slice(&new_bytes);
@@ -4225,7 +4437,10 @@ impl GraphStore {
         }
 
         // ── 8. Remove old entity ────────────────────────────────────────────
-        self.conn.execute("DELETE FROM entities WHERE key = ?1", params![&old_id.to_le_bytes()[..]])?;
+        self.conn.execute(
+            "DELETE FROM entities WHERE key = ?1",
+            params![&old_id.to_le_bytes()[..]],
+        )?;
 
         // ── 9. Update in-memory node map ────────────────────────────────────
         self.nodes.remove(&old_id);
@@ -4239,12 +4454,17 @@ impl GraphStore {
         let mut out = Vec::new();
         for &eid in entity_ids {
             let key = eid.to_le_bytes();
-            if let Ok(Some(v)) = self.conn.query_row(
-                "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
-                params![key.as_ref()],
-                |r| r.get::<_, Vec<u8>>(0),
-            ).optional() {
-                if let Ok(evts) = serde_json::from_slice::<Vec<crate::sequence::TimelineEvent>>(&v) {
+            if let Ok(Some(v)) = self
+                .conn
+                .query_row(
+                    "SELECT value FROM entity_timeline_v1 WHERE key = ?1",
+                    params![key.as_ref()],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()
+            {
+                if let Ok(evts) = serde_json::from_slice::<Vec<crate::sequence::TimelineEvent>>(&v)
+                {
                     out.extend(evts);
                 }
             }
@@ -4264,11 +4484,16 @@ impl GraphStore {
         key[..8].copy_from_slice(&lo.to_le_bytes());
         key[8..].copy_from_slice(&hi.to_le_bytes());
 
-        let existing: Vec<crate::sequence::SequenceInteraction> = self.conn.query_row(
-            "SELECT value FROM interactions WHERE key = ?1",
-            params![key.as_ref()],
-            |r| r.get::<_, Vec<u8>>(0),
-        ).optional()?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+        let existing: Vec<crate::sequence::SequenceInteraction> = self
+            .conn
+            .query_row(
+                "SELECT value FROM interactions WHERE key = ?1",
+                params![key.as_ref()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default();
         let mut merged = existing;
         merged.push(interaction.clone());
         // Global interaction dedup: same (label, date_sort) for this pair across
@@ -4296,9 +4521,13 @@ impl GraphStore {
         if let Ok(mut stmt) = self.conn.prepare("SELECT value FROM interactions") {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)) {
                 for row in rows.flatten() {
-                    if let Ok(interactions) = serde_json::from_slice::<Vec<crate::sequence::SequenceInteraction>>(&row) {
+                    if let Ok(interactions) =
+                        serde_json::from_slice::<Vec<crate::sequence::SequenceInteraction>>(&row)
+                    {
                         for ia in interactions {
-                            if id_set.contains(&ia.from_entity_id) || id_set.contains(&ia.to_entity_id) {
+                            if id_set.contains(&ia.from_entity_id)
+                                || id_set.contains(&ia.to_entity_id)
+                            {
                                 out.push(ia);
                             }
                         }
@@ -4318,11 +4547,17 @@ impl GraphStore {
 
     /// Count stored timeline events and interactions (for status display).
     pub fn timeline_stats(&self) -> (usize, usize) {
-        let event_count = self.conn
-            .query_row("SELECT COUNT(*) FROM entity_timeline_v1", [], |r| r.get::<_, usize>(0))
+        let event_count = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM entity_timeline_v1", [], |r| {
+                r.get::<_, usize>(0)
+            })
             .unwrap_or(0);
-        let interaction_count = self.conn
-            .query_row("SELECT COUNT(*) FROM interactions", [], |r| r.get::<_, usize>(0))
+        let interaction_count = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM interactions", [], |r| {
+                r.get::<_, usize>(0)
+            })
             .unwrap_or(0);
         (event_count, interaction_count)
     }

@@ -92,7 +92,10 @@ impl MetaStore {
                 value BLOB NOT NULL
              ) WITHOUT ROWID;",
         )?;
-        Ok(Self { conn: Mutex::new(SafeConn(conn)), tenant_id })
+        Ok(Self {
+            conn: Mutex::new(SafeConn(conn)),
+            tenant_id,
+        })
     }
 
     fn chunk_key(tenant_id: Uuid, chunk_id: i64) -> [u8; 24] {
@@ -158,9 +161,8 @@ impl MetaStore {
         let mut out = Vec::with_capacity(ids.len());
         for &id in ids {
             let key = Self::chunk_key(self.tenant_id, id);
-            let meta: Option<ChunkMeta> = db
-                .0
-                .query_row(
+            let meta: Option<ChunkMeta> =
+                db.0.query_row(
                     "SELECT value FROM chunks WHERE key = ?1",
                     params![key.as_ref()],
                     |r| r.get::<_, Vec<u8>>(0),
@@ -203,7 +205,8 @@ impl MetaStore {
         let prefix = self.tenant_id.as_bytes();
         let start: Vec<u8> = prefix.to_vec();
         let db = self.db();
-        let mut stmt = db.0.prepare("SELECT key FROM docs WHERE key >= ?1 ORDER BY key")?;
+        let mut stmt =
+            db.0.prepare("SELECT key FROM docs WHERE key >= ?1 ORDER BY key")?;
         let rows: Vec<Vec<u8>> = stmt
             .query_map(params![start.as_slice()], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -222,9 +225,8 @@ impl MetaStore {
     pub fn delete_doc(&self, doc_name: &str) -> Result<Vec<i64>> {
         let doc_key = Self::doc_key(self.tenant_id, doc_name);
         let db = self.db();
-        let ids: Vec<i64> = db
-            .0
-            .query_row(
+        let ids: Vec<i64> =
+            db.0.query_row(
                 "SELECT value FROM docs WHERE key = ?1",
                 params![doc_key.as_slice()],
                 |r| r.get::<_, Vec<u8>>(0),
@@ -242,7 +244,10 @@ impl MetaStore {
             let key = Self::chunk_key(self.tenant_id, id);
             txn.execute("DELETE FROM chunks WHERE key = ?1", params![key.as_ref()])?;
         }
-        txn.execute("DELETE FROM docs WHERE key = ?1", params![doc_key.as_slice()])?;
+        txn.execute(
+            "DELETE FROM docs WHERE key = ?1",
+            params![doc_key.as_slice()],
+        )?;
         txn.commit()?;
         Ok(ids)
     }
@@ -324,9 +329,8 @@ impl MetaStore {
             k
         };
         let db = self.db();
-        let mut stmt = db
-            .0
-            .prepare("SELECT key, value FROM summary_nodes WHERE key >= ?1 ORDER BY key")?;
+        let mut stmt =
+            db.0.prepare("SELECT key, value FROM summary_nodes WHERE key >= ?1 ORDER BY key")?;
         let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
             .query_map(params![start.as_ref()], |r| {
                 Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
@@ -362,7 +366,10 @@ impl MetaStore {
             if kb.len() < 16 || &kb[..16] != prefix.as_ref() {
                 break;
             }
-            txn.execute("DELETE FROM summary_nodes WHERE key = ?1", params![kb.as_slice()])?;
+            txn.execute(
+                "DELETE FROM summary_nodes WHERE key = ?1",
+                params![kb.as_slice()],
+            )?;
         }
         txn.commit()?;
         Ok(())
