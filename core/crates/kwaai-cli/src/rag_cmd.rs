@@ -2589,8 +2589,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         return Ok(());
                     }
                 }
-                // Delete the graph redb file so it is recreated fresh on next open.
-                let graph_path = rag_cfg.data_dir().join(format!("graph-{}.redb", tenant_id));
+                // Delete the graph DB file so it is recreated fresh on next open.
+                let graph_path = rag_cfg.data_dir().join(format!("graph-{}.db", tenant_id));
                 if graph_path.exists() {
                     std::fs::remove_file(&graph_path)
                         .with_context(|| format!("deleting {}", graph_path.display()))?;
@@ -2679,7 +2679,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                 // Optionally wipe the graph before rebuilding.
                 if reset_graph {
-                    let graph_path = rag_cfg.data_dir().join(format!("graph-{}.redb", tenant_id));
+                    let graph_path = rag_cfg.data_dir().join(format!("graph-{}.db", tenant_id));
                     if graph_path.exists() {
                         std::fs::remove_file(&graph_path).with_context(|| {
                             format!("clearing graph at {}", graph_path.display())

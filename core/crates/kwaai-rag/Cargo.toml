@@ -17,7 +17,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
-redb = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.36", features = ["encoding"] }

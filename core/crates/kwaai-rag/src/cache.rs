@@ -1,18 +1,16 @@
 //! Semantic query cache — Phase 6.
 //!
 //! LRU + TTL caching keyed by query embedding cosine similarity (threshold 0.92).
-//! Persists to `<rag_dir>/query_cache.redb`. Lookup is brute-force cosine scan
+//! Persists to `<rag_dir>/query_cache.db` (SQLite WAL). Lookup is brute-force cosine scan
 //! (adequate for ≤2000 entries; add HNSW later if needed).
 
 use anyhow::{Context, Result};
-use redb::{Database, ReadableTable, TableDefinition};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
-
-const ENTRIES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cache_entries");
 
 pub const DEFAULT_TTL_SECS: u64 = 86_400; // 24 h
 pub const DEFAULT_MAX_ENTRIES: usize = 2_000;
@@ -32,29 +30,39 @@ pub struct CacheEntry {
 }
 
 pub struct QueryCache {
-    db: Database,
+    conn: Connection,
     entries: HashMap<i64, CacheEntry>,
     pub ttl_secs: u64,
     pub max_entries: usize,
     pub similarity_threshold: f64,
 }
 
+// rusqlite::Connection is !Send; safe to mark Send because QueryCache is always accessed
+// from a single async task context (never shared across threads simultaneously).
+unsafe impl Send for QueryCache {}
+
 impl QueryCache {
     /// Open (or create) the query cache for a KB tenant.
     pub fn open(data_dir: &Path, _tenant_id: Uuid) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
-        let path = data_dir.join("query_cache.redb");
-        let db = Database::create(&path)
+        let path = data_dir.join("query_cache.db");
+        let conn = Connection::open(&path)
             .with_context(|| format!("opening query cache at {}", path.display()))?;
-
-        {
-            let wtxn = db.begin_write()?;
-            wtxn.open_table(ENTRIES_TABLE)?;
-            wtxn.commit()?;
-        }
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA cache_size=-65536;
+             PRAGMA temp_store=MEMORY;",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS entries (
+                key   BLOB NOT NULL PRIMARY KEY,
+                value BLOB NOT NULL
+             ) WITHOUT ROWID;",
+        )?;
 
         let mut cache = Self {
-            db,
+            conn,
             entries: HashMap::new(),
             ttl_secs: DEFAULT_TTL_SECS,
             max_entries: DEFAULT_MAX_ENTRIES,
@@ -65,11 +73,12 @@ impl QueryCache {
     }
 
     fn rebuild(&mut self) -> Result<()> {
-        let rtxn = self.db.begin_read()?;
-        let table = rtxn.open_table(ENTRIES_TABLE)?;
-        for entry in table.iter()? {
-            let (_, v) = entry?;
-            if let Ok(e) = serde_json::from_slice::<CacheEntry>(v.value()) {
+        let mut stmt = self.conn.prepare("SELECT value FROM entries")?;
+        let rows: Vec<Vec<u8>> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for v in rows {
+            if let Ok(e) = serde_json::from_slice::<CacheEntry>(&v) {
                 self.entries.insert(e.id, e);
             }
         }
@@ -182,24 +191,18 @@ impl QueryCache {
     fn persist(&self, entry: &CacheEntry) -> Result<()> {
         let key = entry.id.to_le_bytes();
         let val = serde_json::to_vec(entry)?;
-        let wtxn = self.db.begin_write()?;
-        {
-            let mut t = wtxn.open_table(ENTRIES_TABLE)?;
-            t.insert(key.as_ref(), val.as_slice())?;
-        }
-        wtxn.commit()?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO entries (key, value) VALUES (?1, ?2)",
+            params![key.as_ref(), val.as_slice()],
+        )?;
         Ok(())
     }
 
     fn remove(&mut self, id: i64) -> Result<()> {
         self.entries.remove(&id);
         let key = id.to_le_bytes();
-        let wtxn = self.db.begin_write()?;
-        {
-            let mut t = wtxn.open_table(ENTRIES_TABLE)?;
-            t.remove(key.as_ref())?;
-        }
-        wtxn.commit()?;
+        self.conn
+            .execute("DELETE FROM entries WHERE key = ?1", params![key.as_ref()])?;
         Ok(())
     }
 }
