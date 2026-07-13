@@ -1,0 +1,46 @@
+{
+  "corpora": {
+    "DeepSea": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 87.2%"
+    },
+    "DreamMem": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 88.7%"
+    },
+    "Astrophysics": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 89.5%"
+    },
+    "CountryHistory": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 95.9%"
+    },
+    "WarPeace": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 85.6%"
+    },
+    "Poems": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 86.3%"
+    },
+    "OSMDocs": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 96.3%"
+    },
+    "ALL": {
+      "phase": "complete",
+      "status": "done"
+    }
+  },
+  "current_kb": "ALL",
+  "current_phase": "complete",
+  "status": "done"
+}
