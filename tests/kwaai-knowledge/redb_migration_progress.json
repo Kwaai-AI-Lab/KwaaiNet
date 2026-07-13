@@ -1,0 +1,51 @@
+{
+  "corpora": {
+    "Manhattan": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 91.0%"
+    },
+    "Meetings": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 78.2%"
+    },
+    "Climate": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 86.2%"
+    },
+    "Legal": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 95.1%"
+    },
+    "NIST": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 93.3%"
+    },
+    "PythonDocs": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 86.5%"
+    },
+    "RFCs": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 90.5%"
+    },
+    "MobyDick": {
+      "phase": "eval",
+      "status": "done",
+      "score": "Retrieval: 95.7%"
+    },
+    "ALL": {
+      "phase": "complete",
+      "status": "done"
+    }
+  },
+  "current_kb": "ALL",
+  "current_phase": "complete",
+  "status": "done"
+}
