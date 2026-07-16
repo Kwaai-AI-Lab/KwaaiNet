@@ -1,0 +1,47 @@
+{
+  "kbs": {
+    "Poems": {
+      "phase": "reembed",
+      "status": "failed"
+    },
+    "MobyDick": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "Astrophysics": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "PythonDocs": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "Climate": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "Meetings": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "OSMDocs": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "NIST": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "Legal": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "ALL": {
+      "phase": "complete",
+      "status": "done"
+    }
+  },
+  "current_kb": "ALL",
+  "current_phase": "complete",
+  "status": "done"
+}

@@ -1,0 +1,35 @@
+{
+  "kbs": {
+    "WarPeace": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "CountryHistory": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "RFCs": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "DreamMem": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "DeepSea": {
+      "phase": "eval",
+      "status": "done"
+    },
+    "Manhattan": {
+      "phase": "reembed",
+      "status": "done"
+    },
+    "ALL": {
+      "phase": "complete",
+      "status": "done"
+    }
+  },
+  "current_kb": "ALL",
+  "current_phase": "complete",
+  "status": "done"
+}
