@@ -134,7 +134,7 @@ async fn status() -> Result<()> {
                     println!("  Available:   {:.1} GB", cap);
                     // Disk usage (read-only metadata, no db lock needed)
                     if let Ok(db_size) =
-                        std::fs::metadata(data_dir.join("metadata.redb")).map(|m| m.len())
+                        std::fs::metadata(data_dir.join("metadata.db")).map(|m| m.len())
                     {
                         println!("  DB size:     {:.1} KB", db_size as f64 / 1024.0);
                     }
@@ -155,14 +155,12 @@ async fn status() -> Result<()> {
                 use kwaai_storage::TenantManager;
                 print_success("Embedded store: reachable (API not running)");
 
-                let tm = TenantManager::new(db);
+                let tm = TenantManager::new(db.clone());
                 let tenant_count = tm.count().await.unwrap_or(0);
                 let total_vectors = tm.total_vectors().await.unwrap_or(0);
                 println!("  Tenants:     {} (vector tables)", tenant_count);
                 println!("  Vectors:     {}", total_vectors);
-                if let Ok(db_size) =
-                    std::fs::metadata(data_dir.join("metadata.redb")).map(|m| m.len())
-                {
+                if let Ok(db_size) = db.db_size_bytes() {
                     println!("  DB size:     {:.1} KB", db_size as f64 / 1024.0);
                 }
             }

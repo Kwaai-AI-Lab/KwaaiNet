@@ -4,7 +4,7 @@
 //! vectors for multiple Bobs (data owners). This crate provides:
 //!
 //! - **Embedded HNSW storage** via hnsw_rs (pure Rust, no Docker/Postgres)
-//! - **Persistent metadata** via redb (pure Rust ACID key-value store)
+//! - **Persistent metadata** via SQLite in WAL mode (multi-process safe)
 //! - **Tenant management** (create, list, delete, capacity enforcement)
 //! - **REST API** for remote Bobs to upload/search vectors
 

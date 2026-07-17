@@ -3195,7 +3195,7 @@ dependencies = [
  "chrono",
  "hnsw_rs",
  "http-body-util",
- "redb",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -5321,15 +5321,6 @@ name = "reborrow"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
-
-[[package]]
-name = "redb"
-version = "2.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eca1e9d98d5a7e9002d0013e18d5a9b000aee942eb134883a82f06ebffb6c01"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "redox_syscall"

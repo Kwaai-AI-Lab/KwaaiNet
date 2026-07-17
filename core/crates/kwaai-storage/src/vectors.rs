@@ -1,6 +1,7 @@
-//! Per-tenant vector storage backed by hnsw_rs (in-memory) + redb (persistence).
+//! Per-tenant vector storage backed by hnsw_rs (in-memory) + SQLite (persistence).
 
 use anyhow::{Context, Result};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -13,7 +14,7 @@ pub struct SearchResult {
     pub score: f64,
 }
 
-/// Per-tenant vector store (hnsw_rs + redb).
+/// Per-tenant vector store (hnsw_rs + SQLite).
 #[derive(Clone)]
 pub struct VectorStore {
     store: StorageDb,
@@ -51,18 +52,21 @@ impl VectorStore {
                 .context("tenant not found")?
         };
 
-        // Persist to redb (one write transaction for the whole batch).
+        // Persist to SQLite (one transaction for the whole batch).
         {
-            let wtxn = self.inner().db.begin_write()?;
+            let mut guard = self.inner().conn();
+            let txn = guard.0.transaction()?;
             {
-                let mut table = wtxn.open_table(VECTORS_TABLE)?;
+                let mut stmt = txn.prepare(&format!(
+                    "INSERT OR REPLACE INTO {VECTORS_TABLE} (key, value) VALUES (?1, ?2)"
+                ))?;
                 for (doc_id, embedding) in vectors {
                     let key = vector_key(tenant_id, *doc_id);
                     let bytes = f32s_to_bytes(embedding);
-                    table.insert(key.as_ref(), bytes.as_slice())?;
+                    stmt.execute(params![key.as_ref(), bytes.as_slice()])?;
                 }
             }
-            wtxn.commit()?;
+            txn.commit()?;
         }
 
         // Update in-memory HNSW index.
@@ -112,17 +116,19 @@ impl VectorStore {
                 .context("tenant not found")?
         };
 
-        // Remove from redb.
+        // Remove from SQLite.
         {
-            let wtxn = self.inner().db.begin_write()?;
+            let mut guard = self.inner().conn();
+            let txn = guard.0.transaction()?;
             {
-                let mut table = wtxn.open_table(VECTORS_TABLE)?;
+                let mut stmt =
+                    txn.prepare(&format!("DELETE FROM {VECTORS_TABLE} WHERE key = ?1"))?;
                 for &doc_id in ids {
                     let key = vector_key(tenant_id, doc_id);
-                    table.remove(key.as_ref())?;
+                    stmt.execute(params![key.as_ref()])?;
                 }
             }
-            wtxn.commit()?;
+            txn.commit()?;
         }
 
         // Tombstone in-memory index.

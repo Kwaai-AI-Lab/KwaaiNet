@@ -1,8 +1,8 @@
-//! Tenant management backed by redb.
+//! Tenant management backed by SQLite.
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use redb::ReadableTable;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -45,7 +45,7 @@ impl TenantManager {
         &self.store.inner
     }
 
-    /// Create a new tenant and its in-memory HNSW index.
+    /// Create a new tenant (fresh random ID) and its in-memory HNSW index.
     pub async fn create(
         &self,
         peer_id: &str,
@@ -53,7 +53,24 @@ impl TenantManager {
         display_name: Option<&str>,
         vector_dimension: usize,
     ) -> Result<TenantInfo> {
-        let tenant_id = Uuid::new_v4();
+        self.create_with_id(Uuid::new_v4(), peer_id, capacity_limit_mb, display_name, vector_dimension)
+            .await
+    }
+
+    /// Create (or overwrite) a tenant record under a caller-supplied ID.
+    ///
+    /// Used to restore a tenant into a freshly (re)created vector store while
+    /// preserving an existing ID that other stores (chunk metadata, graph) are
+    /// already keyed by — e.g. after a vector-store backend change where the
+    /// tenant record itself didn't carry over but the ID must stay the same.
+    pub async fn create_with_id(
+        &self,
+        tenant_id: Uuid,
+        peer_id: &str,
+        capacity_limit_mb: i64,
+        display_name: Option<&str>,
+        vector_dimension: usize,
+    ) -> Result<TenantInfo> {
         let created_at = Utc::now().to_rfc3339();
 
         let record = TenantRecord {
@@ -65,16 +82,11 @@ impl TenantManager {
             vector_dimension,
         };
 
-        // Persist to redb.
-        let wtxn = self.inner().db.begin_write()?;
-        {
-            let mut table = wtxn.open_table(TENANTS_TABLE)?;
-            table.insert(
-                tenant_id.as_bytes().as_ref(),
-                serde_json::to_vec(&record)?.as_slice(),
-            )?;
-        }
-        wtxn.commit()?;
+        // Persist to SQLite.
+        self.inner().conn().0.execute(
+            &format!("INSERT OR REPLACE INTO {TENANTS_TABLE} (key, value) VALUES (?1, ?2)"),
+            params![tenant_id.as_bytes().as_ref(), serde_json::to_vec(&record)?],
+        )?;
 
         // Create in-memory index.
         self.inner().indices.write().unwrap().insert(
@@ -95,14 +107,23 @@ impl TenantManager {
 
     /// List all active tenants.
     pub async fn list(&self) -> Result<Vec<TenantInfo>> {
-        let rtxn = self.inner().db.begin_read()?;
-        let table = rtxn.open_table(TENANTS_TABLE)?;
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = {
+            let guard = self.inner().conn();
+            let mut stmt = guard
+                .0
+                .prepare(&format!("SELECT key, value FROM {TENANTS_TABLE}"))?;
+            let mapped = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            mapped
+        };
 
         let mut out = Vec::new();
-        for entry in table.iter()? {
-            let (k, v) = entry?;
-            let tid = Uuid::from_slice(k.value()).context("corrupt tenant key")?;
-            let rec: TenantRecord = serde_json::from_slice(v.value())?;
+        for (k, v) in rows {
+            let tid = Uuid::from_slice(&k).context("corrupt tenant key")?;
+            let rec: TenantRecord = serde_json::from_slice(&v)?;
             if rec.status != "Deleted" {
                 out.push(record_to_info(tid, &rec));
             }
@@ -113,13 +134,21 @@ impl TenantManager {
 
     /// Get a single active tenant by ID.
     pub async fn get(&self, tenant_id: Uuid) -> Result<Option<TenantInfo>> {
-        let rtxn = self.inner().db.begin_read()?;
-        let table = rtxn.open_table(TENANTS_TABLE)?;
+        let rec_bytes: Option<Vec<u8>> = self
+            .inner()
+            .conn()
+            .0
+            .query_row(
+                &format!("SELECT value FROM {TENANTS_TABLE} WHERE key = ?1"),
+                params![tenant_id.as_bytes().as_ref()],
+                |r| r.get(0),
+            )
+            .optional()?;
 
-        match table.get(tenant_id.as_bytes().as_ref())? {
+        match rec_bytes {
             None => Ok(None),
             Some(v) => {
-                let rec: TenantRecord = serde_json::from_slice(v.value())?;
+                let rec: TenantRecord = serde_json::from_slice(&v)?;
                 if rec.status == "Deleted" {
                     Ok(None)
                 } else {
@@ -131,54 +160,45 @@ impl TenantManager {
 
     /// Soft-delete a tenant and remove its vector data.
     pub async fn delete(&self, tenant_id: Uuid) -> Result<()> {
-        // Mark deleted in redb.
-        let wtxn = self.inner().db.begin_write()?;
+        let prefix = *tenant_id.as_bytes();
+        let mut lower = [0u8; 24];
+        lower[..16].copy_from_slice(&prefix);
+        let mut upper_bound = [0xffu8; 24];
+        upper_bound[..16].copy_from_slice(&prefix);
+
         {
-            let mut tenants = wtxn.open_table(TENANTS_TABLE)?;
-            // Clone the bytes out before dropping the immutable AccessGuard.
-            let rec_bytes: Vec<u8> = tenants
-                .get(tenant_id.as_bytes().as_ref())?
-                .context("tenant not found")?
-                .value()
-                .to_vec();
+            let mut guard = self.inner().conn();
+            let txn = guard.0.transaction()?;
+
+            // Clone the bytes out before mutating the same table.
+            let rec_bytes: Vec<u8> = txn
+                .query_row(
+                    &format!("SELECT value FROM {TENANTS_TABLE} WHERE key = ?1"),
+                    params![tenant_id.as_bytes().as_ref()],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .context("tenant not found")?;
             let mut rec: TenantRecord = serde_json::from_slice(&rec_bytes)?;
             if rec.status == "Deleted" {
                 bail!("tenant not found: {}", tenant_id);
             }
             rec.status = "Deleted".to_string();
-            tenants.insert(
-                tenant_id.as_bytes().as_ref(),
-                serde_json::to_vec(&rec)?.as_slice(),
+            txn.execute(
+                &format!("INSERT OR REPLACE INTO {TENANTS_TABLE} (key, value) VALUES (?1, ?2)"),
+                params![tenant_id.as_bytes().as_ref(), serde_json::to_vec(&rec)?],
             )?;
 
-            // Delete all vectors for this tenant from redb.
-            let mut vectors = wtxn.open_table(VECTORS_TABLE)?;
-            let prefix = *tenant_id.as_bytes();
-            // Collect keys to delete (can't mutate while iterating range).
-            let keys_to_delete: Vec<[u8; 24]> = {
-                let start: [u8; 24] = {
-                    let mut k = [0u8; 24];
-                    k[..16].copy_from_slice(&prefix);
-                    k
-                };
-                let mut collected = Vec::new();
-                for entry in vectors.range(start.as_ref()..)? {
-                    let (k, _) = entry?;
-                    let kb = k.value();
-                    if kb.len() < 16 || kb[..16] != prefix {
-                        break;
-                    }
-                    let mut arr = [0u8; 24];
-                    arr.copy_from_slice(kb);
-                    collected.push(arr);
-                }
-                collected
-            };
-            for k in keys_to_delete {
-                vectors.remove(k.as_ref())?;
-            }
+            // Delete all vectors for this tenant — keys are tenant_id(16) ++
+            // doc_id_be(8), so a lexicographic BLOB range covers exactly this
+            // tenant's rows.
+            txn.execute(
+                &format!("DELETE FROM {VECTORS_TABLE} WHERE key >= ?1 AND key <= ?2"),
+                params![lower.as_ref(), upper_bound.as_ref()],
+            )?;
+
+            txn.commit()?;
         }
-        wtxn.commit()?;
 
         // Remove in-memory index.
         self.inner().indices.write().unwrap().remove(&tenant_id);
@@ -194,7 +214,7 @@ impl TenantManager {
             .map(|arc| arc.lock().unwrap().live_count() as i64)
             .unwrap_or(0);
 
-        // Estimate storage: 4 bytes per float * dimension * vector_count + 24-byte redb key overhead.
+        // Estimate storage: 4 bytes per float * dimension * vector_count + 24-byte key overhead.
         let dim = indices
             .get(&tenant_id)
             .map(|arc| arc.lock().unwrap().dimension)

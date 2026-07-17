@@ -1,34 +1,40 @@
 //! Embedded storage backend — replaces the PostgreSQL connection pool.
 //!
-//! `StorageDb` wraps a `redb` database (tenant metadata) and a map of
-//! in-memory HNSW indices (one per tenant). Both persist across restarts:
-//! redb holds the raw vector bytes; on `open()` the HNSW indices are
+//! `StorageDb` wraps a SQLite (WAL-mode) database (tenant metadata) and a map
+//! of in-memory HNSW indices (one per tenant). Both persist across restarts:
+//! SQLite holds the raw vector bytes; on `open()` the HNSW indices are
 //! rebuilt from stored vectors so no separate index file is needed.
 
 use anyhow::{Context, Result};
 use hnsw_rs::anndists::dist::distances::DistCosine;
 use hnsw_rs::hnsw::Hnsw;
-use redb::{Database, ReadableTable, TableDefinition};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// redb table definitions
+// SQLite table names
 // ---------------------------------------------------------------------------
 
 /// Tenant metadata.  key = UUID bytes (16), value = JSON TenantRecord.
-pub(crate) const TENANTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("tenants");
+pub(crate) const TENANTS_TABLE: &str = "tenants";
 
 /// Vector data for all tenants.
 /// key = tenant_id(16 bytes) ++ doc_id(8 bytes big-endian) = 24 bytes.
 /// value = f32 embedding as little-endian bytes.
-pub(crate) const VECTORS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("vectors");
+pub(crate) const VECTORS_TABLE: &str = "vectors";
+
+// Newtype wrapper so we can implement Send on rusqlite::Connection.
+// Safe because SQLite in serialized mode (the default) is thread-safe; the
+// Mutex in DbInner ensures only one thread accesses the connection at a time.
+pub(crate) struct SafeConn(pub(crate) Connection);
+unsafe impl Send for SafeConn {}
 
 // ---------------------------------------------------------------------------
-// TenantRecord — persisted in redb
+// TenantRecord — persisted in SQLite
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +62,7 @@ pub struct TenantIndex {
     pub id_map: Vec<Option<i64>>,
     /// external doc id → hnsw_internal_id (for upsert / delete).
     pub rev_map: HashMap<i64, usize>,
-    /// Raw vectors for exact search on small corpora (mirrors redb but in-memory).
+    /// Raw vectors for exact search on small corpora (mirrors SQLite but in-memory).
     pub stored_vecs: HashMap<i64, Vec<f32>>,
     pub next_id: usize,
     pub dimension: usize,
@@ -203,10 +209,15 @@ pub struct StorageDb {
 }
 
 pub(crate) struct DbInner {
-    pub db: Database,
+    pub conn: Mutex<SafeConn>,
     pub indices: RwLock<HashMap<Uuid, Arc<Mutex<TenantIndex>>>>,
-    #[allow(dead_code)]
     pub data_dir: PathBuf,
+}
+
+impl DbInner {
+    pub(crate) fn conn(&self) -> MutexGuard<'_, SafeConn> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 impl StorageDb {
@@ -218,44 +229,63 @@ impl StorageDb {
         std::fs::create_dir_all(data_dir)
             .with_context(|| format!("creating storage dir {}", data_dir.display()))?;
 
-        let db_path = data_dir.join("metadata.redb");
-        let db = Database::create(&db_path)
-            .with_context(|| format!("opening embedded db at {}", db_path.display()))?;
-
-        // Ensure both tables exist before any reads.
-        {
-            let wtxn = db.begin_write()?;
-            wtxn.open_table(TENANTS_TABLE)?;
-            wtxn.open_table(VECTORS_TABLE)?;
-            wtxn.commit()?;
+        let db_path = data_dir.join("metadata.db");
+        if data_dir.join("metadata.redb").exists() {
+            eprintln!("⚠  Legacy redb store detected. Run `kwaainet rag rebuild` to migrate.");
         }
+        let conn = Connection::open(&db_path)
+            .with_context(|| format!("opening embedded db at {}", db_path.display()))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA cache_size=-65536;
+             PRAGMA temp_store=MEMORY;",
+        )?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {TENANTS_TABLE} (
+                key BLOB NOT NULL PRIMARY KEY,
+                value BLOB NOT NULL
+             ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS {VECTORS_TABLE} (
+                key BLOB NOT NULL PRIMARY KEY,
+                value BLOB NOT NULL
+             ) WITHOUT ROWID;"
+        ))?;
 
-        let indices = Self::rebuild_indices(&db)?;
+        let indices = Self::rebuild_indices(&conn)?;
 
         Ok(Self {
             inner: Arc::new(DbInner {
-                db,
+                conn: Mutex::new(SafeConn(conn)),
                 indices: RwLock::new(indices),
                 data_dir: data_dir.to_path_buf(),
             }),
         })
     }
 
-    /// Rebuild all in-memory HNSW indices from redb on startup.
-    fn rebuild_indices(db: &Database) -> Result<HashMap<Uuid, Arc<Mutex<TenantIndex>>>> {
-        let rtxn = db.begin_read()?;
-        let tenants = rtxn.open_table(TENANTS_TABLE)?;
-        let vectors = rtxn.open_table(VECTORS_TABLE)?;
+    /// Size in bytes of the underlying SQLite database file, for disk-usage
+    /// reporting (`kwaainet storage status`).
+    pub fn db_size_bytes(&self) -> Result<u64> {
+        Ok(std::fs::metadata(self.inner.data_dir.join("metadata.db"))?.len())
+    }
 
+    /// Rebuild all in-memory HNSW indices from SQLite on startup.
+    fn rebuild_indices(conn: &Connection) -> Result<HashMap<Uuid, Arc<Mutex<TenantIndex>>>> {
         // First pass: collect active tenant dimensions.
         let mut dims: HashMap<Uuid, usize> = HashMap::new();
-        for entry in tenants.iter()? {
-            let (k, v) = entry?;
-            let tid = Uuid::from_slice(k.value()).context("corrupt tenant key")?;
-            let rec: TenantRecord =
-                serde_json::from_slice(v.value()).context("corrupt tenant record")?;
-            if rec.status != "Deleted" {
-                dims.insert(tid, rec.vector_dimension);
+        {
+            let mut stmt = conn.prepare(&format!("SELECT key, value FROM {TENANTS_TABLE}"))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            for row in rows {
+                let (k, v) = row?;
+                let tid = Uuid::from_slice(&k).context("corrupt tenant key")?;
+                let rec: TenantRecord =
+                    serde_json::from_slice(&v).context("corrupt tenant record")?;
+                if rec.status != "Deleted" {
+                    dims.insert(tid, rec.vector_dimension);
+                }
             }
         }
 
@@ -266,17 +296,22 @@ impl StorageDb {
             .collect();
 
         // Second pass: load vectors and populate indices.
-        for entry in vectors.iter()? {
-            let (k, v) = entry?;
-            let key = k.value();
-            if key.len() < 24 {
-                continue;
-            }
-            let tid = Uuid::from_slice(&key[..16]).unwrap_or(Uuid::nil());
-            if let Some(arc) = indices.get(&tid) {
-                let doc_id = i64::from_be_bytes(key[16..24].try_into().unwrap());
-                let embedding = bytes_to_f32s(v.value());
-                arc.lock().unwrap().insert(doc_id, &embedding);
+        {
+            let mut stmt = conn.prepare(&format!("SELECT key, value FROM {VECTORS_TABLE}"))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            for row in rows {
+                let (key, v) = row?;
+                if key.len() < 24 {
+                    continue;
+                }
+                let tid = Uuid::from_slice(&key[..16]).unwrap_or(Uuid::nil());
+                if let Some(arc) = indices.get(&tid) {
+                    let doc_id = i64::from_be_bytes(key[16..24].try_into().unwrap());
+                    let embedding = bytes_to_f32s(&v);
+                    arc.lock().unwrap().insert(doc_id, &embedding);
+                }
             }
         }
 
@@ -289,7 +324,7 @@ impl StorageDb {
 // Key / value encoding helpers
 // ---------------------------------------------------------------------------
 
-/// Composite redb key for a vector: tenant_id(16) ++ doc_id_be(8) = 24 bytes.
+/// Composite SQLite key for a vector: tenant_id(16) ++ doc_id_be(8) = 24 bytes.
 pub(crate) fn vector_key(tenant_id: Uuid, doc_id: i64) -> [u8; 24] {
     let mut k = [0u8; 24];
     k[..16].copy_from_slice(tenant_id.as_bytes());

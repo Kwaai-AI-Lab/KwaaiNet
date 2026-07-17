@@ -1,7 +1,7 @@
 //! REST API for the storage fabric.
 //!
 //! URL surface is unchanged — remote Bobs call the same endpoints regardless
-//! of whether the backend is PostgreSQL or the embedded hnsw_rs+redb store.
+//! of whether the backend is PostgreSQL or the embedded hnsw_rs+SQLite store.
 
 use axum::{
     extract::{Path, State},

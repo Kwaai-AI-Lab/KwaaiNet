@@ -159,3 +159,35 @@ async fn total_storage_bytes_matches_expected_formula() {
     let total = tm.total_storage_bytes().await.unwrap();
     assert_eq!(total, 3 * 40);
 }
+
+// ---------------------------------------------------------------------------
+// Concurrent access (regression: redb's exclusive file lock used to make a
+// second `StorageDb::open()` on the same data_dir fail with "Database
+// already open. Cannot acquire lock." — SQLite's WAL mode allows this.)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn same_data_dir_can_be_opened_concurrently() {
+    let tmp = TempDir::new().unwrap();
+
+    let db_a = StorageDb::open(tmp.path()).unwrap();
+    let db_b = StorageDb::open(tmp.path()).unwrap();
+
+    let tm_a = TenantManager::new(db_a.clone());
+    let vs_a = VectorStore::new(db_a);
+    let tm_b = TenantManager::new(db_b.clone());
+    let vs_b = VectorStore::new(db_b);
+
+    let t_a = tm_a.create("peer-a", 100, None, 4).await.unwrap();
+    let t_b = tm_b.create("peer-b", 100, None, 4).await.unwrap();
+
+    vs_a.upload(t_a.tenant_id, &[(1, unit(4, 0))])
+        .await
+        .unwrap();
+    vs_b.upload(t_b.tenant_id, &[(2, unit(4, 1))])
+        .await
+        .unwrap();
+
+    assert_eq!(vs_a.count(t_a.tenant_id).await.unwrap(), 1);
+    assert_eq!(vs_b.count(t_b.tenant_id).await.unwrap(), 1);
+}
