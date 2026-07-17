@@ -21,6 +21,7 @@ pub mod obsidian;
 pub mod prompt;
 pub mod query_understand;
 pub mod query_understanding;
+pub mod relation_extract;
 pub mod reranker;
 pub mod retriever;
 pub mod scorer;

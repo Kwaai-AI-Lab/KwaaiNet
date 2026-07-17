@@ -2554,3 +2554,13 @@ Speed/quality summary (axiomatic threshold sweep):
 | Baseline (no axiomatic) | ~3h (10800s) | 89.5% | — | — |
 | T=0.70 Phase C2 (clean) | 1h01m (3637s) | 84.2% | 66% faster | –5.3pp |
 | T=0.80 Phase C3 (clean) | 35m29s (2129s) | **92.3% ⭐** | **80% faster** | **+2.8pp** |
+
+## 2026-07-16 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 175.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260716_163930.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260716_182801.json
+
+## 2026-07-16 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 165.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260716_193955.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260716_210535.json

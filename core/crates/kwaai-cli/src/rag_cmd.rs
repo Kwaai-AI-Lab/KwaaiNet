@@ -162,6 +162,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
 
         RagAction::Destroy { yes, kb } => cmd_destroy(yes, kb).await,
 
+        RagAction::ReembedVectors { embed_url, kb } => cmd_reembed_vectors(embed_url, kb).await,
+
         RagAction::Rebuild {
             file,
             kb,
@@ -180,6 +182,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
             sample_pct,
             yes,
             axiomatic_threshold,
+            relation_threshold_high,
+            relation_threshold_low,
         } => {
             cmd_rebuild(
                 file,
@@ -199,6 +203,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 sample_pct,
                 yes,
                 axiomatic_threshold,
+                relation_threshold_high,
+                relation_threshold_low,
             )
             .await
         }
@@ -665,6 +671,8 @@ async fn cmd_ingest(
                 validation_budget: 200,
                 extract_timeline: false,
                 axiomatic_threshold: 0.0,
+                relation_threshold_high: 0.0,
+                relation_threshold_low: 0.0,
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -1972,6 +1980,8 @@ async fn cmd_rebuild(
     sample_pct: Option<u8>,
     yes: bool,
     axiomatic_threshold: f32,
+    relation_threshold_high: f32,
+    relation_threshold_low: f32,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -2034,6 +2044,14 @@ async fn cmd_rebuild(
         // "grandparent_of JMH→Yousuf". Without this ordering the map is empty and
         // kinship-phrase chunks ("my grandfather arrived in 1884") never produce
         // JMH timeline events.
+        //
+        // Phase 4 relation extraction is suppressed here for the identical reason:
+        // the narrator entity only gets its "narrator"/"author" aliases from the
+        // YAML seed, and classify_relation_candidates' first-person pronoun
+        // resolution needs that alias to find the narrator's entity ID. Without
+        // this ordering, "I married X"/"my wife..."-style sentences (the vast
+        // majority of relation-bearing sentences in a first-person memoir) never
+        // resolve their second endpoint. Run separately as step 5.5b, after seed.
         println!();
         println!("  ▶ Step 4/8  graph build");
         // Clone inference args before moving them into GraphAction::Build.
@@ -2052,7 +2070,19 @@ async fn cmd_rebuild(
                 workers,
                 inference_urls: Some(inference_urls),
                 entity_types,
-                no_relations,
+                // When Phase 4 is requested (relation_threshold_high > 0), force
+                // no_relations here too: ALL relation extraction (legacy
+                // boolean-gate AND Phase 4 axiomatic) must defer to step 5.5b/5.5,
+                // after seeding. Forcing only relation_threshold_high to 0.0 below
+                // without ALSO forcing this would re-enable the legacy
+                // lexical_relation_trigger() path here, since ingestion.rs's
+                // `no_relations || relation_threshold_high > 0.0` check would then
+                // evaluate to the original (usually false) no_relations value
+                // instead of staying suppressed. When Phase 4 isn't requested,
+                // pass the caller's own --no-relations value through unchanged —
+                // legacy relation extraction has no seed-ordering dependency, so
+                // step 4 is the correct place for it exactly as before.
+                no_relations: no_relations || relation_threshold_high > 0.0,
                 reset_graph: false,
                 graph_window,
                 sample_pct,
@@ -2067,6 +2097,8 @@ async fn cmd_rebuild(
                 validation_budget: 200,
                 timeline: false,
                 axiomatic_threshold,
+                relation_threshold_high: 0.0,
+                relation_threshold_low: 0.0,
             },
             kb.clone(),
         )
@@ -2099,8 +2131,8 @@ async fn cmd_rebuild(
             cmd_graph(
                 GraphAction::Timeline {
                     action: crate::cli::TimelineAction::Build {
-                        inference_urls: timeline_inference_urls,
-                        model: timeline_model,
+                        inference_urls: timeline_inference_urls.clone(),
+                        model: timeline_model.clone(),
                         workers,
                         reset: true,
                         confidence_threshold: 0.85,
@@ -2109,6 +2141,65 @@ async fn cmd_rebuild(
                 kb.clone(),
             )
             .await?;
+        }
+
+        // ── Step 5.5b: Phase 4 relation extraction (after seed) ───────────
+        // See the note at Step 4 above for why this can't run there.
+        if relation_threshold_high > 0.0 {
+            println!();
+            println!("  ▶ Step 5.5b/8  relation extraction (Phase 4, after seed)");
+            let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+            let store = Arc::new(Mutex::new(
+                GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?,
+            ));
+            let meta = Arc::new(
+                MetaStore::open(&rag_cfg.data_dir(), tenant_id).context("opening meta store")?,
+            );
+
+            // Resolve p2p:// URLs to local HTTP proxies, same as GraphAction::Build does.
+            let has_p2p = timeline_inference_urls
+                .iter()
+                .any(|u| u.starts_with("p2p://") || u.starts_with("mux://"));
+            let (_proxy_handles, resolved_urls) = if has_p2p {
+                use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+                let sock = std::env::var("KWAAINET_SOCKET")
+                    .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+                #[cfg(unix)]
+                let addr = format!("/unix/{sock}");
+                #[cfg(not(unix))]
+                let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+                let p2p = Arc::new(
+                    P2PClient::connect(&addr)
+                        .await
+                        .context("connecting to p2pd for p2p:// URL resolution")?,
+                );
+                let (res, handles) =
+                    crate::ollama_proxy::resolve_inference_urls(&timeline_inference_urls, &p2p)
+                        .await?;
+                (handles, res)
+            } else {
+                (vec![], timeline_inference_urls.clone())
+            };
+
+            let relation_metrics = extract_relations_axiomatic(
+                store,
+                meta,
+                Arc::new(resolved_urls),
+                Arc::new(timeline_model.clone()),
+                workers,
+                relation_threshold_high,
+                relation_threshold_low,
+            )
+            .await;
+            relation_metrics.print_summary();
+            let json_path = std::env::temp_dir().join(format!(
+                "kwaai_relation_axiomatic_metrics_{}.json",
+                chrono::Utc::now().format("%Y%m%d_%H%M%S")
+            ));
+            if let Ok(json) = serde_json::to_string_pretty(&relation_metrics) {
+                let _ = std::fs::write(&json_path, json);
+            }
         }
 
         // ── Step 6: Alias scan ────────────────────────────────────────────
@@ -2203,6 +2294,140 @@ async fn cmd_destroy(yes: bool, kb: String) -> Result<()> {
     print_success(&format!("Knowledge base '{}' destroyed.", kb));
     println!("  Run  kwaainet rag init --name {kb}  to start fresh.");
     Ok(())
+}
+
+// ── reembed-vectors ─────────────────────────────────────────────────────────────
+
+async fn cmd_reembed_vectors(embed_url: Option<String>, kb: String) -> Result<()> {
+    #[cfg(not(feature = "storage"))]
+    bail!("RAG requires the 'storage' feature.");
+
+    #[cfg(feature = "storage")]
+    {
+        print_box_header(&format!("RAG Reembed Vectors ({})", kb));
+
+        let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
+
+        // Resolve p2p:// / mux:// → local HTTP proxy via ollama_proxy, so embedding
+        // can run on a remote GPU node instead of local CPU Ollama.
+        let mut _proxy_handles: Vec<tokio::task::JoinHandle<()>> = vec![];
+        let embed_url = match embed_url {
+            Some(url) if url.starts_with("p2p://") || url.starts_with("mux://") => {
+                use kwaai_p2p_daemon::{P2PClient, DEFAULT_SOCKET_NAME};
+                let sock = std::env::var("KWAAINET_SOCKET")
+                    .unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
+                #[cfg(unix)]
+                let addr = format!("/unix/{sock}");
+                #[cfg(not(unix))]
+                let addr = "/ip4/127.0.0.1/tcp/5005".to_string();
+                let p2p = std::sync::Arc::new(
+                    P2PClient::connect(&addr)
+                        .await
+                        .context("connecting to p2pd for embed URL resolution")?,
+                );
+                let (resolved, handles) =
+                    crate::ollama_proxy::resolve_inference_urls(&[url], &p2p).await?;
+                _proxy_handles = handles;
+                resolved.into_iter().next()
+            }
+            other => other,
+        };
+
+        let embed = EmbedClient::new(embed_url, Some(rag_cfg.embed_model.clone()));
+        let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id).context("opening meta store")?;
+
+        let chunks = meta.all_chunks().context("loading chunks")?;
+        let total = chunks.len();
+        println!("  Chunks to re-embed: {total}");
+        if total == 0 {
+            println!("  Nothing to re-embed — run `rag ingest` first.\n");
+            return Ok(());
+        }
+
+        // Open the store once, outside the batch loop — re-opening it per batch
+        // would re-run its full index rebuild every time (O(n^2) over a whole-KB
+        // re-embed). TenantManager and VectorStore must share this exact same
+        // StorageDb handle (StorageDb::clone is a cheap Arc clone that shares the
+        // in-memory index map) — restoring the tenant on a separately-opened
+        // handle would leave the VectorStore's own copy of the index none the
+        // wiser, and every upload would still fail with "tenant not found".
+        let local_vs = if rag_cfg.storage_url.as_deref() == Some("local") {
+            let db = kwaai_storage::StorageDb::open(&rag_cfg.data_dir())
+                .context("opening local vector store")?;
+            let tm = kwaai_storage::TenantManager::new(db.clone());
+
+            // If the vector store was (re)created fresh (e.g. after a backend
+            // change), its tenant record won't exist yet even though chunk/graph
+            // data survived — restore it under the same tenant_id so uploads
+            // below don't fail with "tenant not found".
+            if tm.get(tenant_id).await?.is_none() {
+                print_info("Tenant record missing from vector store — restoring it.");
+                let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
+                tm.create_with_id(
+                    tenant_id,
+                    &local_peer_id.to_base58(),
+                    0,
+                    Some(&format!("kwaai-rag/{kb}")),
+                    rag_cfg.embed_dim,
+                )
+                .await
+                .context("restoring tenant record")?;
+            }
+            Some(kwaai_storage::VectorStore::new(db))
+        } else {
+            None
+        };
+        let http_client = matches!(rag_cfg.storage_url.as_deref(), Some(url) if url != "local")
+            .then(reqwest::Client::new);
+        let p2p_client = if rag_cfg.storage_url.is_none() {
+            Some(crate::vpk::p2p_connect().await?.0)
+        } else {
+            None
+        };
+
+        const BATCH: usize = 32;
+        let mut uploaded_total = 0usize;
+        let batches: Vec<&[(i64, kwaai_rag::meta_store::ChunkMeta)]> = chunks.chunks(BATCH).collect();
+        let n_batches = batches.len();
+
+        for (bi, batch) in batches.into_iter().enumerate() {
+            let texts: Vec<&str> = batch.iter().map(|(_, m)| m.text.as_str()).collect();
+            let embeddings = embed
+                .embed_batch(&texts)
+                .await
+                .with_context(|| format!("embedding batch {}/{n_batches}", bi + 1))?;
+            let vectors: Vec<(i64, Vec<f32>)> = batch
+                .iter()
+                .zip(embeddings)
+                .map(|((cid, _), emb)| (*cid, emb))
+                .collect();
+
+            let n = match rag_cfg.storage_url.as_deref() {
+                Some("local") => local_vs.as_ref().unwrap().upload(tenant_id, &vectors).await?,
+                Some(url) => {
+                    http_upload_vectors(http_client.as_ref().unwrap(), url, tenant_id, vectors)
+                        .await?
+                }
+                None => {
+                    let ep = eve_peer_id(&rag_cfg)?;
+                    rpc_upload_vectors(p2p_client.as_ref().unwrap(), &ep, tenant_id, vectors)
+                        .await?
+                }
+            };
+            uploaded_total += n;
+
+            let done = (bi + 1) * BATCH;
+            eprint!(
+                "\r  [{:>4}/{total}]  uploaded={uploaded_total}    ",
+                done.min(total)
+            );
+        }
+        eprintln!();
+
+        print_success(&format!("Re-embedded {uploaded_total} chunk vectors."));
+        println!("  Graph and chunk metadata were left untouched — only the vector index was rebuilt.\n");
+        Ok(())
+    }
 }
 
 // ── sync ──────────────────────────────────────────────────────────────────────
@@ -2413,6 +2638,8 @@ async fn run_sync_pass(
                     validation_budget: 200,
                     extract_timeline: false,
                     axiomatic_threshold: 0.0,
+                    relation_threshold_high: 0.0,
+                    relation_threshold_low: 0.0,
                 });
             }
         }
@@ -2624,6 +2851,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 validation_budget,
                 timeline,
                 axiomatic_threshold,
+                relation_threshold_high,
+                relation_threshold_low,
             } => {
                 let raw_infer_url = inference_url.unwrap_or_else(|| rag_cfg.inference_url.clone());
                 let raw_extra_urls: Vec<String> = inference_urls
@@ -2770,6 +2999,11 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if axiomatic_threshold > 0.0 {
                     println!("  Axiomatic threshold: {axiomatic_threshold:.2}  (phases 1–3 pre-classification enabled)");
                 }
+                if relation_threshold_high > 0.0 {
+                    println!(
+                        "  Relation thresholds: high={relation_threshold_high:.2}  low={relation_threshold_low:.2}  (Phase 4 lexical relation classifier enabled)"
+                    );
+                }
                 let graph_cfg = kwaai_rag::ingestion::GraphIngestConfig {
                     store: store.clone(),
                     inference_url: infer_url,
@@ -2790,6 +3024,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     validation_budget,
                     extract_timeline: timeline,
                     axiomatic_threshold,
+                    relation_threshold_high,
+                    relation_threshold_low,
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
@@ -2857,6 +3093,46 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     ));
                 }
 
+                let meta = Arc::new(meta);
+
+                // Phase 4: lexical relation classifier. Runs after entity extraction has
+                // fully completed (relations need resolved entity IDs from the whole
+                // corpus) and before the timeline build below. Fully replaces the legacy
+                // per-chunk boolean `lexical_relation_trigger()` gate for this run — see
+                // `GraphIngestConfig::relation_threshold_high`.
+                if relation_threshold_high > 0.0 {
+                    print_box_header(&format!("Relation Extraction — Phase 4 ({})", kb));
+                    print_info(&format!(
+                        "Thresholds: high={:.2}  low={:.2}  Model: {}  Workers: {}",
+                        relation_threshold_high, relation_threshold_low, graph_cfg.model, graph_cfg.workers
+                    ));
+                    let relation_urls = if graph_cfg.inference_urls.is_empty() {
+                        vec![graph_cfg.inference_url.clone()]
+                    } else {
+                        graph_cfg.inference_urls.clone()
+                    };
+                    let relation_metrics = extract_relations_axiomatic(
+                        store.clone(),
+                        meta.clone(),
+                        Arc::new(relation_urls),
+                        Arc::new(graph_cfg.model.clone()),
+                        graph_cfg.workers,
+                        relation_threshold_high,
+                        relation_threshold_low,
+                    )
+                    .await;
+                    relation_metrics.print_summary();
+                    // Dump metrics JSON for the sweep tooling, matching the entity
+                    // axiomatic metrics file naming convention.
+                    let json_path = std::env::temp_dir().join(format!(
+                        "kwaai_relation_axiomatic_metrics_{}.json",
+                        chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                    ));
+                    if let Ok(json) = serde_json::to_string_pretty(&relation_metrics) {
+                        let _ = std::fs::write(&json_path, json);
+                    }
+                }
+
                 if timeline {
                     print_box_header(&format!("Timeline Build ({})", kb));
                     print_info(&format!(
@@ -2870,7 +3146,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     };
                     let (ev_count, ia_count) = run_timeline_build(
                         store.clone(),
-                        Arc::new(meta),
+                        meta.clone(),
                         Arc::new(timeline_urls),
                         Arc::new(graph_cfg.model.clone()),
                         graph_cfg.workers,
@@ -6745,6 +7021,136 @@ fn parse_relation_response(raw: &str, valid_names: &[&str]) -> Vec<(String, Stri
         .collect()
 }
 
+// ── Phase 4: relation axiomatic classifier — LLM verification for medium tier ─
+
+/// Outcome of the narrow LLM verify pass for one medium-confidence relation candidate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum RelationVerifyOutcome {
+    Confirmed,
+    Rejected,
+    Retyped,
+}
+
+/// Batched confirm/reject/retype prompt for medium-confidence lexical relation
+/// candidates. Unlike `build_cc_prompt`/`build_ec_prompt` (which discover a
+/// qualifying quote from raw chunk text via a two-pass CC→EC scan), Phase 4
+/// candidates already carry the sentence and a guessed relation_type from
+/// `relation_extract::classify_relation_candidates` — this prompt only asks the LLM
+/// to confirm, reject, or retype each guess, never to search open-ended for new
+/// relations. This is strictly cheaper than the CC+EC path since the "does a
+/// qualifying clause exist" question the CC pass answers is already resolved by the
+/// lexical classifier for these candidates.
+fn build_relation_verify_prompt(candidates: &[kwaai_rag::relation_extract::TypedRelationCandidate]) -> String {
+    let allowed = kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES.join(", ");
+    let items = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            format!(
+                "{}. \"{}\" [{}] \"{}\" — from: \"{}\"",
+                i + 1,
+                c.subject_name,
+                c.relation_type,
+                c.object_name,
+                c.source_sentence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "For each numbered candidate relation below, decide whether the quoted sentence \
+         actually states it.\n\
+         \n\
+         Allowed relation types: {allowed}\n\
+         \n\
+         Candidates:\n{items}\n\
+         \n\
+         For each candidate, respond with exactly one of:\n\
+         - \"confirm\" — the sentence clearly states this relation between these two names\n\
+         - \"reject\" — the sentence does not state this relation, or it's ambiguous or only inferred\n\
+         - \"retype\" — the sentence states a relation between these two names, but a \
+           different type from the allowed list fits better (give the corrected type)\n\
+         \n\
+         Return ONLY valid JSON, one verdict per candidate, using its number as \"index\":\n\
+         {{\"verdicts\":[{{\"index\":1,\"verdict\":\"confirm\"}},\
+         {{\"index\":2,\"verdict\":\"reject\"}},\
+         {{\"index\":3,\"verdict\":\"retype\",\"retype_as\":\"member_of\"}}]}}"
+    )
+}
+
+/// Parse the batched verify response, pairing each input candidate with its verdict.
+/// Any candidate whose index is missing, unparseable, or names a `retype_as` outside
+/// `IN_SCOPE_RELATION_TYPES` conservatively defaults to `Rejected` — never commits or
+/// forwards a guess the LLM didn't clearly confirm.
+fn parse_relation_verify_response(
+    raw: &str,
+    candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
+) -> Vec<(kwaai_rag::relation_extract::TypedRelationCandidate, RelationVerifyOutcome)> {
+    #[derive(serde::Deserialize)]
+    struct Response {
+        #[serde(default)]
+        verdicts: Vec<Verdict>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Verdict {
+        index: usize,
+        verdict: String,
+        #[serde(default)]
+        retype_as: Option<String>,
+    }
+
+    let verdicts: std::collections::HashMap<usize, Verdict> = match (raw.find('{'), raw.rfind('}')) {
+        (Some(start), Some(end)) if end >= start => {
+            serde_json::from_str::<Response>(&raw[start..=end])
+                .map(|r| r.verdicts.into_iter().map(|v| (v.index, v)).collect())
+                .unwrap_or_default()
+        }
+        _ => std::collections::HashMap::new(),
+    };
+
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut c)| {
+            let idx = i + 1;
+            let outcome = match verdicts.get(&idx) {
+                Some(v) if v.verdict == "confirm" => RelationVerifyOutcome::Confirmed,
+                Some(v) if v.verdict == "retype" => match v.retype_as.as_deref() {
+                    Some(new_type) if kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES.contains(&new_type) => {
+                        c.relation_type = new_type.to_string();
+                        RelationVerifyOutcome::Retyped
+                    }
+                    _ => RelationVerifyOutcome::Rejected,
+                },
+                _ => RelationVerifyOutcome::Rejected, // missing / "reject" / unparseable
+            };
+            (c, outcome)
+        })
+        .collect()
+}
+
+/// Send medium-confidence relation candidates through the narrow LLM confirm/reject/
+/// retype pass, batching multiple candidates per call (unlike the family-only CC/EC
+/// path, which makes one call per quote). Returns every candidate paired with its
+/// verdict — callers filter to `Confirmed`/`Retyped` for committing via
+/// `upsert_relation_with_confidence` and use `Rejected` counts for metrics.
+pub(crate) async fn verify_relation_candidates_llm(
+    candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
+    inference_url: &str,
+    model: &str,
+) -> Vec<(kwaai_rag::relation_extract::TypedRelationCandidate, RelationVerifyOutcome)> {
+    const BATCH_SIZE: usize = 20;
+    let mut results = Vec::with_capacity(candidates.len());
+    for batch in candidates.chunks(BATCH_SIZE) {
+        let prompt = build_relation_verify_prompt(batch);
+        let raw = call_llm_for_relations(inference_url, model, &prompt)
+            .await
+            .unwrap_or_default();
+        results.extend(parse_relation_verify_response(&raw, batch.to_vec()));
+    }
+    results
+}
+
 // ── dream ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
@@ -8754,6 +9160,263 @@ async fn run_timeline_build(
         event_total.load(std::sync::atomic::Ordering::Relaxed),
         ia_total.load(std::sync::atomic::Ordering::Relaxed),
     )
+}
+
+// ── Phase 4: relation axiomatic classifier — pipeline orchestration ───────────
+
+/// Runs the Phase 4 lexical relation classifier over every chunk with 2+ linked
+/// entities, once per graph build, after entity extraction has fully completed
+/// (relations need resolved entity IDs from the whole corpus — the same precondition
+/// `extract_kinship_interactions`/`run_timeline_build` already rely on). For each
+/// chunk: classify candidates, validate axioms, split by confidence, commit the high
+/// tier directly, and batch the medium tier through the narrow LLM verify pass.
+/// Low-confidence candidates are dropped without ever reaching an LLM.
+#[allow(clippy::too_many_arguments)]
+async fn extract_relations_axiomatic(
+    graph: Arc<Mutex<GraphStore>>,
+    meta: Arc<MetaStore>,
+    infer_urls: Arc<Vec<String>>,
+    model: Arc<String>,
+    workers: usize,
+    threshold_high: f32,
+    threshold_low: f32,
+) -> kwaai_rag::relation_extract::RelationAxiomaticRunMetrics {
+    use kwaai_rag::relation_extract::{
+        classify_relation_candidates, split_relations_by_confidence, validate_relation_axioms,
+        RelationAxiomSnapshot, RelationAxiomaticMetricsAccum,
+    };
+
+    let build_start = std::time::Instant::now();
+
+    let chunk_ids: Vec<i64> = {
+        let g = graph.lock().unwrap();
+        let mut ids: Vec<i64> = g.all_chunk_entity_pairs().map(|(cid, _)| cid).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let total = chunk_ids.len();
+
+    // Find the narrator entity, exactly as `run_timeline_build` does — needed so
+    // first-person pronoun sentences ("I married X", "my wife...") can resolve their
+    // missing second endpoint to a real entity ID instead of being silently skipped
+    // for lacking two literally-named entities.
+    let narrator_entity: Arc<Option<(i64, String)>> = Arc::new({
+        let g = graph.lock().unwrap();
+        let found = g
+            .all_entities()
+            .find(|e| {
+                let n = e.name.to_lowercase();
+                n == "narrator"
+                    || n == "author"
+                    || e.aliases.iter().any(|a| {
+                        let al = a.to_lowercase();
+                        al == "narrator" || al == "author" || al == "i" || al == "the narrator"
+                    })
+            })
+            .map(|e| (e.id, e.name.clone()));
+        found
+    });
+
+    let chunk_ids = Arc::new(chunk_ids);
+
+    // Snapshot entity types + existing trusted relations once, before the spawn loop,
+    // so worker tasks never hold the graph lock for the axiom pass — same precedent as
+    // `ingestion.rs`'s `entity_snapshot`.
+    let snapshot = Arc::new({
+        let g = graph.lock().unwrap();
+        let mut entity_types = std::collections::HashMap::new();
+        let mut trusted_relations: std::collections::HashMap<
+            (i64, i64),
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for e in g.all_entities() {
+            entity_types.insert(e.id, e.entity_type.clone());
+            for (nbr, rel, strength) in g.neighbors_of(e.id) {
+                if strength >= 0.1 {
+                    trusted_relations
+                        .entry(kwaai_rag::graph::ord_pair(e.id, nbr))
+                        .or_default()
+                        .insert(rel);
+                }
+            }
+        }
+        RelationAxiomSnapshot {
+            entity_types,
+            trusted_relations,
+        }
+    });
+
+    let metrics = Arc::new(std::sync::Mutex::new(RelationAxiomaticMetricsAccum::new(
+        threshold_high,
+        threshold_low,
+        total,
+    )));
+
+    let sem = Arc::new(tokio::sync::Semaphore::new(workers.max(1)));
+    let url_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut handles = Vec::new();
+
+    const COREF_WINDOW: usize = 2;
+
+    for (pos, &cid) in chunk_ids.iter().enumerate() {
+        let adj_start = pos.saturating_sub(COREF_WINDOW);
+        let adj_end = (pos + COREF_WINDOW + 1).min(chunk_ids.len());
+        let adjacent: Vec<i64> = chunk_ids[adj_start..adj_end]
+            .iter()
+            .filter(|&&id| id != cid)
+            .copied()
+            .collect();
+
+        let graph = graph.clone();
+        let meta = meta.clone();
+        let snapshot = snapshot.clone();
+        let metrics = metrics.clone();
+        let infer_urls = infer_urls.clone();
+        let url_counter = url_counter.clone();
+        let model = model.clone();
+        let sem = sem.clone();
+        let narrator_entity = narrator_entity.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok()?;
+            let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
+            let (known_entities, person_candidates): (
+                Vec<(i64, String, Vec<String>)>,
+                Vec<(String, Vec<String>, Option<String>)>,
+            ) = {
+                let g = graph.lock().ok()?;
+                let known = g
+                    .get_chunk_entities(cid)
+                    .iter()
+                    .filter_map(|&id| {
+                        g.get_entity(id)
+                            .map(|e| (id, e.name.clone(), e.aliases.clone()))
+                    })
+                    .collect();
+                let persons = g.coref_candidates_for_chunk(cid, &adjacent);
+                (known, persons)
+            };
+            // Note: no `known_entities.len() < 2` short-circuit here — coref/narrator
+            // resolution can supply the missing second endpoint (e.g. "I married X")
+            // even when only one entity is directly linked to this chunk.
+            if known_entities.is_empty() {
+                return Some(());
+            }
+
+            let narrator: Option<(i64, &str)> = narrator_entity
+                .as_ref()
+                .as_ref()
+                .map(|(id, name)| (*id, name.as_str()));
+
+            let chunk_start = std::time::Instant::now();
+            let candidates = classify_relation_candidates(
+                cid,
+                &chunk.text,
+                &known_entities,
+                &person_candidates,
+                narrator,
+            );
+            if candidates.is_empty() {
+                return Some(());
+            }
+            let generated = candidates.len();
+            let validated = validate_relation_axioms(candidates, &snapshot);
+            let demoted = validated
+                .iter()
+                .filter(|c| c.composite_confidence == 0.0)
+                .count();
+            let (commit, verify, dropped) =
+                split_relations_by_confidence(validated, threshold_high, threshold_low);
+
+            // Commit the high tier directly — no LLM call.
+            let methods: Vec<_> = commit.iter().map(|c| c.method).collect();
+            {
+                let mut g = graph.lock().ok()?;
+                for c in &commit {
+                    let _ = g.upsert_relation_with_confidence(
+                        c.subject_id,
+                        c.object_id,
+                        &c.relation_type,
+                        cid,
+                        c.composite_confidence,
+                        &format!("Trigger:{}", c.relation_type),
+                        "axiomatic_high",
+                    );
+                }
+            }
+            let chunk_elapsed_ms = chunk_start.elapsed().as_secs_f64() * 1000.0;
+            {
+                let mut m = metrics.lock().unwrap();
+                m.record_chunk(
+                    generated,
+                    commit.len(),
+                    verify.len(),
+                    dropped.len(),
+                    demoted,
+                    chunk_elapsed_ms,
+                    &methods,
+                );
+            }
+
+            // Batch the medium tier through the narrow LLM confirm/reject/retype pass.
+            if !verify.is_empty() {
+                let infer_url = {
+                    let idx = url_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        % infer_urls.len();
+                    infer_urls[idx].clone()
+                };
+                let llm_start = std::time::Instant::now();
+                let outcomes = verify_relation_candidates_llm(verify, &infer_url, &model).await;
+                let llm_elapsed_ms = llm_start.elapsed().as_secs_f64() * 1000.0;
+                let (mut n_confirmed, mut n_rejected, mut n_retyped) = (0usize, 0usize, 0usize);
+                {
+                    let mut g = graph.lock().ok()?;
+                    for (c, outcome) in outcomes {
+                        match outcome {
+                            RelationVerifyOutcome::Confirmed | RelationVerifyOutcome::Retyped => {
+                                if outcome == RelationVerifyOutcome::Confirmed {
+                                    n_confirmed += 1;
+                                } else {
+                                    n_retyped += 1;
+                                }
+                                let _ = g.upsert_relation_with_confidence(
+                                    c.subject_id,
+                                    c.object_id,
+                                    &c.relation_type,
+                                    cid,
+                                    0.75,
+                                    "LlmVerified",
+                                    "axiomatic_llm_verify",
+                                );
+                            }
+                            RelationVerifyOutcome::Rejected => {
+                                n_rejected += 1;
+                            }
+                        }
+                    }
+                }
+                metrics
+                    .lock()
+                    .unwrap()
+                    .record_llm_verify(n_confirmed, n_rejected, n_retyped, llm_elapsed_ms);
+            }
+            Some(())
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        h.await.ok();
+    }
+
+    let wall_secs = build_start.elapsed().as_secs_f64();
+    // All spawned tasks have joined above, so `metrics` is the only remaining Arc.
+    let accum = Arc::into_inner(metrics)
+        .expect("no other Arc<metrics> clones should outlive their spawned task")
+        .into_inner()
+        .unwrap();
+    accum.finalise(wall_secs)
 }
 
 async fn cmd_graph_timeline(action: TimelineAction, kb: &str) -> Result<()> {

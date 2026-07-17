@@ -1262,6 +1262,21 @@ pub enum RagAction {
         kb: String,
     },
 
+    /// Re-embed every chunk in the metadata store and re-upload its vector, without
+    /// touching the knowledge graph. Chunk text is read as-is from the metadata store
+    /// (docs are NOT re-ingested/re-chunked) — only the vector index is repopulated.
+    /// Needed after a vector-store backend change (e.g. redb → SQLite) where existing
+    /// chunk/graph data survived but the vector index itself started empty.
+    ReembedVectors {
+        /// Embedding server URL (defaults to config embed_url)
+        #[arg(long, value_name = "URL")]
+        embed_url: Option<String>,
+
+        /// Knowledge base name (default: "default")
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+
     /// Permanently delete the local knowledge base and all its data
     Destroy {
         /// Skip confirmation prompt
@@ -1348,6 +1363,16 @@ pub enum RagAction {
         /// See `graph build --axiomatic-threshold` for details.
         #[arg(long, default_value = "0.0", value_name = "FLOAT")]
         axiomatic_threshold: f32,
+
+        /// High-confidence threshold for lexical relation candidates (0.0 = disabled,
+        /// default). See `graph build --relation-threshold-high` for details.
+        #[arg(long, default_value = "0.0", value_name = "FLOAT")]
+        relation_threshold_high: f32,
+
+        /// Low-confidence cutoff for lexical relation candidates (default: 0.0).
+        /// See `graph build --relation-threshold-low` for details.
+        #[arg(long, default_value = "0.0", value_name = "FLOAT")]
+        relation_threshold_low: f32,
     },
 
     /// Serve an OpenAI-compatible RAG API (port 9090 by default)
@@ -1801,6 +1826,22 @@ pub enum GraphAction {
         /// Recommended starting value: 0.70. Higher = fewer LLM calls, lower recall safety margin.
         #[arg(long, default_value = "0.0", value_name = "FLOAT")]
         axiomatic_threshold: f32,
+
+        /// High-confidence threshold for lexical relation candidates (0.0 = disabled,
+        /// default — legacy per-chunk boolean relation trigger stays in effect). Relation
+        /// candidates found by windowed lexical-trigger scanning with composite_confidence
+        /// >= this value are written to the graph directly, with no LLM call. Must be
+        /// >= --relation-threshold-low. Recommended starting value: 0.75.
+        #[arg(long, default_value = "0.0", value_name = "FLOAT")]
+        relation_threshold_high: f32,
+
+        /// Low-confidence cutoff for lexical relation candidates (default: 0.0, meaning
+        /// nothing is dropped — everything below the high threshold goes to LLM
+        /// verification). Candidates below this value are discarded without ever reaching
+        /// the LLM. Only effective when --relation-threshold-high > 0.
+        /// Recommended starting value: 0.45.
+        #[arg(long, default_value = "0.0", value_name = "FLOAT")]
+        relation_threshold_low: f32,
     },
 
     /// Reverse a bad dedup merge: remove an alias from a canonical entity and restore it as its

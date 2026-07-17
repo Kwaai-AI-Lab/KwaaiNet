@@ -79,6 +79,17 @@ pub struct GraphIngestConfig {
     /// composite_confidence >= threshold are resolved without LLM; only the low-confidence
     /// residual goes to `extract_from_text()`. Values 0.6–0.8 are the effective operating range.
     pub axiomatic_threshold: f32,
+    /// High-confidence threshold for the Phase 4 lexical relation classifier
+    /// (0.0 = disabled, default). When > 0, this fully replaces the legacy per-chunk
+    /// boolean `graph::lexical_relation_trigger()` gate inside `extract_from_text()` —
+    /// every call forces `no_relations` regardless of the caller-supplied flag, and
+    /// relation extraction instead runs via `rag_cmd::extract_relations_axiomatic()`
+    /// after this pass completes (relations need fully-resolved entity IDs from the
+    /// whole corpus, not just the current chunk).
+    pub relation_threshold_high: f32,
+    /// Low-confidence cutoff for the Phase 4 lexical relation classifier (default 0.0,
+    /// meaning nothing is dropped). Only effective when `relation_threshold_high > 0.0`.
+    pub relation_threshold_low: f32,
 }
 
 impl GraphIngestConfig {
@@ -268,7 +279,12 @@ pub async fn extract_and_store_entities_pub(
     let workers = graph_cfg.workers.max(1);
     let model = Arc::new(graph_cfg.model.clone());
     let entity_types_cfg = Arc::new(graph_cfg.entity_types.clone());
-    let no_relations = graph_cfg.no_relations;
+    // When the Phase 4 lexical relation classifier is enabled, it fully replaces the
+    // legacy per-chunk boolean `lexical_relation_trigger()` gate inside
+    // `extract_from_text()` — force relations off there unconditionally; the real
+    // relation extraction runs separately via `rag_cmd::extract_relations_axiomatic()`
+    // after this pass completes (see `GraphIngestConfig::relation_threshold_high`).
+    let no_relations = graph_cfg.no_relations || graph_cfg.relation_threshold_high > 0.0;
     let extract_timeline = graph_cfg.extract_timeline;
     let context_window = graph_cfg.context_window;
     let chunk_batch = graph_cfg.chunk_batch.max(1);
@@ -1555,7 +1571,7 @@ async fn extract_entity_centric(
     let model = Arc::new(graph_cfg.model.clone());
     let store = graph_cfg.store.clone();
     let workers = graph_cfg.workers.max(1);
-    let no_relations = graph_cfg.no_relations;
+    let no_relations = graph_cfg.no_relations || graph_cfg.relation_threshold_high > 0.0;
     let et_owned: Arc<Vec<String>> = Arc::new(graph_cfg.entity_types.clone());
 
     let llm_calls = Arc::new(AtomicUsize::new(0));

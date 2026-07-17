@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-07-16T21:38:07.192390+00:00",
+  "threshold_high": 0.65,
+  "threshold_low": 0.3,
+  "total_chunks": 12,
+  "candidates_generated": 0,
+  "candidates_committed_high": 0,
+  "candidates_sent_llm_medium": 0,
+  "candidates_dropped_low": 0,
+  "candidates_demoted_by_axiom": 0,
+  "llm_confirmed": 0,
+  "llm_rejected": 0,
+  "llm_retyped": 0,
+  "total_wall_secs": 0.000937833,
+  "mean_ms_per_chunk_axio": 0.0,
+  "p95_ms_per_chunk_axio": 0.0,
+  "mean_ms_per_llm_verify_call": 0.0,
+  "p95_ms_per_llm_verify_call": 0.0,
+  "commit_pct": 0.0,
+  "drop_pct": 0.0,
+  "llm_confirm_rate": 0.0,
+  "method_breakdown": {}
+}

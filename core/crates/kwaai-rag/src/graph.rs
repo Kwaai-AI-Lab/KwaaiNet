@@ -240,6 +240,31 @@ pub struct RelationRecord {
     /// 0.0–1.0; grows with evidence count: min(1.0, len(evidence) / 10).
     pub strength: f32,
     pub evidence_chunk_ids: Vec<i64>,
+    /// Extraction confidence in [0, 1]. 1.0 (default) for seeded/LLM-open-extraction
+    /// relations, which historically had no confidence concept and are treated as
+    /// fully trusted. Lower values come from the Phase 4 lexical/axiomatic classifier.
+    #[serde(default = "default_relation_confidence")]
+    pub confidence: f32,
+    /// How the relation was classified, e.g. "Trigger:spouse_of", "LlmVerified",
+    /// "LlmOpenExtraction" (default, legacy behavior), "Seeded".
+    #[serde(default = "default_relation_method")]
+    pub method: String,
+    /// Which pipeline produced the relation: "axiomatic_high", "axiomatic_llm_verify",
+    /// "llm_open" (default, legacy behavior), "seeded", "manual".
+    #[serde(default = "default_relation_source")]
+    pub source: String,
+}
+
+fn default_relation_confidence() -> f32 {
+    1.0
+}
+
+fn default_relation_method() -> String {
+    "LlmOpenExtraction".to_string()
+}
+
+fn default_relation_source() -> String {
+    "llm_open".to_string()
 }
 
 /// Raw extraction output from the LLM before embedding / storing.
@@ -433,7 +458,7 @@ pub fn normalize_name(s: &str) -> String {
 /// Same role to the same target is NOT contradictory — it is a positive dedup signal.
 /// Inverse pairs (parent_of ↔ child_of) applied to the same target ARE contradictory
 /// because they would create a self-referential loop.
-fn family_role_contradicts(r1: &str, r2: &str) -> bool {
+pub(crate) fn family_role_contradicts(r1: &str, r2: &str) -> bool {
     if r1 == r2 {
         return false; // same role — positive signal, not a contradiction
     }
@@ -900,12 +925,41 @@ impl GraphStore {
     }
 
     /// Insert or strengthen a directed relation, adding the evidence chunk.
+    /// Thin wrapper over `upsert_relation_with_confidence` preserving legacy provenance
+    /// (confidence=1.0, method="LlmOpenExtraction", source="llm_open") for the many
+    /// existing call sites that predate the Phase 4 axiomatic relation classifier.
     pub fn upsert_relation(
         &mut self,
         src_id: i64,
         dst_id: i64,
         relation_type: &str,
         evidence_chunk_id: i64,
+    ) -> Result<()> {
+        self.upsert_relation_with_confidence(
+            src_id,
+            dst_id,
+            relation_type,
+            evidence_chunk_id,
+            1.0,
+            "LlmOpenExtraction",
+            "llm_open",
+        )
+    }
+
+    /// Insert or strengthen a directed relation, adding the evidence chunk, with
+    /// explicit provenance (confidence/method/source) for the Phase 4 axiomatic
+    /// relation classifier and its LLM-verify tier. See `upsert_relation` for the
+    /// legacy-default wrapper used by every other caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_relation_with_confidence(
+        &mut self,
+        src_id: i64,
+        dst_id: i64,
+        relation_type: &str,
+        evidence_chunk_id: i64,
+        confidence: f32,
+        method: &str,
+        source: &str,
     ) -> Result<()> {
         // ── Constraint: located_in / works_at must not target a CreativeWork entity ──
         // This prevents book/document titles from being incorrectly used as place or
@@ -937,7 +991,15 @@ impl GraphStore {
             }
         }
 
-        self.upsert_relation_unchecked(src_id, dst_id, relation_type, evidence_chunk_id)?;
+        self.upsert_relation_unchecked(
+            src_id,
+            dst_id,
+            relation_type,
+            evidence_chunk_id,
+            confidence,
+            method,
+            source,
+        )?;
 
         // ── Auto-add logical inverse for asymmetric familial relations ──
         if let Some(&inverse) = FAMILIAL_INVERSE
@@ -945,7 +1007,15 @@ impl GraphStore {
             .find(|(r, _)| *r == relation_type)
             .map(|(_, inv)| inv)
         {
-            self.upsert_relation_unchecked(dst_id, src_id, inverse, evidence_chunk_id)?;
+            self.upsert_relation_unchecked(
+                dst_id,
+                src_id,
+                inverse,
+                evidence_chunk_id,
+                confidence,
+                method,
+                source,
+            )?;
         }
 
         // ── Symmetric familial relations: store both directions ──
@@ -953,18 +1023,30 @@ impl GraphStore {
             relation_type,
             "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
         ) {
-            self.upsert_relation_unchecked(dst_id, src_id, relation_type, evidence_chunk_id)?;
+            self.upsert_relation_unchecked(
+                dst_id,
+                src_id,
+                relation_type,
+                evidence_chunk_id,
+                confidence,
+                method,
+                source,
+            )?;
         }
 
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn upsert_relation_unchecked(
         &mut self,
         src_id: i64,
         dst_id: i64,
         relation_type: &str,
         evidence_chunk_id: i64,
+        confidence: f32,
+        method: &str,
+        source: &str,
     ) -> Result<()> {
         let key = relation_key(src_id, dst_id, relation_type);
 
@@ -982,6 +1064,14 @@ impl GraphStore {
                         r.evidence_chunk_ids.push(evidence_chunk_id);
                         r.strength = (r.evidence_chunk_ids.len() as f32 / 10.0).min(1.0);
                     }
+                    // Keep the highest-confidence provenance seen so far for this
+                    // relation, so a later low-confidence lexical hit can't downgrade
+                    // a relation that was already confirmed by a more trustworthy pass.
+                    if confidence > r.confidence {
+                        r.confidence = confidence;
+                        r.method = method.to_string();
+                        r.source = source.to_string();
+                    }
                     r
                 })
                 .unwrap_or_else(|| RelationRecord {
@@ -990,6 +1080,9 @@ impl GraphStore {
                     relation_type: relation_type.to_string(),
                     strength: 0.1,
                     evidence_chunk_ids: vec![evidence_chunk_id],
+                    confidence,
+                    method: method.to_string(),
+                    source: source.to_string(),
                 })
         };
 
@@ -1696,6 +1789,9 @@ impl GraphStore {
                         relation_type: rel.relation_type.clone(),
                         strength: rel.strength,
                         evidence_chunk_ids: rel.evidence_chunk_ids.clone(),
+                        confidence: rel.confidence,
+                        method: rel.method.clone(),
+                        source: rel.source.clone(),
                     });
                 txn.execute(
                     "INSERT OR REPLACE INTO relations (key, value) VALUES (?1, ?2)",
@@ -1939,7 +2035,15 @@ impl GraphStore {
                 if !existing.contains(&(rel.dst_id, rel.src_id, inverse.to_string())) {
                     // Use each evidence chunk so strength is inherited from the forward relation
                     for &cid in &rel.evidence_chunk_ids {
-                        self.upsert_relation_unchecked(rel.dst_id, rel.src_id, inverse, cid)?;
+                        self.upsert_relation_unchecked(
+                            rel.dst_id,
+                            rel.src_id,
+                            inverse,
+                            cid,
+                            rel.confidence,
+                            &rel.method,
+                            &rel.source,
+                        )?;
                     }
                     added += 1;
                 }
@@ -1956,6 +2060,9 @@ impl GraphStore {
                         rel.src_id,
                         &rel.relation_type,
                         cid,
+                        rel.confidence,
+                        &rel.method,
+                        &rel.source,
                     )?;
                 }
                 added += 1;
@@ -3321,7 +3428,10 @@ impl GraphStore {
         let mut map: HashMap<i64, HashSet<String>> = HashMap::new();
         if let Some(edges) = self.adj.get(&id) {
             for (nbr, rel, strength) in edges {
-                if SYMMETRIC.contains(&rel.as_str()) && *strength >= 0.1 {
+                if SYMMETRIC.contains(&rel.as_str())
+                    && *strength >= 0.1
+                    && self.relation_is_dedup_trusted(id, *nbr, rel)
+                {
                     map.entry(*nbr).or_default().insert(rel.clone());
                 }
             }
@@ -3336,9 +3446,41 @@ impl GraphStore {
             .get(&id)
             .into_iter()
             .flatten()
-            .filter(|(_, rel, strength)| SYMMETRIC.contains(&rel.as_str()) && *strength >= 0.1)
+            .filter(|(nbr, rel, strength)| {
+                SYMMETRIC.contains(&rel.as_str())
+                    && *strength >= 0.1
+                    && self.relation_is_dedup_trusted(id, *nbr, rel)
+            })
             .map(|(nbr, rel, _)| (*nbr, rel.clone()))
             .collect()
+    }
+
+    /// Whether a relation is trustworthy enough to feed the R1/R2 dedup contradiction
+    /// guards. Relations written by the Phase 4 lexical-commit tier alone (`source ==
+    /// "axiomatic_high"`, never confirmed by an LLM) need a stricter bar than seeded or
+    /// LLM-extracted relations — those have historically been far more precise, which is
+    /// what the plain `strength >= 0.1` floor elsewhere was calibrated against. A permissive
+    /// `--relation-threshold-high` used to *write* relations shouldn't automatically also
+    /// lower the bar for *blocking merges*, so this floor (0.85) is independent of whatever
+    /// threshold the run was configured with.
+    ///
+    /// Does one point lookup against the `relations` table per candidate pair — cheap since
+    /// callers only reach this after the existing `strength >= 0.1` filter has already
+    /// narrowed the set (not a hot path).
+    fn relation_is_dedup_trusted(&self, src: i64, dst: i64, relation_type: &str) -> bool {
+        let key = relation_key(src, dst, relation_type);
+        self.conn
+            .query_row(
+                "SELECT value FROM relations WHERE key = ?1",
+                params![key.as_slice()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice::<RelationRecord>(&v).ok())
+            .map(|rel| rel.source != "axiomatic_high" || rel.confidence >= 0.85)
+            .unwrap_or(true) // record vanished between adj lookup and here → don't block on it
     }
 
     /// Set of entity IDs that are **parents** of `id`.
@@ -3355,6 +3497,7 @@ impl GraphStore {
                         if rel.src_id == id
                             && rel.relation_type == "child_of"
                             && rel.strength >= 0.1
+                            && (rel.source != "axiomatic_high" || rel.confidence >= 0.85)
                         {
                             parents.insert(rel.dst_id);
                         }
@@ -4388,6 +4531,9 @@ impl GraphStore {
                     relation_type: rel.relation_type.clone(),
                     strength: rel.strength,
                     evidence_chunk_ids: rel.evidence_chunk_ids.clone(),
+                    confidence: rel.confidence,
+                    method: rel.method.clone(),
+                    source: rel.source.clone(),
                 };
                 txn.execute(
                     "INSERT OR REPLACE INTO relations (key, value) VALUES (?1, ?2)",
