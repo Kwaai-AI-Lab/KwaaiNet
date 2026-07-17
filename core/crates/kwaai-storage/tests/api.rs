@@ -141,7 +141,7 @@ async fn list_tenants_returns_created_tenant() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp.into_body()).await;
-    assert!(body.as_array().unwrap().len() >= 1);
+    assert!(!body.as_array().unwrap().is_empty());
     assert!(body
         .as_array()
         .unwrap()

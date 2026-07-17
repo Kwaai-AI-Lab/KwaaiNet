@@ -566,7 +566,7 @@ fn auto_detect_publisher() {
     let text = "Published by Oxford University Press, Oxford\nOther content";
     let schema = auto_detect_schema(text);
     assert!(
-        schema.metadata.get("publisher").is_some(),
+        schema.metadata.contains_key("publisher"),
         "publisher should be extracted"
     );
     assert!(
@@ -594,7 +594,7 @@ fn auto_detect_copyright_holder() {
     let text = "© Joe Rassool 1984";
     let schema = auto_detect_schema(text);
     assert!(
-        schema.metadata.get("copyrightHolder").is_some(),
+        schema.metadata.contains_key("copyrightHolder"),
         "copyright holder should be found"
     );
 }
@@ -724,8 +724,10 @@ fn parse_index_seeds_strips_page_refs() {
 #[test]
 fn doc_schema_context_line_with_author_year() {
     use kwaai_rag::doc_schema::DocSchema;
-    let mut schema = DocSchema::default();
-    schema.document_title = Some("District Six".to_string());
+    let mut schema = DocSchema {
+        document_title: Some("District Six".to_string()),
+        ..Default::default()
+    };
     schema
         .metadata
         .insert("author".to_string(), "Joe Rassool".to_string());

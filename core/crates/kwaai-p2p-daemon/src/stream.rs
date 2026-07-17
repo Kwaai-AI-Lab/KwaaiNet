@@ -187,8 +187,6 @@ pub fn wrap_stream_handler_response(call_id: Vec<u8>, response_data: Vec<u8>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_varint_encoding() {
         let payload = b"test payload";

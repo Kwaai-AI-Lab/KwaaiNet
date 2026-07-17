@@ -53,8 +53,14 @@ impl TenantManager {
         display_name: Option<&str>,
         vector_dimension: usize,
     ) -> Result<TenantInfo> {
-        self.create_with_id(Uuid::new_v4(), peer_id, capacity_limit_mb, display_name, vector_dimension)
-            .await
+        self.create_with_id(
+            Uuid::new_v4(),
+            peer_id,
+            capacity_limit_mb,
+            display_name,
+            vector_dimension,
+        )
+        .await
     }
 
     /// Create (or overwrite) a tenant record under a caller-supplied ID.
@@ -264,6 +270,18 @@ impl TenantManager {
     }
 }
 
+fn record_to_info(tenant_id: Uuid, rec: &TenantRecord) -> TenantInfo {
+    TenantInfo {
+        tenant_id,
+        peer_id: rec.peer_id.clone(),
+        display_name: rec.display_name.clone(),
+        capacity_limit_mb: rec.capacity_limit_mb,
+        status: rec.status.clone(),
+        created_at: rec.created_at.clone(),
+        vector_dimension: rec.vector_dimension as u32,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -400,17 +418,5 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tm.total_vectors().await.unwrap(), 3);
-    }
-}
-
-fn record_to_info(tenant_id: Uuid, rec: &TenantRecord) -> TenantInfo {
-    TenantInfo {
-        tenant_id,
-        peer_id: rec.peer_id.clone(),
-        display_name: rec.display_name.clone(),
-        capacity_limit_mb: rec.capacity_limit_mb,
-        status: rec.status.clone(),
-        created_at: rec.created_at.clone(),
-        vector_dimension: rec.vector_dimension as u32,
     }
 }

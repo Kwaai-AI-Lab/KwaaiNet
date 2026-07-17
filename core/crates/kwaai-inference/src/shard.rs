@@ -879,6 +879,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn causal_mask_all_positions_correct() {
         // seq_len=4, kv_len=4, seq_start=0 → square causal mask
         let mask = causal_mask(4, 4, 0, &Device::Cpu, DType::F32).unwrap();

@@ -106,6 +106,8 @@ const FAMILY_RELATION_TRIGGERS: &[(&str, &str)] = &[
     ("husband of", "spouse_of"),
     ("married to", "spouse_of"),
     ("married ", "spouse_of"), // trailing space avoids matching "unmarried"
+    ("marrying", "spouse_of"), // present participle: "before marrying, Ahmed..."
+    ("marriage with", "spouse_of"), // noun form: "his marriage with Cissie"
     ("widow of", "spouse_of"),
     ("widower of", "spouse_of"),
     ("father of", "parent_of"),
@@ -152,9 +154,22 @@ const REVERSED_TRIGGERS: &[&str] = &["founded by", "born to"];
 
 fn find_best_trigger(
     s_lower: &str,
-) -> Option<(usize, usize, &'static str, &'static str, RelationClassificationMethod, f32)> {
-    let mut matches: Vec<(usize, usize, &'static str, &'static str, RelationClassificationMethod, f32)> =
-        Vec::new();
+) -> Option<(
+    usize,
+    usize,
+    &'static str,
+    &'static str,
+    RelationClassificationMethod,
+    f32,
+)> {
+    let mut matches: Vec<(
+        usize,
+        usize,
+        &'static str,
+        &'static str,
+        RelationClassificationMethod,
+        f32,
+    )> = Vec::new();
     for &(phrase, rel) in FAMILY_RELATION_TRIGGERS {
         if let Some(pos) = s_lower.find(phrase) {
             matches.push((
@@ -356,10 +371,14 @@ pub fn classify_relation_candidates(
             continue;
         }
 
-        let before: Vec<&(usize, usize, i64, bool)> =
-            positions.iter().filter(|(_, end, _, _)| *end <= kw_pos).collect();
-        let after: Vec<&(usize, usize, i64, bool)> =
-            positions.iter().filter(|(start, _, _, _)| *start >= kw_end).collect();
+        let before: Vec<&(usize, usize, i64, bool)> = positions
+            .iter()
+            .filter(|(_, end, _, _)| *end <= kw_pos)
+            .collect();
+        let after: Vec<&(usize, usize, i64, bool)> = positions
+            .iter()
+            .filter(|(start, _, _, _)| *start >= kw_end)
+            .collect();
 
         let before_best = before.iter().max_by_key(|(start, _, _, _)| *start);
         let after_best = after.iter().min_by_key(|(start, _, _, _)| *start);
@@ -381,11 +400,15 @@ pub fn classify_relation_candidates(
 
         let before_ties = before
             .iter()
-            .filter(|(start, _, id, _)| *id != a_id && before_start.saturating_sub(*start) <= TIE_MARGIN_CHARS)
+            .filter(|(start, _, id, _)| {
+                *id != a_id && before_start.saturating_sub(*start) <= TIE_MARGIN_CHARS
+            })
             .count();
         let after_ties = after
             .iter()
-            .filter(|(start, _, id, _)| *id != b_id && start.saturating_sub(after_start) <= TIE_MARGIN_CHARS)
+            .filter(|(start, _, id, _)| {
+                *id != b_id && start.saturating_sub(after_start) <= TIE_MARGIN_CHARS
+            })
             .count();
         let ambiguity_count = (before_ties + after_ties) as u8;
         let via_coref = a_coref || b_coref;
@@ -402,8 +425,14 @@ pub fn classify_relation_candidates(
         results.push(TypedRelationCandidate {
             subject_id: sub_id,
             object_id: obj_id,
-            subject_name: name_by_id.get(&sub_id).map(|s| s.to_string()).unwrap_or_default(),
-            object_name: name_by_id.get(&obj_id).map(|s| s.to_string()).unwrap_or_default(),
+            subject_name: name_by_id
+                .get(&sub_id)
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            object_name: name_by_id
+                .get(&obj_id)
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
             relation_type: relation_type.to_string(),
             trigger_confidence,
             proximity_confidence,
@@ -479,7 +508,10 @@ pub fn validate_relation_axioms(
             // pair (e.g. graph already trusts spouse_of A-B; this candidate guesses
             // sibling_of A-B) — reuses the same contradiction table as the R1 dedup
             // guard rather than duplicating it.
-            if let Some(existing_types) = snapshot.trusted_relations.get(&ord_pair(c.subject_id, c.object_id)) {
+            if let Some(existing_types) = snapshot
+                .trusted_relations
+                .get(&ord_pair(c.subject_id, c.object_id))
+            {
                 let contradicts = existing_types
                     .iter()
                     .any(|existing| family_role_contradicts(&c.relation_type, existing));
@@ -512,7 +544,11 @@ pub fn split_relations_by_confidence(
     candidates: Vec<TypedRelationCandidate>,
     threshold_high: f32,
     threshold_low: f32,
-) -> (Vec<TypedRelationCandidate>, Vec<TypedRelationCandidate>, Vec<TypedRelationCandidate>) {
+) -> (
+    Vec<TypedRelationCandidate>,
+    Vec<TypedRelationCandidate>,
+    Vec<TypedRelationCandidate>,
+) {
     let threshold_low = threshold_low.min(threshold_high);
     let mut commit = Vec::new();
     let mut verify = Vec::new();
@@ -623,11 +659,20 @@ impl RelationAxiomaticMetricsAccum {
         self.candidates_demoted_by_axiom += demoted;
         self.axio_times_ms.push(elapsed_ms);
         for m in methods {
-            *self.method_breakdown.entry(m.as_str().to_string()).or_insert(0) += 1;
+            *self
+                .method_breakdown
+                .entry(m.as_str().to_string())
+                .or_insert(0) += 1;
         }
     }
 
-    pub fn record_llm_verify(&mut self, confirmed: usize, rejected: usize, retyped: usize, elapsed_ms: f64) {
+    pub fn record_llm_verify(
+        &mut self,
+        confirmed: usize,
+        rejected: usize,
+        retyped: usize,
+        elapsed_ms: f64,
+    ) {
         self.llm_confirmed += confirmed;
         self.llm_rejected += rejected;
         self.llm_retyped += retyped;
@@ -722,18 +767,12 @@ impl RelationAxiomaticRunMetrics {
             "  Committed (high): {} ({:.1}%)  ← no LLM call",
             self.candidates_committed_high, self.commit_pct
         );
-        println!(
-            "  Sent to LLM     : {}",
-            self.candidates_sent_llm_medium
-        );
+        println!("  Sent to LLM     : {}", self.candidates_sent_llm_medium);
         println!(
             "  Dropped (low)   : {} ({:.1}%)  ← never reached an LLM",
             self.candidates_dropped_low, self.drop_pct
         );
-        println!(
-            "  Demoted by axiom: {}",
-            self.candidates_demoted_by_axiom
-        );
+        println!("  Demoted by axiom: {}", self.candidates_demoted_by_axiom);
         if self.llm_confirmed + self.llm_rejected > 0 {
             println!(
                 "  LLM confirm rate: {:.1}%  (confirmed={} rejected={} retyped={})",
@@ -743,7 +782,10 @@ impl RelationAxiomaticRunMetrics {
                 self.llm_retyped
             );
         }
-        println!("  Wall-clock      : {}", format_duration(self.total_wall_secs));
+        println!(
+            "  Wall-clock      : {}",
+            format_duration(self.total_wall_secs)
+        );
         if !self.method_breakdown.is_empty() {
             let mut methods: Vec<_> = self.method_breakdown.iter().collect();
             methods.sort_by(|a, b| b.1.cmp(a.1));
@@ -801,7 +843,9 @@ mod tests {
     use super::*;
 
     fn entities(list: &[(i64, &str)]) -> Vec<(i64, String, Vec<String>)> {
-        list.iter().map(|(id, name)| (*id, name.to_string(), vec![])).collect()
+        list.iter()
+            .map(|(id, name)| (*id, name.to_string(), vec![]))
+            .collect()
     }
 
     #[test]
@@ -821,6 +865,37 @@ mod tests {
         assert_eq!(c.object_id, 2);
         assert_eq!(c.method, RelationClassificationMethod::FamilyTrigger);
         assert!(c.composite_confidence > 0.8);
+    }
+
+    #[test]
+    fn present_participle_marrying_trigger() {
+        // Gap found via ground-truth analysis against d6_family_tree.yaml: the
+        // corpus states some marriages with "before marrying, X" rather than
+        // "married to X" / "wife of X" — this phrasing had no matching trigger.
+        let known = entities(&[(1, "Jane Doe"), (2, "John Smith")]);
+        let candidates = classify_relation_candidates(
+            23,
+            "Jane Doe taught for a period before marrying, John Smith, a shop assistant.",
+            &known,
+            &[],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].relation_type, "spouse_of");
+    }
+
+    #[test]
+    fn marriage_with_noun_form_trigger() {
+        let known = entities(&[(1, "Jane Doe"), (2, "John Smith")]);
+        let candidates = classify_relation_candidates(
+            24,
+            "John Smith, a decade into his marriage with Jane Doe, still worked long hours.",
+            &known,
+            &[],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].relation_type, "spouse_of");
     }
 
     #[test]
@@ -928,8 +1003,14 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         let c = &candidates[0];
         assert_eq!(c.relation_type, "spouse_of");
-        assert!(c.subject_id == 99 || c.object_id == 99, "narrator must appear as an endpoint");
-        assert!(c.subject_id == 1 || c.object_id == 1, "Jane Doe must appear as an endpoint");
+        assert!(
+            c.subject_id == 99 || c.object_id == 99,
+            "narrator must appear as an endpoint"
+        );
+        assert!(
+            c.subject_id == 1 || c.object_id == 1,
+            "Jane Doe must appear as an endpoint"
+        );
         // Coref-resolved endpoint caps proximity_confidence below a pure literal match.
         assert!(c.proximity_confidence <= 0.80);
     }
@@ -969,8 +1050,14 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         let c = &candidates[0];
         assert_eq!(c.relation_type, "child_of");
-        assert!(c.subject_id == 1 || c.object_id == 1, "Jane Doe (\"my wife\") must appear as an endpoint");
-        assert!(c.subject_id == 2 || c.object_id == 2, "Mary Johnson must appear as an endpoint");
+        assert!(
+            c.subject_id == 1 || c.object_id == 1,
+            "Jane Doe (\"my wife\") must appear as an endpoint"
+        );
+        assert!(
+            c.subject_id == 2 || c.object_id == 2,
+            "Mary Johnson must appear as an endpoint"
+        );
     }
 
     #[test]

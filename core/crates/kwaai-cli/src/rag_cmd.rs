@@ -2150,8 +2150,7 @@ async fn cmd_rebuild(
             println!("  ▶ Step 5.5b/8  relation extraction (Phase 4, after seed)");
             let (rag_cfg, tenant_id) = load_rag_config_for(&kb)?;
             let store = Arc::new(Mutex::new(
-                GraphStore::open(&rag_cfg.data_dir(), tenant_id)
-                    .context("opening graph store")?,
+                GraphStore::open(&rag_cfg.data_dir(), tenant_id).context("opening graph store")?,
             ));
             let meta = Arc::new(
                 MetaStore::open(&rag_cfg.data_dir(), tenant_id).context("opening meta store")?,
@@ -2387,7 +2386,8 @@ async fn cmd_reembed_vectors(embed_url: Option<String>, kb: String) -> Result<()
 
         const BATCH: usize = 32;
         let mut uploaded_total = 0usize;
-        let batches: Vec<&[(i64, kwaai_rag::meta_store::ChunkMeta)]> = chunks.chunks(BATCH).collect();
+        let batches: Vec<&[(i64, kwaai_rag::meta_store::ChunkMeta)]> =
+            chunks.chunks(BATCH).collect();
         let n_batches = batches.len();
 
         for (bi, batch) in batches.into_iter().enumerate() {
@@ -2403,7 +2403,13 @@ async fn cmd_reembed_vectors(embed_url: Option<String>, kb: String) -> Result<()
                 .collect();
 
             let n = match rag_cfg.storage_url.as_deref() {
-                Some("local") => local_vs.as_ref().unwrap().upload(tenant_id, &vectors).await?,
+                Some("local") => {
+                    local_vs
+                        .as_ref()
+                        .unwrap()
+                        .upload(tenant_id, &vectors)
+                        .await?
+                }
                 Some(url) => {
                     http_upload_vectors(http_client.as_ref().unwrap(), url, tenant_id, vectors)
                         .await?
@@ -2425,7 +2431,9 @@ async fn cmd_reembed_vectors(embed_url: Option<String>, kb: String) -> Result<()
         eprintln!();
 
         print_success(&format!("Re-embedded {uploaded_total} chunk vectors."));
-        println!("  Graph and chunk metadata were left untouched — only the vector index was rebuilt.\n");
+        println!(
+            "  Graph and chunk metadata were left untouched — only the vector index was rebuilt.\n"
+        );
         Ok(())
     }
 }
@@ -3104,7 +3112,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     print_box_header(&format!("Relation Extraction — Phase 4 ({})", kb));
                     print_info(&format!(
                         "Thresholds: high={:.2}  low={:.2}  Model: {}  Workers: {}",
-                        relation_threshold_high, relation_threshold_low, graph_cfg.model, graph_cfg.workers
+                        relation_threshold_high,
+                        relation_threshold_low,
+                        graph_cfg.model,
+                        graph_cfg.workers
                     ));
                     let relation_urls = if graph_cfg.inference_urls.is_empty() {
                         vec![graph_cfg.inference_url.clone()]
@@ -7040,7 +7051,9 @@ pub(crate) enum RelationVerifyOutcome {
 /// relations. This is strictly cheaper than the CC+EC path since the "does a
 /// qualifying clause exist" question the CC pass answers is already resolved by the
 /// lexical classifier for these candidates.
-fn build_relation_verify_prompt(candidates: &[kwaai_rag::relation_extract::TypedRelationCandidate]) -> String {
+fn build_relation_verify_prompt(
+    candidates: &[kwaai_rag::relation_extract::TypedRelationCandidate],
+) -> String {
     let allowed = kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES.join(", ");
     let items = candidates
         .iter()
@@ -7085,7 +7098,10 @@ fn build_relation_verify_prompt(candidates: &[kwaai_rag::relation_extract::Typed
 fn parse_relation_verify_response(
     raw: &str,
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
-) -> Vec<(kwaai_rag::relation_extract::TypedRelationCandidate, RelationVerifyOutcome)> {
+) -> Vec<(
+    kwaai_rag::relation_extract::TypedRelationCandidate,
+    RelationVerifyOutcome,
+)> {
     #[derive(serde::Deserialize)]
     struct Response {
         #[serde(default)]
@@ -7099,7 +7115,8 @@ fn parse_relation_verify_response(
         retype_as: Option<String>,
     }
 
-    let verdicts: std::collections::HashMap<usize, Verdict> = match (raw.find('{'), raw.rfind('}')) {
+    let verdicts: std::collections::HashMap<usize, Verdict> = match (raw.find('{'), raw.rfind('}'))
+    {
         (Some(start), Some(end)) if end >= start => {
             serde_json::from_str::<Response>(&raw[start..=end])
                 .map(|r| r.verdicts.into_iter().map(|v| (v.index, v)).collect())
@@ -7116,7 +7133,10 @@ fn parse_relation_verify_response(
             let outcome = match verdicts.get(&idx) {
                 Some(v) if v.verdict == "confirm" => RelationVerifyOutcome::Confirmed,
                 Some(v) if v.verdict == "retype" => match v.retype_as.as_deref() {
-                    Some(new_type) if kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES.contains(&new_type) => {
+                    Some(new_type)
+                        if kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES
+                            .contains(&new_type) =>
+                    {
                         c.relation_type = new_type.to_string();
                         RelationVerifyOutcome::Retyped
                     }
@@ -7138,7 +7158,10 @@ pub(crate) async fn verify_relation_candidates_llm(
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
     inference_url: &str,
     model: &str,
-) -> Vec<(kwaai_rag::relation_extract::TypedRelationCandidate, RelationVerifyOutcome)> {
+) -> Vec<(
+    kwaai_rag::relation_extract::TypedRelationCandidate,
+    RelationVerifyOutcome,
+)> {
     const BATCH_SIZE: usize = 20;
     let mut results = Vec::with_capacity(candidates.len());
     for batch in candidates.chunks(BATCH_SIZE) {
@@ -9164,6 +9187,9 @@ async fn run_timeline_build(
 
 // ── Phase 4: relation axiomatic classifier — pipeline orchestration ───────────
 
+type KnownEntities = Vec<(i64, String, Vec<String>)>;
+type PersonCandidates = Vec<(String, Vec<String>, Option<String>)>;
+
 /// Runs the Phase 4 lexical relation classifier over every chunk with 2+ linked
 /// entities, once per graph build, after entity extraction has fully completed
 /// (relations need resolved entity IDs from the whole corpus — the same precondition
@@ -9281,10 +9307,7 @@ async fn extract_relations_axiomatic(
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.ok()?;
             let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
-            let (known_entities, person_candidates): (
-                Vec<(i64, String, Vec<String>)>,
-                Vec<(String, Vec<String>, Option<String>)>,
-            ) = {
+            let (known_entities, person_candidates): (KnownEntities, PersonCandidates) = {
                 let g = graph.lock().ok()?;
                 let known = g
                     .get_chunk_entities(cid)
@@ -9396,10 +9419,12 @@ async fn extract_relations_axiomatic(
                         }
                     }
                 }
-                metrics
-                    .lock()
-                    .unwrap()
-                    .record_llm_verify(n_confirmed, n_rejected, n_retyped, llm_elapsed_ms);
+                metrics.lock().unwrap().record_llm_verify(
+                    n_confirmed,
+                    n_rejected,
+                    n_retyped,
+                    llm_elapsed_ms,
+                );
             }
             Some(())
         });
