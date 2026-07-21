@@ -179,10 +179,15 @@ fn classify_one(
     }
 
     // ── Rule 2: honorific prefix → Person ────────────────────────────────────
+    // Requires a word after the honorific — a bare "Rev" or "Dr" with nothing
+    // following it is a title fragment, not a name, and must not commit as Person.
     if let Some(first) = words.first() {
         let fl = first.to_lowercase();
         let fl_stripped = fl.trim_end_matches('.');
-        if HONORIFIC_PREFIXES.contains(&fl.as_str()) || HONORIFIC_PREFIXES.contains(&fl_stripped) {
+        if words.len() > 1
+            && (HONORIFIC_PREFIXES.contains(&fl.as_str())
+                || HONORIFIC_PREFIXES.contains(&fl_stripped))
+        {
             let mut fields = HashMap::new();
             if let Some(occ) = honorific_to_occupation(fl_stripped) {
                 fields.insert("occupation".to_string(), occ.to_string());
@@ -688,6 +693,18 @@ mod tests {
                 .map(|s| s.as_str()),
             Some("doctor")
         );
+    }
+
+    #[test]
+    fn bare_honorific_alone_does_not_classify_as_person() {
+        // A standalone "Rev" with nothing following it is a title fragment, not a
+        // name — must not commit as Person via HonorificPrefix (regression: this
+        // previously classified with composite_confidence 0.81, high enough to
+        // auto-commit and then attract spurious relations from the legacy pipeline).
+        let candidates = vec!["Rev".to_string()];
+        let result = classify_candidates_axiomatic(&candidates, &empty_snapshot(), &[]);
+        assert_ne!(result[0].method, ClassificationMethod::HonorificPrefix);
+        assert_eq!(result[0].composite_confidence, 0.0);
     }
 
     #[test]

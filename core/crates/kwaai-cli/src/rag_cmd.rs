@@ -7040,6 +7040,13 @@ pub(crate) enum RelationVerifyOutcome {
     Confirmed,
     Rejected,
     Retyped,
+    /// The LLM call itself failed (network error, non-2xx status, timeout) or its
+    /// response couldn't be parsed at all — never actually judged. Distinct from
+    /// `Rejected` (a genuine "the sentence doesn't state this" verdict) so that a
+    /// batch-wide API failure doesn't get silently counted as content-based
+    /// precision. Never committed, same as `Rejected`, but tracked separately in
+    /// metrics and logging so the confirm rate reflects real LLM judgment only.
+    CallFailed,
 }
 
 /// Batched confirm/reject/retype prompt for medium-confidence lexical relation
@@ -7092,9 +7099,18 @@ fn build_relation_verify_prompt(
 }
 
 /// Parse the batched verify response, pairing each input candidate with its verdict.
-/// Any candidate whose index is missing, unparseable, or names a `retype_as` outside
-/// `IN_SCOPE_RELATION_TYPES` conservatively defaults to `Rejected` — never commits or
-/// forwards a guess the LLM didn't clearly confirm.
+///
+/// Two distinct failure modes are kept apart deliberately:
+/// - The whole response is missing or unparseable (empty `raw` from a failed LLM
+///   call, or no valid JSON at all) → every candidate in the batch gets
+///   `CallFailed`. This never happened before this fix: a failed API call
+///   silently defaulted every candidate to `Rejected`, indistinguishable from a
+///   genuine "the sentence doesn't state this" verdict — inflating apparent
+///   rejection counts whenever the network/relay hiccuped.
+/// - The response parsed fine but *this specific* candidate's index is missing,
+///   or names a `retype_as` outside `IN_SCOPE_RELATION_TYPES` → `Rejected`, same
+///   conservative default as before (the LLM did respond, just didn't clearly
+///   confirm this one).
 fn parse_relation_verify_response(
     raw: &str,
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
@@ -7115,15 +7131,22 @@ fn parse_relation_verify_response(
         retype_as: Option<String>,
     }
 
-    let verdicts: std::collections::HashMap<usize, Verdict> = match (raw.find('{'), raw.rfind('}'))
-    {
+    let parsed: Option<Response> = match (raw.find('{'), raw.rfind('}')) {
         (Some(start), Some(end)) if end >= start => {
-            serde_json::from_str::<Response>(&raw[start..=end])
-                .map(|r| r.verdicts.into_iter().map(|v| (v.index, v)).collect())
-                .unwrap_or_default()
+            serde_json::from_str::<Response>(&raw[start..=end]).ok()
         }
-        _ => std::collections::HashMap::new(),
+        _ => None,
     };
+
+    let Some(parsed) = parsed else {
+        return candidates
+            .into_iter()
+            .map(|c| (c, RelationVerifyOutcome::CallFailed))
+            .collect();
+    };
+
+    let verdicts: std::collections::HashMap<usize, Verdict> =
+        parsed.verdicts.into_iter().map(|v| (v.index, v)).collect();
 
     candidates
         .into_iter()
@@ -7142,7 +7165,7 @@ fn parse_relation_verify_response(
                     }
                     _ => RelationVerifyOutcome::Rejected,
                 },
-                _ => RelationVerifyOutcome::Rejected, // missing / "reject" / unparseable
+                _ => RelationVerifyOutcome::Rejected, // missing / "reject" within a valid response
             };
             (c, outcome)
         })
@@ -7166,10 +7189,30 @@ pub(crate) async fn verify_relation_candidates_llm(
     let mut results = Vec::with_capacity(candidates.len());
     for batch in candidates.chunks(BATCH_SIZE) {
         let prompt = build_relation_verify_prompt(batch);
-        let raw = call_llm_for_relations(inference_url, model, &prompt)
-            .await
-            .unwrap_or_default();
-        results.extend(parse_relation_verify_response(&raw, batch.to_vec()));
+        let raw = match call_llm_for_relations(inference_url, model, &prompt).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    "Phase 4 relation verify call failed ({e}) — {} candidate(s) in this batch \
+                     marked CallFailed, not Rejected",
+                    batch.len()
+                );
+                String::new()
+            }
+        };
+        let batch_results = parse_relation_verify_response(&raw, batch.to_vec());
+        for (c, outcome) in &batch_results {
+            tracing::info!(
+                "Phase 4 verify: \"{}\" [{}] \"{}\" (conf={:.2}) — {:?} — from: \"{}\"",
+                c.subject_name,
+                c.relation_type,
+                c.object_name,
+                c.composite_confidence,
+                outcome,
+                c.source_sentence,
+            );
+        }
+        results.extend(batch_results);
     }
     results
 }
@@ -9352,6 +9395,27 @@ async fn extract_relations_axiomatic(
             let (commit, verify, dropped) =
                 split_relations_by_confidence(validated, threshold_high, threshold_low);
 
+            for c in &commit {
+                tracing::info!(
+                    "Phase 4 commit (no LLM): \"{}\" [{}] \"{}\" (conf={:.2}) — from: \"{}\"",
+                    c.subject_name,
+                    c.relation_type,
+                    c.object_name,
+                    c.composite_confidence,
+                    c.source_sentence,
+                );
+            }
+            for c in &dropped {
+                tracing::info!(
+                    "Phase 4 dropped (low, never reached LLM): \"{}\" [{}] \"{}\" (conf={:.2}) — from: \"{}\"",
+                    c.subject_name,
+                    c.relation_type,
+                    c.object_name,
+                    c.composite_confidence,
+                    c.source_sentence,
+                );
+            }
+
             // Commit the high tier directly — no LLM call.
             let methods: Vec<_> = commit.iter().map(|c| c.method).collect();
             {
@@ -9392,7 +9456,8 @@ async fn extract_relations_axiomatic(
                 let llm_start = std::time::Instant::now();
                 let outcomes = verify_relation_candidates_llm(verify, &infer_url, &model).await;
                 let llm_elapsed_ms = llm_start.elapsed().as_secs_f64() * 1000.0;
-                let (mut n_confirmed, mut n_rejected, mut n_retyped) = (0usize, 0usize, 0usize);
+                let (mut n_confirmed, mut n_rejected, mut n_retyped, mut n_call_failed) =
+                    (0usize, 0usize, 0usize, 0usize);
                 {
                     let mut g = graph.lock().ok()?;
                     for (c, outcome) in outcomes {
@@ -9416,6 +9481,9 @@ async fn extract_relations_axiomatic(
                             RelationVerifyOutcome::Rejected => {
                                 n_rejected += 1;
                             }
+                            RelationVerifyOutcome::CallFailed => {
+                                n_call_failed += 1;
+                            }
                         }
                     }
                 }
@@ -9423,6 +9491,7 @@ async fn extract_relations_axiomatic(
                     n_confirmed,
                     n_rejected,
                     n_retyped,
+                    n_call_failed,
                     llm_elapsed_ms,
                 );
             }

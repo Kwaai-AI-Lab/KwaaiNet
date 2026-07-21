@@ -42,8 +42,8 @@ persons:
       1914 farewell visit to South Africa before returning to India. Cecil John
       Rhodes, George Bernard Shaw, and Dr. Abdulla Abdurahman also visited. He
       had two wives: Bibi Gool (children: Ayesha Rassool, Mohamed Saaid Gool,
-      Zohra, Ahmed, Goolam Gool, Jane Gool-Tabata, Minnie, Fatima Gool) and
-      Wahida Gool (children: Abdul Hamid Gool, Mariam, Zobeida, Mohammed Hanief
+      Zohra) and Wahida Gool (children: Abdul Hamid Gool, Mariam, Zobeida,
+      Mohammed Hanief Gool, Goolam Gool, Jane Gool-Tabata, Minnie, Fatima
       Gool). His son Abdul Hamid Gool married Cissie Gool (Zainunnissa, daughter
       of Dr. Abdulla Abdurahman) — making Cissie Gool his daughter-in-law. He performed the Hajj in 1899 and died in April 1940.
       He was the grandfather of the memoir's author, Yousuf (Joe) Rassool.
@@ -54,12 +54,22 @@ persons:
 
   - canonical: "Bibi Gool"
     gender: "Female"
+    description: >
+      Bibi Gool (also known as Peari Beghum) was J.M.H. Gool's first wife.
+      She was the mother of Ayesha Rassool (Lallie, mother of the memoir's
+      author Yousuf Rassool), Mohamed Saaid Gool, and Zohra Abdurahman,
+      raising the family in the Gool household at 7 Buitencingle Street in
+      District Six, Cape Town.
     aliases:
       - "Bibi"
       - "Peari Beghum"
 
   - canonical: "Wahida Gool"
     gender: "Female"
+    description: >
+      Wahida Gool (Wahida Ta'al, also known as Hajima) was J.M.H. Gool's
+      second wife, whom he married around 1879 or 1880. She was the mother of
+      Abdul Hamid Gool, Mariam Gool, Zobeida Gool, and Mohammed Hanief Gool.
     aliases:
       - "Wahida Ta'al"
       - "Wahida"
@@ -107,6 +117,12 @@ persons:
 
   - canonical: "Abdul Hamid Gool"
     gender: "Male"
+    description: >
+      Abdul Hamid Gool, known as B.G. or by the family nicknames "Cheops" and
+      "The Black Englishman," was born in 1886, the son of J.M.H. Gool and his
+      second wife Wahida Gool. He practised as a doctor (Dr. Gool) and married
+      Cissie Gool (Zainunnissa, daughter of Dr. Abdulla Abdurahman), making him
+      Dr. Abdurahman's son-in-law.
     fields:
       birthDate: "1886"
     aliases:
@@ -145,6 +161,14 @@ persons:
 
   - canonical: "Fatima Gool"
     gender: "Female"
+    description: >
+      Fatima Gool, known as Timmie, was a daughter of J.M.H. Gool and Wahida
+      Gool. As a young woman she fell in love with Manilal Gandhi, Mahatma
+      Gandhi's son, but the match was blocked by the elder Gandhi on
+      religious grounds (she was Muslim, Manilal Hindu), and Manilal was
+      recalled to India and married to Sushila instead. Timmie never married,
+      but remained close friends with Manilal and Sushila; the episode
+      remained a sensitive family topic for decades afterward.
     aliases:
       - "Fatima"
       - "Fatima (Timmie)"
@@ -226,6 +250,17 @@ persons:
 
   - canonical: "Yousuf Rassool"
     gender: "Male"
+    description: >
+      Yousuf (Joe) Rassool is the narrator and author of the memoir. Son of
+      Ayesha (Lallie) Rassool and Peter Alexander Rassool, and grandson of
+      J.M.H. Gool through his mother — raised with ties to the Gool household
+      at 7 Buitencingle Street in District Six, Cape Town. He was involved in
+      the Teachers League of South Africa (TLSA) and the Non-European Unity
+      Movement, with connections to Hewat Training College, and was an active
+      cricketer and administrator through Kismets Cricket Club. His wife,
+      Professor Nazima Rassool, urged him to ground the memoir in historical
+      research, transforming it from a personal recollection into a
+      historically documented account of District Six.
     aliases:
       - "Joe Rassool"
       - "Yousuf Joe Rassool"
@@ -330,23 +365,38 @@ persons:
     aliases:
       - "Leonardo"
 
-  - canonical: "Dylan Rassool"
+  - canonical: "Dylan"
     gender: "Male"
-    aliases:
-      - "Dylan"
+    aliases: []
 
-  - canonical: "Lewis Rassool"
+  - canonical: "Lewis"
     gender: "Male"
-    aliases:
-      - "Lewis"
+    aliases: []
 
   # ─── Fostered relatives (the Ally/Noor line) ───────────────────────────────
 
   - canonical: "Gadija Noor"
     gender: "Female"
+    # NOTE: the text describes a "Gadija," one of J.M.H. Gool's daughters, who married
+    # Advocate Christopher (see below) without family objection — contrasted with her
+    # sister Timmie's blocked romance with Manilal Gandhi. Identified here with this
+    # foster daughter (only "Gadija" in the family tree) since no separate biological
+    # Gadija is otherwise recorded; flagged as an assumption, not a certainty.
     aliases:
       - "Gadija"
       - "Auntie Dij"
+
+  - canonical: "Advocate Christopher"
+    gender: "Male"
+    description: >
+      Advocate Christopher was a Hindu lawyer, a close friend of Manilal
+      Gandhi, and became one of Mahatma Gandhi's lieutenants in the Natal
+      struggle. He married Gadija, one of J.M.H. Gool's daughters — a
+      Hindu-Muslim match that, unlike Manilal and Timmie's blocked romance,
+      caused no family uproar. Gadija lived to celebrate her 100th birthday
+      in 1996.
+    aliases:
+      - "Christopher"
 
   - canonical: "Hanief Ally"
     gender: "Male"
@@ -387,8 +437,27 @@ persons:
 
   - canonical: "Manilal Gandhi"
     gender: "Male"
+    description: >
+      Manilal Gandhi was the son of Mahatma Gandhi. While visiting Cape Town
+      he fell in love with Fatima "Timmie" Gool, J.M.H. Gool's daughter — but
+      as she was Muslim and he Hindu, his father objected and had him
+      recalled to India in 1914, where he was married instead to Sushila,
+      a match Gandhi arranged. Manilal remained close friends with Timmie and
+      Sushila afterward. He went on to take over as editor of Indian Opinion,
+      the newspaper his father had founded, and remained politically active in
+      South Africa, including threatening a protest fast of his own in the
+      early 1950s against the removal of the "Coloured" vote.
     aliases:
       - "Manilal"
+
+  - canonical: "Kasturba Gandhi"
+    gender: "Female"
+    description: >
+      Kasturba Gandhi was Mahatma Gandhi's wife. During the Gandhis' stay at
+      the Gool home, 7 Buitencingle Street, in February-March 1914, she fell
+      seriously ill and was nursed back to health by the Gool family.
+    aliases:
+      - "Kasturba"
 
   # ─── Messaris family (Louis is a teacher, Tykie his child/relative) ─────────
 
@@ -442,14 +511,29 @@ persons:
     gender: "Male"
     description: >
       Mohandas Karamchand Gandhi, known as Mahatma Gandhi (Mahatma meaning
-      "Great Soul"), came to South Africa in 1893 as a lawyer to work on a
-      legal case. He lived and worked in South Africa for over 20 years,
-      developing his philosophy of satyagraha (non-violent resistance, or
-      passive resistance) as a tool of political struggle. He founded the
-      newspaper Indian Opinion to advocate for non-European rights in South
-      Africa. He was connected to the Gool family in Cape Town, staying at
-      their home at 7 Buitencingle Street during his 1914 South Africa farewell
-      visit. Gandhi returned to India in 1914.
+      "Great Soul"), came to South Africa in 1893 as a lawyer on a one-year
+      assignment for the merchant Dada Abdullah, and stayed on for over 20
+      years developing satyagraha (non-violent resistance) after Natal moved
+      to disenfranchise Indians in 1894. He founded the Natal Indian Congress
+      and the newspaper Indian Opinion. His relationship with the Gool family
+      of Cape Town spanned nearly two decades: J.M.H. Gool first wrote to him
+      in 1897 in support after Gandhi survived a lynch-mob attack at the
+      Durban docks; the two corresponded for years afterward, including
+      letters exchanged with J.M.H.'s son Abdul Hamid Gool during his medical
+      studies at Guy's Hospital in London (c.1906-1910). Gandhi was a guest at
+      the Gool home, 7 Buitencingle Street, on at least three occasions — in
+      1911 (where he helped stain the surgery floors), in October 1912 (to
+      receive the visiting G. H. Gokhale), and in February-March 1914, when
+      his wife Kasturba fell seriously ill and was nursed by the Gool family.
+      In August 1914, Abdul Hamid Gool gave Gandhi a farewell address on
+      behalf of Port Elizabeth's Indian community and hailed him as "Mahatma"
+      — the book argues this predates the title's more commonly cited later
+      use in India. Gandhi's actual final overnight stay in Cape Town before
+      departing South Africa on 18 July 1914 was at the home of Morris and
+      Ruth Alexander, not at 7 Buitencingle Street. He sent his son Manilal
+      home to India that same year. Gandhi was assassinated in January 1948
+      by Nathuram Godse. The correspondence between Gandhi and J.M.H. Gool was
+      later supplied to the memoir's author by Gandhi scholar E.S. Reddy.
     fields:
       birthDate: "1869-10-02"
       deathDate: "1948-01-30"
@@ -758,24 +842,26 @@ relations:
   - { from: "Bibi Gool",                     to: "Mohamed Saaid Gool", type: "parent_of" }
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Zohra Abdurahman",   type: "parent_of" }
   - { from: "Bibi Gool",                     to: "Zohra Abdurahman",   type: "parent_of" }
+  # Bibi Gool had exactly three children (confirmed directly by the user):
+  # Ayesha Rassool, Mohamed Saaid Gool, and Zohra Abdurahman — nothing further.
 
-  # ─── Branch 2 parent_of ────────────────────────────────────────────────────
+  # ─── Branch 2 parent_of (Wahida's children) ─────────────────────────────────
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Abdul Hamid Gool",    type: "parent_of" }
   - { from: "Wahida Gool",                   to: "Abdul Hamid Gool",    type: "parent_of" }
-  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Goolam Gool",         type: "parent_of" }
-  - { from: "Wahida Gool",                   to: "Goolam Gool",         type: "parent_of" }
-  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Jane Gool-Tabata",    type: "parent_of" }
-  - { from: "Wahida Gool",                   to: "Jane Gool-Tabata",    type: "parent_of" }
-  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Minnie Gool",         type: "parent_of" }
-  - { from: "Wahida Gool",                   to: "Minnie Gool",         type: "parent_of" }
-  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Fatima Gool",         type: "parent_of" }
-  - { from: "Wahida Gool",                   to: "Fatima Gool",         type: "parent_of" }
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Mariam Gool",         type: "parent_of" }
   - { from: "Wahida Gool",                   to: "Mariam Gool",         type: "parent_of" }
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Zobeida Gool",        type: "parent_of" }
   - { from: "Wahida Gool",                   to: "Zobeida Gool",        type: "parent_of" }
   - { from: "Haji Joosub Maulvi Hamid Gool", to: "Mohammed Hanief Gool", type: "parent_of" }
   - { from: "Wahida Gool",                   to: "Mohammed Hanief Gool", type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Fatima Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Fatima Gool",         type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Goolam Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Goolam Gool",         type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Jane Gool-Tabata",    type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Jane Gool-Tabata",    type: "parent_of" }
+  - { from: "Haji Joosub Maulvi Hamid Gool", to: "Minnie Gool",         type: "parent_of" }
+  - { from: "Wahida Gool",                   to: "Minnie Gool",         type: "parent_of" }
 
   # ─── Marriages ─────────────────────────────────────────────────────────────
   - { from: "Ayesha Rassool",    to: "Peter Alexander Rassool", type: "spouse_of" }
@@ -832,8 +918,8 @@ relations:
   - { from: "Yousuf Rassool",          to: "Samuel Rassool",    type: "grandparent_of" }
   - { from: "Yousuf Rassool",          to: "Alexander Rassool", type: "grandparent_of" }
   - { from: "Yousuf Rassool",          to: "Leonardo Rassool",  type: "grandparent_of" }
-  - { from: "Yousuf Rassool",          to: "Dylan Rassool",     type: "grandparent_of" }
-  - { from: "Yousuf Rassool",          to: "Lewis Rassool",     type: "grandparent_of" }
+  - { from: "Yousuf Rassool",          to: "Dylan",             type: "grandparent_of" }
+  - { from: "Yousuf Rassool",          to: "Lewis",             type: "grandparent_of" }
 
   # ─── Children of Abdul Hamid + Cissie ──────────────────────────────────────
   - { from: "Abdul Hamid Gool", to: "Shaheen Gool", type: "parent_of" }
@@ -872,6 +958,17 @@ relations:
   - { from: "Mohandas Karamchand Gandhi", to: "Dr. Abdulla Abdurahman",         type: "associated_with" }
   - { from: "Yousuf Rassool",             to: "Hassen Mall",                    type: "associated_with" }
   - { from: "Benjamin Maximilian Kies",   to: "I.B. Tabata",                    type: "associated_with" }
+  - { from: "Mohandas Karamchand Gandhi", to: "Abdul Hamid Gool",              type: "associated_with" }
+
+  # ─── Gandhi family ────────────────────────────────────────────────────────
+  - { from: "Mohandas Karamchand Gandhi", to: "Kasturba Gandhi", type: "spouse_of" }
+
+  # ─── Manilal Gandhi / Fatima Gool romance (blocked by Gandhi Sr.) ───────────
+  - { from: "Manilal Gandhi", to: "Fatima Gool",    type: "romantic_interest_of" }
+  - { from: "Fatima Gool",    to: "Manilal Gandhi", type: "romantic_interest_of" }
+
+  # ─── Advocate Christopher married Gadija (see NOTE on Gadija Noor above) ────
+  - { from: "Advocate Christopher", to: "Gadija Noor", type: "spouse_of" }
 
   # ─── Person → Organization (membership / founding) ───────────────────────────
   - { from: "Yousuf Rassool",              to: "Non-European Unity Movement",    type: "member_of" }

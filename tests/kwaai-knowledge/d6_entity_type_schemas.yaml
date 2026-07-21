@@ -1,0 +1,96 @@
+# Per-KB entity type guidance for D6, injected into every entity-extraction LLM prompt
+# via kb_type_context (see ingestion.rs's kb_schemas / extract_from_text in graph.rs).
+#
+# Written after finding that Publication and Legislation had become catch-all buckets:
+# with only Person/Place/Organization/Legislation/Publication as allowed types, the LLM
+# was dumping anything that didn't cleanly fit elsewhere (school subjects, drugs,
+# diseases, degree abbreviations, dates, historical events, political concepts) into
+# whichever of these two seemed least wrong. anti_examples give the model concrete,
+# corpus-specific counter-examples instead of only the prompt's abstract "discard if not
+# a real entity" rule, which smaller models don't reliably follow on their own.
+#
+# Load with: kwaainet rag graph schema set --kb D6 --file d6_entity_type_schemas.yaml
+
+entity_type_schemas:
+  - name: "Publication"
+    description: >
+      A named newspaper, journal, magazine, book, or other titled published work that
+      is referred to as a distinct publication in the text — not a school subject,
+      medicine, disease, academic degree, or a stray word/phrase that happens to be
+      capitalized.
+    examples:
+      - "Indian Opinion"
+      - "Cape Times"
+      - "Cape Argus"
+      - "Education Journal"
+      - "Rand Daily Mail"
+      - "The Torch"
+    anti_examples:
+      - "Mathematics"       # school subject, not a publication
+      - "Chemistry"         # school subject
+      - "Physics"           # school subject
+      - "Urdu"              # a language, not a publication
+      - "Streptomycin"      # a medicine
+      - "Tubercular"        # a disease description
+      - "MB ChB"            # an academic degree abbreviation
+      - "B.Sc"              # an academic degree abbreviation
+      - "BA LLb"            # an academic degree abbreviation
+      - "Big Bertha"        # a weapon, not a publication
+      - "Fah-fee"           # a numbers game
+      - "Turmeric powder"   # a cooking ingredient
+      - "Inevitably"        # a stray adverb, not an entity at all
+
+  - name: "Legislation"
+    description: >
+      A specific named law, act, ordinance, bill, or regulation that was enacted by a
+      government body — not a date, historical event, political ideology/concept, job
+      title, or general phrase.
+    examples:
+      - "Group Areas Act"
+      - "Population Registration Act"
+      - "Transvaal Asiatic Act"
+      - "Riotous Assemblies Act"
+      - "Franchise Act"
+    anti_examples:
+      - "1952"                  # a bare date, not legislation
+      - "Kristalnacht"          # a historical event, not legislation
+      - "Passive Resistance"    # a political strategy/concept
+      - "Napoleonic"            # a historical era/adjective
+      - "Finance Minister"      # a job title, not legislation
+      - "Socialist Millenium"   # a political ideology
+      - "Imperialism"           # a political concept
+      - "Peace"                 # a greeting/general word
+      - "Gentleman"             # not legislation
+
+  - name: "Organization"
+    description: >
+      A named institution, company, club, political movement, or formal group — not a
+      person's nickname, an abstract concept, or a general field/ideology.
+    examples:
+      - "Non-European Unity Movement"
+      - "Teachers League of South Africa"
+      - "Hanaffi Quwatul Islam Mosque"
+      - "Kismets Cricket Club"
+    anti_examples:
+      - "Muddy"                 # a person's nickname, not an organization
+      - "Higher Education"      # a general concept, not a specific institution
+      - "Pro-Hitler"            # a political leaning, not an organization
+      - "Western Imperialism"   # an ideology, not an organization
+
+  - name: "Person"
+    description: >
+      A real, specific named individual who appears or is discussed in the memoir's own
+      account of events — not a fictional character from a book, play, or film being
+      quoted or studied by the narrator, and not a generic role or relational reference
+      standing in for an unnamed person.
+    examples:
+      - "Yousuf Rassool"
+      - "J.M.H. Gool"
+      - "Cissie Gool"
+    anti_examples:
+      - "Katz"                          # fictional character from a book studied in the text
+      - "Carlson"                       # fictional character from Of Mice and Men, quoted/taught
+      - "Player King"                   # fictional character from Hamlet, quoted
+      - "Fazil's father"                # a relational reference, not a proper name
+      - "Malay mothers"                 # a generic group reference, not a specific person
+      - "Native Representative candidate" # a role description, not a name

@@ -145,6 +145,14 @@ run_graph_build_rel() {
   # re-extraction pass is cheap since axiom_extract's KnownEntity rule matches
   # everything already in the graph without an LLM call.
   log "graph build (pass 1/2, entities only): sample=${sample_pct:-100}% reset=${reset_flag:-no}"
+  # --no-relations here is load-bearing, not decoration: without it, ingestion.rs's
+  # `no_relations || relation_threshold_high > 0.0` guard evaluates false (this pass
+  # passes neither flag), so the legacy lexical_relation_trigger()-gated full-LLM
+  # relation extraction runs at full strength and pollutes the graph with exactly the
+  # kind of hallucinated relations (bare-initials-as-Person entities getting
+  # parent_of/spouse_of edges) that Phase 4 exists to replace. `cmd_rebuild()`'s Step 4
+  # forces this same suppression internally; this script has to do it explicitly since
+  # it drives `graph build` directly instead of `rag rebuild`.
   # shellcheck disable=SC2086
   kwaainet rag graph build --kb D6 \
     --model "$MODEL" \
@@ -153,6 +161,7 @@ run_graph_build_rel() {
     --entity-types "$ENTITY_TYPES" \
     --graph-window 1 \
     --axiomatic-threshold "$ENTITY_THRESHOLD" \
+    --no-relations \
     $reset_flag \
     $sample_flag \
     2>&1 | tee -a "$LOG"

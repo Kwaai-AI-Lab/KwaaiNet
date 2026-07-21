@@ -210,7 +210,15 @@ pub async fn seed_family_tree(
 
         match (from_id, to_id) {
             (Some(fid), Some(tid)) => {
-                graph.upsert_relation(fid, tid, &rel.relation_type, 0)?;
+                graph.upsert_relation_with_confidence(
+                    fid,
+                    tid,
+                    &rel.relation_type,
+                    0,
+                    1.0,
+                    "Seeded",
+                    "seeded",
+                )?;
                 stats.relations_upserted += 1;
             }
             _ => {

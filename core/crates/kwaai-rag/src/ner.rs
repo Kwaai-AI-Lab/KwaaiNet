@@ -128,6 +128,22 @@ fn is_stop_word(s: &str) -> bool {
     STOP_WORDS.contains(&s)
 }
 
+/// True when `words[idx]` opens a sentence — either it's the first word of the text,
+/// or the previous word ends the prior sentence (`.!?`, optionally followed by a
+/// closing quote/paren). English capitalizes the first word of every sentence
+/// regardless of whether it's a proper noun, so this position alone is never good
+/// evidence of a real entity — see `extract_proper_noun_candidates`.
+fn is_sentence_initial(words: &[&str], idx: usize) -> bool {
+    idx == 0
+        || matches!(
+            words[idx - 1]
+                .trim_end_matches(['"', '\'', ')'])
+                .chars()
+                .last(),
+            Some('.' | '!' | '?')
+        )
+}
+
 /// Extract proper noun candidate phrases from `text`.
 ///
 /// Scans all capitalised word sequences (not just mid-sentence ones), merges
@@ -142,8 +158,40 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
 
     let words: Vec<&str> = text.split_whitespace().collect();
     let n = words.len();
-    let mut i = 0;
 
+    // A lone single-word candidate that only appears capitalized at the start of a
+    // sentence is ambiguous — English capitalizes every sentence-initial word
+    // regardless of whether it's a proper noun. Two independent signals below narrow
+    // this down to likely-not-a-proper-noun without penalizing genuine single-mention
+    // names: (a) it ends in "-ly", the shape of a sentence adverb ("Invariably",
+    // "Inevitably"); (b) the same word also appears written lowercase elsewhere in
+    // the text ("Once, ..." vs "...happened once before") — direct evidence it's an
+    // ordinary word, not a name, since real proper nouns essentially never also occur
+    // lowercase. Multi-word phrases don't have this ambiguity at all (only the first
+    // word of a sentence is auto-capitalized, so a second consecutive capitalized
+    // word is real signal), and a word confirmed capitalized elsewhere in this same
+    // chunk — genuinely repeated, not just a sentence-opener — is exempted from both
+    // checks below regardless.
+    let mut confirmed_elsewhere: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen_lowercase: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (idx, &w) in words.iter().enumerate() {
+        let c = core(w);
+        if c.is_empty() {
+            continue;
+        }
+        if c.chars().next().is_some_and(|ch| ch.is_lowercase()) {
+            seen_lowercase.insert(c.to_lowercase());
+            continue;
+        }
+        if is_sentence_initial(&words, idx) {
+            continue;
+        }
+        if c.len() > 1 {
+            confirmed_elsewhere.insert(c);
+        }
+    }
+
+    let mut i = 0;
     while i < n && result.len() < CANDIDATE_CAP {
         let w = words[i];
         let c = core(w);
@@ -153,6 +201,7 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
 
         if is_candidate {
             let mut parts = vec![c.to_string()];
+            let start_idx = i;
             let mut j = i + 1;
 
             // Extend phrase across consecutive capitalised words, stopping at
@@ -169,9 +218,19 @@ pub fn extract_proper_noun_candidates(text: &str) -> Vec<String> {
                 }
             }
 
-            let phrase = parts.join(" ");
-            if seen.insert(phrase.clone()) {
-                result.push(phrase);
+            let looks_like_ordinary_word = parts[0].len() > 2
+                && (parts[0].to_lowercase().ends_with("ly")
+                    || seen_lowercase.contains(&parts[0].to_lowercase()));
+            let sentence_initial_fluke = parts.len() == 1
+                && looks_like_ordinary_word
+                && is_sentence_initial(&words, start_idx)
+                && !confirmed_elsewhere.contains(parts[0].as_str());
+
+            if !sentence_initial_fluke {
+                let phrase = parts.join(" ");
+                if seen.insert(phrase.clone()) {
+                    result.push(phrase);
+                }
             }
             i = j;
         } else {
@@ -349,6 +408,17 @@ pub fn resolve_definite_descriptions(
 /// Extended version of the ingestion-time `resolve_pronouns` that accepts the
 /// richer `(name, aliases, gender)` candidate list from the graph rather than the
 /// global gender snapshot.
+/// Mirrors the alias check `GraphStore::coref_candidates_for_chunk` uses to force-include
+/// the narrator — kept in sync so third-person pronoun resolution can exclude that entry.
+fn is_narrator_candidate(aliases: &[String]) -> bool {
+    aliases.iter().any(|a| {
+        matches!(
+            a.to_lowercase().as_str(),
+            "narrator" | "author" | "i" | "the author" | "the narrator"
+        )
+    })
+}
+
 pub fn resolve_pronouns_from_candidates(
     text: &str,
     candidates: &[(String, Vec<String>, Option<String>)],
@@ -377,9 +447,20 @@ pub fn resolve_pronouns_from_candidates(
 
         // Find the most-recent candidate with matching gender (scan candidates in reverse,
         // assuming they were ordered by recency / appearance position).
+        //
+        // The narrator entry is excluded here: `coref_candidates_for_chunk` always
+        // force-includes the narrator with a hardcoded gender so first-person "I"/"my"
+        // resolves correctly elsewhere (`find_narrator_pronoun_positions`), but that
+        // means the narrator would otherwise silently win THIRD-person "he"/"she"
+        // lookups too whenever the true antecedent's gender field is unset (e.g. a
+        // bare-first-name duplicate entity with no inferred gender) — the scan falls
+        // through past the real (but gender-unlabeled) antecedent all the way to the
+        // narrator, who always matches. Third-person pronouns should only ever resolve
+        // to another character; the narrator's own pronouns are handled separately.
         let matched = candidates
             .iter()
             .rev()
+            .filter(|(_, aliases, _)| !is_narrator_candidate(aliases))
             .find(|(_, _, g)| match g.as_deref() {
                 Some(eg) => eg == gender || gender == "Neutral",
                 None => gender == "Neutral",
@@ -631,6 +712,59 @@ mod tests {
     }
 
     #[test]
+    fn ner_rejects_sentence_initial_ly_adverb() {
+        // Regression: "Inevitably" and "Invariably" — both real corpus false
+        // positives — were extracted as standalone entity candidates purely because
+        // they capitalize a sentence, then hallucinated into graph entities downstream.
+        let text =
+            "We discussed the plan for hours. Invariably, the conversation turned to politics.";
+        let c = extract_proper_noun_candidates(text);
+        assert!(!c.contains(&"Invariably".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn ner_keeps_ly_word_confirmed_elsewhere_in_chunk() {
+        // A word ending in "-ly" that ALSO appears capitalized in a non-sentence-initial
+        // position is real evidence it's a proper noun (e.g. a surname), not an adverb —
+        // must not be rejected just because one of its mentions opens a sentence.
+        let text = "His trip included Beverly Hills. Beverly enjoyed the drive there.";
+        let c = extract_proper_noun_candidates(text);
+        assert!(c.contains(&"Beverly".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn ner_keeps_sentence_initial_single_mention_proper_noun() {
+        // A real, single-mention proper noun that doesn't end in "-ly" (like a place
+        // name) must survive even when its only mention opens a sentence and it's
+        // never confirmed capitalized elsewhere — narrows the fix to the adverb
+        // pattern specifically instead of penalizing every sentence-initial word.
+        let text = "We toured the coast. Rustomjee ran a trading business in Natal.";
+        let c = extract_proper_noun_candidates(text);
+        assert!(c.contains(&"Rustomjee".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn ner_rejects_sentence_initial_word_seen_lowercase_elsewhere() {
+        // A word capitalized only by sentence position, whose lowercase form also
+        // appears written lowercase elsewhere in the text, is strong direct evidence
+        // it's an ordinary word rather than a proper noun — real names essentially
+        // never also occur spelled lowercase.
+        let text = "Once, I visited Cape Town. It happened once before that year.";
+        let c = extract_proper_noun_candidates(text);
+        assert!(!c.contains(&"Once".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn ner_keeps_word_seen_lowercase_elsewhere_when_confirmed_capitalized_too() {
+        // Even when the lowercase-elsewhere signal fires, a word also confirmed
+        // capitalized in a non-sentence-initial position (genuinely used as a name
+        // elsewhere) must still survive — the two escape hatches compose.
+        let text = "Grandpa greeted Rose warmly. Rose smiled back. The sun rose over the hills.";
+        let c = extract_proper_noun_candidates(text);
+        assert!(c.contains(&"Rose".to_string()), "{c:?}");
+    }
+
+    #[test]
     fn ner_proper_nouns_filters_stop_words() {
         let text = "The doctor said He was fine. She visited The Hospital.";
         let c = extract_proper_noun_candidates(text);
@@ -736,6 +870,54 @@ mod tests {
         assert!(
             map.iter().any(|(p, n)| p == "he" && n == "Yousuf Rassool"),
             "{map:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_pronouns_from_candidates_skips_narrator_for_third_person() {
+        // Regression: `coref_candidates_for_chunk` always force-includes the narrator
+        // with a hardcoded Male gender so first-person "I"/"my" resolves correctly
+        // elsewhere. Before this fix, a real male character whose gender field is
+        // unset (e.g. a bare-first-name duplicate entity — the exact shape of the
+        // "Hassen" / "Hassen Mall" duplication found in D6) would fail the gender
+        // match and the scan would fall through to the narrator, which always
+        // matches — silently misattributing a third-person "he" to the narrator
+        // (this produced a real "Yousuf Rassool member_of Congress" false relation).
+        // Excluding the narrator here can't fix the *right* answer without also
+        // solving the underlying gender-unset-candidate problem, but it turns a
+        // confident wrong answer into no answer, which is the safe outcome: no
+        // relation candidate is generated at all rather than a false one.
+        let candidates = vec![
+            (
+                "Yousuf Rassool".to_string(),
+                vec!["narrator".to_string(), "author".to_string()],
+                Some("Male".to_string()),
+            ),
+            ("Hassen".to_string(), vec![], None),
+        ];
+        let results =
+            resolve_pronouns_from_candidates("The one he belonged to was Congress", &candidates);
+        assert!(
+            results.is_empty(),
+            "must not misattribute 'he' to the narrator when the real antecedent's gender is unset: {results:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_pronouns_from_candidates_never_resolves_narrator_even_when_sole_candidate() {
+        // The narrator's own pronouns ("I"/"my") are handled exclusively by
+        // `find_narrator_pronoun_positions` elsewhere; third-person "he"/"she" must
+        // never resolve to the narrator, even in the degenerate case where the
+        // narrator is the only candidate in scope.
+        let candidates = vec![(
+            "Yousuf Rassool".to_string(),
+            vec!["narrator".to_string()],
+            Some("Male".to_string()),
+        )];
+        let results = resolve_pronouns_from_candidates("He wrote the memoir", &candidates);
+        assert!(
+            results.is_empty(),
+            "narrator must not resolve via third-person pronouns even alone: {results:?}"
         );
     }
 }

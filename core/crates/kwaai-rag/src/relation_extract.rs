@@ -118,6 +118,10 @@ const FAMILY_RELATION_TRIGGERS: &[(&str, &str)] = &[
     ("half-sister of", "half_sibling_of"),
     ("half brother of", "half_sibling_of"),
     ("half sister of", "half_sibling_of"),
+    ("half-brother", "half_sibling_of"), // bare form: "her half-brother, the black sheep"
+    ("half-sister", "half_sibling_of"),
+    ("half brother", "half_sibling_of"),
+    ("half sister", "half_sibling_of"),
     ("grandfather of", "grandparent_of"),
     ("grandmother of", "grandparent_of"),
     ("grandson of", "grandchild_of"),
@@ -282,9 +286,14 @@ pub fn classify_relation_candidates(
     person_candidates: &[(String, Vec<String>, Option<String>)],
     narrator: Option<(i64, &str)>,
 ) -> Vec<TypedRelationCandidate> {
+    // Includes the narrator explicitly — it's a separate parameter, not part of
+    // `known_entities`, so without this a narrator-resolved candidate (via bare
+    // first-person "I"/"my") would look up its own name and get "" back, even
+    // though the underlying subject_id/object_id resolved correctly.
     let name_by_id: HashMap<i64, &str> = known_entities
         .iter()
         .map(|(id, name, _)| (*id, name.as_str()))
+        .chain(narrator)
         .collect();
     let id_by_name_lower: HashMap<String, i64> = known_entities
         .iter()
@@ -318,13 +327,36 @@ pub fn classify_relation_candidates(
         for (id, name, aliases) in known_entities {
             let candidates =
                 std::iter::once(name.as_str()).chain(aliases.iter().map(String::as_str));
+            let mut matched = false;
             for tok in candidates {
                 if tok.len() < 3 || tok.eq_ignore_ascii_case("I") {
                     continue;
                 }
                 if let Some(pos) = s_lower.find(&tok.to_lowercase()) {
                     positions.push((pos, pos + tok.len(), *id, false));
+                    matched = true;
                     break;
+                }
+            }
+            // Fall back to a surname-dropped variant of the canonical name when
+            // nothing matched exactly — e.g. "Abdul Hamid Gool" → "Abdul Hamid",
+            // or "Cissie Gool" → "Cissie" — this corpus commonly drops surnames
+            // on repeat mentions ("his marriage with Cissie"), and 2-word "First
+            // Surname" names truncating to a single first name is the *common*
+            // case here, not a rare edge case. Flagged like a coref match (lower
+            // confidence) since it's an approximate, not exact, ID — collision
+            // risk (two known entities sharing a truncated form) is caught by
+            // the existing ambiguous-window axiom, which demotes ties within
+            // the same tie margin regardless of how the position was matched.
+            if !matched {
+                let words: Vec<&str> = name.split_whitespace().collect();
+                if words.len() >= 2 {
+                    let truncated = words[..words.len() - 1].join(" ");
+                    if truncated.len() >= 3 {
+                        if let Some(pos) = s_lower.find(&truncated.to_lowercase()) {
+                            positions.push((pos, pos + truncated.len(), *id, true));
+                        }
+                    }
                 }
             }
         }
@@ -357,10 +389,29 @@ pub fn classify_relation_candidates(
         // (a bare first-person-pronoun match); without this, whichever happened to
         // be pushed last would win regardless of specificity. Mirrors the
         // longest-trigger-wins rule `find_best_trigger` already applies above.
+        //
+        // Critical distinction: an EXACT-same-span match from a *different*
+        // entity (e.g. three distinct people all truncating to the identical
+        // "Cissie" text via the surname-drop fallback) is genuine ambiguity,
+        // not a specificity relationship — it must survive so the
+        // ambiguous-window axiom can see the collision and demote it. Only a
+        // *properly contained* shorter span (different start/end, not an exact
+        // tie) gets dropped in favor of the longer, already-kept one.
         positions.sort_by_key(|(start, end, _, _)| std::cmp::Reverse(end - start));
         let mut deduped: Vec<(usize, usize, i64, bool)> = Vec::with_capacity(positions.len());
-        for pos @ (start, end, _, _) in positions {
-            let overlaps = deduped.iter().any(|&(rs, re, _, _)| start < re && rs < end);
+        for pos @ (start, end, id, _) in positions {
+            let overlaps = deduped.iter().any(|&(rs, re, rid, _)| {
+                if rid == id {
+                    // Same entity matched twice (e.g. literal + coref) — redundant.
+                    start < re && rs < end
+                } else if start == rs && end == re {
+                    // Same span, different entity — keep both; this is ambiguity,
+                    // not one match being more specific than the other.
+                    false
+                } else {
+                    start < re && rs < end
+                }
+            });
             if !overlaps {
                 deduped.push(pos);
             }
@@ -616,6 +667,11 @@ pub struct RelationAxiomaticMetricsAccum {
     pub llm_confirmed: usize,
     pub llm_rejected: usize,
     pub llm_retyped: usize,
+    /// Candidates where the verify LLM call itself failed (network error, non-2xx,
+    /// timeout, unparseable response) rather than being genuinely judged. Kept out
+    /// of `llm_rejected` so `llm_confirm_rate` reflects real LLM precision, not
+    /// infrastructure flakiness.
+    pub llm_call_failed: usize,
     pub axio_times_ms: Vec<f64>,
     pub llm_verify_times_ms: Vec<f64>,
     pub method_breakdown: HashMap<String, usize>,
@@ -635,6 +691,7 @@ impl RelationAxiomaticMetricsAccum {
             llm_confirmed: 0,
             llm_rejected: 0,
             llm_retyped: 0,
+            llm_call_failed: 0,
             axio_times_ms: Vec::new(),
             llm_verify_times_ms: Vec::new(),
             method_breakdown: HashMap::new(),
@@ -666,16 +723,19 @@ impl RelationAxiomaticMetricsAccum {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_llm_verify(
         &mut self,
         confirmed: usize,
         rejected: usize,
         retyped: usize,
+        call_failed: usize,
         elapsed_ms: f64,
     ) {
         self.llm_confirmed += confirmed;
         self.llm_rejected += rejected;
         self.llm_retyped += retyped;
+        self.llm_call_failed += call_failed;
         self.llm_verify_times_ms.push(elapsed_ms);
     }
 
@@ -710,6 +770,7 @@ impl RelationAxiomaticMetricsAccum {
             llm_confirmed: self.llm_confirmed,
             llm_rejected: self.llm_rejected,
             llm_retyped: self.llm_retyped,
+            llm_call_failed: self.llm_call_failed,
             total_wall_secs: wall_secs,
             mean_ms_per_chunk_axio: mean(&self.axio_times_ms),
             p95_ms_per_chunk_axio: p95(&self.axio_times_ms),
@@ -738,6 +799,7 @@ pub struct RelationAxiomaticRunMetrics {
     pub llm_confirmed: usize,
     pub llm_rejected: usize,
     pub llm_retyped: usize,
+    pub llm_call_failed: usize,
     pub total_wall_secs: f64,
     pub mean_ms_per_chunk_axio: f64,
     pub p95_ms_per_chunk_axio: f64,
@@ -780,6 +842,12 @@ impl RelationAxiomaticRunMetrics {
                 self.llm_confirmed,
                 self.llm_rejected,
                 self.llm_retyped
+            );
+        }
+        if self.llm_call_failed > 0 {
+            println!(
+                "  LLM call failed : {}  ← API/network error, NOT a content-based rejection",
+                self.llm_call_failed
             );
         }
         println!(
@@ -899,6 +967,96 @@ mod tests {
     }
 
     #[test]
+    fn bare_half_sibling_trigger_in_possessive_subject_order() {
+        // Gap found in round-2 ground-truth analysis, but note the *original*
+        // ground-truth sentence ("her half-brother, the so-called black sheep")
+        // uses an appositive order — name, THEN possessive-role — which puts
+        // both entities on the same side of the trigger and still can't be
+        // matched by this before/after algorithm regardless of vocabulary.
+        // The bare trigger does earn its keep for the reverse, "X's role was Y"
+        // order, which this test covers.
+        let known = entities(&[(1, "Jane Doe"), (2, "John Smith")]);
+        let candidates = classify_relation_candidates(
+            25,
+            "Jane Doe's half-brother was John Smith for all their lives.",
+            &known,
+            &[],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].relation_type, "half_sibling_of");
+    }
+
+    #[test]
+    fn surname_dropped_variant_matches_three_word_name() {
+        // Gap found in round-2 analysis: "his marriage with Cissie" should match
+        // "Abdul Hamid Gool" even though the text only says "Abdul Hamid" (no
+        // surname) on this mention — common on repeat references in prose.
+        let known = entities(&[(1, "Abdul Hamid Gool"), (2, "Cissie Gool")]);
+        let candidates = classify_relation_candidates(
+            26,
+            "Abdul Hamid, a decade into his marriage with Cissie, still worked long hours.",
+            &known,
+            &[],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        let c = &candidates[0];
+        assert_eq!(c.relation_type, "spouse_of");
+        assert!(c.subject_id == 1 || c.object_id == 1);
+        assert!(c.subject_id == 2 || c.object_id == 2);
+        // Surname-dropped match is flagged like coref, capping proximity_confidence.
+        assert!(c.proximity_confidence <= 0.80);
+    }
+
+    #[test]
+    fn surname_dropped_variant_also_matches_two_word_names() {
+        // Round-2 finding: 2-word "First Surname" names truncating to a single
+        // first name ("Shaheen Gool" -> "Shaheen") is the *common* case in this
+        // corpus, not a rare edge case worth excluding — this is the exact
+        // ground-truth sentence that originally exposed the alias gap.
+        let known = entities(&[(1, "Shaheen Gool"), (2, "Cissie Gool")]);
+        let candidates = classify_relation_candidates(
+            27,
+            "Shaheen, the son of Uncle Doctor and Cissie Gool, arrived first.",
+            &known,
+            &[],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        let c = &candidates[0];
+        assert_eq!(c.relation_type, "child_of");
+        assert!(c.subject_id == 1 || c.object_id == 1);
+        assert!(c.subject_id == 2 || c.object_id == 2);
+    }
+
+    #[test]
+    fn surname_dropped_variant_collision_is_demoted_by_ambiguity_axiom() {
+        // Three known entities sharing the same truncated first name ("Cissie")
+        // in the same sentence must not silently pick one — the ambiguous-window
+        // axiom (same one guarding coref matches) requires >=2 *other* candidates
+        // within the tie margin to demote, so a plain 2-way collision only
+        // softens proximity_confidence; this uses a 3-way collision to actually
+        // clear that bar and confirm the axiom safety net catches severe cases.
+        let known = entities(&[
+            (1, "Cissie Gool"),
+            (2, "Cissie Someone"),
+            (3, "Cissie Another"),
+            (4, "John Smith"),
+        ]);
+        let candidates = classify_relation_candidates(
+            28,
+            "Cissie was the daughter of John Smith according to Cissie's own account.",
+            &known,
+            &[],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        let validated = validate_relation_axioms(candidates, &RelationAxiomSnapshot::default());
+        assert_eq!(validated[0].composite_confidence, 0.0);
+    }
+
+    #[test]
     fn reversed_trigger_swaps_subject_and_object() {
         let known = entities(&[(1, "New Era Fellowship"), (2, "Ben Kies")]);
         let candidates = classify_relation_candidates(
@@ -1013,6 +1171,13 @@ mod tests {
         );
         // Coref-resolved endpoint caps proximity_confidence below a pure literal match.
         assert!(c.proximity_confidence <= 0.80);
+        // Regression: the narrator endpoint's name must be populated, not "" — it was
+        // dropped by name_by_id only being built from `known_entities`, which never
+        // includes the narrator (a separate parameter).
+        assert!(
+            c.subject_name == "John Smith" || c.object_name == "John Smith",
+            "narrator endpoint's name must resolve, not be blank: {c:?}"
+        );
     }
 
     #[test]

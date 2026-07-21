@@ -4934,6 +4934,29 @@ pub fn lexical_relation_trigger(text: &str) -> bool {
     false
 }
 
+/// Catches the case where the LLM's own description text admits the candidate isn't a
+/// real entity (e.g. "It is not a valid entity, skipping it.") but still included it in
+/// the "entities" array rather than omitting it — an observed compliance gap in smaller
+/// models that the prompt's abstract "discard if not real" instruction doesn't reliably
+/// prevent. Narrow substring check on purpose: only rejects self-admitted non-entities,
+/// not entities merely described as uncertain or obscure.
+fn description_self_rejects(description: &str) -> bool {
+    const SELF_REJECTION_PHRASES: &[&str] = &[
+        "not a valid entity",
+        "not a real entity",
+        "not an entity",
+        "not a proper entity",
+        "does not represent an entity",
+        "should be discarded",
+        "skipping it",
+        "skip this",
+    ];
+    let lower = description.to_lowercase();
+    SELF_REJECTION_PHRASES
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+}
+
 /// ingestion can continue without hard errors.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_from_text(
@@ -5265,6 +5288,7 @@ entities or omit the fictional one entirely.\n\n\
                     e.name = clean_entity_name(&e.name);
                     e
                 })
+                .filter(|e| !description_self_rejects(&e.description))
                 .collect();
             let relations = if effective_no_relations {
                 vec![]
@@ -5549,6 +5573,33 @@ mod tests {
         // Clean names pass through unchanged
         assert_eq!(clean_entity_name("Gandhi"), "Gandhi");
         assert_eq!(clean_entity_name("Goolam Gool"), "Goolam Gool");
+    }
+
+    #[test]
+    fn description_self_rejects_catches_llm_admitted_non_entities() {
+        // Regression: an entity literally named "Inevitably" was committed to the D6
+        // graph with this exact description — the LLM correctly judged it invalid but
+        // included it in the output anyway instead of omitting it.
+        assert!(description_self_rejects(
+            "It is not a valid entity, skipping it."
+        ));
+        assert!(description_self_rejects(
+            "This does not represent an entity in the traditional sense."
+        ));
+        assert!(description_self_rejects(
+            "This candidate should be discarded."
+        ));
+    }
+
+    #[test]
+    fn description_self_rejects_leaves_genuine_descriptions_alone() {
+        assert!(!description_self_rejects(
+            "A newspaper founded in 1903 to advocate for non-European rights."
+        ));
+        assert!(!description_self_rejects(
+            "An obscure figure mentioned only once in the text."
+        ));
+        assert!(!description_self_rejects(""));
     }
 
     #[test]
