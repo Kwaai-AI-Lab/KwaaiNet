@@ -181,3 +181,20 @@ sentence's subject correctly resolves to "Abdul Hamid Gool" (previously 4 differ
 successive runs), and the false positive introduced by the widening alone
 (`Ahmed Abdurahman member_of Congress Movement`) is now correctly rejected by LLM-verify instead of
 silently committed.
+
+**Follow-up (same day): the list-order fallback itself was still unsafe.** The proximity fix above kept a
+fallback — "if no gender-matching candidate is textually present, fall back to whichever is last in the
+caller's list" — for the case where the true antecedent was established in an earlier chunk and isn't
+repeated locally. A subsequent full 100% rebuild surfaced a real false relation this fallback produced:
+`"Bibi" [parent_of] "Benjamin Maximilian Kies"`, from a sentence ("...after abandoning Bibi, ... as the
+father of four children, Grandpa decided to perform ... his faith ... the Hajj") whose true "his" antecedent
+was "Grandpa" — an alias of `Haji Joosub Maulvi Hamid Gool`, a *third* entity not present in this chunk's
+candidate window at all. Kies had no textual mention anywhere in the sentence; he was only a Male candidate
+carried in from an unrelated nearby chunk, and won purely by being last in the list. Fixed by removing the
+list-order fallback entirely: a pronoun with zero textual grounding anywhere in scope now resolves to
+nothing, matching the "confident wrong answer -> no answer" precedent already established in the same
+function for the narrator-exclusion case. Regression test:
+`relation_extract.rs::pronoun_with_no_textual_antecedent_must_not_blindly_guess` (confirmed to reproduce the
+exact real-world confidence score, 0.72, before the fix). Validated via unit tests (71/71 passing) plus a
+10% rerun showing no regressions — since the fix only removes a guessing path, it can only reduce spurious
+matches, never introduce new ones.

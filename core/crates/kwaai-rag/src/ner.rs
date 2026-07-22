@@ -499,10 +499,18 @@ pub fn resolve_pronouns_from_candidates(
         // override the real, textually adjacent referent (confirmed root cause of
         // a recurring "his marriage with Cissie" -> wrong-subject mismatch, where
         // the correct antecedent was the literal name earlier in the very same
-        // sentence). Falls back to the old "last in list" heuristic only when none
-        // of the gender-matching candidates are actually named anywhere before the
-        // pronoun in this text — e.g. the true antecedent was established in an
-        // earlier chunk and isn't repeated here, so proximity has nothing to rank.
+        // sentence).
+        //
+        // Deliberately NOT falling back to "last in list" when no gender-matching
+        // candidate is textually present: that fallback was tried and confirmed to
+        // produce a real false relation ("Bibi parent_of Benjamin Maximilian Kies"
+        // — a sentence whose true "his" antecedent was "Grandpa", an alias of a
+        // third entity not even present in this candidate window; Kies only
+        // appeared here as an unrelated Male candidate carried in from a nearby
+        // chunk and won purely by being last in the list). A pronoun with zero
+        // textual grounding anywhere in scope should resolve to nothing, not a
+        // confident guess — the same "confident wrong answer -> no answer" choice
+        // already made for the narrator-exclusion case above.
         let before_text = words[..idx].join(" ").to_lowercase();
         let nearest_name = gender_matching
             .iter()
@@ -510,8 +518,7 @@ pub fn resolve_pronouns_from_candidates(
                 nearest_mention_offset(name, aliases, &before_text).map(|off| (off, name))
             })
             .max_by_key(|(off, _)| *off)
-            .map(|(_, name)| name.clone())
-            .or_else(|| gender_matching.last().map(|(name, _, _)| name.clone()));
+            .map(|(_, name)| name.clone());
 
         if let Some(name) = nearest_name {
             // Find byte offset of this pronoun in original text

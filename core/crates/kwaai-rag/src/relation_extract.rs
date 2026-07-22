@@ -835,6 +835,41 @@ mod tests {
     }
 
     #[test]
+    fn pronoun_with_no_textual_antecedent_must_not_blindly_guess() {
+        // Regression for a real D6 false relation: "Bibi parent_of Benjamin
+        // Maximilian Kies". Source sentence (paraphrased structure preserved):
+        // "...after abandoning Bibi, ... as the father of four children, Grandpa
+        // decided to perform ... his faith, ... the Hajj." The true antecedent of
+        // "his" is "Grandpa" (an alias of a third entity entirely, not present in
+        // this chunk's candidate window) — neither "Bibi" nor "Kies" is "Grandpa".
+        // Kies only appears here as a Male candidate carried in from an unrelated
+        // nearby chunk (the coref window), with no textual mention anywhere in
+        // this sentence. The old list-order fallback picked him anyway (whichever
+        // Male candidate happened to be last), producing a confident but baseless
+        // relation. The safe behavior — established elsewhere in this file for the
+        // exact same "no real textual grounding" situation
+        // (`resolve_pronouns_from_candidates_skips_narrator_for_third_person`) — is
+        // to resolve to nothing rather than guess.
+        let known = entities(&[(1, "Bibi Gool"), (2, "Benjamin Maximilian Kies")]);
+        let candidates = vec![(
+            "Benjamin Maximilian Kies".to_string(),
+            vec![],
+            Some("Male".to_string()),
+        )];
+        let out = classify_via_mentions(
+            1,
+            "After abandoning Bibi, and as the father of four children, Grandpa decided to perform the fifth article of his faith.",
+            &known,
+            &candidates,
+            None,
+        );
+        assert!(
+            out.is_empty(),
+            "must not fabricate a relation to an ungrounded pronoun guess: {out:?}"
+        );
+    }
+
+    #[test]
     fn present_participle_marrying_trigger() {
         // Gap found via ground-truth analysis against d6_family_tree.yaml: the
         // corpus states some marriages with "before marrying, X" rather than
