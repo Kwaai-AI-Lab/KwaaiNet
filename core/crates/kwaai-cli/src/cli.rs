@@ -1658,6 +1658,14 @@ pub enum DreamAction {
         /// adding spurious parent_of / child_of / spouse_of edges from co-mentions.
         #[arg(long)]
         no_relations: bool,
+
+        /// Cross-cutting mode: replaces the score-threshold candidate selection with
+        /// every entity that has >=1 relation (skipping YAML-seeded entities, whose
+        /// descriptions are curated ground truth). Selected entities get their
+        /// description fully replaced by a map-reduce summary of every associated
+        /// chunk, instead of an incremental nudge from a capped evidence sample.
+        #[arg(long)]
+        relation_summary: bool,
     },
 
     /// Show the last dream cycle report

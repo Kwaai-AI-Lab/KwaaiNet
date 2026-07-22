@@ -7241,6 +7241,7 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                 workers,
                 prune_threshold,
                 no_relations,
+                relation_summary,
             } => {
                 let raw_urls: Vec<String> = {
                     let mut v: Vec<String> = inference_urls
@@ -7289,16 +7290,24 @@ async fn cmd_dream(action: DreamAction, kb: String) -> Result<()> {
                     workers,
                     prune_threshold,
                     no_relations,
+                    relation_summary_mode: relation_summary,
                     ..Default::default()
                 };
 
                 print_box_header(&format!("Dream RAG ({})", kb));
                 println!("  Inference: {}", urls.join(", "));
                 println!("  Workers:   {workers}  |  Max completions: {max_completions}");
-                println!(
-                    "  Threshold: {:.0}%  |  Dedup: {dedup_threshold:.2}",
-                    threshold * 100.0
-                );
+                if relation_summary {
+                    println!(
+                        "  Mode:      relation-summary (every entity with >=1 relation, \
+                         map-reduce over all chunks)"
+                    );
+                } else {
+                    println!(
+                        "  Threshold: {:.0}%  |  Dedup: {dedup_threshold:.2}",
+                        threshold * 100.0
+                    );
+                }
                 println!();
 
                 let report = kwaai_rag::dream::run_dream_cycle(

@@ -26,6 +26,10 @@ pub enum DreamTaskKind {
     ConceptDef,   // schema:DefinedTerm — historical/social concepts
     WorkProfile,  // schema:CreativeWork / schema:Product — books, films, objects
     General,      // Unknown / Thing — falls back to general completion
+    /// Cross-cutting: selected by relation count (>=1), not schema type. Map-reduce
+    /// summarizes every chunk associated with the entity, rather than incrementally
+    /// improving the existing description from a capped evidence sample.
+    FullSummary,
 }
 
 pub fn task_for_schema_type(schema_type: Option<&str>) -> DreamTaskKind {
@@ -179,6 +183,14 @@ pub async fn run_task(
             )
             .await
         }
+        DreamTaskKind::FullSummary => {
+            // Not actually dispatched through here — this task needs individual
+            // chunk texts (for map-reduce batching), not one joined evidence_text
+            // string, so dream.rs calls run_full_summary_task directly for items
+            // selected in relation-summary mode. Defensive no-op if ever reached
+            // via this path instead.
+            empty(eid)
+        }
     }
 }
 
@@ -303,6 +315,7 @@ fn parse_result(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                force_description: false,
                 fields: HashMap::new(),
             }
         }
@@ -353,6 +366,7 @@ fn parse_result(
         schema_type: None,
         description,
         relations,
+        force_description: false,
         fields,
     }
 }
@@ -363,7 +377,127 @@ fn empty(eid: i64) -> EntityCompletion {
         schema_type: None,
         description: None,
         relations: vec![],
+        force_description: false,
         fields: HashMap::new(),
+    }
+}
+
+// ── Full-chunk map-reduce summarization ───────────────────────────────────────
+
+/// Batch size (characters) per map-step summarization call — keeps each batch
+/// comfortably within a small model's context window alongside prompt overhead.
+const SUMMARY_BATCH_CHARS: usize = 6_000;
+
+/// Summarize every chunk associated with an entity via map-reduce, rather than
+/// incrementally improving the existing description from a capped evidence
+/// sample: chunks are grouped into batches, each batch is summarized down to
+/// only the facts about this entity, then the batch summaries are combined
+/// into one final description. Always replaces the existing description
+/// (`force_description: true`) — the point is a comprehensive resummarization
+/// grounded in every chunk, not an incremental nudge over what's there.
+/// Deliberately description-only: never touches schema_type/relations/fields,
+/// since handing a large concatenated blob to the LLM alongside a relations
+/// ask is exactly the kind of free-choice-name-list setup that produces
+/// hallucinated relations elsewhere in this codebase.
+/// Group chunk texts into batches of at most ~`batch_char_limit` characters each,
+/// never splitting a single chunk across batches (a lone chunk larger than the
+/// limit gets its own oversized batch rather than being truncated). Pure/testable
+/// split of `run_full_summary_task`'s map step.
+fn batch_chunk_texts(chunk_texts: &[String], batch_char_limit: usize) -> Vec<Vec<&str>> {
+    let mut batches: Vec<Vec<&str>> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    let mut current_len = 0usize;
+    for text in chunk_texts {
+        if current_len + text.len() > batch_char_limit && !current.is_empty() {
+            batches.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        current_len += text.len();
+        current.push(text.as_str());
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+pub async fn run_full_summary_task(
+    eid: i64,
+    name: &str,
+    chunk_texts: &[String],
+    url: &str,
+    model: &str,
+) -> EntityCompletion {
+    if chunk_texts.is_empty() {
+        return empty(eid);
+    }
+
+    // Map: batch chunks into ~SUMMARY_BATCH_CHARS groups, summarize each batch
+    // down to only the facts about `name`.
+    let batches = batch_chunk_texts(chunk_texts, SUMMARY_BATCH_CHARS);
+
+    let mut batch_summaries: Vec<String> = Vec::with_capacity(batches.len());
+    for batch in &batches {
+        let joined = batch.join("\n---\n");
+        let prompt = format!(
+            "Extract only the facts stated about \"{name}\" in the following source text. \
+             Write 2-4 sentences, plain prose, no preamble. If the text says nothing about \
+             \"{name}\", reply with exactly: NONE.\n\n\
+             SOURCE TEXT:\n---\n{joined}\n---"
+        );
+        if let Some(resp) = call_llm(&prompt, url, model).await {
+            let cleaned = resp.trim();
+            if !cleaned.is_empty() && !cleaned.eq_ignore_ascii_case("none") {
+                batch_summaries.push(cleaned.to_string());
+            }
+        }
+    }
+
+    if batch_summaries.is_empty() {
+        return empty(eid);
+    }
+
+    // Single batch: its own summary IS the final description — no reduce call needed.
+    if batch_summaries.len() == 1 {
+        return EntityCompletion {
+            entity_id: eid,
+            schema_type: None,
+            description: Some(batch_summaries.into_iter().next().unwrap()),
+            relations: vec![],
+            force_description: true,
+            fields: HashMap::new(),
+        };
+    }
+
+    // Reduce: combine all batch summaries into one coherent, non-redundant description.
+    let combined = batch_summaries
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("[{}] {s}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reduce_prompt = format!(
+        "The following are partial summaries about \"{name}\", each drawn from a different \
+         part of the same source document. Combine them into ONE coherent description, \
+         2-4 sentences, removing redundancy and resolving any overlap. Plain prose, no \
+         preamble, no numbering.\n\n\
+         PARTIAL SUMMARIES:\n{combined}"
+    );
+    let final_desc = call_llm(&reduce_prompt, url, model)
+        .await
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    match final_desc {
+        Some(desc) => EntityCompletion {
+            entity_id: eid,
+            schema_type: None,
+            description: Some(desc),
+            relations: vec![],
+            force_description: true,
+            fields: HashMap::new(),
+        },
+        None => empty(eid),
     }
 }
 
@@ -734,5 +868,72 @@ pub async fn run_work_task(
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
         None => empty(eid),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_chunk_texts_empty_input_yields_no_batches() {
+        let chunks: Vec<String> = vec![];
+        assert!(batch_chunk_texts(&chunks, 100).is_empty());
+    }
+
+    #[test]
+    fn batch_chunk_texts_fits_in_one_batch_when_under_limit() {
+        let chunks = vec!["a".repeat(50), "b".repeat(40)];
+        let batches = batch_chunk_texts(&chunks, 100);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2);
+    }
+
+    #[test]
+    fn batch_chunk_texts_splits_when_limit_exceeded() {
+        let chunks = vec!["a".repeat(60), "b".repeat(60), "c".repeat(60)];
+        let batches = batch_chunk_texts(&chunks, 100);
+        // 60 + 60 > 100 -> splits after the first chunk each time.
+        assert_eq!(batches.len(), 3);
+        for batch in &batches {
+            assert_eq!(batch.len(), 1);
+        }
+    }
+
+    #[test]
+    fn batch_chunk_texts_never_drops_an_oversized_single_chunk() {
+        // A single chunk larger than the limit must still get its own batch,
+        // not be silently truncated or dropped.
+        let chunks = vec!["x".repeat(500)];
+        let batches = batch_chunk_texts(&chunks, 100);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0][0].len(), 500);
+    }
+
+    #[tokio::test]
+    async fn full_summary_dispatched_via_run_task_is_a_safe_noop() {
+        // FullSummary is never actually routed through run_task in production
+        // (dream.rs calls run_full_summary_task directly, since it needs
+        // per-chunk texts rather than one joined evidence_text string) — but if
+        // it ever were, this must return an inert completion, not panic.
+        let result = run_task(
+            DreamTaskKind::FullSummary,
+            1,
+            "Some Entity",
+            "Person",
+            "",
+            "",
+            "http://localhost:1",
+            "test-model",
+            0,
+            0,
+            &[],
+            &[],
+            true,
+        )
+        .await;
+        assert!(result.description.is_none());
+        assert!(result.relations.is_empty());
+        assert!(!result.force_description);
     }
 }

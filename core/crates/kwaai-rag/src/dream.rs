@@ -43,6 +43,16 @@ pub struct DreamConfig {
     /// When true, skip relation extraction entirely — only improve schema_type and description.
     /// Prevents the LLM from inventing spurious family/social relations from co-mentions.
     pub no_relations: bool,
+    /// When true, replaces the normal score-threshold candidate selection with:
+    /// every entity that has >=1 relation (via `neighbors_of`) and is not
+    /// YAML-seeded (`extraction_confidence < 1.0` — seeded descriptions are
+    /// curated ground truth and must never be auto-resummarized). Selected
+    /// entities get their description fully replaced by a map-reduce summary of
+    /// every associated chunk (`dream_tasks::run_full_summary_task`), not the
+    /// normal per-schema-type task. Schema_type/relations/fields are left
+    /// untouched in this mode.
+    #[serde(default)]
+    pub relation_summary_mode: bool,
 }
 
 impl Default for DreamConfig {
@@ -55,6 +65,7 @@ impl Default for DreamConfig {
             max_completions_per_cycle: 50,
             workers: 4,
             no_relations: false,
+            relation_summary_mode: false,
         }
     }
 }
@@ -83,6 +94,12 @@ pub struct EntityCompletion {
     pub schema_type: Option<String>,
     pub description: Option<String>, // None = no improvement (legacy / General task)
     pub relations: Vec<(String, String)>, // (relation_type, target_name)
+    /// When true, `description` (if present) is written as-is in Step 5, bypassing
+    /// both the normal "must move up a summary tier or be +20 chars" gate and the
+    /// field-derived-description precedence — used by the full-chunk-summary task,
+    /// whose entire purpose is a comprehensive resummarization grounded in every
+    /// associated chunk, not an incremental nudge over the existing text.
+    pub force_description: bool,
     /// Structured field updates from task-specific completion; evidence_chunk_ids
     /// are the entity's full evidence set at the time the dream cycle ran.
     pub fields: HashMap<String, crate::graph::FieldValue>,
@@ -202,6 +219,7 @@ pub async fn complete_entity(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                force_description: false,
                 fields: HashMap::new(),
             }
         }
@@ -227,6 +245,7 @@ pub async fn complete_entity(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                force_description: false,
                 fields: HashMap::new(),
             }
         }
@@ -241,6 +260,7 @@ pub async fn complete_entity(
                     schema_type: None,
                     description: None,
                     relations: vec![],
+                    force_description: false,
                     fields: HashMap::new(),
                 }
             }
@@ -264,6 +284,7 @@ pub async fn complete_entity(
                 schema_type: None,
                 description: None,
                 relations: vec![],
+                force_description: false,
                 fields: HashMap::new(),
             }
         }
@@ -305,6 +326,7 @@ pub async fn complete_entity(
         schema_type,
         description,
         relations,
+        force_description: false,
         fields: HashMap::new(),
     }
 }
@@ -322,6 +344,14 @@ struct WorkItem {
     chunk_count: usize,
     /// Chunk IDs used as evidence; passed to parse_result for field provenance.
     evidence_chunk_ids: Vec<i64>,
+    /// Individual chunk texts, uncapped — only populated in `relation_summary_mode`
+    /// (for map-reduce batching); empty otherwise, since every other task consumes
+    /// the single joined `evidence_text` string.
+    chunk_texts: Vec<String>,
+    /// True when this item was selected by `relation_summary_mode`'s "has >=1
+    /// relation" criterion — routes it to `run_full_summary_task` directly in
+    /// the fan-out step instead of the normal schema-type task dispatch.
+    is_full_summary: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -395,18 +425,78 @@ pub async fn run_dream_cycle(
             .collect();
 
         // Priority order: Unknown type first, then thin summary, then missing relations.
-        let mut candidates: Vec<_> = health
-            .entity_scores
-            .iter()
-            .filter(|s| s.overall < cfg.completeness_threshold)
-            .collect();
-        candidates.sort_by(|a, b| a.overall.partial_cmp(&b.overall).unwrap());
+        // In relation_summary_mode this cross-cutting criterion replaces the score
+        // threshold entirely: every entity with >=1 relation, skipping YAML-seeded
+        // entities (extraction_confidence >= 1.0) whose descriptions are curated
+        // ground truth and must never be auto-resummarized. Sorted by relation
+        // count descending so the most well-connected entities are covered first
+        // within the budget.
+        let candidate_ids: Vec<i64> = if cfg.relation_summary_mode {
+            let mut ids: Vec<(i64, usize)> = store
+                .all_entities()
+                .filter(|n| n.extraction_confidence < 1.0)
+                .map(|n| (n.id, store.neighbors_of(n.id).len()))
+                .filter(|(_, degree)| *degree >= 1)
+                .collect();
+            ids.sort_by(|a, b| b.1.cmp(&a.1));
+            ids.into_iter().map(|(id, _)| id).collect()
+        } else {
+            let mut scored: Vec<_> = health
+                .entity_scores
+                .iter()
+                .filter(|s| s.overall < cfg.completeness_threshold)
+                .collect();
+            scored.sort_by(|a, b| a.overall.partial_cmp(&b.overall).unwrap());
+            scored.into_iter().map(|s| s.entity_id).collect()
+        };
 
-        for score in candidates.iter().take(budget) {
-            let node = match store.get_entity(score.entity_id) {
+        for entity_id in candidate_ids.iter().take(budget).copied() {
+            let node = match store.get_entity(entity_id) {
                 Some(n) => n,
                 None => continue,
             };
+
+            if cfg.relation_summary_mode {
+                // Map-reduce mode: fetch every associated chunk, uncapped, as
+                // individual texts rather than one joined-and-truncated string.
+                let ids = store.chunks_for_entity(entity_id).to_vec();
+                if ids.is_empty() {
+                    continue; // no text evidence — nothing to summarize
+                }
+                let chunks = meta.get_chunks(&ids)?;
+                let chunk_texts: Vec<String> = chunks
+                    .iter()
+                    .flatten()
+                    .map(|c| {
+                        let mut s = String::new();
+                        if let Some(ref sec) = c.section_name {
+                            s.push_str(&format!("[Section: {sec}]\n"));
+                        }
+                        if let Some(ref note) = c.section_note {
+                            s.push_str(&format!("[Note: {note}]\n"));
+                        }
+                        s.push_str(&c.text);
+                        s
+                    })
+                    .collect();
+                if chunk_texts.is_empty() {
+                    continue;
+                }
+                items.push(WorkItem {
+                    entity_id,
+                    name: node.name.clone(),
+                    entity_type: node.entity_type.clone(),
+                    schema_type: node.schema_type.clone(),
+                    description: node.description.clone(),
+                    evidence_text: String::new(),
+                    mention_count: node.mention_count,
+                    chunk_count: ids.len(),
+                    evidence_chunk_ids: ids,
+                    chunk_texts,
+                    is_full_summary: true,
+                });
+                continue;
+            }
 
             // Use evidence field (all known chunks) when populated; fall back to index
             // lookup; then fall back to name-search across all MetaStore chunks.
@@ -434,8 +524,8 @@ pub async fn run_dream_cycle(
                     .collect::<Vec<_>>()
                     .join("\n---\n");
                 (ids, text)
-            } else if !store.chunks_for_entity(score.entity_id).is_empty() {
-                let ids = store.chunks_for_entity(score.entity_id).to_vec();
+            } else if !store.chunks_for_entity(entity_id).is_empty() {
+                let ids = store.chunks_for_entity(entity_id).to_vec();
                 let fetch_limit = ids.len().min(20);
                 let chunks = meta.get_chunks(&ids[..fetch_limit])?;
                 let text = chunks
@@ -495,7 +585,7 @@ pub async fn run_dream_cycle(
             };
 
             items.push(WorkItem {
-                entity_id: score.entity_id,
+                entity_id,
                 name: node.name.clone(),
                 entity_type: node.entity_type.clone(),
                 schema_type: node.schema_type.clone(),
@@ -504,6 +594,8 @@ pub async fn run_dream_cycle(
                 mention_count: node.mention_count,
                 chunk_count: chunk_ids.len(),
                 evidence_chunk_ids: chunk_ids,
+                chunk_texts: vec![],
+                is_full_summary: false,
             });
         }
         (items, document_titles, doc_context_line)
@@ -544,6 +636,23 @@ pub async fn run_dream_cycle(
             let _permit = permit;
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len().max(1);
             let url = &urls[idx % urls.len()];
+
+            if item.is_full_summary {
+                // Map-reduce mode: needs individual chunk texts for batching, not
+                // one joined-and-truncated evidence_text string, so it bypasses
+                // the normal schema-type task dispatch entirely.
+                let result = crate::dream_tasks::run_full_summary_task(
+                    item.entity_id,
+                    &item.name,
+                    &item.chunk_texts,
+                    url,
+                    &model,
+                )
+                .await;
+                let _ = tx.send(Ok(result)).await;
+                return;
+            }
+
             // Prefer the stored schema_type; fall back to the static map so
             // "Person" entities without a schema_type field still get the
             // Biography task rather than the General task.
@@ -637,7 +746,16 @@ pub async fn run_dream_cycle(
                     }
                     let computed =
                         description_from_fields(&node.name, &node.entity_type, &node.fields);
-                    let new_desc = if !computed.is_empty() {
+                    let new_desc = if completion.force_description {
+                        // Full-chunk map-reduce summary: takes precedence over both
+                        // the normal field-derived description and the incremental
+                        // tier-improvement gate, since the whole point is a
+                        // comprehensive resummarization grounded in every chunk.
+                        completion
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| node.description.clone())
+                    } else if !computed.is_empty() {
                         computed
                     } else if let Some(ref d) = completion.description {
                         d.clone()

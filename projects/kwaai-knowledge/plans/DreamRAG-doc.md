@@ -392,8 +392,31 @@ higher-score entity; the source entity is deleted.
 | `--max-completions` | 50 | Total LLM budget for the cycle | Increase for a bigger single-pass improvement |
 | `--workers` | 4 | Max concurrent inference tasks (semaphore) | Match to `OLLAMA_NUM_PARALLEL` on the GPU machine |
 | `--no-relations` | off | Disable relation extraction | **Recommended on** for 8B models (precision 0–17%) |
+| `--relation-summary` | off | Cross-cutting mode (see below) — replaces threshold-based selection | Use for a one-time comprehensive resummarization pass |
 | `--inference-urls` | config | Comma-separated `p2p://` URLs | Use all available GPU relays for parallel load balancing |
 | `--model` | default | Ollama model name | `llama3.1:8b` is the tested model |
+
+### `--relation-summary` mode
+
+A cross-cutting alternative to the score-threshold selection in Step 1, added for "resummarize
+every well-connected entity from all its evidence, not just a capped sample." When set:
+
+- **Selection**: every entity with `neighbors_of(id).len() >= 1`, **excluding** YAML-seeded
+  entities (`extraction_confidence >= 1.0` — their descriptions are curated ground truth and must
+  never be auto-resummarized). Sorted by relation count descending, so the most well-connected
+  entities are covered first within `--max-completions`.
+- **Evidence**: every chunk associated with the entity, uncapped (the normal path caps at 20
+  chunks per entity) — `dream_tasks::run_full_summary_task` (`DreamTaskKind::FullSummary`).
+- **Map-reduce**: chunks are grouped into ~6 000-char batches; each batch is summarized down to
+  only the facts about the entity ("map"); if more than one batch exists, the batch summaries are
+  combined into one final description ("reduce").
+- **Write-back**: the resulting description always replaces the existing one
+  (`EntityCompletion.force_description = true`), bypassing both the normal "must move up a summary
+  tier or be +20 chars longer" gate and field-derived-description precedence — the whole point is a
+  comprehensive resummarization, not an incremental nudge. Schema_type/relations/fields are never
+  touched by this task, to avoid handing the LLM a large concatenated blob alongside a free-choice
+  relation ask (the same hallucination risk pattern documented elsewhere in this codebase for
+  large-context relation prompts).
 
 ---
 
