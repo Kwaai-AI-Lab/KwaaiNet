@@ -15,6 +15,7 @@ pub mod graph;
 pub mod hyde;
 pub mod ingestion;
 pub mod iterative;
+pub mod mentions;
 pub mod meta_store;
 pub mod ner;
 pub mod obsidian;

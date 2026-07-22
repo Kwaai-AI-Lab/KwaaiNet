@@ -419,6 +419,31 @@ fn is_narrator_candidate(aliases: &[String]) -> bool {
     })
 }
 
+/// Rightmost byte offset (within `before_text`, itself already lowercased) that any
+/// whole word (len >= 4, to avoid short-word false positives) of `name`/`aliases`
+/// occurs at — used to rank candidates by actual textual proximity to a pronoun,
+/// not by list order. Mirrors the proximity ranking `resolve_place_pronouns_from_candidates`
+/// already does for spatial pronouns.
+fn nearest_mention_offset(name: &str, aliases: &[String], before_text: &str) -> Option<usize> {
+    let name_hit = name
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|w| w.len() >= 4)
+        .filter_map(|w| before_text.rfind(w))
+        .max();
+    let alias_hit = aliases
+        .iter()
+        .flat_map(|a| {
+            let al = a.to_lowercase();
+            al.split_whitespace()
+                .filter(|w| w.len() >= 4)
+                .filter_map(|w| before_text.rfind(w))
+                .collect::<Vec<_>>()
+        })
+        .max();
+    [name_hit, alias_hit].into_iter().flatten().max()
+}
+
 pub fn resolve_pronouns_from_candidates(
     text: &str,
     candidates: &[(String, Vec<String>, Option<String>)],
@@ -445,9 +470,6 @@ pub fn resolve_pronouns_from_candidates(
             continue;
         }
 
-        // Find the most-recent candidate with matching gender (scan candidates in reverse,
-        // assuming they were ordered by recency / appearance position).
-        //
         // The narrator entry is excluded here: `coref_candidates_for_chunk` always
         // force-includes the narrator with a hardcoded gender so first-person "I"/"my"
         // resolves correctly elsewhere (`find_narrator_pronoun_positions`), but that
@@ -457,16 +479,41 @@ pub fn resolve_pronouns_from_candidates(
         // through past the real (but gender-unlabeled) antecedent all the way to the
         // narrator, who always matches. Third-person pronouns should only ever resolve
         // to another character; the narrator's own pronouns are handled separately.
-        let matched = candidates
+        let gender_matching: Vec<&(String, Vec<String>, Option<String>)> = candidates
             .iter()
-            .rev()
             .filter(|(_, aliases, _)| !is_narrator_candidate(aliases))
-            .find(|(_, _, g)| match g.as_deref() {
+            .filter(|(_, _, g)| match g.as_deref() {
                 Some(eg) => eg == gender || gender == "Neutral",
                 None => gender == "Neutral",
-            });
+            })
+            .collect();
 
-        if let Some((name, _, _)) = matched {
+        if gender_matching.is_empty() {
+            continue;
+        }
+
+        // Prefer whichever gender-matching candidate is textually nearest (and
+        // before) this pronoun in `text` itself — a literal same-sentence
+        // antecedent must win over list order, otherwise an unrelated candidate
+        // that merely happens to be last in the caller-supplied list can silently
+        // override the real, textually adjacent referent (confirmed root cause of
+        // a recurring "his marriage with Cissie" -> wrong-subject mismatch, where
+        // the correct antecedent was the literal name earlier in the very same
+        // sentence). Falls back to the old "last in list" heuristic only when none
+        // of the gender-matching candidates are actually named anywhere before the
+        // pronoun in this text — e.g. the true antecedent was established in an
+        // earlier chunk and isn't repeated here, so proximity has nothing to rank.
+        let before_text = words[..idx].join(" ").to_lowercase();
+        let nearest_name = gender_matching
+            .iter()
+            .filter_map(|(name, aliases, _)| {
+                nearest_mention_offset(name, aliases, &before_text).map(|off| (off, name))
+            })
+            .max_by_key(|(off, _)| *off)
+            .map(|(_, name)| name.clone())
+            .or_else(|| gender_matching.last().map(|(name, _, _)| name.clone()));
+
+        if let Some(name) = nearest_name {
             // Find byte offset of this pronoun in original text
             let offset = text
                 .split_whitespace()
@@ -476,7 +523,7 @@ pub fn resolve_pronouns_from_candidates(
                 .saturating_sub(w.len() + 1);
             results.push(CorefResolution {
                 surface: w.to_string(),
-                entity_name: name.clone(),
+                entity_name: name,
                 offset,
                 confidence: 0.9,
                 method: "gender_nearest",

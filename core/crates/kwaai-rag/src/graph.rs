@@ -636,6 +636,7 @@ impl GraphStore {
              CREATE TABLE IF NOT EXISTS relations (key BLOB NOT NULL PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS chunk_entity (key BLOB NOT NULL PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS entity_chunk (key BLOB NOT NULL PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS chunk_mentions (key BLOB NOT NULL PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS entity_timeline_v1 (key BLOB NOT NULL PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS interactions (key BLOB NOT NULL PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS metadata (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL);",
@@ -4278,6 +4279,43 @@ impl GraphStore {
         self.chunk_to_entities
             .get(&chunk_id)
             .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Persist the resolved mention index for a chunk (see `crate::mentions`) —
+    /// every noun/alias/pronoun/definite-description span already resolved to an
+    /// entity, so relation extraction (and later consumers, e.g. Phase 5's planned
+    /// classifiers) can read it back instead of re-deriving it from raw chunk text.
+    /// Overwrites any existing entry for this chunk — always recomputed fresh
+    /// rather than trusted as a stale cache, since entity merges/renames after the
+    /// chunk was first processed could otherwise leave it pointing at a dead ID.
+    pub fn write_chunk_mentions(
+        &mut self,
+        chunk_id: i64,
+        mentions: &[crate::mentions::SentenceMentions],
+    ) -> Result<()> {
+        let key = chunk_id.to_le_bytes();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO chunk_mentions (key, value) VALUES (?1, ?2)",
+            params![key.as_ref(), serde_json::to_vec(mentions)?.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Read back a chunk's mention index, empty if none was ever written for it
+    /// (e.g. a KB ingested before this table existed).
+    pub fn get_chunk_mentions(&self, chunk_id: i64) -> Vec<crate::mentions::SentenceMentions> {
+        let key = chunk_id.to_le_bytes();
+        self.conn
+            .query_row(
+                "SELECT value FROM chunk_mentions WHERE key = ?1",
+                params![key.as_ref()],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice(&v).ok())
             .unwrap_or_default()
     }
 

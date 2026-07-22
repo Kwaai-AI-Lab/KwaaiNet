@@ -225,91 +225,31 @@ fn find_best_trigger(
 /// "equally close" for ambiguity scoring.
 const TIE_MARGIN_CHARS: usize = 15;
 
-/// Whole-word first-person pronouns, resolved to a fixed narrator entity regardless
-/// of local context (unlike 3rd-person pronouns, which need gender/recency matching).
-/// D6 (and memoirs generally) are written in first person, so most relation-bearing
-/// sentences ("I married Wahida", "my grandfather arrived in 1884") only ever name
-/// ONE person literally — without this, `positions.len() < 2` below discards nearly
-/// every first-person sentence, which is why an earlier version of this classifier
-/// found almost no candidates on D6's real corpus despite it being dense with family
-/// narrative.
-const FIRST_PERSON_PRONOUNS: &[&str] = &["i", "my", "me", "myself"];
-
-/// Locate whole-word first-person pronoun occurrences in `text`, each resolved to
-/// `narrator_id`. Byte offsets computed the same way as
-/// `ner::resolve_pronouns_from_candidates` (cumulative preceding-word lengths), for
-/// consistency with the other coref position sources merged into `positions` below.
-fn find_narrator_pronoun_positions(text: &str, narrator_id: i64) -> Vec<(usize, usize, i64)> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut results = Vec::new();
-    let mut offset = 0usize;
-    for &w in &words {
-        let core = w.trim_matches(|c: char| !c.is_alphanumeric());
-        if FIRST_PERSON_PRONOUNS.contains(&core.to_lowercase().as_str()) {
-            let start = offset + w.find(core).unwrap_or(0);
-            results.push((start, start + core.len(), narrator_id));
-        }
-        offset += w.len() + 1; // +1 for the single space split_whitespace consumed
-    }
-    results
-}
-
-/// Scan `text` for relation trigger phrases and, for each one found, locate the
-/// nearest known entity before and after it to form a subject-relation-object
-/// candidate triple. Generalizes `sequence::extract_kinship_interactions()`:
-/// same sentence-splitting + nearest-entity-before/after-keyword algorithm, but
-/// covering the full Family/Agent/Spatial trigger vocabulary (not kinship-only),
-/// picking the longest matching phrase per sentence, and scoring a composite
-/// confidence instead of returning a bare boolean/triple.
+/// Scan each sentence's pre-resolved mentions (`crate::mentions::resolve_chunk_mentions`,
+/// run once per chunk and persisted — see `GraphStore::write_chunk_mentions`) for
+/// relation trigger phrases and, for each one found, locate the nearest mention
+/// before and after it to form a subject-relation-object candidate triple.
+/// Generalizes `sequence::extract_kinship_interactions()`: same nearest-entity-
+/// before/after-keyword algorithm, but covering the full Family/Agent/Spatial
+/// trigger vocabulary (not kinship-only), picking the longest matching phrase per
+/// sentence, and scoring a composite confidence instead of returning a bare
+/// boolean/triple.
 ///
-/// `known_entities` is `(entity_id, canonical_name, aliases)`, exactly as accepted
-/// by `extract_kinship_interactions`. Only the first trigger match per sentence is
-/// used — same one-relation-per-clause assumption as the function this generalizes.
-///
-/// `person_candidates` is `(name, aliases, gender)`, exactly as produced by
-/// `GraphStore::coref_candidates_for_chunk()` — passed straight into
-/// `ner::resolve_definite_descriptions`/`ner::resolve_pronouns_from_candidates` so
-/// phrases like "my wife", "the author", "he"/"she" can resolve to a specific known
-/// entity even when that entity's canonical name never appears literally in the
-/// sentence. `narrator` (id, name) additionally resolves bare first-person pronouns
-/// ("I", "my", "me") — the one case the two `ner` functions above don't cover, since
-/// first-person always resolves to the same fixed entity rather than needing
-/// gender/alias matching.
-///
-/// Every coref-resolved match is flagged internally and caps this candidate's
-/// `proximity_confidence` lower than a literal name/alias match would — an extra
-/// inference step is a real (if modest) precision risk worth reflecting in the score.
+/// Only the first trigger match per sentence is used — same one-relation-per-clause
+/// assumption as the function this generalizes. Every approximately-resolved mention
+/// (`MentionKind::is_approximate`: surname-dropped, pronoun, definite-description,
+/// narrator-pronoun) caps this candidate's `proximity_confidence` lower than a
+/// literal name/alias match would — an extra inference step is a real (if modest)
+/// precision risk worth reflecting in the score.
 pub fn classify_relation_candidates(
     chunk_id: i64,
-    text: &str,
-    known_entities: &[(i64, String, Vec<String>)],
-    person_candidates: &[(String, Vec<String>, Option<String>)],
-    narrator: Option<(i64, &str)>,
+    chunk_mentions: &[crate::mentions::SentenceMentions],
 ) -> Vec<TypedRelationCandidate> {
-    // Includes the narrator explicitly — it's a separate parameter, not part of
-    // `known_entities`, so without this a narrator-resolved candidate (via bare
-    // first-person "I"/"my") would look up its own name and get "" back, even
-    // though the underlying subject_id/object_id resolved correctly.
-    let name_by_id: HashMap<i64, &str> = known_entities
-        .iter()
-        .map(|(id, name, _)| (*id, name.as_str()))
-        .chain(narrator)
-        .collect();
-    let id_by_name_lower: HashMap<String, i64> = known_entities
-        .iter()
-        .map(|(id, name, _)| (name.to_lowercase(), *id))
-        .collect();
-
     let mut results: Vec<TypedRelationCandidate> = Vec::new();
     let mut seen: HashSet<(i64, i64, String)> = HashSet::new();
 
-    let sentences: Vec<&str> = text
-        .split(['.', '?', '!', ';'])
-        .map(str::trim)
-        .filter(|s| s.len() >= 12)
-        .collect();
-
-    for sentence in sentences {
+    for sm in chunk_mentions {
+        let sentence = sm.sentence.as_str();
         let s_lower = sentence.to_lowercase();
 
         let Some((kw_pos, kw_end, kw, relation_type, method, trigger_confidence)) =
@@ -321,149 +261,50 @@ pub fn classify_relation_candidates(
         // probabilistic) — no separate validation pass is needed downstream.
         let reversed = REVERSED_TRIGGERS.contains(&kw);
 
-        // Map each known entity to its first occurrence position in this sentence.
-        // (start, end, id, via_coref)
-        let mut positions: Vec<(usize, usize, i64, bool)> = Vec::new();
-        for (id, name, aliases) in known_entities {
-            let candidates =
-                std::iter::once(name.as_str()).chain(aliases.iter().map(String::as_str));
-            let mut matched = false;
-            for tok in candidates {
-                if tok.len() < 3 || tok.eq_ignore_ascii_case("I") {
-                    continue;
-                }
-                if let Some(pos) = s_lower.find(&tok.to_lowercase()) {
-                    positions.push((pos, pos + tok.len(), *id, false));
-                    matched = true;
-                    break;
-                }
-            }
-            // Fall back to a surname-dropped variant of the canonical name when
-            // nothing matched exactly — e.g. "Abdul Hamid Gool" → "Abdul Hamid",
-            // or "Cissie Gool" → "Cissie" — this corpus commonly drops surnames
-            // on repeat mentions ("his marriage with Cissie"), and 2-word "First
-            // Surname" names truncating to a single first name is the *common*
-            // case here, not a rare edge case. Flagged like a coref match (lower
-            // confidence) since it's an approximate, not exact, ID — collision
-            // risk (two known entities sharing a truncated form) is caught by
-            // the existing ambiguous-window axiom, which demotes ties within
-            // the same tie margin regardless of how the position was matched.
-            if !matched {
-                let words: Vec<&str> = name.split_whitespace().collect();
-                if words.len() >= 2 {
-                    let truncated = words[..words.len() - 1].join(" ");
-                    if truncated.len() >= 3 {
-                        if let Some(pos) = s_lower.find(&truncated.to_lowercase()) {
-                            positions.push((pos, pos + truncated.len(), *id, true));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Coref: definite descriptions ("my wife", "the author") + 3rd-person pronouns
-        // ("he"/"she", gender-matched to the nearest candidate).
-        for res in crate::ner::resolve_definite_descriptions(sentence, person_candidates)
-            .into_iter()
-            .chain(crate::ner::resolve_pronouns_from_candidates(
-                sentence,
-                person_candidates,
-            ))
-        {
-            if let Some(&id) = id_by_name_lower.get(&res.entity_name.to_lowercase()) {
-                positions.push((res.offset, res.offset + res.surface.len(), id, true));
-            }
-        }
-
-        // Coref: bare first-person pronouns ("I", "my", "me") → the narrator.
-        if let Some((narrator_id, _)) = narrator {
-            positions.extend(
-                find_narrator_pronoun_positions(sentence, narrator_id)
-                    .into_iter()
-                    .map(|(s, e, id)| (s, e, id, true)),
-            );
-        }
-
-        // Resolve overlapping spans by keeping the longest/most-specific match —
-        // e.g. "my wife" (a definite-description resolution) fully contains "my"
-        // (a bare first-person-pronoun match); without this, whichever happened to
-        // be pushed last would win regardless of specificity. Mirrors the
-        // longest-trigger-wins rule `find_best_trigger` already applies above.
-        //
-        // Critical distinction: an EXACT-same-span match from a *different*
-        // entity (e.g. three distinct people all truncating to the identical
-        // "Cissie" text via the surname-drop fallback) is genuine ambiguity,
-        // not a specificity relationship — it must survive so the
-        // ambiguous-window axiom can see the collision and demote it. Only a
-        // *properly contained* shorter span (different start/end, not an exact
-        // tie) gets dropped in favor of the longer, already-kept one.
-        positions.sort_by_key(|(start, end, _, _)| std::cmp::Reverse(end - start));
-        let mut deduped: Vec<(usize, usize, i64, bool)> = Vec::with_capacity(positions.len());
-        for pos @ (start, end, id, _) in positions {
-            let overlaps = deduped.iter().any(|&(rs, re, rid, _)| {
-                if rid == id {
-                    // Same entity matched twice (e.g. literal + coref) — redundant.
-                    start < re && rs < end
-                } else if start == rs && end == re {
-                    // Same span, different entity — keep both; this is ambiguity,
-                    // not one match being more specific than the other.
-                    false
-                } else {
-                    start < re && rs < end
-                }
-            });
-            if !overlaps {
-                deduped.push(pos);
-            }
-        }
-        let positions = deduped;
-
-        if positions.len() < 2 {
+        if sm.mentions.len() < 2 {
             continue;
         }
 
-        let before: Vec<&(usize, usize, i64, bool)> = positions
-            .iter()
-            .filter(|(_, end, _, _)| *end <= kw_pos)
-            .collect();
-        let after: Vec<&(usize, usize, i64, bool)> = positions
-            .iter()
-            .filter(|(start, _, _, _)| *start >= kw_end)
-            .collect();
+        let before: Vec<&crate::mentions::MentionSpan> =
+            sm.mentions.iter().filter(|m| m.end <= kw_pos).collect();
+        let after: Vec<&crate::mentions::MentionSpan> =
+            sm.mentions.iter().filter(|m| m.start >= kw_end).collect();
 
-        let before_best = before.iter().max_by_key(|(start, _, _, _)| *start);
-        let after_best = after.iter().min_by_key(|(start, _, _, _)| *start);
+        let before_best = before.iter().max_by_key(|m| m.start);
+        let after_best = after.iter().min_by_key(|m| m.start);
 
-        let (Some(&&(before_start, _, a_id, a_coref)), Some(&&(after_start, _, b_id, b_coref))) =
-            (before_best, after_best)
-        else {
+        let (Some(&a), Some(&b)) = (before_best, after_best) else {
             continue;
         };
-        if a_id == b_id {
+        if a.entity_id == b.entity_id {
             continue;
         }
 
-        let (sub_id, obj_id) = if reversed { (b_id, a_id) } else { (a_id, b_id) };
-        let key = (sub_id, obj_id, relation_type.to_string());
+        let (subject, object) = if reversed { (b, a) } else { (a, b) };
+        let key = (
+            subject.entity_id,
+            object.entity_id,
+            relation_type.to_string(),
+        );
         if !seen.insert(key) {
             continue;
         }
 
         let before_ties = before
             .iter()
-            .filter(|(start, _, id, _)| {
-                *id != a_id && before_start.saturating_sub(*start) <= TIE_MARGIN_CHARS
+            .filter(|m| {
+                m.entity_id != a.entity_id && a.start.saturating_sub(m.start) <= TIE_MARGIN_CHARS
             })
             .count();
         let after_ties = after
             .iter()
-            .filter(|(start, _, id, _)| {
-                *id != b_id && start.saturating_sub(after_start) <= TIE_MARGIN_CHARS
+            .filter(|m| {
+                m.entity_id != b.entity_id && m.start.saturating_sub(b.start) <= TIE_MARGIN_CHARS
             })
             .count();
         let ambiguity_count = (before_ties + after_ties) as u8;
-        let via_coref = a_coref || b_coref;
-        // 0.50 floor is defensive only — `positions.len() < 2` above already rules
+        let via_coref = a.kind.is_approximate() || b.kind.is_approximate();
+        // 0.50 floor is defensive only — `sm.mentions.len() < 2` above already rules
         // out the zero-candidate-on-a-side case in practice. Coref-resolved matches
         // are capped lower at every ambiguity level to reflect the extra inference step.
         let proximity_confidence = match (ambiguity_count == 0, via_coref) {
@@ -474,16 +315,10 @@ pub fn classify_relation_candidates(
         };
 
         results.push(TypedRelationCandidate {
-            subject_id: sub_id,
-            object_id: obj_id,
-            subject_name: name_by_id
-                .get(&sub_id)
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            object_name: name_by_id
-                .get(&obj_id)
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
+            subject_id: subject.entity_id,
+            object_id: object.entity_id,
+            subject_name: subject.entity_name.clone(),
+            object_name: object.entity_name.clone(),
             relation_type: relation_type.to_string(),
             trigger_confidence,
             proximity_confidence,
@@ -916,10 +751,30 @@ mod tests {
             .collect()
     }
 
+    /// Test helper: resolves mentions then classifies, in one call — mirrors what
+    /// `extract_relations_axiomatic` (rag_cmd.rs) does in production, so these tests
+    /// exercise the same two-step pipeline rather than constructing `SentenceMentions`
+    /// fixtures by hand.
+    fn classify_via_mentions(
+        chunk_id: i64,
+        text: &str,
+        known_entities: &[(i64, String, Vec<String>)],
+        person_candidates: &[(String, Vec<String>, Option<String>)],
+        narrator: Option<(i64, &str)>,
+    ) -> Vec<TypedRelationCandidate> {
+        let mentions = crate::mentions::resolve_chunk_mentions(
+            text,
+            known_entities,
+            person_candidates,
+            narrator,
+        );
+        classify_relation_candidates(chunk_id, &mentions)
+    }
+
     #[test]
     fn family_trigger_produces_correct_triplet() {
         let known = entities(&[(1, "Cissie Gool"), (2, "Abdul Hamid Gool")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             10,
             "Cissie Gool was the wife of Abdul Hamid Gool for many years.",
             &known,
@@ -936,12 +791,56 @@ mod tests {
     }
 
     #[test]
+    fn pronoun_resolves_to_nearest_literal_antecedent_not_list_order() {
+        // Regression for a recurring "Abdul Hamid Gool" mismatch found against the
+        // live corpus: `ner::resolve_pronouns_from_candidates` used to pick whichever
+        // Male-gendered candidate was LAST in `person_candidates` (list order),
+        // regardless of where any candidate was actually mentioned in the text.
+        // "Mohamed Saaid Gool" is placed last here purely to sit after
+        // "Abdul Hamid Gool" in list order, despite never being named in the
+        // sentence at all — "Abdul Hamid" is the literal, same-sentence antecedent
+        // of "his" and must win on proximity.
+        let known = entities(&[
+            (1, "Abdul Hamid Gool"),
+            (2, "Mohamed Saaid Gool"),
+            (3, "Cissie Gool"),
+        ]);
+        let candidates = vec![
+            (
+                "Abdul Hamid Gool".to_string(),
+                vec![],
+                Some("Male".to_string()),
+            ),
+            (
+                "Mohamed Saaid Gool".to_string(),
+                vec![],
+                Some("Male".to_string()),
+            ),
+        ];
+        let out = classify_via_mentions(
+            1,
+            "Abdul Hamid, a decade into his marriage with Cissie, choses instead to cling protectively to his adopted sister.",
+            &known,
+            &candidates,
+            None,
+        );
+        assert_eq!(out.len(), 1);
+        let c = &out[0];
+        assert_eq!(c.relation_type, "spouse_of");
+        assert_eq!(
+            c.subject_id, 1,
+            "Abdul Hamid is the literal antecedent of 'his'"
+        );
+        assert_eq!(c.object_id, 3, "Cissie should still be the object");
+    }
+
+    #[test]
     fn present_participle_marrying_trigger() {
         // Gap found via ground-truth analysis against d6_family_tree.yaml: the
         // corpus states some marriages with "before marrying, X" rather than
         // "married to X" / "wife of X" — this phrasing had no matching trigger.
         let known = entities(&[(1, "Jane Doe"), (2, "John Smith")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             23,
             "Jane Doe taught for a period before marrying, John Smith, a shop assistant.",
             &known,
@@ -955,7 +854,7 @@ mod tests {
     #[test]
     fn marriage_with_noun_form_trigger() {
         let known = entities(&[(1, "Jane Doe"), (2, "John Smith")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             24,
             "John Smith, a decade into his marriage with Jane Doe, still worked long hours.",
             &known,
@@ -976,7 +875,7 @@ mod tests {
         // The bare trigger does earn its keep for the reverse, "X's role was Y"
         // order, which this test covers.
         let known = entities(&[(1, "Jane Doe"), (2, "John Smith")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             25,
             "Jane Doe's half-brother was John Smith for all their lives.",
             &known,
@@ -993,7 +892,7 @@ mod tests {
         // "Abdul Hamid Gool" even though the text only says "Abdul Hamid" (no
         // surname) on this mention — common on repeat references in prose.
         let known = entities(&[(1, "Abdul Hamid Gool"), (2, "Cissie Gool")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             26,
             "Abdul Hamid, a decade into his marriage with Cissie, still worked long hours.",
             &known,
@@ -1016,7 +915,7 @@ mod tests {
         // corpus, not a rare edge case worth excluding — this is the exact
         // ground-truth sentence that originally exposed the alias gap.
         let known = entities(&[(1, "Shaheen Gool"), (2, "Cissie Gool")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             27,
             "Shaheen, the son of Uncle Doctor and Cissie Gool, arrived first.",
             &known,
@@ -1044,7 +943,7 @@ mod tests {
             (3, "Cissie Another"),
             (4, "John Smith"),
         ]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             28,
             "Cissie was the daughter of John Smith according to Cissie's own account.",
             &known,
@@ -1059,7 +958,7 @@ mod tests {
     #[test]
     fn reversed_trigger_swaps_subject_and_object() {
         let known = entities(&[(1, "New Era Fellowship"), (2, "Ben Kies")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             11,
             "The New Era Fellowship was founded by Ben Kies in that decade.",
             &known,
@@ -1078,7 +977,7 @@ mod tests {
     #[test]
     fn longest_phrase_wins_over_substring() {
         let known = entities(&[(1, "Cissie Gool"), (2, "Halima Gool")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             12,
             "Cissie Gool was the foster mother of Halima Gool.",
             &known,
@@ -1094,7 +993,7 @@ mod tests {
         // Three candidate entities all clustered within the tie margin on the same
         // side of the trigger — none should be picked with confidence.
         let known = entities(&[(1, "Ann"), (2, "Ivy"), (3, "Amy"), (4, "Zoe")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             13,
             "Ann Ivy Amy was the mother of Zoe in that year.",
             &known,
@@ -1110,7 +1009,7 @@ mod tests {
     #[test]
     fn familial_type_requires_both_person() {
         let known = entities(&[(1, "Cissie Gool"), (2, "District Six")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             14,
             "Cissie Gool was the mother of District Six in this sentence.",
             &known,
@@ -1129,7 +1028,7 @@ mod tests {
     #[test]
     fn contradiction_with_existing_trusted_relation_demotes() {
         let known = entities(&[(1, "Cissie Gool"), (2, "Abdul Hamid Gool")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             15,
             "Cissie Gool was the sister of Abdul Hamid Gool according to this account.",
             &known,
@@ -1151,7 +1050,7 @@ mod tests {
         // person is literally named in the sentence, the other side is a bare
         // first-person pronoun ("I"/"my"/"me") referring to whoever is narrating.
         let known = entities(&[(1, "Jane Doe")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             20,
             "I married Jane Doe in the winter of that year.",
             &known,
@@ -1185,7 +1084,7 @@ mod tests {
         // Confirms the gap this fix closes: with no narrator supplied, a sentence
         // naming only one person can never produce a candidate (positions.len() < 2).
         let known = entities(&[(1, "Jane Doe")]);
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             21,
             "I married Jane Doe in the winter of that year.",
             &known,
@@ -1205,7 +1104,7 @@ mod tests {
             vec!["wife".to_string()],
             Some("Female".to_string()),
         )];
-        let candidates = classify_relation_candidates(
+        let candidates = classify_via_mentions(
             22,
             "My wife was the daughter of Mary Johnson in this account.",
             &known,

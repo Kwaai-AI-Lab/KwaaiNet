@@ -9326,7 +9326,11 @@ async fn extract_relations_axiomatic(
     let url_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut handles = Vec::new();
 
-    const COREF_WINDOW: usize = 2;
+    // Widened from 2 -> 3: the known_entities pool for relation classification now
+    // also draws from this window (see below), so a wider reach directly increases
+    // the chance a sentence's surname-dropped/partial name resolves to an entity
+    // that was only linked to a nearby chunk during Step 4, not this exact one.
+    const COREF_WINDOW: usize = 3;
 
     for (pos, &cid) in chunk_ids.iter().enumerate() {
         let adj_start = pos.saturating_sub(COREF_WINDOW);
@@ -9352,10 +9356,25 @@ async fn extract_relations_axiomatic(
             let chunk = meta.get_chunks(&[cid]).ok()?.into_iter().next()??;
             let (known_entities, person_candidates): (KnownEntities, PersonCandidates) = {
                 let g = graph.lock().ok()?;
-                let known = g
-                    .get_chunk_entities(cid)
-                    .iter()
-                    .filter_map(|&id| {
+                // Widened beyond just this chunk's own linked entities to also include
+                // adjacent chunks (same ±COREF_WINDOW already used for person_candidates
+                // below) — a sentence can name someone by a form (e.g. a surname-dropped
+                // "Abdul Hamid") who was only actually linked to a neighboring chunk during
+                // Step 4, and without this the trigger-proximity scan can never see them
+                // as a candidate at all, regardless of how correct the matching logic is.
+                // Safe from the LLM-fabrication risk documented elsewhere for a similar
+                // widening (`run_timeline_build`'s "Gandhi in a cricket chunk" case,
+                // ~line 9008 below): that risk is specific to handing a name *list* to an
+                // LLM that can freely pick from it. Here, matching is a deterministic
+                // literal/surname-dropped substring search against this chunk's own text
+                // (`mentions::resolve_chunk_mentions`) — an irrelevant candidate simply
+                // never matches, it can't be fabricated into a relation.
+                let mut seen_ids = std::collections::HashSet::new();
+                let known = std::iter::once(cid)
+                    .chain(adjacent.iter().copied())
+                    .flat_map(|c| g.get_chunk_entities(c))
+                    .filter(|id| seen_ids.insert(*id))
+                    .filter_map(|id| {
                         g.get_entity(id)
                             .map(|e| (id, e.name.clone(), e.aliases.clone()))
                     })
@@ -9376,13 +9395,23 @@ async fn extract_relations_axiomatic(
                 .map(|(id, name)| (*id, name.as_str()));
 
             let chunk_start = std::time::Instant::now();
-            let candidates = classify_relation_candidates(
-                cid,
+            // Resolve + persist the mention index once per chunk (see
+            // `kwaai_rag::mentions`), then classify from it — this is the shared
+            // resolution future consumers (Phase 5's planned classifiers) read
+            // instead of re-deriving their own approximation of the same thing.
+            let mentions = kwaai_rag::mentions::resolve_chunk_mentions(
                 &chunk.text,
                 &known_entities,
                 &person_candidates,
                 narrator,
             );
+            {
+                let mut g = graph.lock().ok()?;
+                if let Err(e) = g.write_chunk_mentions(cid, &mentions) {
+                    tracing::warn!("write_chunk_mentions failed for chunk {cid}: {e}");
+                }
+            }
+            let candidates = classify_relation_candidates(cid, &mentions);
             if candidates.is_empty() {
                 return Some(());
             }
