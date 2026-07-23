@@ -3618,6 +3618,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id))
                                 {
                                     "  [BLOCKED:R1/R2]"
+                                } else if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                    "  [BLOCKED:DESC]"
                                 } else {
                                     ""
                                 };
@@ -3640,6 +3642,17 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .map(|n| n.name.clone())
                                     .unwrap_or_default();
                                 println!("    blocked (R1/R2) '{}'  [{}]", aname, reason);
+                                continue;
+                            }
+                            if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                let aname = store
+                                    .get_entity(*alias_id)
+                                    .map(|n| n.name.clone())
+                                    .unwrap_or_default();
+                                println!(
+                                    "    blocked (DESC) '{}'  [{}]  — descriptions diverge",
+                                    aname, reason
+                                );
                                 continue;
                             }
                             let aname = store
@@ -3723,6 +3736,8 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .contains(&kwaai_rag::graph::ord_pair(*alias_id, *canonical_id))
                                 {
                                     "  [BLOCKED:R1/R2]"
+                                } else if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                    "  [BLOCKED:DESC]"
                                 } else {
                                     ""
                                 };
@@ -3745,6 +3760,17 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                                     .map(|n| n.name.clone())
                                     .unwrap_or_default();
                                 println!("    blocked (R1/R2) '{}'  [{}]", aname, reason);
+                                continue;
+                            }
+                            if store.dedup_desc_diverges(*alias_id, *canonical_id) {
+                                let aname = store
+                                    .get_entity(*alias_id)
+                                    .map(|n| n.name.clone())
+                                    .unwrap_or_default();
+                                println!(
+                                    "    blocked (DESC) '{}'  [{}]  — descriptions diverge",
+                                    aname, reason
+                                );
                                 continue;
                             }
                             let aname = store

@@ -2655,8 +2655,10 @@ impl GraphStore {
                         (Some(x), Some(y)) => (x, y),
                         _ => continue,
                     };
-                    // Gate A: cross-type pairs are never merged (Person ≠ Place, etc.)
-                    if na.entity_type != nb.entity_type {
+                    // Gate A: cross-type pairs are never merged (Person ≠ Place, etc.).
+                    // Case-insensitive: extraction is free-text and inconsistently-cased
+                    // types ("person" vs "Person") must not silently defeat this gate.
+                    if !na.entity_type.eq_ignore_ascii_case(&nb.entity_type) {
                         continue;
                     }
                     // Gate B: explicit disambiguation markers mean distinct individuals
@@ -2867,8 +2869,8 @@ impl GraphStore {
                     {
                         continue;
                     }
-                    // Gate: never merge across entity types (Person ≠ Place, etc.)
-                    if na.entity_type != nc.entity_type {
+                    // Gate: never merge across entity types (Person ≠ Place, etc.).
+                    if !na.entity_type.eq_ignore_ascii_case(&nc.entity_type) {
                         continue;
                     }
                     let key = ord_pair(alias, canonical);
@@ -2937,8 +2939,8 @@ impl GraphStore {
                     if normalize_name(&node.name) == normalize_name(&nc.name) {
                         continue; // Tier 1 handles exact matches
                     }
-                    // Gate: never merge across entity types (Person ≠ Place, etc.)
-                    if node.entity_type != nc.entity_type {
+                    // Gate: never merge across entity types (Person ≠ Place, etc.).
+                    if !node.entity_type.eq_ignore_ascii_case(&nc.entity_type) {
                         continue;
                     }
                 }
@@ -3672,8 +3674,11 @@ impl GraphStore {
                 None => continue,
             };
 
-            // Gate: same entity type.
-            if node.entity_type != canonical.entity_type {
+            // Gate: same entity type (case-insensitive — extraction is free-text).
+            if !node
+                .entity_type
+                .eq_ignore_ascii_case(&canonical.entity_type)
+            {
                 continue;
             }
 
@@ -3684,10 +3689,11 @@ impl GraphStore {
                 continue;
             }
 
-            // Gate: description divergence blocks the merge.
-            if self.dedup_desc_diverges(alias_id, canonical_id) {
-                continue;
-            }
+            // Description divergence is intentionally NOT gated here — unlike the
+            // stricter shape gates above, this candidate should still surface for
+            // review rather than vanish with no trace. Consumers (CLI dry-run/auto)
+            // call `dedup_desc_diverges` themselves to tag/block it, mirroring how
+            // Tier 2/3 already handle this exact check (see rag_cmd.rs).
 
             let key = ord_pair(alias_id, canonical_id);
             if seen.insert(key) {
@@ -3799,11 +3805,14 @@ impl GraphStore {
                 Some(n) => n,
                 None => continue,
             };
-            // Gates
-            if alias_node.entity_type != canonical_node.entity_type {
-                continue;
-            }
-            if self.dedup_desc_diverges(alias_id, canonical_id) {
+            // Gate: same entity type (case-insensitive — extraction is free-text).
+            // Description divergence is intentionally not gated here — see the
+            // comment in find_dedup_candidates_unique_surname above; consumers
+            // (CLI dry-run/auto) call dedup_desc_diverges themselves to tag/block.
+            if !alias_node
+                .entity_type
+                .eq_ignore_ascii_case(&canonical_node.entity_type)
+            {
                 continue;
             }
             let k = ord_pair(alias_id, canonical_id);
@@ -3854,10 +3863,13 @@ impl GraphStore {
                 Some(n) => n,
                 None => continue,
             };
-            if alias_node.entity_type != canonical_node.entity_type {
-                continue;
-            }
-            if self.dedup_desc_diverges(alias_id, canonical_id) {
+            // Gate: same entity type (case-insensitive — extraction is free-text).
+            // Description divergence intentionally not gated here — see the
+            // comment in find_dedup_candidates_unique_surname above.
+            if !alias_node
+                .entity_type
+                .eq_ignore_ascii_case(&canonical_node.entity_type)
+            {
                 continue;
             }
             // Extra gate for bare first names: require at least 1 shared neighbour
@@ -4065,8 +4077,8 @@ impl GraphStore {
                 if normalize_name(&na.name) == normalize_name(&nb.name) {
                     continue;
                 }
-                // Gate: never merge across entity types (Person ≠ Place, etc.)
-                if na.entity_type != nb.entity_type {
+                // Gate: never merge across entity types (Person ≠ Place, etc.).
+                if !na.entity_type.eq_ignore_ascii_case(&nb.entity_type) {
                     continue;
                 }
                 if let (Some(sa), Some(sb)) = (&na.schema_type, &nb.schema_type) {
@@ -5686,6 +5698,155 @@ mod tests {
         assert!(
             dist2 * 2 < max2,
             "Hassen/Hassan variant spelling should not be capped"
+        );
+    }
+}
+
+/// GraphStore test fixture for dedup candidate-finding — a real, temp-directory-backed
+/// SQLite store (not a mock), since these functions read `self.nodes`/`self.adj`, which
+/// are only populated correctly via `GraphStore::open()` + `upsert_entity()`/
+/// `upsert_relation()`, not easily faked without duplicating that logic.
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+
+    /// Opens a fresh GraphStore in a throwaway temp directory. The returned
+    /// `TempDir` must be kept alive for the store's lifetime — dropping it
+    /// deletes the backing SQLite file out from under an open connection.
+    fn test_store() -> (GraphStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("create temp dir for test graph store");
+        let store = GraphStore::open(dir.path(), Uuid::new_v4()).expect("open test graph store");
+        (store, dir)
+    }
+
+    /// Builds a minimal but valid EntityNode for dedup tests. `embedding` is a
+    /// fixed dummy vector — fine for every tier here since none of these tests
+    /// exercise Tier 2 (embedding cosine similarity), only the shape/structural
+    /// tiers (1, 3, 4a, 4b, 5).
+    fn node(name: &str, entity_type: &str, description: &str) -> EntityNode {
+        EntityNode {
+            id: entity_id(name, entity_type),
+            name: name.to_string(),
+            entity_type: entity_type.to_string(),
+            description: description.to_string(),
+            embedding: vec![0.1, 0.2, 0.3],
+            mention_count: 1,
+            first_chunk_id: 0,
+            aliases: vec![],
+            schema_type: None,
+            gender: None,
+            evidence: vec![],
+            fields: HashMap::new(),
+            confidence: 0.0,
+            extraction_confidence: 1.0,
+        }
+    }
+
+    // Two realistic, richly-detailed but topically unrelated descriptions
+    // (>=100 chars, <12% word overlap) — enough to trip `dedup_desc_diverges`.
+    const DESC_RICH_A: &str = "She grew up in the Gool household at Buitencingle Street, \
+        fell in love with a visiting dignitary's son, and the match was blocked on \
+        religious grounds by his father, who arranged a different marriage instead.";
+    const DESC_RICH_B: &str = "Their friendly demeanor made it easy to befriend the \
+        neighbourhood children, who learned that the eight year old daughter of the \
+        household next door was already an aspiring ballet dancer of some renown.";
+
+    #[test]
+    fn tier4b_first_last_drop_surfaces_even_with_diverging_descriptions() {
+        // Regression for a real graph bug: "Fatima Gool" (2 tokens) and
+        // "Fatima Timmie Gool" (3 tokens, same first+last bookend) are the same
+        // person, but an earlier version of this function silently dropped the
+        // candidate whenever their descriptions diverged (which happened here
+        // because the 3-token entity's description had been contaminated with a
+        // different person's facts) — the pair vanished with no trace in every
+        // dedup tier. Divergence must no longer gate this candidate out; it
+        // should still surface for review (callers apply the DESC gate for
+        // display/auto-merge purposes, not this function).
+        let (mut store, _dir) = test_store();
+        let alias = node("Fatima Gool", "Person", DESC_RICH_A);
+        let canonical = node("Fatima Timmie Gool", "Person", DESC_RICH_B);
+        let alias_id = alias.id;
+        let canonical_id = canonical.id;
+        store.upsert_entity(alias).unwrap();
+        store.upsert_entity(canonical).unwrap();
+
+        assert!(
+            store.dedup_desc_diverges(alias_id, canonical_id),
+            "test descriptions must actually diverge for this test to be meaningful"
+        );
+
+        let candidates = store.find_dedup_candidates_middle_drop();
+        assert!(
+            candidates
+                .iter()
+                .any(|&(a, c, reason)| a == alias_id && c == canonical_id && reason == "first_last_drop"),
+            "expected (Fatima Gool -> Fatima Timmie Gool, first_last_drop) despite diverging descriptions, got: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn tier4a_unique_surname_surfaces_even_with_diverging_descriptions() {
+        let (mut store, _dir) = test_store();
+        let alias = node("Kies", "Person", DESC_RICH_A);
+        let canonical = node("Benjamin Maximilian Kies", "Person", DESC_RICH_B);
+        let alias_id = alias.id;
+        let canonical_id = canonical.id;
+        store.upsert_entity(alias).unwrap();
+        store.upsert_entity(canonical).unwrap();
+
+        assert!(store.dedup_desc_diverges(alias_id, canonical_id));
+
+        let candidates = store.find_dedup_candidates_unique_surname();
+        assert!(
+            candidates
+                .iter()
+                .any(|&(a, c, reason)| a == alias_id && c == canonical_id && reason == "unique_surname"),
+            "expected (Kies -> Benjamin Maximilian Kies, unique_surname) despite diverging descriptions, got: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn tier4b_entity_type_gate_is_case_insensitive() {
+        // Regression: entity_type comparisons across every dedup tier used to be
+        // case-sensitive (`!=` instead of `eq_ignore_ascii_case`), so extraction
+        // emitting an inconsistently-cased type string (e.g. "person" vs "Person")
+        // could silently defeat the "same type" gate and hide a real duplicate.
+        let (mut store, _dir) = test_store();
+        let alias = node("Fatima Gool", "person", ""); // lowercase "person"
+        let canonical = node("Fatima Timmie Gool", "Person", ""); // capital "Person"
+        let alias_id = alias.id;
+        let canonical_id = canonical.id;
+        store.upsert_entity(alias).unwrap();
+        store.upsert_entity(canonical).unwrap();
+
+        let candidates = store.find_dedup_candidates_middle_drop();
+        assert!(
+            candidates
+                .iter()
+                .any(|&(a, c, _)| a == alias_id && c == canonical_id),
+            "differently-cased but equal entity_type strings must still match, got: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn tier4b_still_blocks_genuine_cross_type_pairs() {
+        // The case-insensitivity fix must not weaken the gate's actual purpose:
+        // a Person and a Place sharing the same first/last tokens must never
+        // be proposed as a merge candidate.
+        let (mut store, _dir) = test_store();
+        let alias = node("Fatima Gool", "Place", "");
+        let canonical = node("Fatima Timmie Gool", "Person", "");
+        let alias_id = alias.id;
+        let canonical_id = canonical.id;
+        store.upsert_entity(alias).unwrap();
+        store.upsert_entity(canonical).unwrap();
+
+        let candidates = store.find_dedup_candidates_middle_drop();
+        assert!(
+            !candidates
+                .iter()
+                .any(|&(a, c, _)| a == alias_id && c == canonical_id),
+            "Person/Place pair must never be a merge candidate, got: {candidates:?}"
         );
     }
 }
