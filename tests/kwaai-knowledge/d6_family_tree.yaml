@@ -306,7 +306,7 @@ persons:
       - "Fazil"
 
   - canonical: "Zain Rassool"
-    gender: "Male"
+    gender: "Female"
     aliases:
       - "Zain"
 
@@ -328,7 +328,7 @@ persons:
       - "Jessie Rassool"
 
   - canonical: "Nasim Rassool"
-    gender: "Female"
+    gender: "Male"
     aliases:
       - "Nasim"
 

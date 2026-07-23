@@ -828,7 +828,18 @@ impl GraphStore {
                     first_chunk_id: existing.first_chunk_id,
                     aliases: merged_aliases,
                     schema_type: existing.schema_type.clone().or(node.schema_type.clone()),
-                    gender: existing.gender.clone().or(node.gender.clone()),
+                    // Mirrors the description rule above: an incoming high-confidence
+                    // (e.g. YAML-seeded) explicit gender must be able to correct a
+                    // wrong existing value, not just fill in an empty one. Previously
+                    // this was `existing.or(node)` unconditionally, which meant a
+                    // seed file could never fix a gender that was already set —
+                    // confirmed live: re-seeding a corrected "Zain Rassool: Female"
+                    // (was wrongly "Male") had no effect until this changed.
+                    gender: if node.extraction_confidence >= 1.0 && node.gender.is_some() {
+                        node.gender.clone()
+                    } else {
+                        existing.gender.clone().or(node.gender.clone())
+                    },
                     evidence: existing.evidence.clone(),
                     fields: merged_fields,
                     confidence: 0.0,
@@ -5847,6 +5858,63 @@ mod dedup_tests {
                 .iter()
                 .any(|&(a, c, _)| a == alias_id && c == canonical_id),
             "Person/Place pair must never be a merge candidate, got: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn upsert_entity_lets_high_confidence_gender_correct_an_existing_value() {
+        // Regression for a real graph bug: re-seeding a corrected gender
+        // ("Zain Rassool" was wrongly "Male" in the seed file; fixed to
+        // "Female") had no effect on the live graph — upsert_entity's merge
+        // unconditionally kept `existing.gender`, so a seed file could never
+        // correct a gender that was already set on a prior sighting. High-
+        // confidence incoming gender (extraction_confidence >= 1.0, matching
+        // the same signal the description-merge rule already uses) must be
+        // able to override a wrong existing value, not just fill in an empty one.
+        let (mut store, _dir) = test_store();
+        let mut first = node("Zain Rassool", "Person", "");
+        first.gender = Some("Male".to_string()); // wrong, as if from an earlier extraction
+        let id = first.id;
+        store.upsert_entity(first).unwrap();
+        assert_eq!(
+            store.get_entity(id).unwrap().gender.as_deref(),
+            Some("Male")
+        );
+
+        let mut correction = node("Zain Rassool", "Person", "");
+        correction.gender = Some("Female".to_string());
+        correction.extraction_confidence = 1.0; // e.g. a re-seed from YAML ground truth
+        store.upsert_entity(correction).unwrap();
+
+        assert_eq!(
+            store.get_entity(id).unwrap().gender.as_deref(),
+            Some("Female"),
+            "high-confidence incoming gender must correct the wrong existing value"
+        );
+    }
+
+    #[test]
+    fn upsert_entity_keeps_existing_gender_when_incoming_is_low_confidence() {
+        // The fix above must not make gender flip-floppy on every ordinary
+        // re-sighting — a low-confidence incoming value (e.g. an uncertain
+        // re-extraction) should still lose to an already-established gender,
+        // preserving the original "first stable value wins" behavior for the
+        // common (non-seed) case.
+        let (mut store, _dir) = test_store();
+        let mut first = node("Zain Rassool", "Person", "");
+        first.gender = Some("Female".to_string());
+        let id = first.id;
+        store.upsert_entity(first).unwrap();
+
+        let mut low_conf = node("Zain Rassool", "Person", "");
+        low_conf.gender = Some("Male".to_string());
+        low_conf.extraction_confidence = 0.5;
+        store.upsert_entity(low_conf).unwrap();
+
+        assert_eq!(
+            store.get_entity(id).unwrap().gender.as_deref(),
+            Some("Female"),
+            "low-confidence incoming gender must not override an existing value"
         );
     }
 }
