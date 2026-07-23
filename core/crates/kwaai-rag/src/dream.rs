@@ -44,13 +44,15 @@ pub struct DreamConfig {
     /// Prevents the LLM from inventing spurious family/social relations from co-mentions.
     pub no_relations: bool,
     /// When true, replaces the normal score-threshold candidate selection with:
-    /// every entity that has >=1 relation (via `neighbors_of`) and is not
-    /// YAML-seeded (`extraction_confidence < 1.0` — seeded descriptions are
-    /// curated ground truth and must never be auto-resummarized). Selected
-    /// entities get their description fully replaced by a map-reduce summary of
-    /// every associated chunk (`dream_tasks::run_full_summary_task`), not the
-    /// normal per-schema-type task. Schema_type/relations/fields are left
-    /// untouched in this mode.
+    /// every entity that has >=1 relation (via `neighbors_of`). Each selected
+    /// entity's description is replaced by a map-reduce summary of every
+    /// associated chunk (`dream_tasks::run_full_summary_task`), but only if the
+    /// summary clears the same tier/length improvement gate every other task
+    /// uses — there is no "skip seeded entities" selection filter, since
+    /// `extraction_confidence` turned out to be the wrong signal for detecting
+    /// curated ground truth (it defaults to 1.0 for ordinary confidently-
+    /// extracted entities too, not just YAML-seeded ones). Schema_type/
+    /// relations/fields are left untouched in this mode.
     #[serde(default)]
     pub relation_summary_mode: bool,
 }
@@ -426,15 +428,20 @@ pub async fn run_dream_cycle(
 
         // Priority order: Unknown type first, then thin summary, then missing relations.
         // In relation_summary_mode this cross-cutting criterion replaces the score
-        // threshold entirely: every entity with >=1 relation, skipping YAML-seeded
-        // entities (extraction_confidence >= 1.0) whose descriptions are curated
-        // ground truth and must never be auto-resummarized. Sorted by relation
-        // count descending so the most well-connected entities are covered first
-        // within the budget.
+        // threshold entirely: every entity with >=1 relation. No "skip seeded
+        // entities" filter here — extraction_confidence turned out to be the wrong
+        // signal for that (it defaults to 1.0 for ordinary confidently-extracted
+        // entities too — 1462/1536 entities on a real D6 rebuild carried it, vs only
+        // 77 actually seeded from the YAML — so filtering on it excluded nearly the
+        // whole graph, not just curated ground truth). Protection against
+        // overwriting a good existing description instead happens in
+        // `dream_tasks::run_full_summary_task`, which only replaces it if the new
+        // one clears the same tier/length improvement gate every other task uses.
+        // Sorted by relation count descending so the most well-connected entities
+        // are covered first within the budget.
         let candidate_ids: Vec<i64> = if cfg.relation_summary_mode {
             let mut ids: Vec<(i64, usize)> = store
                 .all_entities()
-                .filter(|n| n.extraction_confidence < 1.0)
                 .map(|n| (n.id, store.neighbors_of(n.id).len()))
                 .filter(|(_, degree)| *degree >= 1)
                 .collect();
@@ -644,6 +651,7 @@ pub async fn run_dream_cycle(
                 let result = crate::dream_tasks::run_full_summary_task(
                     item.entity_id,
                     &item.name,
+                    &item.description,
                     &item.chunk_texts,
                     url,
                     &model,

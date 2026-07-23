@@ -401,22 +401,47 @@ higher-score entity; the source entity is deleted.
 A cross-cutting alternative to the score-threshold selection in Step 1, added for "resummarize
 every well-connected entity from all its evidence, not just a capped sample." When set:
 
-- **Selection**: every entity with `neighbors_of(id).len() >= 1`, **excluding** YAML-seeded
-  entities (`extraction_confidence >= 1.0` — their descriptions are curated ground truth and must
-  never be auto-resummarized). Sorted by relation count descending, so the most well-connected
-  entities are covered first within `--max-completions`.
-- **Evidence**: every chunk associated with the entity, uncapped (the normal path caps at 20
-  chunks per entity) — `dream_tasks::run_full_summary_task` (`DreamTaskKind::FullSummary`).
-- **Map-reduce**: chunks are grouped into ~6 000-char batches; each batch is summarized down to
-  only the facts about the entity ("map"); if more than one batch exists, the batch summaries are
-  combined into one final description ("reduce").
-- **Write-back**: the resulting description always replaces the existing one
-  (`EntityCompletion.force_description = true`), bypassing both the normal "must move up a summary
-  tier or be +20 chars longer" gate and field-derived-description precedence — the whole point is a
-  comprehensive resummarization, not an incremental nudge. Schema_type/relations/fields are never
-  touched by this task, to avoid handing the LLM a large concatenated blob alongside a free-choice
-  relation ask (the same hallucination risk pattern documented elsewhere in this codebase for
-  large-context relation prompts).
+- **Selection**: every entity with `neighbors_of(id).len() >= 1`. No "skip seeded entities" filter
+  — an earlier iteration tried gating on `extraction_confidence >= 1.0`, but seeding sets that
+  unconditionally on every seeded entity (`family.rs`), including the majority with no description
+  at all, and it also defaults to 1.0 for ordinary confidently-extracted entities in general (on a
+  real D6 rebuild, 1462/1516 entities carried it, vs 77 actually seeded) — so it excluded nearly the
+  whole graph, not just curated ground truth. Protection instead lives entirely in the write-back
+  gate below. Sorted by relation count descending, so the most well-connected entities are covered
+  first within `--max-completions`.
+- **Evidence**: every chunk associated with the entity, uncapped (the normal path caps at 20 chunks
+  per entity) — `dream_tasks::run_full_summary_task` (`DreamTaskKind::FullSummary`).
+- **Map**: chunks are grouped into ~6 000-char batches; each batch is summarized down to only the
+  facts about the entity, entirely in third person — the source memoir is narrated in first person,
+  so the prompt explicitly rewrites unattributed "my"/"I" references (e.g. "my uncle") to "the
+  narrator's uncle" rather than leaking narrator voice into entity prose.
+- **Synthesis**: always runs, even for a single batch (not just when there's more than one) — it
+  is given the entity's *existing* description as "known facts to preserve" alongside the new
+  batch notes, and instructed to integrate new detail without dropping existing facts (names,
+  dates, nicknames, family relations) unless directly contradicted. An earlier iteration skipped
+  this step for single-batch entities and treated the map output as final, which silently regressed
+  real facts — e.g. a "born in 1886, nicknamed Cheops, m. Cissie Gool" description lost the birth
+  year, nickname, and marriage once replaced by a memoir-grounded but fact-preservation-blind
+  resummary that had no visibility into what was already known.
+- **NONE detection**: both the map and synthesis steps can decline (reply `NONE`) when there's
+  nothing substantive to say. Two robustness layers guard this: `is_none_response()` tolerates
+  trailing punctuation the model sometimes appends (a bare `eq_ignore_ascii_case("none")` check let
+  the literal string "NONE." through as a stored description), and `looks_like_no_info()` catches
+  meta-commentary disclaimers ("There is no information about X...") that ignore the exact-sentinel
+  instruction entirely — smaller local models don't always follow it reliably.
+- **Write-back gate**: the synthesized description only replaces the existing one if it clears the
+  *same* tier/length improvement rule every other dream task in this file uses (`summary_tier()`
+  comparison) — there is no unconditional overwrite. This is the sole protection against clobbering
+  a good hand-curated or previously-enriched description; combined with fact-preservation in the
+  synthesis prompt, an entity with a solid existing description either gets it enriched with new
+  detail or is correctly left unchanged, never degraded. When accepted, `EntityCompletion.
+  force_description = true` bypasses field-derived-description precedence specifically (the
+  prose result would otherwise be silently discarded in favor of a stale fields-computed
+  description for entities with structured fields from a prior Biography/Geography task) — the
+  tier gate has already run by this point, so this bypass only ever fires on a confirmed
+  improvement. Schema_type/relations/fields are never touched by this task, to avoid handing the
+  LLM a large concatenated blob alongside a free-choice relation ask (the same hallucination risk
+  pattern documented elsewhere in this codebase for large-context relation prompts).
 
 ---
 

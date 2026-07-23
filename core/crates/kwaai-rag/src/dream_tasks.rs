@@ -388,17 +388,34 @@ fn empty(eid: i64) -> EntityCompletion {
 /// comfortably within a small model's context window alongside prompt overhead.
 const SUMMARY_BATCH_CHARS: usize = 6_000;
 
-/// Summarize every chunk associated with an entity via map-reduce, rather than
-/// incrementally improving the existing description from a capped evidence
-/// sample: chunks are grouped into batches, each batch is summarized down to
-/// only the facts about this entity, then the batch summaries are combined
-/// into one final description. Always replaces the existing description
-/// (`force_description: true`) — the point is a comprehensive resummarization
-/// grounded in every chunk, not an incremental nudge over what's there.
-/// Deliberately description-only: never touches schema_type/relations/fields,
-/// since handing a large concatenated blob to the LLM alongside a relations
-/// ask is exactly the kind of free-choice-name-list setup that produces
-/// hallucinated relations elsewhere in this codebase.
+/// Defensive check for synthesis output that ignores the "reply NONE" instruction
+/// and instead writes a meta-commentary sentence stating that no information is
+/// available — smaller local models don't always follow an exact-sentinel
+/// instruction reliably. A real description essentially never legitimately
+/// contains these phrases about its own subject, so treating them as "no answer"
+/// is safe.
+fn looks_like_no_info(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    const PATTERNS: &[&str] = &[
+        "no information",
+        "nothing to combine",
+        "there is no",
+        "not enough information",
+        "no known description",
+        "cannot provide a description",
+    ];
+    PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+/// True if `s` is the "NONE" sentinel, allowing for trailing punctuation the
+/// model sometimes appends despite the "reply with exactly: NONE" instruction
+/// (e.g. "NONE." or "None!") — a bare `eq_ignore_ascii_case("none")` check
+/// missed these and let the literal word through as a stored description.
+fn is_none_response(s: &str) -> bool {
+    s.trim_end_matches(['.', '!', '?'])
+        .eq_ignore_ascii_case("none")
+}
+
 /// Group chunk texts into batches of at most ~`batch_char_limit` characters each,
 /// never splitting a single chunk across batches (a lone chunk larger than the
 /// limit gets its own oversized batch rather than being truncated). Pure/testable
@@ -421,9 +438,31 @@ fn batch_chunk_texts(chunk_texts: &[String], batch_char_limit: usize) -> Vec<Vec
     batches
 }
 
+/// Summarize every chunk associated with an entity via map-reduce, rather than
+/// incrementally improving the existing description from a capped evidence
+/// sample: chunks are grouped into batches, each batch is summarized down to
+/// only the facts about this entity, then a synthesis step combines the batch
+/// summaries into one final description — always explicitly instructed to
+/// preserve every fact already present in `current_description` (names,
+/// dates, nicknames, family relations) rather than just picking whichever
+/// text is longer. Earlier iterations skipped synthesis entirely for
+/// single-batch entities and treated the map output as final; that silently
+/// regressed real facts (e.g. a "born in 1886, m. Cissie Gool, nicknamed
+/// Cheops" description losing the birth year, nickname, and marriage once
+/// replaced by a memoir-grounded but fact-preservation-blind resummary) since
+/// nothing told the LLM those facts existed and mattered. The result only
+/// replaces `current_description` if it clears the same tier/length
+/// improvement gate every other task in this file uses — see the comment
+/// inline below for why this can't be gated on a "was this seeded" heuristic
+/// instead. Deliberately description-only: never touches
+/// schema_type/relations/fields, since handing a large concatenated blob to
+/// the LLM alongside a relations ask is exactly the kind of free-choice-
+/// name-list setup that produces hallucinated relations elsewhere in this
+/// codebase.
 pub async fn run_full_summary_task(
     eid: i64,
     name: &str,
+    current_description: &str,
     chunk_texts: &[String],
     url: &str,
     model: &str,
@@ -441,13 +480,18 @@ pub async fn run_full_summary_task(
         let joined = batch.join("\n---\n");
         let prompt = format!(
             "Extract only the facts stated about \"{name}\" in the following source text. \
-             Write 2-4 sentences, plain prose, no preamble. If the text says nothing about \
-             \"{name}\", reply with exactly: NONE.\n\n\
+             Write 2-4 sentences, plain prose, no preamble, entirely in third person. If the \
+             source text is narrated in first person (uses \"I\"/\"my\"/\"me\") and refers to \
+             \"{name}\" only via that first-person narrator (e.g. \"my uncle\", \"my \
+             grandfather\") without ever naming the narrator, rewrite the relationship as \"the \
+             narrator's uncle\"/\"the narrator's grandfather\" etc. — never leave an unattributed \
+             \"my\"/\"I\" in the output. If the text says nothing about \"{name}\", reply with \
+             exactly: NONE.\n\n\
              SOURCE TEXT:\n---\n{joined}\n---"
         );
         if let Some(resp) = call_llm(&prompt, url, model).await {
             let cleaned = resp.trim();
-            if !cleaned.is_empty() && !cleaned.eq_ignore_ascii_case("none") {
+            if !cleaned.is_empty() && !is_none_response(cleaned) {
                 batch_summaries.push(cleaned.to_string());
             }
         }
@@ -457,47 +501,76 @@ pub async fn run_full_summary_task(
         return empty(eid);
     }
 
-    // Single batch: its own summary IS the final description — no reduce call needed.
-    if batch_summaries.len() == 1 {
-        return EntityCompletion {
-            entity_id: eid,
-            schema_type: None,
-            description: Some(batch_summaries.into_iter().next().unwrap()),
-            relations: vec![],
-            force_description: true,
-            fields: HashMap::new(),
-        };
-    }
-
-    // Reduce: combine all batch summaries into one coherent, non-redundant description.
-    let combined = batch_summaries
+    // Synthesis: always runs (even for a single batch) so the existing
+    // description's facts get a chance to be preserved rather than silently
+    // dropped. Only included when non-empty — an entity with no prior
+    // description has nothing to preserve, and omitting the section avoids
+    // the LLM inventing content to fill it.
+    let notes = batch_summaries
         .iter()
         .enumerate()
         .map(|(i, s)| format!("[{}] {s}", i + 1))
         .collect::<Vec<_>>()
         .join("\n");
-    let reduce_prompt = format!(
-        "The following are partial summaries about \"{name}\", each drawn from a different \
-         part of the same source document. Combine them into ONE coherent description, \
-         2-4 sentences, removing redundancy and resolving any overlap. Plain prose, no \
-         preamble, no numbering.\n\n\
-         PARTIAL SUMMARIES:\n{combined}"
+    let known_facts_section = if current_description.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "EXISTING KNOWN DESCRIPTION (preserve every fact from this — names, dates, \
+             nicknames, family relations — unless the notes below directly contradict it):\n\
+             {current_description}\n\n"
+        )
+    };
+    let synthesis_prompt = format!(
+        "{known_facts_section}NEW NOTES FROM SOURCE TEXT, drawn from one or more passages about \
+         \"{name}\":\n{notes}\n\n\
+         Write ONE combined description of \"{name}\", 2-5 sentences, plain prose, no preamble, \
+         no numbering, entirely in third person. Preserve every fact from the existing known \
+         description above (if any), and integrate any additional relevant details from the new \
+         notes. Do not drop a known fact unless the new notes explicitly contradict it. Do not \
+         invent facts not present in either the known description or the new notes. If any note \
+         above still contains an unattributed \"I\"/\"my\"/\"me\" (a first-person reference to \
+         the source's narrator), rewrite it in third person — e.g. \"my uncle\" becomes \"the \
+         narrator's uncle\" — rather than repeating it verbatim. If there is genuinely no known \
+         description and the new notes contain no real facts about \"{name}\" (e.g. they only say \
+         the source text is silent on the topic), reply with exactly: NONE. Never write a \
+         sentence merely stating that no information is available — either produce a real \
+         description or reply NONE."
     );
-    let final_desc = call_llm(&reduce_prompt, url, model)
+    let candidate = match call_llm(&synthesis_prompt, url, model)
         .await
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty() && !is_none_response(s) && !looks_like_no_info(s))
+    {
+        Some(desc) => desc,
+        None => return empty(eid),
+    };
 
-    match final_desc {
-        Some(desc) => EntityCompletion {
+    // Quality gate: only replace the existing description if this comprehensive
+    // resummarization is at least as good, using the exact same tier/length rule
+    // every other task in this file applies. This is deliberately NOT gated on
+    // any "was this seeded" heuristic — extraction_confidence turned out to be
+    // the wrong signal for that (it defaults to 1.0 for ordinary confidently-
+    // extracted entities too, not just YAML-seeded ones; see dream.rs's
+    // relation_summary_mode selection comment) — so the only reliable protection
+    // against clobbering a good hand-curated or previously-enriched description
+    // is requiring the replacement to actually be an improvement, exactly like
+    // every other dream task already does.
+    let new_tier = summary_tier(&candidate);
+    let old_tier = summary_tier(current_description);
+    if new_tier > old_tier
+        || (new_tier == old_tier && candidate.len() > current_description.len() + 20)
+    {
+        EntityCompletion {
             entity_id: eid,
             schema_type: None,
-            description: Some(desc),
+            description: Some(candidate),
             relations: vec![],
             force_description: true,
             fields: HashMap::new(),
-        },
-        None => empty(eid),
+        }
+    } else {
+        empty(eid)
     }
 }
 
@@ -908,6 +981,45 @@ mod tests {
         let batches = batch_chunk_texts(&chunks, 100);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0][0].len(), 500);
+    }
+
+    #[test]
+    fn looks_like_no_info_catches_meta_commentary_disclaimers() {
+        // Regression: smaller local models sometimes ignore the "reply NONE"
+        // instruction and instead write a sentence stating that no information
+        // is available — these must be caught so they never get accepted as a
+        // real description over an empty prior one.
+        assert!(looks_like_no_info(
+            "There is no information about Jane Gool-Tabata, and the new notes contain only a \
+             statement that there are no new notes from the source text."
+        ));
+        assert!(looks_like_no_info(
+            "There is no information about Mohamed Saaid Gool from either the known description \
+             or the new notes, so there is nothing to combine into a single description."
+        ));
+    }
+
+    #[test]
+    fn looks_like_no_info_does_not_flag_real_descriptions() {
+        assert!(!looks_like_no_info(
+            "Wahida Gool, also known as Hajima, was married to Joosub Gool after he was \
+             confronted by her parental delegation."
+        ));
+    }
+
+    #[test]
+    fn is_none_response_tolerates_trailing_punctuation() {
+        // Regression: a bare `eq_ignore_ascii_case("none")` check let "NONE."
+        // (trailing period, exactly what a real model produced despite the
+        // "reply with exactly: NONE" instruction) through as a stored
+        // description literally reading "NONE."
+        assert!(is_none_response("NONE."));
+        assert!(is_none_response("None!"));
+        assert!(is_none_response("none"));
+        assert!(is_none_response("NONE"));
+        assert!(!is_none_response(
+            "None of this is confirmed by other sources."
+        ));
     }
 
     #[tokio::test]
