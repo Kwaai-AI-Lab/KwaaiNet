@@ -356,6 +356,44 @@ struct WorkItem {
     is_full_summary: bool,
 }
 
+/// Decide what evidence text (if any) a chunk contributes to `entity_id`'s
+/// map-reduce summary, given that chunk's `chunk_mentions` data (empty if
+/// relation extraction never ran over it) and its raw text as a fallback.
+///
+/// Three cases:
+/// - No mention data for this chunk at all (`mentions` empty) — relation
+///   extraction is opt-in and off by default, so this is the common case, not
+///   an edge case. Fall back to the whole chunk text rather than starving
+///   entities of evidence on any KB that hasn't enabled it.
+/// - Mention data exists and at least one sentence has a mention resolving to
+///   `entity_id` — return only those sentences, not the whole chunk. This is
+///   what prevents fact-blending when the coarse `entity_chunk` link (built
+///   from a free-generating per-chunk LLM extraction call with no cross-chunk
+///   disambiguation) wired in a chunk that's actually about a different
+///   entity sharing the same bare name (e.g. two different "Fatima"s).
+/// - Mention data exists but nothing in it resolves to `entity_id` — the
+///   coarse link was a false positive. Return `None` so this chunk
+///   contributes nothing, rather than risk blending in the wrong entity's
+///   facts.
+fn entity_evidence_text(
+    mentions: &[crate::mentions::SentenceMentions],
+    entity_id: i64,
+    whole_chunk_text: &str,
+) -> Option<String> {
+    if mentions.is_empty() {
+        return Some(whole_chunk_text.to_string());
+    }
+    let matching: Vec<&str> = mentions
+        .iter()
+        .filter(|sm| sm.mentions.iter().any(|m| m.entity_id == entity_id))
+        .map(|sm| sm.sentence.as_str())
+        .collect();
+    if matching.is_empty() {
+        return None;
+    }
+    Some(matching.join(" "))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_dream_cycle(
     data_dir: &Path,
@@ -471,10 +509,21 @@ pub async fn run_dream_cycle(
                     continue; // no text evidence — nothing to summarize
                 }
                 let chunks = meta.get_chunks(&ids)?;
-                let chunk_texts: Vec<String> = chunks
+                // The coarse entity_chunk link ("this chunk mentions this
+                // entity") comes straight from the per-chunk LLM extraction
+                // call with no cross-chunk disambiguation — two different
+                // people sharing a bare first name (e.g. two different
+                // "Fatima"s) can both resolve to the same entity_id there,
+                // wiring an unrelated chunk into this entity's evidence.
+                // Narrow each chunk down using chunk_mentions where available
+                // — see entity_evidence_text() for the exact fallback rules.
+                let chunk_texts: Vec<String> = ids
                     .iter()
-                    .flatten()
-                    .map(|c| {
+                    .zip(chunks.iter())
+                    .filter_map(|(&cid, c)| {
+                        let c = c.as_ref()?;
+                        let mentions = store.get_chunk_mentions(cid);
+                        let text = entity_evidence_text(&mentions, entity_id, &c.text)?;
                         let mut s = String::new();
                         if let Some(ref sec) = c.section_name {
                             s.push_str(&format!("[Section: {sec}]\n"));
@@ -482,8 +531,8 @@ pub async fn run_dream_cycle(
                         if let Some(ref note) = c.section_note {
                             s.push_str(&format!("[Note: {note}]\n"));
                         }
-                        s.push_str(&c.text);
-                        s
+                        s.push_str(&text);
+                        Some(s)
                     })
                     .collect();
                 if chunk_texts.is_empty() {
@@ -920,4 +969,71 @@ pub async fn run_dream_cycle(
     report.duration_secs = started.elapsed().as_secs_f64();
     report.cycle_errors = cycle_errors;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mentions::{MentionKind, MentionSpan, SentenceMentions};
+
+    fn sm(sentence: &str, entity_id: i64) -> SentenceMentions {
+        SentenceMentions {
+            sentence: sentence.to_string(),
+            mentions: vec![MentionSpan {
+                entity_id,
+                entity_name: String::new(),
+                start: 0,
+                end: 1,
+                kind: MentionKind::Literal,
+            }],
+        }
+    }
+
+    #[test]
+    fn entity_evidence_text_falls_back_to_whole_chunk_when_no_mention_data() {
+        // Relation extraction is opt-in and off by default — most chunks have
+        // no chunk_mentions entry at all. Must not starve evidence in that case.
+        assert_eq!(
+            entity_evidence_text(&[], 1, "the whole chunk text"),
+            Some("the whole chunk text".to_string())
+        );
+    }
+
+    #[test]
+    fn entity_evidence_text_restricts_to_matching_sentences() {
+        // Regression for a real graph bug: a chunk with a sentence about
+        // Mr Regal's daughter "Fatima" (entity 99) got coarsely linked to a
+        // different "Fatima Timmie Gool" (entity 1) via the per-chunk
+        // extraction call. chunk_mentions correctly resolves each sentence's
+        // "Fatima" independently — evidence for entity 1 must exclude the
+        // sentence that actually resolves to entity 99.
+        let mentions = vec![
+            sm("Fatima Timmie Gool loved ballet as a child.", 1),
+            sm(
+                "Mr Regal's daughter Fatima was also an aspiring ballet dancer.",
+                99,
+            ),
+        ];
+        let text = entity_evidence_text(&mentions, 1, "irrelevant whole-chunk fallback");
+        assert_eq!(
+            text,
+            Some("Fatima Timmie Gool loved ballet as a child.".to_string())
+        );
+    }
+
+    #[test]
+    fn entity_evidence_text_drops_chunk_on_false_positive_link() {
+        // The coarse entity_chunk link says this entity is in this chunk, but
+        // no sentence's confirmed mention actually resolves to it — a false
+        // positive. Must return None (drop), not fall back to the whole
+        // chunk (which would just reproduce the fact-blending bug).
+        let mentions = vec![sm(
+            "Mr Regal's daughter Fatima was also an aspiring ballet dancer.",
+            99,
+        )];
+        assert_eq!(
+            entity_evidence_text(&mentions, 1, "irrelevant whole-chunk fallback"),
+            None
+        );
+    }
 }

@@ -410,7 +410,19 @@ every well-connected entity from all its evidence, not just a capped sample." Wh
   gate below. Sorted by relation count descending, so the most well-connected entities are covered
   first within `--max-completions`.
 - **Evidence**: every chunk associated with the entity, uncapped (the normal path caps at 20 chunks
-  per entity) — `dream_tasks::run_full_summary_task` (`DreamTaskKind::FullSummary`).
+  per entity) — `dream_tasks::run_full_summary_task` (`DreamTaskKind::FullSummary`). Each chunk's
+  text is narrowed by `entity_evidence_text()` before being handed to the map step: the coarse
+  `entity_chunk` link ("this chunk mentions this entity") comes straight from a free-generating
+  per-chunk LLM extraction call with no cross-chunk disambiguation, so two different people sharing
+  a bare first name (e.g. two different "Fatima"s in D6 — one J.M.H. Gool's daughter, one a
+  neighbour's daughter) can both resolve to the same entity_id there, wiring an unrelated chunk's
+  full text into this entity's evidence. Where `chunk_mentions` data exists for a chunk (built by
+  relation extraction's per-sentence mention tagging — opt-in, so not always present), evidence is
+  restricted to only the sentences a mention actually confirms resolve to this entity_id; a chunk
+  whose mention data exists but confirms nothing for this entity is dropped entirely rather than
+  falling back to its full text (that would just reproduce the fact-blending bug). Only chunks with
+  no mention data at all fall back to the whole chunk text, so KBs that haven't enabled relation
+  extraction aren't starved of evidence.
 - **Map**: chunks are grouped into ~6 000-char batches; each batch is summarized down to only the
   facts about the entity, entirely in third person — the source memoir is narrated in first person,
   so the prompt explicitly rewrites unattributed "my"/"I" references (e.g. "my uncle") to "the
