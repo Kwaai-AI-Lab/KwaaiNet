@@ -8,9 +8,27 @@ Each KwaaiNet node combines:
 - A **decentralized trust graph** (cryptographic identity, verifiable credentials, local trust scores).
 - **Shared, sharded LLM compute** over heterogeneous CPUs/GPUs using Petals-style distributed inference. Apple Silicon Macs use llama.cpp with Metal for 30+ tok/s local inference; Linux nodes use CUDA-accelerated block sharding.
 - **Secure multi-tenant knowledge storage** via Virtual Private Knowledge (VPK) with encrypted vector search.
+- **Local-first RAG and knowledge graphs** — retrieval-augmented generation over your own documents, with an optional link to VPK for network-outsourced storage.
 - **Intent-based, peer-to-peer networking** that routes based on "what I need" (model, trust tier, latency), not just IP addresses.
 
 From an app's point of view, KwaaiNet looks like a familiar chat-completion style HTTP API. Under the hood, it is a person-anchored Layer 8 fabric where every node is tied to an accountable human or organization.
+
+---
+
+## Table of Contents
+
+- [Why KwaaiNet?](#why-kwaainet)
+- [Quickstart: run a node and make a request](#quickstart-run-a-node-and-make-a-request)
+- [Project status: where we are now](#project-status-where-we-are-now)
+- [Vision](#vision)
+- [Guiding Principles: GliaNet Fiduciary Pledge](#guiding-principles-glianet-fiduciary-pledge)
+- [Decentralized Trust Graph (DTG)](#decentralized-trust-graph-dtg)
+- [VPK Storage Fabric](#vpk-storage-fabric)
+- [RAG Knowledge Base](#rag-knowledge-base)
+- [Roadmap: destination vs current implementation](#roadmap-destination-vs-current-implementation)
+- [Who is building KwaaiNet?](#who-is-building-kwaainet)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
 
 ---
 
@@ -29,45 +47,6 @@ For the full architectural and philosophical context, see:
 
 - **Layer 8: The Decentralized AI Trust Layer** (whitepaper) — available via the [Kwaai website](https://www.kwaai.ai/kwaainet).
 - **KwaaiNet: Decentralized AI Node Architecture for Layer 8** (technical architecture) — available via the [Kwaai website](https://www.kwaai.ai/kwaainet).
-
----
-
-## Project status: where we are now
-
-KwaaiNet is under active development. The Rust CLI and node implementation already ship many core capabilities; others are in progress or still research.
-
-Today, a KwaaiNet node can:
-
-- Run as a native Rust binary (`kwaainet`) with pre-built cross-platform releases.
-- Generate a persistent Ed25519 keypair at `~/.kwaainet/identity.key` and derive a stable `PeerId` / `did:peer:` DID.
-- Maintain a local W3C Verifiable Credential wallet under `~/.kwaainet/credentials/` with credential types like `FiduciaryPledgeVC`, `VerifiedNodeVC`, `UptimeVC`, `ThroughputVC`, `EventAttendeeVC`, and `PeerEndorsementVC`.
-- Compute a local, time-decayed trust score for peers, grouped into tiers (`Unknown`, `Known`, `Verified`, `Trusted`).
-- Join a libp2p + Kademlia DHT swarm compatible with Petals/Hivemind for node discovery and health checks.
-- Serve and consume **block-sharded LLM inference** (CandelEngine): SafeTensors loading, RoPE, GQA, SwiGLU, per-session KV-cache, and temperature/top-k/top-p sampling, exposed through an OpenAI-compatible HTTP API.
-- Run **distributed inference across multiple machines** with session-pinned peer paths that keep KV-caches coherent, automatic gap-filling, and graceful failover when peers go offline.
-- Download models selectively with `kwaainet shard download --start-block N --blocks M` — fetch only the weight files needed for your block range (10x reduction for large models).
-- **Dual inference backends**: llama.cpp with Metal GPU for 30+ tok/s on Apple Silicon (GGUF models); candle with CUDA for distributed block sharding on Linux.
-- **llama.cpp fast path**: when a Mac node hosts the full model and a GGUF file is available, the OpenAI API and benchmark automatically bypass the distributed shard engine and use llama.cpp with Metal — delivering 36+ tok/s instead of ~5 tok/s on CPU. Auto-detected from Ollama, `--ollama-model`, `--gguf-path`, or `~/.kwaainet/models/`.
-- **`shard run --local` model reuse** — if `shard serve` is already running on the same machine, `shard run --local` detects the live bypass port and routes through it instead of loading the model a second time, cutting cold-start latency to near zero.
-- **Flash Attention (CUDA)** — candle block sharding on NVIDIA GPUs uses a fused QK-softmax-V kernel (`candle-flash-attn`) when built with `--features cuda,flash-attn`, alongside a contiguous KV-cache layout that eliminates strided cuBLAS slowdown. Combined, these push decode throughput toward 30–36 tok/s FP16 on an RTX A5000 (up from ~27 tok/s baseline).
-- Pre-form **inference circuits** (`kwaainet shard circuit create`) for stable, reusable peer paths across multiple chat completions.
-- Auto-detect local models and network state to smart-select what to serve, and appear on the public map when properly configured at [map.kwaai.ai](https://map.kwaai.ai).
-- **Run as a VPK Eve storage node** — initialize an encrypted vector database (`kwaainet storage init --capacity-gb N`), enable VPK mode (`kwaainet vpk enable --mode eve`), and serve vector search to remote Bob nodes over the P2P fabric.
-- **Discover VPK-capable peers** with `kwaainet vpk discover` — finds all Eve nodes on the DHT and returns their PeerId, mode, capacity, and tenant count; no IP addresses involved.
-- **Benchmark storage performance** with `kwaainet vpk bench` — measures local HNSW vs WAN-sharded Eve vs Qdrant (local or cloud) across multiple corpus scales, with recall and upload-time breakdowns.
-- **Inspect live P2P state** with `kwaainet p2p info` (peer ID, observed addresses, NAT verdict), `kwaainet p2p peers list` (active connections tagged direct/relay/bootstrap/trusted-relay with colour), and `kwaainet p2p peers find <peer>` (active DHT lookup) — all talking to the local p2pd over IPC without touching the network except for `find`.
-- **Direct peer messaging** — `kwaainet p2p peers send <peer-id> <message>` sends a text message to any connected peer over the libp2p fabric; `peers connect <multiaddr> --message <text>` dials and sends in one step. Relay'd multiaddrs (with `/p2p-circuit/`) are handled correctly.
-- **Trusted relays** — configure `trusted_relays` and `force_private` in `~/.kwaainet/config.yaml` so NATed nodes use a specific relay and skip AutoNAT; `peers list` tags trusted-relay connections in gold.
-- **IDENTIFY-based public-IP detection** — when no `announce_addr` or `public_ip` is configured, the node polls bootstrap peers for their observed-address reports and restarts p2pd with the confirmed public address automatically. Configurable via `identify_min_confirmations` and `identify_timeout_secs`. `public_port` lets port-forwarded nodes announce a different external port than their listen port.
-- **Stable bootstrap identities** — `kwaainet start --identity-key <path>` loads a libp2p-protobuf-encoded key file (RSA or Ed25519) so bootstrap nodes keep the same `PeerId` across restarts; the watchdog restart path honours the override too.
-- **RAG knowledge base** — ingest local documents (`txt`, `md`, `pdf`, `docx`, `doc`) into a fully local private vector knowledge base (no network required) with `kwaainet rag ingest`. Hybrid BM25 + dense retrieval, grounded citations, HyDE query expansion with blend control, LLM reranker, semantic paragraph chunking, and an eval harness for accuracy measurement. Supports external drives for large corpora.
-- **GraphRAG** — `kwaainet rag graph build` extracts entities and relations from ingested chunks via LLM, storing a persistent property graph (2300+ entities, 7900+ relations on a typical memoir-length corpus). Use `--mode graph` or `--mode auto` on any query/chat/eval command to route through the graph for entity-centric questions. Iterative mode (multi-round gap-fill) reached **56.9% keyword recall / 1.80 judge score** on the D6 eval set (up from 24.6% baseline).
-- **Dream RAG** — `kwaainet rag dream run` runs an autonomous knowledge graph refinement cycle inspired by memory consolidation: scores every entity on a 3-pillar schema.org completeness model (type, summary, relation coverage), fans out LLM completion calls for incomplete entities, auto-merges near-duplicates, and prunes zombie nodes. `kwaainet rag graph score` prints a live health report. First cycle on D6: 7 type assignments, 4 summary enrichments, 5 new relations, Unknown-type count 88 → 81 in 35 seconds.
-- **Pluggable embedding models** — `kwaainet rag init --embed-model <model>` auto-probes dimension (supports 384-dim all-minilm, 768-dim nomic-embed-text, 1024-dim mxbai-embed-large, etc.). The KB stores the dimension; mismatched models are rejected at query time.
-- **Folder sync** — `kwaainet rag sync <folder>` continuously mirrors a directory into the knowledge base, detecting new, changed, and deleted files. Pass `--watch` for continuous mode.
-- **OpenAI-compatible RAG server** — `kwaainet rag serve` exposes an OpenAI-compatible HTTP API on port 9090 with RAG baked in. Point OpenWebUI or any OpenAI-compatible client at it as a custom base URL.
-
-See the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) for the most recent feature list and release notes.
 
 ---
 
@@ -195,6 +174,101 @@ kwaainet start --daemon
 The node will connect to bootstrap peers, announce itself on the DHT, auto-detect available hardware, and appear on [map.kwaai.ai](https://map.kwaai.ai). No Python, no build tools, no manual configuration required.
 
 > **Pre-release note (< v1.0):** `kwaainet start --daemon` automatically starts shard serving (if a local model is present) and storage serving (if storage has been initialised). This opt-out default keeps the network dense during the insider phase. Run with `--no-contribute` to start the node without contributing, or permanently disable with `kwaainet config set contribute.shards false`.
+
+### 3. Call the OpenAI-compatible API
+
+```bash
+curl http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "your-model-id",
+    "messages": [
+      {"role": "user", "content": "Hello, KwaaiNet!"}
+    ]
+  }'
+```
+
+This sends a chat-completion request to your local node, which may route it through a shard chain of other nodes depending on configuration and trust requirements.
+
+For a full walkthrough including platform specifics, model discovery, and Python/JS examples see **[docs/getting-started-node.md](docs/getting-started-node.md)** and **[docs/api-quickstart.md](docs/api-quickstart.md)**.
+
+### 4. Distributed inference across the network
+
+Download the model (or just the blocks you need):
+
+```bash
+kwaainet shard download
+```
+
+Run inference across the live KwaaiNet peer network:
+
+```bash
+kwaainet shard run "What is the capital of France?"
+```
+
+The coordinator discovers block servers via DHT, pins a stable peer path for the session, and forwards activations through the chain:
+
+```
+Pinned path:
+  [ 1] blocks   0– 23  john-linux-draak-x86_64/v0.3.27
+  [ 2] blocks  24– 31  john-linux-draca-x86_64/v0.3.27
+
+  Assistant: The capital of France is Paris.
+```
+
+Add `--stats` to see per-token timing breakdown (prefill, decode, throughput). For local-only inference without networking: `kwaainet shard run "prompt" --local`.
+
+On Apple Silicon Macs with a GGUF model (Ollama or `~/.kwaainet/models/`), inference automatically uses llama.cpp with Metal GPU acceleration (36+ tok/s). The shard API also supports this fast path:
+
+```bash
+kwaainet shard api --port 8080 --ollama-model llama3.1:8b
+```
+
+See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
+
+---
+
+## Project status: where we are now
+
+KwaaiNet is under active development. The Rust CLI and node implementation already ship many core capabilities across five areas; others are in progress or still research. This is a summary — full detail for storage and RAG lives in their own sections below, and everything else lives in [docs/](docs/).
+
+### Trust & identity
+
+- Native Rust binary (`kwaainet`) with pre-built cross-platform releases.
+- Persistent Ed25519 keypair → stable `PeerId` / `did:peer:` DID at `~/.kwaainet/identity.key`.
+- W3C Verifiable Credential wallet at `~/.kwaainet/credentials/` — `FiduciaryPledgeVC`, `VerifiedNodeVC`, `UptimeVC`, `ThroughputVC`, `EventAttendeeVC`, `PeerEndorsementVC`.
+- Local, time-decayed trust scoring across four tiers (`Unknown` → `Known` → `Verified` → `Trusted`). See [Decentralized Trust Graph](#decentralized-trust-graph-dtg) below.
+
+### Compute & inference
+
+- **Block-sharded LLM inference** (CandleEngine) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls.
+- **Distributed inference across multiple machines** with session-pinned peer paths, automatic gap-filling, and graceful failover when peers go offline.
+- **Dual backends**: llama.cpp + Metal on Apple Silicon (36+ tok/s auto fast-path for GGUF models); candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000).
+- Selective block download (`shard download --start-block N --blocks M`), reusable inference circuits (`shard circuit create`), and `shard run --local` model reuse for near-zero cold start.
+- Auto-detects local models and network state, and appears on the public map when configured at [map.kwaai.ai](https://map.kwaai.ai).
+
+### Storage — Virtual Private Knowledge (VPK)
+
+- Run as an encrypted, multi-tenant **Eve storage node** (`kwaainet storage init`, `vpk enable --mode eve`) serving vector search to Bob nodes over the P2P fabric.
+- **Discover VPK peers** (`vpk discover`) via DHT — PeerId, mode, capacity, tenant count; no IP addresses involved.
+- **Benchmark storage** (`vpk bench`) — local HNSW vs WAN-sharded Eve vs Qdrant, with recall and upload-time breakdowns. See [VPK Storage Fabric](#vpk-storage-fabric) below.
+
+### Knowledge — RAG
+
+- **Local, private knowledge base** (`rag ingest/sync`) — `txt`, `md`, `pdf`, `docx`, `doc` chunked and embedded with no network required; hybrid BM25 + dense retrieval, grounded citations, HyDE query expansion, LLM reranking, and an eval harness.
+- **GraphRAG** (`rag graph build`) — LLM-extracted entity/relation property graph (2300+ entities, 7900+ relations on a typical memoir-length corpus); graph-anchored retrieval reached 56.9% keyword recall on the D6 eval set (up from 24.6% baseline).
+- **Dream RAG** (`rag dream run`) — autonomous, self-improving graph refinement: schema.org completeness scoring, LLM completion fan-out, auto-merge, auto-prune.
+- **OpenAI-compatible RAG server** (`rag serve`) — point OpenWebUI or any compatible client at it as a custom base URL. See [RAG Knowledge Base](#rag-knowledge-base) below.
+
+### Networking
+
+- libp2p + Kademlia DHT swarm, Petals/Hivemind-compatible, with live diagnostics (`p2p info`, `p2p peers list/find`) and direct peer messaging (`p2p peers send`).
+- **IDENTIFY-based public-IP detection** — auto-confirms and announces a node's public address with no manual config.
+- **Trusted relays** and **stable bootstrap identities** (`start --identity-key`) so NATed and bootstrap nodes keep consistent routing and `PeerId` across restarts.
+
+See the [latest GitHub Release](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest) for the most recent feature list and release notes.
+
+---
 
 ## Vision
 
@@ -360,70 +434,6 @@ Scores are **local to the querier** — your trust graph may differ from mine. A
 - **Trusted issuers**: GliaNet Foundation (FiduciaryPledge), Kwaai Foundation (VerifiedNode), bootstrap servers (Uptime/Throughput)
 - **Revocation**: `FiduciaryPledgeVC` can be revoked if the pledge is violated
 - **Enterprise routing**: minimum trust score thresholds for HIPAA/GDPR workloads (Phase 2)
-
-### `kwaainet identity` commands
-
-```bash
-kwaainet start --daemon --shard
-```
-
-The node will:
-
-- Connect to bootstrap peers and announce itself on the DHT.
-- Auto-detect available hardware and serve the optimal block range for your machine.
-- Load or download the required model shards.
-- Expose an HTTP API compatible with the OpenAI chat-completion interface.
-
-### 3. Call the OpenAI-compatible API
-
-```bash
-curl http://localhost:11435/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "your-model-id",
-    "messages": [
-      {"role": "user", "content": "Hello, KwaaiNet!"}
-    ]
-  }'
-```
-
-This sends a chat-completion request to your local node, which may route it through a shard chain of other nodes depending on configuration and trust requirements.
-
-For a full walkthrough including platform specifics, model discovery, and Python/JS examples see **[docs/getting-started-node.md](docs/getting-started-node.md)** and **[docs/api-quickstart.md](docs/api-quickstart.md)**.
-
-### 4. Distributed inference across the network
-
-Download the model (or just the blocks you need):
-
-```bash
-kwaainet shard download
-```
-
-Run inference across the live KwaaiNet peer network:
-
-```bash
-kwaainet shard run "What is the capital of France?"
-```
-
-The coordinator discovers block servers via DHT, pins a stable peer path for the session, and forwards activations through the chain:
-
-```
-Pinned path:
-  [ 1] blocks   0– 23  john-linux-draak-x86_64/v0.3.27
-  [ 2] blocks  24– 31  john-linux-draca-x86_64/v0.3.27
-
-  Assistant: The capital of France is Paris.
-```
-
-Add `--stats` to see per-token timing breakdown (prefill, decode, throughput). For local-only inference without networking: `kwaainet shard run "prompt" --local`.
-
-On Apple Silicon Macs with a GGUF model (Ollama or `~/.kwaainet/models/`), inference automatically uses llama.cpp with Metal GPU acceleration (36+ tok/s). The shard API also supports this fast path:
-
-```bash
-kwaainet shard api --port 8080 --ollama-model llama3.1:8b
-```
-
-See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
 
 ---
 
