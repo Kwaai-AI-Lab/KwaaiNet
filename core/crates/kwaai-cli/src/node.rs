@@ -955,6 +955,12 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         });
     }
 
+    // Set when maybe_auto_update() installs a new binary — the actual respawn
+    // is deferred until after this process's own cleanup completes (see the
+    // comment at the bottom of this function for why spawning immediately
+    // used to race the new process's own startup checks).
+    let mut pending_update_version: Option<String> = None;
+
     loop {
         tokio::select! {
             // Incoming RPC stream from p2pd
@@ -1137,12 +1143,17 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 // Auto-update — installs new binary when available (pre-v1.0).
                 // If installed, break the event loop so the daemon exits cleanly
                 // and can be restarted (by systemd/launchd or manually) with the
-                // new binary.
+                // new binary. The respawn itself is deferred to after this
+                // process's own cleanup (see bottom of run_node) rather than
+                // fired here — see maybe_auto_update()'s doc comment for why.
                 let auto_update = KwaaiNetConfig::load_or_create()
                     .map(|c| c.contribute_policy(false).auto_update)
                     .unwrap_or(false);
-                if auto_update && maybe_auto_update().await {
-                    break;
+                if auto_update {
+                    if let Some(version) = maybe_auto_update().await {
+                        pending_update_version = Some(version);
+                        break;
+                    }
                 }
 
                 let sb = config.start_block as i32;
@@ -1277,6 +1288,50 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     let _ = daemon.shutdown().await;
     daemon_mgr.remove_pid();
+
+    // Respawn AFTER this process's own cleanup has fully completed — the PID
+    // file is gone and p2pd is down. Previously the new `start --daemon`
+    // process was spawned immediately inside maybe_auto_update(), before any
+    // of the above ran. That raced this process's PID-file removal against
+    // the new process's own "is another instance already running?" check
+    // (which reads the PID file before doing anything else): if the new
+    // process's network-map fetch + is_running() check completed faster than
+    // this process's unannounce+p2pd-shutdown+remove_pid sequence, the new
+    // process would see the still-present PID file, conclude a daemon was
+    // already running, and exit(1) immediately — leaving no daemon running
+    // at all. Spawning only here, after remove_pid() has synchronously
+    // deleted the file, closes that window entirely.
+    if let Some(version) = pending_update_version {
+        // Resolve via PATH, not current_exe(): install_update() replaces the
+        // binary by unlinking the old file and renaming the new one into its
+        // place (ETXTBSY-safe while this process still has it open). On
+        // Linux, current_exe() resolves through /proc/self/exe, which after
+        // an unlink+rename keeps pointing at the old (deleted) inode — so
+        // spawning via current_exe() here would silently relaunch the old
+        // binary, making the "respawned with new binary" log line a lie.
+        // PATH lookup re-resolves the path fresh, picking up the new file.
+        let new_bin = crate::setup::find_in_path("kwaainet")
+            .or_else(|| std::env::current_exe().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("kwaainet"));
+        match std::process::Command::new(&new_bin)
+            .args(["start", "--daemon"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => info!(
+                "Auto-update: v{} installed — respawned daemon with new binary.",
+                version
+            ),
+            Err(e) => warn!(
+                "Auto-update: v{} installed but respawn failed ({e}). \
+                 Run `kwaainet start --daemon` manually.",
+                version
+            ),
+        }
+    }
+
     info!("KwaaiNet node stopped");
     Ok(())
 }
@@ -2306,9 +2361,17 @@ fn jitter_secs(base: u64, spread: u64) -> u64 {
 /// manager (systemd, launchd) or the user can restart it with the new binary.
 /// On Windows the installer batch runs detached and kills the process itself.
 ///
-/// Returns `true` when an update was installed and the caller should break
-/// the event loop to let the daemon exit.
-async fn maybe_auto_update() -> bool {
+/// Returns `Some(version)` when an update was installed and the caller
+/// should break the event loop; the caller is responsible for actually
+/// respawning, and must only do so *after* its own cleanup (unannounce,
+/// p2pd shutdown, PID-file removal) has fully completed. This function
+/// used to spawn the replacement process itself, immediately after
+/// install_update() succeeded — that raced this (still-running, not yet
+/// cleaned up) process's PID file against the new process's own "is another
+/// instance already running?" check, and could leave no daemon running at
+/// all if the new process's startup won that race. See the respawn site at
+/// the bottom of `run_node` for the fix and full explanation.
+async fn maybe_auto_update() -> Option<String> {
     // Developer escape hatch: a long-running local debug daemon shouldn't
     // get silently replaced by the upstream release binary (which won't
     // contain whatever in-flight feature work is being tested). Setting
@@ -2318,13 +2381,13 @@ async fn maybe_auto_update() -> bool {
         .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
     {
-        return false;
+        return None;
     }
 
     let checker = crate::updater::UpdateChecker::new();
     let update = match checker.check(false).await {
         Ok(Some(u)) => u,
-        _ => return false,
+        _ => return None,
     };
 
     info!(
@@ -2334,42 +2397,20 @@ async fn maybe_auto_update() -> bool {
 
     if let Err(e) = checker.install_update(&update.version).await {
         warn!("Auto-update install failed: {e}");
-        return false;
+        return None;
     }
 
     #[cfg(unix)]
     {
-        // Respawn the daemon using the freshly-installed binary so the node
-        // stays visible on the map without requiring a manual restart.
-        // The installer replaces ~/.cargo/bin/kwaainet, so resolve via PATH
-        // rather than current_exe() (which may still point to the old inode).
-        let new_bin =
-            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("kwaainet"));
-        match std::process::Command::new(&new_bin)
-            .args(["start", "--daemon"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => info!(
-                "Auto-update: v{} installed — respawned daemon with new binary.",
-                update.version
-            ),
-            Err(e) => warn!(
-                "Auto-update: v{} installed but respawn failed ({e}). \
-                 Run `kwaainet start --daemon` manually.",
-                update.version
-            ),
-        }
-        true
+        Some(update.version)
     }
 
     #[cfg(not(unix))]
     {
-        // Windows: the installer batch kills and replaces the process.
+        // Windows: the installer batch kills and replaces the process —
+        // nothing for this process to respawn itself.
         info!("Auto-update: installer launched — daemon will be replaced when batch completes.");
-        return false;
+        None
     }
 }
 

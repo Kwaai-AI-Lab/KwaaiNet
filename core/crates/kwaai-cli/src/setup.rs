@@ -195,7 +195,7 @@ fn build_target_triple() -> Option<&'static str> {
 }
 
 /// Search PATH for `name`, returning the full path if found.
-fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
         let candidate = dir.join(name);
