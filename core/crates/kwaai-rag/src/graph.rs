@@ -3380,6 +3380,15 @@ impl GraphStore {
             return false; // different surnames or not high-risk
         }
 
+        // One side's exact name is already recorded as an alias of the other — direct,
+        // curated evidence of identity (from `graph seed`'s YAML or `alias-scan`'s
+        // inline-text matches), unlike shared parentage below, which is equally
+        // consistent with two distinct siblings and so is deliberately NOT treated as
+        // matching-identity evidence here.
+        if self.dedup_alias_confirms_identity(a, b) {
+            return false;
+        }
+
         // Check for at least one matching family relation to a shared third entity
         let a_family: HashMap<i64, HashSet<String>> = self.trusted_family_rel_map(a);
         let b_family: HashMap<i64, HashSet<String>> = self.trusted_family_rel_map(b);
@@ -3393,6 +3402,25 @@ impl GraphStore {
         }
         // Shared high-risk surname, no matching relation → flag for R3
         true
+    }
+
+    /// True if `a`'s name is recorded as an alias of `b`, or vice versa — i.e. some prior
+    /// process already established these are the same identity, so R3's surname-risk
+    /// downgrade (designed for un-evidenced high-risk pairs) doesn't apply.
+    fn dedup_alias_confirms_identity(&self, a: i64, b: i64) -> bool {
+        let (na, nb) = match (self.nodes.get(&a), self.nodes.get(&b)) {
+            (Some(na), Some(nb)) => (na, nb),
+            _ => return false,
+        };
+        let name_a = normalize_name(&na.name);
+        let name_b = normalize_name(&nb.name);
+        nb.aliases
+            .iter()
+            .any(|alias| normalize_name(alias) == name_a)
+            || na
+                .aliases
+                .iter()
+                .any(|alias| normalize_name(alias) == name_b)
     }
 
     /// R1: merging A into B would give one entity two *different* family roles to
@@ -5915,6 +5943,62 @@ mod dedup_tests {
             store.get_entity(id).unwrap().gender.as_deref(),
             Some("Female"),
             "low-confidence incoming gender must not override an existing value"
+        );
+    }
+
+    #[test]
+    fn r3_bypassed_when_alias_already_confirms_identity() {
+        // Regression for a real graph bug: "Fatima Gool" and "Fatima Timmie Gool"
+        // are the same person — the canonical entity's own alias list already
+        // contained "Fatima Gool" (e.g. from `graph seed` or `alias-scan`), yet
+        // the pair was still perpetually deferred by R3 because their only shared
+        // evidence (parent_of/child_of to the same two parents) is asymmetric and
+        // R3's relation check only looks at symmetric relation types (spouse_of,
+        // sibling_of, ...). The two never actually merged. An already-recorded
+        // alias match is direct, curated evidence of identity and must bypass R3
+        // regardless of what relation types happen to be on file.
+        let (mut store, _dir) = test_store();
+        let mut alias = node("Fatima Gool", "Person", "");
+        let mut canonical = node("Fatima Timmie Gool", "Person", "");
+        canonical.aliases.push("Fatima Gool".to_string());
+        let alias_id = alias.id;
+        let canonical_id = canonical.id;
+        alias.mention_count = 2;
+        canonical.mention_count = 22;
+        store.upsert_entity(alias).unwrap();
+        store.upsert_entity(canonical).unwrap();
+
+        assert!(
+            !store.dedup_r3_high_risk_surname(alias_id, canonical_id),
+            "an already-registered alias match must bypass the R3 surname-risk downgrade"
+        );
+    }
+
+    #[test]
+    fn r3_still_defers_high_risk_surname_pairs_with_only_shared_parentage() {
+        // Guard against a too-permissive fix to the bug above: two genuinely
+        // distinct siblings (different first names, same high-risk surname, no
+        // alias relationship to each other) sharing a parent must NOT bypass R3
+        // — shared parent_of/child_of evidence is equally consistent with "two
+        // different children of the same parents" as with "the same person",
+        // unlike a recorded alias match, so it must not be treated as identity
+        // evidence here (that would risk merging real siblings into one entity).
+        let (mut store, _dir) = test_store();
+        let parent = node("Wahida Gool", "Person", "");
+        let child_a = node("Samuel Rassool", "Person", "");
+        let child_b = node("Leonardo Rassool", "Person", "");
+        let parent_id = parent.id;
+        let a_id = child_a.id;
+        let b_id = child_b.id;
+        store.upsert_entity(parent).unwrap();
+        store.upsert_entity(child_a).unwrap();
+        store.upsert_entity(child_b).unwrap();
+        store.upsert_relation(parent_id, a_id, "parent_of", 0).unwrap();
+        store.upsert_relation(parent_id, b_id, "parent_of", 0).unwrap();
+
+        assert!(
+            store.dedup_r3_high_risk_surname(a_id, b_id),
+            "distinct siblings sharing only a parent (no alias evidence) must still be deferred by R3"
         );
     }
 }
