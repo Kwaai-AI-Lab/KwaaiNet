@@ -1303,16 +1303,23 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // deleted the file, closes that window entirely.
     if let Some(version) = pending_update_version {
         // Resolve via PATH, not current_exe(): install_update() replaces the
-        // binary by unlinking the old file and renaming the new one into its
-        // place (ETXTBSY-safe while this process still has it open). On
-        // Linux, current_exe() resolves through /proc/self/exe, which after
-        // an unlink+rename keeps pointing at the old (deleted) inode — so
-        // spawning via current_exe() here would silently relaunch the old
-        // binary, making the "respawned with new binary" log line a lie.
-        // PATH lookup re-resolves the path fresh, picking up the new file.
-        let new_bin = crate::setup::find_in_path("kwaainet")
+        // binary in place (unlink+rename on Unix, ETXTBSY-safe while this
+        // process still has it open; a rename over the running EXE on
+        // Windows, safe because the OS loader opens EXEs with
+        // FILE_SHARE_DELETE). Either way, current_exe() can point at a stale
+        // path after the swap (Linux's /proc/self/exe keeps resolving to the
+        // old, now-deleted inode) — so spawning via current_exe() here could
+        // silently relaunch the old binary, making the "respawned with new
+        // binary" log line a lie. PATH lookup re-resolves the path fresh,
+        // picking up the new file.
+        #[cfg(windows)]
+        let bin_name = "kwaainet.exe";
+        #[cfg(not(windows))]
+        let bin_name = "kwaainet";
+
+        let new_bin = crate::setup::find_in_path(bin_name)
             .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from("kwaainet"));
+            .unwrap_or_else(|| std::path::PathBuf::from(bin_name));
         match std::process::Command::new(&new_bin)
             .args(["start", "--daemon"])
             .stdin(std::process::Stdio::null())
@@ -2359,7 +2366,6 @@ fn jitter_secs(base: u64, spread: u64) -> u64 {
 /// Check for a newer release and, if found, install it automatically.
 /// After a successful install the daemon exits cleanly so the OS service
 /// manager (systemd, launchd) or the user can restart it with the new binary.
-/// On Windows the installer batch runs detached and kills the process itself.
 ///
 /// Returns `Some(version)` when an update was installed and the caller
 /// should break the event loop; the caller is responsible for actually
@@ -2400,18 +2406,14 @@ async fn maybe_auto_update() -> Option<String> {
         return None;
     }
 
-    #[cfg(unix)]
-    {
-        Some(update.version)
-    }
-
-    #[cfg(not(unix))]
-    {
-        // Windows: the installer batch kills and replaces the process —
-        // nothing for this process to respawn itself.
-        info!("Auto-update: installer launched — daemon will be replaced when batch completes.");
-        None
-    }
+    // Windows can rename a running executable in place — the OS loader opens
+    // EXEs with FILE_SHARE_DELETE, so the memory mapping stays valid after the
+    // rename (see install_update()'s Windows branch in updater.rs). There is
+    // no separate "installer batch" process that kills and replaces this one;
+    // install_update() already did the file swap directly, in-process, on
+    // every platform. So the respawn-after-cleanup handling below applies
+    // identically to Windows and Unix — same code path, no special-casing.
+    Some(update.version)
 }
 
 // ---------------------------------------------------------------------------
