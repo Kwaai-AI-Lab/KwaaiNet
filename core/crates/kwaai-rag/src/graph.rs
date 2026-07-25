@@ -5993,8 +5993,12 @@ mod dedup_tests {
         store.upsert_entity(parent).unwrap();
         store.upsert_entity(child_a).unwrap();
         store.upsert_entity(child_b).unwrap();
-        store.upsert_relation(parent_id, a_id, "parent_of", 0).unwrap();
-        store.upsert_relation(parent_id, b_id, "parent_of", 0).unwrap();
+        store
+            .upsert_relation(parent_id, a_id, "parent_of", 0)
+            .unwrap();
+        store
+            .upsert_relation(parent_id, b_id, "parent_of", 0)
+            .unwrap();
 
         assert!(
             store.dedup_r3_high_risk_surname(a_id, b_id),
