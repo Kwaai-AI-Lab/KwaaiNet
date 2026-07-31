@@ -126,6 +126,23 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_force_private")]
     pub force_private: bool,
 
+    /// Run the node on the in-process rust-libp2p stack instead of spawning the
+    /// Go `p2pd` child process.
+    ///
+    /// The native path reuses every other setting on this struct — `port`,
+    /// `initial_peers`, `identity_key` (so the PeerId is identical either way)
+    /// and `KWAAINET_SOCKET` — and serves the same p2pd control socket, so
+    /// external clients (the GUI, `kwaainet p2p …`, `shard serve`) cannot tell
+    /// the two apart. What it does **not** do yet is NAT traversal: AutoNAT,
+    /// circuit relay, DCUtR and UPnP are still p2pd-only, so a node behind a NAT
+    /// is only reachable on the p2pd path. `no_relay`, `force_private` and
+    /// `trusted_relays` are therefore ignored while this is true.
+    ///
+    /// Defaults to false — the p2pd path stays the default until the NAT slice
+    /// lands and the cutover in Phase 5 flips it.
+    #[serde(default)]
+    pub native_p2p: bool,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -633,6 +650,7 @@ impl Default for KwaaiNetConfig {
             initial_peers: default_peers(),
             trusted_relays: default_trusted_relays(),
             force_private: default_force_private(),
+            native_p2p: false,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -851,6 +869,7 @@ impl KwaaiNetConfig {
             }
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
+            "native_p2p" => self.native_p2p = parse_bool(value)?,
             "start_block" => {
                 self.start_block = value
                     .parse()
