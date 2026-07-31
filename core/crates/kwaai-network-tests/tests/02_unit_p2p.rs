@@ -1,10 +1,15 @@
-//! Unit tests for kwaai-p2p: NetworkConfig, ServerInfo, Hivemind framing,
-//! NodeCapabilities. No network, no daemon required.
+//! Unit tests for kwaai-p2p: NetworkConfig and NodeCapabilities.
+//! No network, no daemon required.
+//!
+//! The ServerInfo / hivemind-framing cases that used to live here were removed
+//! with the Phase 1 rewrite: `kwaai_p2p::hivemind` was a prototype on a wire
+//! format that does not match hivemind's, and the real codec lands in
+//! `kwaai-hivemind-dht` (Phase 0/2). Swarm behaviour is covered by
+//! `kwaai-p2p`'s own `tests/swarm.rs`.
 
 use kwaai_network_tests::metrics::MetricsRecorder;
 use kwaai_p2p::{
     config::{NetworkConfig, KWAAI_BOOTSTRAP_SERVERS},
-    hivemind::{decode_message, encode_error, encode_message, ExpertUID, ServerInfo},
     NodeCapabilities, PETALS_BOOTSTRAP_SERVERS,
 };
 use std::time::Duration;
@@ -80,141 +85,6 @@ fn petals_bootstrap_servers_are_well_formed() {
     }
     rec.metric("petals_count", PETALS_BOOTSTRAP_SERVERS.len());
     rec.metric("kwaai_count", KWAAI_BOOTSTRAP_SERVERS.len());
-    rec.finish(true);
-}
-
-// ============================================================================
-// ServerInfo — msgpack roundtrip and Hivemind compatibility
-// ============================================================================
-
-#[test]
-fn server_info_default_roundtrip() {
-    let mut rec = MetricsRecorder::start("unit::p2p::server_info_default_roundtrip", "unit");
-    let info = ServerInfo::default();
-    let bytes = info.to_msgpack().unwrap();
-    let decoded = ServerInfo::from_msgpack(&bytes).unwrap();
-
-    assert_eq!(decoded.state, "online");
-    assert_eq!(decoded.start_block, 0);
-    assert_eq!(decoded.end_block, 1);
-    assert_eq!(decoded.torch_dtype, "float16");
-    assert_eq!(decoded.quant_type, "none");
-    rec.metric("msgpack_bytes", bytes.len());
-    rec.finish(true);
-}
-
-#[test]
-fn server_info_builder_methods() {
-    let rec = MetricsRecorder::start("unit::p2p::server_info_builder_methods", "unit");
-    let info = ServerInfo::new("kwaai-test-node")
-        .with_span(4, 16)
-        .with_throughput(32.5)
-        .with_cache_tokens(65536)
-        .with_dtype("bfloat16")
-        .with_relay(true);
-
-    assert_eq!(info.public_name.as_deref(), Some("kwaai-test-node"));
-    assert_eq!(info.start_block, 4);
-    assert_eq!(info.end_block, 16);
-    assert_eq!(info.throughput, 32.5);
-    assert_eq!(info.cache_tokens_left, 65536);
-    assert_eq!(info.torch_dtype, "bfloat16");
-    assert!(info.using_relay);
-    assert_eq!(info.spans, Some(vec![(4, 16)]));
-    rec.finish(true);
-}
-
-#[test]
-fn server_info_msgpack_roundtrip_with_extras() {
-    let mut rec = MetricsRecorder::start("unit::p2p::server_info_msgpack_roundtrip_extras", "unit");
-    let original = ServerInfo::new("node-a")
-        .with_span(0, 8)
-        .with_throughput(15.0)
-        .with_cache_tokens(1024);
-
-    let bytes = original.to_msgpack().unwrap();
-    let decoded = ServerInfo::from_msgpack(&bytes).unwrap();
-
-    assert_eq!(decoded.public_name, original.public_name);
-    assert_eq!(decoded.start_block, original.start_block);
-    assert_eq!(decoded.end_block, original.end_block);
-    assert!((decoded.throughput - original.throughput).abs() < 0.001);
-    assert_eq!(decoded.cache_tokens_left, original.cache_tokens_left);
-    assert_eq!(decoded.version, original.version);
-
-    rec.metric("msgpack_bytes", bytes.len());
-    rec.finish(true);
-}
-
-#[test]
-fn server_info_to_expert_info() {
-    let rec = MetricsRecorder::start("unit::p2p::server_info_to_expert_info", "unit");
-    let info = ServerInfo::new("kwaai-node").with_span(0, 4);
-    let expert_info = info.to_expert_info().unwrap();
-    assert!(!expert_info.serialized_info.is_empty());
-    // Verify roundtrip through expert_info
-    let decoded = ServerInfo::from_msgpack(&expert_info.serialized_info).unwrap();
-    assert_eq!(decoded.start_block, 0);
-    assert_eq!(decoded.end_block, 4);
-    rec.finish(true);
-}
-
-// ============================================================================
-// Hivemind message framing
-// ============================================================================
-
-#[test]
-fn framing_encode_decode_message() {
-    let mut rec = MetricsRecorder::start("unit::p2p::framing_encode_decode_message", "unit");
-    use prost::Message as _;
-    let uid = ExpertUID {
-        uid: "llama3.2:3b.block.0".to_string(),
-    };
-
-    let framed = encode_message(&uid);
-    let (is_error, payload) = decode_message(&framed).expect("decode should succeed");
-    assert!(!is_error);
-
-    let decoded = ExpertUID::decode(payload).unwrap();
-    assert_eq!(decoded.uid, uid.uid);
-    rec.metric("framed_bytes", framed.len());
-    rec.finish(true);
-}
-
-#[test]
-fn framing_encode_decode_error() {
-    let rec = MetricsRecorder::start("unit::p2p::framing_encode_decode_error", "unit");
-    let framed = encode_error("inference backend unavailable");
-    let (is_error, payload) = decode_message(&framed).expect("decode should succeed");
-    assert!(is_error);
-    assert_eq!(
-        std::str::from_utf8(payload).unwrap(),
-        "inference backend unavailable"
-    );
-    rec.finish(true);
-}
-
-#[test]
-fn framing_length_prefix_matches_body() {
-    let rec = MetricsRecorder::start("unit::p2p::framing_length_prefix_matches_body", "unit");
-    let uid = ExpertUID {
-        uid: "test".to_string(),
-    };
-    let framed = encode_message(&uid);
-
-    // First 8 bytes declare the body length (marker + protobuf)
-    let declared = u64::from_be_bytes(framed[0..8].try_into().unwrap()) as usize;
-    let actual = framed.len() - 8;
-    assert_eq!(declared, actual);
-    rec.finish(true);
-}
-
-#[test]
-fn framing_decode_too_short_returns_none() {
-    let rec = MetricsRecorder::start("unit::p2p::framing_decode_too_short_returns_none", "unit");
-    assert!(decode_message(&[]).is_none());
-    assert!(decode_message(&[0u8; 4]).is_none());
-    assert!(decode_message(&[0u8; 8]).is_none()); // exactly 8 bytes — no marker
     rec.finish(true);
 }
 
