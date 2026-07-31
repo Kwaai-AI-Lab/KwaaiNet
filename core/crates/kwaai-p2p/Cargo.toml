@@ -37,6 +37,8 @@ tokio-test = "0.4"
 tracing-subscriber = { workspace = true }
 tempfile = "3"
 rmp-serde = { workspace = true }  # msgpack subkeys in the DHT service tests
+rmpv = "1.0"                      # msgpack record values in the live DHT test
+sha1 = "0.10"                     # DHTID derivation in the live DHT test
 
 [features]
 default = ["tcp"]
