@@ -42,6 +42,7 @@ pub mod handle;
 pub mod identity;
 pub mod service;
 pub mod transport;
+pub mod unary;
 
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
