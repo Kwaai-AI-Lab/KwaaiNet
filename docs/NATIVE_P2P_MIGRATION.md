@@ -209,6 +209,19 @@ starvation mistakes (blocking calls inside the select loop); channel deadlocks b
 `request_response<HivemindUnaryCodec>` behaviour + handler dispatch; DHT serving + announce
 via `NetworkHandle`.
 
+*Done so far:* `unary::Behaviour` (see the revision note under design decision 2) and its
+**handler dispatch through `NetworkHandle`**. `KwaaiBehaviour` composes a `unary` field
+built from `NetworkConfig::request_timeout`; the service loop owns a protocol → sender
+dispatch map kept in lockstep with the behaviour's inbound protocol set, and the handle
+exposes `call_unary_handler` / `add_unary_handler` / `remove_unary_handler` under their
+`P2PClient` names. Outbound calls need no pending-map entry — `send_request` owns the
+oneshot and resolves it on every path — and inbound dispatch uses an unbounded channel plus
+one task per call, so neither a slow handler nor a dead one can stall the select loop.
+Gated by `kwaai-p2p/tests/service_unary.rs` and `09_service_unary_interop.rs` (a full
+`NetworkService` against a real p2pd, both directions).
+
+*Still open in this phase:* DHT serving and the announce/re-announce lifecycle.
+
 *Testable:* node announces to bootstraps and shows on the health map; `rpc_find` against a
 Python bootstrap returns our record; a p2pd-based caller successfully calls our `rpc_ping`
 (previously broken inbound path); re-announce loop and clean unannounce (state=-1)
