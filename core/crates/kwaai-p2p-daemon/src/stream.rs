@@ -233,14 +233,12 @@ mod tests {
 
         assert_eq!(decoded.call_id, call_id(), "callId must be echoed verbatim");
         match decoded.message {
-            Some(persistent_connection_request::Message::UnaryResponse(r)) => {
-                match r.result {
-                    Some(call_unary_response::Result::Response(data)) => {
-                        assert_eq!(data, b"dht-response");
-                    }
-                    other => panic!("expected Response arm, got {other:?}"),
+            Some(persistent_connection_request::Message::UnaryResponse(r)) => match r.result {
+                Some(call_unary_response::Result::Response(data)) => {
+                    assert_eq!(data, b"dht-response");
                 }
-            }
+                other => panic!("expected Response arm, got {other:?}"),
+            },
             other => panic!("expected unaryResponse arm, got {other:?}"),
         }
     }
@@ -348,4 +346,3 @@ mod tests {
         assert_eq!(decoded_len, len);
     }
 }
-

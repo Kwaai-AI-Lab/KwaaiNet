@@ -39,16 +39,23 @@
 //!
 //! # Concurrency model
 //!
-//! One tokio task per accepted connection. A connection is in one of two modes:
+//! One tokio task per accepted connection. A connection is in one of three
+//! modes, and the last two are **terminal** — once entered, the connection never
+//! returns to framing:
 //!
 //! - **request/response** — read a `Request`, write a `Response`, repeat. Simple
 //!   verbs are handled here.
-//! - **persistent** — entered by `PERSISTENT_CONN_UPGRADE` and never left. Frames
-//!   flow in both directions concurrently and are correlated by `callId`, so the
-//!   read loop must never block on a call: each request is spawned onto its own
-//!   task (matching Go's `go d.handlePersistentConnRequest(...)`) and all writes
+//! - **persistent** — entered by `PERSISTENT_CONN_UPGRADE`. Frames flow in both
+//!   directions concurrently and are correlated by `callId`, so the read loop
+//!   must never block on a call: each request is spawned onto its own task
+//!   (matching Go's `go d.handlePersistentConnRequest(...)`) and all writes
 //!   funnel through a shared `Mutex<writer>` so frames cannot interleave
 //!   mid-message.
+//! - **pipe** — entered by a successful `STREAM_OPEN`. The socket stops being a
+//!   frame channel and becomes the raw data channel for a libp2p stream: its two
+//!   halves are reunited and handed to `copy_bidirectional`. This is why the
+//!   connection owns a *concrete* socket type rather than boxed trait objects —
+//!   see [`ClientSocket`].
 //!
 //! ## Handler ownership and call-ID isolation
 //!
@@ -58,20 +65,23 @@
 //! connection**, never global. Only the protocol → owning-connection map is
 //! global, because a libp2p protocol can only be served by one handler.
 //!
-//! Every handler a connection registers is tracked in [`ConnState::handlers`]
+//! Every handler a connection registers is tracked — unary ones in
+//! [`ConnState::handlers`], raw-stream ones in [`ConnState::stream_handlers`] —
 //! and deregistered from both the global map and the swarm when the connection
-//! ends — for any reason, including a client crash. That closes today's
+//! ends, for any reason including a client crash. That closes today's
 //! stale-handler bug, where a crashed `storage serve` left the daemon
 //! advertising a protocol nothing would answer, turning a clean negotiation
-//! refusal into a hang.
+//! refusal into a hang. For raw-stream handlers this is a deliberate divergence
+//! from Go, whose `d.handlers` map is process-global and outlives the client
+//! that registered it; see [`ConnState::do_stream_handler`].
 //!
-//! # Scope of this slice
+//! # Scope
 //!
-//! Served: IDENTIFY, CONNECT, DISCONNECT, LIST_PEERS, DHT FIND_PEER, and the
-//! full persistent-connection unary sub-protocol. Stubbed with the Go daemon's
-//! error shape: STREAM_OPEN, STREAM_HANDLER, REMOVE_STREAM_HANDLER (pipe-mode
-//! raw byte relay — Phase 3 continuation), the remaining DHT verbs, PUBSUB and
-//! CONNMANAGER (never implemented by this codebase's client either).
+//! Served: IDENTIFY, CONNECT, DISCONNECT, LIST_PEERS, DHT FIND_PEER, the full
+//! persistent-connection unary sub-protocol, and pipe mode (STREAM_OPEN,
+//! STREAM_HANDLER, REMOVE_STREAM_HANDLER). Stubbed with the Go daemon's error
+//! shape: the remaining DHT verbs, PUBSUB and CONNMANAGER (never implemented by
+//! this codebase's client either).
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -128,6 +138,14 @@ struct Shared {
     /// Go daemon also does whenever `balanced` is false — the only mode any
     /// call site in this codebase uses. See [`ConnState::add_unary_handler`].
     handler_owners: Mutex<HashMap<String, u64>>,
+    /// Raw-stream protocol → the connection currently serving it.
+    ///
+    /// A second map rather than a shared one because the two namespaces are
+    /// independent on the swarm: `unary` and `raw_stream` keep separate inbound
+    /// protocol sets, so the same name could in principle be a unary handler for
+    /// one client and a stream handler for another. Merging the maps would
+    /// impose a coupling the layer below does not have.
+    stream_handler_owners: Mutex<HashMap<String, u64>>,
 }
 
 /// The bound socket. Unix-domain today; a TCP arm mirrors the Windows path the
@@ -158,6 +176,7 @@ impl ControlServer {
             shared: Arc::new(Shared {
                 handle,
                 handler_owners: Mutex::new(HashMap::new()),
+                stream_handler_owners: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -237,8 +256,11 @@ impl ControlServer {
                 #[cfg(unix)]
                 Listener::Unix { listener, .. } => match listener.accept().await {
                     Ok((stream, _)) => {
-                        let (r, w) = stream.into_split();
-                        tokio::spawn(serve_connection(conn_id, shared, r, w));
+                        tokio::spawn(serve_connection(
+                            conn_id,
+                            shared,
+                            ClientSocket::Unix(stream),
+                        ));
                     }
                     Err(e) => {
                         warn!(error = %e, "control socket accept failed");
@@ -247,8 +269,7 @@ impl ControlServer {
                 },
                 Listener::Tcp(listener) => match listener.accept().await {
                     Ok((stream, _)) => {
-                        let (r, w) = stream.into_split();
-                        tokio::spawn(serve_connection(conn_id, shared, r, w));
+                        tokio::spawn(serve_connection(conn_id, shared, ClientSocket::Tcp(stream)));
                     }
                     Err(e) => {
                         warn!(error = %e, "control socket accept failed");
@@ -270,6 +291,185 @@ impl Drop for Listener {
 }
 
 // ============================================================================
+// The client socket
+// ============================================================================
+
+/// An accepted control-socket connection, before it is split for framing.
+///
+/// This type exists for **pipe mode**. In request/response and persistent modes
+/// the connection is read on one task and written from several, so it is split
+/// into halves and the write half is shared behind a mutex. `STREAM_OPEN` then
+/// needs the opposite: the two halves rejoined into one duplex stream that
+/// `copy_bidirectional` can own outright.
+///
+/// Both `tokio::net::UnixStream` and `TcpStream` support `reunite`, but only on
+/// their *concrete* half types — a `Box<dyn AsyncWrite>` cannot be rejoined with
+/// anything. Keeping the concrete type here, and splitting only inside
+/// [`ConnState`], is what makes the handoff possible without a second socket or
+/// an intermediate copy.
+enum ClientSocket {
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
+    Tcp(tokio::net::TcpStream),
+}
+
+/// The read half of a [`ClientSocket`], kept concrete so it can be reunited.
+enum SocketReader {
+    #[cfg(unix)]
+    Unix(tokio::net::unix::OwnedReadHalf),
+    Tcp(tokio::net::tcp::OwnedReadHalf),
+}
+
+/// The write half of a [`ClientSocket`], kept concrete for the same reason.
+enum SocketWriter {
+    #[cfg(unix)]
+    Unix(tokio::net::unix::OwnedWriteHalf),
+    Tcp(tokio::net::tcp::OwnedWriteHalf),
+}
+
+impl ClientSocket {
+    fn split(self) -> (SocketReader, SocketWriter) {
+        match self {
+            #[cfg(unix)]
+            ClientSocket::Unix(s) => {
+                let (r, w) = s.into_split();
+                (SocketReader::Unix(r), SocketWriter::Unix(w))
+            }
+            ClientSocket::Tcp(s) => {
+                let (r, w) = s.into_split();
+                (SocketReader::Tcp(r), SocketWriter::Tcp(w))
+            }
+        }
+    }
+}
+
+impl SocketReader {
+    /// Rejoin this reader with `writer` into the original duplex stream.
+    ///
+    /// The halves always came from the same socket — they are only ever split
+    /// by [`ClientSocket::split`] and stored together in one [`ConnState`] — so
+    /// a mismatch is a bug in this file rather than a runtime condition, and the
+    /// `ReuniteError` is reported as a protocol error rather than propagated.
+    fn reunite(self, writer: SocketWriter) -> Result<ClientSocket> {
+        match (self, writer) {
+            #[cfg(unix)]
+            (SocketReader::Unix(r), SocketWriter::Unix(w)) => r
+                .reunite(w)
+                .map(ClientSocket::Unix)
+                .map_err(|e| Error::Protocol(format!("socket halves do not match: {e}"))),
+            (SocketReader::Tcp(r), SocketWriter::Tcp(w)) => r
+                .reunite(w)
+                .map(ClientSocket::Tcp)
+                .map_err(|e| Error::Protocol(format!("socket halves do not match: {e}"))),
+            #[cfg(unix)]
+            _ => Err(Error::Protocol(
+                "socket halves are of different transports".to_string(),
+            )),
+        }
+    }
+}
+
+impl AsyncRead for ClientSocket {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            ClientSocket::Unix(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            ClientSocket::Tcp(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for ClientSocket {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            ClientSocket::Unix(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            ClientSocket::Tcp(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            ClientSocket::Unix(s) => std::pin::Pin::new(s).poll_flush(cx),
+            ClientSocket::Tcp(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            ClientSocket::Unix(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            ClientSocket::Tcp(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+impl AsyncRead for SocketReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            SocketReader::Unix(r) => std::pin::Pin::new(r).poll_read(cx, buf),
+            SocketReader::Tcp(r) => std::pin::Pin::new(r).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for SocketWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            SocketWriter::Unix(w) => std::pin::Pin::new(w).poll_write(cx, buf),
+            SocketWriter::Tcp(w) => std::pin::Pin::new(w).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            SocketWriter::Unix(w) => std::pin::Pin::new(w).poll_flush(cx),
+            SocketWriter::Tcp(w) => std::pin::Pin::new(w).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            SocketWriter::Unix(w) => std::pin::Pin::new(w).poll_shutdown(cx),
+            SocketWriter::Tcp(w) => std::pin::Pin::new(w).poll_shutdown(cx),
+        }
+    }
+}
+
+// ============================================================================
 // Per-connection state
 // ============================================================================
 
@@ -282,9 +482,22 @@ struct ConnState {
     shared: Arc<Shared>,
     /// Serialises writes so concurrently-spawned request tasks cannot interleave
     /// halves of two frames on the wire.
-    writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
-    /// Protocols this connection registered, for teardown on disconnect.
+    ///
+    /// `Option` because pipe mode *takes* the writer back out: once
+    /// `STREAM_OPEN` succeeds the connection stops being a frame channel
+    /// entirely, and the write half must be reunited with the read half to
+    /// become one duplex stream. After the take, any late frame write finds
+    /// `None` and fails — which is correct, since there is no longer a framed
+    /// protocol on this socket to write into.
+    writer: Arc<Mutex<Option<SocketWriter>>>,
+    /// Unary protocols this connection registered, for teardown on disconnect.
     handlers: Mutex<Vec<String>>,
+    /// Raw-stream protocols this connection registered, for the same teardown.
+    ///
+    /// Tracked separately from `handlers` because they live in a different
+    /// namespace on the swarm (`raw_stream` vs `unary`) and are released
+    /// through different handle calls.
+    stream_handlers: Mutex<Vec<String>>,
     /// Inbound calls awaiting this client's `unaryResponse`, keyed by call ID.
     ///
     /// Per connection by construction — see the module docs on call-ID
@@ -294,18 +507,14 @@ struct ConnState {
 }
 
 /// Serve one accepted connection to completion, then clean up its handlers.
-async fn serve_connection<R, W>(id: u64, shared: Arc<Shared>, reader: R, writer: W)
-where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static,
-{
+async fn serve_connection(id: u64, shared: Arc<Shared>, socket: ClientSocket) {
+    let (reader, writer) = socket.split();
     let state = Arc::new(ConnState {
         id,
         shared,
-        writer: Arc::new(Mutex::new(
-            Box::new(writer) as Box<dyn AsyncWrite + Unpin + Send>
-        )),
+        writer: Arc::new(Mutex::new(Some(writer))),
         handlers: Mutex::new(Vec::new()),
+        stream_handlers: Mutex::new(Vec::new()),
         waiters: Arc::new(Mutex::new(HashMap::new())),
     });
 
@@ -315,17 +524,25 @@ where
     }
 
     // Deregistration runs on *every* exit path — clean close, decode error,
-    // client crash — which is the whole point: a dead client must not leave the
-    // node advertising a protocol it can no longer serve.
+    // client crash, and the end of a pipe-mode relay — which is the whole
+    // point: a dead client must not leave the node advertising a protocol it
+    // can no longer serve.
     state.deregister_all().await;
     debug!(conn = id, "control connection closed");
 }
 
 /// Read frames until EOF. Returns `Ok(())` on a clean client close.
-async fn run_connection<R>(state: Arc<ConnState>, mut reader: R) -> Result<()>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-{
+///
+/// Two verbs are **terminal**: after them the connection never returns to
+/// request/response framing, so both `return` out of the loop rather than
+/// continuing it.
+///
+/// - `PERSISTENT_CONN_UPGRADE` switches to the persistent frame protocol
+///   (Go's `handleConn` does the same),
+/// - `STREAM_OPEN`, on success, switches to **pipe mode**: the socket stops
+///   carrying frames at all and becomes the raw data channel for a libp2p
+///   stream (`conn.go:59-73` — write the response, `doStreamPipe`, `return`).
+async fn run_connection(state: Arc<ConnState>, mut reader: SocketReader) -> Result<()> {
     loop {
         let bytes = match read_frame(&mut reader).await {
             Ok(b) => b,
@@ -339,11 +556,33 @@ where
 
         trace!(conn = state.id, r#type = request.r#type, "control request");
 
-        // PERSISTENT_CONN_UPGRADE is terminal: the connection never returns to
-        // request/response framing, exactly as in Go's `handleConn`.
         if request.r#type == request::Type::PersistentConnUpgrade as i32 {
             state.write_response(ok_response()).await?;
             return run_persistent(state, reader).await;
+        }
+
+        if request.r#type == request::Type::StreamOpen as i32 {
+            // The stream must be opened *before* the response is written: the
+            // response carries the negotiated protocol and the remote's
+            // address, and a failure has to surface as `Response{ERROR}` on a
+            // socket that stays in framing mode.
+            match state.do_stream_open(request).await {
+                Ok((response, stream)) => {
+                    // Go resets the stream if the response cannot be written —
+                    // the client will never know the stream exists, so leaving
+                    // it open would leak it on both ends.
+                    if let Err(e) = state.write_response(response).await {
+                        debug!(conn = state.id, error = %e, "stream open response failed; resetting");
+                        drop(stream);
+                        return Err(e);
+                    }
+                    return state.enter_pipe_mode(reader, stream).await;
+                }
+                Err(response) => {
+                    state.write_response(response).await?;
+                    continue;
+                }
+            }
         }
 
         let response = state.handle_simple_request(request).await;
@@ -374,15 +613,13 @@ impl ConnState {
             request::Type::ListPeers => self.do_list_peers().await,
             request::Type::Dht => self.do_dht(request).await,
 
-            // Pipe mode: raw byte relay between this socket and a libp2p
-            // stream, in both directions with backpressure. Deferred to the
-            // Phase 3 continuation (see docs/NATIVE_P2P_MIGRATION.md); the
-            // in-tree consumers are inference-mux and block_rpc.
-            // TODO(phase3-pipe): implement STREAM_OPEN / STREAM_HANDLER /
-            // REMOVE_STREAM_HANDLER over `libp2p_stream`.
-            request::Type::StreamOpen
-            | request::Type::StreamHandler
-            | request::Type::RemoveStreamHandler => error_response(NOT_SUPPORTED.to_string()),
+            request::Type::StreamHandler => self.do_stream_handler(request).await,
+            request::Type::RemoveStreamHandler => self.do_remove_stream_handler(request).await,
+
+            // Handled in `run_connection`, because a successful STREAM_OPEN is
+            // terminal for the connection and this method can only return a
+            // response. Unreachable in practice.
+            request::Type::StreamOpen => error_response("Unexpected request type".to_string()),
 
             // Never implemented by this codebase's client either; the Go daemon
             // supports them but nothing here has ever called them.
@@ -567,6 +804,443 @@ impl ConnState {
 }
 
 // ============================================================================
+// Pipe mode: raw byte relay between the socket and a libp2p stream
+// ============================================================================
+//
+// Two verbs put a socket into raw-relay mode, and they are mirror images.
+//
+// **`STREAM_OPEN` (outbound).** The client asks for a stream to a peer; we open
+// it, answer with `StreamInfo`, and then *this very socket* becomes the data
+// channel — every subsequent byte in either direction is the libp2p stream's.
+// Go does exactly this (`conn.go:59-73`): write the response, `doStreamPipe(c,
+// s)`, `return`. The client side is `P2PClient::stream_open_raw`, which consumes
+// itself and hands the socket back as a `P2PStream`; there is no second
+// connection and no further framing.
+//
+// **`STREAM_HANDLER` (inbound).** The client registers a listener address for a
+// set of protocols. For each inbound libp2p stream on one of them we dial that
+// address, write a length-delimited `StreamInfo` prologue, and relay. Consumers
+// read the prologue and then their own protocol
+// (`inference_mux.rs::read_p2pd_stream_info`).
+//
+// ## Backpressure
+//
+// Both directions are copied by `tokio::io::copy_bidirectional`, whose flow
+// control is that it *awaits* each write before reading more. A slow consumer
+// therefore stops the producer at the socket rather than accumulating in our
+// process — which is the whole reason not to hand-roll this with channels. The
+// libp2p stream contributes its own yamux window on top.
+//
+// ## Termination
+//
+// `copy_bidirectional` finishes when both directions have seen EOF and been
+// shut down, propagating each half-close as it happens: a client that signals
+// "request complete" by closing its write half gets that FIN forwarded to the
+// remote and still receives the reply. Either side erroring ends the whole
+// relay and drops both stream and socket, so no task or fd outlives it.
+
+/// Cap on how long `STREAM_OPEN` waits for the stream to be established.
+///
+/// Go's `DefaultTimeout` when `StreamOpenRequest.timeout` is unset or
+/// non-positive (`conn.go:21`, `requestContext`). The client's
+/// `stream_open`/`stream_open_raw` both send 60 explicitly, but the field is
+/// optional, so the default has to exist.
+const DEFAULT_STREAM_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl ConnState {
+    /// `STREAM_OPEN` — open a raw stream, ready to hand the socket to the relay.
+    ///
+    /// Returns `Ok((response, stream))` when the stream is live and the caller
+    /// should enter pipe mode, or `Err(response)` when it should write the error
+    /// and keep framing. Splitting it this way keeps the terminal transition in
+    /// `run_connection`, where the reader half still lives.
+    async fn do_stream_open(
+        &self,
+        request: Request,
+    ) -> std::result::Result<(Response, kwaai_p2p::RawStream), Response> {
+        let Some(open) = request.stream_open else {
+            return Err(error_response(
+                "Malformed request; missing parameters".to_string(),
+            ));
+        };
+
+        let peer = match PeerId::from_bytes(&open.peer) {
+            Ok(p) => p,
+            Err(e) => return Err(error_response(format!("invalid peer id: {e}"))),
+        };
+
+        if open.proto.is_empty() {
+            return Err(error_response(
+                "Malformed request; missing parameters".to_string(),
+            ));
+        }
+
+        // `timeout` is seconds, and Go treats anything non-positive as "use the
+        // default" rather than "fail immediately".
+        let timeout = match open.timeout {
+            Some(secs) if secs > 0 => std::time::Duration::from_secs(secs as u64),
+            _ => DEFAULT_STREAM_OPEN_TIMEOUT,
+        };
+
+        let opened = tokio::time::timeout(
+            timeout,
+            self.shared.handle.open_raw_stream(peer, open.proto.clone()),
+        )
+        .await;
+
+        let (proto, stream) = match opened {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(error_response(e.to_string())),
+            Err(_) => {
+                return Err(error_response(format!(
+                    "opening stream to {peer}: context deadline exceeded"
+                )))
+            }
+        };
+
+        // `StreamInfo` describes the *remote* end, as Go's `makeStreamInfo`
+        // does: raw peer-ID bytes and a binary multiaddr. The address is the
+        // connection's remote address; `stream_open_raw` deliberately ignores it
+        // (connecting to it would reach a relay, not a local proxy), but
+        // `stream_open` parses it and clients may log it, so it must be a real
+        // multiaddr rather than empty.
+        let addr = self
+            .shared
+            .handle
+            .list_peers()
+            .await
+            .ok()
+            .and_then(|peers| peers.into_iter().find(|p| p.peer_id == peer))
+            .map(|p| p.addr.to_vec())
+            .unwrap_or_default();
+
+        debug!(conn = self.id, %peer, %proto, "stream open; entering pipe mode");
+
+        let mut response = ok_response();
+        response.stream_info = Some(crate::protocol::p2pd::StreamInfo {
+            peer: peer.to_bytes(),
+            addr,
+            proto,
+        });
+        Ok((response, stream))
+    }
+
+    /// Hand this connection's socket to the relay loop and run it to completion.
+    ///
+    /// Takes the write half back out from under the mutex and reunites it with
+    /// `reader`. Any concurrently-spawned frame writer that runs after this
+    /// point finds `None` and errors, which is correct: the socket is no longer
+    /// a frame channel. In practice there are none — pipe mode is only reachable
+    /// from the request/response loop, which dispatches inline.
+    async fn enter_pipe_mode(
+        &self,
+        reader: SocketReader,
+        stream: kwaai_p2p::RawStream,
+    ) -> Result<()> {
+        let Some(writer) = self.writer.lock().await.take() else {
+            return Err(Error::Protocol(
+                "control socket already handed to a relay".to_string(),
+            ));
+        };
+        let socket = reader.reunite(writer)?;
+
+        let relayed = relay(socket, stream).await;
+        debug!(conn = self.id, ?relayed, "pipe mode ended");
+        // The relay ending is a normal end of connection, not a failure: the
+        // client closed, the remote closed, or the stream reset. All three mean
+        // this task is done.
+        Ok(())
+    }
+
+    /// `STREAM_HANDLER` — accept inbound raw streams and forward them to the
+    /// client's listener address.
+    ///
+    /// The registration is **owned by this connection** and released when it
+    /// ends, which is a deliberate divergence from Go: `d.handlers` there is
+    /// process-global and survives the registering client, so a crashed
+    /// `shard serve` leaves the daemon advertising a protocol whose forwarding
+    /// address refuses connections — every inbound stream then costs a dial
+    /// timeout instead of a negotiation refusal. The unary path already made
+    /// this choice in slice 1; this keeps the two consistent.
+    async fn do_stream_handler(&self, request: Request) -> Response {
+        let Some(req) = request.stream_handler else {
+            return error_response("Malformed request; missing parameters".to_string());
+        };
+
+        let addr = match Multiaddr::try_from(req.addr.clone()) {
+            Ok(a) => a,
+            Err(e) => return error_response(format!("invalid multiaddr: {e}")),
+        };
+        // The forwarding target must be somewhere we can actually open a TCP
+        // connection; anything else would fail per-stream, long after the
+        // client believed registration succeeded.
+        let target = match dial_target(&addr) {
+            Some(t) => t,
+            None => {
+                return error_response(format!(
+                    "handler address {addr} is not a dialable /ip4|/ip6 + /tcp address"
+                ))
+            }
+        };
+
+        if req.proto.is_empty() {
+            return error_response("Malformed request; missing parameters".to_string());
+        }
+
+        // Claim ownership first, so two clients racing on the same protocol
+        // cannot both reach the swarm.
+        {
+            let mut owners = self.shared.stream_handler_owners.lock().await;
+            for proto in &req.proto {
+                match owners.get(proto) {
+                    Some(&owner) if owner != self.id => {
+                        return error_response(format!("handler for protocol {proto} already set"));
+                    }
+                    // Re-registering our own protocol is idempotent, matching
+                    // the unary path.
+                    Some(_) => {}
+                    None => {
+                        owners.insert(proto.clone(), self.id);
+                    }
+                }
+            }
+        }
+
+        let (mut inbound, refused) =
+            match self.shared.handle.accept_streams(req.proto.clone()).await {
+                Ok(v) => v,
+                Err(e) => {
+                    self.release_stream_owners(&req.proto).await;
+                    return error_response(e.to_string());
+                }
+            };
+
+        if !refused.is_empty() {
+            // The swarm already serves one of these under a different owner —
+            // our own map said otherwise, so this is a race we lost. Release
+            // everything and report Go's wording for the first casualty.
+            self.release_stream_owners(&req.proto).await;
+            let _ = self
+                .shared
+                .handle
+                .remove_stream_handler(
+                    req.proto
+                        .iter()
+                        .filter(|p| !refused.contains(p))
+                        .cloned()
+                        .collect(),
+                )
+                .await;
+            return error_response(format!("handler for protocol {} already set", refused[0]));
+        }
+
+        self.stream_handlers.lock().await.extend(req.proto.clone());
+
+        let conn_id = self.id;
+        // One task per registration, ending when the service drops its sender
+        // (i.e. when `remove_stream_handler` runs, on explicit removal or on
+        // this connection's teardown). Each accepted stream gets its own task so
+        // a slow dial-back cannot stall the next stream.
+        tokio::spawn(async move {
+            while let Some(stream) = inbound.recv().await {
+                tokio::spawn(forward_inbound_stream(conn_id, target, stream));
+            }
+            trace!(conn = conn_id, "stream handler accept loop ended");
+        });
+
+        debug!(conn = self.id, protos = ?req.proto, %addr, "stream handler registered");
+        ok_response()
+    }
+
+    /// `REMOVE_STREAM_HANDLER` — stop accepting inbound streams on `proto`.
+    ///
+    /// Go matches on the (protocol, address) pair because one protocol may have
+    /// several forwarding addresses under `balanced`. We keep one owner per
+    /// protocol (`balanced` is unused here, as on the unary path), so the
+    /// address is validated but ownership is what decides — otherwise a client
+    /// that re-bound its listener on a new port could not remove its own
+    /// handler.
+    async fn do_remove_stream_handler(&self, request: Request) -> Response {
+        let Some(req) = request.remove_stream_handler else {
+            return error_response("Malformed request; missing parameters".to_string());
+        };
+
+        if let Err(e) = Multiaddr::try_from(req.addr.clone()) {
+            return error_response(format!("invalid multiaddr: {e}"));
+        }
+
+        {
+            let owners = self.shared.stream_handler_owners.lock().await;
+            for proto in &req.proto {
+                match owners.get(proto) {
+                    None => {
+                        return error_response(format!(
+                            "handler for protocol {proto} does not exist"
+                        ))
+                    }
+                    Some(&owner) if owner != self.id => {
+                        return error_response(format!(
+                            "handler for protocol {proto} was not created in this connection"
+                        ))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
+        self.release_stream_owners(&req.proto).await;
+        let _ = self
+            .shared
+            .handle
+            .remove_stream_handler(req.proto.clone())
+            .await;
+        self.stream_handlers
+            .lock()
+            .await
+            .retain(|p| !req.proto.contains(p));
+
+        debug!(conn = self.id, protos = ?req.proto, "stream handler removed");
+        ok_response()
+    }
+
+    /// Drop this connection's claim on `protos` in the global owner map.
+    async fn release_stream_owners(&self, protos: &[String]) {
+        let mut owners = self.shared.stream_handler_owners.lock().await;
+        for proto in protos {
+            if owners.get(proto) == Some(&self.id) {
+                owners.remove(proto);
+            }
+        }
+    }
+}
+
+/// Serve one inbound libp2p stream by dialling the client's listener and
+/// relaying.
+///
+/// A dial-back failure **resets the stream**, matching Go's `handleStream`: the
+/// remote must learn immediately that nothing is going to answer, rather than
+/// holding an open stream to a black hole until its own timeout.
+async fn forward_inbound_stream(
+    conn_id: u64,
+    target: std::net::SocketAddr,
+    inbound: kwaai_p2p::InboundStream,
+) {
+    let kwaai_p2p::InboundStream {
+        peer,
+        proto,
+        stream,
+    } = inbound;
+
+    let socket = match tokio::net::TcpStream::connect(target).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                conn = conn_id, %peer, %proto, %target, error = %e,
+                "dialling the stream handler failed; resetting the inbound stream"
+            );
+            // Dropping a libp2p `Stream` without closing it resets it, which is
+            // the signal Go sends here.
+            drop(stream);
+            return;
+        }
+    };
+    // The relay is raw after the prologue; Nagle would add latency to small
+    // request/response protocols like the mux for no benefit.
+    let _ = socket.set_nodelay(true);
+
+    // The `StreamInfo` prologue, length-delimited exactly as gogo's
+    // `DelimitedWriter` writes it and `stream.rs::parse_stream_info` reads it.
+    // It describes the *caller*, so a handler can attribute the stream without
+    // trusting anything inside the protocol that follows.
+    let info = crate::protocol::p2pd::StreamInfo {
+        peer: peer.to_bytes(),
+        addr: Vec::new(),
+        proto: proto.as_ref().to_string(),
+    };
+    let mut socket = socket;
+    if let Err(e) = write_delimited(&mut socket, &info).await {
+        warn!(
+            conn = conn_id, %peer, %proto, error = %e,
+            "writing the StreamInfo prologue failed; resetting the inbound stream"
+        );
+        drop(stream);
+        return;
+    }
+
+    trace!(conn = conn_id, %peer, %proto, "relaying inbound stream");
+    let relayed = relay(socket, stream).await;
+    trace!(conn = conn_id, %peer, %proto, ?relayed, "inbound stream relay ended");
+}
+
+/// Copy bytes both ways between a socket and a libp2p stream until both
+/// directions close.
+///
+/// The libp2p stream is `futures::io`; the socket is `tokio::io`. `compat()`
+/// bridges them so a single [`tokio::io::copy_bidirectional`] can own both —
+/// which is what supplies the backpressure: it awaits each write before reading
+/// more, so neither side can outrun the other and nothing is buffered beyond one
+/// in-flight chunk per direction.
+///
+/// Returns the (socket → stream, stream → socket) byte counts, for logging.
+async fn relay<S>(socket: S, stream: kwaai_p2p::RawStream) -> Result<(u64, u64)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use tokio_util::compat::FuturesAsyncReadCompatExt;
+
+    let mut socket = socket;
+    let mut stream = stream.compat();
+
+    tokio::io::copy_bidirectional(&mut socket, &mut stream)
+        .await
+        .map_err(Error::Io)
+}
+
+/// Write one length-delimited protobuf message, gogo `DelimitedWriter` style.
+async fn write_delimited<W, M>(writer: &mut W, msg: &M) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    M: ProstMessage,
+{
+    let mut buf = Vec::with_capacity(msg.encoded_len() + 10);
+    msg.encode(&mut buf)
+        .map_err(|e| Error::Protocol(format!("Failed to encode message: {e}")))?;
+
+    let mut len_buf = unsigned_varint::encode::usize_buffer();
+    let len_bytes = unsigned_varint::encode::usize(buf.len(), &mut len_buf);
+
+    let mut frame = Vec::with_capacity(len_bytes.len() + buf.len());
+    frame.extend_from_slice(len_bytes);
+    frame.extend_from_slice(&buf);
+
+    writer.write_all(&frame).await.map_err(Error::Io)?;
+    writer.flush().await.map_err(Error::Io)?;
+    Ok(())
+}
+
+/// Extract a dialable `SocketAddr` from a `/ip4|/ip6/…/tcp/<port>` multiaddr.
+///
+/// Stream handler addresses are always loopback TCP listeners in this codebase
+/// (`inference_mux.rs`, `node.rs`), and Go dials them with `manet.Dial`. Returns
+/// `None` for anything without both an IP and a TCP port, so a malformed
+/// registration fails at registration time rather than per inbound stream.
+fn dial_target(addr: &Multiaddr) -> Option<std::net::SocketAddr> {
+    use libp2p::multiaddr::Protocol;
+
+    let mut ip = None;
+    let mut port = None;
+    for component in addr.iter() {
+        match component {
+            Protocol::Ip4(a) => ip = Some(std::net::IpAddr::V4(a)),
+            Protocol::Ip6(a) => ip = Some(std::net::IpAddr::V6(a)),
+            Protocol::Tcp(p) => port = Some(p),
+            _ => {}
+        }
+    }
+    Some(std::net::SocketAddr::new(ip?, port?))
+}
+
+// ============================================================================
 // Persistent connection (unary handlers)
 // ============================================================================
 
@@ -575,10 +1249,7 @@ impl ConnState {
 /// Each frame is dispatched on its own task so a slow `callUnary` cannot block
 /// the arrival of the `unaryResponse` that some *other* in-flight call is
 /// waiting for — the deadlock this sub-protocol invites if handled inline.
-async fn run_persistent<R>(state: Arc<ConnState>, mut reader: R) -> Result<()>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-{
+async fn run_persistent(state: Arc<ConnState>, mut reader: SocketReader) -> Result<()> {
     loop {
         let bytes = match read_frame(&mut reader).await {
             Ok(b) => b,
@@ -847,18 +1518,42 @@ impl ConnState {
     /// swarm.
     async fn deregister_all(&self) {
         let protos = std::mem::take(&mut *self.handlers.lock().await);
-        if protos.is_empty() {
-            return;
+        if !protos.is_empty() {
+            let mut owners = self.shared.handler_owners.lock().await;
+            for proto in protos {
+                if owners.get(&proto) == Some(&self.id) {
+                    owners.remove(&proto);
+                    let _ = self.shared.handle.remove_unary_handler(&proto).await;
+                    info!(
+                        conn = self.id,
+                        proto, "unary handler released on client disconnect"
+                    );
+                }
+            }
         }
 
-        let mut owners = self.shared.handler_owners.lock().await;
-        for proto in protos {
-            if owners.get(&proto) == Some(&self.id) {
-                owners.remove(&proto);
-                let _ = self.shared.handle.remove_unary_handler(&proto).await;
+        // Raw-stream handlers get the same treatment, and for the same reason:
+        // the forwarding address is this client's TCP listener, so once it is
+        // gone every inbound stream on that protocol would dial a closed port.
+        // Releasing turns that into a clean negotiation refusal. (Go leaves the
+        // registration in place — see `do_stream_handler`.)
+        let stream_protos = std::mem::take(&mut *self.stream_handlers.lock().await);
+        if !stream_protos.is_empty() {
+            let mut owners = self.shared.stream_handler_owners.lock().await;
+            let mine: Vec<String> = stream_protos
+                .into_iter()
+                .filter(|p| owners.get(p) == Some(&self.id))
+                .collect();
+            for proto in &mine {
+                owners.remove(proto);
+            }
+            drop(owners);
+            if !mine.is_empty() {
+                let _ = self.shared.handle.remove_stream_handler(mine.clone()).await;
                 info!(
                     conn = self.id,
-                    proto, "unary handler released on client disconnect"
+                    protos = ?mine,
+                    "stream handlers released on client disconnect"
                 );
             }
         }
@@ -905,8 +1600,12 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
 }
 
 /// Encode and write one uvarint-delimited frame under the write lock.
+///
+/// Fails if the writer has been taken by pipe mode — the socket is a raw data
+/// channel from that point on, and injecting a frame into it would corrupt the
+/// relayed stream.
 async fn write_frame<M: ProstMessage>(
-    writer: &Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
+    writer: &Arc<Mutex<Option<SocketWriter>>>,
     msg: &M,
 ) -> Result<()> {
     let mut buf = Vec::with_capacity(msg.encoded_len() + 10);
@@ -922,14 +1621,19 @@ async fn write_frame<M: ProstMessage>(
     frame.extend_from_slice(len_bytes);
     frame.extend_from_slice(&buf);
 
-    let mut w = writer.lock().await;
+    let mut guard = writer.lock().await;
+    let Some(w) = guard.as_mut() else {
+        return Err(Error::Protocol(
+            "control socket is in pipe mode; no frames can be written".to_string(),
+        ));
+    };
     w.write_all(&frame).await.map_err(Error::Io)?;
     w.flush().await.map_err(Error::Io)?;
     Ok(())
 }
 
 async fn write_persistent_frame(
-    writer: &Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
+    writer: &Arc<Mutex<Option<SocketWriter>>>,
     frame: &PersistentConnectionResponse,
 ) -> Result<()> {
     write_frame(writer, frame).await
