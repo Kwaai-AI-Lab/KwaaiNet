@@ -203,8 +203,19 @@ impl Default for Config {
 /// A one-shot upgrade that hands back the stream plus whichever protocol
 /// multistream-select agreed on. Like `libp2p::core::upgrade::ReadyUpgrade`,
 /// except it advertises many protocols and reports the selected one.
+///
+/// Shared with [`crate::raw_stream`], which needs the same slash-less
+/// negotiation and the same "which protocol won?" answer, and then diverges by
+/// handing the stream out instead of framing on it.
 pub struct Protocols {
     protocols: Vec<UnaryProtocol>,
+}
+
+impl Protocols {
+    /// Advertise `protocols`, in preference order.
+    pub fn new(protocols: Vec<UnaryProtocol>) -> Self {
+        Self { protocols }
+    }
 }
 
 impl UpgradeInfo for Protocols {
@@ -545,7 +556,7 @@ impl ConnectionHandler for Handler {
             .iter()
             .cloned()
             .collect();
-        SubstreamProtocol::new(Protocols { protocols }, ())
+        SubstreamProtocol::new(Protocols::new(protocols), ())
     }
 
     fn on_behaviour_event(&mut self, message: Self::FromBehaviour) {
@@ -576,9 +587,7 @@ impl ConnectionHandler for Handler {
             < self.config.max_concurrent_streams
         {
             if let Some(message) = self.pending_outbound.pop_front() {
-                let protocols = Protocols {
-                    protocols: vec![message.proto.clone()],
-                };
+                let protocols = Protocols::new(vec![message.proto.clone()]);
                 let id = self.next_outbound_id;
                 self.next_outbound_id += 1;
                 self.requested_outbound.insert(id, message);

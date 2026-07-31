@@ -13,6 +13,10 @@
 //! - [`unary`] — hivemind unary RPC. Inbound handler protocols register at
 //!   runtime, so the behaviour starts with an empty protocol set and the
 //!   service loop drives `register_protocol`/`unregister_protocol`.
+//! - [`raw_stream`] — raw (unframed) libp2p streams on arbitrary, possibly
+//!   slash-less protocols, which the control socket's pipe mode relays bytes
+//!   over. Its protocol set is separate from `unary`'s, so a name can be served
+//!   as a unary handler *or* as a raw stream but never ambiguously as both.
 
 use std::time::Duration;
 
@@ -25,7 +29,7 @@ use libp2p::{
 };
 
 use crate::config::NetworkConfig;
-use crate::unary;
+use crate::{raw_stream, unary};
 
 /// The `protocol_version` advertised over identify.
 ///
@@ -47,6 +51,7 @@ pub struct KwaaiBehaviour {
     pub identify: identify::Behaviour,
     pub kad: kad::Behaviour<MemoryStore>,
     pub unary: unary::Behaviour,
+    pub raw_stream: raw_stream::Behaviour,
 }
 
 impl KwaaiBehaviour {
@@ -106,11 +111,16 @@ impl KwaaiBehaviour {
             ..unary::Config::default()
         });
 
+        // Raw-stream registrations are likewise runtime-only (pipe mode's
+        // `STREAM_HANDLER`), so this too starts with an empty protocol set.
+        let raw_stream = raw_stream::Behaviour::new();
+
         Self {
             ping,
             identify,
             kad,
             unary,
+            raw_stream,
         }
     }
 }

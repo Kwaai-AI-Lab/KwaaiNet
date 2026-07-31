@@ -35,8 +35,10 @@ use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
-    Command, Direction, InboundUnaryCall, InboundUnarySender, NetworkHandle, PeerInfo,
+    parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
+    NetworkHandle, PeerInfo,
 };
+use crate::raw_stream;
 use crate::unary::{self, UnaryProtocol};
 
 /// How often the maintenance arm refreshes the Kademlia routing table.
@@ -72,6 +74,11 @@ pub struct NetworkService {
     /// channel. Kept in lockstep with the behaviour's inbound protocol set, so
     /// an entry here means the protocol is advertised and vice versa.
     unary_handlers: HashMap<String, InboundUnarySender>,
+    /// Registered **raw-stream** handlers: negotiated protocol → the accepting
+    /// task's channel. Same lockstep invariant as `unary_handlers`, against a
+    /// separate protocol set — the two namespaces are independent, so a name
+    /// registered here is not callable as a unary handler and vice versa.
+    stream_handlers: HashMap<String, InboundStreamSender>,
 }
 
 /// A parked DHT lookup.
@@ -142,6 +149,7 @@ impl NetworkService {
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
             unary_handlers: HashMap::new(),
+            stream_handlers: HashMap::new(),
         };
 
         let task = tokio::spawn(service.run());
@@ -327,6 +335,60 @@ impl NetworkService {
                 let _ = reply.send(existed);
             }
 
+            // No pending-map entry, for the same reason as `CallUnary`: the
+            // behaviour owns `reply` and resolves it on every outcome.
+            Command::OpenRawStream {
+                peer,
+                protos,
+                reply,
+            } => {
+                self.swarm.behaviour_mut().raw_stream.open_stream(
+                    peer,
+                    parse_protocols(&protos),
+                    reply,
+                );
+            }
+
+            Command::AddStreamHandler {
+                protos,
+                sender,
+                reply,
+            } => {
+                let mut refused = Vec::new();
+                for proto in protos {
+                    if proto.is_empty() {
+                        refused.push(proto);
+                        continue;
+                    }
+                    // Refuse rather than replace: unlike a unary handler, a raw
+                    // stream handler is an *accept loop* belonging to one
+                    // process, and silently rebinding it would strand the first
+                    // owner's receiver with no way to notice. This matches Go's
+                    // `doStreamHandler` with `balanced` false.
+                    if self.stream_handlers.contains_key(&proto) {
+                        refused.push(proto);
+                        continue;
+                    }
+                    self.swarm
+                        .behaviour_mut()
+                        .raw_stream
+                        .register_protocol(UnaryProtocol::new(proto.as_str()));
+                    self.stream_handlers.insert(proto.clone(), sender.clone());
+                    debug!(%proto, "raw stream handler registered");
+                }
+                let _ = reply.send(refused);
+            }
+
+            Command::RemoveStreamHandler { protos, reply } => {
+                let mut removed = Vec::new();
+                for proto in protos {
+                    if self.unregister_stream(&proto) {
+                        removed.push(proto);
+                    }
+                }
+                let _ = reply.send(removed);
+            }
+
             // Handled in `run` so the loop can break.
             Command::Shutdown { reply } => {
                 let _ = reply.send(());
@@ -442,6 +504,45 @@ impl NetworkService {
             debug!(%proto, "unary handler removed");
         }
         existed
+    }
+
+    /// Stop accepting raw streams on `proto`: drop the accept channel and stop
+    /// advertising it. Returns whether a handler was registered. Idempotent.
+    fn unregister_stream(&mut self, proto: &str) -> bool {
+        let existed = self.stream_handlers.remove(proto).is_some();
+        if existed {
+            self.swarm
+                .behaviour_mut()
+                .raw_stream
+                .unregister_protocol(&UnaryProtocol::new(proto));
+            debug!(%proto, "raw stream handler removed");
+        }
+        existed
+    }
+
+    /// Route one inbound raw stream to its handler.
+    ///
+    /// Dispatch is by **negotiated** protocol. A stream with no handler is
+    /// dropped, which resets it — the same signal Go sends (`s.Reset()` in
+    /// `handleStream` when the protocol is not in its handler map). That is the
+    /// rare path: an unregistered protocol is refused during negotiation, so
+    /// this only fires if the handler went away between negotiation and
+    /// dispatch.
+    fn dispatch_stream(&mut self, inbound: raw_stream::InboundStream) {
+        let proto = inbound.proto.as_ref().to_string();
+
+        let Some(sender) = self.stream_handlers.get(&proto) else {
+            debug!(%proto, "inbound raw stream with no handler; resetting");
+            return;
+        };
+
+        if let Err(e) = sender.send(inbound) {
+            warn!(%proto, "raw stream handler is gone; deregistering the protocol");
+            self.unregister_stream(&proto);
+            // `e.0` is the stream; dropping it resets, which is what the remote
+            // needs to see rather than a stream that is open but never read.
+            drop(e.0);
+        }
     }
 
     /// Route one inbound unary call to its handler.
@@ -583,6 +684,9 @@ impl NetworkService {
             },
             KwaaiBehaviourEvent::Unary(unary::Event::InboundRequest { peer, request }) => {
                 self.dispatch_unary(peer, request)
+            }
+            KwaaiBehaviourEvent::RawStream(raw_stream::Event::InboundStream(inbound)) => {
+                self.dispatch_stream(inbound)
             }
         }
     }
