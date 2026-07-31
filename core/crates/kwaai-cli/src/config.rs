@@ -108,12 +108,19 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_peers")]
     pub initial_peers: Vec<String>,
 
-    /// Multiaddrs of peers to use as trusted circuit relays (for AutoRelay).
-    /// When set, AutoRelay reserves circuits with these peers instead of (or
-    /// in addition to) discovering relays via the DHT. Useful when DHT
-    /// discovery is unreliable (small networks, NAT-isolated test topologies)
-    /// or when you want to force traffic through specific known-good relays.
-    /// Empty means "let AutoRelay discover relays via DHT" (the default).
+    /// Multiaddrs of peers to pin as circuit relays.
+    ///
+    /// An **operator override**, empty by default. Relay candidates normally
+    /// come from identify: any peer advertising
+    /// `/libp2p/circuit/relay/0.2.0/hop` is one, which on the live network
+    /// includes both bootstraps and every KwaaiNet node not run with
+    /// `no_relay`. Set this to force traffic through specific known-good
+    /// relays — a NAT-isolated test topology, or a deployment where one relay
+    /// must be preferred. Pinned relays are tried before discovered ones.
+    ///
+    /// Note this is *not* DHT-based relay discovery: probing the routing table
+    /// for relays is the `-relayDiscovery` behaviour both paths deliberately
+    /// leave off, because it turns every DHT peer into a reservation attempt.
     #[serde(default = "default_trusted_relays")]
     pub trusted_relays: Vec<String>,
 
@@ -133,10 +140,11 @@ pub struct KwaaiNetConfig {
     /// `initial_peers`, `identity_key` (so the PeerId is identical either way)
     /// and `KWAAINET_SOCKET` — and serves the same p2pd control socket, so
     /// external clients (the GUI, `kwaainet p2p …`, `shard serve`) cannot tell
-    /// the two apart. What it does **not** do yet is NAT traversal: AutoNAT,
-    /// circuit relay, DCUtR and UPnP are still p2pd-only, so a node behind a NAT
-    /// is only reachable on the p2pd path. `no_relay`, `force_private` and
-    /// `trusted_relays` are therefore ignored while this is true.
+    /// the two apart. NAT traversal is included: AutoNAT, circuit relay, DCUtR
+    /// and UPnP all run in-process, and `no_relay`, `force_private`,
+    /// `trusted_relays`, `announce_addr` and `public_ip` all take effect on
+    /// this path (see `node_native`'s module docs for the flag-by-flag mapping
+    /// against p2pd).
     ///
     /// Defaults to false — the p2pd path stays the default until the NAT slice
     /// lands and the cutover in Phase 5 flips it.
@@ -566,13 +574,22 @@ fn default_peers() -> Vec<String> {
             .to_string(),
     ]
 }
+/// No trusted relays by default.
+///
+/// This used to name the two production bootstraps, which is worse than it
+/// looks: they have a documented `RESERVATION_REFUSED` history
+/// (`nat-relay-investigation.md`), so pinning them produces a visible
+/// refuse-and-back-off loop and, at the end of it, no relay.
+///
+/// Empty is right because the supply is elsewhere. Both bootstraps advertise
+/// `/libp2p/circuit/relay/0.2.0/hop` over identify (measured 2026-07-31 —
+/// `kwaai-p2p/tests/live_bootstrap.rs`), as does any KwaaiNet node running with
+/// `no_relay` unset, so a node discovers candidates from the peers it is
+/// already talking to and rotates past whichever refuses. `trusted_relays` is
+/// therefore a pure **operator override**: set it to pin a specific known-good
+/// relay, as the docker nat-test topology does with node-a.
 fn default_trusted_relays() -> Vec<String> {
-    vec![
-        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-            .to_string(),
-        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
-            .to_string(),
-    ]
+    Vec::new()
 }
 fn default_force_private() -> bool {
     true
