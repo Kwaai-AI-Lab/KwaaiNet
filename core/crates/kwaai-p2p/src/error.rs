@@ -6,7 +6,10 @@ use thiserror::Error;
 pub type P2PResult<T> = Result<T, P2PError>;
 
 /// Errors that can occur in P2P networking
-#[derive(Error, Debug)]
+///
+/// `Clone` is required because the swarm event loop fans a single failure out
+/// to every parked request when it shuts down.
+#[derive(Error, Debug, Clone)]
 pub enum P2PError {
     /// Failed to connect to peer
     #[error("Connection failed: {0}")]

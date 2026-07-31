@@ -1,142 +1,68 @@
 //! # kwaai-p2p
 //!
-//! P2P networking layer for KwaaiNet using libp2p with Kademlia DHT.
+//! The in-process rust-libp2p swarm for a KwaaiNet node.
 //!
-//! This crate provides the foundational networking infrastructure for
-//! decentralized AI inference and training, including:
+//! A [`NetworkService`] owns the `Swarm` on its own tokio task; everything else
+//! talks to it through a clonable [`NetworkHandle`]. That split exists because
+//! the swarm must be polled from exactly one place, while many call sites need
+//! to dial peers, list connections and run DHT lookups concurrently.
 //!
-//! - **Peer Discovery**: Kademlia DHT for finding nodes by capability
-//! - **Message Routing**: Request/response protocols for inference
-//! - **NAT Traversal**: Hole punching and relay circuits
+//! Phase 1 covers ping, identify and Kademlia — enough for a node to join the
+//! network, learn its observed addresses, and resolve peers. Relay, dcutr,
+//! AutoNAT, UPnP and the hivemind unary-RPC behaviour arrive in later phases;
+//! [`behaviour::KwaaiBehaviour`] is structured so each is an additive field.
 //!
 //! ## Example
 //!
 //! ```rust,no_run
-//! use kwaai_p2p::{KwaaiNetwork, NetworkBehaviour, NetworkConfig};
+//! use kwaai_p2p::{NetworkConfig, NetworkService};
+//! use libp2p::identity::Keypair;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let config = NetworkConfig::default();
-//!     let mut network = KwaaiNetwork::new(config).await?;
+//!     let (handle, _task) = NetworkService::spawn(config, Keypair::generate_ed25519())?;
 //!
-//!     // Join the network
-//!     network.bootstrap(vec!["/ip4/127.0.0.1/tcp/4001".parse()?]).await?;
+//!     let addr = "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc";
+//!     handle.connect_peer(addr).await?;
 //!
-//!     // Find peers with inference capability
-//!     let peers = network.find_peers("inference:llama2-7b").await?;
+//!     for peer in handle.list_peers().await? {
+//!         println!("{} via {} ({})", peer.peer_id, peer.addr, peer.direction.as_str());
+//!     }
 //!
+//!     handle.shutdown().await?;
 //!     Ok(())
 //! }
 //! ```
 
+pub mod behaviour;
 pub mod config;
-pub mod dht;
 pub mod error;
-pub mod hivemind;
-pub mod network;
-pub mod protocol;
-pub mod rpc;
+pub mod handle;
+pub mod identity;
+pub mod service;
 pub mod transport;
 
-pub use config::{NetworkConfig, PETALS_BOOTSTRAP_SERVERS};
+pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
+pub use config::{
+    NetworkConfig, KWAAI_BOOTSTRAP_SERVERS, KWAAI_BOOTSTRAP_SERVERS_DNS, PETALS_BOOTSTRAP_SERVERS,
+};
 pub use error::{P2PError, P2PResult};
-pub use hivemind::ServerInfo;
-pub use network::KwaaiNetwork;
+pub use handle::{Direction, NetworkHandle, PeerInfo};
+pub use service::NetworkService;
 
-use async_trait::async_trait;
-use libp2p::{Multiaddr, PeerId};
+// Re-exported so downstream crates can name peers and addresses without taking
+// their own libp2p dependency (and version-skewing against ours).
+pub use libp2p::{Multiaddr, PeerId};
+
 use serde::{Deserialize, Serialize};
 
-/// Core trait for P2P network operations
+/// Node capabilities advertised in the DHT.
 ///
-/// Implementors provide the fundamental networking capabilities
-/// required for distributed AI inference.
-#[async_trait]
-pub trait NetworkBehaviour: Send + Sync {
-    /// Join the network via bootstrap peers
-    async fn bootstrap(&mut self, peers: Vec<Multiaddr>) -> P2PResult<()>;
-
-    /// Find peers with specific capabilities
-    async fn find_peers(&self, capability: &str) -> P2PResult<Vec<PeerId>>;
-
-    /// Send a request to a specific peer
-    async fn send_request(&self, peer: PeerId, request: Request) -> P2PResult<Response>;
-
-    /// Get the local peer ID
-    fn local_peer_id(&self) -> PeerId;
-
-    /// Check if connected to the network
-    fn is_connected(&self) -> bool;
-}
-
-/// Core trait for DHT operations
-///
-/// Provides distributed hash table functionality for peer discovery
-/// and capability registration.
-#[async_trait]
-pub trait DhtOperations: Send + Sync {
-    /// Store a value in the DHT
-    async fn put(&mut self, key: &str, value: Vec<u8>) -> P2PResult<()>;
-
-    /// Retrieve a value from the DHT
-    async fn get(&self, key: &str) -> P2PResult<Option<Vec<u8>>>;
-
-    /// Announce this node as a provider for a key
-    async fn provide(&mut self, key: &str) -> P2PResult<()>;
-
-    /// Find providers for a key
-    async fn get_providers(&self, key: &str) -> P2PResult<Vec<PeerId>>;
-}
-
-/// Request message for P2P communication
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request {
-    /// Unique request identifier
-    pub id: u64,
-    /// Request type
-    pub request_type: RequestType,
-    /// Request payload
-    pub payload: Vec<u8>,
-}
-
-/// Response message for P2P communication
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Response {
-    /// Request ID this responds to
-    pub request_id: u64,
-    /// Response status
-    pub status: ResponseStatus,
-    /// Response payload
-    pub payload: Vec<u8>,
-}
-
-/// Types of requests supported by the network
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RequestType {
-    /// Request inference from a remote expert
-    InferenceRequest,
-    /// Request parameter exchange for averaging
-    ParameterExchange,
-    /// Health check / ping
-    Ping,
-    /// Capability query
-    CapabilityQuery,
-}
-
-/// Response status codes
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ResponseStatus {
-    /// Request successful
-    Ok,
-    /// Request failed with error
-    Error(String),
-    /// Peer is busy, try again later
-    Busy,
-    /// Capability not available
-    NotAvailable,
-}
-
-/// Node capabilities advertised in DHT
+/// Retained from the pre-rewrite crate because `kwaai-network-tests` asserts on
+/// its encoding. The announce path that will actually publish this lands in
+/// Phase 2 (hivemind `ServerInfo` records), at which point this type is either
+/// wired up or removed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeCapabilities {
     /// Peer ID
