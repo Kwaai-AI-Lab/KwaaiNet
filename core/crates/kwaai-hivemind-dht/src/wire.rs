@@ -60,17 +60,25 @@ const MAX_VARINT_LEN: usize = 10;
 // ============================================================================
 
 /// `p2pd.pb.CallUnaryRequest` — the outbound half of a unary call.
+///
+/// All three fields are proto2 `required`, and Go *enforces* that on
+/// unmarshal: a frame missing any of them is dropped and the stream reset. The
+/// `required` labels below make prost encode them unconditionally — a plain
+/// prost field is silently omitted when empty, which Go rejects (verified
+/// against a real p2pd in `07_wire_interop`).
 #[derive(Clone, PartialEq, Message)]
 pub struct CallUnaryRequest {
-    /// Callee peer ID on the way out; the responder overwrites it with the
-    /// caller's peer ID before dispatch, so the received value is the *caller*.
-    #[prost(bytes = "vec", tag = "1")]
+    /// Callee peer ID on the way out (Go's caller sets it to the dial target).
+    /// On the *unary-handler dispatch path* the responding daemon overwrites it
+    /// with the caller's peer ID; on a raw stream handler nothing rewrites it,
+    /// so it arrives exactly as sent. Never trust it for caller identity.
+    #[prost(bytes = "vec", required, tag = "1")]
     pub peer: Vec<u8>,
     /// Bare handler name, no leading slash (e.g. `DHTProtocol.rpc_store`).
-    #[prost(string, tag = "2")]
+    #[prost(string, required, tag = "2")]
     pub proto: String,
     /// Raw application protobuf.
-    #[prost(bytes = "vec", tag = "3")]
+    #[prost(bytes = "vec", required, tag = "3")]
     pub data: Vec<u8>,
 }
 
@@ -102,16 +110,16 @@ pub mod call_unary_response {
 /// `PersistentConnectionResponse` reply undecodable to Go callers.
 #[derive(Clone, PartialEq, Message)]
 pub struct AddUnaryHandlerRequest {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub proto: String,
-    #[prost(bool, tag = "2")]
+    #[prost(bool, required, tag = "2")]
     pub balanced: bool,
 }
 
 /// `p2pd.pb.RemoveUnaryHandlerRequest`. Control-socket only; see above.
 #[derive(Clone, PartialEq, Message)]
 pub struct RemoveUnaryHandlerRequest {
-    #[prost(string, tag = "1")]
+    #[prost(string, required, tag = "1")]
     pub proto: String,
 }
 
@@ -131,8 +139,8 @@ pub struct DaemonError {
 #[derive(Clone, PartialEq, Message)]
 pub struct PersistentConnectionRequest {
     /// 16 raw UUID bytes in practice; Go does `uuid.FromBytes` and drops the
-    /// message when that fails.
-    #[prost(bytes = "vec", tag = "1")]
+    /// message when that fails. proto2 `required` — always encoded.
+    #[prost(bytes = "vec", required, tag = "1")]
     pub call_id: Vec<u8>,
     #[prost(
         oneof = "persistent_connection_request::Message",
@@ -215,7 +223,11 @@ pub fn unframe(bytes: &[u8]) -> WireResult<(&[u8], usize)> {
     if rest.len() < len {
         return Err(WireError::Io(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            format!("frame declares {} bytes, only {} available", len, rest.len()),
+            format!(
+                "frame declares {} bytes, only {} available",
+                len,
+                rest.len()
+            ),
         )));
     }
     Ok((&rest[..len], prefix_len + len))
@@ -388,8 +400,9 @@ mod tests {
         expect_inner.push(16);
         expect_inner.extend_from_slice(&CALL_ID);
         // field 3 (callUnary), wire type 2 → tag byte 0x1a
-        let mut cu = Vec::new();
-        // CallUnaryRequest field 1 (peer) is empty → prost omits it entirely.
+        // starting with field 1 (peer), wire type 2 → 0x0a. proto2 `required`:
+        // encoded even when empty (len 0) — Go rejects the frame if it is absent.
+        let mut cu = vec![0x0a, 0x00];
         // field 2 (proto), wire type 2 → 0x12
         cu.push(0x12);
         cu.push(20); // len("DHTProtocol.rpc_ping")
@@ -406,11 +419,9 @@ mod tests {
         expect.extend_from_slice(&expect_inner);
 
         assert_eq!(
-            framed,
-            expect,
+            framed, expect,
             "request frame layout drifted\n got: {:02x?}\nwant: {:02x?}",
-            framed,
-            expect
+            framed, expect
         );
     }
 
@@ -468,9 +479,11 @@ mod tests {
         assert_eq!(result.unwrap_err(), "handler exploded");
     }
 
-    /// An empty `data` must survive: proto3-style omission of an empty bytes
-    /// field is fine because the responder only ever reads `data` as "the
-    /// payload", and absent == empty.
+    /// An empty `data` must survive the round trip — and must still be
+    /// *present* on the wire: `data` is proto2 `required`, and Go's unmarshal
+    /// rejects the whole frame when a required field is absent. (An earlier
+    /// revision assumed "absent == empty" was fine; the p2pd interop tests
+    /// disproved that — the daemon resets the stream.)
     #[test]
     fn empty_payload_round_trip() {
         let framed = encode_unary_request(&CALL_ID, b"", "DHTProtocol.rpc_ping", b"");
@@ -566,7 +579,10 @@ mod tests {
         let prefix = unsigned_varint::encode::usize(MAX_FRAME_LEN + 1, &mut buf).to_vec();
         match unframe(&prefix) {
             Err(WireError::FrameTooLarge { len }) => assert_eq!(len, MAX_FRAME_LEN + 1),
-            other => panic!("expected FrameTooLarge, got {:?}", other.map(|(p, _)| p.len())),
+            other => panic!(
+                "expected FrameTooLarge, got {:?}",
+                other.map(|(p, _)| p.len())
+            ),
         }
     }
 
@@ -596,7 +612,10 @@ mod tests {
         // Payload is absent → UnexpectedEof, NOT FrameTooLarge.
         match unframe(&prefix) {
             Err(WireError::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof),
-            other => panic!("expected UnexpectedEof, got {:?}", other.map(|(p, _)| p.len())),
+            other => panic!(
+                "expected UnexpectedEof, got {:?}",
+                other.map(|(p, _)| p.len())
+            ),
         }
     }
 
