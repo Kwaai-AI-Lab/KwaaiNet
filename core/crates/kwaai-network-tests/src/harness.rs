@@ -46,6 +46,49 @@ pub struct TestNode {
 }
 
 impl TestNode {
+    /// Start a bare p2pd on its own socket and TCP port — no DHT, no relay, no
+    /// bootstrap.
+    ///
+    /// Used by the hivemind unary wire tests, which only need two daemons that
+    /// can dial each other directly and speak `PERSISTENT_CONN_UPGRADE`. Keeping
+    /// DHT and relay off makes startup fast and removes all background peer
+    /// churn from what those tests observe.
+    ///
+    /// Every instance gets a fresh tmpdir (unique socket path) and no `-id`
+    /// flag, so p2pd generates a throwaway identity rather than touching any
+    /// persistent key.
+    pub async fn new_wire_peer() -> Result<Self> {
+        let p2p_port = free_port();
+        let tmpdir = TempDir::new()?;
+        let socket_path = tmpdir.path().join("p2pd.sock");
+        let socket_addr = format!("/unix/{}", socket_path.display());
+
+        let mut daemon = DaemonBuilder::new()
+            .with_listen_addr(&socket_addr)
+            .bootstrap(false)
+            .host_addrs([format!("/ip4/127.0.0.1/tcp/{p2p_port}")])
+            .spawn()
+            .await
+            .context("spawn wire peer")?;
+
+        let mut client = daemon.client().await.context("wire peer client")?;
+        let peer_id_hex = client.identify().await.context("wire peer identify")?;
+
+        Ok(Self {
+            daemon,
+            client,
+            peer_id_hex,
+            socket_addr,
+            p2p_port: Some(p2p_port),
+            _tmpdir: tmpdir,
+        })
+    }
+
+    /// Raw peer-ID bytes (what `CallUnaryRequest.peer` and `StreamOpenRequest.peer` want).
+    pub fn peer_id_bytes(&self) -> Vec<u8> {
+        hex::decode(&self.peer_id_hex).expect("peer_id_hex is valid hex")
+    }
+
     /// Start a relay + DHT server node on a deterministic TCP port.
     ///
     /// Other nodes bootstrap from `/ip4/127.0.0.1/tcp/{port}/p2p/{peer_id}`.

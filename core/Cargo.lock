@@ -3062,6 +3062,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unsigned-varint 0.7.2",
 ]
 
 [[package]]
@@ -3111,6 +3112,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unsigned-varint 0.7.2",
 ]
 
 [[package]]
