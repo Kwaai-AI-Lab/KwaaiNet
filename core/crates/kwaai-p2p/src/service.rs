@@ -31,6 +31,7 @@ use libp2p::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, trace, warn};
 
+use crate::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_p2p};
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
@@ -70,6 +71,11 @@ pub struct NetworkService {
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
+    /// Whether the reserved documentation/benchmarking ranges count as
+    /// unroutable. Mirrors `NetworkConfig::require_global_ips`; held here
+    /// because identify-learned addresses are filtered before they reach kad,
+    /// and that decision has to match the one the reachability state makes.
+    require_global_ips: bool,
     /// The protocol list each connected peer advertised over identify. This is
     /// the capability feed: relay-hop support, AutoNAT and dcutr all show up
     /// here. Dropped when the last connection to a peer closes, so an entry
@@ -153,6 +159,7 @@ impl NetworkService {
             pending_kad: HashMap::new(),
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
+            require_global_ips: config.require_global_ips,
             peer_protocols: HashMap::new(),
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
@@ -726,13 +733,45 @@ impl NetworkService {
 
                 // (a) Feed the routing table. Only addresses the peer actually
                 // claims to listen on — the connection's ephemeral source port
-                // is useless to anyone else.
+                // is useless to anyone else — and only those a *third* party
+                // could dial.
+                //
+                // identify advertises every address the peer is listening on,
+                // loopback and LAN-private included, and rust-libp2p filters
+                // none of it (`Behaviour::all_addresses` chains listen and
+                // external addresses verbatim; the receive side drops only
+                // peer-id mismatches). go-libp2p strips these before sending,
+                // so this only bites on the native path.
+                //
+                // Storing them is worse than useless. A peer's `127.0.0.1`
+                // resolves to *us*, so dialing it opens a connection to
+                // ourselves that fails `WrongPeerId` — and it does so
+                // repeatedly, because kad keeps handing back the entry. Its
+                // RFC1918 address is unroutable from any other subnet. Both
+                // crowd out the circuit address that would actually have
+                // worked, which is how a NATed peer ends up unreachable to
+                // another NATed peer that can see it perfectly well in the DHT.
+                //
+                // `is_announceable_with` is the same test the reachability
+                // state and relay manager already apply, so a node cannot
+                // conclude an address is worth advertising while its peers
+                // conclude the reverse. Circuit addresses pass regardless —
+                // reaching the relay is what makes them dialable, and that is
+                // exactly the address a NATed peer needs.
                 let speaks_kad = info
                     .protocols
                     .iter()
                     .any(|p| self.swarm.behaviour().kad.protocol_names().contains(p));
                 if speaks_kad {
                     for addr in &info.listen_addrs {
+                        if !is_announceable_with(addr, self.require_global_ips) {
+                            trace!(
+                                peer = %peer_id,
+                                %addr,
+                                "skipping undialable listen addr from identify"
+                            );
+                            continue;
+                        }
                         self.swarm
                             .behaviour_mut()
                             .kad
@@ -845,50 +884,3 @@ fn dial_error(error: &DialError, peer_id: Option<PeerId>) -> P2PError {
     }
 }
 
-/// Extract the `/p2p/<peer-id>` component from a multiaddr, if present.
-fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
-    addr.iter().find_map(|p| match p {
-        libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
-        _ => None,
-    })
-}
-
-/// Drop a trailing `/p2p/<peer-id>` component.
-fn strip_p2p(addr: &Multiaddr) -> Multiaddr {
-    addr.iter()
-        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_peer_id_from_multiaddr() {
-        let addr: Multiaddr =
-            "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-                .parse()
-                .unwrap();
-        let peer = peer_id_from_multiaddr(&addr).expect("peer id present");
-        assert_eq!(
-            peer.to_base58(),
-            "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-        );
-    }
-
-    #[test]
-    fn no_peer_id_component_yields_none() {
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
-        assert!(peer_id_from_multiaddr(&addr).is_none());
-    }
-
-    #[test]
-    fn strips_the_p2p_component() {
-        let addr: Multiaddr =
-            "/ip4/1.2.3.4/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-                .parse()
-                .unwrap();
-        assert_eq!(strip_p2p(&addr).to_string(), "/ip4/1.2.3.4/tcp/8000");
-    }
-}
