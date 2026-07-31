@@ -13,6 +13,13 @@
 //! `pending_kad` (keyed by `QueryId`). The invariant that keeps callers from
 //! hanging forever is that **every pending entry is removed on both the success
 //! and the failure event**.
+//!
+//! Unary RPC needs no such bookkeeping. Outbound calls hand their `oneshot` to
+//! `unary::Behaviour`, which resolves it on every path. Inbound calls arrive as
+//! `unary::Event::InboundRequest` and are forwarded to the registered handler's
+//! **unbounded** channel — an unbounded send never blocks, which is what makes
+//! it legal inside the select loop. The handler's own task then owns the
+//! responder, so an expensive handler cannot slow the swarm down.
 
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::time::Duration;
@@ -31,7 +38,10 @@ use tracing::{debug, info, trace, warn};
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
-use crate::handle::{Command, Direction, NetworkHandle, PeerInfo};
+use crate::handle::{
+    Command, Direction, InboundUnaryCall, InboundUnarySender, NetworkHandle, PeerInfo,
+};
+use crate::unary::{self, UnaryProtocol};
 
 /// How often the maintenance arm refreshes the Kademlia routing table.
 const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -62,6 +72,10 @@ pub struct NetworkService {
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
+    /// Registered unary handlers: negotiated protocol → the handler task's
+    /// channel. Kept in lockstep with the behaviour's inbound protocol set, so
+    /// an entry here means the protocol is advertised and vice versa.
+    unary_handlers: HashMap<String, InboundUnarySender>,
 }
 
 /// A parked DHT lookup.
@@ -131,11 +145,15 @@ impl NetworkService {
             pending_kad: HashMap::new(),
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
+            unary_handlers: HashMap::new(),
         };
 
         let task = tokio::spawn(service.run());
         info!(peer_id = %local_peer_id, "network service started");
-        Ok((NetworkHandle::new(local_peer_id, tx), task))
+        Ok((
+            NetworkHandle::new(local_peer_id, tx, config.request_timeout),
+            task,
+        ))
     }
 
     /// The event loop. Exits on `Command::Shutdown` or when all handles drop.
@@ -259,6 +277,43 @@ impl NetworkService {
                 let _ = reply.send(self.start_bootstrap(peers));
             }
 
+            // No pending-map entry: the behaviour owns `reply` and resolves it
+            // on every outcome, dial failures and timeouts included.
+            Command::CallUnary {
+                peer,
+                proto,
+                data,
+                reply,
+            } => {
+                self.swarm.behaviour_mut().unary.send_request(
+                    peer,
+                    UnaryProtocol::new(proto),
+                    data,
+                    reply,
+                );
+            }
+
+            Command::AddUnaryHandler {
+                proto,
+                sender,
+                reply,
+            } => {
+                self.swarm
+                    .behaviour_mut()
+                    .unary
+                    .register_protocol(UnaryProtocol::new(proto.clone()));
+                // Re-registering replaces the sender; dropping the old one ends
+                // the previous handler's dispatch task.
+                self.unary_handlers.insert(proto.clone(), sender);
+                debug!(%proto, "unary handler registered");
+                let _ = reply.send(());
+            }
+
+            Command::RemoveUnaryHandler { proto, reply } => {
+                let existed = self.unregister_unary(&proto);
+                let _ = reply.send(existed);
+            }
+
             // Handled in `run` so the loop can break.
             Command::Shutdown { reply } => {
                 let _ = reply.send(());
@@ -362,6 +417,58 @@ impl NetworkService {
         addrs
     }
 
+    /// Stop serving `proto`: drop the dispatch channel and stop advertising it.
+    /// Returns whether a handler was registered. Idempotent.
+    fn unregister_unary(&mut self, proto: &str) -> bool {
+        let existed = self.unary_handlers.remove(proto).is_some();
+        self.swarm
+            .behaviour_mut()
+            .unary
+            .unregister_protocol(&UnaryProtocol::new(proto));
+        if existed {
+            debug!(%proto, "unary handler removed");
+        }
+        existed
+    }
+
+    /// Route one inbound unary call to its handler.
+    ///
+    /// Dispatch is keyed on the **negotiated** protocol, never the frame's
+    /// `proto` field. Three outcomes, none of which may block:
+    ///
+    /// - handler present and its task alive → hand the call over; the task owns
+    ///   the responder from here,
+    /// - handler present but its receiver dropped (the task died) → deregister
+    ///   the protocol so subsequent calls get a clean refusal instead of a
+    ///   silent black hole, and fail this call,
+    /// - nothing registered → fail immediately. This is the rare path: the
+    ///   protocol was deregistered between negotiation and decode, since
+    ///   unregistered protocols are refused during negotiation.
+    fn dispatch_unary(&mut self, peer: PeerId, request: unary::InboundRequest) {
+        let unary::InboundRequest {
+            proto,
+            data,
+            responder,
+        } = request;
+        let proto = proto.as_ref().to_string();
+
+        let Some(sender) = self.unary_handlers.get(&proto) else {
+            let _ = responder.send(Err(format!("no handler for {proto}")));
+            return;
+        };
+
+        let call = InboundUnaryCall {
+            peer,
+            data,
+            responder,
+        };
+        if let Err(e) = sender.send(call) {
+            warn!(%proto, "unary handler task is gone; deregistering the protocol");
+            self.unregister_unary(&proto);
+            let _ = e.0.responder.send(Err(format!("no handler for {proto}")));
+        }
+    }
+
     /// Resolve every parked request with `error`. Called on shutdown so no
     /// caller is left awaiting a reply that will never come.
     fn fail_all_pending(&mut self, error: P2PError) {
@@ -461,6 +568,9 @@ impl NetworkService {
                 Ok(rtt) => trace!(peer = %peer, ?rtt, "ping"),
                 Err(e) => debug!(peer = %peer, error = %e, "ping failed"),
             },
+            KwaaiBehaviourEvent::Unary(unary::Event::InboundRequest { peer, request }) => {
+                self.dispatch_unary(peer, request)
+            }
         }
     }
 

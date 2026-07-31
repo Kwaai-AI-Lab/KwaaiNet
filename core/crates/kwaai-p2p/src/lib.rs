@@ -8,9 +8,12 @@
 //! to dial peers, list connections and run DHT lookups concurrently.
 //!
 //! Phase 1 covers ping, identify and Kademlia — enough for a node to join the
-//! network, learn its observed addresses, and resolve peers. Relay, dcutr,
-//! AutoNAT, UPnP and the hivemind unary-RPC behaviour arrive in later phases;
-//! [`behaviour::KwaaiBehaviour`] is structured so each is an additive field.
+//! network, learn its observed addresses, and resolve peers. Phase 2 adds
+//! hivemind unary RPC: [`NetworkHandle::call_unary_handler`] to call a remote
+//! handler and [`NetworkHandle::add_unary_handler`] to serve one, both named
+//! after their `kwaai_p2p_daemon::P2PClient` counterparts. Relay, dcutr,
+//! AutoNAT and UPnP arrive in later phases; [`behaviour::KwaaiBehaviour`] is
+//! structured so each is an additive field.
 //!
 //! ## Example
 //!
@@ -49,7 +52,7 @@ pub use config::{
     NetworkConfig, KWAAI_BOOTSTRAP_SERVERS, KWAAI_BOOTSTRAP_SERVERS_DNS, PETALS_BOOTSTRAP_SERVERS,
 };
 pub use error::{P2PError, P2PResult};
-pub use handle::{Direction, NetworkHandle, PeerInfo};
+pub use handle::{Direction, InboundUnaryCall, NetworkHandle, PeerInfo, UnaryHandler};
 pub use service::NetworkService;
 
 // Re-exported so downstream crates can name peers and addresses without taking

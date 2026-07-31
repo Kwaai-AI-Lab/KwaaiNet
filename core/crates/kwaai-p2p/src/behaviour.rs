@@ -11,11 +11,18 @@
 //!   go-libp2p daemon with no `ProtocolPrefix`, so any custom protocol name
 //!   here silently partitions us from the live network.
 //!
+//! Phase 2 adds:
+//!
+//! - [`unary`] — hivemind unary RPC. Registration of inbound handler protocols
+//!   is dynamic (Phase 3 registers them at runtime over IPC), so the behaviour
+//!   starts with an empty protocol set and the service loop drives
+//!   `register_protocol`/`unregister_protocol` from handle commands.
+//!
 //! Later phases extend this struct with relay (client + `Toggle` server),
-//! dcutr, autonat, upnp, `request_response` for hivemind unary RPC, and
-//! `libp2p_stream`. The struct is `#[derive(NetworkBehaviour)]` so adding a
-//! field is additive — the generated `KwaaiBehaviourEvent` gains a variant and
-//! the service's event loop gets a new match arm.
+//! dcutr, autonat, upnp and `libp2p_stream`. The struct is
+//! `#[derive(NetworkBehaviour)]` so adding a field is additive — the generated
+//! `KwaaiBehaviourEvent` gains a variant and the service's event loop gets a new
+//! match arm.
 
 use std::time::Duration;
 
@@ -28,6 +35,7 @@ use libp2p::{
 };
 
 use crate::config::NetworkConfig;
+use crate::unary;
 
 /// The `protocol_version` advertised over identify.
 ///
@@ -48,6 +56,7 @@ pub struct KwaaiBehaviour {
     pub ping: ping::Behaviour,
     pub identify: identify::Behaviour,
     pub kad: kad::Behaviour<MemoryStore>,
+    pub unary: unary::Behaviour,
 }
 
 impl KwaaiBehaviour {
@@ -98,10 +107,20 @@ impl KwaaiBehaviour {
         // Otherwise leave `auto_mode` on: kad flips to Server once an external
         // address is confirmed, Client until then.
 
+        // The inbound protocol set starts empty — handlers register at runtime
+        // through `NetworkHandle::add_unary_handler`. `max_concurrent_streams`
+        // keeps its default: it is a per-connection resource guard, unrelated to
+        // anything `NetworkConfig` currently expresses.
+        let unary = unary::Behaviour::new(unary::Config {
+            request_timeout: config.request_timeout,
+            ..unary::Config::default()
+        });
+
         Self {
             ping,
             identify,
             kad,
+            unary,
         }
     }
 }
