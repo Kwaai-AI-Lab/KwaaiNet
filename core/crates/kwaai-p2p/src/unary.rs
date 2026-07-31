@@ -260,31 +260,44 @@ pub struct Handler {
     inbound_protocols: Arc<RwLock<HashSet<UnaryProtocol>>>,
     config: Config,
 
-    /// Outbound requests not yet emitted as substream requests.
+    /// Outbound requests not yet emitted as substream requests. Emission is
+    /// throttled in `poll` so `requested_outbound` + `outbound_workers` stays
+    /// within `max_concurrent_streams`; excess requests wait here under the
+    /// caller's own timeout-free patience (each has a caller awaiting it, so
+    /// the queue is bounded by local concurrency).
     pending_outbound: VecDeque<OutboundMessage>,
-    /// Emitted substream requests awaiting negotiation.
+    /// Emitted substream requests awaiting negotiation, keyed by the request
+    /// id passed as `OutboundOpenInfo`.
     ///
-    /// **Not** correlated by position: with several calls in flight on one
-    /// connection, `FullyNegotiatedOutbound` events arrive in completion order,
-    /// which is not emission order — each negotiation is an independent
-    /// round-trip. Streams are therefore matched to their request by *negotiated
-    /// protocol* (see [`Handler::take_requested`]), which is exact here because
-    /// each substream request proposes exactly one protocol.
-    ///
-    /// Two concurrent calls to the *same* protocol are still matched
-    /// positionally among themselves, which is correct: they are
-    /// interchangeable, each carrying its own reply channel.
-    requested_outbound: VecDeque<OutboundMessage>,
+    /// Correlation must be by id, never by position or protocol:
+    /// `FullyNegotiatedOutbound`/`DialUpgradeError` arrive in *completion*
+    /// order (each negotiation is an independent round-trip), and the id is
+    /// the only token the swarm echoes back verbatim on both the success and
+    /// the failure path.
+    requested_outbound: HashMap<u64, OutboundMessage>,
+    /// Source for `requested_outbound` keys, unique per handler lifetime.
+    next_outbound_id: u64,
 
-    /// Stream workers. Timeouts live inside each future so every worker
-    /// resolves its oneshot on every path.
-    workers: FuturesUnordered<BoxFuture<'static, ()>>,
+    /// Inbound stream workers (serving remote calls). Bounded by
+    /// `max_concurrent_streams`, with a small overflow allowance for workers
+    /// that only write a refusal frame.
+    inbound_workers: FuturesUnordered<BoxFuture<'static, ()>>,
+    /// Outbound stream workers (our calls). Bounded by
+    /// `max_concurrent_streams` via emission throttling in `poll`, so a local
+    /// call burst cannot starve inbound serving. Timeouts live inside each
+    /// future so every worker resolves its oneshot on every path.
+    outbound_workers: FuturesUnordered<BoxFuture<'static, ()>>,
 
     /// Inbound requests decoded by workers, drained in `poll`. Zero-capacity:
     /// a worker parks until the handler actually forwards its request.
     inbound_rx: mpsc::Receiver<InboundStreamRequest>,
     inbound_tx: mpsc::Sender<InboundStreamRequest>,
 }
+
+/// Extra inbound worker slots reserved for writing "at capacity" refusal
+/// frames once the real slots are full. Beyond cap + this, streams are
+/// dropped without a reply — the remote's own timeout is then the backstop.
+const REFUSAL_SLOTS: usize = 16;
 
 impl Handler {
     fn new(
@@ -298,23 +311,53 @@ impl Handler {
             inbound_protocols,
             config,
             pending_outbound: VecDeque::new(),
-            requested_outbound: VecDeque::new(),
-            workers: FuturesUnordered::new(),
+            requested_outbound: HashMap::new(),
+            next_outbound_id: 0,
+            inbound_workers: FuturesUnordered::new(),
+            outbound_workers: FuturesUnordered::new(),
             inbound_rx,
             inbound_tx,
         }
     }
 
     fn on_fully_negotiated_inbound(&mut self, mut stream: Stream, proto: UnaryProtocol) {
-        if self.workers.len() >= self.config.max_concurrent_streams {
-            warn!(%proto, "dropping inbound unary stream: at capacity");
+        if self.inbound_workers.len() >= self.config.max_concurrent_streams {
+            // Refuse politely while the overflow allowance lasts: read the
+            // request (its callId is needed for any reply), answer with the
+            // error arm, close. Beyond the allowance, drop outright.
+            if self.inbound_workers.len() < self.config.max_concurrent_streams + REFUSAL_SLOTS {
+                warn!(%proto, "refusing inbound unary stream: at capacity");
+                self.inbound_workers.push(
+                    async move {
+                        let refusal = async {
+                            let frame = wire::read_framed_futures(&mut stream).await?;
+                            let (call_id, ..) = wire::decode_unary_request(&frame)?;
+                            stream
+                                .write_all(&wire::encode_unary_response(
+                                    &call_id,
+                                    Err("node at capacity".to_string()),
+                                ))
+                                .await?;
+                            stream.flush().await?;
+                            stream.close().await?;
+                            Ok::<_, wire::WireError>(())
+                        };
+                        // A short budget: a refusal that cannot complete
+                        // quickly is not worth a slot.
+                        let _ = tokio::time::timeout(Duration::from_secs(5), refusal).await;
+                    }
+                    .boxed(),
+                );
+            } else {
+                warn!(%proto, "dropping inbound unary stream: at capacity");
+            }
             return;
         }
 
         let mut to_handler = self.inbound_tx.clone();
         let timeout = self.config.request_timeout;
 
-        self.workers.push(
+        self.inbound_workers.push(
             async move {
                 let outcome: Result<(), wire::WireError> = async {
                     let frame = wire::read_framed_futures(&mut stream).await?;
@@ -361,34 +404,20 @@ impl Handler {
         );
     }
 
-    /// Claim the pending request that `proto` belongs to.
-    ///
-    /// Falls back to the oldest request when the protocol does not match any —
-    /// which should not happen, but losing the correlation must not strand a
-    /// caller's reply channel forever.
-    fn take_requested(&mut self, proto: &UnaryProtocol) -> Option<OutboundMessage> {
-        let index = self
-            .requested_outbound
-            .iter()
-            .position(|m| &m.proto == proto)
-            .or(if self.requested_outbound.is_empty() {
-                None
-            } else {
-                Some(0)
-            })?;
-        self.requested_outbound.remove(index)
-    }
-
-    fn on_fully_negotiated_outbound(&mut self, mut stream: Stream, proto: UnaryProtocol) {
-        let Some(message) = self.take_requested(&proto) else {
-            debug!(%proto, "negotiated an outbound stream without a pending message");
+    fn on_fully_negotiated_outbound(&mut self, mut stream: Stream, proto: UnaryProtocol, id: u64) {
+        let Some(message) = self.requested_outbound.remove(&id) else {
+            debug!(%proto, id, "negotiated an outbound stream without a pending message");
             return;
         };
+        debug_assert_eq!(
+            message.proto, proto,
+            "a substream request proposes exactly one protocol"
+        );
 
         let callee = self.remote.to_bytes();
         let timeout = self.config.request_timeout;
 
-        self.workers.push(
+        self.outbound_workers.push(
             async move {
                 let exchange = async {
                     // 16 raw UUID bytes: Go does `uuid.FromBytes` and drops the
@@ -431,15 +460,19 @@ impl Handler {
         );
     }
 
-    /// A failed upgrade carries no negotiated protocol — there is none — so the
-    /// oldest pending request is claimed. With several *different* protocols in
-    /// flight this can attribute a refusal to the wrong call, but both calls are
-    /// to the same peer and only one of them can be the failing one; the other
-    /// then fails on its own path. Reporting the wrong protocol name in the
-    /// error text is strictly better than panicking or leaking a reply channel.
-    fn on_dial_upgrade_error(&mut self, error: StreamUpgradeError<std::convert::Infallible>) {
-        let Some(message) = self.requested_outbound.pop_front() else {
-            debug!("upgrade error for an outbound stream without a pending message");
+    /// A failed upgrade carries no negotiated protocol, but it does echo the
+    /// request id we passed as `OutboundOpenInfo`, so attribution is exact on
+    /// the failure path too.
+    fn on_dial_upgrade_error(
+        &mut self,
+        error: StreamUpgradeError<std::convert::Infallible>,
+        id: u64,
+    ) {
+        let Some(message) = self.requested_outbound.remove(&id) else {
+            debug!(
+                id,
+                "upgrade error for an outbound stream without a pending message"
+            );
             return;
         };
 
@@ -455,13 +488,32 @@ impl Handler {
     }
 }
 
+impl Drop for Handler {
+    /// The connection is gone; every queued and still-negotiating request
+    /// resolves with a definite error rather than a silently dropped channel.
+    /// (In-flight exchanges resolve through their worker futures' own drop —
+    /// the caller sees the channel close, which the handle maps to a service
+    /// error; only the not-yet-started calls can be given the precise cause.)
+    fn drop(&mut self) {
+        for message in self
+            .pending_outbound
+            .drain(..)
+            .chain(self.requested_outbound.drain().map(|(_, m)| m))
+        {
+            let _ = message
+                .reply
+                .send(Err(UnaryError::Wire("connection closed".to_string())));
+        }
+    }
+}
+
 impl ConnectionHandler for Handler {
     type FromBehaviour = OutboundMessage;
     type ToBehaviour = InboundStreamRequestEvent;
     type InboundProtocol = Protocols;
     type OutboundProtocol = Protocols;
     type InboundOpenInfo = ();
-    type OutboundOpenInfo = ();
+    type OutboundOpenInfo = u64;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, ()> {
         let protocols = self
@@ -481,10 +533,11 @@ impl ConnectionHandler for Handler {
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<ConnectionHandlerEvent<Protocols, (), Self::ToBehaviour>> {
-        // Drive stream workers; their outcomes travel through oneshots, so
+    ) -> Poll<ConnectionHandlerEvent<Protocols, u64, Self::ToBehaviour>> {
+        // Drive both worker pools; outcomes travel through oneshots, so
         // completion here is just cleanup.
-        while let Poll::Ready(Some(())) = self.workers.poll_next_unpin(cx) {}
+        while let Poll::Ready(Some(())) = self.inbound_workers.poll_next_unpin(cx) {}
+        while let Poll::Ready(Some(())) = self.outbound_workers.poll_next_unpin(cx) {}
 
         if let Poll::Ready(Some(request)) = self.inbound_rx.poll_next_unpin(cx) {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
@@ -492,14 +545,24 @@ impl ConnectionHandler for Handler {
             ));
         }
 
-        if let Some(message) = self.pending_outbound.pop_front() {
-            let protocols = Protocols {
-                protocols: vec![message.proto.clone()],
-            };
-            self.requested_outbound.push_back(message);
-            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                protocol: SubstreamProtocol::new(protocols, ()),
-            });
+        // Emit the next outbound request only while within the cap, counting
+        // both still-negotiating and in-flight streams. Requests beyond it
+        // wait in `pending_outbound` and are re-examined when a worker
+        // completes (worker completion wakes this poll).
+        if self.requested_outbound.len() + self.outbound_workers.len()
+            < self.config.max_concurrent_streams
+        {
+            if let Some(message) = self.pending_outbound.pop_front() {
+                let protocols = Protocols {
+                    protocols: vec![message.proto.clone()],
+                };
+                let id = self.next_outbound_id;
+                self.next_outbound_id += 1;
+                self.requested_outbound.insert(id, message);
+                return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                    protocol: SubstreamProtocol::new(protocols, id),
+                });
+            }
         }
 
         Poll::Pending
@@ -507,7 +570,7 @@ impl ConnectionHandler for Handler {
 
     fn on_connection_event(
         &mut self,
-        event: ConnectionEvent<Self::InboundProtocol, Self::OutboundProtocol, (), ()>,
+        event: ConnectionEvent<Self::InboundProtocol, Self::OutboundProtocol, (), u64>,
     ) {
         match event {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
@@ -516,10 +579,10 @@ impl ConnectionHandler for Handler {
             }) => self.on_fully_negotiated_inbound(stream, proto),
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: (stream, proto),
-                ..
-            }) => self.on_fully_negotiated_outbound(stream, proto),
-            ConnectionEvent::DialUpgradeError(DialUpgradeError { error, .. }) => {
-                self.on_dial_upgrade_error(error)
+                info,
+            }) => self.on_fully_negotiated_outbound(stream, proto, info),
+            ConnectionEvent::DialUpgradeError(DialUpgradeError { error, info }) => {
+                self.on_dial_upgrade_error(error, info)
             }
             _ => {}
         }
