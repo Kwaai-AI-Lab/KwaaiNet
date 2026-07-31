@@ -3,7 +3,7 @@
 use crate::codec::{DHTRequest, DHTResponse, HivemindCodec};
 use crate::protocol::*;
 use crate::value::{DHTExpiration, DHTValue};
-use crate::{Error, Result, PROTOCOL_FIND, PROTOCOL_STORE};
+use crate::{Error, Result};
 use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
 use libp2p::{PeerId, StreamProtocol};
 use std::collections::HashMap;
@@ -32,11 +32,24 @@ enum PendingRequest {
 
 impl HivemindDHT {
     /// Create a new Hivemind DHT client with Petals-compatible protocol names
+    ///
+    /// NOTE: this `request_response`-based client is a superseded prototype with
+    /// no consumers; the native path is `kwaai-p2p`'s `unary::Behaviour` (see
+    /// design decision 2 in `docs/NATIVE_P2P_MIGRATION.md`). The protocol IDs are
+    /// spelled with a leading slash *here only* because `StreamProtocol` refuses
+    /// slash-less names locally — the real hivemind IDs are bare
+    /// (`crate::PROTOCOL_STORE` / `crate::PROTOCOL_FIND`), so this client cannot
+    /// actually negotiate against a Python peer.
     pub fn new(local_peer_id: PeerId) -> Self {
-        // Petals uses: DHTProtocol.rpc_store and DHTProtocol.rpc_find
         let protocols = vec![
-            (StreamProtocol::new(PROTOCOL_STORE), ProtocolSupport::Full),
-            (StreamProtocol::new(PROTOCOL_FIND), ProtocolSupport::Full),
+            (
+                StreamProtocol::new("/DHTProtocol.rpc_store"),
+                ProtocolSupport::Full,
+            ),
+            (
+                StreamProtocol::new("/DHTProtocol.rpc_find"),
+                ProtocolSupport::Full,
+            ),
         ];
 
         let cfg = request_response::Config::default();
