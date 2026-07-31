@@ -704,3 +704,25 @@ native run_node path (`trusted_relays`/`no_relay`/`force_private`/`public_ip` �
 `NetworkConfig`, watch-driven announce loop, empty relay default); 9. doc update.
 In-process tests cover relay lifecycle, reachability rules, and dcutr plumbing; real
 hole punching and the (a)–(f) acceptance items remain kwaaiai-env nat-test topology work.
+
+### Slice 2 landed (2026-07-31)
+
+All nine planned commits are in (`b5d4cdc..3e2000d` + the settle-deadline fix).
+Full gate green: workspace build, unit suites, integration tiers 01–13 vs real p2pd,
+fmt/clippy clean (one pre-existing wire.rs type-complexity warning).
+
+- **The bootstrap-autonat unknown resolved favourably**: both production bootstraps
+  advertise `/libp2p/autonat/1.0.0`, both relay-hop/stop, and `/libp2p/dcutr`
+  (read-only identify snapshot; full lists in commit `b5d4cdc`). A native node gets two
+  AutoNAT servers from its first dial; identify consensus is a true fallback. Hop
+  advertisement is not a promise — the RESERVATION_REFUSED history stands, and refusal
+  rotates rather than fails.
+- Identify now records per-peer protocol lists (`NetworkHandle::peer_protocols`),
+  dropped on last disconnect; relay-hop discovery and AutoNAT probe targeting read it.
+- The announce settle window is a deadline armed in the watch arm and awaited in its own
+  select branch — an inline sleep would have blocked shutdown/SIGHUP for the window.
+
+**Remaining Phase 4 work**: the kwaaiai-env nat-test topology acceptance run —
+items (a)–(f) — which requires coordinating with the in-flight work in that repo,
+plus the tracked follow-ups above (identify RFC1918 address filter, record validators,
+eviction index, callUnary.peer threading, Windows TCP pipe tests).
