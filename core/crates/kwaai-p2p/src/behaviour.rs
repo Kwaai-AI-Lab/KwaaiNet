@@ -1,7 +1,6 @@
 //! The composed libp2p `NetworkBehaviour` for a KwaaiNet node.
 //!
-//! Phase 1 composes the minimum set needed for a node to join the network and
-//! be observed by it:
+//! The minimum set needed for a node to join the network and be observed by it:
 //!
 //! - [`ping`] — liveness / RTT, and it keeps otherwise-idle connections honest.
 //! - [`identify`] — protocol/agent advertisement plus the **observed address**
@@ -10,6 +9,10 @@
 //!   protocol. This is deliberate: the Python bootstraps run hivemind's
 //!   go-libp2p daemon with no `ProtocolPrefix`, so any custom protocol name
 //!   here silently partitions us from the live network.
+//!
+//! - [`unary`] — hivemind unary RPC. Inbound handler protocols register at
+//!   runtime, so the behaviour starts with an empty protocol set and the
+//!   service loop drives `register_protocol`/`unregister_protocol`.
 
 use std::time::Duration;
 
@@ -22,6 +25,7 @@ use libp2p::{
 };
 
 use crate::config::NetworkConfig;
+use crate::unary;
 
 /// The `protocol_version` advertised over identify.
 ///
@@ -42,6 +46,7 @@ pub struct KwaaiBehaviour {
     pub ping: ping::Behaviour,
     pub identify: identify::Behaviour,
     pub kad: kad::Behaviour<MemoryStore>,
+    pub unary: unary::Behaviour,
 }
 
 impl KwaaiBehaviour {
@@ -92,10 +97,20 @@ impl KwaaiBehaviour {
         // Otherwise leave `auto_mode` on: kad flips to Server once an external
         // address is confirmed, Client until then.
 
+        // The inbound protocol set starts empty — handlers register at runtime
+        // through `NetworkHandle::add_unary_handler`. `max_concurrent_streams`
+        // keeps its default: it is a per-connection resource guard, unrelated to
+        // anything `NetworkConfig` currently expresses.
+        let unary = unary::Behaviour::new(unary::Config {
+            request_timeout: config.request_timeout,
+            ..unary::Config::default()
+        });
+
         Self {
             ping,
             identify,
             kad,
+            unary,
         }
     }
 }

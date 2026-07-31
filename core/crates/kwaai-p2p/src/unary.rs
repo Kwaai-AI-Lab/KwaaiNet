@@ -8,8 +8,7 @@
 //!
 //! ## Why not `libp2p::request_response`
 //!
-//! The migration plan originally called for `request_response` with a custom
-//! codec, but two of its design constants do not fit hivemind:
+//! Two of its design constants do not fit hivemind:
 //!
 //! - **Protocol-per-request.** `request_response::Behaviour` negotiates from
 //!   one protocol list fixed at construction; `send_request` cannot say which
