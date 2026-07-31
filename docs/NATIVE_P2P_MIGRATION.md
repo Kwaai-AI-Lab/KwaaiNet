@@ -291,6 +291,55 @@ skew — bootstraps reject TTLs shorter than the existing record (`node.rs:1381`
 swarms instead of `DaemonBuilder`); existing client-side test bodies become the
 conformance suite — old tests, new server.
 
+*Done so far:* **`ControlServer`** (`kwaai-p2p-daemon/src/server.rs`) — binds the p2pd
+control socket (`/unix/<path>`, plus the `/ip4/…/tcp/<port>` form the Windows client
+already speaks), accepts concurrent clients, and translates into `NetworkHandle`. Verb
+coverage:
+
+| verb | status |
+| --- | --- |
+| IDENTIFY, CONNECT, DISCONNECT, LIST_PEERS | served |
+| DHT FIND_PEER | served (via `dht_find_peer`) |
+| PERSISTENT_CONN_UPGRADE + add/remove_unary_handler, call_unary_handler, unaryResponse | served |
+| PERSISTENT `cancel` | accepted as a no-op — `NetworkHandle` has no mid-flight abort; calls are bounded by `request_timeout` |
+| STREAM_OPEN, STREAM_HANDLER, REMOVE_STREAM_HANDLER | **stubbed** `"not supported"` — pipe mode, see below |
+| DHT put/get/provide/find_providers/get_closest/search/pubkey | **stubbed** `"not supported"` (Go's own wording for unsupported DHT verbs) |
+| PUBSUB, CONNMANAGER | **stubbed** `"not supported"` — never implemented by the client either |
+
+Response shapes follow the Go source rather than the proto, because several are
+load-bearing and invisible in the schema: the add/remove-handler ACK is a
+`PersistentConnectionResponse` with a `callId` and **no** message arm (Go's
+`okUnaryCallResponse`), which is exactly what `persistent.rs` decodes as success;
+`IdentifyResponse.id` is raw peer-ID bytes and `addrs` are binary multiaddrs; simple verbs
+error as `Response{ERROR}` while persistent verbs error as `daemonError`.
+
+**Handler ownership is per socket connection** and released on disconnect for any reason —
+this is the stale-handler-after-crash fix. `balanced` is deliberately ignored (no call site
+passes `true`; honouring it would mean a round-robin fairness policy for an unused mode).
+Call-ID correlation state is per connection so two clients cannot collide on a UUID, and
+inbound dispatch mints its own call IDs so two remote callers cannot either.
+
+*Also fixed here:* a Phase 2 bug this work surfaced — `unary::Handler` correlated outbound
+streams to pending requests **by position**, but `FullyNegotiatedOutbound` arrives in
+completion order, not emission order. Two concurrent calls to *different* protocols on one
+connection could therefore swap replies. Now matched by negotiated protocol.
+Gated by `service_unary.rs::concurrent_calls_to_different_protocols_do_not_cross_talk`.
+
+*Gated by:* `kwaai-p2p-daemon/tests/control_server.rs` (11 in-process tests driving the
+**unmodified** `P2PClient` against a `ControlServer` over a real `NetworkService`) and
+`11_control_server_interop` (the cross-implementation matrix against a real p2pd: client
+via native → p2pd handler, client via p2pd → native handler, native → native, IDENTIFY
+shape parity, and the disconnect-release fix observed from the Go stack).
+
+*Still open in this phase:* **pipe mode** — `stream_open_raw` / `register_stream_handler`
+raw byte relay between the unix socket and a libp2p stream (`libp2p_stream`), with
+backpressure both ways; consumers are inference-mux and block_rpc. Also: threading the
+caller's `PeerId` into `add_unary_handler_boxed` so the dispatched `callUnary.peer` can
+carry it (Go rewrites that field, `persistent_stream.go:298`; we currently send it empty),
+the harness `TestNode` variant that runs the *existing* client-side tiers against the new
+server, and deciding per remaining DHT verb whether to back it with `kad` record/provider
+APIs or delete the client method at cutover.
+
 *Testable:* the full existing daemon-client test suite green against the new server;
 multi-client smoke: `kwaainet status`, `p2p peers list`, `shard serve` (register handler +
 receive inbound call), `storage serve`, inference-mux `stream_open_raw`, two clients
