@@ -15,15 +15,18 @@ pub mod codec;
 pub mod error;
 pub mod protocol;
 pub mod server;
+pub mod storage;
 pub mod value;
 pub mod wire;
 
 pub use client::HivemindDHT;
 pub use error::{Error, Result};
 pub use protocol::{
-    AccessToken, FindResult, NodeInfo, RequestAuthInfo, ResponseAuthInfo, ResultType,
+    dht_id_from_peer_id, AccessToken, FindResult, NodeInfo, RequestAuthInfo, ResponseAuthInfo,
+    ResultType,
 };
-pub use server::DHTStorage;
+pub use server::{DHTStorage, RoutingPeer, IS_DICTIONARY, IS_REGULAR_VALUE};
+pub use storage::{parse_dictionary, serialize_dictionary, LocalStorage, ParsedDictionary, Stored};
 pub use value::{DHTExpiration, DHTValue};
 
 /// Hivemind DHT protocol handlers
