@@ -19,7 +19,7 @@ use kwaai_hivemind_dht::{
     value::get_dht_time,
     DHTStorage,
 };
-use kwaai_p2p::{hivemind::ServerInfo, NetworkConfig};
+use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::{stream, P2PDaemon};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
@@ -606,13 +606,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         public_name.clone(),
         version.clone(),
     );
-
-    // Also create RPC ServerInfo for Hivemind RPC protocol (future use)
-    let _rpc_server_info = ServerInfo::new(&public_name)
-        .with_span(start_block as u32, end_block as u32)
-        .with_cache_tokens(100000)
-        .with_throughput(100.0)
-        .with_dtype(&torch_dtype);
 
     println!("Node Configuration:");
     println!("  Public Name: {}", public_name);
