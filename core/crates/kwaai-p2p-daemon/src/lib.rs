@@ -1,13 +1,25 @@
-//! Rust wrapper for go-libp2p-daemon
+//! The p2pd control protocol — both halves.
 //!
-//! This crate provides a Rust interface to the go-libp2p-daemon binary,
-//! enabling full compatibility with the Hivemind/Petals DHT network.
+//! This crate speaks the go-libp2p-daemon protobuf control protocol, in two
+//! directions:
+//!
+//! - **Client** ([`P2PClient`], [`persistent`], [`dht`]) — what every external
+//!   process uses to drive the node: identify, connect, list_peers, DHT verbs,
+//!   stream handlers, and the persistent-connection unary sub-protocol.
+//! - **Server** ([`ControlServer`]) — the node's own implementation of that same
+//!   protocol, translating it into `kwaai_p2p::NetworkHandle` calls. Added in
+//!   Phase 3 of `docs/NATIVE_P2P_MIGRATION.md` so the Go daemon can be removed
+//!   without touching a single client call site.
+//!
+//! Historically only the client existed and the server was the Go binary
+//! ([`P2PDaemon`] spawns it). Both server implementations answer the same bytes;
+//! `kwaai-network-tests` tiers 07/09/11 hold them to it.
 //!
 //! ## Architecture
 //!
-//! The go-libp2p-daemon runs as a separate process and communicates with
-//! our Rust code via IPC:
-//! - **Windows**: Named pipes (`//./pipe/name`)
+//! The control socket is IPC:
+//! - **Windows**: TCP on loopback (the Go daemon never supported named pipes in
+//!   multiaddr form)
 //! - **Linux/macOS**: Unix domain sockets (`/tmp/name.sock`)
 //!
 //! ## Usage
@@ -44,12 +56,14 @@ pub mod error;
 pub mod hello;
 pub mod persistent;
 pub mod protocol;
+pub mod server;
 pub mod stream;
 
 pub use client::{P2PClient, P2PStream};
 pub use daemon::{DaemonBuilder, P2PDaemon};
 pub use dht::{DhtPeerInfo, DhtValue};
 pub use error::{Error, Result};
+pub use server::ControlServer;
 
 // Re-export commonly used types
 pub use protocol::p2pd;
