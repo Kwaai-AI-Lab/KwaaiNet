@@ -22,7 +22,8 @@ use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{P2PError, P2PResult};
-use crate::unary::UnaryResult;
+use crate::raw_stream::{InboundStream, OpenResult, RawStream, RawStreamError};
+use crate::unary::{UnaryProtocol, UnaryResult};
 
 /// One inbound unary call handed to a registered handler task.
 ///
@@ -163,9 +164,48 @@ pub enum Command {
         proto: String,
         reply: oneshot::Sender<bool>,
     },
+
+    /// Open a **raw** libp2p stream to `peer`, negotiating the first of
+    /// `protos` the remote accepts.
+    ///
+    /// Like `CallUnary` this carries no pending-map entry: the reply channel is
+    /// handed to `raw_stream::Behaviour::open_stream`, which resolves it on
+    /// every path including dial failure and negotiation refusal.
+    OpenRawStream {
+        peer: PeerId,
+        protos: Vec<String>,
+        reply: oneshot::Sender<OpenResult>,
+    },
+    /// Start accepting inbound raw streams on each of `protos`, routing them to
+    /// `sender`.
+    ///
+    /// Reports the protocols that were **not** registered because another
+    /// handler already owns them, so the caller can refuse with the Go daemon's
+    /// "already set" wording without a second round trip.
+    AddStreamHandler {
+        protos: Vec<String>,
+        sender: InboundStreamSender,
+        reply: oneshot::Sender<Vec<String>>,
+    },
+    /// Stop accepting inbound raw streams on `protos`. Reports which were
+    /// actually registered.
+    RemoveStreamHandler {
+        protos: Vec<String>,
+        reply: oneshot::Sender<Vec<String>>,
+    },
+
     /// Stop the event loop.
     Shutdown { reply: oneshot::Sender<()> },
 }
+
+/// The channel the service uses to hand inbound raw streams to their handler.
+///
+/// Unbounded for the same reason as [`InboundUnarySender`]: an unbounded send
+/// never blocks, which is what makes it legal inside the swarm select loop. The
+/// real bound is the receiver's own accept loop, and a stream sitting in this
+/// queue is not consuming a remote's window — libp2p's flow control has not
+/// been released yet because nobody has read from the stream.
+pub type InboundStreamSender = mpsc::UnboundedSender<InboundStream>;
 
 /// Clonable control handle for a running [`crate::service::NetworkService`].
 #[derive(Debug, Clone)]
@@ -401,11 +441,113 @@ impl NetworkHandle {
         .await
     }
 
+    // ------------------------------------------------------------------
+    // Raw streams (pipe mode)
+    // ------------------------------------------------------------------
+
+    /// Open a raw libp2p stream to `peer` on the first of `protos` it accepts.
+    ///
+    /// Mirrors `kwaai_p2p_daemon::P2PClient::stream_open`'s semantics and Go's
+    /// `doStreamOpen`: the protocol list is a preference order handed to
+    /// multistream-select, and the peer is dialled on demand if there is no
+    /// connection. Returns the protocol that won, plus the stream.
+    ///
+    /// The stream is `futures::io::AsyncRead + AsyncWrite`. Nothing is written
+    /// to or read from it here — framing, if any, belongs to the protocol the
+    /// caller just negotiated.
+    ///
+    /// # Errors
+    ///
+    /// [`RawStreamError`] maps onto [`P2PError`] on the same principle as
+    /// [`NetworkHandle::call_unary_handler`]: a clean refusal is a
+    /// protocol-level answer ([`P2PError::Protocol`]), an unreachable peer is
+    /// [`P2PError::DialFailed`], and anything below the application layer is
+    /// [`P2PError::Transport`].
+    pub async fn open_raw_stream(
+        &self,
+        peer: PeerId,
+        protos: Vec<String>,
+    ) -> P2PResult<(String, RawStream)> {
+        let result = self
+            .call(|reply| Command::OpenRawStream {
+                peer,
+                protos,
+                reply,
+            })
+            .await?;
+        match result {
+            Ok((proto, stream)) => Ok((proto.as_ref().to_string(), stream)),
+            Err(e) => Err(raw_stream_error(e)),
+        }
+    }
+
+    /// Accept inbound raw streams on each of `protos`.
+    ///
+    /// Returns an [`mpsc::UnboundedReceiver`] of [`InboundStream`]s, plus the
+    /// protocols that could **not** be registered because another handler
+    /// already serves them. That split mirrors Go's `doStreamHandler`, which
+    /// refuses a protocol already in its handler map (with `balanced` false —
+    /// the only mode this codebase uses) but registers the rest of the list.
+    ///
+    /// Dropping the receiver does *not* unregister: call
+    /// [`NetworkHandle::remove_stream_handler`] for that, so that ownership is
+    /// explicit rather than tied to a channel's lifetime.
+    pub async fn accept_streams(
+        &self,
+        protos: Vec<String>,
+    ) -> P2PResult<(mpsc::UnboundedReceiver<InboundStream>, Vec<String>)> {
+        let (tx, rx) = mpsc::unbounded_channel::<InboundStream>();
+        let refused = self
+            .call(|reply| Command::AddStreamHandler {
+                protos,
+                sender: tx,
+                reply,
+            })
+            .await?;
+        Ok((rx, refused))
+    }
+
+    /// Stop accepting inbound raw streams on `protos`.
+    ///
+    /// Returns the subset that was actually registered. Streams already open
+    /// keep running — this governs negotiation only, matching Go's
+    /// `host.RemoveStreamHandler`.
+    pub async fn remove_stream_handler(&self, protos: Vec<String>) -> P2PResult<Vec<String>> {
+        self.call(|reply| Command::RemoveStreamHandler { protos, reply })
+            .await
+    }
+
     /// Ask the event loop to stop. Returns once it has acknowledged; await the
     /// `JoinHandle` from `NetworkService::spawn` to know it has fully exited.
     pub async fn shutdown(&self) -> P2PResult<()> {
         self.call(|reply| Command::Shutdown { reply }).await
     }
+}
+
+/// Map a raw-stream failure onto the crate error type. See
+/// [`NetworkHandle::open_raw_stream`] for the rationale behind each arm.
+fn raw_stream_error(error: RawStreamError) -> P2PError {
+    match error {
+        RawStreamError::UnsupportedProtocol(p) => {
+            P2PError::Protocol(format!("remote does not support protocol {p}"))
+        }
+        RawStreamError::DialFailure(e) => P2PError::DialFailed(e),
+        RawStreamError::Io(e) => P2PError::Transport(e),
+    }
+}
+
+/// Parse protocol names for the raw-stream behaviour, dropping empties.
+///
+/// [`UnaryProtocol::new`] panics on an empty name (multistream-select cannot
+/// negotiate one), and the protocol list on a `STREAM_HANDLER` request comes
+/// straight off the wire from an external process — so it is filtered here
+/// rather than trusted.
+pub(crate) fn parse_protocols(protos: &[String]) -> Vec<UnaryProtocol> {
+    protos
+        .iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| UnaryProtocol::new(p.as_str()))
+        .collect()
 }
 
 /// Map a unary failure onto the crate error type. See
