@@ -20,6 +20,11 @@ uuid = { version = "1.0", features = ["v4"] }
 # Only used for multiaddr parsing/encoding (not for actual p2p networking)
 libp2p = { workspace = true }
 
+# The control-socket *server* (`server.rs`) translates the p2pd protocol into
+# NetworkHandle calls. The client half of this crate has no such dependency —
+# it talks to whatever serves the socket, Go daemon or native node alike.
+kwaai-p2p = { workspace = true }
+
 # Windows named pipe support
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1.35", features = ["net", "io-util"] }
@@ -34,3 +39,6 @@ prost-build = "0.13"
 [dev-dependencies]
 tokio-test = "0.4"
 env_logger = "0.11"
+# tests/control_server.rs drives the real P2PClient against a ControlServer
+# backed by a real NetworkService.
+tempfile = "3"
