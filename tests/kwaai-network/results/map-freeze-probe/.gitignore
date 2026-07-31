@@ -1,0 +1,6 @@
+venv/
+*.log
+node-sample.txt
+node.log*
+shard-serve.log
+*.crate
