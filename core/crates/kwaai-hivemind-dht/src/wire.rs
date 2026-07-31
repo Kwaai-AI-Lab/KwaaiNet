@@ -266,6 +266,44 @@ where
     Ok(payload)
 }
 
+/// [`read_framed`] for `futures_io` readers — the trait family libp2p
+/// substreams implement.
+///
+/// A deliberate twin of [`read_framed`] rather than a shared generic: the two
+/// `AsyncRead` trait families have no common abstraction, and bridging them
+/// (tokio-util `compat`) costs a dependency to save twenty lines.
+pub async fn read_framed_futures<R>(reader: &mut R) -> WireResult<Vec<u8>>
+where
+    R: futures::io::AsyncRead + Unpin,
+{
+    use futures::io::AsyncReadExt as _;
+
+    let mut varint_buf = [0u8; MAX_VARINT_LEN];
+    let mut n = 0usize;
+
+    loop {
+        if n == MAX_VARINT_LEN {
+            return Err(WireError::BadVarint);
+        }
+        reader.read_exact(&mut varint_buf[n..n + 1]).await?;
+        let is_last = varint_buf[n] & 0x80 == 0;
+        n += 1;
+        if is_last {
+            break;
+        }
+    }
+
+    let (len, _) =
+        unsigned_varint::decode::usize(&varint_buf[..n]).map_err(|_| WireError::BadVarint)?;
+    if len > MAX_FRAME_LEN {
+        return Err(WireError::FrameTooLarge { len });
+    }
+
+    let mut payload = vec![0u8; len];
+    reader.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
 // ============================================================================
 // Caller side
 // ============================================================================
@@ -635,6 +673,44 @@ mod tests {
         let framed = encode_unary_response(&CALL_ID, Ok(b"abcdefgh".to_vec()));
         let truncated = &framed[..framed.len() - 3];
         assert!(matches!(unframe(truncated), Err(WireError::Io(_))));
+    }
+
+    // ------------------------------------------------- futures-io twin
+
+    /// `read_framed_futures` must agree with `read_framed` on the same bytes:
+    /// consecutive frames, a multi-byte length prefix, and both rejection
+    /// paths.
+    #[tokio::test]
+    async fn read_framed_futures_matches_tokio_variant() {
+        use futures::io::Cursor;
+
+        // Two frames back to back, the first large enough for a 2-byte prefix.
+        let big = vec![0xA5u8; 300];
+        let mut bytes = frame(&big);
+        bytes.extend_from_slice(&frame(b"second"));
+
+        let mut reader = Cursor::new(bytes);
+        assert_eq!(read_framed_futures(&mut reader).await.unwrap(), big);
+        assert_eq!(read_framed_futures(&mut reader).await.unwrap(), b"second");
+
+        // Oversized declaration is rejected before allocating.
+        let huge = unsigned_varint::encode::usize(
+            MAX_FRAME_LEN + 1,
+            &mut unsigned_varint::encode::usize_buffer(),
+        )
+        .to_vec();
+        let mut reader = Cursor::new(huge);
+        assert!(matches!(
+            read_framed_futures(&mut reader).await,
+            Err(WireError::FrameTooLarge { .. })
+        ));
+
+        // Runaway varint (11 continuation bytes) is rejected.
+        let mut reader = Cursor::new(vec![0xFFu8; 11]);
+        assert!(matches!(
+            read_framed_futures(&mut reader).await,
+            Err(WireError::BadVarint)
+        ));
     }
 
     // ------------------------------------------------- wrong-envelope decode
