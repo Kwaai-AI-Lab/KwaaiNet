@@ -123,6 +123,11 @@ pub enum Command {
     ListenAddrs {
         reply: oneshot::Sender<Vec<Multiaddr>>,
     },
+    /// The protocol list a connected peer advertised over identify.
+    PeerProtocols {
+        peer: PeerId,
+        reply: oneshot::Sender<Option<Vec<String>>>,
+    },
     /// Every peer currently in the Kademlia routing table.
     RoutingPeers { reply: oneshot::Sender<Vec<PeerId>> },
     /// Kademlia lookup for a peer's addresses.
@@ -284,6 +289,17 @@ impl NetworkHandle {
     /// `/tcp/0` shows the real port).
     pub async fn listen_addrs(&self) -> P2PResult<Vec<Multiaddr>> {
         self.call(|reply| Command::ListenAddrs { reply }).await
+    }
+
+    /// The protocols `peer` advertised in its most recent identify response, or
+    /// `None` if identify has not completed with that peer yet.
+    ///
+    /// This is what the identify-driven capability checks read: relay-hop
+    /// support (`/libp2p/circuit/relay/0.2.0/hop`), AutoNAT
+    /// (`/libp2p/autonat/1.0.0`) and dcutr all announce themselves here.
+    pub async fn peer_protocols(&self, peer: PeerId) -> P2PResult<Option<Vec<String>>> {
+        self.call(|reply| Command::PeerProtocols { peer, reply })
+            .await
     }
 
     /// Every peer in the Kademlia routing table, nearest bucket first.

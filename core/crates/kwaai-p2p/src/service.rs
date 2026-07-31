@@ -70,6 +70,11 @@ pub struct NetworkService {
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
+    /// The protocol list each connected peer advertised over identify. This is
+    /// the capability feed: relay-hop support, AutoNAT and dcutr all show up
+    /// here. Dropped when the last connection to a peer closes, so an entry
+    /// always describes a peer we can act on.
+    peer_protocols: HashMap<PeerId, Vec<String>>,
     /// Registered unary handlers: negotiated protocol → the handler task's
     /// channel. Kept in lockstep with the behaviour's inbound protocol set, so
     /// an entry here means the protocol is advertised and vice versa.
@@ -148,6 +153,7 @@ impl NetworkService {
             pending_kad: HashMap::new(),
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
+            peer_protocols: HashMap::new(),
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
         };
@@ -252,6 +258,10 @@ impl NetworkService {
             Command::ListenAddrs { reply } => {
                 let addrs = self.swarm.listeners().cloned().collect();
                 let _ = reply.send(addrs);
+            }
+
+            Command::PeerProtocols { peer, reply } => {
+                let _ = reply.send(self.peer_protocols.get(&peer).cloned());
             }
 
             // A walk over in-memory k-buckets — bounded by the routing table
@@ -639,11 +649,21 @@ impl NetworkService {
                 ..
             } => {
                 debug!(peer = %peer_id, ?cause, "connection closed");
-                if let Entry::Occupied(mut entry) = self.connections.entry(peer_id) {
-                    entry.get_mut().remove(&connection_id);
-                    if entry.get().is_empty() {
-                        entry.remove();
+                let last = match self.connections.entry(peer_id) {
+                    Entry::Occupied(mut entry) => {
+                        entry.get_mut().remove(&connection_id);
+                        let empty = entry.get().is_empty();
+                        if empty {
+                            entry.remove();
+                        }
+                        empty
                     }
+                    Entry::Vacant(_) => true,
+                };
+                if last {
+                    // The capability list describes a peer we can act on; a
+                    // disconnected peer's is stale by definition.
+                    self.peer_protocols.remove(&peer_id);
                 }
             }
 
@@ -727,6 +747,13 @@ impl NetworkService {
                     .entry(info.observed_addr)
                     .or_default()
                     .insert(peer_id);
+
+                // (c) Remember what the peer can do. Relay-hop, AutoNAT and
+                // dcutr capability are all read off this list.
+                self.peer_protocols.insert(
+                    peer_id,
+                    info.protocols.iter().map(|p| p.to_string()).collect(),
+                );
             }
             identify::Event::Error { peer_id, error } => {
                 debug!(peer = %peer_id, error = %error, "identify failed");
