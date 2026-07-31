@@ -29,6 +29,7 @@ prost     = { workspace = true }          # 0.12 — for kwaai-hivemind-dht / kw
 prost013  = { package = "prost", version = "0.13" }  # 0.13 — for kwaai-rpc tonic-generated types
 rmp-serde = { workspace = true }
 hex       = "0.4"
+sha1      = "0.10"  # DHTID derivation in 13_native_node_assembly
 sha2      = "0.10"
 tempfile  = "3"
 unsigned-varint = { workspace = true }  # hand-built wire frames in 07_wire_interop
