@@ -44,6 +44,7 @@ pub mod handle;
 pub mod identity;
 pub mod raw_stream;
 pub mod reachability;
+pub mod relay_manager;
 pub mod service;
 pub mod transport;
 pub mod unary;

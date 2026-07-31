@@ -18,7 +18,7 @@
 //! and inbound dispatch is an unbounded send, which never blocks the loop.
 
 use std::collections::{hash_map::Entry, HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -41,7 +41,8 @@ use crate::handle::{
     NetworkHandle, PeerInfo,
 };
 use crate::raw_stream;
-use crate::reachability::{Effect, ReachabilityState, IDENTIFY_GRACE};
+use crate::reachability::{Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
+use crate::relay_manager::{RelayAction, RelayManager};
 use crate::unary::{self, UnaryProtocol};
 
 /// How often the maintenance arm refreshes the Kademlia routing table.
@@ -50,6 +51,9 @@ const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Depth of the command channel. Deep enough that bursts of handle calls do not
 /// serialize on the event loop, shallow enough to apply backpressure.
 const COMMAND_CHANNEL_SIZE: usize = 64;
+
+/// How often the relay manager retries candidates whose backoff has expired.
+const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
 /// A connection we are tracking for `list_peers`.
 #[derive(Debug, Clone)]
@@ -93,8 +97,13 @@ pub struct NetworkService {
     /// registered here is not callable as a unary handler and vice versa.
     stream_handlers: HashMap<String, InboundStreamSender>,
     /// Are we reachable from the outside, and on what evidence. Owns no I/O:
-    /// it returns [`reachability::Effect`]s that this loop applies.
+    /// it returns [`Effect`]s that this loop applies.
     reachability: ReachabilityState,
+    /// Circuit reservations held while we are unreachable. A plain state
+    /// machine rather than a task or a behaviour, because it needs `&mut Swarm`
+    /// and swarm-level `ListenerClosed` events — neither of which a behaviour
+    /// or a separate task can see.
+    relays: RelayManager,
 }
 
 /// A parked DHT lookup.
@@ -217,8 +226,12 @@ impl NetworkService {
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             reachability,
+            relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations),
         };
         service.apply_reachability_effects(startup_effects);
+        // `force_private` starts Private, so this is what makes reservations
+        // begin at t=0 rather than after the grace period.
+        service.sync_relay_enablement();
 
         let task = tokio::spawn(service.run());
         info!(peer_id = %local_peer_id, "network service started");
@@ -242,6 +255,12 @@ impl NetworkService {
         let identify_grace = tokio::time::sleep(IDENTIFY_GRACE);
         tokio::pin!(identify_grace);
         let mut grace_fired = false;
+
+        // Retries relays whose backoff has expired. Short, because it is the
+        // only thing that recovers a node whose every candidate was in backoff
+        // the last time it tried.
+        let mut relay_tick = tokio::time::interval(RELAY_TICK_INTERVAL);
+        relay_tick.tick().await;
 
         loop {
             tokio::select! {
@@ -271,6 +290,11 @@ impl NetworkService {
                     grace_fired = true;
                     let effects = self.reachability.on_grace_elapsed(&self.observed_addrs);
                     self.apply_reachability_effects(effects);
+                    self.sync_relay_enablement();
+                }
+                _ = relay_tick.tick() => {
+                    let actions = self.relays.on_tick(Instant::now());
+                    self.apply_relay_actions(actions);
                 }
             }
         }
@@ -691,8 +715,42 @@ impl NetworkService {
 
     fn handle_swarm_event(&mut self, event: SwarmEvent<KwaaiBehaviourEvent>) {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => {
+            SwarmEvent::NewListenAddr {
+                listener_id,
+                address,
+            } => {
                 info!(%address, "listening on new address");
+                // A circuit address on a listener we opened means the relay
+                // accepted our reservation. relay-client confirms the address
+                // as external itself, so there is nothing to add here.
+                self.relays.on_new_listen_addr(listener_id, &address);
+            }
+
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                reason,
+                ..
+            } => {
+                // The authoritative signal that a reservation is gone.
+                // `relay::client::Event` has no failure variant: a refusal or
+                // timeout arrives here as Err, and a relay whose connection
+                // died arrives as Ok.
+                let reason_str;
+                let reason = match &reason {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        reason_str = e.to_string();
+                        Err(reason_str.as_str())
+                    }
+                };
+                let (actions, _lost) =
+                    self.relays
+                        .on_listener_closed(listener_id, reason, Instant::now());
+                self.apply_relay_actions(actions);
+            }
+
+            SwarmEvent::ListenerError { listener_id, error } => {
+                debug!(?listener_id, error = %error, "listener error");
             }
 
             SwarmEvent::ConnectionEstablished {
@@ -719,6 +777,8 @@ impl NetworkService {
                 if let Some(reply) = self.pending_dials.remove(&connection_id) {
                     let _ = reply.send(Ok(peer_id));
                 }
+                // Note: a relay reservation is *not* requested here. It waits
+                // for identify — see `RelayManager::on_relay_ready`.
             }
 
             SwarmEvent::ConnectionClosed {
@@ -765,6 +825,12 @@ impl NetworkService {
                     let _ = reply.send(Err(dial_error(&error, peer_id)));
                 } else {
                     debug!(?peer_id, error = %error, "outgoing connection error");
+                }
+
+                // A relay we cannot reach will never give us a reservation.
+                if let Some(peer) = peer_id {
+                    let actions = self.relays.on_relay_dial_failed(peer, Instant::now());
+                    self.apply_relay_actions(actions);
                 }
             }
 
@@ -857,6 +923,73 @@ impl NetworkService {
         }
     }
 
+    /// Turn relay-seeking on or off to match the current reachability verdict.
+    ///
+    /// Private wants circuits; Public does not (holding one costs a relay real
+    /// resources and routes peers to us the slow way). Unknown deliberately
+    /// leaves the manager as it is: during the grace period we do not yet know
+    /// enough to start, and a `force_private` node was switched on at startup
+    /// and must not be switched off by a transient Unknown.
+    fn sync_relay_enablement(&mut self) {
+        let actions = match self.reachability.current() {
+            Reachability::Private => self.relays.set_enabled(true, Instant::now()),
+            Reachability::Public { .. } => self.relays.set_enabled(false, Instant::now()),
+            Reachability::Unknown => return,
+        };
+        self.apply_relay_actions(actions);
+    }
+
+    /// Carry out what the relay manager asked for.
+    fn apply_relay_actions(&mut self, actions: Vec<RelayAction>) {
+        for action in actions {
+            match action {
+                RelayAction::Dial { relay, relay_addr } => {
+                    // Connected *and* identified — the reservation can be
+                    // negotiated right now. Having the connection is not
+                    // enough: until identify lands, hop is not in the
+                    // connection's supported protocol set.
+                    if self.connections.contains_key(&relay)
+                        && self.peer_protocols.contains_key(&relay)
+                    {
+                        let next = self.relays.on_relay_ready(relay, Instant::now());
+                        self.apply_relay_actions(next);
+                        continue;
+                    }
+                    let dialable = relay_addr.with(libp2p::multiaddr::Protocol::P2p(relay));
+                    if let Err(e) = self.dial(dialable) {
+                        debug!(%relay, error = %e, "dialing a relay candidate");
+                        let next = self.relays.on_relay_dial_failed(relay, Instant::now());
+                        self.apply_relay_actions(next);
+                    }
+                }
+
+                RelayAction::Listen {
+                    relay,
+                    circuit_addr,
+                } => {
+                    match self.swarm.listen_on(circuit_addr.clone()) {
+                        Ok(id) => {
+                            debug!(%relay, %circuit_addr, ?id, "circuit listener opened");
+                            self.relays.note_listener(id, relay, Instant::now());
+                        }
+                        Err(e) => {
+                            // No ListenerId exists, so there is no slot to
+                            // close — the manager has to be told separately or
+                            // this relay would never be marked failed.
+                            warn!(%relay, %circuit_addr, error = %e, "circuit listen failed");
+                            let actions = self.relays.note_listen_failed(relay, Instant::now());
+                            self.apply_relay_actions(actions);
+                        }
+                    }
+                }
+                RelayAction::StopListening(id) => {
+                    debug!(?id, "closing a circuit listener");
+                    self.swarm.remove_listener(id);
+                }
+            }
+        }
+    }
+
     /// AutoNAT status and probe outcomes.
     fn handle_autonat_event(&mut self, event: autonat::Event) {
         match event {
@@ -871,6 +1004,7 @@ impl NetworkService {
                     autonat::NatStatus::Unknown => Vec::new(),
                 };
                 self.apply_reachability_effects(effects);
+                self.sync_relay_enablement();
             }
             autonat::Event::OutboundProbe(probe) => {
                 trace!(?probe, "autonat outbound probe");
@@ -892,11 +1026,13 @@ impl NetworkService {
                 info!(%addr, "upnp mapped an external address");
                 let effects = self.reachability.on_upnp_external(addr);
                 self.apply_reachability_effects(effects);
+                self.sync_relay_enablement();
             }
             upnp::Event::ExpiredExternalAddr(addr) => {
                 info!(%addr, "upnp mapping expired");
                 let effects = self.reachability.on_upnp_expired(&addr);
                 self.apply_reachability_effects(effects);
+                self.sync_relay_enablement();
             }
             upnp::Event::GatewayNotFound => {
                 debug!("no upnp gateway found; relying on autonat and relays");
@@ -978,10 +1114,23 @@ impl NetworkService {
 
                 // (c) Remember what the peer can do. Relay-hop, AutoNAT and
                 // dcutr capability are all read off this list.
-                self.peer_protocols.insert(
+                let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
+                // Recorded *before* the relay manager runs: `apply_relay_actions`
+                // reads this map to decide whether a reservation can be
+                // negotiated immediately, and this identify is precisely what
+                // makes that true.
+                self.peer_protocols.insert(peer_id, protocols.clone());
+
+                // (d) A peer advertising relay hop is a relay candidate — and
+                // an identify from a relay we are already dialing is the signal
+                // that its reservation can now be requested at all.
+                let actions = self.relays.note_identify(
                     peer_id,
-                    info.protocols.iter().map(|p| p.to_string()).collect(),
+                    &protocols,
+                    &info.listen_addrs,
+                    Instant::now(),
                 );
+                self.apply_relay_actions(actions);
             }
             identify::Event::Error { peer_id, error } => {
                 debug!(peer = %peer_id, error = %error, "identify failed");
