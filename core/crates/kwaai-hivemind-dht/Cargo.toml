@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 rmp-serde = { workspace = true }  # MessagePack
 prost = { workspace = true }       # Protobuf
 bincode = { workspace = true }
+unsigned-varint = { workspace = true }  # uvarint framing on the hivemind unary wire
 
 # Error handling
 thiserror = { workspace = true }

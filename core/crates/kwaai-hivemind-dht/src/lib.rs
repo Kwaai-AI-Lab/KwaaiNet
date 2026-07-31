@@ -16,6 +16,7 @@ pub mod error;
 pub mod protocol;
 pub mod server;
 pub mod value;
+pub mod wire;
 
 pub use client::HivemindDHT;
 pub use error::{Error, Result};
