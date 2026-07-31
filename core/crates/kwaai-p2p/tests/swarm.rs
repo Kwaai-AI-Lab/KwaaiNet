@@ -172,7 +172,9 @@ async fn kad_resolves_a_peer_two_hops_away() {
     .await;
 
     assert!(
-        c_addrs.iter().any(|addr| addr.to_string().contains("/tcp/")),
+        c_addrs
+            .iter()
+            .any(|addr| addr.to_string().contains("/tcp/")),
         "resolved addresses should be dialable TCP addrs: {c_addrs:?}"
     );
 
@@ -299,7 +301,10 @@ async fn add_kad_address_makes_a_peer_resolvable_without_a_dial() {
         "bob should be unknown before add_kad_address"
     );
 
-    alice.add_kad_address(bob_id, stripped.clone()).await.unwrap();
+    alice
+        .add_kad_address(bob_id, stripped.clone())
+        .await
+        .unwrap();
 
     let addrs = alice.dht_find_peer(bob_id).await.unwrap();
     assert!(

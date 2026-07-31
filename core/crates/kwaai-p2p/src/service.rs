@@ -108,9 +108,7 @@ impl NetworkService {
             .context("configuring DNS resolution")?
             .with_behaviour(|kp| KwaaiBehaviour::new(kp, &behaviour_config))
             .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
-            .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(config.connection_timeout)
-            })
+            .with_swarm_config(|c| c.with_idle_connection_timeout(config.connection_timeout))
             .build();
 
         for addr in config.swarm_listen_addrs() {
@@ -184,16 +182,14 @@ impl NetworkService {
     /// in a pending map and resolved from `handle_swarm_event`.
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::ConnectPeer { addr, reply } => {
-                match self.dial(addr) {
-                    Ok(connection_id) => {
-                        self.pending_dials.insert(connection_id, reply);
-                    }
-                    Err(e) => {
-                        let _ = reply.send(Err(e));
-                    }
+            Command::ConnectPeer { addr, reply } => match self.dial(addr) {
+                Ok(connection_id) => {
+                    self.pending_dials.insert(connection_id, reply);
                 }
-            }
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                }
+            },
 
             Command::DisconnectPeer { peer, reply } => {
                 let result = match self.swarm.disconnect_peer_id(peer) {
@@ -320,8 +316,7 @@ impl NetworkService {
             Err(e) => {
                 // NoKnownPeers: every address failed to even parse into a dial.
                 if dialed == 0 {
-                    Err(last_error
-                        .unwrap_or_else(|| P2PError::DhtError(format!("bootstrap: {e}"))))
+                    Err(last_error.unwrap_or_else(|| P2PError::DhtError(format!("bootstrap: {e}"))))
                 } else {
                     // Dials are in flight; kad will have peers shortly and the
                     // maintenance tick will retry.

@@ -55,9 +55,7 @@ impl KwaaiBehaviour {
     pub fn new(keypair: &identity::Keypair, config: &NetworkConfig) -> Self {
         let local_peer_id = PeerId::from(keypair.public());
 
-        let ping = ping::Behaviour::new(
-            ping::Config::new().with_interval(Duration::from_secs(30)),
-        );
+        let ping = ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(30)));
 
         let protocol_version = if config.protocol_version.is_empty() {
             DEFAULT_PROTOCOL_VERSION.to_string()
