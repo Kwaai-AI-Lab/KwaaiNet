@@ -83,6 +83,97 @@ pub struct NetworkConfig {
     /// in-process tests where nothing confirms an external address.
     #[serde(default)]
     pub dht_server: bool,
+
+    // ---------------------------------------------------------------
+    // NAT traversal
+    // ---------------------------------------------------------------
+    /// Relays this node will try to hold a circuit reservation on, as
+    /// multiaddrs carrying `/p2p/<peer-id>`.
+    ///
+    /// A pure **operator override**. The normal supply of relay candidates is
+    /// identify: any peer that advertises `/libp2p/circuit/relay/0.2.0/hop` is
+    /// a candidate, which on the live network includes both bootstraps. Set
+    /// this only to pin specific relays — an isolated test topology, or a
+    /// deployment where a known-good relay must be preferred. Configured
+    /// relays are tried first and dialed alongside the bootstrap peers so the
+    /// reservation does not wait on a lazy dial.
+    #[serde(default)]
+    pub trusted_relays: Vec<String>,
+
+    /// Serve as a circuit relay for other peers (the `hop` side).
+    ///
+    /// On by default, matching the p2pd path's `-relay`. Rate limits stay at
+    /// libp2p's defaults; see [`crate::behaviour`].
+    #[serde(default = "default_true")]
+    pub relay_server: bool,
+
+    /// Ask the local gateway to map our listen port via UPnP/IGD.
+    ///
+    /// On by default (parity with p2pd's `-natPortMap`), off in
+    /// [`NetworkConfig::for_tests`] — SSDP is a LAN broadcast and CI should not
+    /// be talking to a gateway.
+    #[serde(default = "default_true")]
+    pub enable_upnp: bool,
+
+    /// Declare this node unreachable without waiting for AutoNAT to say so.
+    ///
+    /// Parity with p2pd's `-forceReachabilityPrivate`: relay reservations start
+    /// immediately instead of after a probe round, and AutoNAT can never
+    /// *promote* the node to public afterwards. That one-way property is the
+    /// point — AutoNAT can read a NAT-PMP mapping as public reachability and
+    /// thereby stop circuits from ever forming.
+    #[serde(default)]
+    pub force_private: bool,
+
+    /// An externally-reachable address to declare unconditionally.
+    ///
+    /// Set from `public_ip`/`announce_addr`. Confirmed into the swarm at
+    /// startup and pins reachability to Public — it outranks `force_private`
+    /// (with a warning, since setting both is contradictory) and AutoNAT can
+    /// never demote it. The operator knows their port forward exists; a failed
+    /// dialback probe does not disprove it.
+    #[serde(default)]
+    pub external_addr: Option<String>,
+
+    /// Require addresses to be globally routable, rejecting the IANA-reserved
+    /// documentation and benchmarking ranges as well as the private ones.
+    ///
+    /// **Default false.** This drives `autonat::Config::only_global_ips`, whose
+    /// own default (`true`) is the single place in rust-libp2p 0.53 that would
+    /// classify the docker nat-test bed's `198.18/15` addresses unreachable.
+    /// Turn it on for a node on the real internet, where a documentation-range
+    /// address could only ever be a misconfiguration.
+    #[serde(default)]
+    pub require_global_ips: bool,
+
+    /// How many circuit reservations to hold at once.
+    ///
+    /// Two: one relay is a single point of failure, and each extra reservation
+    /// costs a held connection plus a keep-alive on the relay's side for a
+    /// benefit that falls off fast.
+    #[serde(default = "default_max_relay_reservations")]
+    pub max_relay_reservations: usize,
+
+    /// Distinct peers that must report the same observed address before the
+    /// identify-consensus fallback will promote it.
+    ///
+    /// One peer's opinion is not evidence: it may be reporting a NAT mapping
+    /// only it can use. Two independent observers of the same address is the
+    /// weakest claim worth acting on.
+    #[serde(default = "default_identify_min_confirmations")]
+    pub identify_min_confirmations: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_relay_reservations() -> usize {
+    2
+}
+
+fn default_identify_min_confirmations() -> usize {
+    2
 }
 
 impl Default for NetworkConfig {
@@ -102,6 +193,14 @@ impl Default for NetworkConfig {
             port: 0,
             initial_peers: Vec::new(),
             dht_server: false,
+            trusted_relays: Vec::new(),
+            relay_server: true,
+            enable_upnp: true,
+            force_private: false,
+            external_addr: None,
+            require_global_ips: false,
+            max_relay_reservations: default_max_relay_reservations(),
+            identify_min_confirmations: default_identify_min_confirmations(),
         }
     }
 }
@@ -127,11 +226,19 @@ impl NetworkConfig {
     /// Config for an in-process test swarm: loopback-only, ephemeral port, kad
     /// forced into server mode (nothing will confirm an external address on
     /// 127.0.0.1, and a client-mode kad answers no queries).
+    ///
+    /// The hop server and UPnP are off. UPnP because SSDP is a LAN broadcast
+    /// that has no business firing from CI; the hop server because most tests
+    /// do not need it and the relay tests that do set `relay_server: true`
+    /// explicitly, which reads better than every other test silently running a
+    /// relay it never uses.
     pub fn for_tests() -> Self {
         Self {
             listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
             port: 0,
             dht_server: true,
+            relay_server: false,
+            enable_upnp: false,
             ..Self::default()
         }
     }
