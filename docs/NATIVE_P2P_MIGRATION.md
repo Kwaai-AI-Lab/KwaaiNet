@@ -238,11 +238,13 @@ node — the direction the `stream.rs` bug used to break).
 
 **Announce records** are extracted into `kwaai-cli/src/announce.rs`:
 `build_announce_records` / `build_unannounce_records` / `send_records_via_handle`
-alongside the record value types moved verbatim from `node.rs`. `run_node` still
-uses its p2pd path; the rewire is Phase 4.
+alongside the record value types moved verbatim from `node.rs`. The rewire landed in
+Phase 4 slice 1: `run_node` uses these when `native_p2p` is set, on the same
+300 s ± 30 s cadence, and the p2pd path still uses its own.
 
-*Still open in this phase:* wiring the re-announce loop to the native path
-(Phase 4, together with the announce watch channel).
+*Still open in this phase:* the announce **watch channel** — re-announcing on an address
+change rather than only on the timer — which belongs with the address discovery deferred
+to the Phase 4 NAT slice.
 
 #### Verified live against the production bootstraps
 
@@ -409,6 +411,70 @@ is transport-agnostic, but every test binds a unix socket; tracked in the follow
 `add_unary_handler`, inference-mux via `accept_streams`. autonat + upnp + RelayManager +
 dcutr + announce watch channel.
 
+*Done so far (slice 1 — the run_node integration):* **`native_p2p`** (`kwaai-cli/src/
+config.rs`, default false, settable via `kwaainet config set`) selects
+`node_native::run_native_node`. `NativeNode::start` assembles what Phases 1–3 built:
+the swarm on the configured port, `spawn_dht_service` over a `DHTStorage` (bootstrap-grade
+serving, the native equivalent of p2pd's `-b`), this node's own handlers, and a
+`ControlServer` on the same socket path p2pd would have used — resolved through the same
+`KWAAINET_SOCKET`-or-default rule every client uses, so the GUI, `kwaainet p2p …`,
+`shard serve` and the map crawler are unchanged. **No p2pd binary need be present.**
+
+Handler registration by protocol:
+
+| protocol | p2pd path | native path |
+| --- | --- | --- |
+| `DHTProtocol.rpc_{ping,store,find}` | TCP listener registered as a *stream handler*; p2pd forwards each request with a `StreamInfo` prologue and a `PersistentConnectionRequest` wrapper | `spawn_dht_service` → `add_unary_handler`, in-swarm, no wrapper |
+| `/kwaai/p2p/hello/1.0.0` | `P2PClient::add_unary_handler` | `NetworkHandle::add_unary_handler` |
+| `/kwaai/ollama-proxy/1.0.0`, `/kwaai/shard-proxy/1.0.0` | same | same, same handler bodies |
+| `/kwaai/inference-mux/1.0.0` | TCP listener + `register_stream_handler`, prologue consumed per stream | `accept_streams`, the libp2p stream directly |
+
+The **peer ID is identical on both paths** — same key file, same libp2p protobuf encoding
+(`kwaai-p2p::identity` and `kwaai-cli::NodeIdentity` are compatible on-disk by
+construction), so a migrating node keeps its DID, its credentials and its map entry.
+Announce and unannounce go through `announce.rs` byte-for-byte on the same 300 s ± 30 s
+jittered cadence against the 360 s TTL, with the `state = -1` tombstone on clean shutdown,
+and the per-bootstrap timings still feed the reputation store.
+
+Watchdog machinery is **absent, not stubbed**: no `find_p2pd_binary`, no crash detection,
+no `restart_p2pd*`, no 10 s heartbeat, no 60 s socket keepalive — there is no child
+process. Everything genuinely shared is shared rather than copied (`SigHup`, the Ollama
+watcher, the auto-update respawn, and the announce-input helpers were extracted from
+`run_node` in the same series), and `run_node`'s prologue and tail cover both paths.
+
+Gated by `13_native_node_assembly` — two native nodes where one announces and the other
+serves the record back as `FOUND_DICTIONARY` with the value byte-identical, an unchanged
+`P2PClient` doing identify + a unary round trip against the assembled node's own control
+socket, a check that the socket and the swarm are *one* node (a `ControlServer` on a
+different handle would pass every tier-11 test and still be broken), and the key-file
+identity property. A `kwaainet run-node` spawn test was deliberately skipped: it writes
+the real PID file, binds the real socket and takes the fixed gRPC port, so it collides
+with a developer's running node and with a second copy of itself, and would add only
+argument parsing and the config round trip over what tier 13 covers.
+
+*Deferred to slice 2 (the NAT slice) — a native node is currently reachable only if it is
+directly dialable:*
+
+- **autonat + upnp + RelayManager + dcutr.** `no_relay`, `force_private` and
+  `trusted_relays` are inert on the native path and documented as such on the config field.
+- **IDENTIFY-driven address discovery and the announce watch channel.** The p2pd path
+  polls observed addresses, restarts the daemon with new announce addrs, and defers that
+  restart while RPC streams are in flight. Natively there is no restart to defer — an
+  address change should re-announce in place — so the whole `discover_and_restart_with_announce`
+  / `pending_restart` / `collect_observed_addresses` cluster has no native counterpart yet.
+  Until it lands, a native node announces `announce_addr`/`public_ip` or warns that it has
+  none, and `using_relay` is simply "no address configured" rather than
+  `all_addrs_are_relay` over discovered addresses.
+- **`rpc_ping` `validate=true` dial-back** (tracked in the follow-ups above) — the
+  reachability state machine it belongs to is this slice.
+
+*API gaps in `kwaai-p2p` the NAT slice will need:* nothing blocked slice 1, but the native
+path found no equivalent of p2pd's announce-address override — `NetworkConfig` has
+`listen_addrs` but no "advertise this instead" field, so `announce_addr`/`public_ip`
+currently only reach the DHT record and never the swarm's own address book. The NAT slice
+needs that (external-address confirmation) plus a `NetworkHandle` event stream for address
+changes, since today's `observed_addrs()`/`listen_addrs()` are poll-only.
+
 *Testable (kwaaiai-env nat-test topology):* (a) direct node announces
 public_ip:public_port (incl. node-d asymmetric port map), (b) NATed↔NATed dcutr
 hole-punch (verify direct transport addr, not just connectivity), (c) symmetric-NAT node
@@ -518,7 +584,7 @@ gates).
 - `core/crates/kwaai-p2p/src/*` — rewritten (service/handle/behaviour/unary/raw_stream/relay_manager/addresses)
 - `core/crates/kwaai-hivemind-dht/src/{wire.rs(new),codec.rs,server.rs,lib.rs}`
 - `core/crates/kwaai-p2p-daemon/src/{server.rs(new),daemon.rs(delete),stream.rs(delete at cutover)}`, `build.rs`
-- `core/crates/kwaai-cli/src/{node.rs,daemon.rs,setup.rs,identity.rs}`
+- `core/crates/kwaai-cli/src/{node.rs,node_native.rs(new),announce.rs,config.rs,inference_mux.rs,daemon.rs,setup.rs,identity.rs}`
 - `core/crates/kwaai-network-tests/src/harness.rs`
 - `{flake.nix,nix/p2pd.nix,nix/crane.nix,Makefile,scripts/build-p2pd.sh,.github/workflows/release.yml,core/Cargo.toml}`
 - kwaaiai-env: `{docker-compose.yml,docker/p2pd-patched/,patches/go-multiaddr/,docker/nat-test/config-node-*.yaml,docs/nat-test-topology.md}`
