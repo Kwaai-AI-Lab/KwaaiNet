@@ -1512,16 +1512,31 @@ impl ConnState {
     async fn deregister_all(&self) {
         let protos = std::mem::take(&mut *self.handlers.lock().await);
         if !protos.is_empty() {
-            let mut owners = self.shared.handler_owners.lock().await;
-            for proto in protos {
-                if owners.get(&proto) == Some(&self.id) {
-                    owners.remove(&proto);
-                    let _ = self.shared.handle.remove_unary_handler(&proto).await;
-                    info!(
-                        conn = self.id,
-                        proto, "unary handler released on client disconnect"
-                    );
-                }
+            // Ownership is decided under the global lock, but the swarm
+            // round-trips happen after it is dropped — `NetworkHandle` calls
+            // have no timeout, and holding `handler_owners` across them would
+            // let one dead client stall every other client's registration
+            // behind a busy swarm.
+            let mine: Vec<String> = {
+                let mut owners = self.shared.handler_owners.lock().await;
+                protos
+                    .into_iter()
+                    .filter(|p| {
+                        if owners.get(p) == Some(&self.id) {
+                            owners.remove(p);
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .collect()
+            };
+            for proto in mine {
+                let _ = self.shared.handle.remove_unary_handler(&proto).await;
+                info!(
+                    conn = self.id,
+                    proto, "unary handler released on client disconnect"
+                );
             }
         }
 
