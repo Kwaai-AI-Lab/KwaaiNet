@@ -43,10 +43,26 @@ pub const DEFAULT_BUCKET_SIZE: usize = 20;
 
 /// Default cache-tier capacity.
 ///
-/// The primary `storage` tier is unbounded in hivemind; only the cache is
-/// bounded (`DHTProtocol.create(cache_size=...)`). Bounding the cache is what
-/// keeps a node serving as a network root from growing without limit.
+/// Matches hivemind's bounded cache (`DHTProtocol.create(cache_size=...)`).
 pub const DEFAULT_CACHE_SIZE: usize = 32_768;
+
+/// Default primary-tier capacity.
+///
+/// Hivemind leaves the primary tier unbounded — but it also gates writes
+/// behind record validators, which this port does not implement yet. Since
+/// `in_cache` is read straight off the wire, an unbounded primary tier would
+/// let any dialable peer grow our memory without limit by sending
+/// `in_cache = false` with a far-future expiration. A deliberately generous
+/// bound (eviction drops the earliest-expiring entries first) keeps a network
+/// root alive under abuse at the cost of strict hivemind parity; revisit when
+/// validators land (tracked in the module docs).
+pub const DEFAULT_STORAGE_SIZE: usize = 1_048_576;
+
+/// Cap on `keys.len()` accepted from a single `StoreRequest`. Entries beyond
+/// it are reported `store_ok = false`. A legitimate announce carries a
+/// handful of keys; thousands in one frame is either a bug or an amplification
+/// attempt (each key can cost an eviction scan under the write lock).
+pub const MAX_STORE_KEYS_PER_REQUEST: usize = 1024;
 
 /// A peer known to the routing table: its 20-byte DHTID and its libp2p peer ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,11 +114,13 @@ impl DHTStorage {
         Self::with_config(local_peer_id, DEFAULT_CACHE_SIZE, DEFAULT_BUCKET_SIZE)
     }
 
-    /// Create a storage backend with explicit cache capacity and neighbour count.
+    /// Create a storage backend with explicit cache capacity and neighbour
+    /// count. The primary tier is bounded at [`DEFAULT_STORAGE_SIZE`] — see
+    /// there for why it must not be unbounded while validators are missing.
     pub fn with_config(local_peer_id: PeerId, cache_size: usize, bucket_size: usize) -> Self {
         Self {
             inner: Arc::new(Inner {
-                storage: RwLock::new(LocalStorage::new()),
+                storage: RwLock::new(LocalStorage::with_maxsize(DEFAULT_STORAGE_SIZE)),
                 cache: RwLock::new(LocalStorage::with_maxsize(cache_size)),
                 peers: RwLock::new(Vec::new()),
                 local_peer_id,
@@ -181,6 +199,18 @@ impl DHTStorage {
         let mut store_ok = Vec::with_capacity(request.keys.len());
 
         for (i, key) in request.keys.iter().enumerate() {
+            // Bound the per-request work: each element can cost an eviction
+            // scan under the write lock, and one 10 MiB frame can carry a lot
+            // of tiny keys. Overflow elements are reported unstored, keeping
+            // the response index-aligned.
+            if i >= MAX_STORE_KEYS_PER_REQUEST {
+                warn!(
+                    total = request.keys.len(),
+                    "STORE: request exceeds {MAX_STORE_KEYS_PER_REQUEST} keys; rejecting the rest"
+                );
+                store_ok.resize(request.keys.len(), false);
+                break;
+            }
             let Some(value) = request.values.get(i) else {
                 warn!("STORE: missing value at index {i}; rejecting");
                 store_ok.push(false);
@@ -1042,5 +1072,38 @@ mod tests {
             s.handle_find(find_req(vec![b"k".to_vec()])).results[0].result_type,
             ResultType::FoundRegular as i32
         );
+    }
+
+    /// A request larger than [`MAX_STORE_KEYS_PER_REQUEST`] processes only the
+    /// first cap-many elements; the rest come back `store_ok = false`, and the
+    /// response stays index-aligned with the request.
+    #[test]
+    fn oversized_store_request_is_truncated_not_processed() {
+        let s = DHTStorage::new(PeerId::random());
+        let total = MAX_STORE_KEYS_PER_REQUEST + 8;
+        let now = get_dht_time();
+
+        let keys: Vec<Vec<u8>> = (0..total)
+            .map(|i| format!("key-{i}").into_bytes())
+            .collect();
+        let values = vec![b"v".to_vec(); total];
+        let subkeys = vec![IS_REGULAR_VALUE.to_vec(); total];
+        let expirations = vec![now + 60.0; total];
+        let in_cache = vec![false; total];
+
+        let resp = s.handle_store(store_req(keys, subkeys, values, expirations, in_cache));
+        assert_eq!(
+            resp.store_ok.len(),
+            total,
+            "response must stay index-aligned"
+        );
+        assert!(resp.store_ok[..MAX_STORE_KEYS_PER_REQUEST]
+            .iter()
+            .all(|&ok| ok));
+        assert!(resp.store_ok[MAX_STORE_KEYS_PER_REQUEST..]
+            .iter()
+            .all(|&ok| !ok));
+        let (stored, _) = s.stats();
+        assert_eq!(stored, MAX_STORE_KEYS_PER_REQUEST);
     }
 }
