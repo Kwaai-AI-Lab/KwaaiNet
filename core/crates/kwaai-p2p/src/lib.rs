@@ -43,6 +43,7 @@ pub mod error;
 pub mod handle;
 pub mod identity;
 pub mod raw_stream;
+pub mod reachability;
 pub mod service;
 pub mod transport;
 pub mod unary;
@@ -56,6 +57,7 @@ pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};
 pub use handle::{Direction, InboundUnaryCall, NetworkHandle, PeerInfo, UnaryHandler};
 pub use raw_stream::{InboundStream, RawStream, RawStreamError};
+pub use reachability::{Reachability, ReachabilityKind, Source as ReachabilitySource};
 pub use service::NetworkService;
 
 // Re-exported so downstream crates can name peers and addresses without taking
