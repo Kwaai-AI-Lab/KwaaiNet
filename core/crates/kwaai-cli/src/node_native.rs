@@ -406,6 +406,8 @@ pub async fn run_native_node(
     )));
     let mut ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     let mut pending_update_version: Option<String> = None;
+    // Deadline for the reachability-change settle window; None = no change pending.
+    let mut announce_settle: Option<tokio::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -477,8 +479,18 @@ pub async fn run_native_node(
             // for each. The watch channel is already equality-gated on the
             // service side (address churn never reaches here), so this is the
             // second of two independent guards rather than the only one.
-            Ok(()) = announce_state.changed() => {
-                tokio::time::sleep(ANNOUNCE_SETTLE).await;
+            //
+            // The delay is a deadline armed here and awaited in its own branch,
+            // not an inline sleep: sleeping inside the arm would hold up every
+            // other branch — most visibly shutdown — for the full settle window.
+            Ok(()) = announce_state.changed(), if announce_settle.is_none() => {
+                announce_settle = Some(tokio::time::Instant::now() + ANNOUNCE_SETTLE);
+            }
+
+            _ = async { tokio::time::sleep_until(announce_settle.unwrap()).await },
+                if announce_settle.is_some() =>
+            {
+                announce_settle = None;
                 let state = *announce_state.borrow_and_update();
                 if !state.announceable {
                     info!(
