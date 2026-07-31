@@ -135,6 +135,10 @@ pub enum Command {
         peer: PeerId,
         reply: oneshot::Sender<Option<Vec<String>>>,
     },
+    /// What this node currently believes about its own reachability.
+    Reachability {
+        reply: oneshot::Sender<crate::reachability::Reachability>,
+    },
     /// Every peer currently in the Kademlia routing table.
     RoutingPeers { reply: oneshot::Sender<Vec<PeerId>> },
     /// Kademlia lookup for a peer's addresses.
@@ -307,6 +311,16 @@ impl NetworkHandle {
     pub async fn peer_protocols(&self, peer: PeerId) -> P2PResult<Option<Vec<String>>> {
         self.call(|reply| Command::PeerProtocols { peer, reply })
             .await
+    }
+
+    /// What this node currently believes about its own reachability, and on
+    /// what evidence. See [`crate::reachability`] for the priority ladder.
+    ///
+    /// This is what `rpc_ping` answers `available` from: a peer asking us to
+    /// validate it wants to know whether we can be dialed, and until this
+    /// existed the honest answer was a hardcoded `false`.
+    pub async fn reachability(&self) -> P2PResult<crate::reachability::Reachability> {
+        self.call(|reply| Command::Reachability { reply }).await
     }
 
     /// Every peer in the Kademlia routing table, nearest bucket first.
