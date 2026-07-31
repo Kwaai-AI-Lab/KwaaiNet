@@ -93,8 +93,12 @@ p2pd.
 2. **Behaviour composition**: ping, identify, kad(MemoryStore, auto client/server mode +
    `dht_server` config override), autonat(v1), relay client, `Toggle<relay server>`
    (`!config.no_relay`), dcutr, `Toggle<upnp>`, a **hand-rolled `unary::Behaviour`** for
-   ALL unary protocols, `libp2p_stream` for slashed raw-stream protocols (inference-mux,
-   block_rpc). Transport: SwarmBuilder TCP+noise+yamux + dns + relay client. TCP-only
+   ALL unary protocols, and a hand-rolled `raw_stream::Behaviour` for raw-stream
+   protocols (inference-mux, block_rpc, the `rpc_*` forwarding path). *(Revised in Phase 3
+   — the original plan said `libp2p_stream`, which cannot express slash-less protocol
+   IDs for the same reason it was ruled out for unary. `raw_stream` reuses
+   `unary::Protocols` for negotiation and diverges after it; see Phase 3 below.)*
+   Transport: SwarmBuilder TCP+noise+yamux + dns + relay client. TCP-only
    (fleet is TCP). Workspace libp2p features add: `ping, dcutr, autonat, upnp, dns`.
 
    *(Revised in Phase 2 — the original plan said `request_response<HivemindUnaryCodec>`,
@@ -302,7 +306,7 @@ coverage:
 | DHT FIND_PEER | served (via `dht_find_peer`) |
 | PERSISTENT_CONN_UPGRADE + add/remove_unary_handler, call_unary_handler, unaryResponse | served |
 | PERSISTENT `cancel` | accepted as a no-op — `NetworkHandle` has no mid-flight abort; calls are bounded by `request_timeout` |
-| STREAM_OPEN, STREAM_HANDLER, REMOVE_STREAM_HANDLER | **stubbed** `"not supported"` — pipe mode, see below |
+| STREAM_OPEN, STREAM_HANDLER, REMOVE_STREAM_HANDLER | served — pipe mode, see below |
 | DHT put/get/provide/find_providers/get_closest/search/pubkey | **stubbed** `"not supported"` (Go's own wording for unsupported DHT verbs) |
 | PUBSUB, CONNMANAGER | **stubbed** `"not supported"` — never implemented by the client either |
 
@@ -325,20 +329,62 @@ completion order, not emission order. Two concurrent calls to *different* protoc
 connection could therefore swap replies. Now matched by negotiated protocol.
 Gated by `service_unary.rs::concurrent_calls_to_different_protocols_do_not_cross_talk`.
 
-*Gated by:* `kwaai-p2p-daemon/tests/control_server.rs` (11 in-process tests driving the
-**unmodified** `P2PClient` against a `ControlServer` over a real `NetworkService`) and
-`11_control_server_interop` (the cross-implementation matrix against a real p2pd: client
-via native → p2pd handler, client via p2pd → native handler, native → native, IDENTIFY
-shape parity, and the disconnect-release fix observed from the Go stack).
+*Also done (slice 2):* **pipe mode** — `STREAM_OPEN` / `STREAM_HANDLER` /
+`REMOVE_STREAM_HANDLER`, the raw byte relay `inference_mux` and `node.rs`'s `rpc_*`
+forwarding run on.
 
-*Still open in this phase:* **pipe mode** — `stream_open_raw` / `register_stream_handler`
-raw byte relay between the unix socket and a libp2p stream (`libp2p_stream`), with
-backpressure both ways; consumers are inference-mux and block_rpc. Also: threading the
-caller's `PeerId` into `add_unary_handler_boxed` so the dispatched `callUnary.peer` can
-carry it (Go rewrites that field, `persistent_stream.go:298`; we currently send it empty),
-the harness `TestNode` variant that runs the *existing* client-side tiers against the new
-server, and deciding per remaining DHT verb whether to back it with `kad` record/provider
-APIs or delete the client method at cutover.
+The libp2p half is a new `kwaai-p2p/src/raw_stream.rs`: a sibling of `unary::Behaviour`
+that reuses its `Protocols` upgrade and `UnaryProtocol` (so slash-less names still
+negotiate, which `libp2p_stream` cannot express) and then hands the negotiated `Stream`
+out untouched — no framing, no per-call timeout, no callId correlation. A raw stream may
+live for a node's whole session, which is exactly the lifetime model the unary path exists
+to prevent, so folding a "raw mode" flag into `unary::Handler` would have put two unrelated
+lifetime policies behind one set of queues. `NetworkHandle` gains `open_raw_stream` /
+`accept_streams` / `remove_stream_handler`; the unary path is untouched.
+
+The **fd handoff** was the restructure slice 1 flagged. A successful `STREAM_OPEN` is
+terminal for the connection exactly as `PERSISTENT_CONN_UPGRADE` is (Go writes the
+response, calls `doStreamPipe(c, s)`, returns — `conn.go:59-73`), so the socket's two
+halves must be rejoined into one duplex stream. Slice 1 boxed the write half behind
+`Arc<Mutex<Box<dyn AsyncWrite>>>`, and a boxed trait object cannot be reunited with
+anything. Resolved by keeping the socket's *concrete* type — a `ClientSocket` enum over
+Unix/TCP that splits inside `ConnState` and reunites on the way into pipe mode — with the
+writer slot becoming an `Option` that pipe mode takes. A late frame write then finds `None`
+and errors, which is correct: the socket is no longer a frame channel.
+
+Backpressure both ways is `tokio::io::copy_bidirectional`, whose flow control *is* awaiting
+each write before reading more, so a slow consumer stops the producer at the socket rather
+than accumulating in-process; yamux's window applies on top. Half-closes propagate, so a
+client that signals "request complete" by closing its write half still receives its reply.
+`STREAM_HANDLER` dials the client's listener per inbound stream and writes the
+length-delimited `StreamInfo` prologue every consumer already parses; a dial-back failure
+**resets** the inbound stream, matching Go's `handleStream`.
+
+Stream-handler registrations are **owned by the connection** and released on disconnect —
+a deliberate divergence from Go, whose `d.handlers` map is process-global and outlives the
+registering client, so a crashed `shard serve` there leaves the daemon advertising a
+protocol whose forwarding address refuses connections (every inbound stream then costs a
+dial timeout instead of a negotiation refusal). This matches the unary discipline from
+slice 1.
+
+*Gated by:* `kwaai-p2p/tests/raw_stream.rs` (12 tests: slash-less negotiation, protocol
+preference lists, 4 MiB each way concurrently, half-close as EOF with the reverse direction
+live, concurrent streams, dial-on-demand, clean refusals),
+`kwaai-p2p-daemon/tests/control_server.rs` (19 in-process tests driving the **unmodified**
+`P2PClient` against a `ControlServer` over a real `NetworkService` — 8 of them pipe mode,
+including a 2 MiB relay through two `copy_bidirectional` hops and the dial-back reset),
+`11_control_server_interop` (the unary cross-implementation matrix against a real p2pd) and
+`12_pipe_mode_interop` (the same matrix for pipe mode: native client → p2pd stream handler,
+p2pd client → native stream handler, `StreamInfo` prologue parity, and 1 MiB each way
+across the boundary where `io.Copy` meets `copy_bidirectional`).
+
+*Still open in this phase:* threading the caller's `PeerId` into `add_unary_handler_boxed`
+so the dispatched `callUnary.peer` can carry it (Go rewrites that field,
+`persistent_stream.go:298`; we currently send it empty) — note the *stream* path already
+carries it, since `StreamInfo.peer` comes from the connection; the harness `TestNode`
+variant that runs the *existing* client-side tiers against the new server; and deciding per
+remaining DHT verb whether to back it with `kad` record/provider APIs or delete the client
+method at cutover.
 
 *Testable:* the full existing daemon-client test suite green against the new server;
 multi-client smoke: `kwaainet status`, `p2p peers list`, `shard serve` (register handler +
@@ -346,12 +392,16 @@ receive inbound call), `storage serve`, inference-mux `stream_open_raw`, two cli
 concurrently; handler deregistration on client disconnect (kill `storage serve`, verify
 the protocol is refused afterward).
 
-*Expected issues:* **riskiest sub-piece** — bidirectional callUnary routing across
-concurrent socket clients (handler ownership, disconnect cleanup, UUID call-ID collisions
-between independent clients); `stream_open_raw` pipe-mode fidelity (raw byte relay between
-unix socket and libp2p stream, backpressure both ways); subtle p2pd response-shape details
-existing clients depend on (error encodings, IdentifyResponse addr byte format); Windows
-TCP-socket path parity.
+*Expected issues, and how they landed:* **riskiest sub-piece** — bidirectional callUnary
+routing across concurrent socket clients (handler ownership, disconnect cleanup, UUID
+call-ID collisions between independent clients): resolved in slice 1 by per-connection
+correlation state. `stream_open_raw` pipe-mode fidelity (raw byte relay, backpressure both
+ways): resolved in slice 2; the real obstacle turned out not to be the relay but the **fd
+handoff** — slice 1's boxed writer could not be reunited with its reader — see the slice-2
+notes above. Subtle p2pd response-shape details existing clients depend on (error
+encodings, IdentifyResponse addr byte format): covered by the interop tiers. **Windows
+TCP-socket path parity remains untested** — the `ClientSocket` TCP arm exists and the relay
+is transport-agnostic, but every test binds a unix socket; tracked in the follow-ups above.
 
 ### Phase 4 — node.rs integration behind flag + NAT traversal
 
@@ -437,9 +487,13 @@ gates).
 - **`callUnary.peer` on IPC-dispatched inbound calls** is sent empty by the
   ControlServer (Go rewrites it to the caller's ID). No current handler reads it; thread
   the caller PeerId through before any handler authenticates callers.
-- **ControlServer pipe mode** (`stream_open_raw`, `register_stream_handler`) deferred —
-  see the stubs in `kwaai-p2p-daemon/src/server.rs` and the risk notes in the Phase 3
-  section below.
+- **Windows TCP parity for pipe mode is untested.** `ClientSocket` has a TCP arm and the
+  relay is transport-agnostic, but every test in this tier binds a unix socket. The
+  Windows client path (`/ip4/127.0.0.1/tcp/5005`) needs a run on Windows CI before the
+  cutover, or at minimum a TCP-bound variant of the `control_server.rs` pipe tests.
+- **Stream-handler `balanced` is ignored**, as on the unary path: Go keeps a round-robin
+  list of forwarding addresses per protocol, we keep one owner and refuse the second. No
+  call site in this codebase passes `true`.
 
 ## Resolved verification items (Phase 0, `07_wire_interop` against a real p2pd)
 
@@ -461,7 +515,7 @@ gates).
 
 ## Critical files
 
-- `core/crates/kwaai-p2p/src/*` — rewritten (service/handle/behaviour/relay_manager/addresses)
+- `core/crates/kwaai-p2p/src/*` — rewritten (service/handle/behaviour/unary/raw_stream/relay_manager/addresses)
 - `core/crates/kwaai-hivemind-dht/src/{wire.rs(new),codec.rs,server.rs,lib.rs}`
 - `core/crates/kwaai-p2p-daemon/src/{server.rs(new),daemon.rs(delete),stream.rs(delete at cutover)}`, `build.rs`
 - `core/crates/kwaai-cli/src/{node.rs,daemon.rs,setup.rs,identity.rs}`
