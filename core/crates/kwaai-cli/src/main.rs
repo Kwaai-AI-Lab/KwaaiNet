@@ -19,6 +19,7 @@ mod llama_local;
 mod map;
 mod monitor;
 mod node;
+mod node_native;
 mod ollama;
 mod ollama_proxy;
 mod p2p_cmd;
