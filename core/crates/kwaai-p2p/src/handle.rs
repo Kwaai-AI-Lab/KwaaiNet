@@ -122,6 +122,8 @@ pub enum Command {
     ListenAddrs {
         reply: oneshot::Sender<Vec<Multiaddr>>,
     },
+    /// Every peer currently in the Kademlia routing table.
+    RoutingPeers { reply: oneshot::Sender<Vec<PeerId>> },
     /// Kademlia lookup for a peer's addresses.
     DhtFindPeer {
         peer: PeerId,
@@ -242,6 +244,27 @@ impl NetworkHandle {
     /// `/tcp/0` shows the real port).
     pub async fn listen_addrs(&self) -> P2PResult<Vec<Multiaddr>> {
         self.call(|reply| Command::ListenAddrs { reply }).await
+    }
+
+    /// Every peer in the Kademlia routing table, nearest bucket first.
+    ///
+    /// This is the routing snapshot a hivemind DHT server needs: hivemind
+    /// answers each `rpc_find` with the `k` peers nearest the queried key
+    /// (`protocol.py:362-364`), drawn from its own routing table. We have no
+    /// second routing table — kad's k-buckets *are* it — so the DHT service
+    /// periodically pulls this and feeds it to
+    /// `kwaai_hivemind_dht::DHTStorage::update_peer_ids`.
+    ///
+    /// Note these are **connected-or-known kad peers**, not the hivemind DHT
+    /// node set: a peer here may speak `/ipfs/kad/1.0.0` without serving
+    /// `DHTProtocol.rpc_*`. That only costs a caller one wasted hop during an
+    /// iterative lookup, which is why it is acceptable to return them
+    /// unfiltered; hivemind's own routing table has the same property.
+    ///
+    /// Reading k-buckets is a synchronous walk over in-memory state, so it does
+    /// not block the event loop.
+    pub async fn routing_peers(&self) -> P2PResult<Vec<PeerId>> {
+        self.call(|reply| Command::RoutingPeers { reply }).await
     }
 
     /// Resolve a peer's addresses through Kademlia.
