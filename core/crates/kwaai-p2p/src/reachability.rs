@@ -274,6 +274,15 @@ impl ReachabilityState {
             info!(%addr, "autonat says public, but force_private is set — staying private");
             return Vec::new();
         }
+        // With `only_global_ips: false` (the default, so the RFC2544 test beds
+        // work) autonat itself does no address-class filtering, and a dialback
+        // from a peer on our own LAN can "confirm" an RFC1918 address. Promoting
+        // it would advertise a LAN address to the whole network and tear down
+        // relay circuits — the Direct-but-unreachable failure mode.
+        if !is_announceable_with(&addr, self.require_global_ips) {
+            info!(%addr, "autonat says public at a non-announceable address; ignoring");
+            return Vec::new();
+        }
         self.promote(addr, Source::AutoNat)
     }
 
@@ -302,6 +311,12 @@ impl ReachabilityState {
         }
         if !matches!(self.current, Reachability::Unknown) {
             debug!(%addr, current = ?self.current, "upnp mapping noted; a stronger verdict stands");
+            return Vec::new();
+        }
+        // Same guard as the autonat path: a gateway can report an internal or
+        // carrier-grade address, and standing on it would be worse than Unknown.
+        if !is_announceable_with(&addr, self.require_global_ips) {
+            info!(%addr, "upnp mapped a non-announceable external address; ignoring");
             return Vec::new();
         }
         info!(%addr, "upnp mapping accepted as our external address");
@@ -396,6 +411,13 @@ impl ReachabilityState {
     /// Move to `Public { addr, source }` if `source` is at least as strong as
     /// what we already have.
     fn promote(&mut self, addr: Multiaddr, source: Source) -> Vec<Effect> {
+        // Belt-and-braces: every caller checks `is_pinned()` first, but the
+        // Declared invariant (an operator's address is never retracted) is
+        // enforced here at the chokepoint so a future caller can't miss it.
+        if self.is_pinned() && source != Source::Declared {
+            debug!(%addr, ?source, "declared address pins reachability; promotion ignored");
+            return Vec::new();
+        }
         if let Reachability::Public {
             addr: current_addr,
             source: current_source,
@@ -440,6 +462,11 @@ impl ReachabilityState {
 
     /// Drop to Private, retracting whatever address we were standing on.
     fn demote(&mut self, why: &str) -> Vec<Effect> {
+        // Same chokepoint guard as `promote`: a declared address never demotes.
+        if self.is_pinned() {
+            debug!(why, "declared address pins reachability; demotion ignored");
+            return Vec::new();
+        }
         match std::mem::replace(&mut self.current, Reachability::Private) {
             Reachability::Public { addr, source } => {
                 info!(%addr, ?source, why, "reachability: private");
@@ -518,6 +545,40 @@ mod tests {
         let obs = observed(&[("/ip4/1.2.3.4/tcp/8080", &[1, 2, 3])]);
         assert!(state.on_grace_elapsed(&obs).is_empty());
         assert_eq!(*state.current(), Reachability::Private);
+    }
+
+    #[test]
+    fn autonat_public_at_a_lan_address_is_ignored() {
+        // With `only_global_ips: false` (our default, for the RFC2544 beds)
+        // autonat does no address filtering of its own: a dialback from a peer
+        // on our LAN can "confirm" an RFC1918 address. Promoting it would
+        // advertise a LAN address fleet-wide and tear down relay circuits.
+        let mut state = plain();
+        let effects = state.on_autonat_public(ma("/ip4/192.168.1.50/tcp/8080"));
+        assert!(effects.is_empty(), "an RFC1918 address must not promote");
+        assert_eq!(*state.current(), Reachability::Unknown);
+
+        // The same verdict at an announceable address still promotes — the
+        // guard is the classifier, not autonat suppression.
+        let effects = state.on_autonat_public(ma("/ip4/198.18.0.40/tcp/8080"));
+        assert!(!effects.is_empty());
+        assert!(matches!(
+            state.current(),
+            Reachability::Public {
+                source: Source::AutoNat,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn upnp_mapping_at_a_cgnat_address_is_ignored() {
+        // A gateway behind carrier-grade NAT reports a 100.64/10 external
+        // address; standing on it is worse than staying Unknown.
+        let mut state = plain();
+        let effects = state.on_upnp_external(ma("/ip4/100.64.0.9/tcp/8080"));
+        assert!(effects.is_empty());
+        assert_eq!(*state.current(), Reachability::Unknown);
     }
 
     // -- declared --------------------------------------------------------
