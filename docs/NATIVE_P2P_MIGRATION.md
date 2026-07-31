@@ -418,12 +418,28 @@ gates).
 
 ## Open verification items
 
-- Hivemind's "regular store" subkey sentinel + exact DictionaryDHTValue msgpack layout
-  (read hivemind `dht/protocol.py`; golden-capture against a live bootstrap).
 - AutoNAT v1 service actually answering on bootstraps (fallback: identify-confirmation
   path already kept; `force_private=true` default makes this low-risk).
 - Health-probe "protocol not supported" string vs rust-libp2p's unknown-protocol error
   surface (the health patch matches on a substring).
+
+## Tracked follow-ups (from the Phase 2/3 adversarial review)
+
+- **Record validators/signatures** (`kwaai-hivemind-dht/src/server.rs` module docs):
+  hivemind gates writes behind `RecordValidator`; this port does not. The primary tier
+  is capacity-bounded as an interim abuse guard — a Rust bootstrap must not ship
+  without validators.
+- **Eviction index**: `LocalStorage::enforce_capacity` is O(n) per eviction under the
+  write lock (Python uses a heap). Add an expiration-ordered index before bootstrap-scale
+  load.
+- **`rpc_ping` `validate=true`** returns `available=false` without the reverse-ping;
+  affects only caller routing confidence. Revisit with the reachability work (Phase 4).
+- **`callUnary.peer` on IPC-dispatched inbound calls** is sent empty by the
+  ControlServer (Go rewrites it to the caller's ID). No current handler reads it; thread
+  the caller PeerId through before any handler authenticates callers.
+- **ControlServer pipe mode** (`stream_open_raw`, `register_stream_handler`) deferred —
+  see the stubs in `kwaai-p2p-daemon/src/server.rs` and the risk notes in the Phase 3
+  section below.
 
 ## Resolved verification items (Phase 0, `07_wire_interop` against a real p2pd)
 
