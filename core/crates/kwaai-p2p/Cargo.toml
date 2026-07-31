@@ -18,6 +18,7 @@ async-trait = { workspace = true }
 libp2p = { workspace = true }
 kwaai-hivemind-dht = { workspace = true }  # hivemind unary wire codec
 uuid = { workspace = true }                # 16-byte call IDs on the unary wire
+prost = { workspace = true }               # DHT request/response encode/decode
 
 # Serialization
 serde = { workspace = true }
@@ -35,6 +36,7 @@ tracing = { workspace = true }
 tokio-test = "0.4"
 tracing-subscriber = { workspace = true }
 tempfile = "3"
+rmp-serde = { workspace = true }  # msgpack subkeys in the DHT service tests
 
 [features]
 default = ["tcp"]
