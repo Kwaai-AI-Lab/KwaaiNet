@@ -400,3 +400,25 @@
 {"timestamp":"2026-07-17T04:54:32.453156+00:00","git_rev":"7054ac3","test":"unit::rpc::server_frame_status_roundtrip","tier":"unit","passed":true,"duration_ms":0,"metrics":{}}{"timestamp":"2026-07-17T04:54:32.453175+00:00","git_rev":"7054ac3","test":"unit::rpc::server_frame_token_roundtrip","tier":"unit","passed":true,"duration_ms":0,"metrics":{}}
 
 {"timestamp":"2026-07-17T04:54:32.453168+00:00","git_rev":"7054ac3","test":"unit::rpc::server_frame_pong_roundtrip","tier":"unit","passed":true,"duration_ms":0,"metrics":{}}
+{"timestamp":"2026-07-31T05:39:51.267303+00:00","git_rev":"14a0bd1","test":"integration::wire::daemon_to_daemon","tier":"integration","passed":true,"duration_ms":265,"metrics":{"response_len":17}}
+{"timestamp":"2026-07-31T05:39:51.659471+00:00","git_rev":"14a0bd1","test":"integration::wire::old_shape_rejected","tier":"integration","passed":true,"duration_ms":136,"metrics":{"error_len":70}}
+{"timestamp":"2026-07-31T05:39:52.059542+00:00","git_rev":"14a0bd1","test":"integration::wire::responder_error_arm","tier":"integration","passed":true,"duration_ms":131,"metrics":{}}
+{"timestamp":"2026-07-31T05:40:41.411919+00:00","git_rev":"14a0bd1","test":"integration::wire::raw_responder","tier":"integration","passed":true,"duration_ms":116,"metrics":{"call_id_len":16}}
+{"timestamp":"2026-07-31T05:53:25.027584+00:00","git_rev":"14a0bd1","test":"integration::wire::raw_responder","tier":"integration","passed":true,"duration_ms":300,"metrics":{"call_id_len":16}}
+{"timestamp":"2026-07-31T05:53:25.027717+00:00","git_rev":"14a0bd1","test":"integration::wire::old_shape_rejected","tier":"integration","passed":true,"duration_ms":329,"metrics":{"error_len":70}}
+{"timestamp":"2026-07-31T05:53:25.037694+00:00","git_rev":"14a0bd1","test":"integration::wire::responder_error_arm","tier":"integration","passed":true,"duration_ms":385,"metrics":{}}
+{"timestamp":"2026-07-31T05:53:25.066942+00:00","git_rev":"14a0bd1","test":"integration::wire::daemon_to_daemon","tier":"integration","passed":true,"duration_ms":450,"metrics":{"response_len":17}}
+{"timestamp":"2026-07-31T05:56:09.588488+00:00","git_rev":"14a0bd1","test":"integration::wire::raw_caller","tier":"integration","passed":true,"duration_ms":230,"metrics":{}}
+{"timestamp":"2026-07-31T05:56:09.588461+00:00","git_rev":"14a0bd1","test":"integration::wire::multibyte_prefix","tier":"integration","passed":true,"duration_ms":232,"metrics":{"payload_bytes":4096}}
+{"timestamp":"2026-07-31T05:56:09.589993+00:00","git_rev":"14a0bd1","test":"integration::wire::responder_error_arm","tier":"integration","passed":true,"duration_ms":233,"metrics":{}}
+{"timestamp":"2026-07-31T05:56:09.592294+00:00","git_rev":"14a0bd1","test":"integration::wire::raw_responder","tier":"integration","passed":true,"duration_ms":232,"metrics":{"call_id_len":16}}
+{"timestamp":"2026-07-31T05:56:09.600899+00:00","git_rev":"14a0bd1","test":"integration::wire::daemon_to_daemon","tier":"integration","passed":true,"duration_ms":231,"metrics":{"response_len":17}}
+{"timestamp":"2026-07-31T05:56:09.642904+00:00","git_rev":"14a0bd1","test":"integration::wire::old_shape_rejected","tier":"integration","passed":true,"duration_ms":273,"metrics":{"error_len":70}}
+{"timestamp":"2026-07-31T05:56:09.650891+00:00","git_rev":"14a0bd1","test":"integration::wire::slashless_protocol","tier":"integration","passed":true,"duration_ms":291,"metrics":{}}
+{"timestamp":"2026-07-31T05:57:19.111807+00:00","git_rev":"14a0bd1","test":"integration::wire::slashless_protocol","tier":"integration","passed":true,"duration_ms":152,"metrics":{}}
+{"timestamp":"2026-07-31T05:57:19.112487+00:00","git_rev":"14a0bd1","test":"integration::wire::daemon_to_daemon","tier":"integration","passed":true,"duration_ms":157,"metrics":{"response_len":17}}
+{"timestamp":"2026-07-31T05:57:19.125600+00:00","git_rev":"14a0bd1","test":"integration::wire::multibyte_prefix","tier":"integration","passed":true,"duration_ms":156,"metrics":{"payload_bytes":4096}}
+{"timestamp":"2026-07-31T05:57:19.126307+00:00","git_rev":"14a0bd1","test":"integration::wire::old_shape_rejected","tier":"integration","passed":true,"duration_ms":153,"metrics":{"error_len":70}}
+{"timestamp":"2026-07-31T05:57:19.131699+00:00","git_rev":"14a0bd1","test":"integration::wire::raw_caller","tier":"integration","passed":true,"duration_ms":159,"metrics":{}}
+{"timestamp":"2026-07-31T05:57:19.140223+00:00","git_rev":"14a0bd1","test":"integration::wire::raw_responder","tier":"integration","passed":true,"duration_ms":183,"metrics":{"call_id_len":16}}
+{"timestamp":"2026-07-31T05:57:19.149713+00:00","git_rev":"14a0bd1","test":"integration::wire::responder_error_arm","tier":"integration","passed":true,"duration_ms":195,"metrics":{}}
