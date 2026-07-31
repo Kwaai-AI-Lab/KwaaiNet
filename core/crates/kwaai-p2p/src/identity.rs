@@ -25,8 +25,8 @@ use tracing::info;
 /// RSA key) want this one, so a typo in the path fails loudly instead of
 /// silently minting a new peer ID.
 pub fn load_keypair(path: &Path) -> Result<Keypair> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading identity key: {}", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("reading identity key: {}", path.display()))?;
     let keypair = Keypair::from_protobuf_encoding(&bytes).with_context(|| {
         format!(
             "decoding identity key {} — file may be corrupted or use an unsupported key type",
