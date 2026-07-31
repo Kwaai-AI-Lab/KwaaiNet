@@ -471,3 +471,65 @@ async fn inbound_overflow_gets_a_capacity_refusal() {
         .expect("first call succeeds");
     assert_eq!(response, b"released");
 }
+
+/// Liveness: with a single outbound slot, a call queued behind one that FAILS
+/// negotiation must still get its turn — the slot is freed by
+/// `DialUpgradeError`, not worker completion, so it exercises the explicit
+/// wake path rather than `FuturesUnordered`'s own wakes.
+#[tokio::test]
+async fn queued_call_survives_a_negotiation_failure_ahead_of_it() {
+    let responder = Responder::spawn(|data| Some(Ok(data))).await;
+
+    let mut swarm = new_swarm(unary::Config {
+        max_concurrent_streams: 1,
+        ..unary::Config::default()
+    });
+    swarm.add_peer_address(responder.peer_id, responder.addr.clone());
+    let (tx, mut rx) =
+        mpsc::unbounded_channel::<(PeerId, String, Vec<u8>, oneshot::Sender<UnaryResult>)>();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                request = rx.recv() => match request {
+                    Some((peer, proto, data, reply)) => swarm.behaviour_mut().send_request(
+                        peer,
+                        UnaryProtocol::new(proto),
+                        data,
+                        reply,
+                    ),
+                    None => break,
+                },
+                _event = swarm.select_next_some() => {}
+            }
+        }
+    });
+
+    // A occupies the only slot and will be refused at negotiation.
+    let (a_tx, a_rx) = oneshot::channel();
+    tx.send((
+        responder.peer_id,
+        "DHTProtocol.rpc_unserved".to_string(),
+        b"a".to_vec(),
+        a_tx,
+    ))
+    .expect("caller task alive");
+    // B queues behind A on a served protocol.
+    let (b_tx, b_rx) = oneshot::channel();
+    tx.send((responder.peer_id, PROTO.to_string(), b"b".to_vec(), b_tx))
+        .expect("caller task alive");
+
+    let a = tokio::time::timeout(TEST_TIMEOUT, a_rx)
+        .await
+        .expect("A resolves")
+        .expect("A channel intact");
+    assert!(
+        matches!(a, Err(UnaryError::UnsupportedProtocol(_))),
+        "A must be refused, got {a:?}"
+    );
+    let b = tokio::time::timeout(TEST_TIMEOUT, b_rx)
+        .await
+        .expect("B must not hang behind A's freed slot")
+        .expect("B channel intact")
+        .expect("B should succeed");
+    assert_eq!(b, b"b");
+}
