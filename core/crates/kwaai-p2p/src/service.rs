@@ -250,6 +250,25 @@ impl NetworkService {
                 let _ = reply.send(addrs);
             }
 
+            // A walk over in-memory k-buckets — bounded by the routing table
+            // size (k=20 per bucket, 256 buckets) and never touching the
+            // network, so it is safe in the event loop.
+            Command::RoutingPeers { reply } => {
+                let peers = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .kbuckets()
+                    .flat_map(|bucket| {
+                        bucket
+                            .iter()
+                            .map(|entry| *entry.node.key.preimage())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                let _ = reply.send(peers);
+            }
+
             Command::DhtFindPeer { peer, reply } => {
                 // Short-circuit: if we already have addresses (routing table or
                 // a live connection) there is no need for a network walk.

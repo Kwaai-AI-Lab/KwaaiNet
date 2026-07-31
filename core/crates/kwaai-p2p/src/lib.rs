@@ -40,6 +40,7 @@
 
 pub mod behaviour;
 pub mod config;
+pub mod dht_service;
 pub mod error;
 pub mod handle;
 pub mod identity;
@@ -51,6 +52,7 @@ pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
     NetworkConfig, KWAAI_BOOTSTRAP_SERVERS, KWAAI_BOOTSTRAP_SERVERS_DNS, PETALS_BOOTSTRAP_SERVERS,
 };
+pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};
 pub use handle::{Direction, InboundUnaryCall, NetworkHandle, PeerInfo, UnaryHandler};
 pub use service::NetworkService;
