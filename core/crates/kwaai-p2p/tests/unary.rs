@@ -337,3 +337,137 @@ async fn late_registration_reaches_existing_connections() {
         .expect("late-registered protocol must be reachable on the existing connection");
     assert_eq!(response, LATE.as_bytes());
 }
+
+/// With `max_concurrent_streams: 1` on the caller, a burst of calls must be
+/// throttled through the single slot and still ALL complete — emission
+/// back-pressure, not failure.
+#[tokio::test]
+async fn outbound_burst_is_throttled_not_failed() {
+    let responder = Responder::spawn(|data| Some(Ok(data))).await;
+
+    // Bespoke caller with a cap of one in-flight outbound stream.
+    let mut swarm = new_swarm(unary::Config {
+        max_concurrent_streams: 1,
+        ..unary::Config::default()
+    });
+    swarm.add_peer_address(responder.peer_id, responder.addr.clone());
+    let (tx, mut rx) =
+        mpsc::unbounded_channel::<(PeerId, String, Vec<u8>, oneshot::Sender<UnaryResult>)>();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                request = rx.recv() => match request {
+                    Some((peer, proto, data, reply)) => swarm.behaviour_mut().send_request(
+                        peer,
+                        UnaryProtocol::new(proto),
+                        data,
+                        reply,
+                    ),
+                    None => break,
+                },
+                _event = swarm.select_next_some() => {}
+            }
+        }
+    });
+
+    let mut replies = Vec::new();
+    for i in 0u8..4 {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send((responder.peer_id, PROTO.to_string(), vec![i; 8], reply_tx))
+            .expect("caller task alive");
+        replies.push(reply_rx);
+    }
+    for (i, reply) in replies.into_iter().enumerate() {
+        let response = tokio::time::timeout(TEST_TIMEOUT, reply)
+            .await
+            .expect("throttled call must still resolve")
+            .expect("reply channel intact")
+            .expect("call should succeed");
+        assert_eq!(response, vec![i as u8; 8], "call {i} payload survived");
+    }
+}
+
+/// A responder at its inbound cap must answer the overflow call with the
+/// "at capacity" error arm — a clean refusal the caller can act on — rather
+/// than resetting the stream or timing it out.
+#[tokio::test]
+async fn inbound_overflow_gets_a_capacity_refusal() {
+    use std::sync::{Arc, Mutex};
+
+    // Responder with a single inbound slot that parks requests instead of
+    // answering, so the test controls when the slot frees up.
+    let mut swarm = new_swarm(unary::Config {
+        max_concurrent_streams: 1,
+        ..unary::Config::default()
+    });
+    swarm
+        .behaviour_mut()
+        .register_protocol(UnaryProtocol::new(PROTO));
+    let peer_id = *swarm.local_peer_id();
+    let addr = listen(&mut swarm).await;
+
+    let parked: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let parked_in_loop = Arc::clone(&parked);
+    tokio::spawn(async move {
+        loop {
+            if let SwarmEvent::Behaviour(unary::Event::InboundRequest { request, .. }) =
+                swarm.select_next_some().await
+            {
+                parked_in_loop
+                    .lock()
+                    .expect("parked lock")
+                    .push(request.responder);
+            }
+        }
+    });
+
+    let responder = Responder { peer_id, addr };
+    let caller = Caller::spawn(&responder);
+
+    // Occupy the only slot, waiting until the request has actually reached
+    // the app layer (the worker is now parked awaiting `parked[0]`).
+    let (first_tx, first_rx) = oneshot::channel();
+    caller
+        .requests
+        .send((peer_id, PROTO.to_string(), b"first".to_vec(), first_tx))
+        .expect("caller task alive");
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        loop {
+            if !parked.lock().expect("parked lock").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first call must reach the responder's app layer");
+
+    // The overflow call gets the refusal error arm.
+    let error = caller
+        .call(peer_id, PROTO, b"second")
+        .await
+        .expect_err("overflow must be refused");
+    match error {
+        UnaryError::Remote(text) => assert!(
+            text.contains("capacity"),
+            "expected the at-capacity refusal, got: {text}"
+        ),
+        other => panic!("expected Remote refusal, got {other:?}"),
+    }
+
+    // Free the slot; the parked first call completes normally.
+    parked
+        .lock()
+        .expect("parked lock")
+        .pop()
+        .expect("first responder parked")
+        .send(Ok(b"released".to_vec()))
+        .expect("worker still awaiting");
+    let response = tokio::time::timeout(TEST_TIMEOUT, first_rx)
+        .await
+        .expect("first call resolves after release")
+        .expect("reply channel intact")
+        .expect("first call succeeds");
+    assert_eq!(response, b"released");
+}
