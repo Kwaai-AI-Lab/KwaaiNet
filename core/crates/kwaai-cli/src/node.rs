@@ -47,19 +47,9 @@ use crate::announce::{dht_id, DHTServerInfo, ModelInfo, VpkInfo};
 // ---------------------------------------------------------------------------
 
 pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
-    // Register SIGHUP handler BEFORE writing the PID file.  The shard
-    // auto-rebalance path sends SIGHUP to the daemon PID to trigger a
-    // re-announce.  If an old shard is still running when a new daemon starts,
-    // it reads the new PID immediately and may send SIGHUP during startup
-    // (before the event-loop handler at the bottom of this function is
-    // installed).  Without an early registration, the OS default fires —
-    // terminating the process.  Registering here queues the signals; they are
-    // consumed by the event-loop select! once startup finishes.
-    #[cfg(unix)]
-    let mut sighup = {
-        use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::hangup()).expect("SIGHUP handler")
-    };
+    // Register the SIGHUP handler BEFORE writing the PID file — see
+    // [`SigHup::register`] for why the ordering is load-bearing.
+    let mut sighup = SigHup::register();
 
     // PID tracking
     let daemon_mgr = DaemonManager::new();
@@ -153,6 +143,37 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     } else {
         config.initial_peers.clone()
     };
+
+    // -----------------------------------------------------------------------
+    // Fork: native rust-libp2p stack, or the Go p2pd child process.
+    //
+    // Everything above is shared — PID file, SIGHUP registration, the gRPC IPC
+    // surface, identity, credentials, the public name and the bootstrap-peer
+    // list all mean the same thing either way. Everything below this point is
+    // the p2pd path verbatim; the native path lives in `node_native` because
+    // the two differ in their *whole lifecycle* (no child process to spawn,
+    // watch, restart or shut down), not in a handful of branches.
+    //
+    // Both share the tail below: unannounce happens inside each path (it needs
+    // that path's transport), and this function then does the PID cleanup and
+    // the deferred auto-update respawn identically.
+    // -----------------------------------------------------------------------
+    if config.native_p2p {
+        info!("native_p2p enabled — running without the Go p2p daemon");
+        let pending_update_version = crate::node_native::run_native_node(
+            config,
+            &bootstrap_peers,
+            &public_name,
+            trust_attestations,
+            &mut sighup,
+        )
+        .await?;
+
+        daemon_mgr.remove_pid();
+        respawn_after_update(pending_update_version);
+        info!("KwaaiNet node stopped");
+        return Ok(());
+    }
 
     // -----------------------------------------------------------------------
     // Step 1: Start p2pd
@@ -584,62 +605,9 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     let mut relay_keepalive = tokio::time::interval(Duration::from_secs(60));
     relay_keepalive.tick().await;
 
-    // Ollama health watcher: spawn a background task that polls
-    // http://localhost:<port>/api/tags every 15 s. Sends `true` on each recovery
-    // (down→up transition) so the main loop can re-announce immediately.
-    let (ollama_recovery_tx, mut ollama_recovery_rx) = tokio::sync::mpsc::channel::<()>(1);
-    {
-        let ollama_port = config.ollama_port;
-        let ollama_manage = config.ollama_manage;
-        tokio::spawn(async move {
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap_or_default();
-            let url = format!("http://localhost:{}/api/tags", ollama_port);
-            let mut was_up = true; // assume up at start to avoid spurious recovery signal
-            let mut fail_count: u32 = 0;
-            loop {
-                tokio::time::sleep(Duration::from_secs(15)).await;
-                let ok = client
-                    .get(&url)
-                    .send()
-                    .await
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
-                if ok {
-                    if !was_up {
-                        info!(
-                            "✅ Ollama recovered on port {} — signalling re-announce",
-                            ollama_port
-                        );
-                        let _ = ollama_recovery_tx.try_send(());
-                    }
-                    was_up = true;
-                    fail_count = 0;
-                } else {
-                    fail_count += 1;
-                    if fail_count == 3 {
-                        warn!(
-                            "⚠️  Ollama unreachable on port {} (3 consecutive failures)",
-                            ollama_port
-                        );
-                        if ollama_manage {
-                            info!("ollama_manage=true — attempting to start Ollama…");
-                            let _ = tokio::process::Command::new("ollama").arg("serve").spawn();
-                        }
-                    } else if fail_count > 3 && fail_count.is_multiple_of(12) {
-                        // Log every ~3 min while still down
-                        warn!(
-                            "⚠️  Ollama still unreachable on port {} ({}× checks)",
-                            ollama_port, fail_count
-                        );
-                    }
-                    was_up = false;
-                }
-            }
-        });
-    }
+    // Ollama health watcher: polls http://localhost:<port>/api/tags every 15 s
+    // and signals on each recovery so the main loop can re-announce immediately.
+    let mut ollama_recovery_rx = spawn_ollama_watcher(&config);
 
     // Set when maybe_auto_update() installs a new binary — the actual respawn
     // is deferred until after this process's own cleanup completes (see the
@@ -669,12 +637,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             }
 
             // SIGHUP (Unix) / never (Windows) — re-read config and re-announce.
-            // Uses #[cfg] inside the arm expression to avoid a conditional arm,
-            // which is unsupported by tokio::select!.
-            _ = async {
-                #[cfg(unix)] { sighup.recv().await; }
-                #[cfg(not(unix))] { std::future::pending::<Option<()>>().await; }
-            } => {
+            _ = sighup.recv() => {
                 info!("SIGHUP received — re-reading config and re-announcing");
                 if let Ok(fresh) = KwaaiNetConfig::load_or_create() {
                     if fresh.start_block != config.start_block || fresh.blocks != config.blocks {
@@ -945,58 +908,66 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     let _ = daemon.shutdown().await;
     daemon_mgr.remove_pid();
 
-    // Respawn AFTER this process's own cleanup has fully completed — the PID
-    // file is gone and p2pd is down. Previously the new `start --daemon`
-    // process was spawned immediately inside maybe_auto_update(), before any
-    // of the above ran. That raced this process's PID-file removal against
-    // the new process's own "is another instance already running?" check
-    // (which reads the PID file before doing anything else): if the new
-    // process's network-map fetch + is_running() check completed faster than
-    // this process's unannounce+p2pd-shutdown+remove_pid sequence, the new
-    // process would see the still-present PID file, conclude a daemon was
-    // already running, and exit(1) immediately — leaving no daemon running
-    // at all. Spawning only here, after remove_pid() has synchronously
-    // deleted the file, closes that window entirely.
-    if let Some(version) = pending_update_version {
-        // Resolve via PATH, not current_exe(): install_update() replaces the
-        // binary in place (unlink+rename on Unix, ETXTBSY-safe while this
-        // process still has it open; a rename over the running EXE on
-        // Windows, safe because the OS loader opens EXEs with
-        // FILE_SHARE_DELETE). Either way, current_exe() can point at a stale
-        // path after the swap (Linux's /proc/self/exe keeps resolving to the
-        // old, now-deleted inode) — so spawning via current_exe() here could
-        // silently relaunch the old binary, making the "respawned with new
-        // binary" log line a lie. PATH lookup re-resolves the path fresh,
-        // picking up the new file.
-        #[cfg(windows)]
-        let bin_name = "kwaainet.exe";
-        #[cfg(not(windows))]
-        let bin_name = "kwaainet";
-
-        let new_bin = crate::setup::find_in_path(bin_name)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from(bin_name));
-        match std::process::Command::new(&new_bin)
-            .args(["start", "--daemon"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => info!(
-                "Auto-update: v{} installed — respawned daemon with new binary.",
-                version
-            ),
-            Err(e) => warn!(
-                "Auto-update: v{} installed but respawn failed ({e}). \
-                 Run `kwaainet start --daemon` manually.",
-                version
-            ),
-        }
-    }
+    respawn_after_update(pending_update_version);
 
     info!("KwaaiNet node stopped");
     Ok(())
+}
+
+/// Relaunch `kwaainet start --daemon` after an auto-update installed a new
+/// binary, or do nothing when none was.
+///
+/// **Call only after this process's own cleanup has fully completed** — the PID
+/// file gone, the transport down. The new `start --daemon` process used to be
+/// spawned inside `maybe_auto_update()`, before any of that ran, which raced
+/// this process's PID-file removal against the new process's own "is another
+/// instance already running?" check (it reads the PID file before doing
+/// anything else). If the new process's network-map fetch + `is_running()`
+/// check finished faster than this process's unannounce + shutdown +
+/// `remove_pid` sequence, the new process saw the still-present PID file,
+/// concluded a daemon was already running, and exited(1) — leaving no daemon
+/// running at all. Spawning only after `remove_pid()` has synchronously deleted
+/// the file closes that window entirely.
+fn respawn_after_update(pending_update_version: Option<String>) {
+    let Some(version) = pending_update_version else {
+        return;
+    };
+
+    // Resolve via PATH, not current_exe(): install_update() replaces the
+    // binary in place (unlink+rename on Unix, ETXTBSY-safe while this
+    // process still has it open; a rename over the running EXE on
+    // Windows, safe because the OS loader opens EXEs with
+    // FILE_SHARE_DELETE). Either way, current_exe() can point at a stale
+    // path after the swap (Linux's /proc/self/exe keeps resolving to the
+    // old, now-deleted inode) — so spawning via current_exe() here could
+    // silently relaunch the old binary, making the "respawned with new
+    // binary" log line a lie. PATH lookup re-resolves the path fresh,
+    // picking up the new file.
+    #[cfg(windows)]
+    let bin_name = "kwaainet.exe";
+    #[cfg(not(windows))]
+    let bin_name = "kwaainet";
+
+    let new_bin = crate::setup::find_in_path(bin_name)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from(bin_name));
+    match std::process::Command::new(&new_bin)
+        .args(["start", "--daemon"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => info!(
+            "Auto-update: v{} installed — respawned daemon with new binary.",
+            version
+        ),
+        Err(e) => warn!(
+            "Auto-update: v{} installed but respawn failed ({e}). \
+             Run `kwaainet start --daemon` manually.",
+            version
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2008,7 +1979,7 @@ async fn read_rpc_message(tcp: &mut tokio::net::TcpStream) -> Result<(Vec<u8>, b
 /// connectivity in the reputation store. Called every 120 s from the event loop.
 /// Return `base ± spread` seconds using a fast LCG over the current nanosecond
 /// timestamp. No `rand` crate needed. Range: `[base - spread, base + spread]`.
-fn jitter_secs(base: u64, spread: u64) -> u64 {
+pub(crate) fn jitter_secs(base: u64, spread: u64) -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2039,7 +2010,7 @@ fn jitter_secs(base: u64, spread: u64) -> u64 {
 /// instance already running?" check, and could leave no daemon running at
 /// all if the new process's startup won that race. See the respawn site at
 /// the bottom of `run_node` for the fix and full explanation.
-async fn maybe_auto_update() -> Option<String> {
+pub(crate) async fn maybe_auto_update() -> Option<String> {
     // Developer escape hatch: a long-running local debug daemon shouldn't
     // get silently replaced by the upstream release binary (which won't
     // contain whatever in-flight feature work is being tested). Setting
@@ -2082,7 +2053,7 @@ async fn maybe_auto_update() -> Option<String> {
 // Signal handling
 // ---------------------------------------------------------------------------
 
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -2129,6 +2100,125 @@ fn find_free_port(preferred: u16) -> Option<u16> {
 #[allow(dead_code)]
 fn port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle plumbing — shared by the p2pd and native paths
+// ---------------------------------------------------------------------------
+
+/// A SIGHUP source that is a no-op on platforms without signals.
+///
+/// `tokio::select!` cannot take a `#[cfg]`-conditional arm, and both event loops
+/// need one SIGHUP arm, so the conditional lives here instead: on Unix
+/// [`SigHup::recv`] resolves when the signal arrives, elsewhere it never
+/// resolves and the arm is simply never taken.
+///
+/// The handler must be **registered before the PID file is written**. The shard
+/// auto-rebalance path sends SIGHUP to the daemon PID to trigger a re-announce,
+/// and an old shard still running when a new daemon starts reads the new PID
+/// immediately — it can fire during startup, before the event loop exists.
+/// Without an early registration the OS default fires and terminates the
+/// process. Registering early queues the signal instead; the loop consumes it
+/// once startup finishes.
+pub(crate) struct SigHup {
+    #[cfg(unix)]
+    inner: tokio::signal::unix::Signal,
+}
+
+impl SigHup {
+    /// Register the handler. Call before writing the PID file.
+    pub(crate) fn register() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Self {
+                inner: signal(SignalKind::hangup()).expect("SIGHUP handler"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+
+    /// Resolve on the next SIGHUP; never resolves on platforms without one.
+    pub(crate) async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            self.inner.recv().await;
+        }
+        #[cfg(not(unix))]
+        {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Watch the local Ollama and signal on every down→up transition.
+///
+/// Polls `/api/tags` every 15 s. Starts out assuming Ollama is up so a node
+/// without Ollama does not fire a spurious recovery on its first tick, warns
+/// after three consecutive failures (and starts `ollama serve` if
+/// `ollama_manage` is set), then re-warns every ~3 minutes while still down.
+///
+/// The channel has capacity 1 and the send is a `try_send`: a recovery that
+/// arrives while one is already queued is dropped rather than backing up, since
+/// the queued one will trigger the same re-announce.
+pub(crate) fn spawn_ollama_watcher(config: &KwaaiNetConfig) -> tokio::sync::mpsc::Receiver<()> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+    let ollama_port = config.ollama_port;
+    let ollama_manage = config.ollama_manage;
+
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        let url = format!("http://localhost:{}/api/tags", ollama_port);
+        let mut was_up = true; // assume up at start to avoid a spurious recovery signal
+        let mut fail_count: u32 = 0;
+        loop {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let ok = client
+                .get(&url)
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if ok {
+                if !was_up {
+                    info!(
+                        "✅ Ollama recovered on port {} — signalling re-announce",
+                        ollama_port
+                    );
+                    let _ = tx.try_send(());
+                }
+                was_up = true;
+                fail_count = 0;
+            } else {
+                fail_count += 1;
+                if fail_count == 3 {
+                    warn!(
+                        "⚠️  Ollama unreachable on port {} (3 consecutive failures)",
+                        ollama_port
+                    );
+                    if ollama_manage {
+                        info!("ollama_manage=true — attempting to start Ollama…");
+                        let _ = tokio::process::Command::new("ollama").arg("serve").spawn();
+                    }
+                } else if fail_count > 3 && fail_count.is_multiple_of(12) {
+                    // Log every ~3 min while still down
+                    warn!(
+                        "⚠️  Ollama still unreachable on port {} ({}× checks)",
+                        ollama_port, fail_count
+                    );
+                }
+                was_up = false;
+            }
+        }
+    });
+
+    rx
 }
 
 // ---------------------------------------------------------------------------
