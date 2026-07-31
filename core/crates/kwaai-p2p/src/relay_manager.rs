@@ -244,7 +244,7 @@ impl RelayManager {
         if self.configured.iter().any(|(p, _)| *p == peer)
             || self.discovered.iter().any(|(p, _)| *p == peer)
         {
-            return self.on_relay_ready(peer);
+            return self.on_relay_ready(peer, now);
         }
         // A relay we can only reach at a LAN address is no use to peers who are
         // not on that LAN.
@@ -260,7 +260,13 @@ impl RelayManager {
             // Oldest out: a candidate we have never successfully used and have
             // had on the list longest is the cheapest thing to forget.
             debug!(peer = %dropped.0, "relay candidate list full; forgetting the oldest");
-            self.cursor = self.cursor.saturating_sub(1);
+            // The cursor indexes the combined `configured ++ discovered` list;
+            // removing `discovered[0]` only shifts entries at or beyond
+            // `configured.len()`, so a cursor inside the configured prefix
+            // must not move.
+            if self.cursor > self.configured.len() {
+                self.cursor -= 1;
+            }
         }
         self.fill_slots(now)
     }
@@ -399,12 +405,17 @@ impl RelayManager {
     ///   negotiated. This is why the trigger is the identify event and not
     ///   `ConnectionEstablished` — the difference is invisible against a fast
     ///   relay and a 30-second stall against a slow one.
-    pub fn on_relay_ready(&mut self, relay: PeerId) -> Vec<RelayAction> {
+    pub fn on_relay_ready(&mut self, relay: PeerId, now: Instant) -> Vec<RelayAction> {
         if !self.enabled || self.pending.remove(&relay).is_none() {
             return Vec::new();
         }
         let Some((_, relay_addr)) = self.candidate_addr(&relay) else {
-            return Vec::new();
+            // The candidate was evicted from the discovered list while its dial
+            // was in flight. The pending entry is already consumed; without a
+            // fail() here the cursor and backoff never advance and the freed
+            // slot waits for the next tick instead of refilling now.
+            self.fail(relay, "the relay was evicted from the candidate list", now);
+            return self.fill_slots(now);
         };
         let circuit_addr = circuit_listen_addr(&relay_addr, relay);
         debug!(%relay, %circuit_addr, "relay connected; requesting the reservation");
@@ -502,7 +513,7 @@ fn backoff_delay(consecutive_failures: u32) -> Duration {
     jitter(base)
 }
 
-/// ±20% of `d`, from a cheap deterministic-per-call source. This does not need
+/// ±20% of `d`, from a cheap uncorrelated-per-call source. This does not need
 /// to be unpredictable, only uncorrelated between nodes.
 fn jitter(d: Duration) -> Duration {
     use std::collections::hash_map::RandomState;
@@ -559,7 +570,7 @@ mod tests {
     /// Walk a candidate through dial → connected → listening, as the service
     /// does. Returns the ListenerId the reservation is tracked under.
     fn connect_and_listen(mgr: &mut RelayManager, relay: PeerId, now: Instant) -> ListenerId {
-        let actions = mgr.on_relay_ready(relay);
+        let actions = mgr.on_relay_ready(relay, now);
         assert_eq!(actions.len(), 1, "connecting should request a reservation");
         let id = ListenerId::next();
         mgr.note_listener(id, relay, now);
@@ -723,7 +734,7 @@ mod tests {
     fn identify_from_an_unrelated_peer_asks_for_nothing() {
         // Every connection the node makes flows through here.
         let (mut mgr, _now) = enabled(&[relay_entry(1)], 1);
-        assert!(mgr.on_relay_ready(peer(200)).is_empty());
+        assert!(mgr.on_relay_ready(peer(200), _now).is_empty());
     }
 
     #[test]
@@ -815,7 +826,7 @@ mod tests {
         assert_eq!(dial_target(&actions[0]), peer(7));
 
         // …and connecting to it is what produces the reservation request.
-        let listen = mgr.on_relay_ready(peer(7));
+        let listen = mgr.on_relay_ready(peer(7), now);
         match &listen[0] {
             RelayAction::Listen { circuit_addr, .. } => {
                 assert!(circuit_addr.to_string().ends_with("/p2p-circuit"))

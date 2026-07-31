@@ -994,7 +994,7 @@ impl NetworkService {
                     if self.connections.contains_key(&relay)
                         && self.peer_protocols.contains_key(&relay)
                     {
-                        let next = self.relays.on_relay_ready(relay);
+                        let next = self.relays.on_relay_ready(relay, Instant::now());
                         self.apply_relay_actions(next);
                         continue;
                     }
