@@ -396,3 +396,9 @@
 {"timestamp":"2026-07-31T06:22:44.113472+00:00","git_rev":"68f5f0e","test":"integration::wire::slashless_protocol","tier":"integration","passed":true,"duration_ms":287,"metrics":{}}
 {"timestamp":"2026-07-31T06:22:44.113458+00:00","git_rev":"68f5f0e","test":"integration::wire::raw_responder","tier":"integration","passed":true,"duration_ms":277,"metrics":{"call_id_len":16}}
 {"timestamp":"2026-07-31T06:22:44.115407+00:00","git_rev":"68f5f0e","test":"integration::wire::multibyte_prefix","tier":"integration","passed":true,"duration_ms":285,"metrics":{"payload_bytes":4096}}
+{"timestamp":"2026-07-31T06:26:17.076212+00:00","git_rev":"fd42934","test":"integration::unary_swarm::clean_refusal","tier":"integration","passed":true,"duration_ms":116,"metrics":{}}
+{"timestamp":"2026-07-31T06:26:17.076273+00:00","git_rev":"fd42934","test":"integration::unary_swarm::swarm_calls_daemon","tier":"integration","passed":true,"duration_ms":114,"metrics":{"response_len":17}}{"timestamp":"2026-07-31T06:26:17.076270+00:00","git_rev":"fd42934","test":"integration::unary_swarm::daemon_calls_swarm","tier":"integration","passed":true,"duration_ms":117,"metrics":{"response_len":17}}
+
+{"timestamp":"2026-07-31T06:26:41.019983+00:00","git_rev":"fd42934","test":"integration::unary_swarm::clean_refusal","tier":"integration","passed":true,"duration_ms":115,"metrics":{}}
+{"timestamp":"2026-07-31T06:26:41.020432+00:00","git_rev":"fd42934","test":"integration::unary_swarm::swarm_calls_daemon","tier":"integration","passed":true,"duration_ms":114,"metrics":{"response_len":17}}
+{"timestamp":"2026-07-31T06:26:41.022532+00:00","git_rev":"fd42934","test":"integration::unary_swarm::daemon_calls_swarm","tier":"integration","passed":true,"duration_ms":116,"metrics":{"response_len":17}}
