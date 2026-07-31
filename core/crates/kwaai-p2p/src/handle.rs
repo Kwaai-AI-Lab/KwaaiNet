@@ -129,10 +129,7 @@ impl NetworkHandle {
 
     /// Send a command and await its reply, mapping a dead event loop onto
     /// [`P2PError::NotInitialized`].
-    async fn call<T>(
-        &self,
-        make: impl FnOnce(oneshot::Sender<T>) -> Command,
-    ) -> P2PResult<T> {
+    async fn call<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Command) -> P2PResult<T> {
         let (tx, rx) = oneshot::channel();
         self.commands
             .send(make(tx))
@@ -147,7 +144,8 @@ impl NetworkHandle {
         let addr: Multiaddr = multiaddr_str
             .parse()
             .map_err(|e| P2PError::InvalidAddress(format!("{multiaddr_str}: {e}")))?;
-        self.call(|reply| Command::ConnectPeer { addr, reply }).await?
+        self.call(|reply| Command::ConnectPeer { addr, reply })
+            .await?
     }
 
     /// Close all connections to `peer`.
