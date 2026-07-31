@@ -424,108 +424,20 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     // Measure network bandwidth once at startup (1 MiB Cloudflare probe).
     // Stored so re-announcements can recompute effective_tps without re-probing.
-    let dl_bps: f64 = if crate::throughput::load(&config.model).is_some() {
-        info!("  Measuring network bandwidth (1 MiB probe)...");
-        let bps = crate::throughput::measure_download_bps().await;
-        if bps > 0.0 {
-            info!("  Network:  {:.1} Mbps download", bps / 1_000_000.0);
-        } else {
-            info!("  Network:  measurement failed — using compute limit only");
-        }
-        bps
-    } else {
-        0.0
-    };
-
-    let throughput = compute_effective_tps(&config.model, dl_bps, using_relay);
-    if let Some(ref entry) = crate::throughput::load(&config.model) {
-        info!(
-            "  Compute:  {:.1} tok/s (measured, hidden_dim={})",
-            entry.compute_tps, entry.hidden_size
-        );
-        info!(
-            "  Effective: {:.1} tok/s  connection={} (min({:.1}, {:.1}×{}))",
-            throughput,
-            if using_relay { "relay" } else { "direct" },
-            entry.compute_tps,
-            if dl_bps > 0.0 {
-                dl_bps / (entry.hidden_size as f64 * 16.0)
-            } else {
-                f64::INFINITY
-            },
-            if using_relay { "0.2" } else { "1.0" },
-        );
-    } else {
-        info!(
-            "  Throughput: {:.1} tok/s (default — run `kwaainet benchmark` to measure)",
-            throughput
-        );
-    }
+    let dl_bps = measure_download_bps_for(&config.model).await;
+    let throughput = report_effective_tps(&config.model, dl_bps, using_relay);
 
     // Use the canonical DHT prefix from the map (set during startup model selection).
     // Falls back to a computed prefix if the map wasn't consulted (e.g. --model override).
     let prefix = config.effective_dht_prefix();
-    let repository = config.model_repository.clone().unwrap_or_else(|| {
-        if config.model.contains('/') {
-            format!("https://huggingface.co/{}", config.model)
-        } else {
-            format!("https://huggingface.co/meta-llama/{}", config.model)
-        }
-    });
+    let repository = effective_repository(config);
 
     info!("  DHT prefix:  {}", prefix);
     info!("  Repository:  {}", repository);
     info!("  Using relay: {}", using_relay);
 
     // Check local VPK health when integration is enabled.
-    // Retries up to 5 times with 1 s gaps to avoid a race with the storage
-    // child process (spawned by `kwaainet start --daemon` just before us).
-    let vpk_info = if config.vpk_enabled {
-        let port = config.vpk_local_port.unwrap_or(7432);
-        info!("VPK enabled — checking local service on port {}", port);
-        let mut health_result = None;
-        for attempt in 0..5u32 {
-            if let Some(h) = check_vpk_health(port).await {
-                health_result = Some(h);
-                break;
-            }
-            if attempt < 4 {
-                info!("VPK not ready yet, retrying in 1 s… ({}/5)", attempt + 1);
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
-        match health_result {
-            Some(health) => {
-                let mode = config
-                    .vpk_mode
-                    .clone()
-                    .unwrap_or_else(|| "both".to_string());
-                let capacity_gb = health["capacity_gb_available"].as_f64().unwrap_or(0.0);
-                let tenant_count = health["tenant_count"].as_u64().unwrap_or(0) as u32;
-                let vpk_version = health["version"].as_str().unwrap_or("unknown").to_string();
-                info!(
-                    "VPK healthy: mode={} tenants={} capacity={:.1}GB v={}",
-                    mode, tenant_count, capacity_gb, vpk_version
-                );
-                Some(VpkInfo {
-                    mode,
-                    capacity_gb,
-                    tenant_count,
-                    vpk_version,
-                    public_name: public_name.clone(),
-                })
-            }
-            None => {
-                warn!(
-                    "VPK health check failed on port {} after 5 attempts — skipping DHT advertisement",
-                    port
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let vpk_info = initial_vpk_info(config, &public_name).await;
 
     // Always announce the configured block range so the node appears on the map.
     let announce_start = config.start_block as i32;
@@ -878,41 +790,11 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                 }
 
                 // Refresh throughput from cache.
-                let fresh_tps = compute_effective_tps(&config.model, dl_bps, using_relay);
-                if (fresh_tps - server_info.throughput).abs() > 0.05 {
-                    info!(
-                        "Throughput updated: {:.1} → {:.1} tok/s",
-                        server_info.throughput, fresh_tps
-                    );
-                    server_info.throughput = fresh_tps;
-                }
+                refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
 
                 // Re-check VPK health so that storage serve started after the
                 // daemon comes online without requiring a full daemon restart.
-                if config.vpk_enabled {
-                    let port = config.vpk_local_port.unwrap_or(7432);
-                    let fresh_vpk = match check_vpk_health(port).await {
-                        Some(health) => {
-                            let mode = config.vpk_mode.clone().unwrap_or_else(|| "both".to_string());
-                            Some(VpkInfo {
-                                mode,
-                                capacity_gb: health["capacity_gb_available"].as_f64().unwrap_or(0.0),
-                                tenant_count: health["tenant_count"].as_u64().unwrap_or(0) as u32,
-                                vpk_version: health["version"].as_str().unwrap_or("unknown").to_string(),
-                                public_name: public_name.clone(),
-                            })
-                        }
-                        None => None,
-                    };
-                    if fresh_vpk.is_some() != server_info.vpk_info.is_some() {
-                        info!(
-                            "VPK state changed: {} → {}",
-                            if server_info.vpk_info.is_some() { "enabled" } else { "disabled" },
-                            if fresh_vpk.is_some() { "enabled" } else { "disabled" },
-                        );
-                    }
-                    server_info.vpk_info = fresh_vpk;
-                }
+                refresh_vpk_info(&mut server_info, &config, &public_name).await;
 
                 // Auto-update — installs new binary when available (pre-v1.0).
                 // If installed, break the event loop so the daemon exits cleanly
@@ -2249,6 +2131,178 @@ fn port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// Announce inputs — shared by the p2pd and native paths
+// ---------------------------------------------------------------------------
+//
+// Everything below computes *what* to announce, independently of how it is
+// delivered. Both `run_node` and `node_native::run_native_node` call these, so
+// the two paths cannot drift on the values the map crawler reads.
+
+/// Measure download bandwidth once at startup, for the Petals throughput
+/// formula. Returns 0.0 when no compute benchmark exists to combine it with —
+/// there is nothing to cap, so the probe would only cost startup latency.
+pub(crate) async fn measure_download_bps_for(model: &str) -> f64 {
+    if crate::throughput::load(model).is_none() {
+        return 0.0;
+    }
+    info!("  Measuring network bandwidth (1 MiB probe)...");
+    let bps = crate::throughput::measure_download_bps().await;
+    if bps > 0.0 {
+        info!("  Network:  {:.1} Mbps download", bps / 1_000_000.0);
+    } else {
+        info!("  Network:  measurement failed — using compute limit only");
+    }
+    bps
+}
+
+/// [`compute_effective_tps`] plus the startup log lines that explain the number.
+pub(crate) fn report_effective_tps(model: &str, dl_bps: f64, using_relay: bool) -> f64 {
+    let throughput = compute_effective_tps(model, dl_bps, using_relay);
+    if let Some(ref entry) = crate::throughput::load(model) {
+        info!(
+            "  Compute:  {:.1} tok/s (measured, hidden_dim={})",
+            entry.compute_tps, entry.hidden_size
+        );
+        info!(
+            "  Effective: {:.1} tok/s  connection={} (min({:.1}, {:.1}×{}))",
+            throughput,
+            if using_relay { "relay" } else { "direct" },
+            entry.compute_tps,
+            if dl_bps > 0.0 {
+                dl_bps / (entry.hidden_size as f64 * 16.0)
+            } else {
+                f64::INFINITY
+            },
+            if using_relay { "0.2" } else { "1.0" },
+        );
+    } else {
+        info!(
+            "  Throughput: {:.1} tok/s (default — run `kwaainet benchmark` to measure)",
+            throughput
+        );
+    }
+    throughput
+}
+
+/// The HuggingFace repository URL for the `_petals.models` registry entry.
+pub(crate) fn effective_repository(config: &KwaaiNetConfig) -> String {
+    config.model_repository.clone().unwrap_or_else(|| {
+        if config.model.contains('/') {
+            format!("https://huggingface.co/{}", config.model)
+        } else {
+            format!("https://huggingface.co/meta-llama/{}", config.model)
+        }
+    })
+}
+
+/// Poll the local VPK health endpoint at startup.
+///
+/// Retries up to 5 times with 1 s gaps to avoid a race with the storage child
+/// process, which `kwaainet start --daemon` spawns just before this one.
+pub(crate) async fn initial_vpk_info(
+    config: &KwaaiNetConfig,
+    public_name: &str,
+) -> Option<VpkInfo> {
+    if !config.vpk_enabled {
+        return None;
+    }
+    let port = config.vpk_local_port.unwrap_or(7432);
+    info!("VPK enabled — checking local service on port {}", port);
+
+    let mut health_result = None;
+    for attempt in 0..5u32 {
+        if let Some(h) = check_vpk_health(port).await {
+            health_result = Some(h);
+            break;
+        }
+        if attempt < 4 {
+            info!("VPK not ready yet, retrying in 1 s… ({}/5)", attempt + 1);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    match health_result {
+        Some(health) => {
+            let info = vpk_info_from_health(&health, config, public_name);
+            info!(
+                "VPK healthy: mode={} tenants={} capacity={:.1}GB v={}",
+                info.mode, info.tenant_count, info.capacity_gb, info.vpk_version
+            );
+            Some(info)
+        }
+        None => {
+            warn!(
+                "VPK health check failed on port {} after 5 attempts — skipping DHT advertisement",
+                port
+            );
+            None
+        }
+    }
+}
+
+/// Decode one `/api/health` body into the announced [`VpkInfo`].
+fn vpk_info_from_health(
+    health: &serde_json::Value,
+    config: &KwaaiNetConfig,
+    public_name: &str,
+) -> VpkInfo {
+    VpkInfo {
+        mode: config
+            .vpk_mode
+            .clone()
+            .unwrap_or_else(|| "both".to_string()),
+        capacity_gb: health["capacity_gb_available"].as_f64().unwrap_or(0.0),
+        tenant_count: health["tenant_count"].as_u64().unwrap_or(0) as u32,
+        vpk_version: health["version"].as_str().unwrap_or("unknown").to_string(),
+        public_name: public_name.to_string(),
+    }
+}
+
+/// Recompute throughput from the benchmark cache before a re-announce, logging
+/// only a material change.
+pub(crate) fn refresh_throughput(
+    server_info: &mut DHTServerInfo,
+    model: &str,
+    dl_bps: f64,
+    using_relay: bool,
+) {
+    let fresh_tps = compute_effective_tps(model, dl_bps, using_relay);
+    if (fresh_tps - server_info.throughput).abs() > 0.05 {
+        info!(
+            "Throughput updated: {:.1} → {:.1} tok/s",
+            server_info.throughput, fresh_tps
+        );
+        server_info.throughput = fresh_tps;
+    }
+}
+
+/// Re-poll VPK health before a re-announce, so a `storage serve` started after
+/// the node came up is advertised without a restart.
+pub(crate) async fn refresh_vpk_info(
+    server_info: &mut DHTServerInfo,
+    config: &KwaaiNetConfig,
+    public_name: &str,
+) {
+    if !config.vpk_enabled {
+        return;
+    }
+    let port = config.vpk_local_port.unwrap_or(7432);
+    let fresh_vpk = check_vpk_health(port)
+        .await
+        .map(|health| vpk_info_from_health(&health, config, public_name));
+
+    if fresh_vpk.is_some() != server_info.vpk_info.is_some() {
+        let label = |present: bool| if present { "enabled" } else { "disabled" };
+        info!(
+            "VPK state changed: {} → {}",
+            label(server_info.vpk_info.is_some()),
+            label(fresh_vpk.is_some()),
+        );
+    }
+    server_info.vpk_info = fresh_vpk;
+}
+
 /// Compute effective throughput from the cached benchmark result.
 ///
 /// Re-reads `~/.kwaainet/throughput_cache.json` on every call so that a
@@ -2257,7 +2311,7 @@ fn port_is_free(port: u16) -> bool {
 ///
 /// `dl_bps` is the download bandwidth measured at startup and reused here
 /// to avoid a slow network probe on every re-announce.
-fn compute_effective_tps(model: &str, dl_bps: f64, using_relay: bool) -> f64 {
+pub(crate) fn compute_effective_tps(model: &str, dl_bps: f64, using_relay: bool) -> f64 {
     match crate::throughput::load(model) {
         Some(entry) => crate::throughput::effective_tps(&entry, dl_bps, using_relay),
         None => 10.0, // fallback until benchmark is run
