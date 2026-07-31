@@ -413,6 +413,8 @@ pub async fn run_native_node(
     )));
     let mut ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     let mut pending_update_version: Option<String> = None;
+    // Deadline for the reachability-change settle window; None = no change pending.
+    let mut announce_settle: Option<tokio::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -470,22 +472,19 @@ pub async fn run_native_node(
                         + Duration::from_secs(crate::node::jitter_secs(300, 30)));
             }
 
-            // Reachability or relay status changed. This is the arm that
-            // replaces the p2pd path's whole restart cluster: there, changing
-            // announce addresses meant re-spawning the daemon (deferred while
-            // RPC streams were in flight), and a relay circuit took ~7 minutes
-            // of AutoRelay latency to appear — which is why that path cached
-            // relay addresses on disk. Natively there is nothing to restart and
-            // nothing to cache; the record is simply re-published in place.
+            // Reachability or relay status changed — re-publish in place.
             //
-            // The settle delay absorbs a burst: acquiring a reservation and
-            // AutoNAT confirming an address land within seconds of each other
-            // at startup, and announcing once for the pair is better than twice
-            // for each. The watch channel is already equality-gated on the
-            // service side (address churn never reaches here), so this is the
-            // second of two independent guards rather than the only one.
-            Ok(()) = announce_state.changed() => {
-                tokio::time::sleep(ANNOUNCE_SETTLE).await;
+            // The delay is a deadline armed here and awaited in its own branch,
+            // not an inline sleep: sleeping inside the arm would hold up every
+            // other branch — most visibly shutdown — for the full settle window.
+            Ok(()) = announce_state.changed(), if announce_settle.is_none() => {
+                announce_settle = Some(tokio::time::Instant::now() + ANNOUNCE_SETTLE);
+            }
+
+            _ = async { tokio::time::sleep_until(announce_settle.unwrap()).await },
+                if announce_settle.is_some() =>
+            {
+                announce_settle = None;
                 let state = *announce_state.borrow_and_update();
                 if !state.announceable {
                     info!(
