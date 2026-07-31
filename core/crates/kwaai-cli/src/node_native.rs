@@ -57,9 +57,11 @@ use tracing::{info, warn};
 
 use crate::announce::{
     build_announce_records, build_unannounce_records, send_records_via_handle, AnnounceContext,
-    DHTServerInfo,
+    DHTServerInfo, StoreTiming,
 };
 use crate::config::KwaaiNetConfig;
+use crate::daemon::ShardManager;
+use crate::node::SigHup;
 
 /// Per-request budget on outbound unary calls.
 ///
@@ -272,6 +274,272 @@ impl NativeNode {
         for task in self.tasks {
             task.abort();
         }
+    }
+}
+
+/// Run the node on the native stack: start everything, announce, then serve
+/// until a shutdown signal.
+///
+/// Called from `run_node` after its shared prologue (PID file, SIGHUP
+/// registration, gRPC surface, identity, credentials, bootstrap-peer
+/// resolution), so this owns only what is genuinely path-specific. Returns when
+/// the node has unannounced and stopped; `run_node` does the PID cleanup and
+/// the deferred auto-update respawn exactly as it does for the p2pd path.
+///
+/// # Loop arms vs the p2pd path
+///
+/// | arm | native |
+/// | --- | --- |
+/// | inbound DHT RPC | **gone** — served in-swarm by `spawn_dht_service`, not over a forwarded TCP stream |
+/// | SIGHUP re-announce | same |
+/// | 300 s ± 30 s re-announce | same, minus the daemon watchdog that gated it |
+/// | periodic IDENTIFY + restart | **deferred to the NAT slice** |
+/// | 10 s p2pd heartbeat | **gone** — no child process to outlive us |
+/// | 60 s relay keepalive | **gone** — no unix socket to a child, no relay circuit yet |
+/// | Ollama recovery | same |
+/// | shutdown | same |
+pub async fn run_native_node(
+    config: &KwaaiNetConfig,
+    bootstrap_peers: &[String],
+    public_name: &str,
+    trust_attestations: Vec<String>,
+    sighup: &mut SigHup,
+) -> Result<Option<String>> {
+    info!("[1/4] Starting the native p2p stack...");
+    let node = NativeNode::start(config, bootstrap_peers).await?;
+    let peer_id = node.peer_id;
+
+    // ── Announce inputs ────────────────────────────────────────────────────
+    info!("[2/4] Preparing the DHT announcement...");
+
+    // Without NAT traversal a native node is "direct" when it has an address to
+    // advertise and unreachable otherwise; there is no relay circuit that could
+    // make the middle case ("reachable, but only via a relay") true yet. The
+    // p2pd path's `all_addrs_are_relay` check over IDENTIFY-discovered addresses
+    // has no native counterpart until the NAT slice lands, so this reports
+    // relay=false whenever an address is configured and relay=true when none is
+    // — the same "no usable address means don't claim Direct" rule.
+    let announce_addr = configured_announce_addr(config);
+    let using_relay = announce_addr.is_none();
+    if let Some(ref addr) = announce_addr {
+        info!("  Announce addr: {addr}");
+    } else {
+        warn!(
+            "No announce_addr/public_ip configured — a native node has no NAT traversal yet, so \
+             it will only be reachable if its listen address is directly dialable"
+        );
+    }
+
+    let dl_bps = crate::node::measure_download_bps_for(&config.model).await;
+    let throughput = crate::node::report_effective_tps(&config.model, dl_bps, using_relay);
+    let prefix = config.effective_dht_prefix();
+    let repository = crate::node::effective_repository(config);
+    info!("  DHT prefix:  {}", prefix);
+    info!("  Repository:  {}", repository);
+    info!("  Using relay: {}", using_relay);
+
+    let vpk_info = crate::node::initial_vpk_info(config, public_name).await;
+
+    let ctx = AnnounceContext {
+        peer_id,
+        prefix: &prefix,
+        repository: &repository,
+        total_blocks: config.model_total_blocks(),
+    };
+
+    let mut config = config.clone();
+    let mut server_info = DHTServerInfo::new(
+        config.start_block as i32,
+        config.effective_end_block() as i32,
+        public_name,
+        using_relay,
+        throughput,
+        trust_attestations,
+        vpk_info,
+        peer_id.to_base58(),
+    );
+
+    // ── Initial announcement ───────────────────────────────────────────────
+    info!("[3/4] Announcing to DHT...");
+    if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+        warn!("Initial announce failed: {e:#} — will retry at the 300 s tick");
+    }
+
+    info!("[4/4] ✅ KwaaiNet node running (native p2p)");
+    info!("   Peer ID : {}", peer_id.to_base58());
+    info!("   Name    : {}", public_name);
+    info!("   Model   : {}", config.model);
+    info!(
+        "   Blocks  : {}–{}",
+        config.start_block,
+        config.effective_end_block()
+    );
+    info!("   Map     : https://map.kwaai.ai");
+
+    // ── Event loop ─────────────────────────────────────────────────────────
+    // Same 300 s ± 30 s jittered cadence as the p2pd path: the DHT TTL is 360 s,
+    // so every record keeps at least 30 s of headroom, and the jitter stops a
+    // mass restart from thundering-herding the bootstraps.
+    let mut rep_store = crate::reputation::ReputationStore::load();
+    let mut next_announce = Box::pin(tokio::time::sleep(Duration::from_secs(
+        crate::node::jitter_secs(300, 30),
+    )));
+    let mut ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
+    let mut pending_update_version: Option<String> = None;
+
+    loop {
+        tokio::select! {
+            // SIGHUP (Unix) — re-read config and re-announce. `shard serve`
+            // signals a block-range change this way.
+            _ = sighup.recv() => {
+                info!("SIGHUP received — re-reading config and re-announcing");
+                reload_block_range(&mut config);
+                refresh_server_info(&mut server_info, &config);
+                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    warn!("Re-announce after SIGHUP failed: {e:#}");
+                }
+            }
+
+            // Periodic re-announcement.
+            _ = &mut next_announce => {
+                reload_block_range(&mut config);
+                #[cfg(not(unix))]
+                {
+                    let flag = crate::config::run_dir().join("reannounce.flag");
+                    if flag.exists() {
+                        let _ = std::fs::remove_file(&flag);
+                    }
+                }
+
+                crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
+                crate::node::refresh_vpk_info(&mut server_info, &config, public_name).await;
+
+                // Auto-update — installs a new binary when available (pre-v1.0)
+                // and breaks the loop so the respawn happens after our own
+                // cleanup. Identical to the p2pd path.
+                let auto_update = KwaaiNetConfig::load_or_create()
+                    .map(|c| c.contribute_policy(false).auto_update)
+                    .unwrap_or(false);
+                if auto_update {
+                    if let Some(version) = crate::node::maybe_auto_update().await {
+                        pending_update_version = Some(version);
+                        break;
+                    }
+                }
+
+                refresh_server_info(&mut server_info, &config);
+                info!(
+                    "Re-announcing to DHT (shard_ready={})...",
+                    ShardManager::shard_is_ready()
+                );
+                match node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    Ok(timings) => record_reputation(&mut rep_store, timings),
+                    Err(e) => warn!("Re-announce failed: {e:#}"),
+                }
+
+                next_announce
+                    .as_mut()
+                    .reset(tokio::time::Instant::now()
+                        + Duration::from_secs(crate::node::jitter_secs(300, 30)));
+            }
+
+            // Ollama came back up — re-announce immediately so clients learn the
+            // host is usable again without waiting out the 300 s tick.
+            Some(()) = ollama_recovery_rx.recv() => {
+                info!("Ollama recovered — triggering immediate re-announce");
+                refresh_server_info(&mut server_info, &config);
+                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    warn!("Re-announce after Ollama recovery failed: {e:#}");
+                }
+            }
+
+            _ = crate::node::shutdown_signal() => {
+                info!("Shutdown signal received");
+                break;
+            }
+        }
+    }
+
+    // Tombstone before tearing down the swarm, so the map drops us immediately
+    // rather than waiting out the TTL.
+    info!("Unannouncing from DHT...");
+    node.unannounce(&ctx, &server_info, bootstrap_peers).await;
+    node.shutdown().await;
+
+    Ok(pending_update_version)
+}
+
+/// The address this node advertises, or `None` when it has none configured.
+///
+/// Same precedence as the p2pd path: an explicit `announce_addr` multiaddr
+/// wins, else `public_ip` formatted with `public_port` (for port-forwarded
+/// deployments) or the listen `port`. An empty `public_ip` string means "no
+/// public IP", not "the empty address".
+fn configured_announce_addr(config: &KwaaiNetConfig) -> Option<String> {
+    config.announce_addr.clone().or_else(|| {
+        let port = config.public_port.unwrap_or(config.port);
+        config
+            .public_ip
+            .as_deref()
+            .filter(|ip| !ip.is_empty())
+            .map(|ip| format!("/ip4/{ip}/tcp/{port}"))
+    })
+}
+
+/// Re-read the on-disk config for a block-range change written by
+/// `shard serve` (via `signal_reannounce`) or `kwaainet config set`.
+fn reload_block_range(config: &mut KwaaiNetConfig) {
+    let Ok(fresh) = KwaaiNetConfig::load_or_create() else {
+        return;
+    };
+    if fresh.start_block == config.start_block && fresh.blocks == config.blocks {
+        return;
+    }
+    info!(
+        "Block range updated: [{}–{}) → [{}–{})",
+        config.start_block,
+        config.effective_end_block(),
+        fresh.start_block,
+        fresh.start_block + fresh.blocks,
+    );
+    config.start_block = fresh.start_block;
+    config.blocks = fresh.blocks;
+}
+
+/// Sync the announced block range and readiness state from the live config.
+fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
+    server_info.start_block = config.start_block as i32;
+    server_info.end_block = config.effective_end_block() as i32;
+    server_info.state = if ShardManager::shard_is_ready() { 2 } else { 0 };
+}
+
+/// Fold one announce round's per-bootstrap timings into the reputation store.
+///
+/// The announce doubles as the reputation probe on both paths — no extra RPCs.
+/// The display name is the `/dns/` hostname from the bootstrap multiaddr when
+/// there is one, else a truncated peer ID.
+fn record_reputation(rep: &mut crate::reputation::ReputationStore, timings: Vec<StoreTiming>) {
+    use crate::reputation::{now_secs, PeerObservation};
+    for (peer_id_str, addr, latency_ms, success) in timings {
+        let name = addr
+            .split('/')
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|w| w[0] == "dns" || w[0] == "dns4" || w[0] == "dns6")
+            .map(|w| w[1].to_string())
+            .unwrap_or_else(|| peer_id_str[..peer_id_str.len().min(12)].to_string());
+        rep.record(
+            &peer_id_str,
+            &name,
+            PeerObservation {
+                timestamp_secs: now_secs(),
+                latency_ms,
+                success,
+                observed_tps: None,
+                claimed_tps: None,
+                lease_outcome: None,
+            },
+        );
     }
 }
 
