@@ -263,8 +263,18 @@ pub struct Handler {
 
     /// Outbound requests not yet emitted as substream requests.
     pending_outbound: VecDeque<OutboundMessage>,
-    /// Emitted substream requests awaiting negotiation, in emission order —
-    /// `FullyNegotiatedOutbound`/`DialUpgradeError` arrive in the same order.
+    /// Emitted substream requests awaiting negotiation.
+    ///
+    /// **Not** correlated by position: with several calls in flight on one
+    /// connection, `FullyNegotiatedOutbound` events arrive in completion order,
+    /// which is not emission order — each negotiation is an independent
+    /// round-trip. Streams are therefore matched to their request by *negotiated
+    /// protocol* (see [`Handler::take_requested`]), which is exact here because
+    /// each substream request proposes exactly one protocol.
+    ///
+    /// Two concurrent calls to the *same* protocol are still matched
+    /// positionally among themselves, which is correct: they are
+    /// interchangeable, each carrying its own reply channel.
     requested_outbound: VecDeque<OutboundMessage>,
 
     /// Stream workers. Timeouts live inside each future so every worker
@@ -352,12 +362,29 @@ impl Handler {
         );
     }
 
-    fn on_fully_negotiated_outbound(&mut self, mut stream: Stream, proto: UnaryProtocol) {
-        let message = self
+    /// Claim the pending request that `proto` belongs to.
+    ///
+    /// Falls back to the oldest request when the protocol does not match any —
+    /// which should not happen, but losing the correlation must not strand a
+    /// caller's reply channel forever.
+    fn take_requested(&mut self, proto: &UnaryProtocol) -> Option<OutboundMessage> {
+        let index = self
             .requested_outbound
-            .pop_front()
-            .expect("negotiated an outbound stream without a pending message");
-        debug_assert_eq!(message.proto, proto, "outbound negotiation out of order");
+            .iter()
+            .position(|m| &m.proto == proto)
+            .or(if self.requested_outbound.is_empty() {
+                None
+            } else {
+                Some(0)
+            })?;
+        self.requested_outbound.remove(index)
+    }
+
+    fn on_fully_negotiated_outbound(&mut self, mut stream: Stream, proto: UnaryProtocol) {
+        let Some(message) = self.take_requested(&proto) else {
+            debug!(%proto, "negotiated an outbound stream without a pending message");
+            return;
+        };
 
         let callee = self.remote.to_bytes();
         let timeout = self.config.request_timeout;
@@ -405,11 +432,17 @@ impl Handler {
         );
     }
 
+    /// A failed upgrade carries no negotiated protocol — there is none — so the
+    /// oldest pending request is claimed. With several *different* protocols in
+    /// flight this can attribute a refusal to the wrong call, but both calls are
+    /// to the same peer and only one of them can be the failing one; the other
+    /// then fails on its own path. Reporting the wrong protocol name in the
+    /// error text is strictly better than panicking or leaking a reply channel.
     fn on_dial_upgrade_error(&mut self, error: StreamUpgradeError<std::convert::Infallible>) {
-        let message = self
-            .requested_outbound
-            .pop_front()
-            .expect("upgrade error for an outbound stream without a pending message");
+        let Some(message) = self.requested_outbound.pop_front() else {
+            debug!("upgrade error for an outbound stream without a pending message");
+            return;
+        };
 
         let error = match error {
             StreamUpgradeError::Timeout => UnaryError::Timeout,

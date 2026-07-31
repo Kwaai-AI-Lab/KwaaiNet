@@ -381,6 +381,56 @@ async fn a_slow_handler_does_not_serialize_other_calls() {
     assert!(responder.list_peers().await.is_ok());
 }
 
+/// Concurrent calls to **different** protocols on one connection must each get
+/// their own answer.
+///
+/// Regression test. `Handler::requested_outbound` used to be correlated by
+/// position, on the assumption that `FullyNegotiatedOutbound` events arrive in
+/// the order the substream requests were emitted. They do not: each negotiation
+/// is an independent round trip, so with two protocols in flight the second to
+/// complete could be paired with the first request's reply channel — sending one
+/// caller the other's response, and tripping a `debug_assert` in debug builds.
+///
+/// `a_slow_handler_does_not_serialize_other_calls` misses this because all of
+/// its calls share one protocol, where positional matching is accidentally
+/// correct. Phase 3's control server made it reachable in practice: two socket
+/// clients each serving a different protocol on one node is the `shard serve` +
+/// `storage serve` deployment.
+#[tokio::test]
+async fn concurrent_calls_to_different_protocols_do_not_cross_talk() {
+    const PROTO_A: &str = "DHTProtocol.rpc_store";
+    const PROTO_B: &str = "DHTProtocol.rpc_find";
+
+    let (caller, responder, responder_id, _tasks) = connected_pair().await;
+
+    for (proto, tag) in [(PROTO_A, &b"A:"[..]), (PROTO_B, &b"B:"[..])] {
+        let tag = tag.to_vec();
+        responder
+            .add_unary_handler(proto, move |data: Vec<u8>| {
+                let tag = tag.clone();
+                async move {
+                    let mut out = tag.clone();
+                    out.extend_from_slice(&data);
+                    Ok(out)
+                }
+            })
+            .await
+            .expect("register handler");
+    }
+
+    let (a, b) = tokio::join!(
+        caller.call_unary_handler(responder_id, PROTO_A, b"one"),
+        caller.call_unary_handler(responder_id, PROTO_B, b"two"),
+    );
+
+    assert_eq!(
+        a.expect("the rpc_store call must succeed"),
+        b"A:one",
+        "each concurrent call must receive its own protocol's response"
+    );
+    assert_eq!(b.expect("the rpc_find call must succeed"), b"B:two");
+}
+
 // ---------------------------------------------------------------------------
 // Shutdown
 // ---------------------------------------------------------------------------
