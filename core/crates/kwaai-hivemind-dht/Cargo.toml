@@ -21,7 +21,9 @@ libp2p = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }  # MessagePack
+rmpv = "1.0"                      # dynamic MessagePack (DictionaryDHTValue Ext payloads)
 prost = { workspace = true }       # Protobuf
+sha1 = "0.10"                     # DHTID derivation: SHA1 over msgpack bytes
 bincode = { workspace = true }
 unsigned-varint = { workspace = true }  # uvarint framing on the hivemind unary wire
 
