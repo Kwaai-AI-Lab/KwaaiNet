@@ -27,10 +27,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use libp2p::{
+    autonat,
     core::ConnectedPoint,
-    identify, identity, kad, noise, ping,
+    dcutr, identify, identity, kad, noise, ping, relay,
     swarm::{ConnectionId, DialError, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+    tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, trace, warn};
@@ -133,7 +134,16 @@ impl NetworkService {
             // addresses; without it those dials fail at the transport layer.
             .with_dns()
             .context("configuring DNS resolution")?
-            .with_behaviour(|kp| KwaaiBehaviour::new(kp, &behaviour_config))
+            // Wraps the transport so `/…/p2p-circuit` addresses dial through a
+            // relay, and hands back the matching client behaviour. It must come
+            // after `with_dns` (the circuit transport wraps the resolved one),
+            // and it is why the `with_behaviour` closure below takes two
+            // arguments rather than one.
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .context("configuring the relay client transport")?
+            .with_behaviour(|kp, relay_client| {
+                KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
+            })
             .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
             .with_swarm_config(|c| c.with_idle_connection_timeout(config.connection_timeout))
             .build();
@@ -714,6 +724,84 @@ impl NetworkService {
             }
             KwaaiBehaviourEvent::RawStream(raw_stream::Event::InboundStream(inbound)) => {
                 self.dispatch_stream(inbound)
+            }
+
+            // ---- NAT traversal -------------------------------------
+            // Log-only for now; the reachability machine and the relay manager
+            // take these over in the commits that follow.
+            KwaaiBehaviourEvent::Autonat(event) => self.handle_autonat_event(event),
+
+            KwaaiBehaviourEvent::RelayClient(event) => match event {
+                relay::client::Event::ReservationReqAccepted {
+                    relay_peer_id,
+                    renewal,
+                    ..
+                } => info!(relay = %relay_peer_id, renewal, "relay reservation accepted"),
+                relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+                    debug!(relay = %relay_peer_id, "outbound circuit established")
+                }
+                relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+                    debug!(peer = %src_peer_id, "inbound circuit established")
+                }
+            },
+
+            KwaaiBehaviourEvent::RelayServer(event) => {
+                trace!(?event, "relay hop server event")
+            }
+
+            KwaaiBehaviourEvent::Dcutr(dcutr::Event {
+                remote_peer_id,
+                result,
+            }) => match result {
+                // A success here means the relayed connection was replaced by a
+                // direct one — the whole point of holding the circuit.
+                Ok(connection_id) => {
+                    info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded")
+                }
+                Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
+            },
+
+            KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
+        }
+    }
+
+    /// AutoNAT status and probe outcomes.
+    ///
+    /// Note what is *not* here: 0.12 never emits `ToSwarm::ExternalAddrConfirmed`
+    /// of its own accord, so a `Public` verdict is inert until something calls
+    /// `add_external_address`. The reachability machine does that.
+    fn handle_autonat_event(&mut self, event: autonat::Event) {
+        match event {
+            autonat::Event::StatusChanged { old, new } => {
+                info!(?old, ?new, "autonat reachability status changed");
+            }
+            autonat::Event::OutboundProbe(probe) => {
+                trace!(?probe, "autonat outbound probe");
+            }
+            autonat::Event::InboundProbe(probe) => {
+                trace!(?probe, "autonat inbound probe");
+            }
+        }
+    }
+
+    /// UPnP port-mapping outcomes.
+    ///
+    /// Every failure arm is informational, never an error: a node with no IGD
+    /// gateway, or one behind a gateway that refuses to map, is the *expected*
+    /// case on most networks and is exactly what relay reservations are for.
+    fn handle_upnp_event(&mut self, event: upnp::Event) {
+        match event {
+            upnp::Event::NewExternalAddr(addr) => {
+                info!(%addr, "upnp mapped an external address");
+            }
+            upnp::Event::ExpiredExternalAddr(addr) => {
+                info!(%addr, "upnp mapping expired");
+            }
+            upnp::Event::GatewayNotFound => {
+                debug!("no upnp gateway found; relying on autonat and relays");
+            }
+            upnp::Event::NonRoutableGateway => {
+                debug!("upnp gateway is not on a routable network; ignoring it");
             }
         }
     }
