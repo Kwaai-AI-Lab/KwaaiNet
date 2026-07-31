@@ -29,7 +29,7 @@ use libp2p::{
     swarm::{ConnectionId, DialError, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_p2p};
@@ -41,7 +41,7 @@ use crate::handle::{
     NetworkHandle, PeerInfo,
 };
 use crate::raw_stream;
-use crate::reachability::{Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
+use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
 use crate::relay_manager::{RelayAction, RelayManager};
 use crate::unary::{self, UnaryProtocol};
 
@@ -104,6 +104,10 @@ pub struct NetworkService {
     /// and swarm-level `ListenerClosed` events — neither of which a behaviour
     /// or a separate task can see.
     relays: RelayManager,
+    /// Publishes [`AnnounceState`] to the announce loop. Sends are gated on a
+    /// real change, so a consumer that only ever reacts to `changed()` does not
+    /// re-announce on address churn.
+    announce_tx: watch::Sender<AnnounceState>,
 }
 
 /// A parked DHT lookup.
@@ -214,6 +218,7 @@ impl NetworkService {
         );
 
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
+        let (announce_tx, announce_rx) = watch::channel(AnnounceState::initial());
         let mut service = Self {
             swarm,
             commands: rx,
@@ -227,16 +232,21 @@ impl NetworkService {
             stream_handlers: HashMap::new(),
             reachability,
             relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations),
+            announce_tx,
         };
         service.apply_reachability_effects(startup_effects);
         // `force_private` starts Private, so this is what makes reservations
         // begin at t=0 rather than after the grace period.
         service.sync_relay_enablement();
+        // A declared external address or `force_private` means the node already
+        // knows where it stands, so the announce loop can start immediately
+        // instead of waiting out the grace period.
+        service.publish_announce_state();
 
         let task = tokio::spawn(service.run());
         info!(peer_id = %local_peer_id, "network service started");
         Ok((
-            NetworkHandle::new(local_peer_id, tx, config.request_timeout),
+            NetworkHandle::new(local_peer_id, tx, config.request_timeout, announce_rx),
             task,
         ))
     }
@@ -723,7 +733,10 @@ impl NetworkService {
                 // A circuit address on a listener we opened means the relay
                 // accepted our reservation. relay-client confirms the address
                 // as external itself, so there is nothing to add here.
-                self.relays.on_new_listen_addr(listener_id, &address);
+                if self.relays.on_new_listen_addr(listener_id, &address) {
+                    // `using_relay` just became true.
+                    self.publish_announce_state();
+                }
             }
 
             SwarmEvent::ListenerClosed {
@@ -743,10 +756,16 @@ impl NetworkService {
                         Err(reason_str.as_str())
                     }
                 };
-                let (actions, _lost) =
+                let (actions, lost) =
                     self.relays
                         .on_listener_closed(listener_id, reason, Instant::now());
                 self.apply_relay_actions(actions);
+                if lost {
+                    // A confirmed reservation went away, so `using_relay` may
+                    // have dropped. An unconfirmed one never reached the
+                    // announce state in the first place.
+                    self.publish_announce_state();
+                }
             }
 
             SwarmEvent::ListenerError { listener_id, error } => {
@@ -923,6 +942,37 @@ impl NetworkService {
         }
     }
 
+    /// Recompute the announce state and publish it if anything a consumer acts
+    /// on changed.
+    ///
+    /// The equality gate is the whole point. A node's addresses churn
+    /// constantly — identify pushes, a reservation moving between relays, a
+    /// re-NAT — and none of that belongs in a DHT record that carries no
+    /// addresses (see [`AnnounceState`]). Only a change in *how reachable the
+    /// node is* wakes the announce loop.
+    fn publish_announce_state(&mut self) {
+        let current = self.reachability.current().clone();
+        let has_circuit = self.relays.has_circuit();
+        self.announce_tx.send_if_modified(|state| {
+            let next = AnnounceState::derive(&current, has_circuit, state.epoch);
+            if !next.differs(state) {
+                return false;
+            }
+            *state = AnnounceState {
+                epoch: state.epoch + 1,
+                ..next
+            };
+            info!(
+                reachability = ?state.reachability,
+                using_relay = state.using_relay,
+                announceable = state.announceable,
+                epoch = state.epoch,
+                "announce state changed"
+            );
+            true
+        });
+    }
+
     /// Turn relay-seeking on or off to match the current reachability verdict.
     ///
     /// Private wants circuits; Public does not (holding one costs a relay real
@@ -934,9 +984,15 @@ impl NetworkService {
         let actions = match self.reachability.current() {
             Reachability::Private => self.relays.set_enabled(true, Instant::now()),
             Reachability::Public { .. } => self.relays.set_enabled(false, Instant::now()),
-            Reachability::Unknown => return,
+            Reachability::Unknown => {
+                self.publish_announce_state();
+                return;
+            }
         };
         self.apply_relay_actions(actions);
+        // Reachability moved, and dropping reservations may have moved
+        // `using_relay` with it.
+        self.publish_announce_state();
     }
 
     /// Carry out what the relay manager asked for.

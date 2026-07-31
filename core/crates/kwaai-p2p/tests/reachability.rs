@@ -161,6 +161,111 @@ async fn a_disconnecting_peer_stops_being_an_observer() {
     .await;
 }
 
+// ---------------------------------------------------------------------------
+// The announce watch channel
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_declared_node_is_announceable_immediately() {
+    // The state is right from the first read, with no round trip to the event
+    // loop.
+    let (handle, _task, _id) = spawn(NetworkConfig {
+        external_addr: Some("/ip4/203.0.113.7/tcp/8080".to_string()),
+        ..NetworkConfig::for_tests()
+    });
+
+    let state = handle.current_announce_state();
+    assert_eq!(state.reachability, kwaai_p2p::ReachabilityKind::Public);
+    assert!(state.announceable);
+    assert!(!state.using_relay, "a public node is not using a relay");
+}
+
+#[tokio::test]
+async fn a_private_node_is_announceable_but_not_yet_relaying() {
+    // `force_private` is a statement about reachability, not about having a
+    // circuit — `using_relay` stays false until one is actually confirmed,
+    // because announcing it earlier would tell the map a node is reachable
+    // through a relay that has not agreed to carry it.
+    let (handle, _task, _id) = spawn(NetworkConfig {
+        force_private: true,
+        ..NetworkConfig::for_tests()
+    });
+
+    let state = handle.current_announce_state();
+    assert_eq!(state.reachability, kwaai_p2p::ReachabilityKind::Private);
+    assert!(state.announceable);
+    assert!(!state.using_relay);
+}
+
+#[tokio::test]
+async fn an_unknown_node_is_not_announceable() {
+    // A node that does not know where it stands should not be telling the
+    // network it is Direct.
+    let (handle, _task, _id) = spawn(NetworkConfig::for_tests());
+    let state = handle.current_announce_state();
+    assert_eq!(state.reachability, kwaai_p2p::ReachabilityKind::Unknown);
+    assert!(!state.announceable);
+}
+
+#[tokio::test]
+async fn address_churn_does_not_wake_the_announce_loop() {
+    // The regression this channel exists to prevent. A node's addresses change
+    // constantly — identify pushes, connections coming and going — and the DHT
+    // record carries no addresses at all, so none of it should cause a
+    // re-announce. Only reachability or `using_relay` changing should.
+    let (alice, _alice_task, _alice_id) = spawn(NetworkConfig {
+        force_private: true,
+        ..NetworkConfig::for_tests()
+    });
+
+    let mut announce = alice.announce_state();
+    let before = *announce.borrow();
+
+    // Plenty of address activity: three peers connect, identify, disconnect.
+    for _ in 0..3 {
+        let (bob, _bob_task, bob_id) = spawn(NetworkConfig::for_tests());
+        let bob_addr = dialable_addr(&bob, bob_id).await;
+        alice
+            .connect_peer(&bob_addr.to_string())
+            .await
+            .expect("dial");
+        eventually("alice to observe an address", || async {
+            let observed = alice.observed_addrs().await.ok()?;
+            (!observed.is_empty()).then_some(())
+        })
+        .await;
+        alice.disconnect_peer(bob_id).await.expect("disconnect");
+    }
+
+    // Nothing about reachability changed, so nothing was published.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), announce.changed())
+            .await
+            .is_err(),
+        "address churn must not wake the announce loop"
+    );
+    assert_eq!(*announce.borrow(), before, "including the epoch");
+}
+
+#[tokio::test]
+async fn each_receiver_waits_for_the_next_real_change() {
+    // `announce_state()` marks the current value as seen, so a consumer that
+    // loops on `changed()` does not immediately re-announce what it already
+    // announced.
+    let (handle, _task, _id) = spawn(NetworkConfig {
+        force_private: true,
+        ..NetworkConfig::for_tests()
+    });
+
+    let mut announce = handle.announce_state();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), announce.changed())
+            .await
+            .is_err(),
+        "a fresh receiver should not fire on the value it was created with"
+    );
+}
+
 #[tokio::test]
 async fn loopback_observations_never_promote_a_node() {
     // Two loopback swarms observe each other at 127.0.0.1. That clears the
