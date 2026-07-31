@@ -1,5 +1,6 @@
 //! kwaainet – KwaaiNet node CLI
 
+mod announce;
 mod api;
 mod block_rpc;
 mod calibration;
