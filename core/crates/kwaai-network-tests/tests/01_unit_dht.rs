@@ -340,7 +340,10 @@ fn node_info_carries_a_20_byte_dht_id() {
     let ni = NodeInfo::from_peer_id(original);
 
     assert_eq!(ni.node_id.len(), 20, "DHTID.to_bytes() is 20 bytes");
-    assert_eq!(ni.node_id, kwaai_hivemind_dht::dht_id_from_peer_id(&original));
+    assert_eq!(
+        ni.node_id,
+        kwaai_hivemind_dht::dht_id_from_peer_id(&original)
+    );
     assert_ne!(ni.node_id, original.to_bytes(), "must not be the multihash");
     rec.finish(true);
 }
