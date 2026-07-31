@@ -742,3 +742,26 @@ Public flip — the service's connected-check compensates; `pick_candidate` recl
 candidate list per call; two relay tests need a positive control / an explicit timeout
 to fail rather than hang (`a_loopback_relay_is_never_discovered_by_identify`,
 `a_node_with_no_relay_candidates_does_not_spin`).
+
+### Live-fleet incident and fix: the dictionary-subkey type freeze (2026-07-31)
+
+First real-network validation of the native node surfaced a wire bug invisible to every
+self-consistent test: our `FOUND_DICTIONARY` blobs wrapped subkeys in msgpack **bin**,
+while hivemind re-encodes its (deserialized) subkeys as msgpack **str**. A Python
+hivemind client merging the same record from a bootstrap (str subkey) and from us
+(bytes subkey) hits `TypeError: '<' not supported between 'bytes' and 'str'` in its
+candidate heap, the traversal worker dies, and — because hivemind never resolves the
+outer future and the health-map updater wraps no timeout around `dht.get` — the
+map.kwaai.ai crawler froze. Reproduced twice against production (map freezes within one
+crawl cycle of a healthy native node joining) and then locally with a stock hivemind
+1.1.10.post2 client (full traceback). Fixed in `f872e2a`: subkeys now serialize as the
+msgpack object their raw bytes encode (str stays str; non-msgpack bytes still pass as
+bin); verified live — the same crawl completes in 0.7s with the native node in the
+traversal and its subkey present.
+
+Lessons recorded: (1) symmetric serialize/parse tests cannot catch asymmetric-encoding
+bugs — a Python-hivemind golden interop check belongs in the follow-ups; (2) the
+hivemind/health-service side has a real robustness gap (a poisoned record type hangs
+the crawler forever; the updater has no timeout and the map UI shows no staleness) —
+worth reporting upstream; (3) debugging artifact: a node run under CodeLLDB freezes on
+panic/pause and becomes a half-dead peer holding sockets in CLOSE_WAIT.
