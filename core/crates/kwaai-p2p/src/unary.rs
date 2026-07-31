@@ -282,6 +282,16 @@ pub struct Handler {
     /// `max_concurrent_streams`, with a small overflow allowance for workers
     /// that only write a refusal frame.
     inbound_workers: FuturesUnordered<BoxFuture<'static, ()>>,
+    /// Refusal-frame writers, tracked apart from `inbound_workers` so pending
+    /// refusals neither consume real capacity nor inflate the measure that
+    /// admits them.
+    refusal_workers: FuturesUnordered<BoxFuture<'static, ()>>,
+    /// Waker from the last `poll`, woken whenever a throttle-relevant slot is
+    /// freed outside worker completion (`FuturesUnordered` wakes on its own
+    /// completions, but `requested_outbound` shrinking on a negotiation
+    /// failure does not — without this, a queued call could wait forever
+    /// behind a slot freed by `DialUpgradeError`).
+    waker: Option<std::task::Waker>,
     /// Outbound stream workers (our calls). Bounded by
     /// `max_concurrent_streams` via emission throttling in `poll`, so a local
     /// call burst cannot starve inbound serving. Timeouts live inside each
@@ -314,7 +324,9 @@ impl Handler {
             requested_outbound: HashMap::new(),
             next_outbound_id: 0,
             inbound_workers: FuturesUnordered::new(),
+            refusal_workers: FuturesUnordered::new(),
             outbound_workers: FuturesUnordered::new(),
+            waker: None,
             inbound_rx,
             inbound_tx,
         }
@@ -325,9 +337,9 @@ impl Handler {
             // Refuse politely while the overflow allowance lasts: read the
             // request (its callId is needed for any reply), answer with the
             // error arm, close. Beyond the allowance, drop outright.
-            if self.inbound_workers.len() < self.config.max_concurrent_streams + REFUSAL_SLOTS {
+            if self.refusal_workers.len() < REFUSAL_SLOTS {
                 warn!(%proto, "refusing inbound unary stream: at capacity");
-                self.inbound_workers.push(
+                self.refusal_workers.push(
                     async move {
                         let refusal = async {
                             let frame = wire::read_framed_futures(&mut stream).await?;
@@ -404,7 +416,16 @@ impl Handler {
         );
     }
 
+    /// Re-run `poll` after a throttle-relevant slot was freed outside the
+    /// worker pools (they wake the task themselves; map mutations do not).
+    fn wake(&mut self) {
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+
     fn on_fully_negotiated_outbound(&mut self, mut stream: Stream, proto: UnaryProtocol, id: u64) {
+        self.wake();
         let Some(message) = self.requested_outbound.remove(&id) else {
             debug!(%proto, id, "negotiated an outbound stream without a pending message");
             return;
@@ -468,6 +489,7 @@ impl Handler {
         error: StreamUpgradeError<std::convert::Infallible>,
         id: u64,
     ) {
+        self.wake();
         let Some(message) = self.requested_outbound.remove(&id) else {
             debug!(
                 id,
@@ -537,6 +559,7 @@ impl ConnectionHandler for Handler {
         // Drive both worker pools; outcomes travel through oneshots, so
         // completion here is just cleanup.
         while let Poll::Ready(Some(())) = self.inbound_workers.poll_next_unpin(cx) {}
+        while let Poll::Ready(Some(())) = self.refusal_workers.poll_next_unpin(cx) {}
         while let Poll::Ready(Some(())) = self.outbound_workers.poll_next_unpin(cx) {}
 
         if let Poll::Ready(Some(request)) = self.inbound_rx.poll_next_unpin(cx) {
@@ -565,6 +588,7 @@ impl ConnectionHandler for Handler {
             }
         }
 
+        self.waker = Some(cx.waker().clone());
         Poll::Pending
     }
 
