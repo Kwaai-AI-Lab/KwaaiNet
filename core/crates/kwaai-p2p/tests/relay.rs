@@ -153,6 +153,41 @@ async fn a_reservation_is_acquired_on_a_trusted_relay() {
 }
 
 #[tokio::test]
+async fn using_relay_follows_the_reservation() {
+    // `using_relay` is the one address-derived fact the DHT record carries, and
+    // it must track a *confirmed* reservation — not a requested one, which is
+    // no way for anybody to reach us.
+    let (relay, _relay_task, relay_addr) = spawn_relay().await;
+    let (client, _client_task, _id) = spawn_client(vec![relay_addr.clone()]);
+
+    // Private but not yet relaying.
+    let initial = client.current_announce_state();
+    assert_eq!(initial.reachability, kwaai_p2p::ReachabilityKind::Private);
+    assert!(!initial.using_relay);
+    assert!(initial.announceable);
+
+    let mut announce = client.announce_state();
+    eventually("using_relay to become true", || async {
+        client.current_announce_state().using_relay.then_some(())
+    })
+    .await;
+    // The change was published, not merely observable by polling.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), announce.changed())
+            .await
+            .is_ok(),
+        "acquiring a circuit must wake the announce loop"
+    );
+
+    // …and losing the relay takes it back down.
+    relay.shutdown().await.expect("relay shutdown");
+    eventually("using_relay to become false again", || async {
+        (!client.current_announce_state().using_relay).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_second_peer_can_dial_us_through_the_circuit() {
     // The point of the whole exercise: a reservation is only worth holding if
     // it actually carries a connection.

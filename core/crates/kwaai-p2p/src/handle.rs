@@ -26,7 +26,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use libp2p::{Multiaddr, PeerId};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::error::{P2PError, P2PResult};
 use crate::raw_stream::{InboundStream, OpenResult, RawStream, RawStreamError};
@@ -228,6 +228,11 @@ pub type InboundStreamSender = mpsc::UnboundedSender<InboundStream>;
 pub struct NetworkHandle {
     local_peer_id: PeerId,
     commands: mpsc::Sender<Command>,
+    /// A live view of the announce-relevant state. Held rather than fetched so
+    /// the announce loop can `await` a change instead of polling for one — the
+    /// gap slice 1 left open, where an address change could not wake a
+    /// re-announce at all.
+    announce_rx: watch::Receiver<crate::reachability::AnnounceState>,
     /// The configured per-call unary budget, kept here purely so a timeout can
     /// be reported as [`P2PError::Timeout`] with the real number of
     /// milliseconds rather than a placeholder.
@@ -239,12 +244,35 @@ impl NetworkHandle {
         local_peer_id: PeerId,
         commands: mpsc::Sender<Command>,
         request_timeout: std::time::Duration,
+        announce_rx: watch::Receiver<crate::reachability::AnnounceState>,
     ) -> Self {
         Self {
             local_peer_id,
             commands,
+            announce_rx,
             request_timeout,
         }
+    }
+
+    /// A receiver for [`crate::reachability::AnnounceState`] changes.
+    ///
+    /// The announce loop's wake-up signal. Each caller gets its own receiver
+    /// marked as having seen the current value, so `changed()` resolves on the
+    /// *next* real change rather than firing immediately.
+    ///
+    /// Sends are equality-gated in the service: an address moving, a
+    /// reservation migrating between relays, an identify push — none of it
+    /// wakes this. Only reachability or `using_relay` actually changing does,
+    /// which is what makes it safe to re-announce on every notification.
+    pub fn announce_state(&self) -> watch::Receiver<crate::reachability::AnnounceState> {
+        let mut rx = self.announce_rx.clone();
+        rx.borrow_and_update();
+        rx
+    }
+
+    /// The announce state right now, without waiting for a change.
+    pub fn current_announce_state(&self) -> crate::reachability::AnnounceState {
+        *self.announce_rx.borrow()
     }
 
     /// This node's peer ID. Available without touching the event loop.

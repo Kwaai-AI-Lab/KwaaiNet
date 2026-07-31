@@ -82,6 +82,70 @@ pub enum ReachabilityKind {
     Private,
 }
 
+/// What the announce loop needs to know, and nothing else.
+///
+/// Notably **no addresses**. The DHT record (`DHTServerInfo`) carries no
+/// multiaddr field at all — peers resolve addresses through Kademlia and
+/// identify — so address publication is `Swarm::add_external_address` plus an
+/// identify push, entirely separate from announcing. The only address-derived
+/// fact the record contains is the `using_relay` boolean.
+///
+/// That is what makes this channel quiet: an address can change, a reservation
+/// can move from one relay to another, identify can push a dozen times, and
+/// none of it alters this struct. Only a genuine change in *how reachable the
+/// node is* does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnnounceState {
+    /// Public, Private, or not yet known.
+    pub reachability: ReachabilityKind,
+    /// Whether at least one circuit reservation is confirmed. Goes straight
+    /// into the DHT record's `using_relay`.
+    pub using_relay: bool,
+    /// Whether there is any point announcing yet. False only while reachability
+    /// is Unknown — a node that does not know where it stands should not be
+    /// telling the network it is Direct.
+    pub announceable: bool,
+    /// Increments on every published change, so a consumer can tell "no change"
+    /// from "changed back to what it was".
+    pub epoch: u64,
+}
+
+impl AnnounceState {
+    /// The state before anything is known.
+    pub fn initial() -> Self {
+        Self {
+            reachability: ReachabilityKind::Unknown,
+            using_relay: false,
+            announceable: false,
+            epoch: 0,
+        }
+    }
+
+    /// Derive the state from a reachability verdict and whether a circuit is
+    /// live, preserving `epoch` (the sender bumps it only on a real change).
+    pub fn derive(reachability: &Reachability, has_circuit: bool, epoch: u64) -> Self {
+        let kind = reachability.kind();
+        Self {
+            reachability: kind,
+            // Only a *confirmed* reservation counts. A requested-but-unanswered
+            // one is not a way for anybody to reach us, and announcing
+            // `using_relay` on the strength of one would tell the map a node is
+            // reachable when it is not.
+            using_relay: has_circuit,
+            announceable: kind != ReachabilityKind::Unknown,
+            epoch,
+        }
+    }
+
+    /// Whether two states differ in anything a consumer acts on — i.e.
+    /// everything but the epoch.
+    pub fn differs(&self, other: &Self) -> bool {
+        self.reachability != other.reachability
+            || self.using_relay != other.using_relay
+            || self.announceable != other.announceable
+    }
+}
+
 impl Reachability {
     pub fn kind(&self) -> ReachabilityKind {
         match self {
