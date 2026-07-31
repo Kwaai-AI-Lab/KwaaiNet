@@ -199,18 +199,43 @@ pub struct FindResponse {
 // ============================================================================
 
 impl NodeInfo {
-    /// Create NodeInfo from libp2p PeerId
-    /// NOTE: Hivemind's NodeInfo only has node_id (no separate peer_id field)
+    /// Create `NodeInfo` from a libp2p [`PeerId`].
+    ///
+    /// `node_id` is a hivemind **DHTID**, not a peer ID: `dht.proto` documents the
+    /// field as "sender's own node id serialized with `DHTID.to_bytes()`", and
+    /// `DHTID.to_bytes()` is a fixed 20-byte big-endian integer
+    /// (`hivemind/dht/routing.py:288-290`, `HASH_NBYTES = 20` at `routing.py:252`).
+    /// Hivemind derives it as `DHTID.generate(source=peer_id.to_bytes())` =
+    /// `SHA1(bytes)` (`routing.py:261-271`); the source is already `bytes`, so the
+    /// msgpack step in `generate()` is skipped and SHA1 runs over the raw multihash.
+    ///
+    /// Our `map-server/src/crawler.rs:74-77` computes exactly this for its own ID.
     pub fn from_peer_id(peer_id: PeerId) -> Self {
         Self {
-            node_id: peer_id.to_bytes(),
+            node_id: dht_id_from_peer_id(&peer_id),
         }
     }
 
-    /// Try to parse PeerId from NodeInfo
+    /// Try to parse a `PeerId` from `NodeInfo`.
+    ///
+    /// Note that for a spec-conformant peer this always returns `None`: `node_id`
+    /// is a one-way SHA1 DHTID, so the originating `PeerId` cannot be recovered.
+    /// Take caller identity from the libp2p connection instead.
     pub fn to_peer_id(&self) -> Option<PeerId> {
         PeerId::from_bytes(&self.node_id).ok()
     }
+}
+
+/// Derive a hivemind 20-byte DHTID from a libp2p [`PeerId`].
+///
+/// `DHTID.generate(source=peer_id.to_bytes())` → `SHA1(peer_id.to_bytes())`
+/// (`hivemind/dht/routing.py:261-271`).
+pub fn dht_id_from_peer_id(peer_id: &PeerId) -> Vec<u8> {
+    use sha1::{Digest, Sha1};
+    Sha1::new()
+        .chain_update(peer_id.to_bytes())
+        .finalize()
+        .to_vec()
 }
 
 impl RequestAuthInfo {
@@ -384,5 +409,38 @@ impl FindResponse {
             results,
             peer: Some(peer),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `NodeInfo.node_id` must be a 20-byte `DHTID.to_bytes()`
+    /// (`hivemind/dht/routing.py:288-290`), never the 34-38 byte peer multihash.
+    #[test]
+    fn node_info_node_id_is_20_byte_sha1_dht_id() {
+        use sha1::{Digest, Sha1};
+
+        let peer_id = PeerId::random();
+        let info = NodeInfo::from_peer_id(peer_id);
+
+        assert_eq!(info.node_id.len(), 20, "DHTID is SHA1 → 20 bytes");
+
+        let expected: Vec<u8> = Sha1::new()
+            .chain_update(peer_id.to_bytes())
+            .finalize()
+            .to_vec();
+        assert_eq!(info.node_id, expected);
+
+        // Regression guard: the old code emitted the raw multihash.
+        assert_ne!(info.node_id, peer_id.to_bytes());
+    }
+
+    /// Derivation must be deterministic — the routing table keys on it.
+    #[test]
+    fn dht_id_derivation_is_stable() {
+        let peer_id = PeerId::random();
+        assert_eq!(dht_id_from_peer_id(&peer_id), dht_id_from_peer_id(&peer_id));
     }
 }
