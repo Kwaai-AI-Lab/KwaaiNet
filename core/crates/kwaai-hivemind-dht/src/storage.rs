@@ -351,8 +351,17 @@ fn bound_dictionary(
 /// `maxsize` is emitted as msgpack **nil** when unbounded: Python's `maxsize` is
 /// `float("inf")` in that case (`timed_storage.py:55`), and `unpackb` feeds it
 /// straight back into `DictionaryDHTValue(maxsize)` where `None`/falsey again
-/// becomes `inf`. Subkeys and values are emitted as msgpack Binary, matching
-/// `use_bin_type=True` (`serializer.py:68`).
+/// becomes `inf`. Values are emitted as msgpack Binary (`use_bin_type=True`,
+/// Python `bytes`). Subkeys are NOT: hivemind deserializes the stored subkey
+/// (`protocol.py` `rpc_store`: `serializer.loads(tag)`) and `packb` re-encodes
+/// the resulting object, so a petals subkey — a peer-id `str` — travels as
+/// msgpack **str**. We keep subkeys as their raw msgpack wire bytes internally,
+/// so here they are spliced back in as the object those bytes encode. Wrapping
+/// them in Binary instead hands a Python reader `bytes` where every other peer
+/// yields `str`; hivemind's `add_candidate` merge then compares the two for the
+/// same record, raises `TypeError: '<' not supported between 'bytes' and
+/// 'str'`, kills the traversal worker, and leaves the caller's `dht.get`
+/// future unresolved forever — the health-map crawler freeze of 2026-07-31.
 pub fn serialize_dictionary(
     entries: &BTreeMap<Vec<u8>, (Vec<u8>, DHTExpiration)>,
     maxsize: Option<u64>,
@@ -364,7 +373,7 @@ pub fn serialize_dictionary(
         .iter()
         .map(|(subkey, (value, expiration))| {
             Value::Array(vec![
-                Value::Binary(subkey.clone()),
+                subkey_bytes_to_value(subkey),
                 Value::Binary(value.clone()),
                 Value::F64(*expiration),
             ])
@@ -404,9 +413,11 @@ pub struct ParsedDictionary {
 /// well-formed dictionary — in particular if it is a plain value or an
 /// `Ext(0x40)` tuple.
 ///
-/// Subkeys arrive as msgpack Binary from Python (`use_bin_type=True`), but a
-/// String is accepted too and re-encoded to its msgpack byte form, so subkey
-/// identity stays consistent with what a Python peer would have sent.
+/// Subkeys arrive as whatever msgpack object the storing peer's subkey was —
+/// for petals, a peer-id **str** (hivemind stores the deserialized subkey and
+/// `packb` re-encodes it). Whatever the type, it is normalized back to its
+/// msgpack byte form so subkey identity matches the raw `StoreRequest` tag
+/// bytes we key on internally.
 pub fn parse_dictionary(bytes: &[u8]) -> Option<ParsedDictionary> {
     use rmpv::Value;
 
@@ -474,6 +485,21 @@ fn value_to_subkey_bytes(v: &rmpv::Value) -> Option<Vec<u8>> {
             rmpv::encode::write_value(&mut buf, other).ok()?;
             Some(buf)
         }
+    }
+}
+
+/// Inverse of [`value_to_subkey_bytes`]: splice raw msgpack subkey bytes back
+/// in as the msgpack object they encode, so a `str` subkey leaves as a `str`.
+///
+/// Falls back to Binary for bytes that are not one self-contained msgpack
+/// object — that cannot come from a hivemind peer (its subkeys are
+/// `serializer.dumps` output by construction), but an opaque passthrough beats
+/// corrupting a key we do not understand.
+fn subkey_bytes_to_value(raw: &[u8]) -> rmpv::Value {
+    let mut cursor = raw;
+    match rmpv::decode::read_value(&mut cursor) {
+        Ok(v) if cursor.is_empty() => v,
+        _ => rmpv::Value::Binary(raw.to_vec()),
     }
 }
 
@@ -578,14 +604,23 @@ mod tests {
         assert_eq!(items.len(), 1);
         let entry = items[0].as_array().unwrap();
 
-        // Crawler path: Binary subkey re-decoded as a msgpack string.
+        // The subkey travels as the msgpack object its raw bytes encode — a
+        // str, exactly as a Python hivemind peer emits it. Emitting Binary
+        // here instead hands Python a `bytes` subkey where every other peer
+        // yields `str`; hivemind's candidate merge then compares the two and
+        // dies (`TypeError: '<' not supported between 'bytes' and 'str'`),
+        // hanging every `dht.get` — the 2026-07-31 health-map freeze.
         let sk = match &entry[0] {
-            Value::Binary(b) => rmpv::decode::read_value(&mut b.as_slice()).unwrap(),
-            other => panic!("subkey must be Binary, got {other:?}"),
+            Value::String(s) => s.as_str().unwrap().to_string(),
+            other => panic!("subkey must be a msgpack str, got {other:?}"),
         };
-        assert_eq!(sk.as_str(), Some("QmPeerAbc"));
+        assert_eq!(sk, "QmPeerAbc");
 
         assert!(matches!(&entry[1], Value::Binary(b) if b == b"serverinfo"));
+
+        // And the round-trip preserves raw-byte subkey identity.
+        let parsed = parse_dictionary(&bytes).expect("must parse");
+        assert!(parsed.entries.contains_key(&subkey));
     }
 
     /// Ext(0x40) is the *tuple* code (`serializer.py:27`) — Petals ServerInfo
