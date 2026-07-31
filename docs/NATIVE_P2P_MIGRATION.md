@@ -726,3 +726,19 @@ fmt/clippy clean (one pre-existing wire.rs type-complexity warning).
 items (a)–(f) — which requires coordinating with the in-flight work in that repo,
 plus the tracked follow-ups above (identify RFC1918 address filter, record validators,
 eviction index, callUnary.peer threading, Windows TCP pipe tests).
+
+### Slice 2 adversarial review (2026-07-31)
+
+Findings fixed with regression tests (`ffb9b30`, `83ad739`, `1ba9f21`): the settle arm
+gated re-announce on `using_relay` alone (reachability-only transitions never
+re-published; epoch-gated now, and the 300 s tick folds in current state); the watch arm
+silently died with the service task (now shuts the node down); AutoNAT/UPnP promotions
+bypassed the announceability classifier (a LAN dialback could advertise an RFC1918
+address fleet-wide and tear down circuits); relay-candidate eviction mid-dial stranded
+the slot and froze rotation/backoff.
+
+Accepted as minor follow-ups: in-flight relay dials are forgotten (not aborted) on a
+Public flip — the service's connected-check compensates; `pick_candidate` reclones the
+candidate list per call; two relay tests need a positive control / an explicit timeout
+to fail rather than hang (`a_loopback_relay_is_never_discovered_by_identify`,
+`a_node_with_no_relay_candidates_does_not_spin`).
