@@ -59,7 +59,7 @@ use kwaai_p2p::{NetworkConfig, NetworkHandle, NetworkService};
 use kwaai_p2p_daemon::ControlServer;
 use libp2p::PeerId;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::announce::{
     build_announce_records, build_unannounce_records, send_records_via_handle, AnnounceContext,
@@ -350,7 +350,13 @@ pub async fn run_native_node(
 
     // `using_relay` is true when a circuit reservation is actually confirmed.
     let mut announce_state = node.handle.announce_state();
-    let mut using_relay = node.handle.current_announce_state().using_relay;
+    let startup_state = node.handle.current_announce_state();
+    let mut using_relay = startup_state.using_relay;
+    // Epoch of the last state actually published to the DHT. Gating on the
+    // epoch (not on `using_relay`) means a reachability-only transition still
+    // re-announces; `using_relay` alone would miss Private→Public with no
+    // circuit, leaving the record stale until the 300 s tick.
+    let mut last_announced_epoch = startup_state.epoch;
     if let Some(addr) = configured_announce_addr(config) {
         info!("  Announce addr: {addr} (declared)");
     } else {
@@ -440,6 +446,14 @@ pub async fn run_native_node(
                     }
                 }
 
+                // Fold in the current reachability so the periodic record is
+                // never staler than the swarm. `borrow` (not `borrow_and_update`)
+                // leaves the change notification for the settle arm.
+                let tick_state = *announce_state.borrow();
+                if tick_state.announceable {
+                    using_relay = tick_state.using_relay;
+                    server_info.using_relay = using_relay;
+                }
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 crate::node::refresh_vpk_info(&mut server_info, &config, public_name).await;
 
@@ -462,7 +476,12 @@ pub async fn run_native_node(
                     ShardManager::shard_is_ready()
                 );
                 match node.announce(&ctx, &server_info, bootstrap_peers).await {
-                    Ok(timings) => record_reputation(&mut rep_store, timings),
+                    Ok(timings) => {
+                        record_reputation(&mut rep_store, timings);
+                        if tick_state.announceable {
+                            last_announced_epoch = tick_state.epoch;
+                        }
+                    }
                     Err(e) => warn!("Re-announce failed: {e:#}"),
                 }
 
@@ -477,7 +496,14 @@ pub async fn run_native_node(
             // The delay is a deadline armed here and awaited in its own branch,
             // not an inline sleep: sleeping inside the arm would hold up every
             // other branch — most visibly shutdown — for the full settle window.
-            Ok(()) = announce_state.changed(), if announce_settle.is_none() => {
+            changed = announce_state.changed(), if announce_settle.is_none() => {
+                if changed.is_err() {
+                    // Every sender lives in the service task; an error here
+                    // means the swarm is gone. Continuing would keep announcing
+                    // a node that can no longer be reached.
+                    error!("Network service ended unexpectedly — shutting down");
+                    break;
+                }
                 announce_settle = Some(tokio::time::Instant::now() + ANNOUNCE_SETTLE);
             }
 
@@ -493,10 +519,8 @@ pub async fn run_native_node(
                     );
                     continue;
                 }
-                if state.using_relay == using_relay {
-                    // Reachability moved but `using_relay` did not, so the
-                    // record's contents are unchanged; the 300 s tick will
-                    // refresh it in due course.
+                if state.epoch == last_announced_epoch {
+                    // Nothing new since the last successful publish.
                     continue;
                 }
                 using_relay = state.using_relay;
@@ -507,8 +531,11 @@ pub async fn run_native_node(
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 server_info.using_relay = using_relay;
                 refresh_server_info(&mut server_info, &config);
-                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
-                    warn!("Re-announce after a reachability change failed: {e:#}");
+                match node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    // Only a successful publish consumes the epoch; on failure
+                    // the next settle window or the 300 s tick retries it.
+                    Ok(_) => last_announced_epoch = state.epoch,
+                    Err(e) => warn!("Re-announce after a reachability change failed: {e:#}"),
                 }
             }
 
