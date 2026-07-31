@@ -34,6 +34,9 @@ sysinfo = { workspace = true }
 # Async
 tokio = { workspace = true }
 futures = { workspace = true }
+# `compat` bridges libp2p's `futures::io` raw streams onto tokio's traits, which
+# is what lets the native inference-mux path reuse the tokio-based frame loop.
+tokio-util = { version = "0.7", features = ["compat"] }
 
 # HTTP (IP detection, health check, update check)
 reqwest = { workspace = true }
