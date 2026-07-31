@@ -156,15 +156,34 @@ pub async fn start_inference_mux_server(client: &mut P2PClient) -> Result<JoinHa
 /// calls local Ollama for each, writes MuxResponse frames back in any order.
 async fn handle_mux_stream_server(stream: TcpStream) {
     let (mut reader, writer) = stream.into_split();
-    let writer = Arc::new(Mutex::new(writer));
 
     // go-libp2p-daemon sends a gogo-protobuf StreamInfo message before piping data.
-    // Consume it before entering the mux frame loop.
+    // Consume it before entering the mux frame loop. Only the p2pd path has this
+    // prologue: it is the daemon describing the stream it is about to forward
+    // over a *separate* TCP connection. The native path receives the libp2p
+    // stream itself, so there is nothing in front of the first mux frame.
     if let Err(e) = read_p2pd_stream_info(&mut reader).await {
         warn!("inference-mux server: failed to read p2pd StreamInfo prologue: {e}");
         return;
     }
     debug!("inference-mux server: StreamInfo prologue consumed — entering mux frame loop");
+
+    serve_mux_frames(reader, writer).await;
+}
+
+/// The mux frame loop, over any split stream.
+///
+/// Shared by both paths so the concurrency model — one task per request, replies
+/// written back in completion order under a shared writer lock — is defined
+/// once. The p2pd path passes the halves of a forwarded `TcpStream` after
+/// consuming its `StreamInfo` prologue; the native path passes the halves of a
+/// libp2p stream directly.
+async fn serve_mux_frames<R, W>(mut reader: R, writer: W)
+where
+    R: AsyncReadExt + Unpin + Send + 'static,
+    W: AsyncWriteExt + Unpin + Send + 'static,
+{
+    let writer = Arc::new(Mutex::new(writer));
 
     loop {
         let frame = match read_frame(&mut reader).await {
@@ -197,6 +216,44 @@ async fn handle_mux_stream_server(stream: TcpStream) {
             }
         });
     }
+}
+
+/// Serve `MUX_PROTO` over a [`NetworkHandle`] instead of a p2pd stream handler.
+///
+/// The p2pd path ([`start_inference_mux_server`]) binds a local TCP listener and
+/// tells the daemon to forward inbound streams to it; the daemon writes a
+/// `StreamInfo` prologue and then pipes bytes. Natively there is no forwarding
+/// hop at all — [`kwaai_p2p::NetworkHandle::accept_streams`] hands us the
+/// negotiated libp2p stream — so there is no listener to bind, no prologue to
+/// consume, and one fewer place for backpressure to be lost.
+///
+/// Returns the accept-loop task. It ends when the network service shuts down and
+/// drops its sender.
+pub async fn start_native_inference_mux_server(
+    handle: &kwaai_p2p::NetworkHandle,
+) -> Result<JoinHandle<()>> {
+    let (mut inbound, refused) = handle
+        .accept_streams(vec![MUX_PROTO.to_string()])
+        .await
+        .context("register native inference-mux stream handler")?;
+    if !refused.is_empty() {
+        anyhow::bail!("inference-mux protocol already served by another handler");
+    }
+
+    info!("inference-mux: serving {MUX_PROTO} natively");
+
+    Ok(tokio::spawn(async move {
+        use tokio_util::compat::FuturesAsyncReadCompatExt;
+        while let Some(stream) = inbound.recv().await {
+            debug!(
+                "inference-mux server: accepted native stream from {}",
+                stream.peer
+            );
+            let (reader, writer) = tokio::io::split(stream.stream.compat());
+            tokio::spawn(serve_mux_frames(reader, writer));
+        }
+        debug!("inference-mux server: native accept loop ended");
+    }))
 }
 
 static OLLAMA_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();

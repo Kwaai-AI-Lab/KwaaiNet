@@ -63,7 +63,7 @@ pub use client::{P2PClient, P2PStream};
 pub use daemon::{DaemonBuilder, P2PDaemon};
 pub use dht::{DhtPeerInfo, DhtValue};
 pub use error::{Error, Result};
-pub use server::ControlServer;
+pub use server::{default_socket_addr, ControlServer};
 
 // Re-export commonly used types
 pub use protocol::p2pd;
