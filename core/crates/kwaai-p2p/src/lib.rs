@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+pub mod addresses;
 pub mod behaviour;
 pub mod config;
 pub mod dht_service;
@@ -49,6 +50,7 @@ pub mod service;
 pub mod transport;
 pub mod unary;
 
+pub use addresses::{is_announceable, is_circuit, is_routable_v4};
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
     NetworkConfig, KWAAI_BOOTSTRAP_SERVERS, KWAAI_BOOTSTRAP_SERVERS_DNS, PETALS_BOOTSTRAP_SERVERS,

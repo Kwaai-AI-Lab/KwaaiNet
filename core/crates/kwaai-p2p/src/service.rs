@@ -35,6 +35,7 @@ use libp2p::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, trace, warn};
 
+use crate::addresses::{peer_id_from_multiaddr, strip_p2p};
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
@@ -851,50 +852,5 @@ fn dial_error(error: &DialError, peer_id: Option<PeerId>) -> P2PError {
     }
 }
 
-/// Extract the `/p2p/<peer-id>` component from a multiaddr, if present.
-fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
-    addr.iter().find_map(|p| match p {
-        libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
-        _ => None,
-    })
-}
-
-/// Drop a trailing `/p2p/<peer-id>` component.
-fn strip_p2p(addr: &Multiaddr) -> Multiaddr {
-    addr.iter()
-        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_peer_id_from_multiaddr() {
-        let addr: Multiaddr =
-            "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-                .parse()
-                .unwrap();
-        let peer = peer_id_from_multiaddr(&addr).expect("peer id present");
-        assert_eq!(
-            peer.to_base58(),
-            "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-        );
-    }
-
-    #[test]
-    fn no_peer_id_component_yields_none() {
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
-        assert!(peer_id_from_multiaddr(&addr).is_none());
-    }
-
-    #[test]
-    fn strips_the_p2p_component() {
-        let addr: Multiaddr =
-            "/ip4/1.2.3.4/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-                .parse()
-                .unwrap();
-        assert_eq!(strip_p2p(&addr).to_string(), "/ip4/1.2.3.4/tcp/8000");
-    }
-}
+// `peer_id_from_multiaddr` and `strip_p2p` live in `crate::addresses` alongside
+// the rest of the multiaddr vocabulary; their tests moved with them.
