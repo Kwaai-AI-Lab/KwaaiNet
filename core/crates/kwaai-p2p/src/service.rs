@@ -41,6 +41,7 @@ use crate::handle::{
     NetworkHandle, PeerInfo,
 };
 use crate::raw_stream;
+use crate::reachability::{Effect, ReachabilityState, IDENTIFY_GRACE};
 use crate::unary::{self, UnaryProtocol};
 
 /// How often the maintenance arm refreshes the Kademlia routing table.
@@ -91,6 +92,9 @@ pub struct NetworkService {
     /// separate protocol set — the two namespaces are independent, so a name
     /// registered here is not callable as a unary handler and vice versa.
     stream_handlers: HashMap<String, InboundStreamSender>,
+    /// Are we reachable from the outside, and on what evidence. Owns no I/O:
+    /// it returns [`reachability::Effect`]s that this loop applies.
+    reachability: ReachabilityState,
 }
 
 /// A parked DHT lookup.
@@ -180,8 +184,28 @@ impl NetworkService {
             }
         }
 
+        // A declared external address is an instruction, not a guess, so a
+        // malformed one is a hard error — silently ignoring it would leave the
+        // node quietly unreachable in exactly the deployment that took the
+        // trouble to configure it.
+        let declared = config
+            .external_addr
+            .as_deref()
+            .map(|addr| {
+                addr.parse::<Multiaddr>()
+                    .with_context(|| format!("parsing external_addr {addr}"))
+            })
+            .transpose()?;
+
+        let (reachability, startup_effects) = ReachabilityState::new(
+            config.force_private,
+            declared,
+            config.identify_min_confirmations,
+            config.require_global_ips,
+        );
+
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
-        let service = Self {
+        let mut service = Self {
             swarm,
             commands: rx,
             pending_dials: HashMap::new(),
@@ -192,7 +216,9 @@ impl NetworkService {
             peer_protocols: HashMap::new(),
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
+            reachability,
         };
+        service.apply_reachability_effects(startup_effects);
 
         let task = tokio::spawn(service.run());
         info!(peer_id = %local_peer_id, "network service started");
@@ -208,6 +234,14 @@ impl NetworkService {
         // The first tick fires immediately; skip it so startup does not race
         // the initial bootstrap dial.
         maintenance.tick().await;
+
+        // Fires once. Until it does, "no evidence" means "not yet"; after it,
+        // the identify-consensus fallback decides and a node that has heard
+        // nothing settles on Private rather than staying Unknown — and
+        // therefore silent — indefinitely.
+        let identify_grace = tokio::time::sleep(IDENTIFY_GRACE);
+        tokio::pin!(identify_grace);
+        let mut grace_fired = false;
 
         loop {
             tokio::select! {
@@ -232,6 +266,11 @@ impl NetworkService {
                 }
                 _ = maintenance.tick() => {
                     self.refresh_routing_table();
+                }
+                _ = &mut identify_grace, if !grace_fired => {
+                    grace_fired = true;
+                    let effects = self.reachability.on_grace_elapsed(&self.observed_addrs);
+                    self.apply_reachability_effects(effects);
                 }
             }
         }
@@ -298,6 +337,10 @@ impl NetworkService {
 
             Command::PeerProtocols { peer, reply } => {
                 let _ = reply.send(self.peer_protocols.get(&peer).cloned());
+            }
+
+            Command::Reachability { reply } => {
+                let _ = reply.send(self.reachability.current().clone());
             }
 
             // A walk over in-memory k-buckets — bounded by the routing table
@@ -700,6 +743,15 @@ impl NetworkService {
                     // The capability list describes a peer we can act on; a
                     // disconnected peer's is stale by definition.
                     self.peer_protocols.remove(&peer_id);
+                    // Same for its opinion about where it saw us. Without this
+                    // the map only ever grows, and the identify-consensus
+                    // fallback would keep counting observers that left —
+                    // latching an address from before a network move and never
+                    // letting go of it.
+                    self.observed_addrs.retain(|_, observers| {
+                        observers.remove(&peer_id);
+                        !observers.is_empty()
+                    });
                 }
             }
 
@@ -782,15 +834,43 @@ impl NetworkService {
         }
     }
 
-    /// AutoNAT status and probe outcomes.
+    /// Apply what the reachability machine asked for.
     ///
-    /// Note what is *not* here: 0.12 never emits `ToSwarm::ExternalAddrConfirmed`
-    /// of its own accord, so a `Public` verdict is inert until something calls
-    /// `add_external_address`. The reachability machine does that.
+    /// This is the *only* place external addresses are added or removed, which
+    /// is what keeps the swarm's address set and the machine's verdict from
+    /// drifting apart. AutoNAT 0.12 never emits `ExternalAddrConfirmed` itself,
+    /// so without this a `Public` verdict would be a log line and nothing more:
+    /// identify would keep advertising nothing and kad would stay in client
+    /// mode.
+    fn apply_reachability_effects(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::ConfirmExternal(addr) => {
+                    info!(%addr, "confirming external address");
+                    self.swarm.add_external_address(addr);
+                }
+                Effect::RetractExternal(addr) => {
+                    info!(%addr, "retracting external address");
+                    self.swarm.remove_external_address(&addr);
+                }
+            }
+        }
+    }
+
+    /// AutoNAT status and probe outcomes.
     fn handle_autonat_event(&mut self, event: autonat::Event) {
         match event {
             autonat::Event::StatusChanged { old, new } => {
                 info!(?old, ?new, "autonat reachability status changed");
+                let effects = match new {
+                    autonat::NatStatus::Public(addr) => self.reachability.on_autonat_public(addr),
+                    autonat::NatStatus::Private => self.reachability.on_autonat_private(),
+                    // Unknown is not a verdict — it is autonat saying it has
+                    // stopped being sure. Whatever we last concluded stands
+                    // until something positive replaces it.
+                    autonat::NatStatus::Unknown => Vec::new(),
+                };
+                self.apply_reachability_effects(effects);
             }
             autonat::Event::OutboundProbe(probe) => {
                 trace!(?probe, "autonat outbound probe");
@@ -810,9 +890,13 @@ impl NetworkService {
         match event {
             upnp::Event::NewExternalAddr(addr) => {
                 info!(%addr, "upnp mapped an external address");
+                let effects = self.reachability.on_upnp_external(addr);
+                self.apply_reachability_effects(effects);
             }
             upnp::Event::ExpiredExternalAddr(addr) => {
                 info!(%addr, "upnp mapping expired");
+                let effects = self.reachability.on_upnp_expired(&addr);
+                self.apply_reachability_effects(effects);
             }
             upnp::Event::GatewayNotFound => {
                 debug!("no upnp gateway found; relying on autonat and relays");
