@@ -589,3 +589,118 @@ gates).
 - `{flake.nix,nix/p2pd.nix,nix/crane.nix,Makefile,scripts/build-p2pd.sh,.github/workflows/release.yml,core/Cargo.toml}`
 - kwaaiai-env: `{docker-compose.yml,docker/p2pd-patched/,patches/go-multiaddr/,docker/nat-test/config-node-*.yaml,docs/nat-test-topology.md}`
 - KwaaiNetGUI: `.github/workflows/release.yml` (p2pd copy conditional)
+
+## Phase 4 slice 2 — NAT traversal design findings (2026-07-31)
+
+Source-verified design pass over libp2p 0.53.2 (autonat 0.12 / relay 0.17.2 / dcutr 0.11 /
+upnp 0.2.2), the old p2pd spawn flags, and the kwaaiai-env nat-test topology, ahead of
+implementation. These findings correct several Phase 4 "expected issues" and set the
+implementation slicing.
+
+### Ground truths (from source, not assumption)
+
+- **G1 — the announce record carries no multiaddrs.** `DHTServerInfo` has no address
+  field; peers resolve addresses via Kademlia + identify. The "announce watch channel"
+  therefore only carries `using_relay` + an announceable flag — address publication is
+  `Swarm::add_external_address` + identify push (already enabled). This shrinks the
+  flapping surface dramatically and removes the restart-to-change-addrs motivation.
+- **G2 — relay reservation refresh-on-expiry is already in libp2p** (renew at 3/4 TTL,
+  keep-alive while live). Only relay-*restart* recovery is ours to build.
+- **G3 — reservation loss surfaces as `SwarmEvent::ListenerClosed`**, not as a
+  relay-client event (`relay::client::Event` has no failure variant). Refusal/timeout →
+  `ListenerClosed{reason: Err}`; relay connection death → `ListenerClosed{reason: Ok}`.
+  The RelayManager is keyed on `ListenerId`, which makes duplicate circuit listens
+  structurally impossible.
+- **G4 — autonat 0.12 never calls `ExternalAddrConfirmed`**; confirming a
+  `NatStatus::Public(addr)` into the swarm's address set is our job. (relay-client and
+  upnp do confirm their own addrs.)
+- **G5 — exactly two RFC2544 (198.18/15) rejection sites in all of rust-libp2p 0.53**:
+  autonat's `is_benchmarking` behind `Config::only_global_ips` (default true), and a upnp
+  gateway check that is unreachable in the nat-test bed (no SSDP responder). kad,
+  identify, swarm, core, dcutr: zero address-class filtering (greps recorded). The whole
+  "RFC2544 classified unreachable somewhere" worry reduces to one config bool.
+- **G6 — identify advertises `listen ∪ external` addresses with no filter knob**, so a
+  NATed node leaks RFC1918 listen addrs to every peer (see risk R1).
+- **G7 — the nat-test trusted relay is node-a**, a KwaaiNet node, not a bootstrap; the
+  production bootstraps have a documented RESERVATION_REFUSED history. Refusal is a
+  normal outcome, not an error.
+- **G8 — p2pd was never spawned with a hole-punching flag**, so there is no dcutr parity
+  baseline; reframe acceptance as an absolute floor (≥7/10 cone-NAT upgrades over 10
+  trials, measured and recorded, not gating).
+- **G9 — `force_private` defaults to true** in kwaai-cli config; Private is the *default*
+  reachability state and AutoNAT is a promotion mechanism for opt-outs only.
+
+### Design decisions
+
+- **Behaviour additions**: `autonat` (client+server; `only_global_ips` from new
+  `require_global_ips` config, default false; boot_delay 5s, retry 30s, refresh 5min,
+  keep `confidence_max 3` as the flap damper), `relay_client` (via
+  `SwarmBuilder::with_relay_client` — the `with_behaviour` closure becomes two-arg),
+  `Toggle<relay::Behaviour>` hop server (default on, parity with `!no_relay`),
+  `dcutr`, `Toggle<upnp>` (off in tests).
+- **RelayManager** lives inside `NetworkService` as a plain state machine polled from the
+  select loop (needs `&mut Swarm` + swarm-level listener events). Slots keyed by
+  `ListenerId`; one reservation per relay; backoff `min(30s·2^(n−1), 15min)` ±20% jitter
+  with rotation orthogonal to backoff. Candidates: configured `trusted_relays` first,
+  then identify-discovered hop-capable peers (protocol list contains the hop protocol) —
+  explicitly *not* kad routing-table probing (that is the `-relayDiscovery` we always
+  disabled). Trusted relays are dialed alongside bootstraps to cut reservation latency.
+- **Reachability state machine** (`Unknown | Public{addr, source} | Private`, sources
+  `Declared > AutoNat > Upnp > IdentifyConsensus`): declared `external_addr` pins Public
+  and outranks `force_private` (with a warning); autonat Private demotes
+  IdentifyConsensus but never Declared; upnp expiry returns to Unknown, not Private.
+  Identify-consensus fallback: after a 45s grace still Unknown, promote the
+  highest-distinct-observer announceable observed addr if it has ≥
+  `identify_min_confirmations` observers, else Private. Whether bootstraps answer
+  autonat dialbacks is the one empirical unknown — measured by a read-only live identify
+  snapshot as implementation commit 1; the design is safe either way because
+  `use_connected: true` makes every autonat-speaking peer a probe target and an
+  unanswered probe leaves status Unknown (never a false flip).
+- **Announce watch channel**: `watch::Sender<AnnounceState{reachability_kind,
+  using_relay, announceable, epoch}>` — no multiaddrs (G1). Equality-gated sends; the
+  10s settle debounce lives in the run_node consumer, not the service. Closes slice 1's
+  known gaps (degraded `using_relay`, no re-announce on address change) and replaces the
+  p2pd path's restart cluster and relay-addr disk cache (which existed only for p2pd's
+  ~7-minute AutoRelay latency and would be harmful now).
+- **`addresses.rs` classifier**: port of node.rs `is_announceable_addr` /
+  `is_globally_routable_v4` (which already deliberately accept 198.18/15 and the
+  RFC5737 doc ranges for the test beds) into kwaai-p2p, with a golden test pinning
+  `198.18.0.20` as routable. `require_global_ips` opt-in tightens.
+- **Follow-up closure for free**: with reachability in hand, `dht_service`'s `rpc_ping`
+  can answer `available = is Public` instead of hardcoded false (open item above), via a
+  new `NetworkHandle::reachability()`.
+
+### New risks found
+
+- **R1 (high)** — identify's unfiltered listen-addr advertisement (G6) is the direct
+  cause of "Direct-but-unreachable" map entries. Accepted for this slice (go-libp2p
+  leaked the same before `-announceAddrs`); a ~60-line filtering identify wrapper is a
+  tracked follow-up. If a NATed node shows "Direct" with a 192.168.x address, this is why.
+- **R2 (medium)** — `default_trusted_relays()` points at the production bootstraps with
+  their refusal history; with an active RelayManager that yields a visible
+  backoff-rotate loop and no relay. Fix in the CLI wiring commit: empty default +
+  identify hop discovery as the real supply; `trusted_relays` becomes a pure operator
+  override.
+- **R3 (medium)** — `observed_addrs` in the service never expires entries; the
+  identify-consensus fallback would latch a stale address after a network move. Fixed by
+  pruning observers on `ConnectionClosed` (also fixes the latent staleness in the
+  existing `ObservedAddrs` handle command).
+- **R4 (low)** — autonat 0.12 is unconditionally also a dialback *server*
+  (`ProtocolSupport::Full`); bounded by its default throttles and observed-IP
+  substitution. Keep the throttles at defaults.
+- **R5 (low)** — `with_relay_client` changes the `with_behaviour` closure arity; the
+  compile error points at the closure, not the cause.
+- **R6 (low)** — autonat/dcutr enter Cargo.lock for the first time; nix/crane vendoring
+  must be regenerated in the same commit or offline CI breaks.
+
+### Implementation slicing (9 commits, only the last-but-one touches node.rs)
+
+1. live bootstrap protocol-list snapshot test (answers the autonat unknown, read-only);
+2. `addresses.rs` classifier + tests; 3. behaviours added inert (Cargo/behaviour/config/
+builder); 4. reachability state machine + observed-addrs pruning + `rpc_ping available`;
+5. RelayManager + in-process relay tests (restart recovery, refusal rotation, slot
+bounds); 6. announce watch channel; 7. dcutr plumbing tests; 8. CLI wiring into the
+native run_node path (`trusted_relays`/`no_relay`/`force_private`/`public_ip` →
+`NetworkConfig`, watch-driven announce loop, empty relay default); 9. doc update.
+In-process tests cover relay lifecycle, reachability rules, and dcutr plumbing; real
+hole punching and the (a)–(f) acceptance items remain kwaaiai-env nat-test topology work.
