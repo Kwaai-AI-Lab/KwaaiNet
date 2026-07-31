@@ -300,12 +300,24 @@ gates).
 
 - Hivemind's "regular store" subkey sentinel + exact DictionaryDHTValue msgpack layout
   (read hivemind `dht/protocol.py`; golden-capture against a live bootstrap).
-- Slash-less protocol IDs through rust-libp2p multistream-select (Phase 0 empirical
-  check).
 - AutoNAT v1 service actually answering on bootstraps (fallback: identify-confirmation
   path already kept; `force_private=true` default makes this low-risk).
 - Health-probe "protocol not supported" string vs rust-libp2p's unknown-protocol error
   surface (the health patch matches on a substring).
+
+## Resolved verification items (Phase 0, `07_wire_interop` against a real p2pd)
+
+- Slash-less protocol IDs negotiate fine on the go-libp2p wire
+  (`slashless_protocol_negotiates`) — Phase 2's `UnaryProtocol(Arc<str>)` is viable.
+- The wire wrapper is exactly as described above (both directions proven; the old
+  `PersistentConnectionResponse` reply shape is provably rejected by Go callers).
+- **proto2 `required` is enforced by Go on unmarshal**: a frame omitting an empty
+  `peer`/`data` field is dropped and the stream reset. The wire.rs prost types carry
+  `required` labels so empty fields are still encoded.
+- **`callUnary.peer` is only rewritten to the caller's ID on the unary-handler dispatch
+  path.** On a raw stream handler it arrives exactly as the caller sent it (the callee's
+  ID, per Go's caller convention). A native responder must take caller identity from the
+  libp2p connection, never from this field.
 
 ## Critical files
 
