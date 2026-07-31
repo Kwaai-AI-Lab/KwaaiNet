@@ -242,7 +242,7 @@ impl LocalStorage {
                     Stored::Dictionary {
                         entries,
                         latest_expiration,
-                        ..
+                        maxsize: maxsize_field,
                     } => {
                         // storage.py:65-66 — refresh the *outer* expiration
                         // against the dictionary's latest_expiration_time.
@@ -264,6 +264,7 @@ impl LocalStorage {
                             Some((_, existing_exp)) if *existing_exp >= expiration => false,
                             _ => {
                                 entries.insert(subkey, (value, expiration));
+                                bound_dictionary(entries, *maxsize_field);
                                 true
                             }
                         }
@@ -282,7 +283,7 @@ impl LocalStorage {
                         entries.insert(subkey, (value, expiration));
                         entry.value = Stored::Dictionary {
                             entries,
-                            maxsize: None,
+                            maxsize: self.maxsize.map(|m| m as u64),
                             latest_expiration: expiration,
                         };
                         entry.expiration = expiration;
@@ -302,7 +303,7 @@ impl LocalStorage {
                     Entry {
                         value: Stored::Dictionary {
                             entries,
-                            maxsize: None,
+                            maxsize: self.maxsize.map(|m| m as u64),
                             latest_expiration: expiration,
                         },
                         expiration,
@@ -312,6 +313,29 @@ impl LocalStorage {
                 true
             }
         }
+    }
+}
+
+/// Bound a dictionary's entry count, evicting the earliest-expiring subkeys.
+///
+/// Hivemind creates inner dictionaries with the tier's own bound
+/// (`DictionaryDHTValue(self.maxsize)`, `storage.py:59`) and inherits
+/// `TimedStorage`'s eviction. Without this, the tier's entry-count bound is
+/// trivially bypassed: one key, unbounded subkeys.
+fn bound_dictionary(
+    entries: &mut BTreeMap<Vec<u8>, (Vec<u8>, DHTExpiration)>,
+    maxsize: Option<u64>,
+) {
+    let Some(maxsize) = maxsize else { return };
+    while entries.len() as u64 > maxsize {
+        let Some(victim) = entries
+            .iter()
+            .min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))
+            .map(|(k, _)| k.clone())
+        else {
+            break;
+        };
+        entries.remove(&victim);
     }
 }
 
@@ -808,5 +832,39 @@ mod tests {
 
     fn hex_of(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// One key with many subkeys must NOT bypass the tier bound: inner
+    /// dictionaries inherit it and evict earliest-expiring subkeys (mirroring
+    /// `DictionaryDHTValue(self.maxsize)`, `storage.py:59`). Regression for
+    /// the review finding that a single key with unbounded subkeys grew
+    /// memory without ever consulting the entry-count bound.
+    #[test]
+    fn dictionary_subkeys_respect_the_tier_bound() {
+        let mut s = LocalStorage::with_maxsize(4);
+        let now = get_dht_time();
+
+        for i in 0u32..10 {
+            // Later subkeys expire later, so eviction keeps the newest four.
+            assert!(s.store_subkey(
+                b"one-key".to_vec(),
+                format!("sub-{i:02}").into_bytes(),
+                b"v".to_vec(),
+                now + 60.0 + f64::from(i),
+            ));
+        }
+
+        let Some((Stored::Dictionary { entries, .. }, _)) = s.get(b"one-key") else {
+            panic!("expected a dictionary");
+        };
+        assert_eq!(entries.len(), 4, "inner dictionary must be bounded");
+        let survivors: Vec<_> = entries.keys().cloned().collect();
+        assert_eq!(
+            survivors,
+            (6u32..10)
+                .map(|i| format!("sub-{i:02}").into_bytes())
+                .collect::<Vec<_>>(),
+            "eviction must drop the earliest-expiring subkeys"
+        );
     }
 }
