@@ -16,7 +16,19 @@ members = [
     "crates/kwaai-rpc",
     "crates/kwaai-network-tests",
 ]
+# Vendored dependency patches are path deps, not members — without this Cargo
+# would auto-adopt them into the workspace and pull their dev-deps into the lock.
+exclude = ["patches/multistream-select"]
 default-members = ["crates/kwaai-cli"]
+
+# Hivemind protocol IDs are bare handler names (`DHTProtocol.rpc_store`, no
+# leading slash). The wire supports them — go-libp2p negotiates them today, and
+# Phase 0 of docs/NATIVE_P2P_MIGRATION.md proved it against a live p2pd — but
+# upstream multistream-select rejects slash-less names in local validation, on
+# both the dial and listen path. This patch is the crates.io 0.13.0 source with
+# that one rule relaxed; see patches/multistream-select/README.md for the diff.
+[patch.crates-io]
+multistream-select = { path = "patches/multistream-select" }
 
 # Root package for examples
 [package]
