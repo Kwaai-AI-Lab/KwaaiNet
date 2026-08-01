@@ -4,16 +4,15 @@
 //! `peers list` return p2pd's in-memory view; `peers find` issues an active
 //! Kademlia lookup via p2pd.
 
-use std::collections::HashSet;
-
 use anyhow::{Context, Result};
-use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::P2PClient;
 use libp2p::{Multiaddr, PeerId};
 
 use crate::cli::{P2pAction, P2pArgs, PeersAction, PeersArgs, ProbeArgs};
-use crate::config::KwaaiNetConfig;
 use crate::display::*;
+use crate::peers_view::{
+    bootstrap_peer_ids, classify_addr, group_index, trusted_relay_peer_ids, ConnKind,
+};
 use crate::shard_cmd::daemon_socket;
 
 pub async fn run(args: P2pArgs) -> Result<()> {
@@ -86,26 +85,6 @@ fn fmt_addr(bytes: &[u8]) -> String {
         .unwrap_or_else(|_| format!("0x{} (unparseable)", hex::encode(bytes)))
 }
 
-/// Connection classification. `LIST_PEERS` only gives us `(id, addrs)` so this
-/// is derived from the multiaddr alone.
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum ConnKind {
-    /// Plain `/ip4/.../tcp/...` — directly dialable.
-    Direct,
-    /// Path includes `/p2p-circuit/` — going through a relay.
-    Relay,
-}
-
-fn classify_addr(m: &Multiaddr) -> ConnKind {
-    if m.iter()
-        .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
-    {
-        ConnKind::Relay
-    } else {
-        ConnKind::Direct
-    }
-}
-
 /// Backwards-compat shim retained so `info` keeps working unchanged.
 fn is_relayed(m: &Multiaddr) -> bool {
     classify_addr(m) == ConnKind::Relay
@@ -118,36 +97,6 @@ fn fmt_kind(k: ConnKind) -> &'static str {
         ConnKind::Direct => "\x1b[32m[direct]\x1b[0m",
         ConnKind::Relay => "\x1b[33m[ relay]\x1b[0m",
     }
-}
-
-/// Build the set of bootstrap peer IDs the local node was configured to use.
-/// Prefers the user's `initial_peers` override; falls back to the built-in
-/// KwaaiNet/Petals defaults. Same precedence as `vpk discover` and `node.rs`.
-fn bootstrap_peer_ids() -> HashSet<PeerId> {
-    let bootstraps: Vec<String> = match KwaaiNetConfig::load_or_create() {
-        Ok(cfg) if !cfg.initial_peers.is_empty() => cfg.initial_peers,
-        _ => NetworkConfig::with_petals_bootstrap().bootstrap_peers,
-    };
-
-    bootstraps
-        .iter()
-        .filter_map(|addr| addr.split("/p2p/").nth(1))
-        .filter_map(|id| id.parse::<PeerId>().ok())
-        .collect()
-}
-
-/// Build the set of trusted-relay peer IDs the local node was configured with.
-/// Empty when the user hasn't configured any (the production default).
-fn trusted_relay_peer_ids() -> HashSet<PeerId> {
-    let relays = KwaaiNetConfig::load_or_create()
-        .map(|cfg| cfg.trusted_relays)
-        .unwrap_or_default();
-
-    relays
-        .iter()
-        .filter_map(|addr| addr.split("/p2p/").nth(1))
-        .filter_map(|id| id.parse::<PeerId>().ok())
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -243,20 +192,8 @@ async fn peers_list() -> Result<()> {
     // Group ordering for the sort: bootstrap first (regardless of conn kind),
     // then trusted relay, then plain direct, then via-relay. Within each
     // group, sort by peer ID so output is stable across polls — useful when
-    // watching the list change as peers come and go.
-    fn group_index(is_bootstrap: bool, is_trusted_relay: bool, kind: ConnKind) -> u8 {
-        if is_bootstrap {
-            return 0;
-        }
-        if is_trusted_relay {
-            return 1;
-        }
-        match kind {
-            ConnKind::Direct => 2,
-            ConnKind::Relay => 3,
-        }
-    }
-
+    // watching the list change as peers come and go. Shared with the gRPC
+    // Network op so both surfaces order the same network identically.
     struct Row {
         group: u8,
         id_str: String,

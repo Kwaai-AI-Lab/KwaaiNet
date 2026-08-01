@@ -483,6 +483,7 @@ impl NetworkService {
                 observed.sort_by(|a, b| b.1.cmp(&a.1));
 
                 let _ = reply.send(NetworkSnapshot {
+                    local_peer_id: *self.swarm.local_peer_id(),
                     peers: self.collect_peers(),
                     routing,
                     reachability: self.reachability.current().clone(),

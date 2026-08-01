@@ -340,10 +340,16 @@ pub async fn run_native_node(
     public_name: &str,
     trust_attestations: Vec<String>,
     sighup: &mut SigHup,
+    grpc: &crate::grpc_server::GrpcServerHandle,
 ) -> Result<Option<String>> {
     info!("[1/4] Starting the native p2p stack...");
     let node = NativeNode::start(config, bootstrap_peers).await?;
     let peer_id = node.peer_id;
+
+    // Hand the swarm to the gRPC surface, which bound before the node existed
+    // so that ping/status/generate would answer during startup. Until now its
+    // Network op has been reporting "still starting"; from here it can serve.
+    grpc.attach_network(node.handle.clone()).await;
 
     // ── Announce inputs ────────────────────────────────────────────────────
     info!("[2/4] Preparing the DHT announcement...");
