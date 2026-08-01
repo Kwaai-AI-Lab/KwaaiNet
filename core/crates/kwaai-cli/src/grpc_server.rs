@@ -653,6 +653,50 @@ async fn spawn_session_shard_run(
 /// doesn't ask for a specific interval. Mirrors the map-server crawler.
 const DEFAULT_COVERAGE_INTERVAL_SECS: u64 = 5;
 
+/// How long a subscription may stay silent while coverage is unchanged.
+///
+/// Unchanged snapshots are suppressed, so without this a stable network
+/// and a wedged daemon look identical from the client's side. Sending an
+/// otherwise-redundant update this often bounds that ambiguity while
+/// still dropping the vast majority of duplicate frames — at the default
+/// 5 s cadence this keeps roughly one tick in twelve.
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The parts of a [`BlockCoverageUpdate`] that decide whether it tells the
+/// client anything new.
+///
+/// Deliberately excludes `server_time`: it changes every tick by
+/// construction, so comparing whole updates would report every snapshot as
+/// changed and suppress nothing. Peers are compared as a *set* — the DHT
+/// returns them in whatever order responders answered in, and a pure
+/// reordering is not a change worth waking the UI for.
+type CoverageIdentity = (u32, u32, bool, std::collections::BTreeSet<String>);
+
+fn coverage_identity(u: &BlockCoverageUpdate) -> CoverageIdentity {
+    let peers = u
+        .peers
+        .iter()
+        .map(|p| {
+            // Every field a client renders per row, so a peer changing its
+            // range, name, throughput or trust still counts as a change.
+            // Floats are formatted rather than compared bitwise: the DHT
+            // round-trips them through msgpack, and a stable rendering is
+            // what the client actually sees.
+            format!(
+                "{}|{}|{}|{}|{:.3}|{:.3}|{}",
+                p.peer_id,
+                p.start_block,
+                p.end_block,
+                p.public_name,
+                p.throughput,
+                p.trust_score,
+                p.trust_tier,
+            )
+        })
+        .collect();
+    (u.total_blocks, u.covered_blocks, u.full_coverage, peers)
+}
+
 /// Serve a `block_coverage` op within a Session: query the DHT for the
 /// model's block servers and emit one BlockCoverageUpdate (one-shot) or
 /// one per refresh interval until cancelled (subscribe).
@@ -693,6 +737,11 @@ async fn spawn_session_block_coverage(
         let mut discovery: Option<(kwaai_p2p_daemon::P2PClient, libp2p::PeerId, Vec<String>)> =
             None;
 
+        // Identity of the last snapshot actually sent, and when it went
+        // out — together these drive the change/heartbeat decision below.
+        let mut last_sent: Option<CoverageIdentity> = None;
+        let mut last_send_at: Option<std::time::Instant> = None;
+
         loop {
             if discovery.is_none() {
                 match crate::shard_cmd::connect_for_discovery(&cfg).await {
@@ -724,12 +773,37 @@ async fn spawn_session_block_coverage(
                 .await;
 
                 let update = build_coverage_update(&cfg, &dht_prefix, total_blocks, &chain);
-                let frame = ServerFrame {
-                    id,
-                    body: Some(server_frame::Body::BlockCoverage(update)),
-                };
-                if out_tx.send(Ok(frame)).await.is_err() {
-                    break; // client went away
+
+                // Suppress updates that would tell the client nothing new.
+                //
+                // Coverage is derived from DHT records with a 360 s TTL that
+                // peers re-announce every ~300 s, so at a 5 s cadence the
+                // overwhelming majority of ticks produce a byte-identical
+                // snapshot. Sending them anyway costs a frame and a client
+                // rebuild per tick to convey nothing.
+                //
+                // The heartbeat is what keeps that safe: silence alone is
+                // ambiguous — a client cannot distinguish "nothing changed"
+                // from "the daemon wedged" — so an unchanged snapshot is
+                // still sent every HEARTBEAT interval. That preserves a
+                // liveness signal and keeps any client-side "last updated"
+                // display honest.
+                let changed = last_sent.as_ref() != Some(&coverage_identity(&update));
+                let heartbeat_due = last_send_at
+                    .map(|t: std::time::Instant| t.elapsed() >= HEARTBEAT)
+                    .unwrap_or(true);
+
+                if changed || heartbeat_due || !req.subscribe {
+                    last_sent = Some(coverage_identity(&update));
+                    last_send_at = Some(std::time::Instant::now());
+
+                    let frame = ServerFrame {
+                        id,
+                        body: Some(server_frame::Body::BlockCoverage(update)),
+                    };
+                    if out_tx.send(Ok(frame)).await.is_err() {
+                        break; // client went away
+                    }
                 }
 
                 if !req.subscribe {
@@ -1406,5 +1480,65 @@ mod tests {
         assert_eq!(update.covered_blocks, 8);
         assert!(update.full_coverage);
         assert_eq!(update.peers[1].end_block, 12);
+    }
+
+    #[test]
+    fn coverage_identity_ignores_time_and_peer_order() {
+        let peer = |id: &str, start, end| BlockPeer {
+            peer_id: id.to_string(),
+            start_block: start,
+            end_block: end,
+            public_name: "peer".into(),
+            throughput: 1.0,
+            trust_score: 0.5,
+            trust_tier: String::new(),
+        };
+        let update = |time: &str, peers: Vec<BlockPeer>| BlockCoverageUpdate {
+            server_time: time.to_string(),
+            model: "m".into(),
+            dht_prefix: "Model-X".into(),
+            total_blocks: 8,
+            covered_blocks: 8,
+            full_coverage: true,
+            peers,
+        };
+
+        let a = update(
+            "2026-01-01T00:00:00Z",
+            vec![peer("A", 0, 4), peer("B", 4, 8)],
+        );
+
+        // server_time advances every tick by construction; if it counted,
+        // nothing would ever be suppressed and the diff would be useless.
+        let later = update(
+            "2026-01-01T00:00:05Z",
+            vec![peer("A", 0, 4), peer("B", 4, 8)],
+        );
+        assert_eq!(coverage_identity(&a), coverage_identity(&later));
+
+        // Responder order is not information — the same peers arriving in
+        // a different order must not wake the client.
+        let reordered = update(
+            "2026-01-01T00:00:05Z",
+            vec![peer("B", 4, 8), peer("A", 0, 4)],
+        );
+        assert_eq!(coverage_identity(&a), coverage_identity(&reordered));
+
+        // A peer leaving is the change the subscription exists to report.
+        let departed = update("2026-01-01T00:00:05Z", vec![peer("A", 0, 4)]);
+        assert_ne!(coverage_identity(&a), coverage_identity(&departed));
+
+        // So is one silently changing the range it serves.
+        let reranged = update(
+            "2026-01-01T00:00:05Z",
+            vec![peer("A", 0, 4), peer("B", 4, 6)],
+        );
+        assert_ne!(coverage_identity(&a), coverage_identity(&reranged));
+
+        // And so is a trust re-tiering, which the client renders per row.
+        let mut retiered_peer = peer("B", 4, 8);
+        retiered_peer.trust_tier = "TRUSTED".into();
+        let retiered = update("2026-01-01T00:00:05Z", vec![peer("A", 0, 4), retiered_peer]);
+        assert_ne!(coverage_identity(&a), coverage_identity(&retiered));
     }
 }
