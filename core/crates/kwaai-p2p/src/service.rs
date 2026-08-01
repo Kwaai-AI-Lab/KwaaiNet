@@ -33,7 +33,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
-    dest_peer_id, is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
+    dest_peer_id, is_announceable_with, is_circuit, peer_id_from_multiaddr, strip_dest_p2p,
+    strip_p2p,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
@@ -411,9 +412,18 @@ impl NetworkService {
                     Some(peer) if strip_p2p(&addr).is_empty() => {
                         self.dispatch_routed(peer, RoutedRequest::Connect { reply });
                     }
-                    _ => match self.dial(addr) {
+                    _ => match self.dial(addr.clone()) {
                         Ok(connection_id) => {
                             self.pending_dials.insert(connection_id, reply);
+                        }
+                        // Already connected: the caller asked to be connected
+                        // and is, so answer success rather than surfacing an
+                        // error for a no-op.
+                        Err(P2PError::AlreadyConnected) => {
+                            let resolved = peer_id_from_multiaddr(&addr);
+                            let _ = reply.send(
+                                resolved.ok_or_else(|| P2PError::DialFailed(addr.to_string())),
+                            );
                         }
                         Err(e) => {
                             let _ = reply.send(Err(e));
@@ -658,8 +668,20 @@ impl NetworkService {
 
     /// Dial `addr`, seeding the routing table with it when it carries a
     /// `/p2p/<peer-id>` component.
+    ///
+    /// Redundant when we are already connected to the named peer, so those
+    /// dials are suppressed. `DialOpts::from(Multiaddr)` cannot express that:
+    /// it builds the *unknown-peer-id* variant, which hardcodes
+    /// `PeerCondition::Always` and offers no `condition()` at all. The result
+    /// was a second connection to every bootstrap on each re-dial — same peer,
+    /// byte-identical address, indistinguishable in `list_peers` — held until
+    /// libp2p reaped it on keepalive ~45 s later.
+    ///
+    /// When the address names a peer we can use the peer-id builder instead,
+    /// which does take a condition. A bare address (no `/p2p/`) has no peer to
+    /// compare against and keeps the old unconditional behaviour.
     fn dial(&mut self, addr: Multiaddr) -> P2PResult<ConnectionId> {
-        use libp2p::swarm::dial_opts::DialOpts;
+        use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 
         // `dest_peer_id`, not `peer_id_from_multiaddr`: the latter returns the
         // *first* `/p2p`, which on a circuit address is the relay. Filing the
@@ -684,8 +706,17 @@ impl NetworkService {
             }
         }
 
-        // `allocate_new_port()`, overriding the `DialOpts` default of
-        // best-effort port reuse.
+        // Only for a plain address naming one peer. A circuit address carries
+        // *two* `/p2p/` components — the relay's and the target's — and
+        // `peer_id_from_multiaddr` returns the first, which is the relay.
+        // Conditioning on that would skip a dial to the target whenever we
+        // happened to be connected to the relay, which is always: holding a
+        // connection to the relay is what makes the circuit dialable at all.
+        let peer = peer_id_from_multiaddr(&addr);
+        let condition_safe = peer.is_some() && !is_circuit(&addr);
+
+        // Both arms call `allocate_new_port()`, overriding the `DialOpts`
+        // default of best-effort port reuse.
         //
         // Reuse asks the transport to bind our listen port as the dial's source
         // port. That is right for a DCUtR hole punch — `libp2p-dcutr` requests
@@ -699,19 +730,40 @@ impl NetworkService {
         // `AddrNotAvailable` raised by `connect`. Our failure is `EADDRINUSE`
         // from `bind`, one step earlier, where the `?` propagates before the
         // fallback can run — so the dial simply fails.
-        // Built through `unknown_peer_id().address(..)` rather than
-        // `DialOpts::from(addr)`, because only the builder exposes
-        // `allocate_new_port()`; the two are otherwise the same dial.
-        let opts = DialOpts::unknown_peer_id()
-            .address(addr.clone())
-            .allocate_new_port()
-            .build();
+        let opts = match peer {
+            // DisconnectedAndNotDialing rather than Disconnected: the latter
+            // still permits a second dial while the first is in flight, which
+            // is exactly the window a periodic re-dial lands in.
+            Some(peer) if condition_safe => DialOpts::peer_id(peer)
+                .addresses(vec![addr.clone()])
+                .condition(PeerCondition::DisconnectedAndNotDialing)
+                .allocate_new_port()
+                .build(),
+            // `unknown_peer_id().address(..)` rather than
+            // `DialOpts::from(addr)`, because only the builder exposes
+            // `allocate_new_port()`; the two are otherwise the same dial.
+            _ => DialOpts::unknown_peer_id()
+                .address(addr.clone())
+                .allocate_new_port()
+                .build(),
+        };
         let connection_id = opts.connection_id();
-        self.swarm
-            .dial(opts)
-            .map_err(|e| P2PError::DialFailed(format!("{addr}: {e}")))?;
-        debug!(%addr, ?connection_id, "dialing");
-        Ok(connection_id)
+        match self.swarm.dial(opts) {
+            Ok(()) => {
+                debug!(%addr, ?connection_id, "dialing");
+                Ok(connection_id)
+            }
+            // Not a failure: the condition held, meaning we are already
+            // connected or already dialing. Reported as its own error so
+            // callers can tell "no dial was needed" from "the dial failed" —
+            // `ConnectPeer` in particular must answer success here, since the
+            // caller's goal (be connected to this peer) is already met.
+            Err(DialError::DialPeerConditionFalse(_)) => {
+                debug!(%addr, "already connected or dialing — skipping redundant dial");
+                Err(P2PError::AlreadyConnected)
+            }
+            Err(e) => Err(P2PError::DialFailed(format!("{addr}: {e}"))),
+        }
     }
 
     /// Dial every bootstrap address and kick off a Kademlia bootstrap.
@@ -724,7 +776,11 @@ impl NetworkService {
         let mut last_error = None;
         for addr in peers {
             match self.dial(addr.clone()) {
-                Ok(_) => dialed += 1,
+                // A skipped dial counts as reached: we are already connected
+                // to that bootstrap, which is what the dial was for. Counting
+                // it as a failure would make a re-bootstrap on a healthy node
+                // look like a total failure.
+                Ok(_) | Err(P2PError::AlreadyConnected) => dialed += 1,
                 Err(e) => {
                     warn!(%addr, error = %e, "bootstrap dial failed to start");
                     last_error = Some(e);
@@ -1468,7 +1524,15 @@ impl NetworkService {
                         continue;
                     }
                     let dialable = relay_addr.with(libp2p::multiaddr::Protocol::P2p(relay));
+                    // AlreadyConnected is not a dial failure and must not back
+                    // the candidate off: the connection this dial wanted
+                    // exists. The guard above usually catches that first, but
+                    // it also requires identify to have landed, so this arm is
+                    // reachable in the window between the two.
                     if let Err(e) = self.dial(dialable) {
+                        if matches!(e, P2PError::AlreadyConnected) {
+                            continue;
+                        }
                         debug!(%relay, error = %e, "dialing a relay candidate");
                         let next = self.relays.on_relay_dial_failed(relay, Instant::now());
                         self.apply_relay_actions(next);
