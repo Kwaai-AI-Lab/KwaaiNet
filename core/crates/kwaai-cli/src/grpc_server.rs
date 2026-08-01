@@ -1374,4 +1374,37 @@ mod tests {
         let down = wait_for(Duration::from_secs(2), tcp_refused).await;
         assert!(down, "TCP listener did not close after handle drop");
     }
+
+    #[test]
+    fn coverage_update_counts_blocks_and_clamps_ranges() {
+        let mut cfg = KwaaiNetConfig::default();
+        // Keep the test hermetic: enabled reputation would read the real
+        // user's on-disk ReputationStore.
+        cfg.reputation.enabled = false;
+
+        let entry = |start, end| crate::shard_cmd::BlockServerEntry {
+            peer_id: libp2p::PeerId::random(),
+            start_block: start,
+            end_block: end,
+            public_name: "peer".into(),
+            throughput: 1.0,
+            trust_score: None,
+        };
+
+        // Gap at block 3: [0,3) + [4,8).
+        let update = build_coverage_update(&cfg, "Model-X", 8, &[entry(0, 3), entry(4, 8)]);
+        assert_eq!(update.dht_prefix, "Model-X");
+        assert_eq!(update.total_blocks, 8);
+        assert_eq!(update.covered_blocks, 7);
+        assert!(!update.full_coverage);
+        assert_eq!(update.peers.len(), 2);
+        assert!(update.peers[0].trust_tier.is_empty());
+
+        // Overlapping ranges cover fully, and an end past total_blocks
+        // must clamp for the bitmap while surviving verbatim on the peer.
+        let update = build_coverage_update(&cfg, "Model-X", 8, &[entry(0, 5), entry(3, 12)]);
+        assert_eq!(update.covered_blocks, 8);
+        assert!(update.full_coverage);
+        assert_eq!(update.peers[1].end_block, 12);
+    }
 }
