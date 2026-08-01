@@ -45,10 +45,10 @@ use kwaai_rpc::v1::{
     error::Code as ErrorCode,
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
-    ChatToken, ClientFrame, ConnectedPeer, Done, Error as RpcError, GenerateRequest,
-    NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest, RoutingPeer, SelfStatus,
-    ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer,
-    StorageReachability, StorageUpdate, UpdateReason,
+    ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, Done, Error as RpcError,
+    GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest,
+    RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest,
+    StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -325,6 +325,10 @@ impl KwaaiNet for KwaaiNetService {
                             cancels.clone(),
                         )
                         .await;
+                    }
+
+                    client_frame::Body::Connect(req) => {
+                        spawn_session_connect(id, req, net_slot.clone(), out_tx.clone()).await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
@@ -1533,6 +1537,58 @@ async fn spawn_session_network(
         }
 
         cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+/// `ConnectRequest` — dial a peer we know of but are not connected to.
+///
+/// One-shot: a reply then Done, with no subscription to manage. The dial
+/// itself can take a while (a DHT lookup, then the dial), so it runs in its
+/// own task rather than blocking the session loop.
+async fn spawn_session_connect(
+    id: u64,
+    req: ConnectRequest,
+    net: Arc<RwLock<Option<NetworkHandle>>>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+) {
+    tokio::spawn(async move {
+        let Some(handle) = net.read().await.clone() else {
+            let _ = out_tx
+                .send(Ok(error_frame(
+                    id,
+                    ErrorCode::Unimplemented,
+                    "connect requires the native p2p stack",
+                )))
+                .await;
+            return;
+        };
+
+        // A bare `/p2p/<id>` has no transport, which is precisely what makes
+        // the handle resolve it through the DHT rather than dial an address.
+        let reply = match handle.connect_peer(&format!("/p2p/{}", req.peer_id)).await {
+            Ok(_) => ConnectReply {
+                connected: true,
+                error: String::new(),
+            },
+            // Already connected is success: the caller wanted a connection to
+            // this peer and there is one.
+            Err(kwaai_p2p::P2PError::AlreadyConnected) => ConnectReply {
+                connected: true,
+                error: String::new(),
+            },
+            Err(e) => ConnectReply {
+                connected: false,
+                error: e.to_string(),
+            },
+        };
+
+        let _ = out_tx
+            .send(Ok(ServerFrame {
+                id,
+                body: Some(server_frame::Body::Connect(reply)),
+            }))
+            .await;
+        let _ = out_tx.send(Ok(done_frame(id))).await;
     });
 }
 
