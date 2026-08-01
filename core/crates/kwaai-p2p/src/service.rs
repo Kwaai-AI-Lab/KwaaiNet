@@ -90,6 +90,13 @@ const MAX_ADDRESSES_PER_PEER: usize = 6;
 struct Connection {
     addr: Multiaddr,
     direction: Direction,
+    /// Whether DCUtR upgraded this connection from a relayed path to a direct
+    /// one. Set when `dcutr::Event` reports success for this connection id.
+    ///
+    /// Worth distinguishing from a plain direct connection: it is direct
+    /// *despite* both ends being behind NAT, which is the difference between
+    /// "no NAT in the way" and "the NAT was traversed".
+    dcutr: bool,
 }
 
 /// Owns the swarm and drives it. Construct with [`NetworkService::spawn`].
@@ -666,6 +673,7 @@ impl NetworkService {
                     peer_id: *peer_id,
                     addr: c.addr.clone(),
                     direction: c.direction,
+                    dcutr: c.dcutr,
                     rtt,
                     agent_version: agent_version.clone(),
                     protocols: protocols.clone(),
@@ -1212,10 +1220,16 @@ impl NetworkService {
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
-                self.connections
-                    .entry(peer_id)
-                    .or_default()
-                    .insert(connection_id, Connection { addr, direction });
+                self.connections.entry(peer_id).or_default().insert(
+                    connection_id,
+                    Connection {
+                        addr,
+                        direction,
+                        // Set later if dcutr reports success for this id;
+                        // the upgrade always follows establishment.
+                        dcutr: false,
+                    },
+                );
 
                 if let Some(reply) = self.pending_dials.remove(&connection_id) {
                     let _ = reply.send(Ok(peer_id));
@@ -1389,7 +1403,15 @@ impl NetworkService {
                 // A success here means the relayed connection was replaced by a
                 // direct one — the whole point of holding the circuit.
                 Ok(connection_id) => {
-                    info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded")
+                    info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded");
+                    // Mark the specific connection, not the peer: a peer can
+                    // hold both an upgraded connection and a plain one, and
+                    // only the former was earned by DCUtR.
+                    if let Some(conns) = self.connections.get_mut(&remote_peer_id) {
+                        if let Some(conn) = conns.get_mut(&connection_id) {
+                            conn.dcutr = true;
+                        }
+                    }
                 }
                 Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
             },

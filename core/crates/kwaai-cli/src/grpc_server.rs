@@ -1314,8 +1314,11 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
             // Every field a client renders per row *except* rtt_ms — see the
             // type comment. Protocols are joined rather than nested so the
             // whole row stays one comparable string.
+            // `dcutr` is in here deliberately: an upgrade flips a connection
+            // from relayed to direct, which is exactly the kind of change the
+            // user is watching this page for.
             format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 p.peer_id,
                 p.addr,
                 p.kind,
@@ -1324,13 +1327,14 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
                 p.is_trusted_relay,
                 p.protocols.join(","),
                 p.agent_version,
+                p.dcutr,
             )
         })
         .collect();
     let routing = u
         .routing
         .iter()
-        .map(|r| format!("{}|{}", r.peer_id, r.connected))
+        .map(|r| format!("{}|{}|{}", r.peer_id, r.connected, r.is_bootstrap))
         .collect();
 
     (
@@ -1564,6 +1568,7 @@ fn build_network_update(
                     .map(|d| d.as_millis().min(u32::MAX as u128) as u32)
                     .unwrap_or(0),
                 agent_version: p.agent_version.clone().unwrap_or_default(),
+                dcutr: p.dcutr,
             };
             (
                 group_index(is_bootstrap, is_trusted_relay, kind),
@@ -1583,6 +1588,7 @@ fn build_network_update(
         .map(|p| RoutingPeer {
             peer_id: p.to_base58(),
             connected: connected_ids.contains(p),
+            is_bootstrap: bootstraps.contains(p),
         })
         .collect();
     routing.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
@@ -2425,6 +2431,7 @@ mod tests {
             protocols: vec!["/ipfs/kad/1.0.0".into()],
             rtt_ms: 10,
             agent_version: "kwaainet/0.5.4".into(),
+            dcutr: false,
         }
     }
 
@@ -2516,8 +2523,38 @@ mod tests {
         routed.routing = vec![RoutingPeer {
             peer_id: "A".into(),
             connected: true,
+            is_bootstrap: false,
         }];
         assert_ne!(network_identity(&a), network_identity(&routed));
+
+        // A DCUtR upgrade. The connection was already direct in `kind` terms
+        // by the time dcutr reports, so without this field in the identity the
+        // upgrade would be suppressed and never reach the client — despite
+        // being one of the most interesting things that can happen here.
+        let mut upgraded_peer = net_peer("A");
+        upgraded_peer.dcutr = true;
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&net_update("2026-01-01T00:00:00Z", vec![upgraded_peer]))
+        );
+
+        // A routing peer being recognised as a bootstrap.
+        let mut bootstrap_routed = a.clone();
+        bootstrap_routed.routing = vec![RoutingPeer {
+            peer_id: "A".into(),
+            connected: false,
+            is_bootstrap: true,
+        }];
+        let mut plain_routed = a.clone();
+        plain_routed.routing = vec![RoutingPeer {
+            peer_id: "A".into(),
+            connected: false,
+            is_bootstrap: false,
+        }];
+        assert_ne!(
+            network_identity(&bootstrap_routed),
+            network_identity(&plain_routed)
+        );
     }
 
     /// Address churn is not a reachability change. `observed_addrs` moves as
