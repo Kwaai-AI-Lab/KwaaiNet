@@ -123,6 +123,14 @@ pub struct NetworkSnapshot {
     pub observed_addrs: Vec<(Multiaddr, usize)>,
     /// The swarm's listen addresses.
     pub listen_addrs: Vec<Multiaddr>,
+    /// Protocols this node serves to peers, sorted.
+    ///
+    /// The handlers actually registered — the unary and raw-stream namespaces
+    /// plus kad's own names — rather than everything the swarm might negotiate.
+    /// libp2p keeps its full advertised set private to `Swarm`, and this is the
+    /// more useful answer anyway: it is what this node will *do* for a peer,
+    /// which is what a reader comparing it against a peer's list wants.
+    pub local_protocols: Vec<String>,
 }
 
 /// Which end dialed.

@@ -234,6 +234,10 @@ fn network_update_roundtrip_all_sections() {
             listen_addrs: vec!["/ip4/0.0.0.0/tcp/4001".to_string()],
             observed_addrs: vec!["/ip4/203.0.113.7/tcp/4001".to_string()],
             relay_addrs: vec!["/ip4/198.18.0.50/tcp/4001/p2p-circuit".to_string()],
+            local_protocols: vec![
+                "/ipfs/kad/1.0.0".to_string(),
+                "/kwaai/inference/1.0.0".to_string(),
+            ],
         }),
         connected: vec![ConnectedPeer {
             peer_id: "12D3KooWExamplePeerA".to_string(),
