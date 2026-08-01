@@ -139,7 +139,7 @@ enum PendingKad {
 /// Go's p2pd wraps its host in a *routed host*: `NewStream` to a peer with no
 /// known addresses transparently runs a DHT `FindPeer` first. rust-libp2p has
 /// no equivalent — Kademlia only serves addresses it already has — so the
-/// service replicates that here for the two commands that dial by bare peer ID.
+/// service replicates that here for the commands that dial by bare peer ID.
 enum RoutedRequest {
     Unary {
         proto: String,
@@ -149,6 +149,12 @@ enum RoutedRequest {
     RawStream {
         protos: Vec<String>,
         reply: oneshot::Sender<raw_stream::OpenResult>,
+    },
+    /// `ConnectPeer` with a bare `/p2p/<id>` address — no way to reach the
+    /// peer was supplied, so the connect *is* the lookup. Go's daemon accepts
+    /// exactly this from `shard run`'s pre-connect pass.
+    Connect {
+        reply: oneshot::Sender<P2PResult<PeerId>>,
     },
 }
 
@@ -346,14 +352,24 @@ impl NetworkService {
     /// in a pending map and resolved from `handle_swarm_event`.
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::ConnectPeer { addr, reply } => match self.dial(addr) {
-                Ok(connection_id) => {
-                    self.pending_dials.insert(connection_id, reply);
+            Command::ConnectPeer { addr, reply } => {
+                match peer_id_from_multiaddr(&addr) {
+                    // A bare `/p2p/<id>` carries no way to reach the peer:
+                    // resolve it through the DHT like Go's routed host instead
+                    // of dialing an address that has no transport.
+                    Some(peer) if strip_p2p(&addr).is_empty() => {
+                        self.dispatch_routed(peer, RoutedRequest::Connect { reply });
+                    }
+                    _ => match self.dial(addr) {
+                        Ok(connection_id) => {
+                            self.pending_dials.insert(connection_id, reply);
+                        }
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                        }
+                    },
                 }
-                Err(e) => {
-                    let _ = reply.send(Err(e));
-                }
-            },
+            }
 
             Command::DisconnectPeer { peer, reply } => {
                 let result = match self.swarm.disconnect_peer_id(peer) {
@@ -545,11 +561,14 @@ impl NetworkService {
 
         if let Some(peer) = peer_id_from_multiaddr(&addr) {
             // Kad wants the address without the trailing /p2p component; it
-            // re-attaches it itself via `with_p2p`.
-            self.swarm
-                .behaviour_mut()
-                .kad
-                .add_address(&peer, strip_p2p(&addr));
+            // re-attaches it itself via `with_p2p`. A bare `/p2p/<id>` strips
+            // to an *empty* multiaddr — seeding that would poison the routing
+            // table with an undialable entry that `known_addresses` then
+            // mistakes for a way to reach the peer.
+            let stripped = strip_p2p(&addr);
+            if !stripped.is_empty() {
+                self.swarm.behaviour_mut().kad.add_address(&peer, stripped);
+            }
         }
 
         let opts = DialOpts::from(addr.clone());
@@ -618,7 +637,9 @@ impl NetworkService {
         if let Some(bucket) = self.swarm.behaviour_mut().kad.kbucket(*peer) {
             for entry in bucket.iter() {
                 if entry.node.key.preimage() == peer {
-                    addrs.extend(entry.node.value.iter().cloned());
+                    // Skip empty entries: an address with no transport cannot
+                    // be dialed, only mistaken for reachability.
+                    addrs.extend(entry.node.value.iter().filter(|a| !a.is_empty()).cloned());
                 }
             }
         }
@@ -673,6 +694,23 @@ impl NetworkService {
                     reply,
                 );
             }
+            RoutedRequest::Connect { reply } => {
+                use libp2p::swarm::dial_opts::DialOpts;
+                if self.swarm.is_connected(&peer) {
+                    let _ = reply.send(Ok(peer));
+                    return;
+                }
+                let opts = DialOpts::peer_id(peer).build();
+                let connection_id = opts.connection_id();
+                match self.swarm.dial(opts) {
+                    Ok(()) => {
+                        self.pending_dials.insert(connection_id, reply);
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(dial_error(&e, Some(peer))));
+                    }
+                }
+            }
         }
     }
 
@@ -698,6 +736,9 @@ impl NetworkService {
                 }
                 RoutedRequest::RawStream { reply, .. } => {
                     let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(text.clone())));
+                }
+                RoutedRequest::Connect { reply } => {
+                    let _ = reply.send(Err(P2PError::DialFailed(text.clone())));
                 }
             }
         }
@@ -815,6 +856,9 @@ impl NetworkService {
                         let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(
                             error.to_string(),
                         )));
+                    }
+                    RoutedRequest::Connect { reply } => {
+                        let _ = reply.send(Err(error.clone()));
                     }
                 }
             }
