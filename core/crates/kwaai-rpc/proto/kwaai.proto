@@ -85,6 +85,13 @@ message ClientFrame {
         // Done); a live feed when true (a BlockCoverageUpdate every
         // refresh interval until cancelled with a `Cancel` body).
         BlockCoverageRequest block_coverage = 15;
+        // Local p2p state: connections, DHT routing table and this
+        // node's own reachability. Unlike the two above it queries no
+        // DHT — it reads the swarm — so it is cheap enough to poll at a
+        // few seconds. Reachability changes push out of band rather than
+        // waiting for the next tick; see NetworkUpdate.reason.
+        NetworkRequest network = 17;
+
 
         // VPK storage-node discovery. Like block_coverage, but for the
         // `_kwaai.vpk.nodes` DHT registry. Note that a one-shot request
@@ -122,6 +129,11 @@ message ServerFrame {
         // one-shot BlockCoverageRequest; a subscription delivers one
         // per refresh interval until the op is cancelled.
         BlockCoverageUpdate block_coverage = 15;
+        // Snapshot of local p2p state. One arrives for a one-shot
+        // NetworkRequest; a subscription delivers one per refresh
+        // interval, plus one immediately whenever reachability changes.
+        NetworkUpdate network = 17;
+
 
         // Snapshot of discovered VPK storage nodes. Arrives in pairs
         // per discovery round: one with probes_pending set, then one
@@ -325,6 +337,170 @@ message BlockCoverageUpdate {
 
     // All discovered block servers, sorted by start_block.
     repeated BlockPeer peers = 7;
+}
+
+// `kwaainet p2p peers list`, and more — local swarm state.
+//
+// Requires the native p2p stack. The Go p2p daemon's control protocol
+// reports only (peer id, addresses) per connection, so direction,
+// protocols, latency and the routing table have nowhere to come from;
+// the daemon answers FAILED_PRECONDITION rather than serving a view
+// that is mostly blank.
+message NetworkRequest {
+    // When true the operation stays open and the server pushes updates
+    // until the client sends a Cancel body for this op id. When false a
+    // single update is sent followed by Done.
+    bool subscribe = 1;
+
+    // Refresh cadence for subscriptions, in seconds. 0 means the server
+    // default (5s). Ignored when `subscribe` is false.
+    //
+    // This is the *sampling* floor, not the whole story: connections and
+    // the routing table have no event source and so are polled, but
+    // reachability changes are pushed the moment they happen. See
+    // NetworkUpdate.reason.
+    uint32 interval_secs = 2;
+}
+
+// Why a NetworkUpdate was sent.
+//
+// Without this a client cannot tell a routine sample from a genuine
+// event, and would have to infer it by diffing successive snapshots.
+enum UpdateReason {
+    // The refresh timer fired and something changed, or this is the
+    // single update of a one-shot request.
+    UPDATE_REASON_TICK = 0;
+
+    // Reachability, relay use, or announceability moved. Sent
+    // immediately rather than on the next tick boundary.
+    UPDATE_REASON_REACHABILITY = 1;
+
+    // The connected-peer or routing set changed since the last update.
+    UPDATE_REASON_PEERS = 2;
+
+    // Nothing changed. Sent periodically so a client can distinguish a
+    // quiet network from a stalled feed.
+    UPDATE_REASON_HEARTBEAT = 3;
+}
+
+// How a connection reaches the peer.
+enum PeerConnKind {
+    // A plain transport address — directly dialable.
+    PEER_CONN_KIND_DIRECT = 0;
+
+    // The path runs through a circuit relay.
+    PEER_CONN_KIND_RELAY = 1;
+}
+
+// One live connection.
+//
+// Per connection, not per peer: a peer reachable both directly and over
+// a relay appears twice, which is what makes a hole-punch upgrade
+// visible while it happens.
+message ConnectedPeer {
+    // libp2p peer id, base58.
+    string peer_id = 1;
+
+    // The connection's multiaddr — the remote address for outbound
+    // connections, the observed send-back address for inbound ones.
+    string addr = 2;
+
+    PeerConnKind kind = 3;
+
+    // "inbound" if the peer dialed us, "outbound" if we dialed them.
+    string direction = 4;
+
+    // Set when this peer is one of our configured bootstrap nodes.
+    bool is_bootstrap = 5;
+
+    // Set when this peer is one of our configured trusted relays.
+    bool is_trusted_relay = 6;
+
+    // Protocols the peer advertised over identify. Empty until identify
+    // completes, which is shortly *after* the connection establishes —
+    // empty means "not yet known", not "speaks nothing".
+    repeated string protocols = 7;
+
+    // Most recent ping round-trip time. 0 means no ping has completed
+    // yet, not zero latency.
+    uint32 rtt_ms = 8;
+
+    // The peer's advertised software version. May be empty.
+    string agent_version = 9;
+}
+
+// One entry in the Kademlia routing table.
+//
+// The routing table and the connected set overlap but neither contains
+// the other: k-buckets hold a bounded number of entries per distance
+// range, the table deliberately retains peers we are not currently
+// connected to, and kad stays in client mode (adding nothing) until
+// reachability resolves. A young node can have live connections and an
+// empty table.
+message RoutingPeer {
+    // libp2p peer id, base58.
+    string peer_id = 1;
+
+    // Whether this peer also appears in NetworkUpdate.connected.
+    bool connected = 2;
+}
+
+// This node's own position in the network.
+message SelfStatus {
+    // Our libp2p peer id, base58.
+    string peer_id = 1;
+
+    // "unknown" until a verdict is reached, then "public" or "private".
+    // Announcing is deferred while unknown.
+    string reachability = 2;
+
+    // What produced the verdict: "identify" (peer consensus), "autonat"
+    // (a dial-back probe) or "declared" (operator configuration — an
+    // instruction, not evidence). Empty while reachability is unknown.
+    string reachability_source = 3;
+
+    // Whether at least one *confirmed* circuit reservation is live. A
+    // requested-but-unanswered reservation does not count.
+    bool using_relay = 4;
+
+    // Whether there is any point announcing to the DHT yet. False only
+    // while reachability is unknown.
+    bool announceable = 5;
+
+    // The swarm's listen addresses.
+    repeated string listen_addrs = 6;
+
+    // Addresses peers reported observing us at — our external-address
+    // candidates. Ordered by the number of distinct peers that agreed,
+    // most-confirmed first.
+    repeated string observed_addrs = 7;
+
+    // Addresses of confirmed circuit-relay reservations. Empty when not
+    // relaying.
+    repeated string relay_addrs = 8;
+}
+
+// Snapshot of local p2p state.
+//
+// A subscription suppresses unchanged snapshots, so a client should read
+// silence as "nothing changed" rather than as a stalled feed — an
+// unchanged snapshot is still sent periodically as a heartbeat, so a
+// feed quiet for much longer than the heartbeat is genuinely wedged.
+message NetworkUpdate {
+    // Daemon wall-clock time of this snapshot, RFC 3339.
+    string server_time = 1;
+
+    UpdateReason reason = 2;
+
+    SelfStatus self_status = 3;
+
+    // One entry per live connection, ordered bootstrap → trusted relay →
+    // direct → relayed, then by peer id, so the ordering is stable
+    // across updates.
+    repeated ConnectedPeer connected = 4;
+
+    // The Kademlia routing table, sorted by peer id.
+    repeated RoutingPeer routing = 5;
 }
 
 // `kwaainet vpk discover` — VPK storage nodes from the DHT.
