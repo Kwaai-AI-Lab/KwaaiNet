@@ -87,8 +87,8 @@ message ClientFrame {
         BlockCoverageRequest block_coverage = 15;
 
         // VPK storage-node discovery. Like block_coverage, but for the
-        // `_kwaai.vpk.nodes` DHT registry. Note that even a one-shot
-        // request yields *two* StorageUpdate replies — see
+        // `_kwaai.vpk.nodes` DHT registry. Note that a one-shot request
+        // yields *two* StorageUpdate replies before Done — see
         // StorageUpdate.probes_pending.
         StorageDiscoveryRequest storage_discovery = 16;
     }
@@ -398,19 +398,29 @@ message StoragePeer {
 
 // Snapshot of the VPK storage nodes visible from this daemon.
 //
-// A discovery round emits two of these: the first as soon as the DHT
-// answers (`probes_pending` true, every peer UNKNOWN), the second once
-// the health probes resolve. The DHT lookup is fast and the probes are
-// not — splitting them lets a client render the registry immediately
-// rather than holding a blank view until the slowest dial times out.
+// The first discovery round emits two of these: one as soon as the DHT
+// answers (`probes_pending` true, every peer UNKNOWN), and one once the
+// health probes resolve. The DHT lookup is fast and the probes are not —
+// splitting them lets a client render the registry immediately rather
+// than holding a blank view until the slowest dial times out.
+//
+// Subsequent rounds emit at most one update, and only when something
+// actually changed: re-sending the pending phase would throw a client's
+// status column back to "checking" every round, and an unchanged
+// resolved snapshot is suppressed. A client should therefore treat
+// silence as "nothing has changed", not as a stalled feed — an unchanged
+// snapshot is still sent periodically as a heartbeat, so a feed that
+// goes quiet for much longer than the discovery interval is genuinely
+// wedged.
 message StorageUpdate {
     // Daemon wall-clock time of this snapshot, RFC 3339.
     string server_time = 1;
 
-    // True on the first update of a round: the peer list is complete
-    // but reachability is still resolving, so a client should show the
-    // rows in a pending state rather than as unreachable. Always false
-    // when `skip_probes` was set — nothing is pending in that case.
+    // True on the pending update that opens the *first* round: the peer
+    // list is complete but reachability is still resolving, so a client
+    // should show the rows in a pending state rather than as
+    // unreachable. Never set on later rounds, and never when
+    // `skip_probes` was set.
     bool probes_pending = 2;
 
     // All discovered nodes, sorted by public_name then peer_id so the
