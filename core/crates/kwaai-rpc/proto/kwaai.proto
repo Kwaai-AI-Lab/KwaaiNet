@@ -429,6 +429,17 @@ message ConnectedPeer {
 
     // The peer's advertised software version. May be empty.
     string agent_version = 9;
+
+    // Whether DCUtR upgraded this connection from a relayed path to a
+    // direct one.
+    //
+    // Only ever true alongside PEER_CONN_KIND_DIRECT, and it means
+    // something stronger: the path was established *through* a NAT by
+    // coordinated simultaneous dial, rather than there being no NAT in
+    // the way. A node reporting "private" reachability can still hold
+    // upgraded connections — that is DCUtR working, not a
+    // contradiction.
+    bool dcutr = 10;
 }
 
 // One entry in the Kademlia routing table.
@@ -445,6 +456,13 @@ message RoutingPeer {
 
     // Whether this peer also appears in NetworkUpdate.connected.
     bool connected = 2;
+
+    // Whether this peer is one of our configured bootstrap nodes.
+    //
+    // Derived from local configuration, the same way it is for a
+    // connection: the DHT does not label bootstraps, and which nodes
+    // hold that role is the operator's choice.
+    bool is_bootstrap = 3;
 }
 
 // This node's own position in the network.

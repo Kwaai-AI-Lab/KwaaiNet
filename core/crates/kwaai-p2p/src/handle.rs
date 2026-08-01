@@ -81,6 +81,12 @@ pub struct PeerInfo {
     pub addr: Multiaddr,
     /// Which side opened the connection.
     pub direction: Direction,
+    /// Whether DCUtR upgraded this connection from relayed to direct.
+    ///
+    /// Distinct from simply being direct: it means the path was established
+    /// *through* a NAT by coordinated simultaneous dial, rather than there
+    /// being no NAT to traverse.
+    pub dcutr: bool,
     /// Most recent ping round-trip time. `None` until the first ping completes.
     pub rtt: Option<Duration>,
     /// The peer's advertised software version, from identify.
