@@ -579,3 +579,58 @@ async fn call_from_isolated_node_fails_cleanly() {
         "expected DialFailed, got {error:?}"
     );
 }
+
+/// `shard run` pre-connects each chain entry with a bare `/p2p/<id>` address —
+/// no transport component at all. Go's daemon resolved that through the DHT;
+/// the native service must do the same rather than dial an empty address (or,
+/// worse, poison the routing table with one).
+#[tokio::test]
+async fn connect_by_bare_peer_id_resolves_through_the_dht() {
+    let (bootstrap, bootstrap_task, bootstrap_id) = spawn_service();
+    let (responder, responder_task, responder_id) = spawn_service();
+    let (caller, caller_task, _caller_id) = spawn_service();
+    let _tasks = [bootstrap_task, responder_task, caller_task];
+
+    responder
+        .add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("register handler");
+
+    let bootstrap_addr = dialable_addr(&bootstrap, bootstrap_id).await;
+    responder
+        .connect_peer(&bootstrap_addr)
+        .await
+        .expect("responder dials bootstrap");
+    caller
+        .connect_peer(&bootstrap_addr)
+        .await
+        .expect("caller dials bootstrap");
+
+    within(
+        "the bootstrap to learn the responder",
+        wait_in_routing_table(&bootstrap, responder_id),
+    )
+    .await;
+    within(
+        "the caller to learn the bootstrap",
+        wait_in_routing_table(&caller, bootstrap_id),
+    )
+    .await;
+
+    let connected = within(
+        "the routed connect",
+        caller.connect_peer(&format!("/p2p/{}", responder_id.to_base58())),
+    )
+    .await
+    .expect("a bare /p2p/ connect must resolve through the DHT");
+    assert_eq!(connected, responder_id);
+
+    // The connection is real: a call over it round-trips.
+    let response = within(
+        "a call over the routed connection",
+        caller.call_unary_handler(responder_id, PROTO, b"ping"),
+    )
+    .await
+    .expect("the routed connection must carry calls");
+    assert_eq!(response, b"ping");
+}
