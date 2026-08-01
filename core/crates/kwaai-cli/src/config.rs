@@ -126,6 +126,20 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_force_private")]
     pub force_private: bool,
 
+    /// Ask the local gateway to map our listen port via UPnP/IGD
+    /// (`-natPortMap`).
+    ///
+    /// On by default, which is the behaviour this replaces — the flag was
+    /// previously passed unconditionally. Turning it off is how you get a
+    /// genuinely NATed node without touching router settings, which makes the
+    /// relay and hole-punch paths testable; it also lets an operator decline
+    /// to have the node ask the router to open ports at all.
+    ///
+    /// Takes effect at startup, since the mapping is requested when the daemon
+    /// launches. Changing it needs a restart.
+    #[serde(default = "default_enable_upnp")]
+    pub enable_upnp: bool,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -560,6 +574,9 @@ fn default_trusted_relays() -> Vec<String> {
 fn default_force_private() -> bool {
     true
 }
+fn default_enable_upnp() -> bool {
+    true
+}
 fn default_api_endpoint() -> String {
     "https://map.kwaai.ai/api/v1/state".to_string()
 }
@@ -633,6 +650,7 @@ impl Default for KwaaiNetConfig {
             initial_peers: default_peers(),
             trusted_relays: default_trusted_relays(),
             force_private: default_force_private(),
+            enable_upnp: default_enable_upnp(),
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -851,6 +869,7 @@ impl KwaaiNetConfig {
             }
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
+            "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "start_block" => {
                 self.start_block = value
                     .parse()
