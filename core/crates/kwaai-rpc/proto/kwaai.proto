@@ -85,6 +85,12 @@ message ClientFrame {
         // Done); a live feed when true (a BlockCoverageUpdate every
         // refresh interval until cancelled with a `Cancel` body).
         BlockCoverageRequest block_coverage = 15;
+
+        // VPK storage-node discovery. Like block_coverage, but for the
+        // `_kwaai.vpk.nodes` DHT registry. Note that even a one-shot
+        // request yields *two* StorageUpdate replies — see
+        // StorageUpdate.probes_pending.
+        StorageDiscoveryRequest storage_discovery = 16;
     }
 }
 
@@ -116,6 +122,11 @@ message ServerFrame {
         // one-shot BlockCoverageRequest; a subscription delivers one
         // per refresh interval until the op is cancelled.
         BlockCoverageUpdate block_coverage = 15;
+
+        // Snapshot of discovered VPK storage nodes. Arrives in pairs
+        // per discovery round: one with probes_pending set, then one
+        // with reachability resolved.
+        StorageUpdate storage = 16;
     }
 }
 
@@ -314,6 +325,107 @@ message BlockCoverageUpdate {
 
     // All discovered block servers, sorted by start_block.
     repeated BlockPeer peers = 7;
+}
+
+// `kwaainet vpk discover` — VPK storage nodes from the DHT.
+message StorageDiscoveryRequest {
+    // When true the operation stays open and the server runs a fresh
+    // discovery round every `interval_secs` until the client sends a
+    // Cancel body for this op id. When false a single round runs and
+    // the op ends with Done.
+    bool subscribe = 1;
+
+    // Discovery cadence for subscriptions, in seconds. 0 means the
+    // server default (30s). Ignored when `subscribe` is false.
+    //
+    // Slower than block coverage by default: each round dials every
+    // advertised node, so a tight interval spends real network work to
+    // observe a registry that only changes on the ~120s announce cycle.
+    uint32 interval_secs = 2;
+
+    // Skip the reachability probes and report DHT records only. Yields
+    // a single StorageUpdate per round with every peer left UNKNOWN,
+    // for callers that just want the advertised registry cheaply.
+    bool skip_probes = 3;
+}
+
+// Whether a discovered node answered a storage RPC.
+//
+// Reachability is a property of *this* node's route to the peer, not of
+// the peer itself: a node behind a NAT that we cannot traverse is
+// unreachable from here and fine from elsewhere.
+enum StorageReachability {
+    // Not probed yet. Every peer holds this in the first update of a
+    // round, and keeps it for the whole round when `skip_probes` is set.
+    STORAGE_REACHABILITY_UNKNOWN = 0;
+
+    // Answered a /kwaai/storage/1.0.0 health RPC. `capacity_gb_free`
+    // and `tenant_count` on this peer are live values from that reply.
+    STORAGE_REACHABILITY_REACHABLE = 1;
+
+    // Advertised in the DHT but did not answer — offline, or running a
+    // build without the storage protocol.
+    STORAGE_REACHABILITY_UNREACHABLE = 2;
+}
+
+// One VPK-capable node, as advertised in the DHT and (optionally)
+// confirmed by a live health probe.
+message StoragePeer {
+    // libp2p peer id, base58.
+    string peer_id = 1;
+
+    // Human-readable name the node announced (may be empty).
+    string public_name = 2;
+
+    // VPK role: "bob" (client), "eve" (server), or "both".
+    string mode = 3;
+
+    // VPK version string the node announced (may be empty).
+    string vpk_version = 4;
+
+    // Capacity the node advertised in its DHT record, in GB. Always
+    // present — this is what the registry claims.
+    double capacity_gb = 5;
+
+    // Tenants the node advertised in its DHT record.
+    uint32 tenant_count = 6;
+
+    // Whether this node answered a health probe this round.
+    StorageReachability reachability = 7;
+
+    // Free capacity in GB, from the health probe. Only meaningful when
+    // `reachability` is REACHABLE; 0 otherwise.
+    double capacity_gb_free = 8;
+
+    // Local reputation score in [0, 1]. Only meaningful when
+    // `trust_tier` is non-empty.
+    double trust_score = 9;
+
+    // Trust tier label ("UNKNOWN" / "KNOWN" / "VERIFIED" / "TRUSTED").
+    // Empty when the local reputation system is disabled.
+    string trust_tier = 10;
+}
+
+// Snapshot of the VPK storage nodes visible from this daemon.
+//
+// A discovery round emits two of these: the first as soon as the DHT
+// answers (`probes_pending` true, every peer UNKNOWN), the second once
+// the health probes resolve. The DHT lookup is fast and the probes are
+// not — splitting them lets a client render the registry immediately
+// rather than holding a blank view until the slowest dial times out.
+message StorageUpdate {
+    // Daemon wall-clock time of this snapshot, RFC 3339.
+    string server_time = 1;
+
+    // True on the first update of a round: the peer list is complete
+    // but reachability is still resolving, so a client should show the
+    // rows in a pending state rather than as unreachable. Always false
+    // when `skip_probes` was set — nothing is pending in that case.
+    bool probes_pending = 2;
+
+    // All discovered nodes, sorted by public_name then peer_id so the
+    // ordering is stable across rounds.
+    repeated StoragePeer peers = 3;
 }
 
 // =====================================================================

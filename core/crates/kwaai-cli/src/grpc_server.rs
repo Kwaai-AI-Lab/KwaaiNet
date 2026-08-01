@@ -42,7 +42,8 @@ use kwaai_rpc::v1::{
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
     ChatToken, ClientFrame, Done, Error as RpcError, GenerateRequest, PingReply, PingRequest,
-    ServerFrame, ShardRunRequest, StatusReply,
+    ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer,
+    StorageReachability, StorageUpdate,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -266,6 +267,17 @@ impl KwaaiNet for KwaaiNetService {
 
                     client_frame::Body::BlockCoverage(req) => {
                         spawn_session_block_coverage(
+                            id,
+                            req,
+                            cfg.clone(),
+                            out_tx.clone(),
+                            cancels.clone(),
+                        )
+                        .await;
+                    }
+
+                    client_frame::Body::StorageDiscovery(req) => {
+                        spawn_session_storage_discovery(
                             id,
                             req,
                             cfg.clone(),
@@ -890,6 +902,256 @@ fn build_coverage_update(
     }
 }
 
+/// Default cadence for storage-discovery subscriptions.
+///
+/// Much slower than block coverage: a round dials every advertised node,
+/// and VPK records are re-announced on a ~120 s cycle, so polling faster
+/// spends real network work to observe a registry that has not moved.
+const DEFAULT_STORAGE_INTERVAL_SECS: u64 = 30;
+
+/// How long a single node's health probe may take before it counts as
+/// unreachable.
+///
+/// Probes run concurrently, so this bounds the whole probe phase rather
+/// than each node in sequence — the wall-clock cost of a round is one
+/// timeout, not one per unreachable node.
+const STORAGE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Serve a `storage_discovery` op within a Session: look up the VPK node
+/// registry in the DHT, emit it immediately, then probe each node's
+/// reachability and emit the resolved snapshot.
+///
+/// Each round sends two updates because the two halves have very
+/// different latencies — the DHT answers in about a second, while probing
+/// nodes that will never answer costs a full timeout. Emitting the
+/// registry first lets a client show the node list while reachability is
+/// still resolving.
+async fn spawn_session_storage_discovery(
+    id: u64,
+    req: StorageDiscoveryRequest,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    // Registered up-front so a Cancel arriving immediately after this
+    // frame still finds an entry to fire.
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    let cancels_for_cleanup = cancels.clone();
+    tokio::spawn(async move {
+        use std::time::Duration;
+
+        let interval = if req.interval_secs > 0 {
+            req.interval_secs as u64
+        } else {
+            DEFAULT_STORAGE_INTERVAL_SECS
+        };
+
+        // As with block coverage, the gRPC server binds before p2pd is
+        // up, so the connection is established lazily: a one-shot fails
+        // fast, a subscription retries on the next tick.
+        let mut discovery: Option<(kwaai_p2p_daemon::P2PClient, libp2p::PeerId, Vec<String>)> =
+            None;
+
+        loop {
+            if discovery.is_none() {
+                match crate::shard_cmd::connect_for_discovery(&cfg).await {
+                    Ok(conn) => discovery = Some(conn),
+                    Err(e) if !req.subscribe => {
+                        let _ = out_tx
+                            .send(Ok(error_frame(
+                                id,
+                                ErrorCode::Unavailable,
+                                &format!("{e:#}"),
+                            )))
+                            .await;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::debug!(id, "storage discovery: p2pd not reachable yet: {e:#}");
+                    }
+                }
+            }
+
+            let mut client_died = false;
+
+            if let Some((client, our_peer_id, bootstrap_peers)) = discovery.as_mut() {
+                match crate::vpk::discover_nodes(client, our_peer_id, bootstrap_peers).await {
+                    Ok(entries) => {
+                        let mut peers = build_storage_peers(&cfg, &entries);
+
+                        // Phase 1 — the registry, as advertised. Skipped
+                        // when probing is off: there is no second update
+                        // coming, so `probes_pending` would be a lie.
+                        if !req.skip_probes {
+                            let frame = ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::Storage(StorageUpdate {
+                                    server_time: now_rfc3339(),
+                                    probes_pending: true,
+                                    peers: peers.clone(),
+                                })),
+                            };
+                            if out_tx.send(Ok(frame)).await.is_err() {
+                                break; // client went away
+                            }
+
+                            probe_storage_peers(client, &mut peers).await;
+                        }
+
+                        let frame = ServerFrame {
+                            id,
+                            body: Some(server_frame::Body::Storage(StorageUpdate {
+                                server_time: now_rfc3339(),
+                                probes_pending: false,
+                                peers,
+                            })),
+                        };
+                        if out_tx.send(Ok(frame)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        // The p2pd handle may be stale (daemon restarted);
+                        // drop it so the next tick reconnects.
+                        client_died = true;
+                        if !req.subscribe {
+                            let _ = out_tx
+                                .send(Ok(error_frame(
+                                    id,
+                                    ErrorCode::Unavailable,
+                                    &format!("{e:#}"),
+                                )))
+                                .await;
+                            break;
+                        }
+                        tracing::debug!(id, "storage discovery round failed: {e:#}");
+                    }
+                }
+
+                if !req.subscribe {
+                    let _ = out_tx.send(Ok(done_frame(id))).await;
+                    break;
+                }
+            }
+
+            if client_died {
+                discovery = None;
+            }
+
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    let _ = out_tx
+                        .send(Ok(error_frame(
+                            id,
+                            ErrorCode::Cancelled,
+                            "cancelled by client",
+                        )))
+                        .await;
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
+            }
+        }
+
+        cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+/// Convert decoded DHT advertisements into wire peers, enriching each
+/// with its local reputation score/tier when enabled.
+///
+/// Sorted by name then peer id so a client's row order is stable across
+/// rounds — the DHT returns entries in whatever order responders
+/// answered in.
+fn build_storage_peers(
+    cfg: &KwaaiNetConfig,
+    entries: &[crate::vpk::VpkNodeEntry],
+) -> Vec<StoragePeer> {
+    let rep_store = if cfg.reputation.enabled {
+        Some(crate::reputation::ReputationStore::load())
+    } else {
+        None
+    };
+
+    let mut peers: Vec<StoragePeer> = entries
+        .iter()
+        .map(|e| {
+            let (trust_score, trust_tier) = match rep_store.as_ref() {
+                Some(store) => {
+                    let s = store.score(&e.peer_id);
+                    (s.score, s.tier.as_str().to_string())
+                }
+                None => (0.0, String::new()),
+            };
+            StoragePeer {
+                peer_id: e.peer_id.clone(),
+                public_name: e.public_name.clone(),
+                mode: e.mode.clone(),
+                vpk_version: e.vpk_version.clone(),
+                capacity_gb: e.capacity_gb,
+                tenant_count: e.tenant_count,
+                reachability: StorageReachability::Unknown as i32,
+                capacity_gb_free: 0.0,
+                trust_score,
+                trust_tier,
+            }
+        })
+        .collect();
+
+    peers.sort_by(|a, b| {
+        a.public_name
+            .cmp(&b.public_name)
+            .then_with(|| a.peer_id.cmp(&b.peer_id))
+    });
+    peers
+}
+
+/// Probe every peer's storage health concurrently, filling in
+/// `reachability` and `capacity_gb_free` in place.
+///
+/// Unlike the CLI's serial loop, the probes are issued together: a round
+/// then costs about one timeout rather than one per unreachable node,
+/// which matters because unreachable nodes are the common case on a
+/// NAT-heavy network.
+async fn probe_storage_peers(client: &kwaai_p2p_daemon::P2PClient, peers: &mut [StoragePeer]) {
+    let probes = peers.iter().map(|peer| {
+        let parsed = peer.peer_id.parse::<libp2p::PeerId>();
+        async move {
+            let Ok(pid) = parsed else {
+                // An unparseable id can never be dialled, so this is a
+                // permanent negative rather than a probe failure.
+                return None;
+            };
+            tokio::time::timeout(
+                STORAGE_PROBE_TIMEOUT,
+                crate::storage_rpc::rpc_health(client, &pid),
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+        }
+    });
+
+    let results = futures::future::join_all(probes).await;
+
+    for (peer, health) in peers.iter_mut().zip(results) {
+        match health {
+            Some(h) => {
+                peer.reachability = StorageReachability::Reachable as i32;
+                peer.capacity_gb_free = h.capacity_gb_available;
+                // The health reply is live; the DHT record may be up to
+                // an announce cycle stale, so prefer the probe.
+                peer.tenant_count = h.tenant_count.max(0) as u32;
+            }
+            None => {
+                peer.reachability = StorageReachability::Unreachable as i32;
+            }
+        }
+    }
+}
+
 /// Free-function variant of `KwaaiNetService::get_or_init_inference` so
 /// session worker tasks can call it without holding a `&self` borrow.
 async fn get_or_init_inference(
@@ -1485,6 +1747,52 @@ mod tests {
         assert_eq!(update.covered_blocks, 8);
         assert!(update.full_coverage);
         assert_eq!(update.peers[1].end_block, 12);
+    }
+
+    #[test]
+    fn storage_peers_start_unprobed_and_sort_stably() {
+        let mut cfg = KwaaiNetConfig::default();
+        // Keep the test hermetic: enabled reputation would read the real
+        // user's on-disk ReputationStore.
+        cfg.reputation.enabled = false;
+
+        let entry = |name: &str, peer: &str, cap: f64| crate::vpk::VpkNodeEntry {
+            peer_id: peer.into(),
+            mode: "eve".into(),
+            capacity_gb: cap,
+            tenant_count: 2,
+            vpk_version: "0.5.0".into(),
+            public_name: name.into(),
+        };
+
+        // Deliberately out of order — the DHT returns entries in whatever
+        // order responders answered in.
+        let peers = build_storage_peers(
+            &cfg,
+            &[
+                entry("metro", "12D3KooWZ", 48.3),
+                entry("arach", "12D3KooWA", 34.5),
+                entry("metro", "12D3KooWB", 1.0),
+            ],
+        );
+
+        // Name first, peer id as the tie-break.
+        let order: Vec<&str> = peers.iter().map(|p| p.peer_id.as_str()).collect();
+        assert_eq!(order, ["12D3KooWA", "12D3KooWB", "12D3KooWZ"]);
+
+        // Nothing has been probed yet, so every row must read as pending
+        // rather than as unreachable, and free capacity is not yet known.
+        for p in &peers {
+            assert_eq!(p.reachability, StorageReachability::Unknown as i32);
+            assert_eq!(p.capacity_gb_free, 0.0);
+        }
+
+        // Advertised values survive verbatim; trust stays empty while the
+        // reputation system is off.
+        assert_eq!(peers[0].capacity_gb, 34.5);
+        assert_eq!(peers[0].tenant_count, 2);
+        assert_eq!(peers[0].mode, "eve");
+        assert!(peers[0].trust_tier.is_empty());
     }
 
     #[test]
