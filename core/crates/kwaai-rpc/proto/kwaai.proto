@@ -92,6 +92,10 @@ message ClientFrame {
         // waiting for the next tick; see NetworkUpdate.reason.
         NetworkRequest network = 17;
 
+        // Dial a peer by id. One ConnectReply, then Done.
+        ConnectRequest connect = 18;
+
+
 
         // VPK storage-node discovery. Like block_coverage, but for the
         // `_kwaai.vpk.nodes` DHT registry. Note that a one-shot request
@@ -133,6 +137,10 @@ message ServerFrame {
         // NetworkRequest; a subscription delivers one per refresh
         // interval, plus one immediately whenever reachability changes.
         NetworkUpdate network = 17;
+
+        // Reply to a ConnectRequest.
+        ConnectReply connect = 18;
+
 
 
         // Snapshot of discovered VPK storage nodes. Arrives in pairs
@@ -654,6 +662,29 @@ message StorageUpdate {
     // All discovered nodes, sorted by public_name then peer_id so the
     // ordering is stable across rounds.
     repeated StoragePeer peers = 3;
+}
+
+// Dial a peer we know of but hold no connection to.
+//
+// A bare peer id is resolved through the DHT first, the way Go's routed
+// host does it, so the caller does not need an address — which is the
+// point: the routing table knows peers it has no connection to, and this
+// is how you reach one.
+//
+// Note this makes *us* the dialer, so it will not trigger a DCUtR
+// upgrade: libp2p has the inbound side initiate hole punching.
+message ConnectRequest {
+    // libp2p peer id, base58. An address is resolved via the DHT.
+    string peer_id = 1;
+}
+
+message ConnectReply {
+    // True when a connection exists after the attempt — including when
+    // one already existed, since the caller's goal is met either way.
+    bool connected = 1;
+
+    // Failure detail, empty on success.
+    string error = 2;
 }
 
 // =====================================================================
