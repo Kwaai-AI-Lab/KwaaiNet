@@ -100,6 +100,8 @@ pub struct PeerInfo {
 /// each other on screen.
 #[derive(Debug, Clone)]
 pub struct NetworkSnapshot {
+    /// This node's own peer ID.
+    pub local_peer_id: PeerId,
     /// One entry per live connection.
     pub peers: Vec<PeerInfo>,
     /// Every peer in the Kademlia routing table. Overlaps `peers` but neither

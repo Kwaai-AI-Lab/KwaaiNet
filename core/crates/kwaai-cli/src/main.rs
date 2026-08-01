@@ -23,6 +23,7 @@ mod node_native;
 mod ollama;
 mod ollama_proxy;
 mod p2p_cmd;
+mod peers_view;
 mod progress;
 #[cfg(feature = "rag")]
 mod rag_api;

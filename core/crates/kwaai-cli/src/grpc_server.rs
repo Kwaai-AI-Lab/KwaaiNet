@@ -32,20 +32,25 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
+use kwaai_p2p::{
+    reachability::{Reachability, Source},
+    NetworkHandle,
+};
 use kwaai_rpc::v1::{
     client_frame,
     error::Code as ErrorCode,
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
-    ChatToken, ClientFrame, Done, Error as RpcError, GenerateRequest, PingReply, PingRequest,
+    ChatToken, ClientFrame, ConnectedPeer, Done, Error as RpcError, GenerateRequest,
+    NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest, RoutingPeer, SelfStatus,
     ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer,
-    StorageReachability, StorageUpdate,
+    StorageReachability, StorageUpdate, UpdateReason,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -84,6 +89,14 @@ struct InferenceState {
 pub struct KwaaiNetService {
     config: Arc<KwaaiNetConfig>,
     inference: Arc<Mutex<Option<Arc<Mutex<InferenceState>>>>>,
+    /// The native swarm handle, filled in once the p2p node is up.
+    ///
+    /// Late-bound because `spawn` runs before the node starts — deliberately,
+    /// so ping/status/generate answer while p2p is still coming up. Empty
+    /// therefore means one of two things, and the Network op distinguishes
+    /// them: the node has not started yet (transient), or this daemon is
+    /// running the Go p2p path and never will (permanent).
+    net: Arc<RwLock<Option<NetworkHandle>>>,
     /// Captured at service construction so StatusReply.uptime_secs can
     /// report a process-level uptime without a separate clock.
     started_at: Instant,
@@ -94,6 +107,7 @@ impl KwaaiNetService {
         Self {
             config: Arc::new(config),
             inference: Arc::new(Mutex::new(None)),
+            net: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -184,6 +198,7 @@ impl KwaaiNet for KwaaiNetService {
         // Clone the bits each per-frame task captures.
         let cfg = self.config.clone();
         let inference_slot = self.inference.clone();
+        let net_slot = self.net.clone();
         let started_at = self.started_at;
 
         tokio::spawn(async move {
@@ -229,11 +244,24 @@ impl KwaaiNet for KwaaiNetService {
                     }
 
                     client_frame::Body::Status(_) => {
+                        // Routing-table size, matching the field's documented
+                        // meaning. 0 when the swarm is not up yet, or on the Go
+                        // p2p path where there is no handle to ask — the same
+                        // value this reported unconditionally before.
+                        let peer_count = match net_slot.read().await.clone() {
+                            Some(handle) => handle
+                                .routing_peers()
+                                .await
+                                .map(|p| p.len() as u32)
+                                .unwrap_or(0),
+                            None => 0,
+                        };
+
                         let reply = StatusReply {
                             server_time: now_rfc3339(),
                             model: cfg.model.clone(),
                             shard_ready: shard_ready_path_exists(),
-                            peer_count: 0, // TODO: thread through DHT routing-table size
+                            peer_count,
                             uptime_secs: started_at.elapsed().as_secs(),
                             // Same constant the updater compares against, so
                             // the version reported over the wire can never
@@ -280,6 +308,18 @@ impl KwaaiNet for KwaaiNetService {
                         spawn_session_storage_discovery(
                             id,
                             req,
+                            cfg.clone(),
+                            out_tx.clone(),
+                            cancels.clone(),
+                        )
+                        .await;
+                    }
+
+                    client_frame::Body::Network(req) => {
+                        spawn_session_network(
+                            id,
+                            req,
+                            net_slot.clone(),
                             cfg.clone(),
                             out_tx.clone(),
                             cancels.clone(),
@@ -1244,6 +1284,354 @@ async fn probe_storage_peers(client: &kwaai_p2p_daemon::P2PClient, peers: &mut [
     }
 }
 
+/// Default refresh cadence for a Network subscription, in seconds.
+///
+/// Faster than the two DHT-backed ops because a snapshot is a read of local
+/// swarm state — one trip through the event loop, no network. The cost of a
+/// tick is low enough that the interesting question is how quickly a
+/// connect/disconnect should surface, and 5s is about the limit of what feels
+/// live.
+const DEFAULT_NETWORK_INTERVAL_SECS: u64 = 5;
+
+/// The comparable content of a [`NetworkUpdate`].
+///
+/// Deliberately excludes `server_time` (moves every tick), `reason` (describes
+/// *why* we are sending, not what changed) and — critically — `rtt_ms`, which
+/// jitters on every ping and would defeat suppression entirely, turning a quiet
+/// node into a 5-second frame generator.
+///
+/// Connections are compared as a set: the swarm iterates a `HashMap`, so
+/// ordering is arbitrary and a pure reordering is not a change worth waking the
+/// UI for. The routing table is compared the same way.
+type NetworkIdentity = (String, bool, bool, BTreeSet<String>, BTreeSet<String>);
+
+fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
+    let self_status = u.self_status.clone().unwrap_or_default();
+    let connected = u
+        .connected
+        .iter()
+        .map(|p| {
+            // Every field a client renders per row *except* rtt_ms — see the
+            // type comment. Protocols are joined rather than nested so the
+            // whole row stays one comparable string.
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}",
+                p.peer_id,
+                p.addr,
+                p.kind,
+                p.direction,
+                p.is_bootstrap,
+                p.is_trusted_relay,
+                p.protocols.join(","),
+                p.agent_version,
+            )
+        })
+        .collect();
+    let routing = u
+        .routing
+        .iter()
+        .map(|r| format!("{}|{}", r.peer_id, r.connected))
+        .collect();
+
+    (
+        self_status.reachability,
+        self_status.using_relay,
+        self_status.announceable,
+        connected,
+        routing,
+    )
+}
+
+/// `NetworkRequest` — local swarm state, sampled and pushed.
+///
+/// Two things distinguish this from its DHT-backed siblings. First, it needs
+/// the native swarm: an empty handle slot is answered with a typed error rather
+/// than a blank view (see [`KwaaiNetService::net`]). Second, it is not purely
+/// polled — reachability is a real event source, so the loop waits on the
+/// announce watch channel alongside the interval timer and reports which one
+/// woke it in `NetworkUpdate.reason`.
+async fn spawn_session_network(
+    id: u64,
+    req: NetworkRequest,
+    net: Arc<RwLock<Option<NetworkHandle>>>,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    // Register the cancel channel up-front so a Cancel arriving immediately
+    // after this frame still finds an entry to fire.
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    let cancels_for_cleanup = cancels.clone();
+    tokio::spawn(async move {
+        use std::time::Duration;
+
+        // Resolve the handle once. The slot is filled during node startup and
+        // never cleared, so a subscription that finds it empty would spin
+        // forever — better to say so immediately and let the client decide.
+        let handle = match net.read().await.clone() {
+            Some(h) => h,
+            None => {
+                // Two very different situations, and the client acts on them
+                // differently: on the Go p2p path the slot is never filled, so
+                // retrying is pointless; during native startup it is about to
+                // be, so retrying is exactly right.
+                let (code, msg) = if cfg.native_p2p {
+                    (
+                        ErrorCode::Unavailable,
+                        "p2p node is still starting; retry shortly",
+                    )
+                } else {
+                    // UNIMPLEMENTED, not UNAVAILABLE: on the Go p2p path this
+                    // operation is not merely down, it is absent, and the slot
+                    // will never fill. A client that retries UNAVAILABLE would
+                    // do so forever.
+                    (
+                        ErrorCode::Unimplemented,
+                        "network view requires the native p2p stack \
+                         (`kwaainet config set native_p2p true`)",
+                    )
+                };
+                let _ = out_tx.send(Ok(error_frame(id, code, msg))).await;
+                cancels_for_cleanup.lock().await.remove(&id);
+                return;
+            }
+        };
+
+        let interval = if req.interval_secs > 0 {
+            req.interval_secs as u64
+        } else {
+            DEFAULT_NETWORK_INTERVAL_SECS
+        };
+
+        let bootstraps = crate::peers_view::bootstrap_peer_ids();
+        let trusted_relays = crate::peers_view::trusted_relay_peer_ids();
+
+        // The reachability event source. `changed()` fires only on a genuine
+        // change — address churn and repeated identifies do not move it — so
+        // this arm cannot become chatty.
+        let mut announce_rx = handle.announce_state();
+
+        let mut last_sent: Option<NetworkIdentity> = None;
+        let mut last_send_at: Option<std::time::Instant> = None;
+        // Why we are building this particular snapshot. The first one is a
+        // plain sample; later iterations set it from whichever select! arm won.
+        let mut reason = UpdateReason::Tick;
+
+        loop {
+            let snapshot = match handle.network_snapshot().await {
+                Ok(s) => s,
+                Err(e) => {
+                    // The swarm is gone (shutdown, or the service task died).
+                    // Nothing a retry can fix, so end the operation rather than
+                    // looping on a dead handle.
+                    let _ = out_tx
+                        .send(Ok(error_frame(
+                            id,
+                            ErrorCode::Unavailable,
+                            &format!("network snapshot failed: {e}"),
+                        )))
+                        .await;
+                    break;
+                }
+            };
+
+            let update = build_network_update(&snapshot, &bootstraps, &trusted_relays, reason);
+
+            // Same change/heartbeat contract as block coverage: suppress
+            // snapshots that would tell the client nothing, but never go
+            // silent for longer than HEARTBEAT, so silence stays readable as
+            // "nothing changed" rather than "the daemon wedged".
+            //
+            // A reachability wake-up bypasses the suppression check entirely.
+            // It is an event, and the whole reason for the watch arm is that
+            // the client should see it immediately.
+            let identity = network_identity(&update);
+            let changed = last_sent.as_ref() != Some(&identity);
+            let heartbeat_due = last_send_at
+                .map(|t: std::time::Instant| t.elapsed() >= HEARTBEAT)
+                .unwrap_or(true);
+            let is_event = reason == UpdateReason::Reachability;
+
+            if changed || heartbeat_due || is_event || !req.subscribe {
+                // A tick that changed nothing and is only going out to prove
+                // liveness says so, rather than masquerading as fresh news.
+                let update = if !changed && !is_event && req.subscribe {
+                    NetworkUpdate {
+                        reason: UpdateReason::Heartbeat as i32,
+                        ..update
+                    }
+                } else if changed && reason == UpdateReason::Tick && req.subscribe {
+                    // A sampled tick that *did* change is a peer-set change:
+                    // reachability changes arrive on the other arm.
+                    NetworkUpdate {
+                        reason: UpdateReason::Peers as i32,
+                        ..update
+                    }
+                } else {
+                    update
+                };
+
+                last_sent = Some(identity);
+                last_send_at = Some(std::time::Instant::now());
+
+                let frame = ServerFrame {
+                    id,
+                    body: Some(server_frame::Body::Network(update)),
+                };
+                if out_tx.send(Ok(frame)).await.is_err() {
+                    break; // client went away
+                }
+            }
+
+            if !req.subscribe {
+                let _ = out_tx.send(Ok(done_frame(id))).await;
+                break;
+            }
+
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    let _ = out_tx
+                        .send(Ok(error_frame(
+                            id,
+                            ErrorCode::Cancelled,
+                            "cancelled by client",
+                        )))
+                        .await;
+                    break;
+                }
+                // Reachability moved. Rebuild immediately rather than waiting
+                // out the remaining interval — a NAT transition is exactly the
+                // thing a user is watching this page for.
+                changed = announce_rx.changed() => {
+                    if changed.is_err() {
+                        // Sender dropped: the swarm is shutting down.
+                        break;
+                    }
+                    reason = UpdateReason::Reachability;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(interval)) => {
+                    reason = UpdateReason::Tick;
+                }
+            }
+        }
+
+        cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+/// Project a [`kwaai_p2p::NetworkSnapshot`] onto the wire type.
+///
+/// Classification (relay-vs-direct, bootstrap, trusted-relay) and the sort
+/// order come from [`crate::peers_view`], shared with `kwaainet p2p peers
+/// list` so both surfaces describe the same network the same way.
+fn build_network_update(
+    snapshot: &kwaai_p2p::NetworkSnapshot,
+    bootstraps: &std::collections::HashSet<libp2p::PeerId>,
+    trusted_relays: &std::collections::HashSet<libp2p::PeerId>,
+    reason: UpdateReason,
+) -> NetworkUpdate {
+    use crate::peers_view::{classify_addr, group_index, ConnKind};
+
+    let connected_ids: std::collections::HashSet<libp2p::PeerId> =
+        snapshot.peers.iter().map(|p| p.peer_id).collect();
+
+    let mut connected: Vec<(u8, String, ConnectedPeer)> = snapshot
+        .peers
+        .iter()
+        .map(|p| {
+            let kind = classify_addr(&p.addr);
+            let is_bootstrap = bootstraps.contains(&p.peer_id);
+            let is_trusted_relay = trusted_relays.contains(&p.peer_id);
+            let peer_id = p.peer_id.to_base58();
+
+            let wire = ConnectedPeer {
+                peer_id: peer_id.clone(),
+                addr: p.addr.to_string(),
+                kind: match kind {
+                    ConnKind::Direct => PeerConnKind::Direct as i32,
+                    ConnKind::Relay => PeerConnKind::Relay as i32,
+                },
+                direction: p.direction.as_str().to_string(),
+                is_bootstrap,
+                is_trusted_relay,
+                protocols: p.protocols.clone(),
+                // Saturating rather than wrapping: an absurd RTT should show as
+                // "very large", never as a small number.
+                rtt_ms: p
+                    .rtt
+                    .map(|d| d.as_millis().min(u32::MAX as u128) as u32)
+                    .unwrap_or(0),
+                agent_version: p.agent_version.clone().unwrap_or_default(),
+            };
+            (
+                group_index(is_bootstrap, is_trusted_relay, kind),
+                peer_id,
+                wire,
+            )
+        })
+        .collect();
+
+    // Stable across polls: group, then peer id. An unstable order makes a live
+    // view flicker as rows swap under the user.
+    connected.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut routing: Vec<RoutingPeer> = snapshot
+        .routing
+        .iter()
+        .map(|p| RoutingPeer {
+            peer_id: p.to_base58(),
+            connected: connected_ids.contains(p),
+        })
+        .collect();
+    routing.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+
+    // Spelled out rather than derived from Debug: these strings are wire
+    // contract (documented in kwaai.proto and matched by the GUI), so they must
+    // not follow a Rust variant rename.
+    let (reachability, reachability_source) = match &snapshot.reachability {
+        Reachability::Unknown => ("unknown", ""),
+        Reachability::Public { source, .. } => (
+            "public",
+            match source {
+                Source::IdentifyConsensus => "identify",
+                Source::Upnp => "upnp",
+                Source::AutoNat => "autonat",
+                Source::Declared => "declared",
+            },
+        ),
+        Reachability::Private => ("private", ""),
+    };
+
+    NetworkUpdate {
+        server_time: now_rfc3339(),
+        reason: reason as i32,
+        self_status: Some(SelfStatus {
+            peer_id: snapshot.local_peer_id.to_base58(),
+            reachability: reachability.to_string(),
+            reachability_source: reachability_source.to_string(),
+            using_relay: !snapshot.relay_addrs.is_empty(),
+            // Mirrors the announce loop's own gate: a node that does not know
+            // where it stands should not be telling the network it is direct.
+            announceable: !matches!(snapshot.reachability, Reachability::Unknown),
+            listen_addrs: snapshot
+                .listen_addrs
+                .iter()
+                .map(|a| a.to_string())
+                .collect(),
+            observed_addrs: snapshot
+                .observed_addrs
+                .iter()
+                .map(|(a, _)| a.to_string())
+                .collect(),
+            relay_addrs: snapshot.relay_addrs.iter().map(|a| a.to_string()).collect(),
+        }),
+        connected: connected.into_iter().map(|(_, _, w)| w).collect(),
+        routing,
+    }
+}
+
 /// Free-function variant of `KwaaiNetService::get_or_init_inference` so
 /// session worker tasks can call it without holding a `&self` borrow.
 async fn get_or_init_inference(
@@ -1435,6 +1823,7 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
     let (shutdown_unix_tx, shutdown_unix_rx) = oneshot::channel::<()>();
 
     let svc_state = KwaaiNetService::new(config);
+    let net_slot = svc_state.net.clone();
     let service = KwaaiNetServer::new(svc_state);
 
     // TCP: every platform.
@@ -1468,6 +1857,7 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
             shutdown_tcp: Some(shutdown_tcp_tx),
             #[cfg(unix)]
             shutdown_unix: Some(shutdown_unix_tx),
+            net: net_slot,
         }
     }
     #[cfg(not(unix))]
@@ -1527,9 +1917,22 @@ pub struct GrpcServerHandle {
     shutdown_tcp: Option<oneshot::Sender<()>>,
     #[cfg(unix)]
     shutdown_unix: Option<oneshot::Sender<()>>,
+    /// The service's swarm-handle slot, shared so the node can fill it once
+    /// p2p is up. See [`GrpcServerHandle::attach_network`].
+    net: Arc<RwLock<Option<NetworkHandle>>>,
 }
 
 impl GrpcServerHandle {
+    /// Hand the running swarm to the gRPC service.
+    ///
+    /// Until this is called the Network op reports that it has nothing to
+    /// serve. Only the native p2p path calls it; on the Go daemon path the
+    /// slot stays empty for the process's lifetime, which is what makes
+    /// "unsupported" distinguishable from "still starting".
+    pub async fn attach_network(&self, handle: NetworkHandle) {
+        *self.net.write().await = Some(handle);
+    }
+
     /// Trigger a graceful shutdown of both transports. Safe to call multiple
     /// times; subsequent calls are no-ops.
     pub fn shutdown(&mut self) {
@@ -1989,5 +2392,122 @@ mod tests {
         retiered_peer.trust_tier = "TRUSTED".into();
         let retiered = update("2026-01-01T00:00:05Z", vec![peer("A", 0, 4), retiered_peer]);
         assert_ne!(coverage_identity(&a), coverage_identity(&retiered));
+    }
+    fn net_peer(id: &str) -> ConnectedPeer {
+        ConnectedPeer {
+            peer_id: id.to_string(),
+            addr: "/ip4/198.18.0.10/tcp/8000".into(),
+            kind: PeerConnKind::Direct as i32,
+            direction: "outbound".into(),
+            is_bootstrap: false,
+            is_trusted_relay: false,
+            protocols: vec!["/ipfs/kad/1.0.0".into()],
+            rtt_ms: 10,
+            agent_version: "kwaainet/0.5.4".into(),
+        }
+    }
+
+    fn net_update(time: &str, peers: Vec<ConnectedPeer>) -> NetworkUpdate {
+        NetworkUpdate {
+            server_time: time.to_string(),
+            reason: UpdateReason::Tick as i32,
+            self_status: Some(SelfStatus {
+                peer_id: "12D3KooWSelf".into(),
+                reachability: "public".into(),
+                reachability_source: "autonat".into(),
+                using_relay: false,
+                announceable: true,
+                listen_addrs: vec!["/ip4/0.0.0.0/tcp/4001".into()],
+                observed_addrs: vec![],
+                relay_addrs: vec![],
+            }),
+            connected: peers,
+            routing: vec![],
+        }
+    }
+
+    /// The suppression contract. If any of these trip, a quiet node turns into
+    /// a frame generator (or, worse, a changing one goes silent).
+    #[test]
+    fn network_identity_ignores_time_reason_and_rtt() {
+        let a = net_update("2026-01-01T00:00:00Z", vec![net_peer("A"), net_peer("B")]);
+
+        // server_time advances every tick by construction.
+        let later = net_update("2026-01-01T00:00:05Z", vec![net_peer("A"), net_peer("B")]);
+        assert_eq!(network_identity(&a), network_identity(&later));
+
+        // `reason` says why we are sending, not what changed. If it counted,
+        // a heartbeat would look like news.
+        let mut different_reason = later.clone();
+        different_reason.reason = UpdateReason::Heartbeat as i32;
+        assert_eq!(network_identity(&a), network_identity(&different_reason));
+
+        // RTT is the important one: it moves on every ping, for every peer.
+        // Counting it would defeat suppression entirely.
+        let mut jittery = net_peer("A");
+        jittery.rtt_ms = 999;
+        let rtt_moved = net_update("2026-01-01T00:00:05Z", vec![jittery, net_peer("B")]);
+        assert_eq!(network_identity(&a), network_identity(&rtt_moved));
+
+        // The swarm iterates a HashMap, so connection order is arbitrary.
+        let reordered = net_update("2026-01-01T00:00:05Z", vec![net_peer("B"), net_peer("A")]);
+        assert_eq!(network_identity(&a), network_identity(&reordered));
+    }
+
+    /// The converse: everything a client actually renders must count.
+    #[test]
+    fn network_identity_tracks_rendered_fields() {
+        let a = net_update("2026-01-01T00:00:00Z", vec![net_peer("A")]);
+
+        // A peer joining or leaving.
+        let joined = net_update("2026-01-01T00:00:00Z", vec![net_peer("A"), net_peer("B")]);
+        assert_ne!(network_identity(&a), network_identity(&joined));
+
+        // A hole-punch upgrade: same peer, relayed path becomes direct.
+        let mut upgraded = net_peer("A");
+        upgraded.kind = PeerConnKind::Relay as i32;
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&net_update("2026-01-01T00:00:00Z", vec![upgraded]))
+        );
+
+        // Identify landing after the connection established.
+        let mut identified = net_peer("A");
+        identified.protocols = vec!["/ipfs/kad/1.0.0".into(), "/libp2p/dcutr".into()];
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&net_update("2026-01-01T00:00:00Z", vec![identified]))
+        );
+
+        // A NAT transition — the headline event this whole view exists for.
+        let mut gone_private = a.clone();
+        gone_private.self_status.as_mut().unwrap().reachability = "private".into();
+        assert_ne!(network_identity(&a), network_identity(&gone_private));
+
+        // Picking up a relay reservation.
+        let mut relaying = a.clone();
+        relaying.self_status.as_mut().unwrap().using_relay = true;
+        assert_ne!(network_identity(&a), network_identity(&relaying));
+
+        // A routing-table entry changing connected-state. The routing table
+        // and the connected set move independently, so this must register.
+        let mut routed = a.clone();
+        routed.routing = vec![RoutingPeer {
+            peer_id: "A".into(),
+            connected: true,
+        }];
+        assert_ne!(network_identity(&a), network_identity(&routed));
+    }
+
+    /// Address churn is not a reachability change. `observed_addrs` moves as
+    /// peers come and go without the verdict changing, and waking the UI for it
+    /// would make the page twitch for no reason.
+    #[test]
+    fn network_identity_ignores_observed_address_churn() {
+        let a = net_update("2026-01-01T00:00:00Z", vec![net_peer("A")]);
+        let mut churned = a.clone();
+        churned.self_status.as_mut().unwrap().observed_addrs =
+            vec!["/ip4/203.0.113.7/tcp/4001".into()];
+        assert_eq!(network_identity(&a), network_identity(&churned));
     }
 }

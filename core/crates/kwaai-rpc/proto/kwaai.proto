@@ -344,8 +344,10 @@ message BlockCoverageUpdate {
 // Requires the native p2p stack. The Go p2p daemon's control protocol
 // reports only (peer id, addresses) per connection, so direction,
 // protocols, latency and the routing table have nowhere to come from;
-// the daemon answers FAILED_PRECONDITION rather than serving a view
-// that is mostly blank.
+// rather than serve a mostly-blank view the daemon answers
+// UNIMPLEMENTED, which a client should treat as permanent for the
+// daemon's lifetime. UNAVAILABLE means something different here — the
+// native node is still starting and a retry will succeed.
 message NetworkRequest {
     // When true the operation stays open and the server pushes updates
     // until the client sends a Cancel body for this op id. When false a
@@ -454,9 +456,12 @@ message SelfStatus {
     // Announcing is deferred while unknown.
     string reachability = 2;
 
-    // What produced the verdict: "identify" (peer consensus), "autonat"
-    // (a dial-back probe) or "declared" (operator configuration — an
-    // instruction, not evidence). Empty while reachability is unknown.
+    // What produced the verdict, weakest evidence first: "identify"
+    // (enough distinct peers reported the same address), "upnp" (the
+    // local gateway says it mapped us), "autonat" (a peer dialed us back
+    // and got through) or "declared" (operator configuration — an
+    // instruction, not evidence at all). Empty unless reachability is
+    // "public": a private or undecided verdict has no source.
     string reachability_source = 3;
 
     // Whether at least one *confirmed* circuit reservation is live. A
