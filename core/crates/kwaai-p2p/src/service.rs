@@ -71,6 +71,9 @@ pub struct NetworkService {
     pending_dials: HashMap<ConnectionId, oneshot::Sender<P2PResult<PeerId>>>,
     /// DHT lookups awaiting query completion.
     pending_kad: HashMap<kad::QueryId, PendingKad>,
+    /// Stream requests parked behind a `RoutedDial` lookup, flushed when the
+    /// lookup completes or a connection to the peer establishes first.
+    pending_routed: HashMap<PeerId, Vec<RoutedRequest>>,
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
@@ -124,6 +127,29 @@ enum PendingKad {
     Bootstrap,
     /// The periodic maintenance refresh.
     Maintenance,
+    /// A peer lookup running on behalf of parked stream requests (see
+    /// `pending_routed`): on completion, forward them — the walk has populated
+    /// the routing table with whatever addresses exist.
+    RoutedDial { target: PeerId },
+}
+
+/// A stream request parked while a `RoutedDial` lookup finds addresses for its
+/// peer.
+///
+/// Go's p2pd wraps its host in a *routed host*: `NewStream` to a peer with no
+/// known addresses transparently runs a DHT `FindPeer` first. rust-libp2p has
+/// no equivalent — Kademlia only serves addresses it already has — so the
+/// service replicates that here for the two commands that dial by bare peer ID.
+enum RoutedRequest {
+    Unary {
+        proto: String,
+        data: Vec<u8>,
+        reply: oneshot::Sender<unary::UnaryResult>,
+    },
+    RawStream {
+        protos: Vec<String>,
+        reply: oneshot::Sender<raw_stream::OpenResult>,
+    },
 }
 
 impl NetworkService {
@@ -224,6 +250,7 @@ impl NetworkService {
             commands: rx,
             pending_dials: HashMap::new(),
             pending_kad: HashMap::new(),
+            pending_routed: HashMap::new(),
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
@@ -423,18 +450,15 @@ impl NetworkService {
                 let _ = reply.send(self.start_bootstrap(peers));
             }
 
+            // While parked in `pending_routed` the service owns `reply`; see
+            // `fail_all_pending`.
             Command::CallUnary {
                 peer,
                 proto,
                 data,
                 reply,
             } => {
-                self.swarm.behaviour_mut().unary.send_request(
-                    peer,
-                    UnaryProtocol::new(proto),
-                    data,
-                    reply,
-                );
+                self.dispatch_routed(peer, RoutedRequest::Unary { proto, data, reply });
             }
 
             Command::AddUnaryHandler {
@@ -458,18 +482,13 @@ impl NetworkService {
                 let _ = reply.send(existed);
             }
 
-            // No pending-map entry, for the same reason as `CallUnary`: the
-            // behaviour owns `reply` and resolves it on every outcome.
+            // Same ownership story as `CallUnary`.
             Command::OpenRawStream {
                 peer,
                 protos,
                 reply,
             } => {
-                self.swarm.behaviour_mut().raw_stream.open_stream(
-                    peer,
-                    parse_protocols(&protos),
-                    reply,
-                );
+                self.dispatch_routed(peer, RoutedRequest::RawStream { protos, reply });
             }
 
             Command::AddStreamHandler {
@@ -615,6 +634,75 @@ impl NetworkService {
         addrs
     }
 
+    /// Route a stream request to `peer`, looking its addresses up in the DHT
+    /// first when we have none — Go's routed-host semantics (see
+    /// [`RoutedRequest`]). With a connection or known addresses, dispatch is
+    /// immediate.
+    fn dispatch_routed(&mut self, peer: PeerId, request: RoutedRequest) {
+        if self.swarm.is_connected(&peer) || !self.known_addresses(&peer).is_empty() {
+            self.forward_routed(peer, request);
+            return;
+        }
+        let parked = self.pending_routed.entry(peer).or_default();
+        // One lookup per burst: requests parked while a lookup is in flight
+        // ride along on its completion.
+        if parked.is_empty() {
+            let query_id = self.swarm.behaviour_mut().kad.get_closest_peers(peer);
+            self.pending_kad
+                .insert(query_id, PendingKad::RoutedDial { target: peer });
+            debug!(%peer, "no addresses for stream request — running find_peer first");
+        }
+        parked.push(request);
+    }
+
+    /// Hand a routed request to its behaviour, which owns `reply` from here on.
+    fn forward_routed(&mut self, peer: PeerId, request: RoutedRequest) {
+        match request {
+            RoutedRequest::Unary { proto, data, reply } => {
+                self.swarm.behaviour_mut().unary.send_request(
+                    peer,
+                    UnaryProtocol::new(proto),
+                    data,
+                    reply,
+                );
+            }
+            RoutedRequest::RawStream { protos, reply } => {
+                self.swarm.behaviour_mut().raw_stream.open_stream(
+                    peer,
+                    parse_protocols(&protos),
+                    reply,
+                );
+            }
+        }
+    }
+
+    /// Flush every request parked for `peer`: forward them when the lookup (or
+    /// an incidental connection) produced a way to reach the peer, fail them
+    /// with a clear error when it did not.
+    fn flush_routed(&mut self, peer: PeerId) {
+        let Some(parked) = self.pending_routed.remove(&peer) else {
+            return;
+        };
+        if self.swarm.is_connected(&peer) || !self.known_addresses(&peer).is_empty() {
+            for request in parked {
+                self.forward_routed(peer, request);
+            }
+            return;
+        }
+        let text = format!("{peer}: peer not found in DHT (no addresses)");
+        debug!(%peer, "find_peer produced no addresses — failing parked requests");
+        for request in parked {
+            match request {
+                RoutedRequest::Unary { reply, .. } => {
+                    let _ = reply.send(Err(unary::UnaryError::DialFailure(text.clone())));
+                }
+                RoutedRequest::RawStream { reply, .. } => {
+                    let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(text.clone())));
+                }
+            }
+        }
+    }
+
     /// Stop serving `proto`: drop the dispatch channel and stop advertising it.
     /// Returns whether a handler was registered. Idempotent.
     fn unregister_unary(&mut self, proto: &str) -> bool {
@@ -717,6 +805,20 @@ impl NetworkService {
                 let _ = reply.send(Err(error.clone()));
             }
         }
+        for (_, parked) in self.pending_routed.drain() {
+            for request in parked {
+                match request {
+                    RoutedRequest::Unary { reply, .. } => {
+                        let _ = reply.send(Err(unary::UnaryError::DialFailure(error.to_string())));
+                    }
+                    RoutedRequest::RawStream { reply, .. } => {
+                        let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(
+                            error.to_string(),
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -795,6 +897,13 @@ impl NetworkService {
 
                 if let Some(reply) = self.pending_dials.remove(&connection_id) {
                     let _ = reply.send(Ok(peer_id));
+                }
+                // A connection beat a pending routed lookup (the peer dialed
+                // us, or another dial landed): flush now rather than making
+                // the parked requests wait out the DHT walk. The lookup's
+                // completion then finds nothing parked and is a no-op.
+                if self.pending_routed.contains_key(&peer_id) {
+                    self.flush_routed(peer_id);
                 }
                 // Note: a relay reservation is *not* requested here. It waits
                 // for identify — see `RelayManager::on_relay_ready`.
@@ -1225,6 +1334,12 @@ impl NetworkService {
                         let _ = reply.send(Err(P2PError::DhtError(
                             "unexpected query result for find_peer".to_string(),
                         )));
+                    }
+                    // Whatever the walk's own outcome, it has populated the
+                    // routing table with everything it found — flush decides
+                    // between forwarding and failing from there.
+                    (Some(PendingKad::RoutedDial { target }), _) => {
+                        self.flush_routed(target);
                     }
                     (Some(PendingKad::Bootstrap), kad::QueryResult::Bootstrap(result)) => {
                         match result {
