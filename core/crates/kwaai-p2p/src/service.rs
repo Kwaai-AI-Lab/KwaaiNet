@@ -40,7 +40,7 @@ use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
-    NetworkHandle, PeerInfo,
+    NetworkHandle, NetworkSnapshot, PeerInfo,
 };
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
@@ -120,6 +120,15 @@ pub struct NetworkService {
     /// here. Dropped when the last connection to a peer closes, so an entry
     /// always describes a peer we can act on.
     peer_protocols: HashMap<PeerId, Vec<String>>,
+    /// Most recent ping round-trip time per peer. Sampled: overwritten on every
+    /// ping event rather than accumulated, so this is "latency now", not an
+    /// average. Same lifetime as `peer_protocols` — dropped with the last
+    /// connection, so an entry always describes a peer we can act on.
+    peer_rtt: HashMap<PeerId, Duration>,
+    /// The agent version each connected peer advertised over identify (the
+    /// remote's software build, e.g. `kwaainet/0.5.4`). Same lifetime as
+    /// `peer_protocols`.
+    peer_agent: HashMap<PeerId, String>,
     /// Registered unary handlers: negotiated protocol → the handler task's
     /// channel. Kept in lockstep with the behaviour's inbound protocol set, so
     /// an entry here means the protocol is advertised and vice versa.
@@ -294,6 +303,8 @@ impl NetworkService {
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
             peer_protocols: HashMap::new(),
+            peer_rtt: HashMap::new(),
+            peer_agent: HashMap::new(),
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             reachability,
@@ -414,18 +425,26 @@ impl NetworkService {
             }
 
             Command::ListPeers { reply } => {
-                let peers = self
-                    .connections
+                let _ = reply.send(self.collect_peers());
+            }
+
+            Command::NetworkSnapshot { reply } => {
+                let routing = self.collect_routing_peers();
+                let mut observed: Vec<(Multiaddr, usize)> = self
+                    .observed_addrs
                     .iter()
-                    .flat_map(|(peer_id, conns)| {
-                        conns.values().map(move |c| PeerInfo {
-                            peer_id: *peer_id,
-                            addr: c.addr.clone(),
-                            direction: c.direction,
-                        })
-                    })
+                    .map(|(addr, observers)| (addr.clone(), observers.len()))
                     .collect();
-                let _ = reply.send(peers);
+                observed.sort_by(|a, b| b.1.cmp(&a.1));
+
+                let _ = reply.send(NetworkSnapshot {
+                    peers: self.collect_peers(),
+                    routing,
+                    reachability: self.reachability.current().clone(),
+                    relay_addrs: self.relays.confirmed_addrs(),
+                    observed_addrs: observed,
+                    listen_addrs: self.swarm.listeners().cloned().collect(),
+                });
             }
 
             Command::ObservedAddrs { reply } => {
@@ -457,19 +476,7 @@ impl NetworkService {
             // size (k=20 per bucket, 256 buckets) and never touching the
             // network, so it is safe in the event loop.
             Command::RoutingPeers { reply } => {
-                let peers = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .kbuckets()
-                    .flat_map(|bucket| {
-                        bucket
-                            .iter()
-                            .map(|entry| *entry.node.key.preimage())
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                let _ = reply.send(peers);
+                let _ = reply.send(self.collect_routing_peers());
             }
 
             Command::DhtFindPeer { peer, reply } => {
@@ -589,6 +596,55 @@ impl NetworkService {
                 let _ = reply.send(());
             }
         }
+    }
+
+    /// One [`PeerInfo`] per live connection, enriched with whatever identify
+    /// and ping have learned so far.
+    ///
+    /// Per-connection, not per-peer: a peer with both a relay path and a direct
+    /// path appears twice, deliberately — that duplication is how a hole-punch
+    /// upgrade becomes visible. The enrichment fields are keyed by peer, so the
+    /// two rows share them.
+    fn collect_peers(&self) -> Vec<PeerInfo> {
+        self.connections
+            .iter()
+            .flat_map(|(peer_id, conns)| {
+                let rtt = self.peer_rtt.get(peer_id).copied();
+                let agent_version = self.peer_agent.get(peer_id).cloned();
+                let protocols = self
+                    .peer_protocols
+                    .get(peer_id)
+                    .cloned()
+                    .unwrap_or_default();
+                conns.values().map(move |c| PeerInfo {
+                    peer_id: *peer_id,
+                    addr: c.addr.clone(),
+                    direction: c.direction,
+                    rtt,
+                    agent_version: agent_version.clone(),
+                    protocols: protocols.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Every peer in the Kademlia routing table.
+    ///
+    /// A walk over in-memory k-buckets — bounded by the routing table size
+    /// (k=20 per bucket, 256 buckets) and never touching the network, so it is
+    /// safe in the event loop.
+    fn collect_routing_peers(&mut self) -> Vec<PeerId> {
+        self.swarm
+            .behaviour_mut()
+            .kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|entry| *entry.node.key.preimage())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// Dial `addr`, seeding the routing table with it when it carries a
@@ -1151,6 +1207,11 @@ impl NetworkService {
                     // The capability list describes a peer we can act on; a
                     // disconnected peer's is stale by definition.
                     self.peer_protocols.remove(&peer_id);
+                    // Latency and build version are properties of a live
+                    // connection too. Keeping them would let a reconnected peer
+                    // briefly report the *previous* session's RTT.
+                    self.peer_rtt.remove(&peer_id);
+                    self.peer_agent.remove(&peer_id);
                     // Same for its opinion about where it saw us. Without this
                     // the map only ever grows, and the identify-consensus
                     // fallback would keep counting observers that left —
@@ -1236,7 +1297,15 @@ impl NetworkService {
             KwaaiBehaviourEvent::Identify(event) => self.handle_identify_event(event),
             KwaaiBehaviourEvent::Kad(event) => self.handle_kad_event(event),
             KwaaiBehaviourEvent::Ping(ping::Event { peer, result, .. }) => match result {
-                Ok(rtt) => trace!(peer = %peer, ?rtt, "ping"),
+                Ok(rtt) => {
+                    trace!(peer = %peer, ?rtt, "ping");
+                    // Last-write-wins: the peer table reports current latency,
+                    // not a smoothed average. A failed ping deliberately leaves
+                    // the previous value rather than clearing it — one lost
+                    // probe is not evidence the peer is gone, and libp2p will
+                    // close the connection (clearing this) if it really is.
+                    self.peer_rtt.insert(peer, rtt);
+                }
                 Err(e) => debug!(peer = %peer, error = %e, "ping failed"),
             },
             KwaaiBehaviourEvent::Unary(unary::Event::InboundRequest { peer, request }) => {
@@ -1530,7 +1599,11 @@ impl NetworkService {
                     .insert(peer_id);
 
                 // (c) Remember what the peer can do. Relay-hop, AutoNAT and
-                // dcutr capability are all read off this list.
+                // dcutr capability are all read off this list. The agent
+                // version rides along: purely descriptive (nothing branches on
+                // it), but it is what makes a peer table diagnosable when one
+                // build in the mesh misbehaves.
+                self.peer_agent.insert(peer_id, info.agent_version.clone());
                 let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
                 // Recorded *before* the relay manager runs: `apply_relay_actions`
                 // reads this map to decide whether a reservation can be
