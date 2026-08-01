@@ -81,6 +81,14 @@ pub struct PeerInfo {
     pub addr: Multiaddr,
     /// Which side opened the connection.
     pub direction: Direction,
+    /// The relay an inbound connection arrived through, when it was relayed.
+    ///
+    /// An inbound relayed connection's `addr` is a bare `/p2p/<peer>` — it says
+    /// who reached us and nothing about how. This is the local end of that
+    /// connection (our circuit listener), which is the only place the relay's
+    /// address and identity appear. `None` for outbound, where `addr` already
+    /// carries the relay, and for plain inbound.
+    pub via: Option<Multiaddr>,
     /// Whether DCUtR upgraded this connection from relayed to direct.
     ///
     /// Distinct from simply being direct: it means the path was established

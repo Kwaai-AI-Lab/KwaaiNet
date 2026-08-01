@@ -430,6 +430,16 @@ message ConnectedPeer {
     // The peer's advertised software version. May be empty.
     string agent_version = 9;
 
+    // The relay an inbound connection arrived through, when it was
+    // relayed. Empty otherwise.
+    //
+    // An inbound relayed connection's `addr` is a bare `/p2p/<peer>`: it
+    // names who reached us and says nothing about how. This is the local
+    // end of that connection — our circuit listener — and is the only
+    // place the relay's address and identity appear. Outbound needs no
+    // equivalent, since the dialled address already carries the relay.
+    string via = 11;
+
     // Whether DCUtR upgraded this connection from a relayed path to a
     // direct one.
     //

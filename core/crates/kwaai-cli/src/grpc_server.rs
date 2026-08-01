@@ -1325,7 +1325,7 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
             // from relayed to direct, which is exactly the kind of change the
             // user is watching this page for.
             format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 p.peer_id,
                 p.addr,
                 p.kind,
@@ -1334,6 +1334,7 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
                 p.is_trusted_relay,
                 p.protocols.join(","),
                 p.agent_version,
+                p.via,
                 p.dcutr,
             )
         })
@@ -1578,6 +1579,7 @@ fn build_network_update(
                     .map(|d| d.as_millis().min(u32::MAX as u128) as u32)
                     .unwrap_or(0),
                 agent_version: p.agent_version.clone().unwrap_or_default(),
+                via: p.via.as_ref().map(|a| a.to_string()).unwrap_or_default(),
                 dcutr: p.dcutr,
             };
             (
@@ -2442,6 +2444,7 @@ mod tests {
             protocols: vec!["/ipfs/kad/1.0.0".into()],
             rtt_ms: 10,
             agent_version: "kwaainet/0.5.4".into(),
+            via: String::new(),
             dcutr: false,
         }
     }
@@ -2548,6 +2551,16 @@ mod tests {
         assert_ne!(
             network_identity(&a),
             network_identity(&net_update("2026-01-01T00:00:00Z", vec![upgraded_peer]))
+        );
+
+        // The relay an inbound connection arrives through. A peer moving from
+        // one relay to another is a real change in how we reach it, and the
+        // view shows it, so it must not be suppressed.
+        let mut via_changed = net_peer("A");
+        via_changed.via = "/ip4/1.2.3.4/tcp/1/p2p/QmRelay/p2p-circuit".into();
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&net_update("2026-01-01T00:00:00Z", vec![via_changed]))
         );
 
         // Registering a handler changes what this node serves, and the view

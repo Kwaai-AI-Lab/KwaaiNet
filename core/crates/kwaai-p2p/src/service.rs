@@ -91,6 +91,10 @@ const MAX_ADDRESSES_PER_PEER: usize = 6;
 struct Connection {
     addr: Multiaddr,
     direction: Direction,
+    /// For an inbound relayed connection, our circuit listener — which names
+    /// the relay. `None` for outbound (the dialled address already carries the
+    /// relay) and for plain inbound (our own bind address says nothing).
+    via: Option<Multiaddr>,
     /// Whether DCUtR upgraded this connection from a relayed path to a direct
     /// one. Set when `dcutr::Event` reports success for this connection id.
     ///
@@ -684,6 +688,7 @@ impl NetworkService {
                     peer_id: *peer_id,
                     addr: c.addr.clone(),
                     direction: c.direction,
+                    via: c.via.clone(),
                     dcutr: c.dcutr,
                     rtt,
                     agent_version: agent_version.clone(),
@@ -1293,13 +1298,25 @@ impl NetworkService {
                 endpoint,
                 ..
             } => {
-                let (addr, direction) = match &endpoint {
+                // `via` is the local end of an inbound connection. For a
+                // relayed one that is our circuit listener, which names the
+                // relay's address and peer id — the only place that appears.
+                // `send_back_addr` alone is a bare `/p2p/<peer>`: it says who
+                // reached us and nothing at all about how.
+                let (addr, direction, via) = match &endpoint {
                     ConnectedPoint::Dialer { address, .. } => {
-                        (address.clone(), Direction::Outbound)
+                        (address.clone(), Direction::Outbound, None)
                     }
-                    ConnectedPoint::Listener { send_back_addr, .. } => {
-                        (send_back_addr.clone(), Direction::Inbound)
-                    }
+                    ConnectedPoint::Listener {
+                        send_back_addr,
+                        local_addr,
+                    } => (
+                        send_back_addr.clone(),
+                        Direction::Inbound,
+                        // Only when it tells us something the address does not:
+                        // a plain TCP listener is just our own bind address.
+                        is_circuit(local_addr).then(|| local_addr.clone()),
+                    ),
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
@@ -1308,6 +1325,7 @@ impl NetworkService {
                     Connection {
                         addr,
                         direction,
+                        via,
                         // Set later if dcutr reports success for this id;
                         // the upgrade always follows establishment.
                         dcutr: false,

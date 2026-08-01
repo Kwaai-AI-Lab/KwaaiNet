@@ -179,6 +179,7 @@ fn connected_peer_roundtrip_all_fields_set() {
         ],
         rtt_ms: 42,
         agent_version: "kwaainet/0.5.4".to_string(),
+        via: String::new(),
         dcutr: false,
     };
 
@@ -206,6 +207,7 @@ fn connected_peer_roundtrip_before_identify() {
         protocols: vec![],
         rtt_ms: 0,
         agent_version: String::new(),
+        via: String::new(),
         dcutr: false,
     };
 
@@ -249,6 +251,7 @@ fn network_update_roundtrip_all_sections() {
             protocols: vec!["/ipfs/kad/1.0.0".to_string()],
             rtt_ms: 7,
             agent_version: "kwaainet/0.5.4".to_string(),
+            via: String::new(),
             dcutr: false,
         }],
         routing: vec![
