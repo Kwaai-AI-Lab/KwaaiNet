@@ -30,14 +30,32 @@ pub enum ConnKind {
 
 /// Classify a connection from its multiaddr.
 ///
-/// A `/p2p-circuit` component is the only signal available: neither the p2pd
-/// control protocol nor the swarm reports "relayed" as a fact of its own.
+/// Neither the p2pd control protocol nor the swarm reports "relayed" as a fact
+/// of its own, so this reads it off the address. Two shapes mean relayed:
+///
+/// * an explicit `/p2p-circuit` component;
+/// * an address with **no transport at all** — a bare `/p2p/<id>`. That is what
+///   an inbound connection's `send_back_addr` looks like when it arrived over a
+///   relay's already-open circuit: the relay strips the circuit components
+///   before handing us the stream, leaving only the peer id.
+///
+/// The second case is why `Direct` is not the fallback. Calling an unclassifi-
+/// able address direct claims the stronger and more surprising thing — that a
+/// stranger reached us unsolicited — on the least evidence, and on a NATed node
+/// with no port forward that claim is simply wrong.
 pub fn classify_addr(m: &Multiaddr) -> ConnKind {
-    if is_circuit(m) {
+    if is_circuit(m) || !has_transport(m) {
         ConnKind::Relay
     } else {
         ConnKind::Direct
     }
+}
+
+/// Whether the address names a way to actually reach the peer, rather than only
+/// naming the peer.
+fn has_transport(m: &Multiaddr) -> bool {
+    m.iter()
+        .any(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
 }
 
 /// Sort group for a connection, lowest first: bootstrap, trusted relay, plain
@@ -116,6 +134,20 @@ mod tests {
         assert_eq!(
             classify_addr(&addr("/ip4/198.18.0.10/tcp/8000/p2p/12D3KooWA9DGWLoTPRZaZhBnjaGoQoDeGjKZKuadyeR6mUwXNBTa")),
             ConnKind::Direct
+        );
+    }
+
+    #[test]
+    fn classifies_a_transportless_address_as_relayed() {
+        // What an inbound connection over an already-open circuit looks like:
+        // the relay strips the circuit components, leaving only the peer id.
+        // Calling this "direct" told a NATed node with no port forward that a
+        // stranger had reached it unsolicited, which cannot happen.
+        assert_eq!(
+            classify_addr(&addr(
+                "/p2p/12D3KooWA9DGWLoTPRZaZhBnjaGoQoDeGjKZKuadyeR6mUwXNBTa"
+            )),
+            ConnKind::Relay
         );
     }
 
