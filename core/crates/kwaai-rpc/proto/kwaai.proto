@@ -51,6 +51,7 @@ service KwaaiNet {
 //   shardRun          ←  `kwaainet shard run <PROMPT>`
 //   status            ←  `kwaainet status`
 //   cancel            ←  (no CLI equivalent; aborts an in-flight op)
+//   blockCoverage     ←  `kwaainet shard chain`
 //
 // New operations are added as siblings here; preserving the flat shape
 // keeps the dispatch trivial on both sides.
@@ -78,6 +79,12 @@ message ClientFrame {
 
         // Cancel an in-flight operation by id.
         Cancel cancel = 14;
+
+        // Block-coverage snapshot / subscription. One-shot when
+        // `subscribe` is false (one BlockCoverageUpdate reply, then
+        // Done); a live feed when true (a BlockCoverageUpdate every
+        // refresh interval until cancelled with a `Cancel` body).
+        BlockCoverageRequest block_coverage = 15;
     }
 }
 
@@ -104,6 +111,11 @@ message ServerFrame {
 
         // Reply to a StatusRequest.
         StatusReply status = 14;
+
+        // Snapshot of model block coverage. Exactly one arrives for a
+        // one-shot BlockCoverageRequest; a subscription delivers one
+        // per refresh interval until the op is cancelled.
+        BlockCoverageUpdate block_coverage = 15;
     }
 }
 
@@ -223,6 +235,75 @@ message StatusReply {
 
     // Daemon process uptime in seconds.
     uint64 uptime_secs = 5;
+}
+
+// `kwaainet shard chain` — model block coverage from the DHT.
+message BlockCoverageRequest {
+    // DHT prefix to query. Defaults to the daemon's configured model
+    // prefix when empty.
+    optional string dht_prefix = 1;
+
+    // Total transformer blocks in the model. Defaults to the daemon's
+    // model config (`num_hidden_layers`) when unset.
+    optional uint32 total_blocks = 2;
+
+    // When true the operation stays open and the server pushes a fresh
+    // BlockCoverageUpdate every `interval_secs` until the client sends
+    // a Cancel body for this op id. When false a single update is sent
+    // followed by Done.
+    bool subscribe = 3;
+
+    // Refresh cadence for subscriptions, in seconds. 0 means the
+    // server default (5s). Ignored when `subscribe` is false.
+    uint32 interval_secs = 4;
+}
+
+// One peer serving a contiguous block range, as announced in the DHT.
+message BlockPeer {
+    // libp2p peer id, base58.
+    string peer_id = 1;
+
+    // Served block range: [start_block, end_block).
+    uint32 start_block = 2;
+    uint32 end_block = 3;
+
+    // Human-readable name the peer announced (may be empty).
+    string public_name = 4;
+
+    // Tokens/sec the peer claimed in its DHT announcement (0 = unknown).
+    double throughput = 5;
+
+    // Local reputation score in [0, 1]. Only meaningful when
+    // `trust_tier` is non-empty.
+    double trust_score = 6;
+
+    // Trust tier label ("UNKNOWN" / "KNOWN" / "VERIFIED" / "TRUSTED").
+    // Empty when the local reputation system is disabled.
+    string trust_tier = 7;
+}
+
+// Snapshot of which peers cover which blocks of the model.
+message BlockCoverageUpdate {
+    // Daemon wall-clock time of this snapshot, RFC 3339.
+    string server_time = 1;
+
+    // The model whose coverage was queried (daemon's configured model).
+    string model = 2;
+
+    // The DHT prefix actually queried.
+    string dht_prefix = 3;
+
+    // Total transformer blocks in the model.
+    uint32 total_blocks = 4;
+
+    // Number of blocks covered by at least one peer.
+    uint32 covered_blocks = 5;
+
+    // True when every block is covered — distributed inference ready.
+    bool full_coverage = 6;
+
+    // All discovered block servers, sorted by start_block.
+    repeated BlockPeer peers = 7;
 }
 
 // =====================================================================

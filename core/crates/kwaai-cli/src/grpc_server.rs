@@ -40,8 +40,9 @@ use kwaai_rpc::v1::{
     client_frame,
     error::Code as ErrorCode,
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
-    server_frame, Cancel, ChatMessage, ChatToken, ClientFrame, Done, Error as RpcError,
-    GenerateRequest, PingReply, PingRequest, ServerFrame, ShardRunRequest, StatusReply,
+    server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
+    ChatToken, ClientFrame, Done, Error as RpcError, GenerateRequest, PingReply, PingRequest,
+    ServerFrame, ShardRunRequest, StatusReply,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -257,6 +258,17 @@ impl KwaaiNet for KwaaiNetService {
 
                     client_frame::Body::ShardRun(req) => {
                         spawn_session_shard_run(id, req, out_tx.clone(), cancels.clone()).await;
+                    }
+
+                    client_frame::Body::BlockCoverage(req) => {
+                        spawn_session_block_coverage(
+                            id,
+                            req,
+                            cfg.clone(),
+                            out_tx.clone(),
+                            cancels.clone(),
+                        )
+                        .await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
@@ -635,6 +647,169 @@ async fn spawn_session_shard_run(
 
         cancels_for_cleanup.lock().await.remove(&id);
     });
+}
+
+/// Refresh cadence for block-coverage subscriptions when the client
+/// doesn't ask for a specific interval. Mirrors the map-server crawler.
+const DEFAULT_COVERAGE_INTERVAL_SECS: u64 = 5;
+
+/// Serve a `block_coverage` op within a Session: query the DHT for the
+/// model's block servers and emit one BlockCoverageUpdate (one-shot) or
+/// one per refresh interval until cancelled (subscribe).
+async fn spawn_session_block_coverage(
+    id: u64,
+    req: BlockCoverageRequest,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    // Register the cancel channel up-front so a Cancel arriving immediately
+    // after this frame still finds an entry to fire.
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    let cancels_for_cleanup = cancels.clone();
+    tokio::spawn(async move {
+        use std::time::Duration;
+
+        let dht_prefix = req
+            .dht_prefix
+            .clone()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| cfg.effective_dht_prefix());
+        let total_blocks = match req.total_blocks {
+            Some(n) if n > 0 => n as usize,
+            _ => cfg.model_total_blocks().max(1) as usize,
+        };
+        let interval = if req.interval_secs > 0 {
+            req.interval_secs as u64
+        } else {
+            DEFAULT_COVERAGE_INTERVAL_SECS
+        };
+
+        // The gRPC server binds before p2pd is up during daemon startup,
+        // so the p2pd connection is (re)established lazily: a one-shot
+        // fetch fails fast, a subscription just retries next tick.
+        let mut discovery: Option<(kwaai_p2p_daemon::P2PClient, libp2p::PeerId, Vec<String>)> =
+            None;
+
+        loop {
+            if discovery.is_none() {
+                match crate::shard_cmd::connect_for_discovery(&cfg).await {
+                    Ok(conn) => discovery = Some(conn),
+                    Err(e) if !req.subscribe => {
+                        let _ = out_tx
+                            .send(Ok(error_frame(
+                                id,
+                                ErrorCode::Unavailable,
+                                &format!("{e:#}"),
+                            )))
+                            .await;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::debug!(id, "block coverage: p2pd not reachable yet: {e:#}");
+                    }
+                }
+            }
+
+            if let Some((client, our_peer_id, bootstrap_peers)) = discovery.as_mut() {
+                let chain = crate::shard_cmd::discover_chain(
+                    client,
+                    our_peer_id,
+                    &dht_prefix,
+                    total_blocks,
+                    bootstrap_peers,
+                )
+                .await;
+
+                let update = build_coverage_update(&cfg, &dht_prefix, total_blocks, &chain);
+                let frame = ServerFrame {
+                    id,
+                    body: Some(server_frame::Body::BlockCoverage(update)),
+                };
+                if out_tx.send(Ok(frame)).await.is_err() {
+                    break; // client went away
+                }
+
+                if !req.subscribe {
+                    let _ = out_tx.send(Ok(done_frame(id))).await;
+                    break;
+                }
+            }
+
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    let _ = out_tx
+                        .send(Ok(error_frame(
+                            id,
+                            ErrorCode::Cancelled,
+                            "cancelled by client",
+                        )))
+                        .await;
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
+            }
+        }
+
+        cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+/// Assemble a [`BlockCoverageUpdate`] from a discovered chain, enriching
+/// each peer with its local reputation score/tier when enabled.
+fn build_coverage_update(
+    cfg: &KwaaiNetConfig,
+    dht_prefix: &str,
+    total_blocks: usize,
+    chain: &[crate::shard_cmd::BlockServerEntry],
+) -> BlockCoverageUpdate {
+    let rep_store = if cfg.reputation.enabled {
+        Some(crate::reputation::ReputationStore::load())
+    } else {
+        None
+    };
+
+    let mut covered = vec![false; total_blocks];
+    let peers: Vec<BlockPeer> = chain
+        .iter()
+        .map(|e| {
+            let start = e.start_block.min(total_blocks);
+            let end = e.end_block.min(total_blocks);
+            if start < end {
+                covered[start..end].fill(true);
+            }
+            let peer_b58 = e.peer_id.to_base58();
+            let (trust_score, trust_tier) = match rep_store.as_ref() {
+                Some(store) => {
+                    let s = store.score(&peer_b58);
+                    (s.score, s.tier.as_str().to_string())
+                }
+                None => (0.0, String::new()),
+            };
+            BlockPeer {
+                peer_id: peer_b58,
+                start_block: e.start_block as u32,
+                end_block: e.end_block as u32,
+                public_name: e.public_name.clone(),
+                throughput: e.throughput,
+                trust_score,
+                trust_tier,
+            }
+        })
+        .collect();
+    let covered_blocks = covered.iter().filter(|&&c| c).count();
+
+    BlockCoverageUpdate {
+        server_time: now_rfc3339(),
+        model: cfg.model.clone(),
+        dht_prefix: dht_prefix.to_string(),
+        total_blocks: total_blocks as u32,
+        covered_blocks: covered_blocks as u32,
+        full_coverage: covered_blocks == total_blocks,
+        peers,
+    }
 }
 
 /// Free-function variant of `KwaaiNetService::get_or_init_inference` so
