@@ -501,6 +501,12 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
             // Signal daemon that inference is live — daemon will re-announce
             // with real block coverage instead of [0, 0).
+            //
+            // The PID file normally comes from the supervised launch path, but
+            // `shard_is_ready()` requires it (ready sentinel AND live process),
+            // so a standalone `kwaainet shard serve` must write its own or the
+            // node announces state 0 (map: "offline") forever.
+            crate::daemon::ShardManager::new().write_pid(std::process::id());
             let ready_file = crate::daemon::ShardManager::ready_file();
             let _ = std::fs::write(&ready_file, "");
             crate::daemon::DaemonManager::new().signal_reannounce();
