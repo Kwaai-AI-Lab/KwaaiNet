@@ -459,3 +459,123 @@ async fn calls_after_shutdown_error_rather_than_hang() {
         .is_err());
     assert!(caller.remove_unary_handler(PROTO).await.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Routed dial: calling a peer we have no addresses for at all
+// ---------------------------------------------------------------------------
+
+/// Poll `handle.routing_peers()` until it contains `peer`.
+async fn wait_in_routing_table(handle: &NetworkHandle, peer: PeerId) {
+    loop {
+        if handle
+            .routing_peers()
+            .await
+            .expect("routing_peers")
+            .contains(&peer)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The caller knows nothing about the responder — no connection, no seeded
+/// address — only a shared bootstrap. The service must resolve the peer through
+/// a DHT walk before dialing (Go's *routed host* semantics), because a petals
+/// `ServerInfo` record carries a peer ID and nothing else.
+#[tokio::test]
+async fn call_to_unconnected_peer_resolves_through_the_dht() {
+    let (bootstrap, bootstrap_task, bootstrap_id) = spawn_service();
+    let (responder, responder_task, responder_id) = spawn_service();
+    let (caller, caller_task, _caller_id) = spawn_service();
+    let _tasks = [bootstrap_task, responder_task, caller_task];
+
+    responder
+        .add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("register handler");
+
+    let bootstrap_addr = dialable_addr(&bootstrap, bootstrap_id).await;
+    responder
+        .connect_peer(&bootstrap_addr)
+        .await
+        .expect("responder dials bootstrap");
+    caller
+        .connect_peer(&bootstrap_addr)
+        .await
+        .expect("caller dials bootstrap");
+
+    // The walk can only find the responder once the bootstrap's routing table
+    // has it (fed by identify) and the caller's has the bootstrap.
+    within(
+        "the bootstrap to learn the responder",
+        wait_in_routing_table(&bootstrap, responder_id),
+    )
+    .await;
+    within(
+        "the caller to learn the bootstrap",
+        wait_in_routing_table(&caller, bootstrap_id),
+    )
+    .await;
+
+    let response = within(
+        "the routed round trip",
+        caller.call_unary_handler(responder_id, PROTO, b"hello"),
+    )
+    .await
+    .expect("a call to an unconnected peer must resolve through the DHT");
+    assert_eq!(response, b"hello");
+}
+
+/// A peer nobody has ever heard of: the walk completes empty and the call must
+/// fail with a clear error, not hang or surface a bare-`/p2p/` transport error.
+#[tokio::test]
+async fn call_to_unknown_peer_fails_cleanly_after_the_walk() {
+    let (bootstrap, bootstrap_task, bootstrap_id) = spawn_service();
+    let (caller, caller_task, _caller_id) = spawn_service();
+    let _tasks = [bootstrap_task, caller_task];
+
+    caller
+        .connect_peer(&dialable_addr(&bootstrap, bootstrap_id).await)
+        .await
+        .expect("caller dials bootstrap");
+    within(
+        "the caller to learn the bootstrap",
+        wait_in_routing_table(&caller, bootstrap_id),
+    )
+    .await;
+
+    let ghost = Keypair::generate_ed25519().public().to_peer_id();
+    let error = within(
+        "the failed walk",
+        caller.call_unary_handler(ghost, PROTO, b"x"),
+    )
+    .await
+    .expect_err("an unknown peer cannot be called");
+    match error {
+        P2PError::DialFailed(text) => assert!(
+            text.contains("peer not found in DHT"),
+            "unexpected error text: {text}"
+        ),
+        other => panic!("expected DialFailed, got {other:?}"),
+    }
+}
+
+/// Same, from a completely isolated node: the walk has no peers to ask and
+/// completes immediately — the call must still resolve, not hang.
+#[tokio::test]
+async fn call_from_isolated_node_fails_cleanly() {
+    let (caller, _caller_task, _caller_id) = spawn_service();
+
+    let ghost = Keypair::generate_ed25519().public().to_peer_id();
+    let error = within(
+        "the empty walk",
+        caller.call_unary_handler(ghost, PROTO, b"x"),
+    )
+    .await
+    .expect_err("an isolated node cannot reach anyone");
+    assert!(
+        matches!(error, P2PError::DialFailed(_)),
+        "expected DialFailed, got {error:?}"
+    );
+}
