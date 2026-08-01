@@ -462,6 +462,7 @@ impl NetworkService {
                     relay_addrs: self.relays.confirmed_addrs(),
                     observed_addrs: observed,
                     listen_addrs: self.swarm.listeners().cloned().collect(),
+                    local_protocols: self.collect_local_protocols(),
                 });
             }
 
@@ -645,6 +646,32 @@ impl NetworkService {
                 })
             })
             .collect()
+    }
+
+    /// Protocols this node serves, sorted and deduplicated.
+    ///
+    /// Read off the registered handlers rather than from the swarm: libp2p
+    /// keeps its advertised protocol set private to `Swarm`, and the handlers
+    /// are the more honest answer anyway — they are what this node will
+    /// actually do for a peer that asks.
+    fn collect_local_protocols(&mut self) -> Vec<String> {
+        let mut protos: Vec<String> = self
+            .unary_handlers
+            .keys()
+            .chain(self.stream_handlers.keys())
+            .cloned()
+            .collect();
+        protos.extend(
+            self.swarm
+                .behaviour_mut()
+                .kad
+                .protocol_names()
+                .iter()
+                .map(|p| p.to_string()),
+        );
+        protos.sort();
+        protos.dedup();
+        protos
     }
 
     /// Every peer in the Kademlia routing table.

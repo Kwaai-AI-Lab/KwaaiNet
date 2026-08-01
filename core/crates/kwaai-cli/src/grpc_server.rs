@@ -1303,7 +1303,14 @@ const DEFAULT_NETWORK_INTERVAL_SECS: u64 = 5;
 /// Connections are compared as a set: the swarm iterates a `HashMap`, so
 /// ordering is arbitrary and a pure reordering is not a change worth waking the
 /// UI for. The routing table is compared the same way.
-type NetworkIdentity = (String, bool, bool, BTreeSet<String>, BTreeSet<String>);
+type NetworkIdentity = (
+    String,
+    bool,
+    bool,
+    String,
+    BTreeSet<String>,
+    BTreeSet<String>,
+);
 
 fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
     let self_status = u.self_status.clone().unwrap_or_default();
@@ -1341,6 +1348,9 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
         self_status.reachability,
         self_status.using_relay,
         self_status.announceable,
+        // Registering or removing a handler changes what this node serves, and
+        // the view shows it, so it has to wake the client.
+        self_status.local_protocols.join(","),
         connected,
         routing,
     )
@@ -1632,6 +1642,7 @@ fn build_network_update(
                 .map(|(a, _)| a.to_string())
                 .collect(),
             relay_addrs: snapshot.relay_addrs.iter().map(|a| a.to_string()).collect(),
+            local_protocols: snapshot.local_protocols.clone(),
         }),
         connected: connected.into_iter().map(|(_, _, w)| w).collect(),
         routing,
@@ -2427,6 +2438,7 @@ mod tests {
                 listen_addrs: vec!["/ip4/0.0.0.0/tcp/4001".into()],
                 observed_addrs: vec![],
                 relay_addrs: vec![],
+                local_protocols: vec!["/ipfs/kad/1.0.0".into()],
             }),
             connected: peers,
             routing: vec![],
@@ -2516,6 +2528,17 @@ mod tests {
             network_identity(&a),
             network_identity(&net_update("2026-01-01T00:00:00Z", vec![upgraded_peer]))
         );
+
+        // Registering a handler changes what this node serves, and the view
+        // shows it, so it has to reach the client.
+        let mut serving_more = a.clone();
+        serving_more
+            .self_status
+            .as_mut()
+            .unwrap()
+            .local_protocols
+            .push("/kwaai/inference/1.0.0".into());
+        assert_ne!(network_identity(&a), network_identity(&serving_more));
 
         // A routing peer being recognised as a bootstrap.
         let mut bootstrap_routed = a.clone();

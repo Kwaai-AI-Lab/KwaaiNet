@@ -501,6 +501,15 @@ message SelfStatus {
     // Addresses of confirmed circuit-relay reservations. Empty when not
     // relaying.
     repeated string relay_addrs = 8;
+
+    // Protocols this node serves to peers, sorted.
+    //
+    // The handlers actually registered rather than everything the swarm
+    // might negotiate: libp2p keeps its full advertised set private, and
+    // this is the more useful answer anyway — it is what this node will
+    // *do* for a peer, which is what a reader comparing it against a
+    // peer's protocol list wants to know.
+    repeated string local_protocols = 9;
 }
 
 // Snapshot of local p2p state.
