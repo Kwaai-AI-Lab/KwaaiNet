@@ -55,6 +55,34 @@ const COMMAND_CHANNEL_SIZE: usize = 64;
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Cap on routing-table addresses per peer.
+///
+/// kad's own `Addresses` is an unbounded `SmallVec`: `insert` appends whatever
+/// it is given, and the only removal is reactive — `address_failed` drops one
+/// address per failed dial. Feeding it faster than dials fail makes the list
+/// grow without limit, and every entry is then dialed on the next attempt.
+///
+/// A peer behind a symmetric NAT supplies exactly that. Each of its outbound
+/// flows gets a fresh public port, it reports those ports as listen addresses
+/// over identify, and none of them is dialable once the flow it belonged to
+/// has closed. Measured in the NAT test bed: node-a accumulated 20+ addresses
+/// for node-h and re-added them ~7x faster than kad evicted them, fanning
+/// every dial out across the whole stale set.
+///
+/// With port reuse on, those dials all share one local port, so repeats
+/// against an address already being attempted collide on the 4-tuple and fail
+/// `AddrNotAvailable`. The cap is what keeps that from happening; it is not a
+/// port-exhaustion guard (a reused port exhausts nothing).
+///
+/// Six is `Addresses`' own `SmallVec` inline size — the width kad is built
+/// around, so staying at or under it also keeps the list from spilling to the
+/// heap.
+///
+/// go-libp2p bounds the same growth by TTL rather than count, ageing observed
+/// addresses out faster than listen addresses. rust-libp2p's kad has no TTL
+/// layer, so a count cap is the closest available approximation.
+const MAX_ADDRESSES_PER_PEER: usize = 6;
+
 /// A connection we are tracking for `list_peers`.
 #[derive(Debug, Clone)]
 struct Connection {
@@ -458,6 +486,10 @@ impl NetworkService {
             }
 
             Command::AddKadAddress { peer, addr, reply } => {
+                // Deliberately not capped (unlike the identify path): this is
+                // the operator naming an address, not a peer claiming one. A
+                // symmetric-NAT peer flooding identify must never be able to
+                // evict a bootstrap address someone configured by hand.
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
                 let _ = reply.send(());
             }
@@ -567,6 +599,9 @@ impl NetworkService {
             // mistakes for a way to reach the peer.
             let stripped = strip_p2p(&addr);
             if !stripped.is_empty() {
+                // Uncapped for the same reason as `AddKadAddress`: an address
+                // we are actively dialing is our own intent, not a remote
+                // claim, and is the one entry least worth evicting.
                 self.swarm.behaviour_mut().kad.add_address(&peer, stripped);
             }
         }
@@ -761,6 +796,69 @@ impl NetworkService {
                 }
             }
         }
+    }
+
+    /// Seed one routing-table address for `peer`, holding the per-peer list at
+    /// `MAX_ADDRESSES_PER_PEER`.
+    ///
+    /// Every path that learns an address from a *remote claim* goes through
+    /// here. kad applies no bound of its own (see `MAX_ADDRESSES_PER_PEER`), so
+    /// without this a peer that reports a fresh address on every identify grows
+    /// its entry without limit and every stale entry is redialed forever.
+    ///
+    /// At the cap the oldest address is evicted to make room. Refusing the new
+    /// one instead would be simpler but wrong: a peer that legitimately moves
+    /// would be frozen at the six addresses it happened to report first, and
+    /// could never become reachable again. Oldest-out keeps the list tracking
+    /// where the peer is *now*, which is also the order kad's own
+    /// `Addresses::insert` appends in.
+    ///
+    /// Returns whether the address was seeded.
+    fn add_routing_address(&mut self, peer: &PeerId, addr: Multiaddr) -> bool {
+        let existing: Vec<Multiaddr> = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .kbucket(*peer)
+            .into_iter()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .filter(|entry| entry.node.key.preimage() == peer)
+                    .flat_map(|entry| entry.node.value.iter().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Already known. kad would dedupe this itself, but returning early
+        // keeps a repeat identify from counting as churn.
+        if existing.iter().any(|a| *a == addr) {
+            return false;
+        }
+
+        if existing.len() >= MAX_ADDRESSES_PER_PEER {
+            // `remove` refuses to drop the last address, which is what we want:
+            // kad keeps a peer in the table with one address rather than
+            // flushing it on a transient failure.
+            if let Some(oldest) = existing.first() {
+                let removed = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .remove_address(peer, oldest)
+                    .is_none();
+                trace!(
+                    %peer,
+                    %oldest,
+                    %addr,
+                    peer_removed = removed,
+                    "routing address cap reached; evicting the oldest"
+                );
+            }
+        }
+
+        self.swarm.behaviour_mut().kad.add_address(peer, addr);
+        true
     }
 
     /// Stop serving `proto`: drop the dispatch channel and stop advertising it.
@@ -1325,10 +1423,7 @@ impl NetworkService {
                             );
                             continue;
                         }
-                        self.swarm
-                            .behaviour_mut()
-                            .kad
-                            .add_address(&peer_id, addr.clone());
+                        self.add_routing_address(&peer_id, addr.clone());
                     }
                 }
 
