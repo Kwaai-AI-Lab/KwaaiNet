@@ -2073,4 +2073,157 @@ mod tests {
         let retiered = update("2026-01-01T00:00:05Z", vec![peer("A", 0, 4), retiered_peer]);
         assert_ne!(coverage_identity(&a), coverage_identity(&retiered));
     }
+
+    /// Drive a real `shard_run` over a real Session and assert the routing
+    /// telemetry reaches the wire.
+    ///
+    /// There is no p2p daemon here, so the run fails as soon as it tries to
+    /// connect to one — which still exercises the whole path end to end:
+    /// `run_streaming_inner` builds the event, the sink pushes it onto the
+    /// run's channel, `progress_to_proto` maps it, and it leaves the socket
+    /// as a real `ServerFrame`. Only `Resolved` precedes that failure, so
+    /// that is what this can honestly assert; the phases that need peers
+    /// are covered by the NAT topology, not by a unit test.
+    #[tokio::test]
+    async fn shard_run_streams_inference_events_when_requested() {
+        use futures::StreamExt as _;
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+        use kwaai_rpc::v1::InferencePhase;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let _serial = TEST_LOCK.lock().await;
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let handle = spawn(KwaaiNetConfig::default());
+        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
+        assert!(up, "gRPC TCP listener never came up");
+
+        let endpoint = format!("http://127.0.0.1:{DEFAULT_GRPC_TCP_PORT}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("connect to loopback gRPC server");
+        let mut client = KwaaiNetClient::new(channel);
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
+        tx.send(ClientFrame {
+            id: 1,
+            body: Some(client_frame::Body::ShardRun(ShardRunRequest {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                model: None,
+                conversation_id: None,
+                events: true,
+            })),
+        })
+        .await
+        .expect("send shard_run frame");
+
+        let mut inbound = client
+            .session(ReceiverStream::new(rx))
+            .await
+            .expect("open Session")
+            .into_inner();
+
+        // Collect until the operation terminates, or we give up waiting.
+        let mut phases = Vec::new();
+        let collect = async {
+            while let Some(Ok(frame)) = inbound.next().await {
+                match frame.body {
+                    Some(server_frame::Body::InferenceEvent(e)) => phases.push(e.phase),
+                    Some(server_frame::Body::Done(_)) | Some(server_frame::Body::Error(_)) => break,
+                    _ => {}
+                }
+            }
+        };
+        // Generous: the daemon polls the DHT before giving up on discovery.
+        let _ = tokio::time::timeout(Duration::from_secs(45), collect).await;
+
+        assert!(
+            phases.contains(&(InferencePhase::Resolved as i32)),
+            "expected a Resolved event on the wire, got {phases:?}"
+        );
+
+        // Close our end first: an open Session keeps the connection — and
+        // so the listener — alive past the handle drop.
+        drop(inbound);
+        drop(tx);
+        drop(client);
+        drop(handle);
+        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        assert!(down, "TCP listener did not close after handle drop");
+    }
+
+    /// The mirror of the above: with `events` unset the daemon must stay
+    /// silent, since that is what keeps the flag worth having.
+    #[tokio::test]
+    async fn shard_run_stays_silent_without_the_events_flag() {
+        use futures::StreamExt as _;
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let _serial = TEST_LOCK.lock().await;
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let handle = spawn(KwaaiNetConfig::default());
+        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
+        assert!(up, "gRPC TCP listener never came up");
+
+        let endpoint = format!("http://127.0.0.1:{DEFAULT_GRPC_TCP_PORT}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("connect to loopback gRPC server");
+        let mut client = KwaaiNetClient::new(channel);
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
+        tx.send(ClientFrame {
+            id: 1,
+            body: Some(client_frame::Body::ShardRun(ShardRunRequest {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                model: None,
+                conversation_id: None,
+                events: false,
+            })),
+        })
+        .await
+        .expect("send shard_run frame");
+
+        let mut inbound = client
+            .session(ReceiverStream::new(rx))
+            .await
+            .expect("open Session")
+            .into_inner();
+
+        let mut saw_event = false;
+        let collect = async {
+            while let Some(Ok(frame)) = inbound.next().await {
+                match frame.body {
+                    Some(server_frame::Body::InferenceEvent(_)) => {
+                        saw_event = true;
+                        break;
+                    }
+                    Some(server_frame::Body::Done(_)) | Some(server_frame::Body::Error(_)) => break,
+                    _ => {}
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(45), collect).await;
+
+        assert!(!saw_event, "events were emitted without being requested");
+
+        drop(inbound);
+        drop(tx);
+        drop(client);
+        drop(handle);
+        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        assert!(down, "TCP listener did not close after handle drop");
+    }
 }
