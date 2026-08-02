@@ -632,6 +632,7 @@ impl NetworkService {
     /// Addresses we already know for `peer`: routing table entries first, then
     /// any live connection's address.
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
+        let strict = self.require_global_ips;
         let mut addrs: Vec<Multiaddr> = Vec::new();
 
         if let Some(bucket) = self.swarm.behaviour_mut().kad.kbucket(*peer) {
@@ -639,7 +640,25 @@ impl NetworkService {
                 if entry.node.key.preimage() == peer {
                     // Skip empty entries: an address with no transport cannot
                     // be dialed, only mistaken for reachability.
-                    addrs.extend(entry.node.value.iter().filter(|a| !a.is_empty()).cloned());
+                    //
+                    // Filter here, on the way *out*, because kad has more ways
+                    // in than we control. Identify is filtered at the handler,
+                    // but `kad::Behaviour::discovered` also inserts whatever
+                    // `multiaddrs` a remote peer reports during a query walk,
+                    // verbatim and inside libp2p — so a peer's loopback and LAN
+                    // addresses arrive without passing anything of ours. This
+                    // is the one place every consumer (connect, routed dial,
+                    // the GUI's peer table) reads them back, so one check here
+                    // covers paths that would otherwise need finding one at a
+                    // time.
+                    addrs.extend(
+                        entry
+                            .node
+                            .value
+                            .iter()
+                            .filter(|a| !a.is_empty() && is_announceable_with(a, strict))
+                            .cloned(),
+                    );
                 }
             }
         }
