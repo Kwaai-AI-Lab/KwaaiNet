@@ -80,6 +80,53 @@ pub fn group_index(is_bootstrap: bool, is_trusted_relay: bool, kind: ConnKind) -
     }
 }
 
+/// Whether a peer serves the DHT, as far as identify has told us.
+///
+/// This is a *third* state deliberately: identify completes shortly after the
+/// connection establishes, so `protocols` is empty on a freshly-connected peer
+/// and stays empty for a beat. Collapsing that into a bool would make every
+/// peer briefly look like a non-server, and anything filtering on it would
+/// blink rows in and out as connections settle.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DhtRole {
+    /// Advertises the kad protocol — a routing hop that can store records and
+    /// be returned as a lookup result.
+    Server,
+    /// Identify completed and kad was absent. A query-only participant: it
+    /// reads the DHT but never serves it, so it can be a peer's *target* but
+    /// never a step on the way to one.
+    Client,
+    /// Identify has not reported yet. Not a claim either way.
+    Unknown,
+}
+
+/// The kad protocol identifier, as advertised over identify.
+///
+/// Matched with a prefix rather than equality: libp2p appends a network
+/// suffix when one is configured (`/ipfs/kad/1.0.0` vs `/kwaai/kad/1.0.0`),
+/// and a peer on a named network still serves the DHT.
+const KAD_PROTOCOL_INFIX: &str = "/kad/";
+
+/// Classify a peer's DHT participation from its advertised protocols.
+///
+/// Keyed off the protocol list rather than `agent_version` on purpose:
+/// advertising a protocol is a commitment the peer's stack actually honours,
+/// whereas the version string is free text a peer can set to anything.
+///
+/// Client-mode is not a hivemind artifact and does not go away with the p2pd
+/// migration — rust-libp2p has the same mode, and our own nodes sit in it
+/// until reachability resolves. It is a permanent property of the network.
+pub fn dht_role(protocols: &[String]) -> DhtRole {
+    if protocols.is_empty() {
+        return DhtRole::Unknown;
+    }
+    if protocols.iter().any(|p| p.contains(KAD_PROTOCOL_INFIX)) {
+        DhtRole::Server
+    } else {
+        DhtRole::Client
+    }
+}
+
 /// The bootstrap peer IDs this node was configured to use.
 ///
 /// Prefers the user's `initial_peers` override and falls back to the built-in
@@ -193,5 +240,75 @@ mod tests {
                 .parse::<PeerId>()
                 .unwrap()
         ));
+    }
+
+    /// The protocol list a kwaainet node advertises once identify settles.
+    /// Captured from a live nat-test node.
+    fn server_protocols() -> Vec<String> {
+        [
+            "/ipfs/id/1.0.0",
+            "/ipfs/id/push/1.0.0",
+            "/ipfs/kad/1.0.0",
+            "/ipfs/ping/1.0.0",
+            "/libp2p/autonat/1.0.0",
+            "/libp2p/circuit/relay/0.2.0/hop",
+            "/libp2p/circuit/relay/0.2.0/stop",
+            "/libp2p/dcutr",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    /// A hivemind `-dhtClient=1` sidecar, captured from the same network.
+    /// Note it still advertises circuit relay hop.
+    fn client_protocols() -> Vec<String> {
+        [
+            "/ipfs/id/1.0.0",
+            "/ipfs/id/push/1.0.0",
+            "/ipfs/ping/1.0.0",
+            "/libp2p/autonat/1.0.0",
+            "/libp2p/circuit/relay/0.2.0/hop",
+            "/libp2p/circuit/relay/0.2.0/stop",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn kad_speaker_is_a_server() {
+        assert_eq!(dht_role(&server_protocols()), DhtRole::Server);
+    }
+
+    #[test]
+    fn query_only_peer_is_a_client() {
+        assert_eq!(dht_role(&client_protocols()), DhtRole::Client);
+    }
+
+    /// The case that makes this an enum rather than a bool. identify lands
+    /// *after* the connection establishes, so a just-connected peer reports
+    /// nothing. Calling that "client" would misclassify every peer for the
+    /// first moments of its life, and blink rows in and out of a filtered view.
+    #[test]
+    fn no_protocols_yet_is_unknown() {
+        assert_eq!(dht_role(&[]), DhtRole::Unknown);
+    }
+
+    /// A named network suffixes the kad protocol id. Such a peer still serves
+    /// the DHT, so the match is on the infix rather than the full string.
+    #[test]
+    fn named_network_kad_still_serves() {
+        let protocols = vec!["/ipfs/id/1.0.0".to_string(), "/kwaai/kad/1.0.0".to_string()];
+        assert_eq!(dht_role(&protocols), DhtRole::Server);
+    }
+
+    /// Relay hop must not be read as DHT participation: the hivemind clients
+    /// advertise it, and conflating the two would classify every one of them
+    /// as a server.
+    #[test]
+    fn relay_hop_alone_is_not_a_server() {
+        let protocols = vec!["/libp2p/circuit/relay/0.2.0/hop".to_string()];
+        assert_eq!(dht_role(&protocols), DhtRole::Client);
     }
 }
