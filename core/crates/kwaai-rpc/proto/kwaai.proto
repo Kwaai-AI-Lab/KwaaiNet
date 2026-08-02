@@ -118,6 +118,17 @@ message ServerFrame {
         // Reply to a StatusRequest.
         StatusReply status = 14;
 
+        // Structured progress event for a shard_run operation, emitted
+        // only when ShardRunRequest.events was set. Interleaved with
+        // `token` bodies on the same id, and never terminal — the
+        // operation still ends with Done or Error.
+        //
+        // Tags 15-18 are claimed by in-flight work (block coverage,
+        // storage discovery, network, connect); this starts at 19 so
+        // the two land together without renumbering.
+        InferenceEvent inference_event = 19;
+
+
         // Snapshot of model block coverage. Exactly one arrives for a
         // one-shot BlockCoverageRequest; a subscription delivers one
         // per refresh interval until the op is cancelled.
@@ -221,7 +232,20 @@ message ShardRunRequest {
 
     optional string conversation_id = 4;
 
-    // 5-15 reserved for high-frequency metadata.
+    // Emit InferenceEvent frames on this operation id, interleaved with
+    // tokens, describing peer/block routing as it happens.
+    //
+    // Off by default, and deliberately opt-in: a chain of N hops over T
+    // tokens produces O(N*T) events, which is real formatting work for a
+    // client that isn't showing them — and they share this operation's
+    // channel with the tokens, so producing them unasked adds
+    // backpressure to the path the user is actually waiting on.
+    //
+    // A daemon predating this field ignores it and emits no events. See
+    // InferenceEvent for how a client tells that apart from a quiet run.
+    bool events = 5;
+
+    // 6-15 reserved for high-frequency metadata.
     // 16+ reserved for sampling controls / routing hints.
 }
 
@@ -436,6 +460,187 @@ message StorageUpdate {
     // All discovered nodes, sorted by public_name then peer_id so the
     // ordering is stable across rounds.
     repeated StoragePeer peers = 3;
+}
+
+// =====================================================================
+// Distributed-inference telemetry (Session.shard_run, opt-in)
+// =====================================================================
+
+// What stage of a distributed run an InferenceEvent describes.
+//
+// Open enum: a client that does not recognise a value must render the
+// event's `message` generically rather than dropping it, so a newer
+// daemon's added phases stay legible on an older client.
+enum InferencePhase {
+    INFERENCE_PHASE_UNSPECIFIED = 0;
+
+    // Run accepted; model / dht_prefix / total_blocks resolved.
+    // Sets: model, dht_prefix, total_blocks.
+    INFERENCE_PHASE_RESOLVED = 1;
+
+    // A DHT discovery round is starting. Sets: attempt, dht_prefix.
+    INFERENCE_PHASE_DISCOVERY_START = 2;
+
+    // A discovery round returned. Sets: attempt, peer_count,
+    // covered_blocks, total_blocks. peer_count == 0 means the round
+    // found nothing and another attempt follows, up to the 30s cap.
+    INFERENCE_PHASE_DISCOVERY_RESULT = 3;
+
+    // The chain came from a saved circuit rather than the DHT.
+    // Sets: circuit_id, peer_count.
+    INFERENCE_PHASE_CIRCUIT_LOADED = 4;
+
+    // The route for this run was pinned. Sets: hops (ordered, gapless,
+    // covering [0, total_blocks)) and total_blocks. Re-emitted after a
+    // rebuild with `attempt` incremented.
+    INFERENCE_PHASE_CHAIN_PINNED = 5;
+
+    // Best-effort dial of a chain member before generation starts.
+    // Sets: peer_id, peer_name, ok.
+    INFERENCE_PHASE_PEER_DIAL = 6;
+
+    // A hop is being dispatched. Sets: peer_id, peer_name, block_start,
+    // block_end, is_self, token_index, is_prefill, candidate_index.
+    INFERENCE_PHASE_HOP_START = 7;
+
+    // A hop returned activations or logits. Sets everything HOP_START
+    // does, plus duration_ms.
+    INFERENCE_PHASE_HOP_OK = 8;
+
+    // A hop failed. Sets everything HOP_START does, plus duration_ms,
+    // message (the error) and failure. Followed by either a HOP_START
+    // for the next candidate at the same block_start, or a
+    // PATH_REBUILD when no candidate is left.
+    INFERENCE_PHASE_HOP_FAILED = 9;
+
+    // Every candidate for a block position failed; the path is being
+    // rebuilt and the token retried. The KV cache is lost at this
+    // point, so output may degrade. Sets: block_start, message, attempt.
+    INFERENCE_PHASE_PATH_REBUILD = 10;
+
+    // A token was sampled. Sets: token_index, is_prefill, duration_ms
+    // (wall time for this token's whole forward pass).
+    INFERENCE_PHASE_TOKEN_SAMPLED = 11;
+
+    // Generation finished. Sets: token_index (total generated),
+    // duration_ms (whole run) and message (the stop reason).
+    INFERENCE_PHASE_COMPLETE = 12;
+}
+
+// Why a hop failed, which decides whether the peer stays eligible for
+// the rest of the run.
+enum HopFailure {
+    HOP_FAILURE_UNSPECIFIED = 0;
+
+    // The peer answered but has no inference handler registered
+    // ("protocols not supported"). Blacklisted for this run.
+    HOP_FAILURE_NO_HANDLER = 1;
+
+    // Stream reset, early eof, or connection closed. NOT blacklisted:
+    // the peer may recover and is retried on the next token.
+    HOP_FAILURE_TRANSIENT = 2;
+
+    // Exceeded the per-hop deadline. Blacklisted for this run.
+    HOP_FAILURE_TIMEOUT = 3;
+
+    // Anything else. Blacklisted for this run.
+    HOP_FAILURE_OTHER = 4;
+}
+
+// One hop of a pinned route: which peer serves which block range.
+message InferenceHop {
+    // libp2p peer id, base58.
+    string peer_id = 1;
+
+    // The name the peer announced in the DHT. May be empty.
+    string peer_name = 2;
+
+    // Served block range: [block_start, block_end).
+    uint32 block_start = 3;
+    uint32 block_end = 4;
+
+    // Whether this hop dispatches to the local bypass server rather
+    // than out over libp2p — i.e. this machine serves these blocks.
+    bool is_self = 5;
+
+    // Local reputation score in [0, 1]. Absent when the reputation
+    // system is disabled.
+    optional double trust_score = 6;
+
+    // Tokens/sec the peer claimed in its DHT announcement. 0 = unknown.
+    double throughput = 7;
+}
+
+// A single point-in-time event during a distributed run.
+//
+// Deliberately one flat message with a phase enum rather than a oneof
+// of per-phase types: clients render these as a homogeneous log, and a
+// flat shape means a future phase costs one enum value instead of a new
+// message plus a new oneof arm — which matters under the append-only
+// rule at the top of this file. It also degrades better across version
+// skew, since an unknown enum value still carries a readable `message`
+// where an unknown oneof arm is simply invisible.
+//
+// Which fields carry meaning depends on `phase`; see InferencePhase.
+// Numerics that are not always applicable use explicit presence, so
+// "0 ms" is distinguishable from "not applicable to this phase".
+message InferenceEvent {
+    // Milliseconds since the run started. Relative rather than absolute
+    // so a client can render a timeline without trusting clock skew
+    // between the daemon and itself.
+    uint64 elapsed_ms = 1;
+
+    InferencePhase phase = 2;
+
+    // Human-readable detail. Always safe to display; for a phase the
+    // client does not recognise it is the only thing to display.
+    string message = 3;
+
+    // ── Peer identity (HOP_*, PEER_DIAL) ──
+    string peer_id = 10;
+    string peer_name = 11;
+    bool is_self = 12;
+
+    // ── Block range (HOP_*, PATH_REBUILD, discovery) ──
+    optional uint32 block_start = 20;
+    optional uint32 block_end = 21;
+    optional uint32 total_blocks = 22;
+    optional uint32 covered_blocks = 23;
+
+    // ── Timing ──
+    optional double duration_ms = 30;
+
+    // ── Sequencing ──
+    // 0-based index of the token being produced. Token 0 is the prefill
+    // pass over the whole prompt; every later token is a single-token
+    // decode step. `is_prefill` says which, so a client does not have to
+    // infer it from the index.
+    optional uint32 token_index = 40;
+    bool is_prefill = 41;
+
+    // Which candidate at this block position, 0 = first choice. Greater
+    // than 0 means earlier candidates for the same blocks already failed.
+    optional uint32 candidate_index = 42;
+
+    // Discovery round or path-rebuild generation, 1-based.
+    optional uint32 attempt = 43;
+
+    // Whether the action this event reports succeeded. Only meaningful
+    // for PEER_DIAL, where a failed dial is routine rather than fatal —
+    // the peer may still be reachable when the hop is actually made.
+    bool ok = 44;
+
+    // ── Failure detail (HOP_FAILED) ──
+    HopFailure failure = 50;
+
+    // ── Discovery / resolution detail ──
+    string model = 60;
+    string dht_prefix = 61;
+    optional uint32 peer_count = 62;
+    string circuit_id = 63;
+
+    // ── Route (CHAIN_PINNED only) ──
+    repeated InferenceHop hops = 70;
 }
 
 // =====================================================================
