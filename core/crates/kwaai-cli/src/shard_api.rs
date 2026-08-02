@@ -260,7 +260,13 @@ async fn run_inference(
         }
     };
 
+    // This HTTP path has no progress consumer — the OpenAI-compatible API
+    // streams text only — so the sink stays `None` and the token context
+    // exists just to satisfy the shared signature.
+    let run_started = std::time::Instant::now();
+
     loop {
+        let token_ctx = crate::shard_cmd::TokenContext::new(generated, generated == 0, run_started);
         let (shape, data) = token_ids_to_bytes(&current_ids);
         let request = InferenceRequest {
             session_id,
@@ -282,6 +288,7 @@ async fn run_inference(
             &unreached,
             None,
             None,
+            token_ctx,
         )
         .await
         {
@@ -323,6 +330,7 @@ async fn run_inference(
                             &unreached,
                             None,
                             None,
+                            token_ctx,
                         )
                         .await
                         {

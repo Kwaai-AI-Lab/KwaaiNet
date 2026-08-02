@@ -46,9 +46,10 @@ use kwaai_rpc::v1::{
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
     ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, Done, Error as RpcError,
-    GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest,
-    RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest,
-    StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
+    GenerateRequest, HopFailure, InferenceEvent, InferenceHop, InferencePhase, NetworkRequest,
+    NetworkUpdate, PeerConnKind, PingReply, PingRequest, RoutingPeer, SelfStatus, ServerFrame,
+    ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer, StorageReachability,
+    StorageUpdate, UpdateReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -457,6 +458,75 @@ fn error_frame(id: u64, code: ErrorCode, msg: &str) -> ServerFrame {
     }
 }
 
+/// Map a daemon-side [`InferenceProgress`] onto the wire type.
+///
+/// `shard_cmd` deliberately keeps its own proto-free mirror so it stays
+/// usable from the CLI without the rpc crate, which leaves exactly one place
+/// — here — that has to know both shapes.
+fn progress_to_proto(p: crate::shard_cmd::InferenceProgress) -> InferenceEvent {
+    use crate::shard_cmd::{HopFailureKind, ProgressPhase};
+
+    let phase = match p.phase {
+        ProgressPhase::Resolved => InferencePhase::Resolved,
+        ProgressPhase::DiscoveryStart => InferencePhase::DiscoveryStart,
+        ProgressPhase::DiscoveryResult => InferencePhase::DiscoveryResult,
+        ProgressPhase::CircuitLoaded => InferencePhase::CircuitLoaded,
+        ProgressPhase::ChainPinned => InferencePhase::ChainPinned,
+        ProgressPhase::PeerDial => InferencePhase::PeerDial,
+        ProgressPhase::HopStart => InferencePhase::HopStart,
+        ProgressPhase::HopOk => InferencePhase::HopOk,
+        ProgressPhase::HopFailed => InferencePhase::HopFailed,
+        ProgressPhase::PathRebuild => InferencePhase::PathRebuild,
+        ProgressPhase::TokenSampled => InferencePhase::TokenSampled,
+        ProgressPhase::Complete => InferencePhase::Complete,
+    };
+
+    let failure = match p.failure {
+        None => HopFailure::Unspecified,
+        Some(HopFailureKind::NoHandler) => HopFailure::NoHandler,
+        Some(HopFailureKind::Transient) => HopFailure::Transient,
+        Some(HopFailureKind::Timeout) => HopFailure::Timeout,
+        Some(HopFailureKind::Other) => HopFailure::Other,
+    };
+
+    InferenceEvent {
+        elapsed_ms: p.elapsed_ms,
+        phase: phase as i32,
+        message: p.message,
+        peer_id: p.peer_id.unwrap_or_default(),
+        peer_name: p.peer_name.unwrap_or_default(),
+        is_self: p.is_self,
+        block_start: p.block_start.map(|v| v as u32),
+        block_end: p.block_end.map(|v| v as u32),
+        total_blocks: p.total_blocks.map(|v| v as u32),
+        covered_blocks: p.covered_blocks.map(|v| v as u32),
+        duration_ms: p.duration_ms,
+        token_index: p.token_index.map(|v| v as u32),
+        is_prefill: p.is_prefill,
+        candidate_index: p.candidate_index.map(|v| v as u32),
+        attempt: p.attempt.map(|v| v as u32),
+        ok: p.ok,
+        failure: failure as i32,
+        model: p.model.unwrap_or_default(),
+        dht_prefix: p.dht_prefix.unwrap_or_default(),
+        peer_count: p.peer_count.map(|v| v as u32),
+        circuit_id: p.circuit_id.unwrap_or_default(),
+        hops: p
+            .hops
+            .into_iter()
+            .map(|h| InferenceHop {
+                peer_id: h.peer_id,
+                peer_name: h.peer_name,
+                block_start: h.block_start as u32,
+                block_end: h.block_end as u32,
+                is_self: h.is_self,
+                trust_score: h.trust_score,
+                throughput: h.throughput,
+            })
+            .collect(),
+    }
+}
+
 /// Classify a `shard_run` failure into a specific [`ErrorCode`]. The
 /// dispatcher in [`crate::shard_cmd`] returns anyhow errors with
 /// descriptive `bail!` messages; pattern-match the strings here so
@@ -638,6 +708,9 @@ async fn spawn_session_shard_run(
         // tag-space so they can be added without a breaking change.
         max_tokens: None,
         circuit_id: None,
+        // Opt-in per request: the client asks for routing telemetry only when
+        // it has somewhere to show it.
+        events: req.events,
     };
 
     let cancels_for_cleanup = cancels.clone();
@@ -671,6 +744,17 @@ async fn spawn_session_shard_run(
                                     done: false,
                                     finish_reason: None,
                                 })),
+                            };
+                            if out_tx.send(Ok(frame)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(crate::shard_cmd::ShardRunEvent::Progress(p)) => {
+                            let frame = ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::InferenceEvent(
+                                    progress_to_proto(*p),
+                                )),
                             };
                             if out_tx.send(Ok(frame)).await.is_err() {
                                 break;
