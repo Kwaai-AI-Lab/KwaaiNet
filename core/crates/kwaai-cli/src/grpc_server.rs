@@ -1616,7 +1616,8 @@ fn build_network_update(
     trusted_relays: &std::collections::HashSet<libp2p::PeerId>,
     reason: UpdateReason,
 ) -> NetworkUpdate {
-    use crate::peers_view::{classify_addr, group_index, ConnKind};
+    use crate::peers_view::{classify_addr, dht_role, group_index, ConnKind, DhtRole};
+    use kwaai_rpc::v1::DhtRole as WireDhtRole;
 
     let connected_ids: std::collections::HashSet<libp2p::PeerId> =
         snapshot.peers.iter().map(|p| p.peer_id).collect();
@@ -1650,6 +1651,11 @@ fn build_network_update(
                 agent_version: p.agent_version.clone().unwrap_or_default(),
                 via: p.via.as_ref().map(|a| a.to_string()).unwrap_or_default(),
                 dcutr: p.dcutr,
+                dht_role: match dht_role(&p.protocols) {
+                    DhtRole::Server => WireDhtRole::Server as i32,
+                    DhtRole::Client => WireDhtRole::Client as i32,
+                    DhtRole::Unknown => WireDhtRole::Unknown as i32,
+                },
             };
             (
                 group_index(is_bootstrap, is_trusted_relay, kind),
@@ -2495,6 +2501,8 @@ mod tests {
             agent_version: "kwaainet/0.5.4".into(),
             via: String::new(),
             dcutr: false,
+            // Consistent with the kad entry in `protocols` above.
+            dht_role: kwaai_rpc::v1::DhtRole::Server as i32,
         }
     }
 

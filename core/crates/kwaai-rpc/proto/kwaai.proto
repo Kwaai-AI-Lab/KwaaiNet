@@ -458,6 +458,37 @@ message ConnectedPeer {
     // upgraded connections — that is DCUtR working, not a
     // contradiction.
     bool dcutr = 10;
+
+    // Whether this peer serves the DHT, from its advertised protocols.
+    //
+    // Separate from is_bootstrap/is_trusted_relay rather than a variant
+    // of them: those are operator configuration, this is observed peer
+    // behaviour, and they are independent. A client-mode peer still
+    // advertises circuit relay hop, and a relayed node of ours runs kad
+    // in client mode while remaining a full peer — so "client" is a
+    // marker on a row, not a role that replaces the others.
+    DhtRole dht_role = 12;
+}
+
+// A peer's DHT participation, as reported by identify.
+//
+// Three states, not a bool: identify completes shortly *after* the
+// connection establishes, so a freshly-connected peer has no protocol
+// list yet. UNKNOWN keeps that gap honest — a client filtering on this
+// would otherwise blink rows in and out as connections settle.
+enum DhtRole {
+    // Identify has not reported this peer's protocols yet.
+    DHT_ROLE_UNKNOWN = 0;
+
+    // Advertises kad: a routing hop that can store records and be
+    // returned as a lookup result.
+    DHT_ROLE_SERVER = 1;
+
+    // Identify completed and kad was absent. Queries the DHT without
+    // serving it. Common and permanent — every hivemind/Python process
+    // proxies through such a peer, and rust-libp2p nodes sit in this
+    // mode until reachability resolves.
+    DHT_ROLE_CLIENT = 2;
 }
 
 // One entry in the Kademlia routing table.
