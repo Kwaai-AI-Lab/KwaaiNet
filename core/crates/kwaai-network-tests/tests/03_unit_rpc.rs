@@ -4,8 +4,8 @@
 use kwaai_network_tests::metrics::MetricsRecorder;
 use kwaai_rpc::v1::{
     client_frame, error::Code as ErrorCode, server_frame, Cancel, ChatMessage, ChatToken,
-    ClientFrame, Done, GenerateRequest, PingReply, PingRequest, ServerFrame, ShardRunRequest,
-    StatusReply, StatusRequest,
+    ClientFrame, Done, GenerateRequest, InferenceEvent, InferenceHop, InferencePhase, PingReply,
+    PingRequest, ServerFrame, ShardRunRequest, StatusReply, StatusRequest,
 };
 use prost013::Message as _;
 
@@ -71,12 +71,145 @@ fn client_frame_shard_run_roundtrip() {
         content: "What is KwaaiNet?".to_string(),
         model: Some("llama3.2:3b".to_string()),
         conversation_id: None,
+        events: false,
     };
     let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
     if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
         assert_eq!(s.role, "user");
         assert_eq!(s.model.as_deref(), Some("llama3.2:3b"));
         assert!(s.conversation_id.is_none());
+        assert!(!s.events, "telemetry stays opt-in");
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// The events flag has to survive the wire, since it is the only thing
+/// that makes the daemon produce telemetry at all.
+#[test]
+fn client_frame_shard_run_events_flag_roundtrip() {
+    let rec = MetricsRecorder::start(
+        "unit::rpc::client_frame_shard_run_events_flag_roundtrip",
+        "unit",
+    );
+    let req = ShardRunRequest {
+        role: "user".to_string(),
+        content: "trace this".to_string(),
+        model: None,
+        conversation_id: None,
+        events: true,
+    };
+    let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
+    if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
+        assert!(s.events);
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// A hop event carries the peer, its block range and the timing. Optional
+/// numerics use explicit presence so "0 ms" stays distinguishable from
+/// "not applicable to this phase" — assert that survives encoding.
+#[test]
+fn server_frame_inference_event_roundtrip() {
+    let rec = MetricsRecorder::start("unit::rpc::server_frame_inference_event_roundtrip", "unit");
+    let ev = InferenceEvent {
+        elapsed_ms: 1234,
+        phase: InferencePhase::HopOk as i32,
+        message: "ok".to_string(),
+        peer_id: "12D3KooWtest".to_string(),
+        peer_name: "node-f".to_string(),
+        is_self: false,
+        block_start: Some(8),
+        block_end: Some(16),
+        duration_ms: Some(184.5),
+        token_index: Some(0),
+        is_prefill: true,
+        ..Default::default()
+    };
+    let decoded = encode_decode_server_frame(server_frame::Body::InferenceEvent(ev));
+    if let Some(server_frame::Body::InferenceEvent(e)) = decoded.body {
+        assert_eq!(e.elapsed_ms, 1234);
+        assert_eq!(e.phase, InferencePhase::HopOk as i32);
+        assert_eq!(e.peer_name, "node-f");
+        assert_eq!(e.block_start, Some(8));
+        assert_eq!(e.block_end, Some(16));
+        assert_eq!(e.duration_ms, Some(184.5));
+        // Explicit presence: token 0 is a real index, not "unset".
+        assert_eq!(e.token_index, Some(0));
+        assert!(e.is_prefill);
+        // Never set for this phase, and must not arrive as a default 0.
+        assert_eq!(e.covered_blocks, None);
+        assert_eq!(e.attempt, None);
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// The pinned route is the one phase carrying a repeated payload.
+#[test]
+fn server_frame_inference_event_chain_roundtrip() {
+    let rec = MetricsRecorder::start(
+        "unit::rpc::server_frame_inference_event_chain_roundtrip",
+        "unit",
+    );
+    let ev = InferenceEvent {
+        phase: InferencePhase::ChainPinned as i32,
+        total_blocks: Some(16),
+        hops: vec![
+            InferenceHop {
+                peer_id: "self".to_string(),
+                peer_name: "me".to_string(),
+                block_start: 0,
+                block_end: 8,
+                is_self: true,
+                trust_score: None,
+                throughput: 0.0,
+            },
+            InferenceHop {
+                peer_id: "12D3KooWpeer".to_string(),
+                peer_name: "node-f".to_string(),
+                block_start: 8,
+                block_end: 16,
+                is_self: false,
+                trust_score: Some(0.75),
+                throughput: 12.5,
+            },
+        ],
+        ..Default::default()
+    };
+    let decoded = encode_decode_server_frame(server_frame::Body::InferenceEvent(ev));
+    if let Some(server_frame::Body::InferenceEvent(e)) = decoded.body {
+        assert_eq!(e.hops.len(), 2);
+        assert!(e.hops[0].is_self);
+        assert_eq!(e.hops[1].trust_score, Some(0.75));
+        // Hops must stay in route order — the panel renders them as the
+        // path activations take through the model.
+        assert_eq!(e.hops[0].block_end, e.hops[1].block_start);
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// A client that does not know a phase must still get its text. Unknown
+/// enum values decode as the raw int rather than failing, which is what
+/// keeps an older client legible against a newer daemon.
+#[test]
+fn inference_event_unknown_phase_survives_decode() {
+    let rec = MetricsRecorder::start("unit::rpc::inference_event_unknown_phase", "unit");
+    let ev = InferenceEvent {
+        phase: 9999,
+        message: "something new".to_string(),
+        ..Default::default()
+    };
+    let decoded = encode_decode_server_frame(server_frame::Body::InferenceEvent(ev));
+    if let Some(server_frame::Body::InferenceEvent(e)) = decoded.body {
+        assert_eq!(e.phase, 9999);
+        assert_eq!(e.message, "something new");
     } else {
         panic!("wrong variant");
     }
