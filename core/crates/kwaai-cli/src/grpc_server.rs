@@ -1346,7 +1346,20 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
     let routing = u
         .routing
         .iter()
-        .map(|r| format!("{}|{}|{}", r.peer_id, r.connected, r.is_bootstrap))
+        .map(|r| {
+            // Addresses are part of the identity: an entry losing its last
+            // dialable address is a real change of state, and omitting them
+            // here would suppress the update that reports it.
+            let mut addrs: Vec<&str> = r.addrs.iter().map(String::as_str).collect();
+            addrs.sort_unstable();
+            format!(
+                "{}|{}|{}|{}",
+                r.peer_id,
+                r.connected,
+                r.is_bootstrap,
+                addrs.join(",")
+            )
+        })
         .collect();
 
     (
@@ -1654,9 +1667,10 @@ fn build_network_update(
         .routing
         .iter()
         .map(|p| RoutingPeer {
-            peer_id: p.to_base58(),
-            connected: connected_ids.contains(p),
-            is_bootstrap: bootstraps.contains(p),
+            peer_id: p.peer_id.to_base58(),
+            connected: connected_ids.contains(&p.peer_id),
+            is_bootstrap: bootstraps.contains(&p.peer_id),
+            addrs: p.addrs.iter().map(|a| a.to_string()).collect(),
         })
         .collect();
     routing.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
@@ -2574,8 +2588,25 @@ mod tests {
             peer_id: "A".into(),
             connected: true,
             is_bootstrap: false,
+            addrs: vec![],
         }];
         assert_ne!(network_identity(&a), network_identity(&routed));
+
+        // An entry losing its last dialable address is a state change worth
+        // pushing: the peer goes from "reachable, just not connected" to
+        // "known but undialable", which is what the addrs field exists to
+        // distinguish. Suppressing it would leave the view claiming the
+        // former while the latter is true.
+        let mut addressed = a.clone();
+        addressed.routing = vec![RoutingPeer {
+            peer_id: "A".into(),
+            connected: false,
+            is_bootstrap: false,
+            addrs: vec!["/ip4/198.18.0.32/tcp/8080".into()],
+        }];
+        let mut stripped = addressed.clone();
+        stripped.routing[0].addrs.clear();
+        assert_ne!(network_identity(&addressed), network_identity(&stripped));
 
         // A DCUtR upgrade. The connection was already direct in `kind` terms
         // by the time dcutr reports, so without this field in the identity the
@@ -2615,12 +2646,14 @@ mod tests {
             peer_id: "A".into(),
             connected: false,
             is_bootstrap: true,
+            addrs: vec![],
         }];
         let mut plain_routed = a.clone();
         plain_routed.routing = vec![RoutingPeer {
             peer_id: "A".into(),
             connected: false,
             is_bootstrap: false,
+            addrs: vec![],
         }];
         assert_ne!(
             network_identity(&bootstrap_routed),

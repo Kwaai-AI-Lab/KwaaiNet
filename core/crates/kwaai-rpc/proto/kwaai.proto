@@ -481,6 +481,16 @@ message RoutingPeer {
     // connection: the DHT does not label bootstraps, and which nodes
     // hold that role is the operator's choice.
     bool is_bootstrap = 3;
+
+    // The addresses the routing table holds for this peer, as multiaddr
+    // strings.
+    //
+    // Empty means kad knows the peer but has no address a third party
+    // could dial — a materially different state from "known and not
+    // currently connected", and one a peer id alone cannot express. It is
+    // also what makes a poisoned entry legible: a peer whose only address
+    // is its own loopback reads as healthy until the address is visible.
+    repeated string addrs = 4;
 }
 
 // This node's own position in the network.

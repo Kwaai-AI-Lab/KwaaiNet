@@ -104,6 +104,21 @@ pub struct PeerInfo {
     pub protocols: Vec<String>,
 }
 
+/// One Kademlia routing-table entry: a peer, and how we would reach it.
+///
+/// The addresses matter on their own. A routing entry with none is a peer we
+/// know of but cannot dial, which is a different state from one we simply are
+/// not connected to — and only the addresses distinguish them. Surfacing them
+/// is also what makes a bad entry visible: a peer whose only address is its own
+/// loopback looks identical to a healthy one until you can see the address.
+#[derive(Debug, Clone)]
+pub struct RoutingEntry {
+    pub peer_id: PeerId,
+    /// What kad holds for this peer, already filtered to addresses a third
+    /// party could dial. Empty when kad knows the peer but no usable address.
+    pub addrs: Vec<Multiaddr>,
+}
+
 /// Everything the Network view needs, captured in one pass over the service's
 /// state.
 ///
@@ -120,7 +135,7 @@ pub struct NetworkSnapshot {
     pub peers: Vec<PeerInfo>,
     /// Every peer in the Kademlia routing table. Overlaps `peers` but neither
     /// set contains the other — see [`NetworkHandle::routing_peers`].
-    pub routing: Vec<PeerId>,
+    pub routing: Vec<RoutingEntry>,
     /// What we currently believe about our own reachability.
     pub reachability: crate::reachability::Reachability,
     /// Addresses of confirmed circuit-relay reservations. Empty when not
