@@ -41,7 +41,7 @@ use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
-    NetworkHandle, NetworkSnapshot, PeerInfo,
+    NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
 };
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
@@ -544,7 +544,12 @@ impl NetworkService {
             // size (k=20 per bucket, 256 buckets) and never touching the
             // network, so it is safe in the event loop.
             Command::RoutingPeers { reply } => {
-                let _ = reply.send(self.collect_routing_peers());
+                let _ = reply.send(
+                    self.collect_routing_peers()
+                        .into_iter()
+                        .map(|e| e.peer_id)
+                        .collect(),
+                );
             }
 
             Command::DhtFindPeer { peer, reply } => {
@@ -729,7 +734,7 @@ impl NetworkService {
     /// A walk over in-memory k-buckets — bounded by the routing table size
     /// (k=20 per bucket, 256 buckets) and never touching the network, so it is
     /// safe in the event loop.
-    fn collect_routing_peers(&mut self) -> Vec<PeerId> {
+    fn collect_routing_peers(&mut self) -> Vec<RoutingEntry> {
         self.swarm
             .behaviour_mut()
             .kad
@@ -737,7 +742,21 @@ impl NetworkService {
             .flat_map(|bucket| {
                 bucket
                     .iter()
-                    .map(|entry| *entry.node.key.preimage())
+                    .map(|entry| RoutingEntry {
+                        peer_id: *entry.node.key.preimage(),
+                        // Reported alongside the peer rather than dropped: an
+                        // entry with no usable address is a peer we know of but
+                        // cannot dial, and without the addresses that is
+                        // indistinguishable on screen from one we simply have
+                        // not connected to yet.
+                        addrs: entry
+                            .node
+                            .value
+                            .iter()
+                            .filter(|a| !a.is_empty())
+                            .cloned()
+                            .collect(),
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()
