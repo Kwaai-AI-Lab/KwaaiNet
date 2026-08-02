@@ -1038,11 +1038,20 @@ impl KwaaiNetConfig {
     /// nodes announced JOINING for as long as they ran, which put them off the
     /// map and, worse, out of `shard run`'s candidate set while they were
     /// serving perfectly well.
+    ///
+    /// `announce_online_without_shard` overrides the gate entirely for topology
+    /// tests, which serve no inference and would otherwise show every node as
+    /// offline on the map — hiding the connectivity they exist to exercise.
+    ///
+    /// Lives beside the flag it reads, and reachable from both the p2pd and the
+    /// native announce paths, so the two cannot drift on what ONLINE means.
     pub fn announce_state() -> i32 {
         if ShardManager::shard_is_ready() || ShardManager::whole_model_is_ready() {
-            2
-        } else {
-            0
+            return 2;
+        }
+        match Self::load_or_create() {
+            Ok(cfg) if cfg.announce_online_without_shard => 2,
+            _ => 0,
         }
     }
 
