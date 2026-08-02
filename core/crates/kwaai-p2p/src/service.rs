@@ -203,26 +203,29 @@ impl NetworkService {
         let mut swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
-                // `port_reuse` is what makes DCUtR's TCP hole punch possible,
-                // and it is off by default in libp2p-tcp.
+                // No `.port_reuse(true)` here — since libp2p 0.54 the option is
+                // deprecated and does nothing, because reuse is decided per
+                // connection by the behaviour that asks for the dial.
                 //
-                // A hole punch is a simultaneous open: both peers dial each
-                // other at the same instant, and each one's outbound SYN
-                // opens the pinhole its NAT needs to admit the other's. That
-                // only works if the port each side *dials from* is the port
-                // the other side is *dialing to* — i.e. the listen port.
-                // Without port reuse the dial binds an ephemeral port, so the
-                // two pinholes and the two targets never intersect and every
-                // punch times out no matter how well synchronised it is.
+                // That per-connection policy is what DCUtR needs and what a
+                // global flag got wrong. A hole punch is a simultaneous open:
+                // each peer's outbound SYN opens the pinhole that admits the
+                // other's, which only works if the port each side dials *from*
+                // is the port the other side is dialing *to* — the listen port.
+                // `libp2p-dcutr` therefore requests `PortUse::Reuse` on its
+                // punch dials, and gets it, without every ordinary dial having
+                // to share one local port.
                 //
-                // Measured in the NAT test bed: the punch dials left on
-                // ephemeral 48776 / 40514 while both peers listened on 8080,
-                // and all 18 attempts failed. See kwaaiai-env
-                // docs/native-dcutr-investigation.md.
+                // Forcing reuse globally (which is what the old flag did) made
+                // every dial bind the listen port, so a second dial to an
+                // endpoint already connected collided on the 4-tuple and failed
+                // `AddrNotAvailable`. Upstream hit the same wall and added a
+                // fallback in libp2p-tcp 0.44: on that error it re-dials from a
+                // fresh port rather than failing the connection.
                 //
-                // This cannot rescue a symmetric NAT, which re-maps the port
-                // per destination — that is what the relay fallback is for.
-                tcp::Config::default().nodelay(true).port_reuse(true),
+                // Neither mechanism rescues a symmetric NAT, which re-maps the
+                // port per destination — that is what the relay fallback is for.
+                tcp::Config::default().nodelay(true),
                 noise::Config::new,
                 yamux::Config::default,
             )
@@ -606,7 +609,28 @@ impl NetworkService {
             }
         }
 
-        let opts = DialOpts::from(addr.clone());
+        // `allocate_new_port()`, overriding the `DialOpts` default of
+        // best-effort port reuse.
+        //
+        // Reuse asks the transport to bind our listen port as the dial's source
+        // port. That is right for a DCUtR hole punch — `libp2p-dcutr` requests
+        // it on its own dials and still gets it — but wrong for an ordinary
+        // dial, because the bind fails outright: `SO_REUSEPORT` lets several
+        // *listeners* share a port, not a listener plus an outbound connect.
+        // Measured on macOS (errno 48) and Linux (errno 98) alike, with no
+        // prior connection to the target.
+        //
+        // libp2p-tcp 0.44 does retry on a fresh port, but only for
+        // `AddrNotAvailable` raised by `connect`. Our failure is `EADDRINUSE`
+        // from `bind`, one step earlier, where the `?` propagates before the
+        // fallback can run — so the dial simply fails.
+        // Built through `unknown_peer_id().address(..)` rather than
+        // `DialOpts::from(addr)`, because only the builder exposes
+        // `allocate_new_port()`; the two are otherwise the same dial.
+        let opts = DialOpts::unknown_peer_id()
+            .address(addr.clone())
+            .allocate_new_port()
+            .build();
         let connection_id = opts.connection_id();
         self.swarm
             .dial(opts)
@@ -706,6 +730,16 @@ impl NetworkService {
             }
         }
 
+        // Hand back addresses *without* the `/p2p/<peer-id>` suffix: kad stores
+        // fully-qualified ones (since libp2p 0.54) while connection addresses
+        // never carry one, and callers append the id themselves — so a mixed
+        // bag yields `/p2p/<id>/p2p/<id>`, which parses and then fails to dial.
+        for addr in &mut addrs {
+            *addr = strip_p2p(addr);
+        }
+        addrs.retain(|a| !a.is_empty());
+        addrs.dedup();
+
         addrs
     }
 
@@ -754,7 +788,10 @@ impl NetworkService {
                     let _ = reply.send(Ok(peer));
                     return;
                 }
-                let opts = DialOpts::peer_id(peer).build();
+                // A new port for the same reason as `dial()`: reuse
+                // asks the transport to bind our listen port, which
+                // `EADDRINUSE`s against our own listener.
+                let opts = DialOpts::peer_id(peer).allocate_new_port().build();
                 let connection_id = opts.connection_id();
                 match self.swarm.dial(opts) {
                     Ok(()) => {
@@ -832,7 +869,12 @@ impl NetworkService {
 
         // Already known. kad would dedupe this itself, but returning early
         // keeps a repeat identify from counting as churn.
-        if existing.iter().any(|a| *a == addr) {
+        //
+        // Compare with `/p2p/<peer-id>` stripped: kad stores fully-qualified
+        // addresses, identify reports bare ones, and treating those as distinct
+        // would let the same address occupy several of the six slots.
+        let bare = strip_p2p(&addr);
+        if existing.iter().any(|a| strip_p2p(a) == bare) {
             return false;
         }
 
@@ -1371,7 +1413,7 @@ impl NetworkService {
 
     fn handle_identify_event(&mut self, event: identify::Event) {
         match event {
-            identify::Event::Received { peer_id, info } => {
+            identify::Event::Received { peer_id, info, .. } => {
                 debug!(
                     peer = %peer_id,
                     protocol_version = %info.protocol_version,
@@ -1455,7 +1497,7 @@ impl NetworkService {
                 );
                 self.apply_relay_actions(actions);
             }
-            identify::Event::Error { peer_id, error } => {
+            identify::Event::Error { peer_id, error, .. } => {
                 debug!(peer = %peer_id, error = %error, "identify failed");
             }
             other => trace!(?other, "identify event"),
@@ -1477,10 +1519,13 @@ impl NetworkService {
                         Some(PendingKad::FindPeer { target, reply }),
                         kad::QueryResult::GetClosestPeers(result),
                     ) => {
+                        // Since libp2p 0.54 a closest-peers result carries
+                        // `PeerInfo { peer_id, addrs }` rather than a bare
+                        // `PeerId`, so match on the id field.
                         let found = match &result {
-                            Ok(ok) => ok.peers.contains(&target),
+                            Ok(ok) => ok.peers.iter().any(|p| p.peer_id == target),
                             Err(kad::GetClosestPeersError::Timeout { peers, .. }) => {
-                                peers.contains(&target)
+                                peers.iter().any(|p| p.peer_id == target)
                             }
                         };
                         let addrs = self.known_addresses(&target);

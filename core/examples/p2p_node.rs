@@ -112,10 +112,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     send_back_addr, local_addr
                 );
             }
-            SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received {
-                peer_id,
-                info,
-            })) => {
+            SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                 info!(
                     "Identified peer {}: {} ({})",
                     peer_id, info.protocol_version, info.agent_version
