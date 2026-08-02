@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 );
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Identify(
-                identify::Event::Received { peer_id, info },
+                identify::Event::Received { peer_id, info, .. },
             )) => {
                 info!("Identified: {} ({})", peer_id, info.protocol_version);
                 for addr in info.listen_addrs {

@@ -52,9 +52,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Setup Kademlia with Hivemind-compatible protocol
     let kademlia = {
         let store = MemoryStore::new(local_peer_id);
-        let mut config = kad::Config::default();
-        // Try to use a protocol that might be compatible
-        config.set_protocol_names(vec![libp2p::StreamProtocol::new("/ipfs/kad/1.0.0")]);
+        // `Config::default()` already uses `/ipfs/kad/1.0.0`; libp2p 0.56
+        // dropped `set_protocol_names`, and setting it here was a no-op.
+        let config = kad::Config::default();
         let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, config);
         behaviour.set_mode(Some(Mode::Client));
         behaviour
@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("  [CONNECTION ERROR] {:?} - {}", peer_id, error);
                     }
                     SwarmEvent::Behaviour(BootstrapBehaviourEvent::Identify(
-                        identify::Event::Received { peer_id, info },
+                        identify::Event::Received { peer_id, info, .. },
                     )) => {
                         identified += 1;
                         println!("\n  [IDENTIFIED] {}", peer_id);
