@@ -37,6 +37,28 @@ type SharedStorage = Arc<RwLock<DHTStorage>>;
 
 use crate::announce::{dht_id, DHTServerInfo, ModelInfo, VpkInfo};
 
+/// The `state` field for a DHT announcement: `2` ONLINE, `0` JOINING.
+///
+/// ONLINE means "this node will serve inference", not merely "this node is
+/// up" — `shard run` filters on `state == 2`, so a node that claims it
+/// without a loaded shard gets dialled and fails the session with "protocols
+/// not supported". Hence the gate on `shard_is_ready()`.
+///
+/// `announce_online_without_shard` overrides that for topology tests, which
+/// serve no inference and would otherwise show every node as offline on the
+/// map — hiding the connectivity they exist to exercise. Reading the config
+/// here rather than threading a flag through every call site keeps the rule
+/// in one place.
+fn announce_state() -> i32 {
+    if ShardManager::shard_is_ready() {
+        return 2;
+    }
+    match KwaaiNetConfig::load_or_create() {
+        Ok(cfg) if cfg.announce_online_without_shard => 2,
+        _ => 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------

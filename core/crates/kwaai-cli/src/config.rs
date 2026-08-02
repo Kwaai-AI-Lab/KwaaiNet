@@ -296,6 +296,21 @@ pub struct KwaaiNetConfig {
     /// when `decentralized_dht` is false.
     #[serde(default = "default_dht_replication")]
     pub dht_replication: usize,
+    /// Announce `state=2` (ONLINE) even when no shard server is running.
+    ///
+    /// Off by default, and deliberately so. A node announces `state=0`
+    /// (JOINING) until `shard serve` reports its model loaded, because
+    /// `shard run` filters on `state==2`: a node claiming ONLINE without an
+    /// `/kwaai/inference/1.0.0` handler gets dialled and fails the session
+    /// with "protocols not supported".
+    ///
+    /// Turn it on only where that cannot happen — a topology test exercising
+    /// NAT traversal, relays and hole punching, where no inference is served
+    /// and no client will route to these nodes. It exists because such a
+    /// topology otherwise shows every node as offline on the map, which
+    /// obscures the connectivity it is there to test.
+    #[serde(default)]
+    pub announce_online_without_shard: bool,
 
     #[serde(default)]
     pub health_monitoring: HealthConfig,
@@ -902,6 +917,7 @@ impl Default for KwaaiNetConfig {
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
+            announce_online_without_shard: false,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -1239,6 +1255,9 @@ impl KwaaiNetConfig {
                 }
                 self.dht_replication = k;
             }
+            "announce_online_without_shard" => {
+                self.announce_online_without_shard = parse_bool(value)?
+            }
             "start_block" => {
                 self.start_block =
                     Some(value.parse().map_err(|_| {
@@ -1492,6 +1511,24 @@ mod tests {
             blocks,
             ..KwaaiNetConfig::default()
         }
+    }
+
+    #[test]
+    fn announce_online_without_shard_defaults_off() {
+        // The default has to stay false. Announcing ONLINE without a loaded
+        // shard is what `shard run` filters on, so a node that does it gets
+        // dialled and fails the session with "protocols not supported" — the
+        // exact bug the state gate was introduced to fix.
+        assert!(!KwaaiNetConfig::default().announce_online_without_shard);
+    }
+
+    #[test]
+    fn announce_online_without_shard_round_trips() {
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("announce_online_without_shard", "true").unwrap();
+        assert!(c.announce_online_without_shard);
+        c.set_key("announce_online_without_shard", "false").unwrap();
+        assert!(!c.announce_online_without_shard);
     }
 
     #[test]
