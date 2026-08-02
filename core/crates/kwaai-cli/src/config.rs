@@ -3,6 +3,7 @@
 //! Config file lives at `~/.kwaainet/config.yaml`.
 //! On first run a default config is written and returned.
 
+use crate::daemon::ShardManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -708,6 +709,20 @@ impl Default for ReconnectionConfig {
 // ---------------------------------------------------------------------------
 
 impl KwaaiNetConfig {
+    /// The `state` field for a DHT announcement: `2` ONLINE, `0` JOINING.
+    ///
+    /// ONLINE means "this node will serve inference", not merely "this node is
+    /// up" — `shard run` filters on `state == 2`, so a node that claims it
+    /// without a loaded shard gets dialled and fails the session with
+    /// "protocols not supported". Hence the gate on `shard_is_ready()`.
+    pub fn announce_state() -> i32 {
+        if ShardManager::shard_is_ready() {
+            2
+        } else {
+            0
+        }
+    }
+
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
     pub fn load_or_create() -> Result<Self> {
         let cfg_file = config_file();

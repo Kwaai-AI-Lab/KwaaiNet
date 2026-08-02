@@ -606,7 +606,7 @@ fn reload_block_range(config: &mut KwaaiNetConfig) {
 fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
     server_info.start_block = config.start_block as i32;
     server_info.end_block = config.effective_end_block() as i32;
-    server_info.state = if ShardManager::shard_is_ready() { 2 } else { 0 };
+    server_info.state = KwaaiNetConfig::announce_state();
 }
 
 /// Fold one announce round's per-bootstrap timings into the reputation store.

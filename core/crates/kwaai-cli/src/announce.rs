@@ -28,7 +28,7 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-use crate::daemon::ShardManager;
+use crate::config::KwaaiNetConfig;
 
 /// TTL applied to every announced record, in seconds.
 ///
@@ -167,7 +167,7 @@ impl DHTServerInfo {
         peer_id_b58: String,
     ) -> Self {
         Self {
-            state: if ShardManager::shard_is_ready() { 2 } else { 0 },
+            state: KwaaiNetConfig::announce_state(),
             throughput,
             start_block: start,
             end_block: end,
