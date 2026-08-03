@@ -15,8 +15,9 @@
 //!     to `None` (we are NOT silently widening absent-vs-empty).
 
 use kwaai_rpc::v1::{
-    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, NetworkRequest,
-    NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame, UpdateReason,
+    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtRole,
+    NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
+    UpdateReason,
 };
 use prost::Message;
 
@@ -181,6 +182,9 @@ fn connected_peer_roundtrip_all_fields_set() {
         agent_version: "kwaainet/0.5.4".to_string(),
         via: String::new(),
         dcutr: false,
+        // Consistent with the kad protocol advertised above: a peer that
+        // speaks kad is a DHT server.
+        dht_role: DhtRole::Server as i32,
     };
 
     let decoded = ConnectedPeer::decode(original.encode_to_vec().as_slice())
@@ -209,6 +213,9 @@ fn connected_peer_roundtrip_before_identify() {
         agent_version: String::new(),
         via: String::new(),
         dcutr: false,
+        // Identify has not run, so the role is genuinely not known yet —
+        // the same "not yet known" state this test exists to pin.
+        dht_role: DhtRole::Unknown as i32,
     };
 
     let decoded = ConnectedPeer::decode(original.encode_to_vec().as_slice())
@@ -253,17 +260,22 @@ fn network_update_roundtrip_all_sections() {
             agent_version: "kwaainet/0.5.4".to_string(),
             via: String::new(),
             dcutr: false,
+            dht_role: DhtRole::Server as i32,
         }],
         routing: vec![
             RoutingPeer {
                 peer_id: "12D3KooWExamplePeerA".to_string(),
                 connected: true,
                 is_bootstrap: false,
+                addrs: vec!["/ip4/198.18.0.10/tcp/8000".to_string()],
             },
             RoutingPeer {
                 peer_id: "12D3KooWExampleKnownButOffline".to_string(),
                 connected: false,
                 is_bootstrap: false,
+                // A routing entry keeps its addresses after the connection
+                // drops — that is what makes it dialable again later.
+                addrs: vec!["/ip4/198.18.0.99/tcp/8000".to_string()],
             },
         ],
     };
@@ -308,6 +320,10 @@ fn network_update_roundtrip_disjoint_peer_sets() {
             peer_id: "12D3KooWExampleKnownButOffline".to_string(),
             connected: false,
             is_bootstrap: false,
+            // Deliberately empty: a routing entry carrying no address is
+            // the degenerate case a client has to be able to distinguish,
+            // and an empty list must survive the wire as one.
+            addrs: vec![],
         }],
     };
     let decoded =
