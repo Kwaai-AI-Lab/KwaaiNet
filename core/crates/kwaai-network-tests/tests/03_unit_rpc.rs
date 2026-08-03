@@ -149,6 +149,68 @@ fn server_frame_inference_event_roundtrip() {
     rec.finish(true);
 }
 
+/// The cross-node correlation ids must survive the wire intact.
+///
+/// These are the only fields that let a client match a hop it displays to
+/// the work logged by the peer that served it, so a silent truncation or a
+/// dropped tag would break tracing while leaving every other field — and
+/// every other test — looking correct.
+#[test]
+fn inference_event_carries_correlation_ids() {
+    let rec = MetricsRecorder::start("unit::rpc::inference_event_correlation_ids", "unit");
+    // A session id near u64::MAX: the value is a string precisely so the
+    // full range survives, and a numeric field would round-trip this wrong.
+    let session = "18446744073709551615".to_string();
+    let ev = InferenceEvent {
+        elapsed_ms: 64300,
+        phase: InferencePhase::HopOk as i32,
+        session_id: session.clone(),
+        // Deliberately not equal to token_index: after a 40-token prompt the
+        // second decode step sits at 41, and conflating the two would send a
+        // client grepping for a position the server never logged.
+        seq_pos: Some(41),
+        token_index: Some(1),
+        is_prefill: false,
+        ..Default::default()
+    };
+    let decoded = encode_decode_server_frame(server_frame::Body::InferenceEvent(ev));
+    if let Some(server_frame::Body::InferenceEvent(e)) = decoded.body {
+        assert_eq!(e.session_id, session, "session id survives in full");
+        assert_eq!(e.seq_pos, Some(41));
+        assert_eq!(e.token_index, Some(1));
+        assert_ne!(
+            e.seq_pos.map(|v| v as usize),
+            e.token_index.map(|v| v as usize),
+            "seq_pos and token_index are distinct identifiers"
+        );
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// A run with no correlation ids set must not fabricate them.
+///
+/// `session_id` is a plain string, so an unset one arrives as empty rather
+/// than absent — a client has to be able to tell "no id" from id "0".
+#[test]
+fn inference_event_without_correlation_ids_stays_empty() {
+    let rec = MetricsRecorder::start("unit::rpc::inference_event_no_correlation_ids", "unit");
+    let ev = InferenceEvent {
+        elapsed_ms: 10,
+        phase: InferencePhase::DiscoveryStart as i32,
+        ..Default::default()
+    };
+    let decoded = encode_decode_server_frame(server_frame::Body::InferenceEvent(ev));
+    if let Some(server_frame::Body::InferenceEvent(e)) = decoded.body {
+        assert!(e.session_id.is_empty(), "unset session id stays empty");
+        assert_eq!(e.seq_pos, None, "unset seq_pos stays absent, not Some(0)");
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
 /// The pinned route is the one phase carrying a repeated payload.
 #[test]
 fn server_frame_inference_event_chain_roundtrip() {
