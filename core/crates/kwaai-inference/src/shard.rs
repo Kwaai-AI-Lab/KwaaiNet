@@ -633,6 +633,11 @@ impl TransformerShard {
             x = block.forward(&x, seq_pos, &mut session.kv[local_idx], &self.rope)?;
         }
 
+        // Release the session map before logging: the trace line below runs
+        // on every forward, and holding this lock across log I/O would
+        // serialise every concurrent session behind it.
+        drop(sessions);
+
         let total = run_start.elapsed();
         if total.as_millis() > 500 {
             eprintln!(
@@ -642,6 +647,25 @@ impl TransformerShard {
                 total.as_secs_f64() * 1000.0 / self.blocks.len() as f64
             );
         }
+
+        // One line per forward, carrying the identifiers the *coordinator*
+        // also knows. `session_id` and `seq_pos` arrive on the wire in every
+        // InferenceRequest, so a client that surfaces them can pick a single
+        // hop out of its own log and find the matching work here — which was
+        // otherwise impossible, since the only session logging was at open
+        // and close and said nothing about the requests in between.
+        //
+        // Logged after the work rather than before it so the duration is on
+        // the same line: a trace of a slow run is mostly the question "which
+        // hop was slow", and a start-only line cannot answer it.
+        info!(
+            session_id,
+            seq_pos,
+            start_block = self.start_block,
+            end_block = self.end_block,
+            duration_ms = total.as_secs_f64() * 1000.0,
+            "forward"
+        );
 
         Ok(x)
     }
