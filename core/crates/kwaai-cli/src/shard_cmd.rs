@@ -1311,6 +1311,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             generated_ids.len(),
             generated_ids.is_empty(),
             generation_start,
+            session_id,
+            seq_pos as u32,
         );
         let logits_bytes = match forward_through_chain(
             &mut client,
@@ -1653,6 +1655,11 @@ pub struct InferenceProgress {
     pub candidate_index: Option<usize>,
     pub attempt: Option<usize>,
     pub ok: bool,
+    /// The run's session id, as a string — see the proto field for why.
+    pub session_id: Option<String>,
+    /// Global sequence position of this call's first token. Not the token
+    /// index: prefill advances it by the whole prompt length.
+    pub seq_pos: Option<u32>,
     pub failure: Option<HopFailureKind>,
     pub model: Option<String>,
     pub dht_prefix: Option<String>,
@@ -1672,6 +1679,8 @@ impl InferenceProgress {
             elapsed_ms: started.elapsed().as_millis() as u64,
             phase,
             message: String::new(),
+            session_id: None,
+            seq_pos: None,
             peer_id: None,
             peer_name: None,
             is_self: false,
@@ -1731,6 +1740,11 @@ impl InferenceProgress {
     pub fn token(mut self, ctx: TokenContext) -> Self {
         self.token_index = Some(ctx.index);
         self.is_prefill = ctx.is_prefill;
+        // Carried on the same builder call as the token identity, so every
+        // existing hop emit site gains the correlation ids without each
+        // having to remember to attach them.
+        self.session_id = Some(ctx.session_id.to_string());
+        self.seq_pos = Some(ctx.seq_pos);
         self
     }
 
@@ -1798,14 +1812,29 @@ pub struct TokenContext {
     pub is_prefill: bool,
     /// Run start, so every event carries a consistent `elapsed_ms`.
     pub started: std::time::Instant,
+    /// The run's session id — the same value sent in every
+    /// `InferenceRequest` and used by each server as its KV-cache key, so
+    /// a hop reported here can be found in that server's own log.
+    pub session_id: u64,
+    /// Global sequence position of this call's first token, as sent on the
+    /// wire. Distinct from `index` for the reason given above.
+    pub seq_pos: u32,
 }
 
 impl TokenContext {
-    pub fn new(index: usize, is_prefill: bool, started: std::time::Instant) -> Self {
+    pub fn new(
+        index: usize,
+        is_prefill: bool,
+        started: std::time::Instant,
+        session_id: u64,
+        seq_pos: u32,
+    ) -> Self {
         Self {
             index,
             is_prefill,
             started,
+            session_id,
+            seq_pos,
         }
     }
 }
@@ -2174,8 +2203,13 @@ async fn run_streaming_inner(
 
     loop {
         let token_started = std::time::Instant::now();
-        let token_ctx =
-            TokenContext::new(generated_ids.len(), generated_ids.is_empty(), run_started);
+        let token_ctx = TokenContext::new(
+            generated_ids.len(),
+            generated_ids.is_empty(),
+            run_started,
+            session_id,
+            seq_pos as u32,
+        );
         let (shape, data) = token_ids_to_bytes(&current_ids);
         let request = InferenceRequest {
             session_id,

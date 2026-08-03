@@ -450,6 +450,8 @@ fn progress_to_proto(p: crate::shard_cmd::InferenceProgress) -> InferenceEvent {
         candidate_index: p.candidate_index.map(|v| v as u32),
         attempt: p.attempt.map(|v| v as u32),
         ok: p.ok,
+        session_id: p.session_id.unwrap_or_default(),
+        seq_pos: p.seq_pos,
         failure: failure as i32,
         model: p.model.unwrap_or_default(),
         dht_prefix: p.dht_prefix.unwrap_or_default(),

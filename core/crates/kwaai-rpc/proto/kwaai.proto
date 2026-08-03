@@ -630,6 +630,25 @@ message InferenceEvent {
     // the peer may still be reachable when the hop is actually made.
     bool ok = 44;
 
+    // ── Cross-node correlation ──
+    // The two identifiers that also travel in every InferenceRequest, so
+    // both ends of a hop name the same work the same way. A client can
+    // take a hop from this stream and find it in the serving peer's log,
+    // which is otherwise impossible — peer id and block range identify
+    // *who* and *what*, but not *which request*.
+    //
+    // `session_id` is constant for a run and is the remote's KV-cache
+    // key. Sent as a string because it is a u64 whose full range does not
+    // survive JSON-based clients, and it is only ever compared or
+    // displayed, never arithmetic.
+    string session_id = 45;
+
+    // Global sequence position of the first token in this call. NOT the
+    // same as `token_index`: prefill covers the whole prompt, so this
+    // advances by the prompt length and then by one per token. It is what
+    // the serving peer logs, which is what makes it the field to grep on.
+    optional uint32 seq_pos = 46;
+
     // ── Failure detail (HOP_FAILED) ──
     HopFailure failure = 50;
 
