@@ -18,6 +18,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

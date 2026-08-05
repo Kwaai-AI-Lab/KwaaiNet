@@ -27,6 +27,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
+
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
