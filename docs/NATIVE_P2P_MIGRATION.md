@@ -92,12 +92,19 @@ p2pd.
 
 2. **Behaviour composition**: ping, identify, kad(MemoryStore, auto client/server mode +
    `dht_server` config override), autonat(v1), relay client, `Toggle<relay server>`
-   (`!config.no_relay`), dcutr, `Toggle<upnp>`, `request_response<HivemindUnaryCodec>` for
-   ALL unary protocols (slash-less hivemind names via a custom `UnaryProtocol(Arc<str>)`
-   protocol type — `StreamProtocol::new` panics on slash-less, `request_response` only
-   needs `AsRef<str>`), `libp2p_stream` for slashed raw-stream protocols (inference-mux,
+   (`!config.no_relay`), dcutr, `Toggle<upnp>`, a **hand-rolled `unary::Behaviour`** for
+   ALL unary protocols, `libp2p_stream` for slashed raw-stream protocols (inference-mux,
    block_rpc). Transport: SwarmBuilder TCP+noise+yamux + dns + relay client. TCP-only
    (fleet is TCP). Workspace libp2p features add: `ping, dcutr, autonat, upnp, dns`.
+
+   *(Revised in Phase 2 — the original plan said `request_response<HivemindUnaryCodec>`,
+   which turned out to be structurally wrong for hivemind: its protocol list is fixed at
+   construction and `send_request` cannot pick a protocol per request, while a hivemind
+   call IS its protocol and Phase 3 registers handlers at runtime. `kwaai-p2p/src/unary.rs`
+   keeps `request_response`'s architecture — pending queues, dial-on-demand, worker
+   futures — with per-request negotiation via `UnaryProtocol(Arc<str>)` and a shared
+   dynamic inbound protocol set. Slash-less negotiation additionally needs the vendored
+   `multistream-select` patch; see Resolved verification items.)*
 
 3. **IPC for external processes — node-hosted p2pd-protocol control socket.** The node
    serves the existing p2pd protobuf control protocol on the same socket path
@@ -201,6 +208,19 @@ starvation mistakes (blocking calls inside the select loop); channel deadlocks b
 
 `request_response<HivemindUnaryCodec>` behaviour + handler dispatch; DHT serving + announce
 via `NetworkHandle`.
+
+*Done so far:* `unary::Behaviour` (see the revision note under design decision 2) and its
+**handler dispatch through `NetworkHandle`**. `KwaaiBehaviour` composes a `unary` field
+built from `NetworkConfig::request_timeout`; the service loop owns a protocol → sender
+dispatch map kept in lockstep with the behaviour's inbound protocol set, and the handle
+exposes `call_unary_handler` / `add_unary_handler` / `remove_unary_handler` under their
+`P2PClient` names. Outbound calls need no pending-map entry — `send_request` owns the
+oneshot and resolves it on every path — and inbound dispatch uses an unbounded channel plus
+one task per call, so neither a slow handler nor a dead one can stall the select loop.
+Gated by `kwaai-p2p/tests/service_unary.rs` and `09_service_unary_interop.rs` (a full
+`NetworkService` against a real p2pd, both directions).
+
+*Still open in this phase:* DHT serving and the announce/re-announce lifecycle.
 
 *Testable:* node announces to bootstraps and shows on the health map; `rpc_find` against a
 Python bootstrap returns our record; a p2pd-based caller successfully calls our `rpc_ping`
@@ -308,7 +328,11 @@ gates).
 ## Resolved verification items (Phase 0, `07_wire_interop` against a real p2pd)
 
 - Slash-less protocol IDs negotiate fine on the go-libp2p wire
-  (`slashless_protocol_negotiates`) — Phase 2's `UnaryProtocol(Arc<str>)` is viable.
+  (`slashless_protocol_negotiates`) — but rust-libp2p's *local* validation rejects them
+  at three points in `multistream-select` (dial-side and listen-side `Protocol::try_from`
+  plus the proposal-recognition rule in `Message::decode`). Resolved by a vendored
+  two-file patch: `core/patches/multistream-select/` via `[patch.crates-io]`. The wire
+  format itself is unaffected.
 - The wire wrapper is exactly as described above (both directions proven; the old
   `PersistentConnectionResponse` reply shape is provably rejected by Go callers).
 - **proto2 `required` is enforced by Go on unmarshal**: a frame omitting an empty
