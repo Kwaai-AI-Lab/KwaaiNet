@@ -202,10 +202,14 @@ pub fn trim_evidence(text: &str) -> &str {
     if text.len() <= LIMIT {
         return text;
     }
-    text[..LIMIT]
+    let mut limit = LIMIT;
+    while !text.is_char_boundary(limit) {
+        limit -= 1;
+    }
+    text[..limit]
         .rfind(". ")
         .map(|p| &text[..p + 2])
-        .unwrap_or(&text[..LIMIT])
+        .unwrap_or(&text[..limit])
 }
 
 // ── Shared LLM helpers ────────────────────────────────────────────────────────
@@ -1005,6 +1009,15 @@ mod tests {
             "Wahida Gool, also known as Hajima, was married to Joosub Gool after he was \
              confronted by her parental delegation."
         ));
+    }
+
+    #[test]
+    fn trim_evidence_handles_multibyte_char_at_truncation_boundary() {
+        // Regression: the fixed 8_000-byte truncation point used to panic
+        // when it landed mid-character (e.g. inside a 3-byte en dash '–').
+        let text = format!("{}{}{}", "a".repeat(7999), "\u{2013}", "b".repeat(100));
+        let trimmed = trim_evidence(&text);
+        assert!(trimmed.len() <= text.len());
     }
 
     #[test]

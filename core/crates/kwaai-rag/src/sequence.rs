@@ -1236,7 +1236,10 @@ const RELATIVE_DATE_PHRASES: &[(&str, u32)] = &[
 
 /// Extract the sentence (or ≤300-char window) that contains `char_offset`.
 fn extract_sentence_at(text: &str, char_offset: usize) -> String {
-    let safe_offset = char_offset.min(text.len());
+    let mut safe_offset = char_offset.min(text.len());
+    while !text.is_char_boundary(safe_offset) {
+        safe_offset -= 1;
+    }
     let before = &text[..safe_offset];
     let start = before
         .rfind(". ")
@@ -1246,26 +1249,34 @@ fn extract_sentence_at(text: &str, char_offset: usize) -> String {
         .map(|p| p + 1)
         .unwrap_or(0);
     let after = &text[safe_offset..];
-    let end = after
+    let mut end = after
         .find(". ")
         .or_else(|| after.find("! "))
         .or_else(|| after.find("? "))
         .or_else(|| after.find('\n'))
         .map(|p| p + safe_offset + 2)
-        .unwrap_or(text.len());
-    let sentence = text[start..end.min(text.len())].trim().to_string();
+        .unwrap_or(text.len())
+        .min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let sentence = text[start..end].trim().to_string();
     if sentence.len() <= 300 {
         sentence
     } else {
         let center = safe_offset.saturating_sub(start);
-        let lo = center.saturating_sub(150);
-        let hi = (lo + 300).min(sentence.len());
-        // snap to char boundary
+        let lo_target = center.saturating_sub(150);
+        // snap both ends to char boundaries
         let lo = sentence
             .char_indices()
             .map(|(i, _)| i)
-            .rfind(|&i| i <= lo)
+            .rfind(|&i| i <= lo_target)
             .unwrap_or(0);
+        let mut hi = (lo_target + 300).min(sentence.len());
+        while !sentence.is_char_boundary(hi) {
+            hi -= 1;
+        }
+        let hi = hi.max(lo);
         sentence[lo..hi].trim().to_string()
     }
 }
@@ -1457,7 +1468,10 @@ pub fn scan_chunk_for_dates(text: &str, chunk_id: i64) -> Vec<DateMention> {
         };
 
         // Check for month prefix: scan up to 25 bytes before the year for a month name
-        let look_back_start = digit_start.saturating_sub(25);
+        let mut look_back_start = digit_start.saturating_sub(25);
+        while !text.is_char_boundary(look_back_start) {
+            look_back_start -= 1;
+        }
         let preceding = &text[look_back_start..digit_start];
         let preceding_with_year = format!("{preceding}{year_str}");
         let month_prefix = parse_month_year(&preceding_with_year);
@@ -1595,8 +1609,14 @@ pub fn attribute_dates_to_entities(
         let date_pos_in_sentence = sentence.find(&mention.date_raw).unwrap_or(0);
 
         // ±400-char context window for adjacent-sentence entity detection.
-        let ctx_start = mention.char_offset.saturating_sub(400);
-        let ctx_end = (mention.char_offset + 400).min(chunk_text.len());
+        let mut ctx_start = mention.char_offset.saturating_sub(400);
+        while !chunk_text.is_char_boundary(ctx_start) {
+            ctx_start -= 1;
+        }
+        let mut ctx_end = (mention.char_offset + 400).min(chunk_text.len());
+        while !chunk_text.is_char_boundary(ctx_end) {
+            ctx_end -= 1;
+        }
         let ctx_window_lower = chunk_text[ctx_start..ctx_end].to_lowercase();
 
         // First-person narrator detection.
@@ -1876,4 +1896,103 @@ pub async fn extract_events_for_uncertain(
         events.len()
     );
     Ok(events)
+}
+
+#[cfg(test)]
+mod utf8_boundary_regression_tests {
+    use super::*;
+
+    // Regression tests for a class of panics ("byte index N is not a char
+    // boundary") hit when curly quotes or other multi-byte UTF-8 characters
+    // landed on a fixed-size byte-offset window edge (sentence extraction,
+    // month-name lookback, and attribution context window).
+
+    #[test]
+    fn extract_sentence_at_handles_multibyte_char_after_newline() {
+        // '\n' is a 1-byte match, but the old code always added +2 when
+        // computing the sentence end, landing mid-character in the
+        // following 3-byte curly quote.
+        let text = "AAA\n\u{201d}BBB more text to follow.";
+        let _ = extract_sentence_at(text, 0);
+    }
+
+    #[test]
+    fn extract_sentence_at_handles_multibyte_char_at_truncation_hi_boundary() {
+        // Regression: the >300-char truncation branch snapped `lo` to a
+        // char boundary but not `hi`, panicking when the fixed 300-byte
+        // window landed mid-character (e.g. inside a 2-byte '©').
+        let text = format!("{}{}{}", "a".repeat(299), "\u{a9}", "a".repeat(99));
+        let result = extract_sentence_at(&text, 0);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn scan_chunk_for_dates_handles_multibyte_char_in_lookback_window() {
+        // A curly quote sitting inside the fixed 25-byte lookback window
+        // before a 4-digit year used to panic on the raw slice.
+        let text = format!(
+            "{}{}{}{}",
+            "a".repeat(42),
+            "\u{201d}",
+            "a".repeat(22),
+            " 1955 more text"
+        );
+        let mentions = scan_chunk_for_dates(&text, 1);
+        assert!(mentions.iter().any(|m| m.date_raw.contains("1955")));
+    }
+
+    #[test]
+    fn attribute_dates_to_entities_handles_multibyte_char_at_context_start() {
+        let text = format!(
+            "{}{}{}{}{}",
+            "a".repeat(99),
+            "\u{201d}",
+            "a".repeat(701),
+            "\u{201c}",
+            "a".repeat(100)
+        );
+        let mention = DateMention {
+            chunk_id: 1,
+            date_raw: "1955".to_string(),
+            date_sort: "1955-01-01".to_string(),
+            date_confidence: 0.9,
+            char_offset: 500,
+            sentence: "In 1955 something happened.".to_string(),
+            mention_type: DateMentionType::ExplicitYear,
+        };
+        let chunk_entities = vec![(1i64, "Alice".to_string(), vec![])];
+        let narrator_kinship = std::collections::HashMap::new();
+        let (high, low) = attribute_dates_to_entities(
+            vec![mention],
+            &chunk_entities,
+            &narrator_kinship,
+            &text,
+            0.5,
+        );
+        assert_eq!(high.len() + low.len(), 1);
+    }
+
+    #[test]
+    fn attribute_dates_to_entities_handles_multibyte_char_at_context_end() {
+        let text = format!("{}{}{}", "a".repeat(400), "\u{201d}", "a".repeat(96));
+        let mention = DateMention {
+            chunk_id: 1,
+            date_raw: "1955".to_string(),
+            date_sort: "1955-01-01".to_string(),
+            date_confidence: 0.9,
+            char_offset: 1,
+            sentence: "In 1955 something happened.".to_string(),
+            mention_type: DateMentionType::ExplicitYear,
+        };
+        let chunk_entities = vec![(1i64, "Alice".to_string(), vec![])];
+        let narrator_kinship = std::collections::HashMap::new();
+        let (high, low) = attribute_dates_to_entities(
+            vec![mention],
+            &chunk_entities,
+            &narrator_kinship,
+            &text,
+            0.5,
+        );
+        assert_eq!(high.len() + low.len(), 1);
+    }
 }

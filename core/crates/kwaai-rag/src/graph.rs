@@ -5288,11 +5288,6 @@ entities or omit the fictional one entirely.\n\n\
     };
 
     let url = format!("{}/api/chat", inference_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()?;
-
     let body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -5307,44 +5302,15 @@ entities or omit the fictional one entirely.\n\n\
         },
     });
 
-    // Note: the P2P relay buffers the full response before returning headers,
-    // so this timeout covers the full round-trip (relay + generation), not
-    // just connection setup. 120s gives headroom for slow chunks on loaded GPUs.
-    let send_result = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        client.post(&url).json(&body).send(),
-    )
-    .await;
-    let resp = match send_result {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::warn!("entity extraction request failed: {e}");
-            return Ok((vec![], vec![]));
-        }
-        Err(_) => {
-            tracing::warn!("entity extraction send timed out after 120s");
-            return Ok((vec![], vec![]));
-        }
-    };
-
-    if !resp.status().is_success() {
-        tracing::warn!("entity extraction got HTTP {}", resp.status());
-        return Ok((vec![], vec![]));
-    }
-
-    // Read full streaming NDJSON body: each line is {"message":{"content":"..."},"done":bool}
-    let raw_text =
-        match tokio::time::timeout(std::time::Duration::from_secs(120), resp.text()).await {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                tracing::warn!("entity extraction body read error: {e}");
-                return Ok((vec![], vec![]));
-            }
-            Err(_) => {
-                tracing::warn!("entity extraction body read timed out after 120s");
-                return Ok((vec![], vec![]));
-            }
-        };
+    // Retry transport/HTTP failures with backoff long enough to span the P2P
+    // circuit breaker's 30s OPEN_DURATION. Without this, a chunk assigned to a
+    // peer whose breaker is Open gets an instant 503 from the local proxy (no
+    // real network round-trip), and — since callers previously treated any
+    // failure here as "legitimately zero entities" — a sustained peer outage
+    // silently discarded every remaining chunk as a false "success" instead of
+    // surfacing as an error. Three attempts (immediate, +15s, +30s) give the
+    // breaker a real chance to reach HalfOpen and recover before giving up.
+    let raw_text = extract_request_with_retry(&url, &body, &EXTRACT_RETRY_BACKOFF_SECS).await?;
 
     // Accumulate content tokens from each streaming chunk
     let mut content_buf = String::new();
@@ -5398,6 +5364,106 @@ entities or omit the fictional one entirely.\n\n\
             Ok((vec![], vec![]))
         }
     }
+}
+
+/// Backoff schedule for [`extract_request_with_retry`], deliberately longer than
+/// the sub-second retries used elsewhere in this crate: it needs to span the P2P
+/// circuit breaker's 30s `OPEN_DURATION` so a chunk dispatched to a peer whose
+/// breaker just opened gets a real chance to hit a recovered (or HalfOpen-probed)
+/// peer on a later attempt, instead of exhausting all attempts against an instant
+/// local 503 in milliseconds.
+const EXTRACT_RETRY_BACKOFF_SECS: [u64; 3] = [0, 15, 30];
+
+/// POST the extraction request and read its streamed NDJSON body, retrying
+/// transport failures and non-2xx responses per `backoff_secs` before giving up.
+/// Returns `Err` only after all attempts fail, so callers can distinguish a
+/// genuine outage from "the LLM found no entities." `backoff_secs` is a parameter
+/// (rather than a hardcoded sleep) purely so tests can exercise the retry loop
+/// without waiting on the real ~45s production schedule.
+async fn extract_request_with_retry(
+    url: &str,
+    body: &serde_json::Value,
+    backoff_secs: &[u64],
+) -> Result<String> {
+    let max_attempts = backoff_secs.len() as u32;
+
+    let mut last_err: Option<String> = None;
+    for attempt in 0..max_attempts {
+        if backoff_secs[attempt as usize] > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                backoff_secs[attempt as usize],
+            ))
+            .await;
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("building HTTP client for entity extraction")?;
+
+        // Note: the P2P relay buffers the full response before returning headers,
+        // so this timeout covers the full round-trip (relay + generation), not
+        // just connection setup. 120s gives headroom for slow chunks on loaded GPUs.
+        let send_result = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            client.post(url).json(body).send(),
+        )
+        .await;
+        let resp = match send_result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "entity extraction request failed (attempt {}/{max_attempts}): {e}",
+                    attempt + 1
+                );
+                last_err = Some(e.to_string());
+                continue;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "entity extraction send timed out after 120s (attempt {}/{max_attempts})",
+                    attempt + 1
+                );
+                last_err = Some("send timed out after 120s".to_string());
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            tracing::warn!(
+                "entity extraction got HTTP {} (attempt {}/{max_attempts})",
+                resp.status(),
+                attempt + 1
+            );
+            last_err = Some(format!("HTTP {}", resp.status()));
+            continue;
+        }
+
+        // Read full streaming NDJSON body: each line is {"message":{"content":"..."},"done":bool}
+        match tokio::time::timeout(std::time::Duration::from_secs(120), resp.text()).await {
+            Ok(Ok(t)) => return Ok(t),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "entity extraction body read error (attempt {}/{max_attempts}): {e}",
+                    attempt + 1
+                );
+                last_err = Some(e.to_string());
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "entity extraction body read timed out after 120s (attempt {}/{max_attempts})",
+                    attempt + 1
+                );
+                last_err = Some("body read timed out after 120s".to_string());
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "entity extraction failed after {max_attempts} attempts: {}",
+        last_err.unwrap_or_else(|| "unknown error".to_string())
+    )
 }
 
 /// Fix PDF-extraction underscore artifacts in entity names extracted by the LLM.
@@ -6004,5 +6070,93 @@ mod dedup_tests {
             store.dedup_r3_high_risk_surname(a_id, b_id),
             "distinct siblings sharing only a parent (no alias evidence) must still be deferred by R3"
         );
+    }
+
+    // Regression for a bug where a sustained P2P peer outage (both circuit breakers
+    // Open) caused graph build to silently discard up to 94% of a corpus's chunks:
+    // every extraction attempt got an instant local 503 from the proxy, and the old
+    // code treated *any* transport/HTTP failure as "the LLM legitimately found no
+    // entities" (`Ok((vec![], vec![]))`), so the run raced through the rest of the
+    // chunks in milliseconds and reported success. `extract_request_with_retry` must
+    // (a) actually retry instead of giving up on the first failure, and (b) return
+    // `Err` — not a silent empty `Ok` — once every attempt has genuinely failed, so
+    // callers can tell a real outage apart from a chunk with no entities in it.
+
+    /// Spawn a one-shot mock server: replies with `status_lines[i]` (and a JSON body
+    /// only for 200s) to the i-th request it accepts, then stops.
+    fn spawn_mock_sequence(status_lines: Vec<&'static str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let port = std_listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+
+        tokio::spawn(async move {
+            for status_line in status_lines {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let resp = if status_line.contains("200") {
+                    // One streamed NDJSON line, matching Ollama's /api/chat format.
+                    let body = "{\"message\":{\"content\":\"ok\"},\"done\":true}\n".to_string();
+                    format!(
+                        "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                } else {
+                    format!("{status_line}\r\nContent-Length: 0\r\n\r\n")
+                };
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        format!("http://127.0.0.1:{port}/api/chat")
+    }
+
+    #[tokio::test]
+    async fn extract_request_with_retry_recovers_after_transient_failures() {
+        // Simulates two chunks' worth of "peer circuit-broken" 503s (as the proxy
+        // returns while breakers are Open) followed by recovery once a retry lands
+        // on a peer that has come back — this must succeed, not give up after the
+        // first 503.
+        let url = spawn_mock_sequence(vec![
+            "HTTP/1.1 503 Service Unavailable",
+            "HTTP/1.1 503 Service Unavailable",
+            "HTTP/1.1 200 OK",
+        ]);
+        let body = serde_json::json!({"model": "test", "messages": []});
+
+        let result = extract_request_with_retry(&url, &body, &[0, 0, 0]).await;
+
+        assert!(
+            result.is_ok(),
+            "expected retry to recover once a request finally succeeds, got: {result:?}"
+        );
+        assert!(result.unwrap().contains("\"done\":true"));
+    }
+
+    #[tokio::test]
+    async fn extract_request_with_retry_errs_after_exhausting_attempts() {
+        // A sustained outage: every attempt gets a 503. The old behavior silently
+        // returned `Ok((vec![], vec![]))` from `extract_from_text` for this exact
+        // case, indistinguishable from a chunk that genuinely has no entities. The
+        // fix must surface this as an `Err` so it shows up as a logged failure
+        // instead of a false "success".
+        let url = spawn_mock_sequence(vec![
+            "HTTP/1.1 503 Service Unavailable",
+            "HTTP/1.1 503 Service Unavailable",
+            "HTTP/1.1 503 Service Unavailable",
+        ]);
+        let body = serde_json::json!({"model": "test", "messages": []});
+
+        let result = extract_request_with_retry(&url, &body, &[0, 0, 0]).await;
+
+        assert!(
+            result.is_err(),
+            "a sustained outage must surface as Err, not a silent empty success"
+        );
+        assert!(result.unwrap_err().to_string().contains("3 attempts"));
     }
 }
