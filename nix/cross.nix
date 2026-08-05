@@ -34,6 +34,9 @@ let
       cargoTarget
       ;
     inherit (pkgsCross) lib makeWrapper;
+    # fetchurl/runCommand for the patched multistream-select source; the
+    # native package set is correct here — it is build-time-only source prep.
+    pkgs = pkgsCross;
   };
 
   containers = import ./containers.nix {

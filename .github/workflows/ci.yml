@@ -32,6 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -48,6 +51,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -98,6 +104,9 @@ jobs:
         os: ${{ github.event_name == 'pull_request' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v4
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -147,6 +156,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -203,6 +215,9 @@ jobs:
             target: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
