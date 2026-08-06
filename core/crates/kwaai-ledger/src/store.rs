@@ -58,13 +58,28 @@ impl PeerBalance {
         self.earned as i128 - self.spent as i128
     }
 
+    /// Claims we issued to this peer, settled or not.
+    pub fn claims_issued(&self) -> u64 {
+        self.receipts_as_provider + self.unsigned_claims
+    }
+
     /// Share of our claims against this peer that it declined to sign.
     /// `None` when we have never issued it a claim.
     pub fn unsigned_ratio(&self) -> Option<f64> {
-        let issued = self.receipts_as_provider + self.unsigned_claims;
+        let issued = self.claims_issued();
         (issued > 0).then(|| self.unsigned_claims as f64 / issued as f64)
     }
 }
+
+/// Below this many issued claims, an unsigned ratio says nothing useful about a
+/// peer's behaviour.
+///
+/// An ack can be lost for reasons that are entirely our own — most of all a
+/// short-lived consumer process exiting before its ack reaches the socket, which
+/// is a bug class we have already hit. One lost ack out of one claim is a 100%
+/// ratio and would brand a peer that did nothing wrong, so callers must require
+/// a real sample before reading anything into it.
+pub const MIN_CLAIMS_FOR_RATIO: u64 = 5;
 
 pub struct LedgerStore {
     conn: Connection,

@@ -62,7 +62,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod store;
-pub use store::{LedgerStore, PeerBalance};
+pub use store::{LedgerStore, PeerBalance, MIN_CLAIMS_FOR_RATIO};
 
 /// Server-minted lease identifier, scoped to the granting peer's process.
 /// Mirrors `capacity_lease::LeaseId`; never persisted by the lease table.

@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use ed25519_dalek::SigningKey;
-use kwaai_ledger::{LeaseQuote, Receipt, WorkClaimPayload, MICRO_PER_CREDIT};
+use kwaai_ledger::{LeaseQuote, Receipt, WorkClaimPayload, MICRO_PER_CREDIT, MIN_CLAIMS_FOR_RATIO};
 
 use crate::cli::{LedgerAction, LedgerArgs};
 use crate::display::*;
@@ -90,10 +90,13 @@ fn show(micro: bool) -> Result<()> {
         if b.unsigned_claims > 0 {
             notes.push(format!("{} unsigned", b.unsigned_claims));
         }
-        // A peer that mostly declines to counter-sign is taking delivery without
-        // acknowledging it. Advisory only in Phase 1 — flagged here, not yet an
-        // admission gate.
-        if b.unsigned_ratio().is_some_and(|r| r > UNSIGNED_RATIO_WARN) {
+        // A peer that mostly declines to counter-sign may be taking delivery
+        // without acknowledging it — but only once there's enough of a sample to
+        // mean anything, since a lost ack can be entirely our own fault. Advisory
+        // only in Phase 1; never an admission gate.
+        if b.claims_issued() >= MIN_CLAIMS_FOR_RATIO
+            && b.unsigned_ratio().is_some_and(|r| r > UNSIGNED_RATIO_WARN)
+        {
             notes.push("⚠ mostly unacknowledged".to_string());
         }
 
