@@ -341,6 +341,22 @@ impl LedgerNode {
         }
     }
 
+    /// Whether we already hold a receipt with this content address. Used to
+    /// confirm two parties really converged on the same artifact rather than on
+    /// two receipts that merely agree numerically.
+    ///
+    /// Test-only for now — the replay path doesn't need it, because
+    /// counter-signing is deterministic and `record_receipt` already rejects a
+    /// duplicate `receipt_id` on the primary key.
+    #[cfg(test)]
+    pub fn has_receipt(&self, receipt_id: &[u8; 32]) -> anyhow::Result<bool> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|e| anyhow::anyhow!("ledger store lock poisoned: {e}"))?;
+        Ok(store.has_receipt(receipt_id)?)
+    }
+
     pub fn balances(&self) -> anyhow::Result<Vec<PeerBalance>> {
         let store = self
             .store
