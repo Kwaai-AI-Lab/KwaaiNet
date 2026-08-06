@@ -83,6 +83,9 @@ kwaai-hivemind-dht = { workspace = true }
 kwaai-p2p-daemon = { workspace = true }
 kwaai-inference = { workspace = true }
 kwaai-trust = { workspace = true }
+kwaai-ledger = { workspace = true }
+# Signing work receipts with the node's Ed25519 identity key
+ed25519-dalek = { workspace = true }
 kwaai-storage = { workspace = true, optional = true }
 kwaai-rag = { workspace = true, optional = true, features = ["pdf"] }
 uuid = { workspace = true, optional = true }

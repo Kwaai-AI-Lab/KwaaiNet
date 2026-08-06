@@ -131,39 +131,11 @@ async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> 
     Ok(buf)
 }
 
-// ── Protocol helpers ──────────────────────────────────────────────────────────
-
-/// Read and discard the gogo-protobuf delimited `StreamInfo` message that
-/// go-libp2p-daemon sends to a registered stream handler before piping data.
-///
-/// Wire format: varint(len) || proto_bytes  (same varint encoding as protobuf).
-async fn read_p2pd_stream_info<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<()> {
-    // Decode varint length prefix (≤ 10 bytes for u64).
-    let mut len: u64 = 0;
-    let mut shift = 0u32;
-    for _ in 0..10 {
-        let mut b = [0u8; 1];
-        reader
-            .read_exact(&mut b)
-            .await
-            .context("read p2pd StreamInfo varint")?;
-        len |= ((b[0] & 0x7F) as u64) << shift;
-        if b[0] & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-        if shift > 63 {
-            anyhow::bail!("p2pd StreamInfo varint overflow");
-        }
-    }
-    // Read and discard the message body.
-    let mut buf = vec![0u8; len as usize];
-    reader
-        .read_exact(&mut buf)
-        .await
-        .context("read p2pd StreamInfo body")?;
-    Ok(())
-}
+// NOTE: the StreamInfo prologue used to be read-and-discarded by a local
+// reimplementation of the varint framing here. It is now parsed via
+// `kwaai_p2p_daemon::stream::parse_stream_info`, which decodes the message
+// properly and yields the authenticated caller's PeerId — see
+// `handle_mux_stream_server`.
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
@@ -223,20 +195,34 @@ pub async fn start_inference_mux_server(
 /// local Ollama for each `Request` (subject to the Capacity Lease admission
 /// gate), writes responses back in any order.
 async fn handle_mux_stream_server(
-    stream: TcpStream,
+    mut stream: TcpStream,
     lease_table: Arc<LeaseTable>,
     connection_id: ConnectionId,
 ) {
+    // go-libp2p-daemon sends a varint-framed StreamInfo prologue before piping
+    // data. Parse it (rather than discarding it) — `StreamInfo.peer` is the
+    // *authenticated* caller, which is what a signed receipt must be bound to.
+    // Done before splitting, since the shared helper takes the whole TcpStream.
+    let caller = match kwaai_p2p_daemon::stream::parse_stream_info(&mut stream).await {
+        Ok(info) => match libp2p::PeerId::from_bytes(&info.peer) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("inference-mux server: unparseable peer id in StreamInfo prologue: {e}");
+                return;
+            }
+        },
+        Err(e) => {
+            warn!("inference-mux server: failed to read p2pd StreamInfo prologue: {e}");
+            return;
+        }
+    };
+    debug!(
+        "inference-mux server: StreamInfo prologue consumed — caller {} — entering mux frame loop",
+        caller.to_base58()
+    );
+
     let (mut reader, writer) = stream.into_split();
     let writer = Arc::new(Mutex::new(writer));
-
-    // go-libp2p-daemon sends a gogo-protobuf StreamInfo message before piping data.
-    // Consume it before entering the mux frame loop.
-    if let Err(e) = read_p2pd_stream_info(&mut reader).await {
-        warn!("inference-mux server: failed to read p2pd StreamInfo prologue: {e}");
-        return;
-    }
-    debug!("inference-mux server: StreamInfo prologue consumed — entering mux frame loop");
 
     let ttl = Duration::from_secs(LEASE_TTL_SECS);
 

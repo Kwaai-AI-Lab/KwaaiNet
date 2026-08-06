@@ -140,6 +140,9 @@ pub enum Command {
     /// View and manage the local peer reputation store (trust scores, observed performance)
     Reputation(ReputationArgs),
 
+    /// Inspect internal work credits — co-signed receipts for compute served and consumed
+    Ledger(LedgerArgs),
+
     /// Manage the local storage fabric (Eve role — host opaque vectors for Bob nodes on the network)
     Storage(StorageArgs),
 
@@ -470,6 +473,33 @@ pub enum IdentityAction {
         #[arg(value_name = "FILE")]
         path: std::path::PathBuf,
     },
+}
+
+// ---------------------------------------------------------------------------
+// ledger — internal work credits
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct LedgerArgs {
+    #[command(subcommand)]
+    pub action: LedgerAction,
+}
+
+#[derive(Subcommand)]
+pub enum LedgerAction {
+    /// Verify a co-signed work receipt file (both signatures + content address)
+    Verify {
+        /// Path to a msgpack-encoded receipt
+        #[arg(value_name = "FILE")]
+        path: std::path::PathBuf,
+    },
+    /// Check that this node's identity key can produce verifiable receipts.
+    ///
+    /// Signs a sample receipt as both parties and verifies it end-to-end,
+    /// including a full encode/decode round-trip. Catches identities that
+    /// cannot participate in the ledger at all — notably RSA bootstrap keys,
+    /// whose PeerIds yield no Ed25519 verifying key.
+    SelfTest,
 }
 
 // ---------------------------------------------------------------------------
