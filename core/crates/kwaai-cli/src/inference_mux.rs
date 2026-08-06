@@ -125,11 +125,15 @@ pub enum MuxFrame {
     LeaseKeepalive {
         lease_id: LeaseId,
     },
-    /// Consumer's counter-signature, completing a receipt. Fire-and-forget: the
-    /// consumer has already persisted its own copy, so a lost ack costs the
-    /// provider an unpayable claim, not a divergent balance. That asymmetry is
-    /// intentional — it is the consumer, not the provider, who is trusted to
-    /// report what it consumed.
+    /// Consumer's counter-signature, completing a receipt. No reply is awaited,
+    /// but the write is flushed before the consumer considers the request done
+    /// — see `InferenceMuxClient::settle`.
+    ///
+    /// A lost ack leaves the two sides **disagreeing**: the consumer has already
+    /// recorded what it spent, while the provider still holds only an unpayable
+    /// claim. With no arbiter that divergence cannot be fully eliminated, so the
+    /// provider's unsigned-claim ratio is advisory only and must never be the
+    /// sole basis for denying a peer.
     ReceiptAck {
         receipt: Receipt,
     },
@@ -480,6 +484,17 @@ async fn call_ollama_local(req: &MuxRequest) -> MuxResponse {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+/// A frame queued for the writer task, plus an optional signal fired once the
+/// bytes have actually reached the socket.
+///
+/// The distinction is load-bearing. Enqueueing is not delivery: a short-lived
+/// CLI process (a one-shot `rag query`, say) can exit between the enqueue and
+/// the write, and the frame is simply lost. That silently dropped every receipt
+/// ack from such a process, leaving the consumer recording what it spent while
+/// the provider recorded only an unsigned claim — found by running the two-node
+/// live test, not by any unit test.
+type Outbound = (Vec<u8>, Option<oneshot::Sender<()>>);
+
 /// What a `LeaseResponse` frame carries back to the awaiting negotiator: the
 /// admission answer plus, when granted by a ledger-capable provider, the signed
 /// quote that prices work under it.
@@ -511,7 +526,7 @@ pub struct InferenceMuxClient {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<MuxResponse>>>>,
     pending_lease: Arc<Mutex<HashMap<u64, oneshot::Sender<LeaseAnswer>>>>,
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: mpsc::Sender<Outbound>,
     /// Set to true when the underlying stream dies. Checked in send() to fail
     /// fast instead of hanging on a oneshot that will never be resolved.
     dead: Arc<AtomicBool>,
@@ -574,7 +589,7 @@ impl InferenceMuxClient {
             .context("stream_open_raw for inference-mux")?;
 
         let (mut reader, writer) = tokio::io::split(raw);
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
+        let (tx, mut rx) = mpsc::channel::<Outbound>(256);
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<MuxResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -592,10 +607,16 @@ impl InferenceMuxClient {
         let dead_w = dead.clone();
         tokio::spawn(async move {
             let mut writer = writer;
-            while let Some(payload) = rx.recv().await {
+            while let Some((payload, flushed)) = rx.recv().await {
                 if let Err(e) = write_frame(&mut writer, &payload).await {
                     warn!("inference-mux client: writer error: {e}");
                     break;
+                }
+                // Signal only after the bytes are actually handed to the socket.
+                // Dropping the sender on the error path above is what tells a
+                // waiter the write did not happen.
+                if let Some(f) = flushed {
+                    let _ = f.send(());
                 }
             }
             dead_w.store(true, Ordering::Release);
@@ -750,7 +771,7 @@ impl InferenceMuxClient {
         };
         let answer = match rmp_serde::to_vec_named(&frame) {
             Ok(payload) => {
-                if self.tx.send(payload).await.is_err() {
+                if self.tx.send((payload, None)).await.is_err() {
                     LeaseAnswer::unreachable()
                 } else {
                     // Negotiation is a pure in-memory check on the remote
@@ -798,7 +819,7 @@ impl InferenceMuxClient {
         let payload =
             rmp_serde::to_vec_named(&MuxFrame::Request(req)).context("encode MuxRequest")?;
         self.tx
-            .send(payload)
+            .send((payload, None))
             .await
             .map_err(|_| anyhow::anyhow!("inference-mux send channel closed"))?;
 
@@ -851,15 +872,31 @@ impl InferenceMuxClient {
             return;
         };
 
-        match rmp_serde::to_vec_named(&MuxFrame::ReceiptAck { receipt }) {
-            // Fire-and-forget: our own copy is already persisted, so a dropped
-            // ack costs the provider a payable receipt, not our agreement.
-            Ok(payload) => {
-                if self.tx.send(payload).await.is_err() {
-                    debug!("inference-mux client: could not send ReceiptAck, stream closed");
-                }
+        let payload = match rmp_serde::to_vec_named(&MuxFrame::ReceiptAck { receipt }) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("inference-mux client: encoding ReceiptAck: {e}");
+                return;
             }
-            Err(e) => warn!("inference-mux client: encoding ReceiptAck: {e}"),
+        };
+
+        let (flushed_tx, flushed_rx) = oneshot::channel();
+        if self.tx.send((payload, Some(flushed_tx))).await.is_err() {
+            debug!("inference-mux client: could not queue ReceiptAck, stream closed");
+            return;
+        }
+
+        // Wait for the ack to actually leave the socket before reporting the
+        // request complete. This is not a round trip — we never wait on the
+        // provider — but without it a process that exits promptly after its last
+        // response drops the ack on the floor, and the two sides then disagree
+        // about what was owed.
+        match tokio::time::timeout(Duration::from_secs(5), flushed_rx).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                debug!("inference-mux client: writer died before the ReceiptAck went out")
+            }
+            Err(_) => warn!("inference-mux client: timed out flushing a ReceiptAck"),
         }
     }
 }
@@ -1382,9 +1419,12 @@ mod tests {
             "our did: {}",
             ledger.as_ref().map(|l| l.did()).unwrap_or("<no ledger>")
         );
-        let before = ledger
+        // Count receipts, not peers: a peer we have already transacted with is
+        // already in the list, so a peer-count comparison silently reports "no
+        // ledger" on the second run against the same provider.
+        let receipts_before: u64 = ledger
             .as_ref()
-            .map(|l| l.balances().unwrap().len())
+            .map(|l| l.balances().unwrap().iter().map(|b| b.receipts).sum())
             .unwrap_or(0);
 
         let body = serde_json::json!({
@@ -1426,7 +1466,8 @@ mod tests {
                         b.peer_did, b.earned, b.spent, b.receipts, b.unsigned_claims
                     );
                 }
-                if after.len() > before {
+                let receipts_after: u64 = after.iter().map(|b| b.receipts).sum();
+                if receipts_after > receipts_before {
                     println!("→ remote HAS the ledger: a receipt was co-signed");
                 } else {
                     println!(
