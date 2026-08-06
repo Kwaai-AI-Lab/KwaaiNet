@@ -24,9 +24,18 @@ use tracing::{debug, error, trace, warn};
 use unsigned_varint::encode as varint_encode;
 use uuid::Uuid;
 
-/// Type alias for unary handler functions (use Arc for cloning)
+/// Type alias for unary handler functions (use Arc for cloning).
+///
+/// Handlers receive the request payload **and** the authenticated `PeerId` of
+/// the caller, which the daemon supplies in `CallUnaryRequest.peer`. Anything
+/// that needs to know *who* is calling — signed receipts, per-peer admission,
+/// authorization — must use the peer argument rather than a self-declared
+/// identifier inside the payload.
 pub type UnaryHandlerFn = Arc<
-    dyn Fn(Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>
+    dyn Fn(
+            Vec<u8>,
+            libp2p::PeerId,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>
         + Send
         + Sync,
 >;
@@ -158,6 +167,21 @@ impl PersistentConnection {
                         let data = req.data.clone();
                         let call_id_bytes = response.call_id.clone();
 
+                        // The daemon populates `peer` with the *authenticated*
+                        // caller. Surfacing it is what lets handlers bind
+                        // anything security-relevant to a real identity rather
+                        // than to a self-declared field in the payload.
+                        let caller = match libp2p::PeerId::from_bytes(&req.peer) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                warn!(
+                                    "Dropping incoming unary request for {proto}: \
+                                     daemon sent an unparseable peer id ({e})"
+                                );
+                                continue;
+                            }
+                        };
+
                         // Look up handler
                         let handlers = unary_handlers.lock().await;
                         if let Some(handler) = handlers.get(&proto) {
@@ -168,7 +192,7 @@ impl PersistentConnection {
 
                             // Execute handler in background
                             tokio::spawn(async move {
-                                let result = handler(data).await;
+                                let result = handler(data, caller).await;
 
                                 // Send response back
                                 let response = match result {
@@ -322,7 +346,12 @@ impl PersistentConnection {
         }
     }
 
-    /// Register a unary handler for incoming requests
+    /// Register a unary handler for incoming requests.
+    ///
+    /// The handler does not learn who called it. Prefer
+    /// [`add_unary_handler_with_peer`](Self::add_unary_handler_with_peer) for
+    /// anything that needs the caller's identity; this remains for handlers
+    /// where the payload is genuinely self-contained.
     pub async fn add_unary_handler<F, Fut>(
         &self,
         proto: &str,
@@ -331,6 +360,27 @@ impl PersistentConnection {
     ) -> Result<()>
     where
         F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Vec<u8>>> + Send + 'static,
+    {
+        self.add_unary_handler_with_peer(proto, move |data, _peer| handler(data), balanced)
+            .await
+    }
+
+    /// Register a unary handler that also receives the **authenticated**
+    /// `PeerId` of the caller, as supplied by the daemon in
+    /// `CallUnaryRequest.peer`.
+    ///
+    /// Use this whenever the handler's behaviour depends on who is calling.
+    /// Trusting a peer id carried *inside* the request payload instead is
+    /// unauthenticated — the caller can put anything there.
+    pub async fn add_unary_handler_with_peer<F, Fut>(
+        &self,
+        proto: &str,
+        handler: F,
+        balanced: bool,
+    ) -> Result<()>
+    where
+        F: Fn(Vec<u8>, libp2p::PeerId) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Vec<u8>>> + Send + 'static,
     {
         let call_id = Uuid::new_v4();
@@ -381,7 +431,7 @@ impl PersistentConnection {
             let mut handlers = self.unary_handlers.lock().await;
             handlers.insert(
                 proto.to_string(),
-                Arc::new(move |data| Box::pin(handler(data))),
+                Arc::new(move |data, peer| Box::pin(handler(data, peer))),
             );
         }
 

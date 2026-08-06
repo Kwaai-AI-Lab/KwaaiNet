@@ -10,6 +10,7 @@ members = [
     "crates/kwaai-p2p-daemon",
     "crates/kwaai-cli",
     "crates/kwaai-trust",
+    "crates/kwaai-ledger",
     "crates/map-server",
     "crates/kwaai-storage",
     "crates/kwaai-rag",
@@ -140,6 +141,7 @@ categories = ["network-programming", "wasm", "science"]
 [workspace.dependencies]
 kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.5.0" }
 kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.5.0" }
+kwaai-ledger       = { path = "crates/kwaai-ledger",       version = "0.5.0" }
 kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.5.0" }
 kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.5.0" }
 kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.5.0" }

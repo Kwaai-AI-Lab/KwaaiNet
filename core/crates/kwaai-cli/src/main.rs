@@ -14,6 +14,7 @@ mod health;
 mod hf;
 mod identity;
 mod inference_mux;
+mod ledger_cmd;
 mod llama_local;
 mod map;
 mod monitor;
@@ -1678,6 +1679,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Reputation(args) => {
             reputation_cmd::run(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // ledger
+        // -------------------------------------------------------------------
+        Command::Ledger(args) => {
+            ledger_cmd::run(args).await?;
         }
 
         // -------------------------------------------------------------------

@@ -1,0 +1,36 @@
+[package]
+name = "kwaai-ledger"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "KwaaiNet internal work credits — co-signed work receipts for bilateral compute/storage accounting"
+
+[dependencies]
+# Serialisation. msgpack (rmp-serde) matches the rest of the workspace's wire
+# formats; see the canonical-encoding rules in lib.rs for why signing uses the
+# positional (non-named) encoding specifically.
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Ed25519 signing/verification of receipts
+ed25519-dalek = { workspace = true }
+
+# receipt_id / response_digest are SHA-256. Already in the lock file via
+# kwaai-rag and kwaai-network-tests, so this adds no new dependency.
+sha2 = "0.10"
+
+# did:peer <-> PeerId resolution. Reuses kwaai-trust's multihash byte-scan
+# rather than duplicating it — the DID is self-certifying, so this is the whole
+# key-resolution mechanism.
+kwaai-trust = { path = "../kwaai-trust" }
+libp2p = { workspace = true }
+
+# Hex rendering of receipt ids for CLI/log output. Declared directly rather than
+# inherited: `hex` lives in the root package's [dependencies], not in
+# [workspace.dependencies].
+hex = "0.4"

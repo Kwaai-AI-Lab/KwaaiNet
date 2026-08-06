@@ -26,10 +26,17 @@ use kwaai_trust::{verify, CredentialStore, TrustScore, VerifiableCredential};
 // NodeIdentity — the persistent cryptographic identity
 // ---------------------------------------------------------------------------
 
+/// Current identity key epoch.
+///
+/// Recorded alongside signatures (see `kwaai_ledger`) so that rotating the node
+/// key does not silently invalidate history. Bump this when a rotation
+/// mechanism lands; carrying it now is free, retrofitting it later is a
+/// migration.
+pub const KEY_EPOCH: u32 = 1;
+
 /// The node's persistent Ed25519 identity
 pub struct NodeIdentity {
-    /// The full keypair — retained for Phase 4 peer endorsement signing
-    #[allow(dead_code)]
+    /// The full keypair — the signing key behind `sign()`.
     pub keypair: Keypair,
     pub peer_id: PeerId,
 }
@@ -57,6 +64,10 @@ impl NodeIdentity {
             "decoding identity key — file may be corrupted or use an unsupported key type",
         )?;
         let peer_id = keypair.public().to_peer_id();
+        // Repair permissions on keys written before they were created 0600.
+        // Existing nodes have world-readable identity keys on disk; loading is
+        // the only moment we reliably get to fix that in place.
+        tighten_key_permissions(path);
         info!(
             "Loaded identity from {}: {}",
             path.display(),
@@ -77,8 +88,7 @@ impl NodeIdentity {
         let bytes = keypair
             .to_protobuf_encoding()
             .context("encoding identity key")?;
-        std::fs::write(&path, &bytes)
-            .with_context(|| format!("writing identity key: {}", path.display()))?;
+        write_key_file(&path, &bytes)?;
         info!(
             "Generated new persistent identity: {} ({})",
             peer_id.to_base58(),
@@ -92,10 +102,124 @@ impl NodeIdentity {
         kwaai_trust::peer_id_to_did(&self.peer_id)
     }
 
+    /// The raw 32-byte Ed25519 secret, for building an `ed25519_dalek::SigningKey`.
+    ///
+    /// This is the signing path behind work receipts (`kwaai_ledger`).
+    /// Deliberately the *only* signing accessor: libp2p's `Keypair::sign` would
+    /// be a second, redundant way to produce the same Ed25519 signatures, and
+    /// having two invites them to drift.
+    ///
+    /// Verification needs no key exchange — the signer's `did:peer:` *is* its
+    /// public key, so any holder of the DID can verify.
+    ///
+    /// Returns an error for non-Ed25519 identities — bootstrap nodes may mount
+    /// RSA keys, which cannot produce receipts (and whose PeerIds the
+    /// `did:peer:` resolver cannot extract a verifying key from either).
+    pub fn ed25519_secret_bytes(&self) -> Result<[u8; 32]> {
+        let ed = self
+            .keypair
+            .clone()
+            .try_into_ed25519()
+            .map_err(|_| anyhow::anyhow!("node identity is not an Ed25519 key"))?;
+        ed.secret()
+            .as_ref()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("unexpected Ed25519 secret length"))
+    }
+
     /// Path to the identity key file (`~/.kwaainet/identity.key`, or `$KWAAINET_HOME/identity.key`)
     pub fn key_file_path() -> PathBuf {
         crate::config::kwaainet_dir().join("identity.key")
     }
+}
+
+/// Narrow an existing key file to `0600` if it is currently more permissive.
+///
+/// Best-effort and deliberately non-fatal: a node that cannot chmod its key
+/// (unusual ownership, exotic filesystem) should still start rather than refuse
+/// to run, but it gets a warning so the exposure is visible.
+fn tighten_key_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return;
+        };
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                Ok(()) => info!(
+                    "Tightened identity key permissions from {:o} to 600: {}",
+                    mode,
+                    path.display()
+                ),
+                Err(e) => tracing::warn!(
+                    "Identity key {} is mode {:o} (group/world readable) and could not be \
+                     tightened to 600: {e}. This key authorises every signature this node \
+                     makes — restrict it manually.",
+                    path.display(),
+                    mode
+                ),
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Write the identity key atomically and with owner-only permissions.
+///
+/// Two problems with the previous bare `std::fs::write`:
+///
+/// * **Permissions.** The file inherited the process umask — typically `0644`,
+///   i.e. world-readable. This key authorises every signature the node makes,
+///   including work receipts, so it must be `0600`. Note that receipts are
+///   durable and retroactively valuable: a key stolen while receipts are
+///   "worth nothing" can forge history that acquires value later, so this
+///   matters from the first signature rather than from the first balance.
+/// * **Atomicity.** A crash mid-write left a truncated key and a node that
+///   could no longer prove its identity. Write to a temp file in the same
+///   directory, then rename — `rename(2)` is atomic within a filesystem.
+fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp = dir.join(format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("identity.key")
+    ));
+
+    // Create with 0600 from the outset on Unix, so the secret is never briefly
+    // world-readable between creation and a later chmod.
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("creating temp identity key: {}", tmp.display()))?;
+        f.write_all(bytes)
+            .with_context(|| format!("writing temp identity key: {}", tmp.display()))?;
+        f.sync_all().ok();
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp, bytes)
+            .with_context(|| format!("writing temp identity key: {}", tmp.display()))?;
+    }
+
+    std::fs::rename(&tmp, path).with_context(|| {
+        format!(
+            "atomically replacing identity key {} with {}",
+            path.display(),
+            tmp.display()
+        )
+    })?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

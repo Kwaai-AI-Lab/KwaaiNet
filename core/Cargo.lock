@@ -3090,6 +3090,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kwaai-ledger"
+version = "0.5.5"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek",
+ "hex",
+ "kwaai-trust",
+ "libp2p",
+ "rmp-serde",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "kwaai-network-tests"
 version = "0.5.5"
 dependencies = [
@@ -3254,11 +3269,13 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "ed25519-dalek",
  "futures",
  "half",
  "hex",
  "kwaai-hivemind-dht",
  "kwaai-inference",
+ "kwaai-ledger",
  "kwaai-p2p",
  "kwaai-p2p-daemon",
  "kwaai-rag",

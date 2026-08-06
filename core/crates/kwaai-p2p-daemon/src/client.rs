@@ -854,6 +854,27 @@ impl P2PClient {
         conn.add_unary_handler(proto, handler, balanced).await
     }
 
+    /// Register a unary handler that also receives the **authenticated**
+    /// `PeerId` of the caller.
+    ///
+    /// Required for any handler whose behaviour depends on who is calling — a
+    /// peer id carried inside the request payload is self-declared and cannot
+    /// be trusted.
+    pub async fn add_unary_handler_with_peer<F, Fut>(
+        &self,
+        proto: &str,
+        handler: F,
+        balanced: bool,
+    ) -> Result<()>
+    where
+        F: Fn(Vec<u8>, libp2p::PeerId) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Vec<u8>>> + Send + 'static,
+    {
+        let conn = self.get_persistent_connection().await?;
+        conn.add_unary_handler_with_peer(proto, handler, balanced)
+            .await
+    }
+
     /// Remove a previously registered unary handler
     pub async fn remove_unary_handler(&self, proto: &str) -> Result<()> {
         let conn = self.get_persistent_connection().await?;
