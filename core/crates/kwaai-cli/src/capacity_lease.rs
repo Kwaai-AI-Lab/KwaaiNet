@@ -327,6 +327,48 @@ pub fn apply_breaker_outcome(
     peer_id: &PeerId,
     breaker: &CircuitBreaker,
 ) {
+    // Visible at the default log level so a live test against a real peer
+    // can confirm negotiation is actually happening, not just inferred from
+    // absence of errors.
+    match outcome {
+        NegotiationOutcome::Granted(grant) => {
+            tracing::info!(
+                "capacity-lease: {} → Granted (lease_id={}, ttl={}s)",
+                peer_id.to_base58(),
+                grant.lease_id,
+                grant.ttl_secs
+            );
+        }
+        NegotiationOutcome::DeniedAtCapacity { retry_after_secs } => {
+            tracing::info!(
+                "capacity-lease: {} → DeniedAtCapacity (retry_after={}s)",
+                peer_id.to_base58(),
+                retry_after_secs
+            );
+        }
+        NegotiationOutcome::DeniedWrongModel => {
+            tracing::info!("capacity-lease: {} → DeniedWrongModel", peer_id.to_base58());
+        }
+        NegotiationOutcome::DeniedLeaseUnknown => {
+            tracing::info!(
+                "capacity-lease: {} → DeniedLeaseUnknown",
+                peer_id.to_base58()
+            );
+        }
+        NegotiationOutcome::DeniedProtocolUnsupported => {
+            tracing::info!(
+                "capacity-lease: {} → DeniedProtocolUnsupported (legacy peer, or truly unreachable — falling back to uncontracted dispatch)",
+                peer_id.to_base58()
+            );
+        }
+        NegotiationOutcome::PeerUnreachable => {
+            tracing::info!(
+                "capacity-lease: {} → PeerUnreachable (negotiation call itself failed)",
+                peer_id.to_base58()
+            );
+        }
+    }
+
     match outcome {
         NegotiationOutcome::PeerUnreachable => breaker.record_failure(peer_id),
         NegotiationOutcome::DeniedAtCapacity { retry_after_secs } => {
