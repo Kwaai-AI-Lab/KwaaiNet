@@ -25,6 +25,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, OnceLock,
     },
+    time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -34,6 +35,9 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use crate::capacity_lease::{
+    ConnectionId, LeaseHolder, LeaseId, LeaseTable, NegotiationOutcome, LEASE_TTL_SECS,
+};
 use crate::circuit_breaker::CircuitBreaker;
 
 pub const MUX_PROTO: &str = "/kwaai/inference-mux/1.0.0";
@@ -46,6 +50,12 @@ pub struct MuxRequest {
     pub method: String,
     pub path: String,
     pub body: Vec<u8>,
+    /// Attached once a lease has been negotiated (see `capacity_lease.rs`).
+    /// `None` for legacy peers or callers that haven't/couldn't negotiate —
+    /// the server forwards unconditionally in that case, exactly as before
+    /// this feature existed.
+    #[serde(default)]
+    pub lease_id: Option<LeaseId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +63,45 @@ pub struct MuxResponse {
     pub request_id: u64,
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+/// Status the server uses on `MuxResponse` when a request's `lease_id` is
+/// present but no longer valid (expired, or unknown after a server
+/// restart) — distinguishable from a real Ollama HTTP status so a future
+/// client refinement could react to it specifically without another wire
+/// change; today's Phase 1 client doesn't yet inspect it.
+pub const LEASE_EXPIRED_STATUS: u16 = 409;
+
+/// One frame on the mux stream — the original `Request`/`Response` pair,
+/// plus the Capacity Lease negotiation frames, all sharing the same
+/// `[4-byte LE length][msgpack(...)]` framing via `write_frame`/`read_frame`.
+/// Wrapping every variant in one externally-tagged enum keeps that framing
+/// untouched; only the `rmp_serde::from_slice::<MuxFrame>` call site differs
+/// from the pre-lease `::<MuxRequest>`/`::<MuxResponse>` calls.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum MuxFrame {
+    Request(MuxRequest),
+    Response(MuxResponse),
+    /// `model: None` when the caller doesn't know its target model yet
+    /// (today's mux proxy is a generic HTTP tunnel — see
+    /// `LeaseTable::try_grant`'s doc comment).
+    LeaseRequest {
+        request_id: u64,
+        model: Option<String>,
+    },
+    LeaseResponse {
+        request_id: u64,
+        outcome: NegotiationOutcome,
+    },
+    /// Fire-and-forget — no reply expected or awaited.
+    LeaseRelease {
+        lease_id: LeaseId,
+    },
+    /// Fire-and-forget renewal ping, sent only as a fallback when no real
+    /// request has gone out in `ttl/2` (see `LeaseHolder::needs_keepalive_probe`).
+    LeaseKeepalive {
+        lease_id: LeaseId,
+    },
 }
 
 // ── Frame I/O ─────────────────────────────────────────────────────────────────
@@ -121,8 +170,16 @@ async fn read_p2pd_stream_info<R: AsyncReadExt + Unpin>(reader: &mut R) -> Resul
 /// Start the inference-mux server: binds a local TCP port, registers it with
 /// the daemon as the handler for `MUX_PROTO`, and spawns an accept loop.
 ///
+/// `lease_table` is the node's single, process-wide Capacity Lease admission
+/// gate — the SAME `Arc` must also be handed to the `/kwaai/capacity-lease`
+/// unary handler (Phase 2), since both protocols dispatch to the same local
+/// Ollama instance and must share one semaphore, not one each.
+///
 /// Call from `cmd_shard_serve()` alongside the unary proxy handlers.
-pub async fn start_inference_mux_server(client: &mut P2PClient) -> Result<JoinHandle<()>> {
+pub async fn start_inference_mux_server(
+    client: &mut P2PClient,
+    lease_table: Arc<LeaseTable>,
+) -> Result<JoinHandle<()>> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .context("bind inference-mux server")?;
@@ -136,12 +193,22 @@ pub async fn start_inference_mux_server(client: &mut P2PClient) -> Result<JoinHa
 
     info!("inference-mux: listening on {addr}, registered as {MUX_PROTO}");
 
+    // Fresh id per accepted connection — used only to scope
+    // `lease_table.release_connection()` on stream death, not for admission
+    // itself (the semaphore is shared process-wide, see `lease_table` above).
+    let next_connection_id = Arc::new(AtomicU64::new(1));
+
     Ok(tokio::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((stream, peer)) => {
                     debug!("inference-mux server: accepted connection from {peer}");
-                    tokio::spawn(handle_mux_stream_server(stream));
+                    let connection_id = next_connection_id.fetch_add(1, Ordering::Relaxed);
+                    tokio::spawn(handle_mux_stream_server(
+                        stream,
+                        lease_table.clone(),
+                        connection_id,
+                    ));
                 }
                 Err(e) => {
                     warn!("inference-mux server accept error: {e}");
@@ -152,9 +219,14 @@ pub async fn start_inference_mux_server(client: &mut P2PClient) -> Result<JoinHa
     }))
 }
 
-/// Handle one connected client stream — reads MuxRequest frames concurrently,
-/// calls local Ollama for each, writes MuxResponse frames back in any order.
-async fn handle_mux_stream_server(stream: TcpStream) {
+/// Handle one connected client stream — reads mux frames concurrently, calls
+/// local Ollama for each `Request` (subject to the Capacity Lease admission
+/// gate), writes responses back in any order.
+async fn handle_mux_stream_server(
+    stream: TcpStream,
+    lease_table: Arc<LeaseTable>,
+    connection_id: ConnectionId,
+) {
     let (mut reader, writer) = stream.into_split();
     let writer = Arc::new(Mutex::new(writer));
 
@@ -166,36 +238,93 @@ async fn handle_mux_stream_server(stream: TcpStream) {
     }
     debug!("inference-mux server: StreamInfo prologue consumed — entering mux frame loop");
 
+    let ttl = Duration::from_secs(LEASE_TTL_SECS);
+
     loop {
         let frame = match read_frame(&mut reader).await {
             Ok(f) => f,
             Err(e) => {
                 debug!("inference-mux server: stream closed ({e})");
+                // Eager reclaim — don't make a healthy caller's lease wait
+                // out the full TTL just because THIS caller's stream died.
+                lease_table.release_connection(connection_id);
                 break;
             }
         };
 
-        let req: MuxRequest = match rmp_serde::from_slice(&frame) {
-            Ok(r) => r,
+        let mux_frame: MuxFrame = match rmp_serde::from_slice(&frame) {
+            Ok(f) => f,
             Err(e) => {
-                warn!("inference-mux server: bad MuxRequest: {e}");
+                warn!("inference-mux server: bad frame: {e}");
                 continue;
             }
         };
 
-        let writer = writer.clone();
-        tokio::spawn(async move {
-            let resp = call_ollama_local(&req).await;
-            match rmp_serde::to_vec_named(&resp) {
-                Ok(payload) => {
-                    let mut w = writer.lock().await;
-                    if let Err(e) = write_frame(&mut *w, &payload).await {
-                        warn!("inference-mux server: write response: {e}");
+        match mux_frame {
+            MuxFrame::Request(req) => {
+                if let Some(lease_id) = req.lease_id {
+                    if !lease_table.renew(lease_id, ttl) {
+                        // Lease unknown/expired — deny without ever calling
+                        // Ollama, rather than silently treating it as
+                        // unleased (that would defeat the admission gate).
+                        let resp = MuxResponse {
+                            request_id: req.request_id,
+                            status: LEASE_EXPIRED_STATUS,
+                            body: b"capacity lease expired or unknown".to_vec(),
+                        };
+                        write_mux_frame(&writer, MuxFrame::Response(resp)).await;
+                        continue;
                     }
                 }
-                Err(e) => warn!("inference-mux server: encode response: {e}"),
+                // No lease_id (legacy caller, or a caller whose negotiation
+                // was denied/unsupported) forwards unconditionally, exactly
+                // as before this feature existed — zero behavior change.
+                let writer = writer.clone();
+                tokio::spawn(async move {
+                    let resp = call_ollama_local(&req).await;
+                    write_mux_frame(&writer, MuxFrame::Response(resp)).await;
+                });
             }
-        });
+            MuxFrame::LeaseRequest { request_id, model } => {
+                let outcome = lease_table.try_grant(model.as_deref(), connection_id, ttl);
+                write_mux_frame(
+                    &writer,
+                    MuxFrame::LeaseResponse {
+                        request_id,
+                        outcome,
+                    },
+                )
+                .await;
+            }
+            MuxFrame::LeaseRelease { lease_id } => {
+                lease_table.release(lease_id);
+            }
+            MuxFrame::LeaseKeepalive { lease_id } => {
+                lease_table.renew(lease_id, ttl);
+            }
+            MuxFrame::Response(_) | MuxFrame::LeaseResponse { .. } => {
+                // These are client-bound frame types; a well-behaved peer
+                // never sends one to us. Ignore rather than treat as a
+                // protocol error — a future/relaxed client version sending
+                // an unexpected frame type shouldn't tear down the stream.
+                warn!("inference-mux server: received a client-bound frame type, ignoring");
+            }
+        }
+    }
+}
+
+/// Encode and write one `MuxFrame`, logging (not panicking) on failure —
+/// mirrors the original inline write-response logic, now shared across the
+/// several places the server writes a frame back.
+async fn write_mux_frame(writer: &Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>, frame: MuxFrame) {
+    match rmp_serde::to_vec_named(&frame) {
+        Ok(payload) => {
+            let mut w = writer.lock().await;
+            if let Err(e) = write_frame(&mut *w, &payload).await {
+                warn!("inference-mux server: write frame: {e}");
+            }
+        }
+        Err(e) => warn!("inference-mux server: encode frame: {e}"),
     }
 }
 
@@ -251,12 +380,19 @@ async fn call_ollama_local(req: &MuxRequest) -> MuxResponse {
 /// Shared client that multiplexes N concurrent inference requests over one
 /// persistent yamux stream to a remote GPU node.
 pub struct InferenceMuxClient {
+    peer_id: PeerId,
+    breaker: Arc<CircuitBreaker>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<MuxResponse>>>>,
+    pending_lease: Arc<Mutex<HashMap<u64, oneshot::Sender<NegotiationOutcome>>>>,
     tx: mpsc::Sender<Vec<u8>>,
     /// Set to true when the underlying stream dies. Checked in send() to fail
     /// fast instead of hanging on a oneshot that will never be resolved.
     dead: Arc<AtomicBool>,
+    /// Cached lease from the most recent successful negotiation, if any.
+    /// `send()` reuses it until it needs a keepalive-equivalent refresh;
+    /// see `ensure_lease()`.
+    lease: RwLock<Option<Arc<LeaseHolder>>>,
 }
 
 impl InferenceMuxClient {
@@ -264,8 +400,13 @@ impl InferenceMuxClient {
         self.dead.load(Ordering::Acquire)
     }
 
-    /// Open a stream to `peer_id` and start background I/O tasks.
-    pub async fn connect(peer_id: PeerId) -> Result<Arc<Self>> {
+    /// Open a stream to `peer_id` and start background I/O tasks. `breaker`
+    /// is the SAME per-session `CircuitBreaker` `resolve_inference_urls()`
+    /// already shares across every proxy for this peer — lease negotiation
+    /// outcomes feed it via the taxonomy in `capacity_lease.rs`'s doc
+    /// comment (only a transport-level failure trips it; a healthy
+    /// `Denied*` answer does not).
+    pub async fn connect(peer_id: PeerId, breaker: Arc<CircuitBreaker>) -> Result<Arc<Self>> {
         let sock =
             std::env::var("KWAAINET_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET_NAME.to_string());
         #[cfg(unix)]
@@ -298,13 +439,17 @@ impl InferenceMuxClient {
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<MuxResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let pending_lease: Arc<Mutex<HashMap<u64, oneshot::Sender<NegotiationOutcome>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let dead = Arc::new(AtomicBool::new(false));
 
         // Writer task: drains the send channel and writes frames to the stream.
-        // On exit, marks dead and drains pending so in-flight send() calls
-        // immediately receive an error rather than hanging forever.
+        // On exit, marks dead and drains both pending maps so in-flight
+        // send()/negotiate calls immediately receive an error rather than
+        // hanging forever.
         let pending_w = pending.clone();
+        let pending_lease_w = pending_lease.clone();
         let dead_w = dead.clone();
         tokio::spawn(async move {
             let mut writer = writer;
@@ -316,11 +461,14 @@ impl InferenceMuxClient {
             }
             dead_w.store(true, Ordering::Release);
             pending_w.lock().await.clear();
+            pending_lease_w.lock().await.clear();
         });
 
-        // Reader task: reads response frames and routes them to waiting callers.
-        // On exit, marks dead and drains pending.
+        // Reader task: reads frames and routes them to waiting callers —
+        // Response frames via `pending`, LeaseResponse frames via
+        // `pending_lease`. On exit, marks dead and drains both.
         let pending_rx = pending.clone();
+        let pending_lease_rx = pending_lease.clone();
         let dead_r = dead.clone();
         tokio::spawn(async move {
             loop {
@@ -331,28 +479,136 @@ impl InferenceMuxClient {
                         break;
                     }
                 };
-                let resp: MuxResponse = match rmp_serde::from_slice(&frame) {
-                    Ok(r) => r,
+                let mux_frame: MuxFrame = match rmp_serde::from_slice(&frame) {
+                    Ok(f) => f,
                     Err(e) => {
-                        warn!("inference-mux client: bad MuxResponse: {e}");
+                        warn!("inference-mux client: bad frame: {e}");
                         continue;
                     }
                 };
-                let sender = pending_rx.lock().await.remove(&resp.request_id);
-                if let Some(s) = sender {
-                    let _ = s.send(resp);
+                match mux_frame {
+                    MuxFrame::Response(resp) => {
+                        if let Some(s) = pending_rx.lock().await.remove(&resp.request_id) {
+                            let _ = s.send(resp);
+                        }
+                    }
+                    MuxFrame::LeaseResponse {
+                        request_id,
+                        outcome,
+                    } => {
+                        if let Some(s) = pending_lease_rx.lock().await.remove(&request_id) {
+                            let _ = s.send(outcome);
+                        }
+                    }
+                    MuxFrame::Request(_)
+                    | MuxFrame::LeaseRequest { .. }
+                    | MuxFrame::LeaseRelease { .. }
+                    | MuxFrame::LeaseKeepalive { .. } => {
+                        warn!("inference-mux client: received a server-bound frame type, ignoring");
+                    }
                 }
             }
             dead_r.store(true, Ordering::Release);
             pending_rx.lock().await.clear();
+            pending_lease_rx.lock().await.clear();
         });
 
         Ok(Arc::new(Self {
+            peer_id,
+            breaker,
             next_id: AtomicU64::new(1),
             pending,
+            pending_lease,
             tx,
             dead,
+            lease: RwLock::new(None),
         }))
+    }
+
+    /// Negotiate a `Capacity Lease` slot, or reuse the cached one if it
+    /// doesn't yet need a keepalive-equivalent refresh. Returns `None` on
+    /// any non-`Granted` outcome (denied, unsupported peer, or the
+    /// negotiation call itself failing) — callers proceed without a
+    /// `lease_id` in that case, exactly as before this feature existed.
+    ///
+    /// `model: None` because today's mux proxy is a generic HTTP tunnel
+    /// with no visibility into which model a forwarded request targets
+    /// (see `LeaseTable::try_grant`'s doc comment) — this is a known
+    /// simplification, not a final answer; real model-aware negotiation
+    /// needs `resolve_inference_urls()` to learn the target model first,
+    /// which is a separate, not-yet-resolved plumbing question.
+    async fn ensure_lease(&self, model: Option<&str>) -> Option<Arc<LeaseHolder>> {
+        {
+            let g = self.lease.read().await;
+            if let Some(holder) = g.as_ref() {
+                if !holder.needs_keepalive_probe() {
+                    return Some(holder.clone());
+                }
+            }
+        }
+
+        match self.negotiate_lease(model).await {
+            NegotiationOutcome::Granted(grant) => {
+                let holder = Arc::new(LeaseHolder::new(grant));
+                *self.lease.write().await = Some(holder.clone());
+                Some(holder)
+            }
+            _ => {
+                // Denied*/unreachable: proceed unleased for this request.
+                // Not caching a permanent "unsupported" verdict here is a
+                // deliberate Phase 1 simplification — a legacy/full peer
+                // gets re-negotiated roughly every ttl/2, not every single
+                // request. Phase 3's DHT capability flag is the real fix
+                // for skipping negotiation entirely against known-legacy
+                // peers, before ever opening this stream.
+                None
+            }
+        }
+    }
+
+    /// Send one `LeaseRequest` and translate the outcome into the
+    /// appropriate `CircuitBreaker` signal — this is the one place that
+    /// implements the taxonomy documented on `NegotiationOutcome`: only a
+    /// transport-level failure (timeout, channel closed) is `PeerUnreachable`
+    /// and trips the breaker; every answer the peer actually sends back,
+    /// Granted or Denied*, is proof of life.
+    async fn negotiate_lease(&self, model: Option<&str>) -> NegotiationOutcome {
+        if self.dead.load(Ordering::Acquire) {
+            return NegotiationOutcome::PeerUnreachable;
+        }
+
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending_lease.lock().await.insert(request_id, tx);
+
+        let frame = MuxFrame::LeaseRequest {
+            request_id,
+            model: model.map(String::from),
+        };
+        let outcome = match rmp_serde::to_vec_named(&frame) {
+            Ok(payload) => {
+                if self.tx.send(payload).await.is_err() {
+                    NegotiationOutcome::PeerUnreachable
+                } else {
+                    // Negotiation is a pure in-memory check on the remote
+                    // side (no LLM call involved) — a short timeout is
+                    // enough, and keeps a genuinely unreachable peer from
+                    // stalling the caller for anywhere near the 120s a real
+                    // inference request is allowed to take.
+                    match tokio::time::timeout(Duration::from_secs(10), rx).await {
+                        Ok(Ok(outcome)) => outcome,
+                        Ok(Err(_)) | Err(_) => NegotiationOutcome::PeerUnreachable,
+                    }
+                }
+            }
+            Err(_) => NegotiationOutcome::PeerUnreachable,
+        };
+
+        self.pending_lease.lock().await.remove(&request_id);
+
+        crate::capacity_lease::apply_breaker_outcome(&outcome, &self.peer_id, &self.breaker);
+
+        outcome
     }
 
     /// Send one inference request and await the response.
@@ -361,6 +617,9 @@ impl InferenceMuxClient {
         if self.dead.load(Ordering::Acquire) {
             return Err(anyhow::anyhow!("inference-mux client: stream disconnected"));
         }
+
+        let holder = self.ensure_lease(None).await;
+        let lease_id = holder.as_ref().map(|h| h.lease_id);
 
         let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (resp_tx, resp_rx) = oneshot::channel();
@@ -371,8 +630,10 @@ impl InferenceMuxClient {
             method: method.to_string(),
             path: path.to_string(),
             body,
+            lease_id,
         };
-        let payload = rmp_serde::to_vec_named(&req).context("encode MuxRequest")?;
+        let payload =
+            rmp_serde::to_vec_named(&MuxFrame::Request(req)).context("encode MuxRequest")?;
         self.tx
             .send(payload)
             .await
@@ -381,10 +642,17 @@ impl InferenceMuxClient {
         // 120s timeout guards the rare race where the stream dies between the
         // dead-check above and this await. Normally the dead+drain path fires
         // the oneshot error in microseconds, not seconds.
-        tokio::time::timeout(std::time::Duration::from_secs(120), resp_rx)
+        let result = tokio::time::timeout(Duration::from_secs(120), resp_rx)
             .await
             .context("inference-mux response timeout")?
-            .context("inference-mux response channel closed")
+            .context("inference-mux response channel closed");
+
+        if result.is_ok() {
+            if let Some(h) = holder.as_ref() {
+                h.mark_request_sent();
+            }
+        }
+        result
     }
 }
 
@@ -442,6 +710,7 @@ pub async fn start_local_mux_proxy(
 async fn ensure_mux_client(
     shared: &SharedMuxClient,
     peer_id: PeerId,
+    breaker: Arc<CircuitBreaker>,
 ) -> Result<Arc<InferenceMuxClient>> {
     {
         let g = shared.read().await;
@@ -458,7 +727,7 @@ async fn ensure_mux_client(
         }
     }
     info!("inference-mux: (re)connecting to {}", peer_id.to_base58());
-    let new_client = InferenceMuxClient::connect(peer_id).await?;
+    let new_client = InferenceMuxClient::connect(peer_id, breaker).await?;
     *g = Some(new_client.clone());
     Ok(new_client)
 }
@@ -534,7 +803,7 @@ async fn handle_mux_proxy_connection(
 
     let resp = 'send: {
         for attempt in 0u32..2 {
-            let client = match ensure_mux_client(&shared, peer_id).await {
+            let client = match ensure_mux_client(&shared, peer_id, breaker.clone()).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("inference-mux: connect failed (attempt {attempt}): {e:#}");

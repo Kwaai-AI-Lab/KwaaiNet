@@ -24,6 +24,18 @@ pub fn reputation_file() -> PathBuf {
 // Observation (single measurement sample)
 // ---------------------------------------------------------------------------
 
+/// Capacity Lease negotiation outcome, tagged onto an observation for
+/// diagnostics — orthogonal to `success`, which alone drives `score()`.
+/// A clean `DeniedHonest` still means `success: true` (the peer answered
+/// correctly, it was just full); only `BrokenPromise` (granted, then failed
+/// to honor) should also carry `success: false` on the same observation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum LeaseOutcome {
+    Granted,
+    DeniedHonest,
+    BrokenPromise,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerObservation {
     pub timestamp_secs: u64,
@@ -35,6 +47,11 @@ pub struct PeerObservation {
     /// Tokens/sec the peer claimed in its DHT announcement (None when unknown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claimed_tps: Option<f64>,
+    /// Diagnostic tag from a Capacity Lease negotiation, if this observation
+    /// came from one. `#[serde(default)]` keeps existing `reputation.json`
+    /// files (written before this field existed) loading cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_outcome: Option<LeaseOutcome>,
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +342,7 @@ mod tests {
             success,
             observed_tps: None,
             claimed_tps: None,
+            lease_outcome: None,
         }
     }
 
@@ -384,6 +402,7 @@ mod tests {
                     success: true,
                     observed_tps: Some(6.0),
                     claimed_tps: Some(10.0),
+                    lease_outcome: None,
                 },
             );
         }
@@ -404,6 +423,7 @@ mod tests {
                     success: true,
                     observed_tps: None,
                     claimed_tps: None,
+                    lease_outcome: None,
                 },
             );
         }

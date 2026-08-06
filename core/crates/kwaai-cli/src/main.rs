@@ -3,6 +3,7 @@
 mod api;
 mod block_rpc;
 mod calibration;
+mod capacity_lease;
 mod circuit_breaker;
 mod cli;
 mod config;

@@ -147,6 +147,7 @@ mod tests {
             public_name: format!("node-{}", start),
             trust_score: None,
             throughput: 0.0,
+            lease_v1: false,
         }
     }
 

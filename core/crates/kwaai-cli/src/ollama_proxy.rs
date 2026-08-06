@@ -31,6 +31,7 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use crate::capacity_lease::{LeaseId, LeaseTable};
 use crate::circuit_breaker::CircuitBreaker;
 
 pub const OLLAMA_PROXY_PROTO: &str = "/kwaai/ollama-proxy/1.0.0";
@@ -43,6 +44,14 @@ pub struct ProxyRequest {
     pub method: String,
     pub path: String,
     pub body: Vec<u8>,
+    /// Attached once `resolve_inference_urls()` has negotiated a Capacity
+    /// Lease for this peer (see `capacity_lease.rs`). `None` for legacy
+    /// servers, denied/unsupported negotiations, or the shard-proxy path
+    /// (which doesn't dispatch to Ollama and has no admission gate) — the
+    /// server forwards unconditionally in that case, exactly as before this
+    /// feature existed.
+    #[serde(default)]
+    pub lease_id: Option<LeaseId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,9 +76,19 @@ fn proxy_client() -> &'static reqwest::Client {
 /// Build a unary handler that forwards incoming proxy requests to the local
 /// Ollama at `localhost:11434`.
 ///
+/// `lease_table` is the SAME Capacity Lease admission gate shared with the
+/// inference-mux server (see `node.rs`/`shard_cmd.rs`) — both protocols
+/// dispatch to this same local Ollama instance. A request carrying a
+/// `lease_id` is renewed against the table before forwarding; an unknown or
+/// expired lease is denied without ever reaching Ollama. A request with no
+/// `lease_id` (legacy caller, or a negotiation that was denied/unsupported)
+/// forwards unconditionally, exactly as before this feature existed.
+///
 /// Register with `client.add_unary_handler(OLLAMA_PROXY_PROTO, handler, false)`.
 #[allow(clippy::type_complexity)]
-pub fn make_ollama_proxy_handler() -> impl Fn(
+pub fn make_ollama_proxy_handler(
+    lease_table: Arc<LeaseTable>,
+) -> impl Fn(
     Vec<u8>,
 ) -> Pin<
     Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
@@ -77,6 +96,7 @@ pub fn make_ollama_proxy_handler() -> impl Fn(
        + Sync
        + 'static {
     move |data: Vec<u8>| {
+        let lease_table = lease_table.clone();
         Box::pin(async move {
             let req: ProxyRequest = match rmp_serde::from_slice(&data) {
                 Ok(r) => r,
@@ -87,6 +107,13 @@ pub fn make_ollama_proxy_handler() -> impl Fn(
             };
 
             debug!("ollama_proxy server: {} {}", req.method, req.path);
+
+            if let Some(lease_id) = req.lease_id {
+                let ttl = std::time::Duration::from_secs(crate::capacity_lease::LEASE_TTL_SECS);
+                if !lease_table.renew(lease_id, ttl) {
+                    return encode_err(409, "capacity lease expired or unknown");
+                }
+            }
 
             let client = proxy_client();
             let url = format!("http://localhost:11434{}", req.path);
@@ -208,16 +235,27 @@ fn encode_err(status: u16, msg: &str) -> kwaai_p2p_daemon::error::Result<Vec<u8>
 
 /// Start a local TCP listener that proxies HTTP → P2P → remote Ollama.
 ///
+/// `lease_id` is the Capacity Lease negotiated once by the caller (see
+/// `resolve_inference_urls()`) before this proxy starts — `None` when
+/// negotiation was denied, unsupported, or skipped; every request through
+/// this proxy for the life of the returned handle carries the same
+/// `lease_id`, renewed implicitly by the server on each one.
+///
 /// Returns `(local_port, join_handle)`.  Drop the handle to stop the proxy.
 pub async fn start_local_proxy(
     client: Arc<P2PClient>,
     peer_id: PeerId,
     breaker: Arc<CircuitBreaker>,
+    lease_id: Option<LeaseId>,
 ) -> Result<(u16, tokio::task::JoinHandle<()>)> {
-    start_proxy_with_proto(client, peer_id, OLLAMA_PROXY_PROTO, breaker).await
+    start_proxy_with_proto(client, peer_id, OLLAMA_PROXY_PROTO, breaker, lease_id).await
 }
 
 /// Start a local TCP listener that proxies HTTP → P2P → remote shard API.
+///
+/// The shard API is a different local resource than Ollama and has no
+/// Capacity Lease admission gate — requests through this proxy never carry
+/// a `lease_id`.
 ///
 /// Returns `(local_port, join_handle)`.  Drop the handle to stop the proxy.
 pub async fn start_local_shard_proxy(
@@ -225,7 +263,7 @@ pub async fn start_local_shard_proxy(
     peer_id: PeerId,
     breaker: Arc<CircuitBreaker>,
 ) -> Result<(u16, tokio::task::JoinHandle<()>)> {
-    start_proxy_with_proto(client, peer_id, SHARD_PROXY_PROTO, breaker).await
+    start_proxy_with_proto(client, peer_id, SHARD_PROXY_PROTO, breaker, None).await
 }
 
 async fn start_proxy_with_proto(
@@ -233,6 +271,7 @@ async fn start_proxy_with_proto(
     peer_id: PeerId,
     protocol: &'static str,
     breaker: Arc<CircuitBreaker>,
+    lease_id: Option<LeaseId>,
 ) -> Result<(u16, tokio::task::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -251,7 +290,7 @@ async fn start_proxy_with_proto(
             let client = client.clone();
             let breaker = breaker.clone();
             tokio::spawn(handle_connection(
-                stream, client, peer_id, protocol, breaker,
+                stream, client, peer_id, protocol, breaker, lease_id,
             ));
         }
     });
@@ -265,6 +304,7 @@ async fn handle_connection(
     peer_id: PeerId,
     protocol: &'static str,
     breaker: Arc<CircuitBreaker>,
+    lease_id: Option<LeaseId>,
 ) {
     // Read the full HTTP request in two phases so that large LLM prompts
     // (~20-50 KB) delivered over a relay connection are not silently truncated
@@ -332,7 +372,12 @@ async fn handle_connection(
         }
     };
 
-    let req_bytes = match rmp_serde::to_vec_named(&ProxyRequest { method, path, body }) {
+    let req_bytes = match rmp_serde::to_vec_named(&ProxyRequest {
+        method,
+        path,
+        body,
+        lease_id,
+    }) {
         Ok(b) => b,
         Err(e) => {
             warn!("ollama_proxy: serialise: {e}");
@@ -420,6 +465,7 @@ async fn probe_shard_proxy(client: &Arc<P2PClient>, peer_id: PeerId) -> bool {
         method: "GET".to_string(),
         path: "/v1/models".to_string(),
         body: vec![],
+        lease_id: None,
     };
     let probe_bytes = match rmp_serde::to_vec_named(&probe) {
         Ok(b) => b,
@@ -478,9 +524,26 @@ pub async fn resolve_inference_urls(
                     start_local_shard_proxy(client.clone(), peer_id, breaker.clone()).await?,
                 )
             } else {
+                // Negotiate a Capacity Lease once per URL, before starting
+                // the local proxy — not once per request. `model: None`
+                // because this function has no visibility into which model
+                // a forwarded request will target (that's embedded in the
+                // JSON body, not known at resolve time); a peer that hasn't
+                // registered the lease protocol at all (legacy, or simply
+                // unreachable right now) falls through to today's
+                // uncontracted dispatch via `lease_id: None`.
+                let outcome =
+                    crate::capacity_lease::negotiate_lease_unary(client, peer_id, None, &breaker)
+                        .await;
+                let lease_id = match outcome {
+                    crate::capacity_lease::NegotiationOutcome::Granted(grant) => {
+                        Some(grant.lease_id)
+                    }
+                    _ => None,
+                };
                 (
                     "ollama-proxy",
-                    start_local_proxy(client.clone(), peer_id, breaker.clone()).await?,
+                    start_local_proxy(client.clone(), peer_id, breaker.clone(), lease_id).await?,
                 )
             };
 
@@ -493,4 +556,47 @@ pub async fn resolve_inference_urls(
     }
 
     Ok((resolved, handles))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_request_lease_id_defaults_to_none_for_legacy_wire_bytes() {
+        // Regression: `lease_id` was added after this wire format was
+        // already in use. A pre-Phase-2 caller's encoded ProxyRequest (no
+        // lease_id key at all) must still decode cleanly, defaulting to
+        // None, rather than failing to deserialize.
+        #[derive(Debug, Serialize)]
+        struct LegacyProxyRequest {
+            method: String,
+            path: String,
+            body: Vec<u8>,
+        }
+        let legacy = LegacyProxyRequest {
+            method: "POST".to_string(),
+            path: "/api/chat".to_string(),
+            body: b"{}".to_vec(),
+        };
+        let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
+
+        let decoded: ProxyRequest = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.method, "POST");
+        assert_eq!(decoded.path, "/api/chat");
+        assert_eq!(decoded.lease_id, None);
+    }
+
+    #[test]
+    fn proxy_request_lease_id_round_trips_when_present() {
+        let req = ProxyRequest {
+            method: "POST".to_string(),
+            path: "/api/chat".to_string(),
+            body: vec![],
+            lease_id: Some(42),
+        };
+        let bytes = rmp_serde::to_vec_named(&req).unwrap();
+        let decoded: ProxyRequest = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.lease_id, Some(42));
+    }
 }

@@ -126,6 +126,17 @@ struct DHTServerInfo {
     /// (which do not carry the DHT subkey). Unknown fields are silently ignored
     /// by legacy Python Hivemind clients.
     peer_id_b58: String,
+
+    /// Capacity Lease capability flag: this node supports negotiating a
+    /// GPU-slot lease before dispatch (see `capacity_lease.rs`), over
+    /// either `/kwaai/capacity-lease/1.0.0` (unary) or lease frames on an
+    /// already-open `/kwaai/inference-mux/1.0.0` stream. Always `true` for
+    /// any binary built with this field — it describes this binary's own
+    /// capability, not configuration, exactly like `version`. Lets a
+    /// requester skip straight to negotiation instead of an
+    /// attempt-and-fallback probe; absence of this key entirely (a legacy
+    /// pre-Capacity-Lease peer) is itself the "false" signal on decode.
+    lease_v1: bool,
 }
 
 impl DHTServerInfo {
@@ -155,6 +166,7 @@ impl DHTServerInfo {
             trust_attestations,
             vpk_info,
             peer_id_b58,
+            lease_v1: true,
         }
     }
 
@@ -193,6 +205,14 @@ impl DHTServerInfo {
             (
                 rmpv::Value::from("peer_id"),
                 rmpv::Value::from(self.peer_id_b58.as_str()),
+            ),
+            // Capacity Lease capability flag. Unconditional (unlike
+            // trust_attestations/vpk below) since this binary's own
+            // capability has no "empty" state to skip — legacy clients
+            // ignore the unknown key exactly as they do those two.
+            (
+                rmpv::Value::from("lease_v1"),
+                rmpv::Value::from(self.lease_v1),
             ),
         ];
 
@@ -529,8 +549,27 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         .await
         .context("registering p2p hello handler")?;
 
+    // Capacity Lease admission gate — ONE table per node process, shared by
+    // every transport that dispatches to this node's local Ollama instance
+    // (the ollama-proxy unary handler, the p2p capacity-lease handler, and
+    // the inference-mux server, all registered below). Sharing one Arc is
+    // load-bearing: two independent semaphores would let two contending
+    // callers each believe they hold exclusive capacity while still
+    // colliding inside the same Ollama process.
+    //
+    // Sized off OLLAMA_NUM_PARALLEL when set (Ollama's own concurrency
+    // knob), falling back to a conservative default otherwise.
+    let lease_max_concurrent = std::env::var("OLLAMA_NUM_PARALLEL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(crate::capacity_lease::DEFAULT_MAX_CONCURRENT);
+    let lease_table =
+        crate::capacity_lease::LeaseTable::new(config.model.clone(), lease_max_concurrent);
+    let _lease_sweep_handle = lease_table.spawn_periodic_sweep(std::time::Duration::from_secs(5));
+
     // Ollama proxy — lets remote peers route LLM requests to our local Ollama.
-    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler();
+    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler(lease_table.clone());
     let _ = client
         .add_unary_handler(
             crate::ollama_proxy::OLLAMA_PROXY_PROTO,
@@ -540,6 +579,8 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         .await;
 
     // Shard proxy — lets remote peers route requests to our local shard API.
+    // Unrelated to Ollama/Capacity Lease — a different local resource, no
+    // admission gate.
     let shard_proxy_handler = crate::ollama_proxy::make_shard_proxy_handler();
     let _ = client
         .add_unary_handler(
@@ -549,10 +590,23 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         )
         .await;
 
+    // Capacity-lease unary handler — lets p2p:// (non-persistent-stream)
+    // callers negotiate a slot once per resolve_inference_urls() call. The
+    // mux:// path negotiates over its own already-open stream instead (see
+    // inference_mux.rs) and doesn't use this protocol.
+    let lease_handler = crate::capacity_lease::make_capacity_lease_handler(lease_table.clone());
+    let _ = client
+        .add_unary_handler(
+            crate::capacity_lease::CAPACITY_LEASE_PROTO,
+            lease_handler,
+            false,
+        )
+        .await;
+
     // Inference-mux server — persistent multiplexed stream handler.
     // Registering here means any node running `kwaainet start` supports
     // `mux://PEER_ID` in --inference-urls, not just shard-serve nodes.
-    match crate::inference_mux::start_inference_mux_server(&mut client).await {
+    match crate::inference_mux::start_inference_mux_server(&mut client, lease_table.clone()).await {
         Ok(_) => info!("inference-mux server registered successfully"),
         Err(e) => warn!("inference-mux server registration failed: {e:#}"),
     }
@@ -1375,6 +1429,7 @@ async fn unannounce(
         trust_attestations: vec![],
         vpk_info: None,
         peer_id_b58: server_info.peer_id_b58.clone(),
+        lease_v1: server_info.lease_v1,
     };
     // Use the same 360 s TTL as a regular announcement — Hivemind bootstrap
     // peers reject updates with a shorter TTL than the existing record.
@@ -1537,6 +1592,7 @@ async fn announce(
                         success,
                         observed_tps: None,
                         claimed_tps: None,
+                        lease_outcome: None,
                     },
                 );
             }
@@ -2628,4 +2684,56 @@ fn find_p2pd_binary() -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod capacity_lease_dht_tests {
+    use super::*;
+
+    /// Decode `to_msgpack()`'s `Ext(64, ...)` wrapper down to the inner
+    /// fields map, mirroring what `shard_cmd.rs`'s `decode_server_info_ext`
+    /// does on the read side.
+    fn decode_fields_map(bytes: &[u8]) -> rmpv::Value {
+        let ext = rmpv::decode::read_value(&mut &bytes[..]).expect("valid outer msgpack");
+        let inner_bytes = match ext {
+            rmpv::Value::Ext(64, b) => b,
+            other => panic!("expected Ext(64, ..), got {other:?}"),
+        };
+        let inner = rmpv::decode::read_value(&mut &inner_bytes[..]).expect("valid inner msgpack");
+        match inner {
+            rmpv::Value::Array(arr) if arr.len() == 3 => arr[2].clone(),
+            other => {
+                panic!("expected a 3-element [state, throughput, fields] array, got {other:?}")
+            }
+        }
+    }
+
+    fn find_field<'a>(fields: &'a rmpv::Value, key: &str) -> Option<&'a rmpv::Value> {
+        match fields {
+            rmpv::Value::Map(entries) => entries
+                .iter()
+                .find(|(k, _)| k.as_str() == Some(key))
+                .map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn to_msgpack_announces_lease_v1_true() {
+        let info = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            false,
+            10.0,
+            vec![],
+            None,
+            "peer123".to_string(),
+        );
+        let bytes = info.to_msgpack().expect("encode");
+        let fields = decode_fields_map(&bytes);
+
+        let lease_v1 = find_field(&fields, "lease_v1").expect("lease_v1 key present");
+        assert_eq!(lease_v1.as_bool(), Some(true));
+    }
 }

@@ -353,8 +353,21 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         .await
         .context("Failed to register inference handler with p2pd")?;
 
+    // Capacity Lease admission gate for this shard-server process — see the
+    // matching construction in node.rs's run_node() for the full rationale
+    // (one table per process, shared by every transport dispatching to this
+    // node's local Ollama instance).
+    let lease_max_concurrent = std::env::var("OLLAMA_NUM_PARALLEL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(crate::capacity_lease::DEFAULT_MAX_CONCURRENT);
+    let lease_table =
+        crate::capacity_lease::LeaseTable::new(cfg.model.clone(), lease_max_concurrent);
+    let _lease_sweep_handle = lease_table.spawn_periodic_sweep(std::time::Duration::from_secs(5));
+
     // Ollama proxy — lets remote nodes route LLM requests to our local Ollama.
-    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler();
+    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler(lease_table.clone());
     let _ = client
         .add_unary_handler(
             crate::ollama_proxy::OLLAMA_PROXY_PROTO,
@@ -373,12 +386,25 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         )
         .await;
 
+    // Capacity-lease unary handler — lets p2p:// (non-persistent-stream)
+    // callers negotiate a slot once per resolve_inference_urls() call.
+    let lease_handler = crate::capacity_lease::make_capacity_lease_handler(lease_table.clone());
+    let _ = client
+        .add_unary_handler(
+            crate::capacity_lease::CAPACITY_LEASE_PROTO,
+            lease_handler,
+            false,
+        )
+        .await;
+
     // Inference mux — concurrent multiplexed inference via persistent stream.
     // Retry with backoff: p2pd may still be reconnecting to the relay on startup.
     let _mux_handle = {
         let mut handle = None;
         for attempt in 0..5u32 {
-            match crate::inference_mux::start_inference_mux_server(&mut client).await {
+            match crate::inference_mux::start_inference_mux_server(&mut client, lease_table.clone())
+                .await
+            {
                 Ok(h) => {
                     handle = Some(h);
                     break;
@@ -1951,6 +1977,12 @@ pub struct BlockServerEntry {
     pub throughput: f64,
     /// Local trust score for this peer (None until enriched from ReputationStore).
     pub trust_score: Option<f64>,
+    /// Whether this peer announced Capacity Lease support (`capacity_lease.rs`).
+    /// `false` for peers built before that feature existed. Not yet consumed
+    /// by candidate selection — landed now so the decode path is ready for
+    /// the shard-chain integration phase without another decoder pass.
+    #[allow(dead_code)]
+    pub lease_v1: bool,
 }
 
 /// Query bootstrap peers for all block keys of `dht_prefix` and return a
@@ -2105,7 +2137,7 @@ pub async fn discover_inference_peer(
             // Values stored under _kwaai.inference.nodes use the same
             // DHTServerInfo msgpack encoding as block records.
             if result.result_type == 1 {
-                if let Some((state, _, _, name, peer_id_b58, version, tps)) =
+                if let Some((state, _, _, name, peer_id_b58, version, tps, _lease_v1)) =
                     decode_server_info_ext(&result.value)
                 {
                     if state == 2 && version_meets_minimum(&version) {
@@ -2248,7 +2280,7 @@ async fn pick_gap_blocks(
 /// synthesise a stable key from `public_name:start_block` so they still count
 /// for gap detection even though they cannot be routed to directly.
 fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)> {
-    let (state, start_block, end_block, public_name, peer_id_b58, version, throughput) =
+    let (state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1) =
         decode_server_info_ext(bytes)?;
     // Only include ONLINE nodes (state=2); skip JOINING (0) and OFFLINE (-1).
     if state != 2 {
@@ -2273,6 +2305,7 @@ fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)
             public_name,
             throughput,
             trust_score: None,
+            lease_v1,
         },
     ))
 }
@@ -2334,8 +2367,16 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             Err(_) => continue,
         };
 
-        if let Some((state, start_block, end_block, public_name, _, version, throughput)) =
-            decode_server_info_ext(value_bytes)
+        if let Some((
+            state,
+            start_block,
+            end_block,
+            public_name,
+            _,
+            version,
+            throughput,
+            lease_v1,
+        )) = decode_server_info_ext(value_bytes)
         {
             if state != 2 {
                 continue;
@@ -2351,6 +2392,7 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
                 public_name,
                 throughput,
                 trust_score: None,
+                lease_v1,
             });
         }
     }
@@ -2393,10 +2435,11 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
 }
 
 /// Core decoder: `Ext(64, msgpack([state, throughput, {start_block, end_block, …}]))`
-/// Returns `(state, start_block, end_block, public_name, peer_id_b58, version, throughput)`.
+/// Returns `(state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1)`.
+#[allow(clippy::type_complexity)]
 fn decode_server_info_ext(
     bytes: &[u8],
-) -> Option<(i32, usize, usize, String, String, String, f64)> {
+) -> Option<(i32, usize, usize, String, String, String, f64, bool)> {
     let val = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
     let inner_bytes = match &val {
         rmpv::Value::Ext(64, b) => b.as_slice(),
@@ -2429,6 +2472,13 @@ fn decode_server_info_ext(
     let public_name = get_s("public_name");
     let peer_id_b58 = get_s("peer_id");
     let version = get_s("version");
+    // Absent key (a peer built before Capacity Lease existed) defaults to
+    // false — the exact "legacy peer" signal a requester falls back on.
+    let lease_v1 = map
+        .iter()
+        .find(|(ky, _)| ky.as_str() == Some("lease_v1"))
+        .and_then(|(_, v)| v.as_bool())
+        .unwrap_or(false);
 
     Some((
         state,
@@ -2438,6 +2488,7 @@ fn decode_server_info_ext(
         peer_id_b58,
         version,
         throughput,
+        lease_v1,
     ))
 }
 
@@ -2522,6 +2573,10 @@ impl SerializableEntry {
             public_name: self.public_name.clone(),
             throughput: 0.0,
             trust_score: None,
+            // A persisted circuit doesn't record whether the peer supports
+            // Capacity Lease — conservatively unknown/false, same as any
+            // other legacy-shaped record with the key absent.
+            lease_v1: false,
         })
     }
 }
@@ -2872,6 +2927,7 @@ pub async fn forward_through_chain(
                                     success: true,
                                     observed_tps: None,
                                     claimed_tps: None,
+                                    lease_outcome: None,
                                 },
                             );
                         }
@@ -2911,6 +2967,7 @@ pub async fn forward_through_chain(
                                     success: false,
                                     observed_tps: None,
                                     claimed_tps: None,
+                                    lease_outcome: None,
                                 },
                             );
                         }
@@ -3401,6 +3458,64 @@ mod tests {
         assert!(version_meets_minimum("kwaai-0.3.16"));
         assert!(version_meets_minimum("kwaai-0.4.0"));
         assert!(version_meets_minimum("kwaai-1.0.0"));
+    }
+
+    /// Build a minimal `Ext(64, [state, throughput, {fields}])` blob matching
+    /// `DHTServerInfo::to_msgpack()`'s shape, with `lease_v1` present or
+    /// absent — mirrors what a real (or legacy, pre-Capacity-Lease) peer's
+    /// DHT announcement decodes from.
+    fn make_server_info_ext_bytes(lease_v1: Option<bool>) -> Vec<u8> {
+        let mut fields = vec![
+            (rmpv::Value::from("start_block"), rmpv::Value::from(0i64)),
+            (rmpv::Value::from("end_block"), rmpv::Value::from(32i64)),
+            (
+                rmpv::Value::from("public_name"),
+                rmpv::Value::from("test-node"),
+            ),
+            (
+                rmpv::Value::from("peer_id"),
+                rmpv::Value::from(PeerId::random().to_base58().as_str()),
+            ),
+            (
+                rmpv::Value::from("version"),
+                rmpv::Value::from("kwaai-0.5.4"),
+            ),
+        ];
+        if let Some(v) = lease_v1 {
+            fields.push((rmpv::Value::from("lease_v1"), rmpv::Value::from(v)));
+        }
+        let inner = rmpv::Value::Array(vec![
+            rmpv::Value::from(2i32), // state = ONLINE
+            rmpv::Value::from(10.0), // throughput
+            rmpv::Value::Map(fields),
+        ]);
+        let mut inner_bytes = Vec::new();
+        rmpv::encode::write_value(&mut inner_bytes, &inner).unwrap();
+        let ext = rmpv::Value::Ext(64, inner_bytes);
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &ext).unwrap();
+        out
+    }
+
+    #[test]
+    fn decode_server_info_ext_reads_lease_v1_when_present() {
+        let bytes = make_server_info_ext_bytes(Some(true));
+        let (_, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
+        assert!(lease_v1);
+    }
+
+    #[test]
+    fn decode_server_info_ext_defaults_lease_v1_false_for_legacy_bytes() {
+        // No lease_v1 key at all — exactly what a pre-Capacity-Lease peer's
+        // announcement looks like. Must decode successfully (not error) and
+        // default to false, not panic or silently drop the record.
+        let bytes = make_server_info_ext_bytes(None);
+        let (state, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
+        assert_eq!(
+            state, 2,
+            "pre-existing fields must still decode alongside the new one"
+        );
+        assert!(!lease_v1);
     }
 
     #[test]
