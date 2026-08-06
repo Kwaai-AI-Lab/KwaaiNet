@@ -222,7 +222,7 @@ graph TB
 
 ### Technical Requirements
 
-**Primary Objective**: Modular framework for integrating storage and identity systems (Verida Network as reference implementation)
+**Primary Objective**: Modular framework for integrating storage and identity systems
 
 **Core Components**:
 ```rust
@@ -239,30 +239,26 @@ pub trait IdentityProvider {
 }
 
 // Example implementations
-pub struct VeridaStorage;     // Verida Network integration
 pub struct IPFSStorage;        // IPFS integration
 pub struct CustomStorage;      // Custom backend
 
-pub struct VeridaIdentity;     // Verida DID system
+pub struct DidPeerIdentity;    // did:peer (kwaai-trust)
 pub struct WebAuthnIdentity;   // FIDO2/PassKeys
 pub struct CustomIdentity;     // Custom provider
 ```
 
 **Integration Framework Features**:
-- **Storage Abstraction**: Pluggable storage backends (Verida, Solid, IPFS, Filecoin, custom)
+- **Storage Abstraction**: Pluggable storage backends (Solid, IPFS, Filecoin, custom)
 - **Identity Abstraction**: Pluggable identity providers (DIDs, WebAuthn, custom)
 - **Encryption Layer**: User-controlled private keys, zero-knowledge architecture
 - **Access Control**: Fine-grained permissions for data sharing
 - **Progressive Auth**: Anonymous → Email → Full identity flow
 - **GDPR Compliance**: Right to deletion, data portability, consent management
 
-**Example Integration: Verida Network**:
-See [docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md) for a complete reference implementation using Verida Network as one optional backend.
-
 **Key Deliverables**:
 1. Storage provider trait and plugin system
 2. Identity provider trait and plugin system
-3. Example implementations (Verida, IPFS, WebAuthn)
+3. Example implementations (IPFS, `did:peer`, WebAuthn)
 4. Progressive authentication framework
 5. Privacy compliance framework
 6. Integration documentation and examples
@@ -542,7 +538,7 @@ W3C VC Data Model 1.1 credentials, signed with `Ed25519Signature2020`. Stored as
 
 | Credential | Issuer | Subject | Trust weight | Phase |
 |---|---|---|---|---|
-| `SummitAttendeeVC` | Kwaai summit server | Node PeerId | 0.10 | **1 — live** |
+| `SummitAttendeeVC` | _(none — issuer removed)_ | Node PeerId | 0.10 | — no issuer |
 | `FiduciaryPledgeVC` | GliaNet Foundation | Node operator | 0.30 | 2 — Q2 2026 |
 | `VerifiedNodeVC` | Kwaai Foundation | Node PeerId | 0.20 | 2 — Q2 2026 |
 | `UptimeVC` | Bootstrap servers | Node PeerId | 0.20 | 3 — Q3 2026 |
@@ -573,7 +569,7 @@ W3C VC Data Model 1.1 credentials, signed with `Ed25519Signature2020`. Stored as
     "https://kwaai.ai/credentials/v1"
   ],
   "type": ["VerifiableCredential", "SummitAttendeeVC"],
-  "issuer": "did:peer:<summit-server-peer-id>",
+  "issuer": "did:peer:<issuer-peer-id>",
   "issuanceDate": "2026-03-15T09:00:00Z",
   "expirationDate": "2028-03-15T09:00:00Z",
   "credentialSubject": {
@@ -584,7 +580,7 @@ W3C VC Data Model 1.1 credentials, signed with `Ed25519Signature2020`. Stored as
   "proof": {
     "type": "Ed25519Signature2020",
     "created": "2026-03-15T09:00:00Z",
-    "verificationMethod": "did:peer:<summit-server-peer-id>#key-1",
+    "verificationMethod": "did:peer:<issuer-peer-id>#key-1",
     "proofPurpose": "assertionMethod",
     "proofValue": "<base64url-encoded-64-byte-signature>"
   }
@@ -655,7 +651,6 @@ core/crates/kwaai-trust/src/
 
 ### Storage Systems
 Multiple distributed storage networks can be integrated:
-- **Verida Network**: Decentralized storage with built-in identity (reference implementation - see docs/VERIDA_INTEGRATION.md)
 - **Solid Protocol**: Tim Berners-Lee's personal data pods with linked data standards
 - **IPFS**: Content-addressed storage for models and data
 - **Filecoin**: Persistent storage with cryptographic proofs and economic incentives
@@ -757,15 +752,6 @@ Platform-specific deployment patterns:
 - Edge Device Deployment: Router firmware, IoT devices, resource-constrained patterns
 - Enterprise/Server Deployment: Kubernetes, compliance integration, high availability
 
-### Verida Integration Architecture (Optional Example)
-**[docs/VERIDA_ARCHITECTURE.md](docs/VERIDA_ARCHITECTURE.md)**
-
-Deep dive into Verida Network integration as one optional backend:
-- Protocol Bridge Design: Message translation, state synchronization
-- Identity Management: DID architecture, key management, multi-context identity
-- Storage Layer: Private datastores, data schemas, sync engine
-- Security Architecture: E2E encryption, zero-knowledge auth, threat model
-
 ### Distributed Deep Learning (Hivemind Patterns)
 **[docs/HIVEMIND_RUST_ARCHITECTURE.md](docs/HIVEMIND_RUST_ARCHITECTURE.md)**
 
@@ -780,7 +766,6 @@ Comprehensive plan for replicating Hivemind's distributed deep learning in Rust/
 ### Supporting Documentation
 - **[INTEGRATIONS.md](INTEGRATIONS.md)** - Optional integration framework and examples
 - **[docs/CANDLE_ENGINE.md](docs/CANDLE_ENGINE.md)** - Candle framework technical details (includes distributed inference patterns)
-- **[docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md)** - Optional Verida integration example
 - **`core/crates/kwaai-trust/`** - Decentralized trust graph implementation (credential types, DID utilities, storage, verification, trust scoring)
 
 ---

@@ -24,7 +24,6 @@ COPY crates/kwaai-p2p-daemon/Cargo.toml crates/kwaai-p2p-daemon/
 COPY crates/kwaai-hivemind-dht/Cargo.toml crates/kwaai-hivemind-dht/
 COPY crates/kwaai-trust/Cargo.toml crates/kwaai-trust/
 COPY crates/kwaai-inference/Cargo.toml crates/kwaai-inference/
-COPY crates/summit-server/Cargo.toml crates/summit-server/
 
 # Stub out source files so the dependency layer caches
 RUN find crates -name Cargo.toml | while read f; do \

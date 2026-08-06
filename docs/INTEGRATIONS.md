@@ -4,19 +4,6 @@ KwaaiNet is designed with a modular architecture allowing integration with vario
 
 ## Storage Systems
 
-### Verida Network
-**Status**: Reference Implementation Available
-
-Decentralized storage with built-in identity management. See [docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md) for complete integration guide.
-
-**Features**:
-- End-to-end encrypted private databases
-- User-controlled data with self-sovereign identity
-- Multi-chain data verification
-- W3C DID-compliant identity system
-
-**Use When**: You need both storage and identity in a single integrated solution.
-
 ### IPFS
 **Status**: Community Integration
 
@@ -86,18 +73,19 @@ pub trait StorageProvider {
 
 ## Identity Systems
 
-### W3C DIDs (Verida Example)
-**Status**: Reference Implementation Available
+### W3C DIDs
+**Status**: `did:peer` implemented in `kwaai-trust`
 
-Decentralized Identifiers following W3C standards, with Verida Network as example implementation.
+Decentralized Identifiers following W3C standards. KwaaiNet ships a self-certifying
+`did:peer:<base58-peer-id>` method derived directly from the node's libp2p Ed25519
+keypair — the DID *is* the key, so no registry or network resolution is needed.
 
 **Features**:
-- Self-sovereign identity
-- Multi-chain verification
-- User-controlled credentials
+- Self-sovereign identity, no registry
+- User-controlled credentials (`~/.kwaainet/credentials/`)
 - Interoperable across platforms
 
-**Use When**: You need full decentralized identity with cross-chain support.
+**Use When**: You need decentralized identity bound to a node's network identity.
 
 ### WebAuthn / PassKeys
 **Status**: Framework Provided

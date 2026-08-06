@@ -6,14 +6,12 @@ on:
     paths:
       - "core/crates/kwaai-cli/**"
       - "core/crates/map-server/**"
-      - "core/crates/summit-server/**"
       - "projects/kwaai-platform/**"
   pull_request:
     branches: [main]
     paths:
       - "core/crates/kwaai-cli/**"
       - "core/crates/map-server/**"
-      - "core/crates/summit-server/**"
       - "projects/kwaai-platform/**"
 
 jobs:

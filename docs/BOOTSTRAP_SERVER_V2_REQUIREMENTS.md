@@ -135,7 +135,7 @@ Fast-lane exception: peers with a `KwaaiNet:TrustedNodeVC` can present their VC 
 ### 3.5 Federation — community bootstrap operators
 
 Bootstrap operators register by:
-1. Running `kwaainet bootstrap register --stake <vc>` — submits a `BootstrapOperatorVC` to the summit-server trust registry
+1. Running `kwaainet bootstrap register --stake <vc>` — submits a `BootstrapOperatorVC` to a trust registry (**to be chosen**: this role was assigned to summit-server, which has been removed)
 2. Receiving a signed `BootstrapAdmissionVC` authorising them to serve introductions
 3. Publishing their multiaddr in the `_kwaai.bootstrap.nodes` DHT key
 
@@ -342,7 +342,7 @@ kwaainet bootstrap peers
 ### Phase 3 — Federation
 1. `_kwaai.bootstrap.nodes` DHT key
 2. Community registration endpoint
-3. BootstrapOperatorVC issuance via summit-server
+3. BootstrapOperatorVC issuance (issuer TBD — summit-server removed)
 4. `kwaainet` auto-discovers community nodes
 
 ### Phase 4 — Peer cache gossip
@@ -387,6 +387,6 @@ kwaainet bootstrap peers
 
 2. **QUIC transport**: libp2p QUIC support in Rust is stable but adds ~15 MB to binary. Is the latency improvement (no handshake RTT) worth it for bootstrap specifically?
 
-3. **Federation governance**: who decides which community operators get BootstrapAdmissionVCs? Kwaai-controlled summit-server for now, but longer-term this should move to a DAO or multi-sig.
+3. **Federation governance**: who decides which community operators get BootstrapAdmissionVCs? This was to be a Kwaai-controlled summit-server, which has since been removed — so the near-term issuer is now an open question, with a DAO or multi-sig still the longer-term goal.
 
 4. **PoW accessibility**: adaptive PoW may disadvantage very low-power devices (Raspberry Pi). Should there be a VC-free but bandwidth-limited slow-lane?

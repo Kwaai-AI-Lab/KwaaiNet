@@ -1063,7 +1063,7 @@ cargo build --release --target aarch64-unknown-linux-gnu
 
 ### Updated Challenge 1 Specification
 
-The Rust/WASM Core Engine challenge (750K VDA) now incorporates Hivemind patterns:
+The Rust/WASM Core Engine challenge (prize TBD) now incorporates Hivemind patterns:
 
 | Original Requirement | Hivemind Enhancement |
 |---------------------|---------------------|

@@ -6,6 +6,40 @@
 
 - [ ] **Release build takes ~1.5 hours** — `[profile.release]` in `core/Cargo.toml` uses `lto = true` (fat LTO) + `codegen-units = 1`. Switch to `lto = "thin"`: thin LTO is parallel (5–10× faster link) with <5% runtime impact for this workload (I/O-bound: network, Ollama calls, redb). The `[profile.ci]` profile is already fast (`lto = false`, `codegen-units = 16`) and is unaffected.
 
+## Replacements needed after the Verida / summit-server removal
+
+Both Verida (identity + VDA token) and `summit-server` (VC issuer / trust registry) were
+dropped. Their code and docs are gone, but three things they were providing now have no
+owner and need a replacement design.
+
+- [ ] **Node earning rates / token economics** — the old docs denominated contribution in
+      VDA (`100 VDA/hour` compute, `50 VDA/GB` storage, `25 VDA/verification`, plus a
+      `+30-70%` renewable-energy bonus). These figures are removed, not replaced. The new
+      internal unit is **credits**, accounted via co-signed work receipts (`kwaai-ledger`).
+      First release is deliberately **zero-sum with no faucet**, so no issuance rate exists
+      yet — define earn/spend rates only when/if a mint is introduced. Deployment-tier
+      docs now say "highest/medium/lowest earning rate" rather than absolute amounts.
+
+- [ ] **Progressive authentication model** — `docs/DATA_FLOWS.md` (deleted) documented an
+      auth ladder of Anonymous → PassKey/Email → "Full Sovereign" (a Verida DID) →
+      "Wallet Connected" (multi-chain). The sovereign and wallet tiers are void. KwaaiNet
+      already has self-certifying `did:peer` identity in `kwaai-trust`, which is the
+      natural replacement for the sovereign tier; the multi-chain tier simply disappears.
+      Needs a rewritten data-flow/auth doc. The deleted file's Verida-free
+      "Privacy-Preserving AI Inference" section is worth recovering from git history.
+
+- [ ] **VC issuer / trust registry** — `summit-server` was the only component that issued
+      Verifiable Credentials, and was also slated to be the `BootstrapOperatorVC` trust
+      registry. Nothing issues VCs now, so `SummitAttendeeVC` has no issuer and the
+      bootstrap-federation admission design is blocked. Choose a replacement issuer before
+      any VC gates anything. Note two pre-existing blockers first: `kwaai-trust`'s VC
+      signatures are nondeterministic (HashMap + `serde(flatten)`, so any VC with ≥2 claims
+      can fail verification at random), and `TrustScore::from_credentials` never calls
+      `verify()` at all.
+
+- [ ] **Hackathon prize denomination** — challenge prizes were quoted in VDA (3M+ total).
+      All figures replaced with "TBD"; the challenges themselves are unchanged.
+
 ## Housekeeping
 
 - [ ] **Finish moving `~/Source` to `/Volumes/WD2`** — rsync copy already done and verified (checksums match, file counts match). Step remaining: `rm -rf ~/Source` then `ln -s /Volumes/WD2/Source ~/Source`. WD2 must be mounted before deleting the original. Frees ~49 GB on internal SSD.
@@ -96,10 +130,10 @@
 
 ### v2 — Operator Dashboard (auth required)
 
-- [ ] **Passkey / WebAuthn registration** — reuse `summit-server` WebAuthn flow. Add `POST /api/auth/begin` + `/complete` to map-server, or proxy to summit-server.
+- [ ] **Passkey / WebAuthn registration** — add `POST /api/auth/begin` + `/complete` to map-server. (Was planned as a reuse of the summit-server WebAuthn flow; that crate has been removed, so this is now a from-scratch implementation.)
 - [ ] **Operator node binding** — `POST /api/node/claim` lets an authenticated user claim their peer ID. Stored in SQLite alongside the node cache.
 - [ ] **Private stats panel** — authenticated route `/dashboard` showing uptime history, per-block throughput, earnings ledger, and VC status for the operator's own node.
-- [ ] **VC issuance trigger** — operator dashboard shows a "Request VerifiedNodeVC" button that initiates the issuance flow via summit-server.
+- [ ] **VC issuance trigger** — operator dashboard shows a "Request VerifiedNodeVC" button that initiates an issuance flow. **Blocked:** no VC issuer exists in the system since summit-server was removed; an issuer must be chosen/built first.
 
 ---
 
@@ -193,7 +227,7 @@
 
 ### Phase 3 — Federation
 - [ ] **`_kwaai.bootstrap.nodes` DHT key** — community bootstrap nodes self-register; existing nodes auto-discover via DHT crawl.
-- [ ] **`BootstrapOperatorVC` issuance** — `kwaainet bootstrap register --vc <path>` submits to summit-server; returns `BootstrapAdmissionVC`.
+- [ ] **`BootstrapOperatorVC` issuance** — `kwaainet bootstrap register --vc <path>` submits to a trust registry; returns `BootstrapAdmissionVC`. **Blocked:** the registry role was assigned to summit-server, which has been removed; a replacement must be chosen first.
 - [ ] **Federation API** — `GET /api/federation/nodes`, `POST /api/federation/register`, `DELETE /api/federation/nodes/:peer_id` (Kwaai admin).
 - [ ] **VC revocation** — revoked `BootstrapAdmissionVC` causes nodes to stop using that bootstrap within 60 s (next DHT crawl).
 - [ ] **Geographic distribution** — deploy Kwaai-operated nodes in US-West, US-East, EU-West, AP-Southeast; anycast DNS (`bootstrap.kwaai.ai`).
