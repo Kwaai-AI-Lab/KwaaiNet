@@ -61,6 +61,9 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod store;
+pub use store::{LedgerStore, PeerBalance};
+
 /// Server-minted lease identifier, scoped to the granting peer's process.
 /// Mirrors `capacity_lease::LeaseId`; never persisted by the lease table.
 pub type LeaseId = u64;
@@ -97,6 +100,8 @@ pub enum LedgerError {
     QuoteMismatch(String),
     #[error("response digest mismatch — the claim refers to different bytes than were delivered")]
     DigestMismatch,
+    #[error("ledger store: {0}")]
+    Store(String),
     #[error(
         "token count mismatch — provider claimed {claimed_prompt}+{claimed_completion} but the \
          delivered response reports {observed_prompt}+{observed_completion}"
@@ -322,6 +327,18 @@ impl WorkClaim {
     fn to_receipt_signing_bytes(&self) -> Result<Vec<u8>> {
         to_canonical(self)
     }
+
+    /// Content address of the claim itself, computable by **either** party from
+    /// the claim alone.
+    ///
+    /// This is deliberately not [`Receipt::receipt_id`]: that one hashes the
+    /// whole co-signed receipt, so it depends on `consumer_sig` and a provider
+    /// holding an unsigned claim cannot compute it. The store keys outstanding
+    /// claims on *this* id precisely so a later counter-signature can be matched
+    /// back to the claim it settles.
+    pub fn claim_id(&self) -> Result<[u8; 32]> {
+        Ok(digest(&to_canonical(self)?))
+    }
 }
 
 // ── Receipt ───────────────────────────────────────────────────────────────────
@@ -359,6 +376,12 @@ impl Receipt {
 
     pub fn receipt_id_hex(&self) -> Result<String> {
         Ok(hex::encode(self.receipt_id()?))
+    }
+
+    /// Content address of the underlying claim — the key under which the
+    /// provider may already be holding this work as outstanding.
+    pub fn claim_id(&self) -> Result<[u8; 32]> {
+        self.claim.claim_id()
     }
 
     pub fn credits(&self) -> MicroCredits {
@@ -418,24 +441,38 @@ pub fn response_digest(body: &[u8]) -> [u8; 32] {
     digest(body)
 }
 
+/// Encode any ledger artifact for the wire or for storage, using the same
+/// canonical encoding as the signing preimage.
+pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {
+    to_canonical(v)
+}
+
+/// Decode a ledger artifact produced by [`encode`].
+pub fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T> {
+    rmp_serde::from_slice(bytes).map_err(|e| LedgerError::Encode(e.to_string()))
+}
+
+/// Shared fixtures for this crate's tests. Lives outside `mod tests` so the
+/// `store` module's tests can use the same identities and receipt builders
+/// rather than duplicating them.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use libp2p::identity::Keypair;
 
-    /// A test identity: the libp2p keypair, its `did:peer:` form, and the
-    /// dalek signing key derived from the same secret bytes.
-    struct Id {
-        did: String,
-        signing: SigningKey,
+    /// A test identity: its `did:peer:` form and a dalek signing key derived
+    /// from the same secret bytes.
+    pub struct Id {
+        pub did: String,
+        pub signing: SigningKey,
     }
 
-    fn make_id() -> Id {
+    pub fn make_id() -> Id {
         let kp = Keypair::generate_ed25519();
         let did = kwaai_trust::peer_id_to_did(&kp.public().to_peer_id());
         // libp2p's `secret()` yields its own SecretKey wrapper; dalek wants the
-        // raw 32 bytes. This is the same conversion a caller in kwaai-cli will
-        // need to make from NodeIdentity.
+        // raw 32 bytes. This is the same conversion a caller in kwaai-cli makes
+        // from NodeIdentity.
         let ed = kp.try_into_ed25519().unwrap();
         let raw: [u8; 32] = ed.secret().as_ref().try_into().unwrap();
         Id {
@@ -444,7 +481,7 @@ mod tests {
         }
     }
 
-    fn quote(provider: &Id, consumer: &Id) -> LeaseQuote {
+    pub fn quote(provider: &Id, consumer: &Id) -> LeaseQuote {
         LeaseQuote {
             lease_id: 7,
             provider_did: provider.did.clone(),
@@ -458,7 +495,7 @@ mod tests {
         }
     }
 
-    fn claim_for(
+    pub fn claim_for(
         grant: &SignedLeaseGrant,
         provider: &Id,
         body: &[u8],
@@ -483,6 +520,42 @@ mod tests {
         .sign(&provider.signing)
         .unwrap()
     }
+
+    /// A complete, co-signed receipt for the given parties.
+    pub fn full_receipt(
+        provider: &Id,
+        consumer: &Id,
+        body: &[u8],
+        prompt: u64,
+        completion: u64,
+    ) -> Receipt {
+        let grant = quote(provider, consumer).sign(&provider.signing).unwrap();
+        claim_for(&grant, provider, body, prompt, completion)
+            .counter_sign(&consumer.signing, 1)
+            .unwrap()
+    }
+
+    /// A provider-only claim, as a provider would actually hold it: signed by
+    /// the provider and nothing else. Deliberately does *not* reach for the
+    /// consumer's key — an earlier version of this fixture counter-signed just
+    /// to obtain a receipt id, which hid the fact that a real provider cannot
+    /// compute one.
+    pub fn unsigned_claim(
+        provider: &Id,
+        consumer: &Id,
+        body: &[u8],
+        prompt: u64,
+        completion: u64,
+    ) -> WorkClaim {
+        let grant = quote(provider, consumer).sign(&provider.signing).unwrap();
+        claim_for(&grant, provider, body, prompt, completion)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::*;
 
     // ── The load-bearing test ────────────────────────────────────────────────
 

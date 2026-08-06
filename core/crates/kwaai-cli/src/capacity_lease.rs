@@ -244,6 +244,15 @@ impl LeaseTable {
             .retain(|_, row| row.expires_at > now);
     }
 
+    /// Whether a lease is still live. Exists so callers keeping their own
+    /// per-lease state alongside the table (the mux server's signed-quote map)
+    /// can drop entries for leases the table has already reclaimed — a lease
+    /// that lapses by TTL never fires `release`, so without this such state
+    /// would grow for the life of the connection.
+    pub fn is_active(&self, lease_id: LeaseId) -> bool {
+        self.rows.lock().unwrap().contains_key(&lease_id)
+    }
+
     /// Spawn a background task that calls `sweep_expired()` on a fixed
     /// cadence for the life of the process. This is what actually makes
     /// `sweep_expired()` load-bearing rather than dead code: without it, a
@@ -476,6 +485,33 @@ mod tests {
     use super::*;
 
     const MODEL: &str = "llama3.1:8b";
+
+    #[tokio::test]
+    async fn is_active_reports_a_lease_gone_after_expiry_and_after_release() {
+        // The mux server's quote map prunes on this, so a stale `true` would
+        // leak per-lease state for the life of a connection.
+        let table = LeaseTable::new(MODEL.to_string(), 2);
+        let a = match table.try_grant(None, 1, Duration::from_millis(20)) {
+            NegotiationOutcome::Granted(g) => g.lease_id,
+            other => panic!("expected a grant, got {other:?}"),
+        };
+        let b = match table.try_grant(None, 1, Duration::from_secs(30)) {
+            NegotiationOutcome::Granted(g) => g.lease_id,
+            other => panic!("expected a grant, got {other:?}"),
+        };
+        assert!(table.is_active(a));
+        assert!(table.is_active(b));
+
+        // `a` lapses by TTL — the path that never fires `release`.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        table.sweep_expired();
+        assert!(!table.is_active(a), "an expired lease is not active");
+        assert!(table.is_active(b), "an unexpired lease is untouched");
+
+        table.release(b);
+        assert!(!table.is_active(b));
+        assert!(!table.is_active(9_999), "an id never granted is not active");
+    }
 
     #[tokio::test]
     async fn periodic_sweep_reclaims_an_abandoned_lease() {

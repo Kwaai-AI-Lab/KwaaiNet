@@ -15,6 +15,7 @@ mod hf;
 mod identity;
 mod inference_mux;
 mod ledger_cmd;
+mod ledger_node;
 mod llama_local;
 mod map;
 mod monitor;

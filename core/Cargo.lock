@@ -3099,8 +3099,10 @@ dependencies = [
  "kwaai-trust",
  "libp2p",
  "rmp-serde",
+ "rusqlite",
  "serde",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
 ]
 
