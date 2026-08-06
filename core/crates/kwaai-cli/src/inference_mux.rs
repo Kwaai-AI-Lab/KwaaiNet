@@ -1142,6 +1142,302 @@ mod tests {
         rmp_serde::to_vec_named(frame).expect("encode frame")
     }
 
+    /// Build a valid go-libp2p-daemon StreamInfo prologue naming `peer` as the
+    /// authenticated caller — the same bytes the real daemon writes before it
+    /// pipes a stream to our handler.
+    ///
+    /// Hand-encoded rather than built with `prost`: kwaai-cli is on prost 0.12
+    /// (workspace) while kwaai-p2p-daemon generates `StreamInfo` against prost
+    /// 0.13, so `StreamInfo`'s `Message` impl is for a trait this crate cannot
+    /// name. Two length-delimited fields is less machinery than reconciling that
+    /// skew, and keeps the test pinned to the wire format rather than to a
+    /// generated type.
+    fn stream_info_prologue(peer: &PeerId) -> Vec<u8> {
+        fn len_delimited(field: u8, bytes: &[u8], out: &mut Vec<u8>) {
+            out.push((field << 3) | 2); // wire type 2 = length-delimited
+            let mut buf = unsigned_varint::encode::u64_buffer();
+            out.extend_from_slice(unsigned_varint::encode::u64(bytes.len() as u64, &mut buf));
+            out.extend_from_slice(bytes);
+        }
+
+        // StreamInfo { peer = 1, addr = 2, proto = 3 } — `addr` is unset, which
+        // proto3 encodes as absent.
+        let mut payload = Vec::new();
+        len_delimited(1, &peer.to_bytes(), &mut payload);
+        len_delimited(3, MUX_PROTO.as_bytes(), &mut payload);
+
+        // The prologue itself is varint-length-framed; see
+        // `kwaai_p2p_daemon::stream::parse_stream_info`.
+        let mut buf = unsigned_varint::encode::u64_buffer();
+        let mut out = unsigned_varint::encode::u64(payload.len() as u64, &mut buf).to_vec();
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    fn identity_from(seed: [u8; 32]) -> (ed25519_dalek::SigningKey, PeerId, String) {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let pk = libp2p::identity::ed25519::PublicKey::try_from_bytes(
+            signing.verifying_key().as_bytes(),
+        )
+        .expect("valid ed25519 public key");
+        let peer = PeerId::from_public_key(&libp2p::identity::PublicKey::from(pk));
+        let did = did_for_peer(&peer);
+        (signing, peer, did)
+    }
+
+    async fn read_one_frame(stream: &mut TcpStream) -> MuxFrame {
+        let bytes = read_frame(stream).await.expect("read frame");
+        rmp_serde::from_slice(&bytes).expect("decode frame")
+    }
+
+    async fn send_one_frame(stream: &mut TcpStream, frame: &MuxFrame) {
+        let payload = rmp_serde::to_vec_named(frame).expect("encode frame");
+        write_frame(stream, &payload).await.expect("write frame");
+    }
+
+    /// Full three-step exchange against the real server handler over a real TCP
+    /// connection, with a real StreamInfo prologue, real Ed25519 signatures, a
+    /// live local Ollama, and two independent SQLite ledgers.
+    ///
+    /// Ignored because it needs Ollama on 127.0.0.1:11434 with llama3.2:3b. Run
+    /// with:
+    ///   cargo test -p kwaainet --profile ci -- --ignored --nocapture full_receipt_exchange
+    #[tokio::test]
+    #[ignore = "requires a local Ollama with llama3.2:3b"]
+    async fn full_receipt_exchange_between_two_real_ledgers() {
+        let (provider_key, _provider_peer, provider_did) = identity_from([21u8; 32]);
+        let (consumer_key, consumer_peer, consumer_did) = identity_from([22u8; 32]);
+
+        let provider_ledger = LedgerNode::in_memory(provider_key, provider_did.clone());
+        let consumer_ledger = LedgerNode::in_memory(consumer_key, consumer_did.clone());
+
+        // Real admission gate, one slot, so the grant path is the real one.
+        let lease_table = crate::capacity_lease::LeaseTable::new("llama3.2:3b".to_string(), 1);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().unwrap();
+        {
+            let lease_table = lease_table.clone();
+            let ledger = provider_ledger.clone();
+            tokio::spawn(async move {
+                let (sock, _) = listener.accept().await.expect("accept");
+                handle_mux_stream_server(sock, lease_table, Some(ledger), 1).await;
+            });
+        }
+
+        let mut client = TcpStream::connect(addr).await.expect("connect");
+        client
+            .write_all(&stream_info_prologue(&consumer_peer))
+            .await
+            .expect("write prologue");
+
+        // ── 1. Negotiate, and get a signed quote back ────────────────────────
+        send_one_frame(
+            &mut client,
+            &MuxFrame::LeaseRequest {
+                request_id: 1,
+                model: None,
+            },
+        )
+        .await;
+
+        let (lease_id, grant) = match read_one_frame(&mut client).await {
+            MuxFrame::LeaseResponse {
+                outcome: NegotiationOutcome::Granted(g),
+                quote: Some(q),
+                ..
+            } => (g.lease_id, q),
+            other => panic!("expected a granted lease with a quote, got {other:?}"),
+        };
+        grant
+            .verify()
+            .expect("the quote must carry a valid provider signature");
+        assert_eq!(
+            grant.quote.consumer_did, consumer_did,
+            "the quote must be bound to the authenticated caller, not a self-declared id"
+        );
+        assert_eq!(grant.quote.provider_did, provider_did);
+
+        // ── 2. Real inference, and a claim over the exact bytes returned ─────
+        let body = serde_json::json!({
+            "model": "llama3.2:3b",
+            "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+            "stream": false,
+            "options": {"num_ctx": 2048, "num_predict": 8},
+        });
+        send_one_frame(
+            &mut client,
+            &MuxFrame::Request(MuxRequest {
+                request_id: 7,
+                method: "POST".into(),
+                path: "/api/chat".into(),
+                body: serde_json::to_vec(&body).unwrap(),
+                lease_id: Some(lease_id),
+            }),
+        )
+        .await;
+
+        let resp = match read_one_frame(&mut client).await {
+            MuxFrame::Response(r) => r,
+            other => panic!("expected a Response, got {other:?}"),
+        };
+        assert_eq!(
+            resp.status,
+            200,
+            "ollama said: {}",
+            String::from_utf8_lossy(&resp.body)
+        );
+        let claim = resp
+            .claim
+            .expect("a leased, metered response must carry a claim");
+
+        // The provider is holding this as unpayable until we counter-sign.
+        let pending = provider_ledger.balances().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].earned, 0, "an unsigned claim is not income");
+        assert_eq!(pending[0].unsigned_claims, 1);
+
+        // ── 3. Counter-sign and ack ──────────────────────────────────────────
+        let (prompt_tokens, completion_tokens) =
+            (claim.payload.prompt_tokens, claim.payload.completion_tokens);
+        let receipt = consumer_ledger
+            .counter_sign(claim, &grant, &resp.body)
+            .expect("the claim must verify against the quote and the delivered bytes");
+        let receipt_id = receipt.receipt_id().unwrap();
+        send_one_frame(&mut client, &MuxFrame::ReceiptAck { receipt }).await;
+
+        // The ack is fire-and-forget, so poll rather than assume it has landed.
+        let mut provider_view = None;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let b = provider_ledger.balances().unwrap();
+            if b.first().is_some_and(|p| p.receipts == 1) {
+                provider_view = Some(b);
+                break;
+            }
+        }
+        let p = &provider_view.expect("provider should have recorded the receipt")[0];
+        let c = &consumer_ledger.balances().unwrap()[0];
+
+        assert_eq!(p.peer_did, consumer_did);
+        assert_eq!(c.peer_did, provider_did);
+        assert_eq!(p.unsigned_claims, 0, "the receipt must retire the claim");
+        assert_eq!(
+            p.earned, c.spent,
+            "both sides must independently agree on the amount"
+        );
+        assert_eq!(
+            p.net(),
+            -c.net(),
+            "and therefore on the net, with opposite sign"
+        );
+        assert!(
+            p.earned > 0,
+            "real tokens were served, so the amount must be non-zero"
+        );
+
+        // Both parties must hold the same content-addressed artifact.
+        assert!(
+            consumer_ledger.has_receipt(&receipt_id).unwrap()
+                && provider_ledger.has_receipt(&receipt_id).unwrap(),
+            "the receipt_id must match on both sides"
+        );
+
+        println!(
+            "receipt {} — {prompt_tokens} prompt + {completion_tokens} completion tokens \
+             — {} micro-credits, agreed by both sides",
+            hex::encode(receipt_id),
+            p.earned,
+        );
+    }
+
+    /// Live interop against a real remote peer over the real relay, using this
+    /// node's real p2pd and real `~/.kwaainet/ledger.db`.
+    ///
+    /// Doubles as both compatibility checks, decided by what the remote runs:
+    ///
+    /// * remote on v0.5.4/v0.5.5 (no ledger) → 200, `claim: None`, no receipt,
+    ///   no error. This is the graceful-degradation bar.
+    /// * remote on this branch → 200, a claim, and a receipt persisted on both
+    ///   sides.
+    ///
+    /// Run with a peer id and the node running:
+    ///   KWAAI_TEST_PEER=12D3Koo… cargo test -p kwaainet --profile ci -- \
+    ///     --ignored --nocapture live_mux_request
+    #[tokio::test]
+    #[ignore = "requires a running node and KWAAI_TEST_PEER"]
+    async fn live_mux_request_against_a_remote_peer() {
+        let peer_b58 =
+            std::env::var("KWAAI_TEST_PEER").expect("set KWAAI_TEST_PEER to the remote peer id");
+        let model = std::env::var("KWAAI_TEST_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string());
+        let peer: PeerId = peer_b58.parse().expect("valid peer id");
+
+        // `CircuitBreaker::new()` already hands back an Arc.
+        let client = InferenceMuxClient::connect(peer, CircuitBreaker::new())
+            .await
+            .expect("open a mux stream to the remote peer");
+
+        let ledger = LedgerNode::shared();
+        println!(
+            "our did: {}",
+            ledger.as_ref().map(|l| l.did()).unwrap_or("<no ledger>")
+        );
+        let before = ledger
+            .as_ref()
+            .map(|l| l.balances().unwrap().len())
+            .unwrap_or(0);
+
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+            "stream": false,
+            "options": {"num_ctx": 2048, "num_predict": 8},
+        });
+        let resp = client
+            .send("POST", "/api/chat", serde_json::to_vec(&body).unwrap())
+            .await
+            .expect("the remote peer must answer");
+
+        println!("status: {}", resp.status);
+        println!(
+            "body:   {}",
+            String::from_utf8_lossy(&resp.body)
+                .chars()
+                .take(300)
+                .collect::<String>()
+        );
+        assert_eq!(
+            resp.status,
+            200,
+            "remote said: {}",
+            String::from_utf8_lossy(&resp.body)
+        );
+
+        // `send()` takes the claim out once it has settled it, so what we assert
+        // on is whether a receipt landed — not the transient field.
+        match ledger.as_ref() {
+            None => println!("no local ledger — nothing to settle"),
+            Some(l) => {
+                let after = l.balances().unwrap();
+                println!("peer balances now: {}", after.len());
+                for b in &after {
+                    println!(
+                        "  {} earned={} spent={} receipts={} unsigned={}",
+                        b.peer_did, b.earned, b.spent, b.receipts, b.unsigned_claims
+                    );
+                }
+                if after.len() > before {
+                    println!("→ remote HAS the ledger: a receipt was co-signed");
+                } else {
+                    println!(
+                        "→ remote has NO ledger (expected on v0.5.4/v0.5.5): \
+                         served correctly with no receipt and no error"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_v055_peer_can_still_decode_our_response_carrying_a_claim() {
         // The claim field is populated by the provider; an old consumer must
