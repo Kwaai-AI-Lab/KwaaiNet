@@ -6,17 +6,122 @@
 
 use anyhow::{Context, Result};
 use ed25519_dalek::SigningKey;
-use kwaai_ledger::{LeaseQuote, Receipt, WorkClaimPayload};
+use kwaai_ledger::{LeaseQuote, Receipt, WorkClaimPayload, MICRO_PER_CREDIT};
 
 use crate::cli::{LedgerAction, LedgerArgs};
 use crate::display::*;
 use crate::identity::{NodeIdentity, KEY_EPOCH};
+use crate::ledger_node::{LedgerNode, UNSIGNED_RATIO_WARN};
 
 pub async fn run(args: LedgerArgs) -> Result<()> {
     match args.action {
+        LedgerAction::Show { micro } => show(micro),
         LedgerAction::Verify { path } => verify_receipt(&path),
         LedgerAction::SelfTest => self_test(),
     }
+}
+
+/// Per-peer netting from this node's point of view.
+///
+/// Credits are pairwise, not network-wide, so this is deliberately a list of
+/// bilateral positions rather than a single balance. The absence of a total
+/// "wallet balance" is the design, not a missing feature — there is no mint, so
+/// the only meaningful number is what you and one other peer owe each other.
+fn show(micro: bool) -> Result<()> {
+    print_box_header("Work Credits");
+
+    let Some(ledger) = LedgerNode::shared() else {
+        print_warning("Ledger unavailable — this node cannot record work credits.");
+        println!("  Run `kwaainet ledger self-test` for the reason.");
+        print_separator();
+        return Ok(());
+    };
+
+    println!("  This node:   {}", ledger.did());
+    println!(
+        "  Price:       {} micro / 1k tokens",
+        ledger.price_micro_per_1k_tokens()
+    );
+    println!();
+
+    let balances = ledger.balances()?;
+    if balances.is_empty() {
+        print_info("No receipts yet — no work has been served or consumed under a lease.");
+        print_separator();
+        return Ok(());
+    }
+
+    let fmt = |v: u64| -> String {
+        if micro {
+            v.to_string()
+        } else {
+            format!("{:.6}", v as f64 / MICRO_PER_CREDIT as f64)
+        }
+    };
+
+    println!(
+        "  {:<18} {:>14} {:>14} {:>14}   NOTES",
+        "PEER", "EARNED", "SPENT", "NET"
+    );
+    for b in &balances {
+        // The DID is ~55 chars of which only the tail distinguishes peers, so
+        // show the tail — the same convention the peer list uses.
+        let short = b
+            .peer_did
+            .rsplit(':')
+            .next()
+            .map(|s| {
+                if s.len() > 16 {
+                    format!("…{}", &s[s.len() - 15..])
+                } else {
+                    s.to_string()
+                }
+            })
+            .unwrap_or_else(|| b.peer_did.clone());
+
+        let net = b.net();
+        let net_str = if micro {
+            net.to_string()
+        } else {
+            format!("{:.6}", net as f64 / MICRO_PER_CREDIT as f64)
+        };
+
+        let mut notes = vec![format!("{} receipts", b.receipts)];
+        if b.unsigned_claims > 0 {
+            notes.push(format!("{} unsigned", b.unsigned_claims));
+        }
+        // A peer that mostly declines to counter-sign is taking delivery without
+        // acknowledging it. Advisory only in Phase 1 — flagged here, not yet an
+        // admission gate.
+        if b.unsigned_ratio().is_some_and(|r| r > UNSIGNED_RATIO_WARN) {
+            notes.push("⚠ mostly unacknowledged".to_string());
+        }
+
+        println!(
+            "  {:<18} {:>14} {:>14} {:>14}   {}",
+            short,
+            fmt(b.earned),
+            fmt(b.spent),
+            net_str,
+            notes.join(", ")
+        );
+    }
+
+    let (earned, spent, receipts) = ledger.totals()?;
+    println!();
+    println!(
+        "  {} receipts · {} earned · {} spent",
+        receipts,
+        fmt(earned),
+        fmt(spent)
+    );
+    println!();
+    print_info(
+        "Credits are pairwise and non-transferable: earning from one peer does \
+         not let you spend at another.",
+    );
+    print_separator();
+    Ok(())
 }
 
 fn verify_receipt(path: &std::path::Path) -> Result<()> {

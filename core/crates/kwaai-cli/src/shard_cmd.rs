@@ -402,8 +402,12 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     let _mux_handle = {
         let mut handle = None;
         for attempt in 0..5u32 {
-            match crate::inference_mux::start_inference_mux_server(&mut client, lease_table.clone())
-                .await
+            match crate::inference_mux::start_inference_mux_server(
+                &mut client,
+                lease_table.clone(),
+                crate::ledger_node::LedgerNode::shared(),
+            )
+            .await
             {
                 Ok(h) => {
                     handle = Some(h);

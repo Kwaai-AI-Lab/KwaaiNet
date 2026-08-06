@@ -606,7 +606,13 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Inference-mux server — persistent multiplexed stream handler.
     // Registering here means any node running `kwaainet start` supports
     // `mux://PEER_ID` in --inference-urls, not just shard-serve nodes.
-    match crate::inference_mux::start_inference_mux_server(&mut client, lease_table.clone()).await {
+    match crate::inference_mux::start_inference_mux_server(
+        &mut client,
+        lease_table.clone(),
+        crate::ledger_node::LedgerNode::shared(),
+    )
+    .await
+    {
         Ok(_) => info!("inference-mux server registered successfully"),
         Err(e) => warn!("inference-mux server registration failed: {e:#}"),
     }

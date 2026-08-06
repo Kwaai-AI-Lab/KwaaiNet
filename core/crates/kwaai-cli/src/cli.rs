@@ -487,6 +487,12 @@ pub struct LedgerArgs {
 
 #[derive(Subcommand)]
 pub enum LedgerAction {
+    /// Show earned / spent / net credits per peer
+    Show {
+        /// Show raw micro-credits instead of whole credits
+        #[arg(long)]
+        micro: bool,
+    },
     /// Verify a co-signed work receipt file (both signatures + content address)
     Verify {
         /// Path to a msgpack-encoded receipt
