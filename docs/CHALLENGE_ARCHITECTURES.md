@@ -230,64 +230,6 @@ graph TB
 
 ## Component 2: Optional Integration Framework
 
-### 2.1 Integration Architecture (Verida Example)
-
-```mermaid
-graph TB
-    subgraph "KwaaiNet Core"
-        InferenceEngine[Inference Engine]
-        UserContext[User Context Manager]
-    end
-
-    subgraph "Verida Integration Layer"
-        Bridge[Protocol Bridge]
-        IdentityMgr[Identity Manager<br/>DID & Keys]
-        StorageIface[Storage Interface<br/>DbStore]
-    end
-
-    subgraph "Verida Network"
-        VeridaClient[Verida Client SDK]
-        Datastore[Private Datastores<br/>Encrypted]
-        DIDRegistry[DID Registry<br/>Multi-Chain]
-    end
-
-    subgraph "User Data Sources"
-        Gmail[Gmail]
-        Calendar[Calendar]
-        Drive[Drive]
-        Telegram[Telegram]
-    end
-
-    subgraph "AI Enhancement"
-        PersonalAI[Personalized AI<br/>with Context]
-    end
-
-    InferenceEngine --> Bridge
-    UserContext --> Bridge
-
-    Bridge --> IdentityMgr
-    Bridge --> StorageIface
-
-    IdentityMgr --> VeridaClient
-    StorageIface --> VeridaClient
-
-    VeridaClient --> Datastore
-    VeridaClient --> DIDRegistry
-
-    Gmail --> StorageIface
-    Calendar --> StorageIface
-    Drive --> StorageIface
-    Telegram --> StorageIface
-
-    Bridge --> PersonalAI
-    InferenceEngine --> PersonalAI
-    Datastore --> PersonalAI
-
-    style Bridge fill:#50C878,color:#fff
-    style IdentityMgr fill:#50C878,color:#fff
-    style PersonalAI fill:#FFD700,color:#000
-```
-
 ### 2.2 Progressive Authentication Flow
 
 ```mermaid
@@ -308,7 +250,6 @@ stateDiagram-v2
         - Temporary storage
     end note
 
-    BiometricVerified --> FullSovereign: Create Verida DID
     note right of BiometricVerified
         - Device biometrics
         - Enhanced security
@@ -330,55 +271,6 @@ stateDiagram-v2
 
     OptionalWallet --> [*]
 ```
-
-### 2.3 Personal Data Integration Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant KwaaiNet
-    participant Bridge as Verida Bridge
-    participant Identity as Identity Manager
-    participant Storage as Storage Interface
-    participant Verida as Verida Network
-    participant DataSources as Data Sources<br/>(Gmail/Calendar/etc)
-
-    User->>KwaaiNet: AI Query with Personal Context
-    KwaaiNet->>Bridge: request_personal_context(query, privacy_level)
-
-    Bridge->>Identity: authenticate_user()
-    Identity->>Verida: verify_DID()
-    Verida-->>Identity: DID_verified
-    Identity-->>Bridge: AuthToken
-
-    alt Privacy Level: Personalized
-        Bridge->>Storage: gather_personal_context(query)
-
-        par Gather from Multiple Sources
-            Storage->>DataSources: fetch_relevant_emails()
-            Storage->>DataSources: fetch_calendar_events()
-            Storage->>DataSources: fetch_documents()
-        end
-
-        Storage->>Storage: apply_privacy_filters()
-        Storage->>Storage: encrypt_sensitive_data()
-        Storage-->>Bridge: PersonalContext
-    else Privacy Level: Basic
-        Bridge->>Bridge: use_basic_preferences()
-    end
-
-    Bridge->>KwaaiNet: enhanced_context
-    KwaaiNet->>KwaaiNet: run_inference_with_context()
-    KwaaiNet-->>User: Personalized AI Response
-
-    opt Store Interaction
-        KwaaiNet->>Bridge: store_interaction_for_learning()
-        Bridge->>Verida: save_to_private_datastore()
-    end
-```
-
-
----
 
 ## Component 3: Browser SDK Development
 
@@ -414,7 +306,6 @@ graph TB
 
     subgraph "Backend"
         Network[KwaaiNet P2P]
-        Verida[Verida Network]
         MapAPI[Map API<br/>Node Registry]
     end
 
@@ -436,8 +327,6 @@ graph TB
     Storage --> Privacy
 
     Compute --> Network
-    Identity --> Verida
-    Privacy --> Verida
     Carbon --> MapAPI
 
     Events -.notifications.-> UI
@@ -481,7 +370,7 @@ sequenceDiagram
         Worker->>WASM: execute_inference()
         WASM-->>Worker: results
         Worker->>Network: submit_results()
-        Network-->>Worker: VDA_rewards
+        Network-->>Worker: rewards
 
         Worker->>SDK: emit('vda-earned', amount)
         SDK->>Website: Update UI
@@ -573,7 +462,6 @@ graph TB
 
     subgraph "Integration Points"
         KwaaiNet[KwaaiNet Core]
-        Verida[Verida Storage]
         Enterprise[Enterprise IAM]
     end
 
@@ -593,7 +481,6 @@ graph TB
     ImmutableLog --> Alerts
 
     KwaaiNet --> Framework
-    Verida --> Framework
     Enterprise --> Framework
 
     style Framework fill:#FF6B6B,color:#fff
@@ -741,7 +628,7 @@ graph TB
 
     subgraph "Common Features"
         Auth[Progressive Auth]
-        Rewards[VDA Rewards]
+        Rewards[Rewards]
         Battery[Battery Manager]
         Carbon[Carbon Tracking]
     end
@@ -972,7 +859,7 @@ graph TB
     end
 
     subgraph "Rewards"
-        BaseReward[Base VDA Rewards]
+        BaseReward[Base Rewards]
         GreenBonus[Green Energy Bonus<br/>+30-70%]
         CommunityBonus[Community Challenges<br/>+10-20%]
     end
@@ -1150,7 +1037,7 @@ graph TB
 
     subgraph "Rewards"
         Badge[Digital Badges]
-        VDABonus[VDA Bonus Rewards]
+        BonusRewards[Bonus Rewards]
         Leaderboard[Leaderboard Position]
         NFT[Verifiable NFT Certificates]
     end
@@ -1172,13 +1059,13 @@ graph TB
     Milestones --> Models10
 
     Solar100 --> Badge
-    GreenStreak --> VDABonus
+    GreenStreak --> BonusRewards
     Pioneer --> Leaderboard
 
-    Negative --> VDABonus
+    Negative --> BonusRewards
     Offset100 --> NFT
 
-    Team --> VDABonus
+    Team --> BonusRewards
     Community --> Leaderboard
 
     style Solar100 fill:#FFD700,color:#000
@@ -1196,10 +1083,6 @@ graph TB
 graph TB
     subgraph "Challenge 1: Core Engine"
         Core[Rust/WASM Core]
-    end
-
-    subgraph "Optional: Verida Integration"
-        Verida[Verida Layer]
     end
 
     subgraph "Challenge 3: Browser SDK"
@@ -1221,11 +1104,7 @@ graph TB
     Core --> Browser
     Core --> Mobile
 
-    Verida --> Core
-    Verida --> Browser
-    Verida --> Mobile
 
-    Compliance --> Verida
     Compliance --> Core
 
     Environmental --> Core
@@ -1236,7 +1115,6 @@ graph TB
     Mobile --> Compliance
 
     style Core fill:#4A90E2,color:#fff
-    style Verida fill:#50C878,color:#fff
     style Environmental fill:#FFD700,color:#000
 ```
 
@@ -1248,7 +1126,6 @@ graph TB
 - [Integration Options](../INTEGRATIONS.md) - Optional storage and identity integrations
 - [Data Flows](./DATA_FLOWS.md) - Authentication and data flow diagrams
 - [Deployment Architecture](./DEPLOYMENT_ARCHITECTURE.md) - Platform-specific deployment patterns
-- [Verida Architecture](./VERIDA_ARCHITECTURE.md) - Optional Verida integration example
 
 ---
 

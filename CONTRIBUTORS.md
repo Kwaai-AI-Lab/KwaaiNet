@@ -153,8 +153,6 @@ See `CONTRIBUTING.md` → "CLI Command Idempotency" for the required pattern.
 > make trust a live network feature rather than a local tool.
 
 **Phase 2 — Credential issuance (Q2 2026)**
-- [ ] Build the summit on-ramp server that issues `SummitAttendeeVC` on QR scan
-      (signs with its own Ed25519 keypair; returns VC JSON for the attendee to import)
 - [ ] Build the GliaNet pledge endpoint that issues `FiduciaryPledgeVC`
       (`kwaainet pledge sign` flow — submits pledge hash, receives signed VC)
 - [ ] Build the Kwaai Foundation onboarding endpoint that issues `VerifiedNodeVC`
@@ -208,7 +206,6 @@ See `CONTRIBUTING.md` → "CLI Command Idempotency" for the required pattern.
 ### Identity Integrations
 - [ ] WebAuthn / PassKey identity provider (implement `IdentityProvider` trait)
 - [ ] ENS (Ethereum Name Service) identity provider
-- [ ] Improve Verida DID documentation with working end-to-end example
 
 ### Browser / Web
 - [ ] WASM bundle size audit and tree-shaking
@@ -231,7 +228,6 @@ See `CONTRIBUTING.md` → "CLI Command Idempotency" for the required pattern.
 - [ ] Add CI platform matrix (Linux, macOS, Windows, WASM)
 - [ ] End-to-end test harness for multi-node inference
 - [ ] Performance regression benchmarks in CI
-- [ ] Smoke-test `summit-server` Docker image end-to-end (passkey registration → VC issuance → node bind)
 - [ ] Add Docker build to CI so image is validated on every PR, not only on release tags
 
 ### Cross-Compilation

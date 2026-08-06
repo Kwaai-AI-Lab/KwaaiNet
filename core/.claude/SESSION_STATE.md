@@ -79,18 +79,17 @@ KwaaiNetCore
 │   ├── ExpertRouter (load balancing)
 │   ├── DecentralizedAverager (parameter sync)
 │   └── BlockwiseQuantizer (8-bit compression)
-├── Verida Integration
-│   ├── VeridaStorage (E2E encrypted DB)
-│   └── SelfSovereignID (multi-chain identity)
+├── Identity & Trust
+│   └── did:peer + Verifiable Credentials (kwaai-trust)
 └── Environmental & Economic
     ├── CarbonTracker (green energy metrics)
-    └── VDARewardSystem (token economics)
+    └── Credit ledger (co-signed work receipts — planned)
 ```
 
 ### Three-Service Platform
-1. **AI Compute**: Distributed inference (100 VDA/hour)
-2. **Private Storage**: E2E encrypted via Verida (50 VDA/GB)
-3. **Self-Sovereign Identity**: Multi-chain verified (25 VDA/verification)
+1. **AI Compute**: Distributed inference
+2. **Private Storage**: E2E encrypted (VPK / kwaai-storage)
+3. **Self-Sovereign Identity**: `did:peer`, self-certifying (kwaai-trust)
 
 ## Files Modified This Session
 - `crates/kwaai-p2p/src/rpc.rs` - Fixed libp2p 0.53 API compatibility
@@ -157,13 +156,12 @@ cargo run --release --example tensor_exchange -- --connect /ip4/<IP>/tcp/4001/p2
 3. **Model Support**: PyTorch loader, streaming loading
 4. **Testing**: Integration tests, benchmarks, multi-node scenarios
 
-### Q1 2026 Hackathon (3M+ VDA Prizes)
-- 🦀 Rust/WASM Core Engine: 750K VDA
-- 🔗 Verida Integration: 600K VDA
-- 🌐 Browser SDK: 500K VDA
-- 🏢 Enterprise Compliance: 450K VDA
-- 📱 Mobile Foundation: 400K VDA
-- 🌱 Environmental Gamification: 300K VDA
+### Q1 2026 Hackathon (prizes TBD)
+- 🦀 Rust/WASM Core Engine
+- 🌐 Browser SDK
+- 🏢 Enterprise Compliance
+- 📱 Mobile Foundation
+- 🌱 Environmental Gamification
 
 ### Getting Started
 ```bash
@@ -212,8 +210,7 @@ Provider: Announce model availability
 4. **Multi-model Support**: Announce multiple model spans
 5. **NAT Traversal**: Add relay/hole-punching for nodes behind NAT
 6. **WASM Build**: Complete browser bindings for web deployment
-7. **Verida Integration**: Bridge to Verida storage and identity
-8. **Token Economics**: Implement VDA reward distribution
+7. **Credit Ledger**: Co-signed work receipts (`kwaai-ledger`) for earn/spend accounting
 9. **Carbon Tracking**: Add environmental metrics and green energy detection
 
 ## Notes
@@ -224,5 +221,5 @@ Provider: Announce model availability
 - libp2p 0.53 API is correctly implemented with `Codec` trait
 - All compilation warnings are minor (unused imports) and don't affect functionality
 - Architecture supports universal deployment: Browser, Mobile, Desktop, Embedded
-- Token economics: 100 VDA/hour compute + 50 VDA/GB storage + 25 VDA/ID verification
-- Carbon bonus: +30-70% VDA for renewable energy usage
+- Credit ledger: earn/spend rates not yet defined (zero-sum receipts first, no faucet)
+- Carbon bonus: renewable-energy incentive planned; unit TBD

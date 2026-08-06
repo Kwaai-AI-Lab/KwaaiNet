@@ -122,7 +122,6 @@ graph TB
 
     subgraph "Backend Integration"
         P2P[P2P Network]
-        Verida[Verida Storage]
         MapAPI[Map API]
     end
 
@@ -145,7 +144,6 @@ graph TB
     Messaging --> Settings
 
     Dashboard --> P2P
-    Earnings --> Verida
     Carbon --> MapAPI
 
     style Background fill:#4A90E2,color:#fff
@@ -245,7 +243,6 @@ graph TB
 
     subgraph "Backend Services"
         P2P[P2P Network<br/>WebRTC]
-        Verida[Verida SDK<br/>Identity & Storage]
         Push[APNs<br/>Push Notifications]
     end
 
@@ -266,7 +263,6 @@ graph TB
     RustCore --> BatteryAPI
 
     RustCore --> P2P
-    SwiftUI --> Verida
     SwiftUI --> Push
 
     style RustCore fill:#4A90E2,color:#fff
@@ -305,7 +301,6 @@ graph TB
 
     subgraph "Backend Services"
         P2P[P2P Network<br/>WebRTC]
-        Verida[Verida SDK<br/>Identity & Storage]
         FCM[Firebase Cloud Messaging]
     end
 
@@ -326,7 +321,6 @@ graph TB
     RustLib --> BatteryManager
 
     RustLib --> P2P
-    Compose --> Verida
     FGService --> FCM
 
     style RustLib fill:#4A90E2,color:#fff
@@ -449,7 +443,6 @@ graph TB
 
     subgraph "Backend Services"
         P2P[P2P Network]
-        Verida[Verida Integration]
         Updates[Auto-Update System]
     end
 
@@ -476,7 +469,6 @@ graph TB
     Daemon --> Vulkan
 
     Daemon --> P2P
-    Daemon --> Verida
     Daemon --> Updates
 
     style Daemon fill:#4A90E2,color:#fff
@@ -735,9 +727,9 @@ graph TB
     end
 
     subgraph "Contribution Capabilities"
-        T1Contrib[Tier 1:<br/>- 4-8 model blocks<br/>- GPU acceleration<br/>- 100 VDA/hour]
-        T2Contrib[Tier 2:<br/>- 1-2 model blocks<br/>- CPU only<br/>- 20-40 VDA/hour]
-        T3Contrib[Tier 3:<br/>- Relay traffic<br/>- Cache models<br/>- 5-10 VDA/hour]
+        T1Contrib[Tier 1:<br/>- 4-8 model blocks<br/>- GPU acceleration<br/>- highest earning rate]
+        T2Contrib[Tier 2:<br/>- 1-2 model blocks<br/>- CPU only<br/>- medium earning rate]
+        T3Contrib[Tier 3:<br/>- Relay traffic<br/>- Cache models<br/>- lowest earning rate]
     end
 
     subgraph "Network Roles"
@@ -808,7 +800,6 @@ graph TB
         Postgres[PostgreSQL<br/>Metadata]
         S3[S3-Compatible<br/>Model Storage]
         Redis[Redis<br/>Cache Layer]
-        Verida[Verida Enterprise<br/>Private Nodes]
     end
 
     subgraph "Network Integration"
@@ -830,9 +821,7 @@ graph TB
     Compliance --> Postgres
     Audit --> S3
     Monitoring --> Redis
-    IAM --> Verida
 
-    Verida --> PrivateP2P
     PrivateP2P --> VPN
     VPN --> Firewall
     Firewall --> Proxy
@@ -914,9 +903,7 @@ sequenceDiagram
     participant Compliance as Compliance Module
     participant Audit as Audit System
     participant IAM as Enterprise IAM
-    participant Verida as Verida Private Node
 
-    Note over Admin,Verida: Enterprise Deployment with Compliance
 
     Admin->>K8s: Apply deployment manifests
     K8s->>K8s: Create namespace: kwaainet-prod
@@ -932,10 +919,6 @@ sequenceDiagram
     IAM->>IAM: Setup SAML/OIDC integration
     IAM-->>Compliance: iam_configured
 
-    Compliance->>Verida: Setup private Verida node
-    Verida->>Verida: Deploy within enterprise network
-    Verida->>Verida: Configure data residency (EU/US/APAC)
-    Verida-->>Compliance: verida_node_ready
 
     K8s->>Compliance: Deploy KwaaiNet nodes
     Compliance->>Compliance: Apply compliance policies
@@ -951,8 +934,6 @@ sequenceDiagram
     IAM-->>Compliance: user_authenticated
 
     Compliance->>Audit: Log data access attempt
-    Compliance->>Verida: Retrieve private data
-    Verida-->>Compliance: encrypted_data
 
     Compliance->>K8s: Process with compliance
     K8s-->>Compliance: processing_complete
@@ -1052,7 +1033,6 @@ gantt
 - [Main Architecture](../ARCHITECTURE.md) - High-level system architecture
 - [Challenge Architectures](./CHALLENGE_ARCHITECTURES.md) - Detailed component diagrams
 - [Data Flows](./DATA_FLOWS.md) - Authentication and data flow diagrams
-- [Verida Architecture](./VERIDA_ARCHITECTURE.md) - Deep dive into Verida integration
 - [Mass Adoption Strategy](../MASS_ADOPTION_STRATEGY.md) - Deployment wave strategy
 - [OpenAI-Petal Patterns](../../OpenAI-Petal/docs/REUSABLE_PATTERNS.md) - Lessons learned
 

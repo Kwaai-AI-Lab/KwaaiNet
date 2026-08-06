@@ -35,10 +35,6 @@ graph TD
         MapServer[map-server\nnode topology API]
     end
 
-    subgraph summit-server
-        Summit[summit-server\nVC issuance + coordination]
-    end
-
     subgraph Release [cargo-dist release pipeline]
         DistBuild[dist build\narcXZ archives]
         Installers[shell + PowerShell\ninstaller scripts]

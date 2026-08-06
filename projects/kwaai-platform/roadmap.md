@@ -10,7 +10,7 @@
 - Shell installer patch: `_bins="kwaainet p2pd"`
 - `kwaainet setup --get-deps` — downloads p2pd for current platform
 - Auto-start service (`--daemon`) on macOS (launchd), Linux (systemd), Windows
-- map-server and summit-server (deployed)
+- map-server (deployed)
 - Tag trigger pattern fixed: `v[0-9]*.[0-9]*.[0-9]*` supports two-digit patch
 - Ad-hoc codesign step in release.yml for Gatekeeper compatibility
 
