@@ -235,22 +235,26 @@ pub async fn call_block_forward(
 /// after a short back-off.
 ///
 /// The returned closure is `'static + Send + Sync` so it can be registered
-/// with the p2p daemon.
+/// with the p2p daemon, via `add_unary_handler_with_peer` — the authenticated
+/// caller is what lets a forward pass be attributed to the peer that requested
+/// it. A peer id inside the payload would be self-declared.
 #[allow(clippy::type_complexity)]
 pub fn make_block_rpc_handler(
     shard: ShardCell,
     device: Device,
 ) -> impl Fn(
     Vec<u8>,
+    libp2p::PeerId,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
 > + Send
        + Sync
        + 'static {
-    move |data: Vec<u8>| {
+    move |data: Vec<u8>, caller: libp2p::PeerId| {
         let shard = shard.clone();
         let device = device.clone();
         Box::pin(async move {
+            tracing::debug!("block_rpc: forward pass requested by {caller}");
             // Read the shard cell and clone the Arc (drops the read lock immediately).
             let shard_arc: Option<Arc<TransformerShard>> = {
                 let guard = shard.read().await;

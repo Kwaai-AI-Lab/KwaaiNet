@@ -349,7 +349,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
     let handler = make_block_rpc_handler(shard_cell.clone(), device.clone());
     client
-        .add_unary_handler(crate::block_rpc::INFERENCE_PROTO, handler, false)
+        .add_unary_handler_with_peer(crate::block_rpc::INFERENCE_PROTO, handler, false)
         .await
         .context("Failed to register inference handler with p2pd")?;
 
@@ -369,7 +369,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // Ollama proxy — lets remote nodes route LLM requests to our local Ollama.
     let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler(lease_table.clone());
     let _ = client
-        .add_unary_handler(
+        .add_unary_handler_with_peer(
             crate::ollama_proxy::OLLAMA_PROXY_PROTO,
             proxy_handler,
             false,
@@ -379,7 +379,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // Shard proxy — lets remote nodes route requests to our local shard API (no Ollama needed).
     let shard_proxy_handler = crate::ollama_proxy::make_shard_proxy_handler();
     let _ = client
-        .add_unary_handler(
+        .add_unary_handler_with_peer(
             crate::ollama_proxy::SHARD_PROXY_PROTO,
             shard_proxy_handler,
             false,
@@ -390,7 +390,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // callers negotiate a slot once per resolve_inference_urls() call.
     let lease_handler = crate::capacity_lease::make_capacity_lease_handler(lease_table.clone());
     let _ = client
-        .add_unary_handler(
+        .add_unary_handler_with_peer(
             crate::capacity_lease::CAPACITY_LEASE_PROTO,
             lease_handler,
             false,

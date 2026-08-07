@@ -593,7 +593,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Ollama proxy — lets remote peers route LLM requests to our local Ollama.
     let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler(lease_table.clone());
     let _ = client
-        .add_unary_handler(
+        .add_unary_handler_with_peer(
             crate::ollama_proxy::OLLAMA_PROXY_PROTO,
             proxy_handler,
             false,
@@ -605,7 +605,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // admission gate.
     let shard_proxy_handler = crate::ollama_proxy::make_shard_proxy_handler();
     let _ = client
-        .add_unary_handler(
+        .add_unary_handler_with_peer(
             crate::ollama_proxy::SHARD_PROXY_PROTO,
             shard_proxy_handler,
             false,
@@ -618,7 +618,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // inference_mux.rs) and doesn't use this protocol.
     let lease_handler = crate::capacity_lease::make_capacity_lease_handler(lease_table.clone());
     let _ = client
-        .add_unary_handler(
+        .add_unary_handler_with_peer(
             crate::capacity_lease::CAPACITY_LEASE_PROTO,
             lease_handler,
             false,
