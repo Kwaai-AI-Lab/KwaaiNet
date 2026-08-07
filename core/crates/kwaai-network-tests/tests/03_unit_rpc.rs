@@ -171,12 +171,46 @@ fn server_frame_status_roundtrip() {
         shard_ready: true,
         peer_count: 12,
         uptime_secs: 3600,
+        // Arbitrary round-trip fixture, deliberately not a real release
+        // number: this asserts the field survives encode/decode, not what the
+        // daemon reports. Nothing here tracks CARGO_PKG_VERSION, so a version
+        // bump never needs to touch this test.
+        version: "9.9.9-test".to_string(),
     };
     let decoded = encode_decode_server_frame(server_frame::Body::Status(reply));
     if let Some(server_frame::Body::Status(s)) = decoded.body {
         assert_eq!(s.model, "llama3.2:3b");
         assert!(s.shard_ready);
         assert_eq!(s.peer_count, 12);
+        assert_eq!(s.uptime_secs, 3600);
+        assert_eq!(s.version, "9.9.9-test");
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// A daemon built before `version` existed sends no field 6; proto3 decodes
+/// the absent field as "". Clients must be able to distinguish that from a
+/// real version, so pin the behaviour rather than leaving it implied.
+#[test]
+fn server_frame_status_version_defaults_empty_for_old_daemons() {
+    let rec = MetricsRecorder::start(
+        "unit::rpc::server_frame_status_version_defaults_empty_for_old_daemons",
+        "unit",
+    );
+    let reply = StatusReply {
+        server_time: "2026-05-23T18:32:00Z".to_string(),
+        model: "llama3.2:3b".to_string(),
+        shard_ready: true,
+        peer_count: 12,
+        uptime_secs: 3600,
+        ..Default::default()
+    };
+    let decoded = encode_decode_server_frame(server_frame::Body::Status(reply));
+    if let Some(server_frame::Body::Status(s)) = decoded.body {
+        assert_eq!(s.version, "");
+        // The pre-existing fields must still decode alongside the new one.
         assert_eq!(s.uptime_secs, 3600);
     } else {
         panic!("wrong variant");

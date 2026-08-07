@@ -233,6 +233,10 @@ impl KwaaiNet for KwaaiNetService {
                             shard_ready: shard_ready_path_exists(),
                             peer_count: 0, // TODO: thread through DHT routing-table size
                             uptime_secs: started_at.elapsed().as_secs(),
+                            // Same constant the updater compares against, so
+                            // the version reported over the wire can never
+                            // drift from the one used for update checks.
+                            version: crate::updater::CURRENT_VERSION.to_string(),
                         };
                         let _ = out_tx
                             .send(Ok(ServerFrame {
