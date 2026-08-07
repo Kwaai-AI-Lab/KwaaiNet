@@ -1620,6 +1620,7 @@ mod tests {
         };
         let body = br#"{"prompt_eval_count":1,"eval_count":1}"#;
         let quote = LeaseQuote {
+            version: kwaai_ledger::PAYLOAD_VERSION,
             lease_id: 1,
             provider_did: did(&provider),
             consumer_did: did(&consumer),
@@ -1632,6 +1633,7 @@ mod tests {
         };
         let credits = quote.credits_for_tokens(2).unwrap();
         let receipt = kwaai_ledger::WorkClaimPayload {
+            version: kwaai_ledger::PAYLOAD_VERSION,
             lease_id: 1,
             request_id: 1,
             provider_did: quote.provider_did.clone(),

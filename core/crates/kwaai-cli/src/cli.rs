@@ -492,6 +492,10 @@ pub enum LedgerAction {
         /// Show raw micro-credits instead of whole credits
         #[arg(long)]
         micro: bool,
+        /// Emit machine-readable JSON instead of a table — for reporting
+        /// results of a currency experiment.
+        #[arg(long)]
+        json: bool,
     },
     /// Verify a co-signed work receipt file (both signatures + content address)
     Verify {

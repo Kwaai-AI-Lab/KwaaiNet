@@ -32,21 +32,24 @@ use libp2p::PeerId;
 use tracing::{debug, warn};
 
 use kwaai_ledger::{
-    LeaseQuote, LedgerStore, MicroCredits, PeerBalance, Receipt, SignedLeaseGrant, WorkClaim,
-    WorkClaimPayload,
+    economy_by_id, Economy, LeaseQuote, LedgerStore, MicroCredits, PeerBalance, Receipt,
+    Settlement, SettlementContext, SignedLeaseGrant, WorkClaim, WorkClaimPayload,
 };
 
 use crate::config::kwaainet_dir;
 use crate::identity::{NodeIdentity, KEY_EPOCH};
 
-/// Default price when `KWAAINET_LEDGER_PRICE_MICRO_PER_1K` isn't set: 1000
-/// micro-credits (0.001 credit) per 1k tokens.
+/// Which currency experiment this node participates in, when nothing is
+/// configured.
 ///
-/// The absolute number is arbitrary and deliberately so — with no mint and no
-/// convertibility, only the *ratio* between peers' prices carries information,
-/// and today every node ships the same default so every ratio is 1. Real price
-/// discovery is Phase 3's DHT advisory field; this constant exists so Phase 1
-/// has a well-defined quote to sign.
+/// The community is A/B testing currency models a month at a time, so this is
+/// expected to change between releases. It is safe to default to a live economy
+/// because nothing is gated on balances yet — settlement is computed from
+/// receipts the node already holds and is reported, not enforced.
+pub const DEFAULT_ECONOMY: &str = "miles";
+
+/// Fallback price when neither the economy's rate card nor
+/// `KWAAINET_LEDGER_PRICE_MICRO_PER_1K` applies.
 pub const DEFAULT_PRICE_MICRO_PER_1K_TOKENS: MicroCredits = 1_000;
 
 /// How long after issue a claim may still be counter-signed. Generous relative
@@ -79,6 +82,9 @@ pub struct LedgerNode {
     /// while this is held.
     store: Mutex<LedgerStore>,
     price_micro_per_1k_tokens: MicroCredits,
+    /// The currency model this node is running. Pricing comes from its rate
+    /// card; settlement from its issuance rules.
+    economy: Box<dyn Economy>,
     /// Nonces make otherwise-identical exchanges produce distinct
     /// `receipt_id`s. Seeded from the wall clock so a restarted node doesn't
     /// re-mint the nonce sequence it already used; monotonic within a process.
@@ -119,15 +125,30 @@ impl LedgerNode {
             }
         };
 
+        // Env beats config so an operator can switch experiment for a single
+        // run without editing YAML; config beats the built-in default.
+        let configured = std::env::var("KWAAINET_ECONOMY").ok().or_else(|| {
+            crate::config::KwaaiNetConfig::load_or_create()
+                .ok()
+                .and_then(|c| c.economy)
+        });
+        let economy = economy_by_id(configured.as_deref().unwrap_or(DEFAULT_ECONOMY));
+
+        // An explicit override still wins, so an operator can price against the
+        // network without switching currency model.
         let price = std::env::var("KWAAINET_LEDGER_PRICE_MICRO_PER_1K")
             .ok()
             .and_then(|v| v.parse::<MicroCredits>().ok())
-            .unwrap_or(DEFAULT_PRICE_MICRO_PER_1K_TOKENS);
+            .unwrap_or_else(|| match economy.rate_card().micro_per_1k_chat_tokens {
+                0 => DEFAULT_PRICE_MICRO_PER_1K_TOKENS,
+                rate => rate,
+            });
 
         debug!(
-            "ledger enabled: {} at {} ({} micro/1k tokens)",
+            "ledger enabled: {} at {} — economy {}, {} micro/1k tokens",
             did,
             path.display(),
+            economy.id(),
             price
         );
 
@@ -136,6 +157,7 @@ impl LedgerNode {
             signing: SigningKey::from_bytes(&secret),
             store: Mutex::new(store),
             price_micro_per_1k_tokens: price,
+            economy,
             nonces: AtomicU64::new(now_unix_ms()),
         }))
     }
@@ -161,6 +183,7 @@ impl LedgerNode {
             did,
             signing,
             price_micro_per_1k_tokens: DEFAULT_PRICE_MICRO_PER_1K_TOKENS,
+            economy: economy_by_id(DEFAULT_ECONOMY),
             nonces: AtomicU64::new(1),
         })
     }
@@ -171,6 +194,27 @@ impl LedgerNode {
 
     pub fn price_micro_per_1k_tokens(&self) -> MicroCredits {
         self.price_micro_per_1k_tokens
+    }
+
+    pub fn economy(&self) -> &dyn Economy {
+        self.economy.as_ref()
+    }
+
+    /// Settle this node's own receipts under the configured economy.
+    ///
+    /// Local and advisory: it reports what this node believes it has earned, from
+    /// evidence it holds. Making that authoritative needs a clearing house, which
+    /// is deliberately not in the month-1 experiment — the point is to compare
+    /// how the models *feel*, not to resist fraud yet.
+    pub fn settle(&self, ctx: &SettlementContext) -> anyhow::Result<Settlement> {
+        let ledger = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|e| anyhow::anyhow!("ledger store lock poisoned: {e}"))?;
+            store.work_ledger()?
+        };
+        Ok(self.economy.settle(&ledger, ctx))
     }
 
     fn next_nonce(&self) -> u64 {
@@ -190,6 +234,7 @@ impl LedgerNode {
         ttl_secs: u32,
     ) -> Option<SignedLeaseGrant> {
         let quote = LeaseQuote {
+            version: kwaai_ledger::PAYLOAD_VERSION,
             lease_id,
             provider_did: self.did.clone(),
             consumer_did,
@@ -233,6 +278,7 @@ impl LedgerNode {
         };
 
         let payload = WorkClaimPayload {
+            version: kwaai_ledger::PAYLOAD_VERSION,
             lease_id: quote.lease_id,
             request_id,
             provider_did: self.did.clone(),

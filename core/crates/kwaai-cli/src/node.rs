@@ -137,6 +137,16 @@ struct DHTServerInfo {
     /// attempt-and-fallback probe; absence of this key entirely (a legacy
     /// pre-Capacity-Lease peer) is itself the "false" signal on decode.
     lease_v1: bool,
+
+    /// Which currency experiment this node is participating in (`miles`,
+    /// `asi-shadow`, `none`).
+    ///
+    /// Advisory and self-declared, like every other field here — the DHT is
+    /// unauthenticated, so this identifies willing participants, it does not
+    /// prove anything. It exists so a month-long A/B has a visible cohort and
+    /// results can be attributed to the model that produced them. Omitted when
+    /// `none`, so absence and "not participating" read the same.
+    economy: String,
 }
 
 impl DHTServerInfo {
@@ -167,6 +177,9 @@ impl DHTServerInfo {
             vpk_info,
             peer_id_b58,
             lease_v1: true,
+            economy: crate::ledger_node::LedgerNode::shared()
+                .map(|l| l.economy().id().to_string())
+                .unwrap_or_else(|| "none".to_string()),
         }
     }
 
@@ -215,6 +228,15 @@ impl DHTServerInfo {
                 rmpv::Value::from(self.lease_v1),
             ),
         ];
+
+        // Currency experiment cohort. Skipped when not participating, matching
+        // how trust_attestations and vpk treat their empty states.
+        if self.economy != "none" {
+            fields.push((
+                rmpv::Value::from("economy"),
+                rmpv::Value::from(self.economy.as_str()),
+            ));
+        }
 
         // Include trust attestations when present — zero-cost for nodes without VCs.
         // Legacy clients (Python Hivemind, old map viewers) ignore unknown fields.
@@ -1436,6 +1458,7 @@ async fn unannounce(
         vpk_info: None,
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
+        economy: server_info.economy.clone(),
     };
     // Use the same 360 s TTL as a regular announcement — Hivemind bootstrap
     // peers reject updates with a shorter TTL than the existing record.

@@ -252,6 +252,43 @@ impl LedgerStore {
 
     /// Per-peer netting, ordered by largest absolute net first so the most
     /// significant relationships surface at the top of `ledger show`.
+    /// Raw two-way work volume per counterparty, for [`crate::Economy::settle`].
+    ///
+    /// Deliberately returns **tokens, not credits**. `credits` records what the
+    /// two parties agreed bilaterally under whatever rate card the provider was
+    /// running; an economy has to re-price the same work in its own terms, or the
+    /// A/B comparison between currency models would be contaminated by whichever
+    /// card happened to be in force.
+    pub fn work_ledger(&self) -> Result<crate::WorkLedger> {
+        let mut stmt = self.conn.prepare(
+            "SELECT provider_did, consumer_did, prompt_tokens + completion_tokens
+             FROM receipts WHERE provider_did = ?1 OR consumer_did = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![&self.our_did], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? as u64,
+            ))
+        })?;
+
+        let mut folded = Vec::new();
+        for row in rows {
+            let (provider, consumer, tokens) = row?;
+            // Same exclusion as `balances`: self-dealing nets to zero and would
+            // otherwise be counted on both sides of the same row.
+            if provider == consumer {
+                continue;
+            }
+            if provider == self.our_did {
+                folded.push((consumer, tokens, 0));
+            } else {
+                folded.push((provider, 0, tokens));
+            }
+        }
+        Ok(crate::economy::work_ledger_from(folded))
+    }
+
     pub fn balances(&self) -> Result<Vec<PeerBalance>> {
         use std::collections::BTreeMap;
         let mut acc: BTreeMap<String, PeerBalance> = BTreeMap::new();

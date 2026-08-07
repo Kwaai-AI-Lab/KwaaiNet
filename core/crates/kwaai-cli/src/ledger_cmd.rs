@@ -15,7 +15,7 @@ use crate::ledger_node::{LedgerNode, UNSIGNED_RATIO_WARN};
 
 pub async fn run(args: LedgerArgs) -> Result<()> {
     match args.action {
-        LedgerAction::Show { micro } => show(micro),
+        LedgerAction::Show { micro, json } => show(micro, json),
         LedgerAction::Verify { path } => verify_receipt(&path),
         LedgerAction::SelfTest => self_test(),
     }
@@ -27,7 +27,10 @@ pub async fn run(args: LedgerArgs) -> Result<()> {
 /// bilateral positions rather than a single balance. The absence of a total
 /// "wallet balance" is the design, not a missing feature — there is no mint, so
 /// the only meaningful number is what you and one other peer owe each other.
-fn show(micro: bool) -> Result<()> {
+fn show(micro: bool, json: bool) -> Result<()> {
+    if json {
+        return show_json();
+    }
     print_box_header("Work Credits");
 
     let Some(ledger) = LedgerNode::shared() else {
@@ -37,9 +40,12 @@ fn show(micro: bool) -> Result<()> {
         return Ok(());
     };
 
+    let economy = ledger.economy();
     println!("  This node:   {}", ledger.did());
+    println!("  Economy:     {}", economy.id());
     println!(
-        "  Price:       {} micro / 1k tokens",
+        "  Rate card:   v{} — {} micro / 1k tokens",
+        economy.rate_card().version,
         ledger.price_micro_per_1k_tokens()
     );
     println!();
@@ -118,12 +124,90 @@ fn show(micro: bool) -> Result<()> {
         fmt(earned),
         fmt(spent)
     );
+    // What the configured currency model makes of the same evidence. Advisory:
+    // computed locally from receipts this node holds, not certified by anyone.
+    let s = ledger.settle(&Default::default())?;
+    println!();
+    println!("  ── settlement estimate ({}) ──", s.economy);
+    println!("  {:<24} {}", "net contribution", fmt(s.net_positive));
+    println!(
+        "  {:<24} {:.2} counterparties (x{:.3})",
+        "diversity", s.effective_counterparties, s.diversity_factor
+    );
+    println!("  {:<24} {} {}", "would earn", fmt(s.minted), s.unit);
+    if let Some(note) = &s.note {
+        println!("  {:<24} {note}", "note");
+    }
+
     println!();
     print_info(
         "Credits are pairwise and non-transferable: earning from one peer does \
          not let you spend at another.",
     );
+    print_warning(
+        "Settlement is a local estimate from receipts this node holds — nobody \
+         has certified it. This is an economics experiment, not fraud resistance.",
+    );
     print_separator();
+    Ok(())
+}
+
+/// Machine-readable snapshot, so a currency experiment can actually be
+/// evaluated.
+///
+/// Each node only ever sees its own receipts, so comparing currency models
+/// across the community means participants exporting and pooling this. Without
+/// it a month-long A/B produces impressions rather than data.
+fn show_json() -> Result<()> {
+    let Some(ledger) = LedgerNode::shared() else {
+        println!(
+            "{}",
+            serde_json::json!({"economy": null, "error": "ledger unavailable"})
+        );
+        return Ok(());
+    };
+    let s = ledger.settle(&Default::default())?;
+    let peers: Vec<_> = ledger
+        .balances()?
+        .into_iter()
+        .map(|b| {
+            serde_json::json!({
+                "peer_did": b.peer_did,
+                "earned_micro": b.earned,
+                "spent_micro": b.spent,
+                "net_micro": b.net(),
+                "receipts": b.receipts,
+                "unsigned_claims": b.unsigned_claims,
+            })
+        })
+        .collect();
+    let (earned, spent, receipts) = ledger.totals()?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "node_did": ledger.did(),
+            "economy": s.economy,
+            "unit": s.unit,
+            "rate_card_version": ledger.economy().rate_card().version,
+            "price_micro_per_1k_tokens": ledger.price_micro_per_1k_tokens(),
+            "totals": {
+                "receipts": receipts,
+                "earned_micro": earned,
+                "spent_micro": spent,
+            },
+            "settlement": {
+                "gross_served_micro": s.gross_served,
+                "gross_consumed_micro": s.gross_consumed,
+                "net_positive_micro": s.net_positive,
+                "effective_counterparties": s.effective_counterparties,
+                "diversity_factor": s.diversity_factor,
+                "would_earn_micro": s.minted,
+                "note": s.note,
+            },
+            "peers": peers,
+        }))?
+    );
     Ok(())
 }
 
@@ -192,6 +276,7 @@ fn self_test() -> Result<()> {
     // real exchange happened.
     let body = br#"{"message":{"content":"self-test"},"prompt_eval_count":3,"eval_count":7}"#;
     let quote = LeaseQuote {
+        version: kwaai_ledger::PAYLOAD_VERSION,
         lease_id: 1,
         provider_did: did.clone(),
         consumer_did: did.clone(),
@@ -210,6 +295,7 @@ fn self_test() -> Result<()> {
 
     let credits = quote.credits_for_tokens(3 + 7)?;
     let claim = WorkClaimPayload {
+        version: kwaai_ledger::PAYLOAD_VERSION,
         lease_id: quote.lease_id,
         request_id: 1,
         provider_did: did.clone(),

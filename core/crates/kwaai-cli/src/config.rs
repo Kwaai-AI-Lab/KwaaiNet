@@ -155,6 +155,16 @@ pub struct KwaaiNetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpk_local_port: Option<u16>,
 
+    /// Which currency experiment this node takes part in: `miles`,
+    /// `asi-shadow`, or `none`.
+    ///
+    /// The community is comparing currency models a month at a time, so this is
+    /// expected to change between releases. An unrecognised value falls back to
+    /// `none` rather than failing — a bad setting must never stop a node
+    /// serving. `KWAAINET_ECONOMY` overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub economy: Option<String>,
+
     // ── Ollama supervision ────────────────────────────────────────────────────
     /// When true, kwaainet supervises Ollama: health-checks every 15 s and
     /// optionally spawns `ollama serve` on failure (if ollama is in PATH).
@@ -640,6 +650,7 @@ impl Default for KwaaiNetConfig {
             ollama_port: default_ollama_port(),
             vpk_enabled: false,
             vpk_mode: None,
+            economy: None,
             vpk_local_port: None,
             storage: None,
             identify_min_confirmations: default_identify_min_confirmations(),
