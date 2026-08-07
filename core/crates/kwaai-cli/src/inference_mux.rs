@@ -1630,6 +1630,7 @@ mod tests {
             granted_at_unix_ms: 0,
             nonce: 1,
             key_epoch: 1,
+            ext: Vec::new(),
         };
         let credits = quote.credits_for_tokens(2).unwrap();
         let receipt = kwaai_ledger::WorkClaimPayload {
@@ -1645,6 +1646,7 @@ mod tests {
             valid_until_unix_ms: u64::MAX,
             nonce: 2,
             key_epoch: 1,
+            ext: Vec::new(),
         }
         .sign(&provider)
         .unwrap()

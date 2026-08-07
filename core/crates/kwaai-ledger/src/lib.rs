@@ -92,10 +92,36 @@ const SIG_LEN: usize = 64;
 /// `BadSignature` that looks like an attack.
 ///
 /// This matters because releases are frequent and the network is therefore
-/// almost always running mixed versions. Changing any signed field's meaning,
-/// order, or count changes the preimage; bump this at the same time so the
-/// mismatch is self-describing.
-pub const PAYLOAD_VERSION: u16 = 1;
+/// almost always running mixed versions.
+///
+/// ## The extension discipline — read before changing a signed struct
+///
+/// Signed payloads are encoded *positionally*, so the field count is part of the
+/// preimage. Adding or removing a field makes both directions fail at
+/// `serde` decode, before any version check can run — measured, not assumed. A
+/// version number alone therefore buys nothing; the shape has to be extensible.
+///
+/// It is, via the trailing `ext` field. From this version onward:
+///
+/// * **Never add, remove or reorder a field.** The element count is frozen.
+/// * Put new data in `ext` as a canonically-encoded struct of its own.
+/// * Bump [`PAYLOAD_VERSION`] and add the old value to
+///   [`SUPPORTED_PAYLOAD_VERSIONS`].
+///
+/// Because the shape never changes, a node one release behind still *decodes*
+/// the payload and its signature still *verifies* — `ext` is covered by the
+/// signature but opaque to a reader that doesn't know the new schema. Whether to
+/// honour such a receipt becomes a policy decision (the supported set) rather
+/// than a decode failure. That is what makes the compatibility window real.
+pub const PAYLOAD_VERSION: u16 = 2;
+
+/// Payload versions this build will verify. Always contains
+/// [`PAYLOAD_VERSION`]; older entries are the compatibility window.
+///
+/// Issuing and accepting are deliberately separate: a node issues exactly one
+/// version but honours several, so a release does not orphan receipts still in
+/// flight from the previous one.
+pub const SUPPORTED_PAYLOAD_VERSIONS: &[u16] = &[2];
 
 /// Which identity key signed an artifact. Recorded so a future key rotation
 /// does not silently invalidate historical receipts — cheap to carry now,
@@ -121,13 +147,13 @@ pub enum LedgerError {
     #[error("ledger store: {0}")]
     Store(String),
     #[error(
-        "unsupported {artifact} payload version {got} (this build understands \
-         {supported}) — the peer is running a different release"
+        "unsupported {artifact} payload version {got} (this build accepts \
+         {supported:?}) — the peer is running a different release"
     )]
     UnsupportedVersion {
         artifact: &'static str,
         got: u16,
-        supported: u16,
+        supported: &'static [u16],
     },
     #[error(
         "token count mismatch — provider claimed {claimed_prompt}+{claimed_completion} but the \
@@ -168,6 +194,13 @@ pub struct LeaseQuote {
     pub granted_at_unix_ms: u64,
     pub nonce: u64,
     pub key_epoch: KeyEpoch,
+    /// Version-specific extension — see [`PAYLOAD_VERSION`].
+    ///
+    /// Must stay last, and the field count must never change again. Empty at
+    /// this version. A reader that does not understand the contents still
+    /// decodes the payload and still verifies the signature, which is covered by
+    /// these bytes.
+    pub ext: Vec<u8>,
 }
 
 impl LeaseQuote {
@@ -244,6 +277,9 @@ pub struct WorkClaimPayload {
     pub valid_until_unix_ms: u64,
     pub nonce: u64,
     pub key_epoch: KeyEpoch,
+    /// Version-specific extension — see [`LeaseQuote::ext`] and
+    /// [`PAYLOAD_VERSION`].
+    pub ext: Vec<u8>,
 }
 
 impl WorkClaimPayload {
@@ -444,13 +480,13 @@ fn to_canonical<T: Serialize>(v: &T) -> Result<Vec<u8>> {
 }
 
 fn check_version(artifact: &'static str, got: u16) -> Result<()> {
-    if got == PAYLOAD_VERSION {
+    if SUPPORTED_PAYLOAD_VERSIONS.contains(&got) {
         Ok(())
     } else {
         Err(LedgerError::UnsupportedVersion {
             artifact,
             got,
-            supported: PAYLOAD_VERSION,
+            supported: SUPPORTED_PAYLOAD_VERSIONS,
         })
     }
 }
@@ -543,6 +579,7 @@ pub(crate) mod test_support {
             granted_at_unix_ms: 1_770_000_000_000,
             nonce: 42,
             key_epoch: 1,
+            ext: Vec::new(),
         }
     }
 
@@ -568,6 +605,7 @@ pub(crate) mod test_support {
             valid_until_unix_ms: q.granted_at_unix_ms + 60_000,
             nonce: 99,
             key_epoch: 1,
+            ext: Vec::new(),
         }
         .sign(&provider.signing)
         .unwrap()
@@ -629,10 +667,66 @@ mod tests {
             }) => {
                 assert_eq!(artifact, "quote");
                 assert_eq!(got, PAYLOAD_VERSION + 1);
-                assert_eq!(supported, PAYLOAD_VERSION);
+                assert_eq!(supported, SUPPORTED_PAYLOAD_VERSIONS);
             }
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn every_supported_version_is_accepted() {
+        // The compatibility window is a policy list, so it has to be exercised
+        // as one — otherwise adding an entry to SUPPORTED_PAYLOAD_VERSIONS would
+        // be untested until something in production relied on it.
+        let (p, c) = (make_id(), make_id());
+        for &v in SUPPORTED_PAYLOAD_VERSIONS {
+            let mut q = quote(&p, &c);
+            q.version = v;
+            let grant = q.sign(&p.signing).unwrap();
+            assert!(
+                grant.verify().is_ok(),
+                "version {v} is advertised as supported but was rejected"
+            );
+        }
+        assert!(
+            SUPPORTED_PAYLOAD_VERSIONS.contains(&PAYLOAD_VERSION),
+            "we must accept what we issue"
+        );
+    }
+
+    #[test]
+    fn a_payload_carrying_unknown_extension_data_still_decodes_and_verifies() {
+        // This is the property the whole design turns on. A node one release
+        // behind cannot interpret `ext`, but the shape is frozen so it still
+        // decodes, and the signature covers `ext` so it still verifies. Version
+        // then becomes a policy decision rather than a decode failure.
+        let (p, c) = (make_id(), make_id());
+        let mut q = quote(&p, &c);
+        q.ext = rmp_serde::to_vec(&("some-future-field", 42u64, true)).unwrap();
+        let grant = q.sign(&p.signing).unwrap();
+
+        let wire = rmp_serde::to_vec(&grant).unwrap();
+        let decoded: SignedLeaseGrant = rmp_serde::from_slice(&wire)
+            .expect("a frozen shape must decode regardless of what the extension holds");
+        decoded
+            .verify()
+            .expect("the signature covers ext, so it must still verify");
+        assert_eq!(decoded.quote.ext, grant.quote.ext);
+    }
+
+    #[test]
+    fn extension_bytes_are_covered_by_the_signature() {
+        // Otherwise a future field could be rewritten in transit by anyone.
+        let (p, c) = (make_id(), make_id());
+        let mut q = quote(&p, &c);
+        q.ext = b"original".to_vec();
+        let mut grant = q.sign(&p.signing).unwrap();
+
+        grant.quote.ext = b"tampered".to_vec();
+        assert!(matches!(
+            grant.verify(),
+            Err(LedgerError::BadSignature { .. })
+        ));
     }
 
     #[test]
