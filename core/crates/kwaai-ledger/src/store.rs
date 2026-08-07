@@ -139,7 +139,10 @@ impl LedgerStore {
                  completion_tokens INTEGER NOT NULL,
                  credits           INTEGER NOT NULL,
                  recorded_at_ms    INTEGER NOT NULL,
-                 payload           BLOB    NOT NULL
+                 payload           BLOB    NOT NULL,
+                 -- Added after the first receipts existed; defaults to chat,
+                 -- which is the only kind those rows could have been.
+                 work_kind         INTEGER NOT NULL DEFAULT 0
              ) WITHOUT ROWID;
 
              CREATE INDEX IF NOT EXISTS receipts_provider ON receipts(provider_did);
@@ -161,6 +164,14 @@ impl LedgerStore {
 
              CREATE INDEX IF NOT EXISTS unsigned_consumer ON unsigned_claims(consumer_did);",
         )?;
+
+        // Migration for stores created before work kinds existed. SQLite has no
+        // ADD COLUMN IF NOT EXISTS, and re-adding is a plain error rather than
+        // anything destructive, so it is safe to attempt and ignore.
+        let _ = self.conn.execute(
+            "ALTER TABLE receipts ADD COLUMN work_kind INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(())
     }
 
@@ -182,8 +193,9 @@ impl LedgerStore {
         let changed = self.conn.execute(
             "INSERT OR IGNORE INTO receipts (
                  receipt_id, provider_did, consumer_did, lease_id, request_id,
-                 prompt_tokens, completion_tokens, credits, recorded_at_ms, payload
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 prompt_tokens, completion_tokens, credits, recorded_at_ms, payload,
+                 work_kind
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 &id[..],
                 &p.provider_did,
@@ -195,6 +207,7 @@ impl LedgerStore {
                 p.credits_owed as i64,
                 now_ms() as i64,
                 payload,
+                p.ext_or_default().kind as i64,
             ],
         )?;
 
@@ -261,7 +274,7 @@ impl LedgerStore {
     /// card happened to be in force.
     pub fn work_ledger(&self) -> Result<crate::WorkLedger> {
         let mut stmt = self.conn.prepare(
-            "SELECT provider_did, consumer_did, prompt_tokens + completion_tokens
+            "SELECT provider_did, consumer_did, prompt_tokens + completion_tokens, work_kind
              FROM receipts WHERE provider_did = ?1 OR consumer_did = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![&self.our_did], |r| {
@@ -269,21 +282,22 @@ impl LedgerStore {
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)? as u64,
+                r.get::<_, i64>(3)? as u8,
             ))
         })?;
 
         let mut folded = Vec::new();
         for row in rows {
-            let (provider, consumer, tokens) = row?;
+            let (provider, consumer, tokens, kind) = row?;
             // Same exclusion as `balances`: self-dealing nets to zero and would
             // otherwise be counted on both sides of the same row.
             if provider == consumer {
                 continue;
             }
             if provider == self.our_did {
-                folded.push((consumer, tokens, 0));
+                folded.push((consumer, kind, tokens, 0));
             } else {
-                folded.push((provider, 0, tokens));
+                folded.push((provider, kind, 0, tokens));
             }
         }
         Ok(crate::economy::work_ledger_from(folded))

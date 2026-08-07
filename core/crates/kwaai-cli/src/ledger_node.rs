@@ -32,8 +32,9 @@ use libp2p::PeerId;
 use tracing::{debug, warn};
 
 use kwaai_ledger::{
-    economy_by_id, Economy, LeaseQuote, LedgerStore, MicroCredits, PeerBalance, Receipt,
-    Settlement, SettlementContext, SignedLeaseGrant, WorkClaim, WorkClaimPayload,
+    economy_by_id, ClaimExt, Economy, LeaseQuote, LedgerStore, MicroCredits, ObservedWork,
+    PeerBalance, Receipt, Settlement, SettlementContext, SignedLeaseGrant, WorkClaim,
+    WorkClaimPayload, WORK_KIND_CHAT, WORK_KIND_EMBEDDINGS,
 };
 
 use crate::config::kwaainet_dir;
@@ -244,7 +245,22 @@ impl LedgerNode {
             granted_at_unix_ms: now_unix_ms(),
             nonce: self.next_nonce(),
             key_epoch: KEY_EPOCH,
-            ext: Vec::new(),
+            // Commit to the embedding price up front too, so neither price can
+            // be chosen after the work is known.
+            ext: match (kwaai_ledger::QuoteExt {
+                price_micro_per_1k_embedding_tokens: self
+                    .economy
+                    .rate_card()
+                    .micro_per_1k_embedding_tokens,
+            })
+            .encode()
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("ledger: failed to encode quote extension: {e}");
+                    return None;
+                }
+            },
         };
         match quote.sign(&self.signing) {
             Ok(g) => Some(g),
@@ -257,20 +273,25 @@ impl LedgerNode {
 
     /// Build and sign a claim for one served response.
     ///
-    /// Returns `None` when the response carries no token counts — an embeddings
-    /// call, a non-200, or any endpoint whose body has no usage block. That is
-    /// the correct answer, not a failure: no measurable work means nothing to
-    /// bill, and a claim the consumer cannot independently re-derive would just
-    /// be refused.
+    /// Returns `None` when the response carries no measurable work — a non-200,
+    /// a ragged embedding response, or any body with no usage block. That is the
+    /// correct answer, not a failure: a claim the consumer cannot independently
+    /// re-derive would just be refused.
     pub fn claim_for_response(
         &self,
         quote: &LeaseQuote,
         request_id: u64,
         response_body: &[u8],
     ) -> Option<WorkClaim> {
-        let (prompt_tokens, completion_tokens) = parse_token_counts(response_body)?;
-        let total = prompt_tokens.checked_add(completion_tokens)?;
-        let credits_owed = match quote.credits_for_tokens(total) {
+        let observed = parse_work(response_body)?;
+        let total = observed
+            .prompt_tokens
+            .checked_add(observed.completion_tokens)?;
+        // Embedding work is prefill only, so it is priced off its own rate rather
+        // than the quoted chat price.
+        // Always priced off the signed quote, whichever kind of work it was —
+        // the consumer verifies against the same commitment.
+        let credits_owed = match quote.credits_for(observed.kind, total) {
             Ok(c) => c,
             Err(e) => {
                 warn!("ledger: credit arithmetic failed for request {request_id}: {e}");
@@ -278,20 +299,31 @@ impl LedgerNode {
             }
         };
 
+        let ext = if observed.kind == WORK_KIND_EMBEDDINGS {
+            ClaimExt::embeddings(observed.vectors, observed.dimension)
+        } else {
+            ClaimExt::chat()
+        };
         let payload = WorkClaimPayload {
             version: kwaai_ledger::PAYLOAD_VERSION,
             lease_id: quote.lease_id,
             request_id,
             provider_did: self.did.clone(),
             consumer_did: quote.consumer_did.clone(),
-            prompt_tokens,
-            completion_tokens,
+            prompt_tokens: observed.prompt_tokens,
+            completion_tokens: observed.completion_tokens,
             response_digest: kwaai_ledger::response_digest(response_body),
             credits_owed,
             valid_until_unix_ms: now_unix_ms() + CLAIM_VALIDITY_MS,
             nonce: self.next_nonce(),
             key_epoch: KEY_EPOCH,
-            ext: Vec::new(),
+            ext: match ext.encode() {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("ledger: failed to encode claim extension: {e}");
+                    return None;
+                }
+            },
         };
         match payload.sign(&self.signing) {
             Ok(c) => Some(c),
@@ -335,18 +367,18 @@ impl LedgerNode {
         grant: &SignedLeaseGrant,
         response_body: &[u8],
     ) -> Option<Receipt> {
-        let (prompt, completion) = match parse_token_counts(response_body) {
-            Some(t) => t,
+        let observed = match parse_work(response_body) {
+            Some(w) => w,
             None => {
                 // The provider claimed work on a body we can't meter. Refusing
                 // is correct: signing a quantity we cannot verify is exactly
                 // what this design exists to avoid.
-                warn!("ledger: refusing to counter-sign — no token counts in the response body");
+                warn!("ledger: refusing to counter-sign — no measurable work in the response body");
                 return None;
             }
         };
 
-        if let Err(e) = claim.verify_against(grant, response_body, prompt, completion) {
+        if let Err(e) = claim.verify_against(grant, response_body, &observed) {
             warn!(
                 "ledger: refusing to counter-sign claim from {}: {e}",
                 claim.payload.provider_did
@@ -420,6 +452,66 @@ impl LedgerNode {
             .map_err(|e| anyhow::anyhow!("ledger store lock poisoned: {e}"))?;
         Ok(store.totals()?)
     }
+}
+
+/// Everything a party can independently derive from a delivered response body.
+///
+/// Tries embeddings first because their shape is unambiguous — an `embeddings`
+/// array — whereas chat is identified by its usage counters. Both parties run
+/// this same function over the same bytes, so the interpretation is agreed, not
+/// asserted; the derived `kind` is then signed into the claim and re-checked by
+/// `WorkClaim::verify_against`.
+pub fn parse_work(body: &[u8]) -> Option<ObservedWork> {
+    if let Some(w) = parse_embedding_work(body) {
+        return Some(w);
+    }
+    let (prompt_tokens, completion_tokens) = parse_token_counts(body)?;
+    Some(ObservedWork {
+        kind: WORK_KIND_CHAT,
+        prompt_tokens,
+        completion_tokens,
+        vectors: 0,
+        dimension: 0,
+    })
+}
+
+/// Ollama `/api/embed`: `{"embeddings": [[...], ...], "prompt_eval_count": N}`.
+///
+/// Billed on `prompt_eval_count` so embeddings share one unit with chat and need
+/// no exchange rate between them — an embedding pass is pure prefill, which is
+/// why it gets its own (cheaper) line on the rate card rather than its own unit.
+/// Vector count and dimension are carried as corroborating evidence: both are
+/// countable straight from the delivered bytes, which makes them the most
+/// directly verifiable quantity in the system.
+///
+/// Never streamed — `/api/embed` returns a single document — so there is no
+/// NDJSON tail to scan here.
+fn parse_embedding_work(body: &[u8]) -> Option<ObservedWork> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let rows = v.get("embeddings")?.as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let dimension = rows[0].as_array()?.len() as u32;
+    // A ragged response is not meterable: the two parties could disagree on what
+    // "dimension" means, and a claim neither can reproduce is worthless.
+    if rows
+        .iter()
+        .any(|r| r.as_array().map(|a| a.len() as u32) != Some(dimension))
+    {
+        return None;
+    }
+    Some(ObservedWork {
+        kind: WORK_KIND_EMBEDDINGS,
+        // Absent on some builds; the vector count still bounds the work.
+        prompt_tokens: v
+            .get("prompt_eval_count")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
+        completion_tokens: 0,
+        vectors: rows.len() as u64,
+        dimension,
+    })
 }
 
 /// How many trailing chunks of a streamed body to examine when looking for the
@@ -508,6 +600,7 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kwaai_ledger::MilesEconomy;
 
     fn keypair() -> (SigningKey, String) {
         // A deterministic key is fine: nothing here depends on secrecy, and a
@@ -616,6 +709,123 @@ mod tests {
             body.push_str("{\"done\":false}\n");
         }
         assert_eq!(parse_token_counts(body.as_bytes()), None);
+    }
+
+    // Captured verbatim from a live POST /api/embed with two inputs.
+    const EMBED_BODY: &[u8] = br#"{"model":"all-minilm:latest","embeddings":[[0.1,0.2,0.3],[0.4,0.5,0.6]],"total_duration":1,"load_duration":1,"prompt_eval_count":8}"#;
+
+    #[test]
+    fn parses_an_embedding_response() {
+        let w = parse_work(EMBED_BODY).expect("embeddings must be meterable");
+        assert_eq!(w.kind, WORK_KIND_EMBEDDINGS);
+        assert_eq!(w.prompt_tokens, 8);
+        assert_eq!(w.completion_tokens, 0);
+        assert_eq!(w.vectors, 2);
+        assert_eq!(w.dimension, 3);
+    }
+
+    #[test]
+    fn chat_is_still_classified_as_chat() {
+        let w = parse_work(OLLAMA_STREAMED).expect("chat must still parse");
+        assert_eq!(w.kind, WORK_KIND_CHAT);
+        assert_eq!((w.prompt_tokens, w.completion_tokens), (27, 2));
+        assert_eq!(w.vectors, 0);
+    }
+
+    #[test]
+    fn a_ragged_embedding_response_is_declined() {
+        // Two parties could disagree about what "dimension" means, and a claim
+        // neither can reproduce is worthless.
+        let body = br#"{"embeddings":[[0.1,0.2],[0.3]],"prompt_eval_count":4}"#;
+        assert_eq!(parse_work(body), None);
+        assert_eq!(parse_work(br#"{"embeddings":[]}"#), None);
+    }
+
+    #[test]
+    fn an_embedding_exchange_settles_end_to_end() {
+        let (provider_key, provider_did) = keypair();
+        let (consumer_key, consumer_did) = other_keypair();
+        let provider = LedgerNode::in_memory(provider_key, provider_did);
+        let consumer = LedgerNode::in_memory(consumer_key, consumer_did.clone());
+
+        let grant = provider
+            .sign_quote(1, consumer_did, "all-minilm".into(), 30)
+            .expect("quote");
+        let claim = provider
+            .claim_for_response(&grant.quote, 1, EMBED_BODY)
+            .expect("embedding work must produce a claim");
+
+        // Priced off the embedding line, not the chat price in the quote.
+        let expected = MilesEconomy::default()
+            .rate_card()
+            .micro_per_1k_embedding_tokens
+            * 8_u64
+            / 1000;
+        assert_eq!(claim.payload.credits_owed, expected.max(1));
+        assert_eq!(claim.payload.ext_or_default().kind, WORK_KIND_EMBEDDINGS);
+        assert_eq!(claim.payload.ext_or_default().vectors, 2);
+
+        let receipt = consumer
+            .counter_sign(claim, &grant, EMBED_BODY)
+            .expect("the consumer must be able to re-derive and counter-sign");
+        provider.record_receipt(&receipt);
+        assert_eq!(provider.balances().unwrap()[0].receipts, 1);
+    }
+
+    #[test]
+    fn embedding_work_cannot_be_billed_as_chat() {
+        // The reason `kind` is signed rather than re-derived independently: chat
+        // is four times the rate here, so mislabelling is a direct overcharge.
+        let (provider_key, provider_did) = keypair();
+        let (consumer_key, consumer_did) = other_keypair();
+        let provider = LedgerNode::in_memory(provider_key, provider_did);
+        let consumer = LedgerNode::in_memory(consumer_key, consumer_did.clone());
+
+        let grant = provider
+            .sign_quote(1, consumer_did, "m".into(), 30)
+            .expect("quote");
+        let honest = provider
+            .claim_for_response(&grant.quote, 1, EMBED_BODY)
+            .expect("claim");
+
+        // Re-sign the same work as chat, at the chat rate.
+        let mut payload = honest.payload.clone();
+        payload.ext = kwaai_ledger::ClaimExt::chat().encode().unwrap();
+        payload.credits_owed = grant.quote.credits_for_tokens(8).unwrap();
+        let forged = payload
+            .sign(&ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]))
+            .unwrap();
+
+        assert!(
+            consumer.counter_sign(forged, &grant, EMBED_BODY).is_none(),
+            "a claim that mislabels embedding work as chat must be refused"
+        );
+    }
+
+    #[test]
+    fn a_v2_claim_with_no_extension_still_reads_as_chat() {
+        // A peer one release behind cannot express a work kind at all. Its claims
+        // must keep working and be understood as chat, which is the only thing v2
+        // could describe — this is the compatibility window in use.
+        let (provider_key, provider_did) = keypair();
+        let (_, consumer_did) = other_keypair();
+        let provider = LedgerNode::in_memory(provider_key, provider_did);
+        let grant = provider
+            .sign_quote(1, consumer_did, "m".into(), 30)
+            .expect("quote");
+
+        let mut payload = provider
+            .claim_for_response(&grant.quote, 1, OLLAMA_STREAMED)
+            .expect("claim")
+            .payload;
+        payload.version = 2;
+        payload.ext = Vec::new();
+        let older = payload
+            .sign(&ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]))
+            .unwrap();
+
+        assert!(older.verify().is_ok(), "v2 must still verify");
+        assert_eq!(older.payload.ext_or_default().kind, WORK_KIND_CHAT);
     }
 
     #[test]

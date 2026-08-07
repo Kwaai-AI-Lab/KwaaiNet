@@ -1430,15 +1430,27 @@ mod tests {
         // KWAAI_TEST_STREAM=1 exercises the path that used to bill nothing:
         // Ollama replies with NDJSON and only the final line carries the counts.
         let stream = std::env::var("KWAAI_TEST_STREAM").is_ok();
-        println!("stream: {stream}");
-        let body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
-            "stream": stream,
-            "options": {"num_ctx": 2048, "num_predict": 8},
-        });
+        // KWAAI_TEST_EMBED=1 exercises /api/embed instead of /api/chat.
+        let embed = std::env::var("KWAAI_TEST_EMBED").is_ok();
+        println!("stream: {stream} embed: {embed}");
+        let (path, body) = if embed {
+            (
+                "/api/embed",
+                serde_json::json!({ "model": model, "input": ["hello world", "second text"] }),
+            )
+        } else {
+            (
+                "/api/chat",
+                serde_json::json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+                    "stream": stream,
+                    "options": {"num_ctx": 2048, "num_predict": 8},
+                }),
+            )
+        };
         let resp = client
-            .send("POST", "/api/chat", serde_json::to_vec(&body).unwrap())
+            .send("POST", path, serde_json::to_vec(&body).unwrap())
             .await
             .expect("the remote peer must answer");
 

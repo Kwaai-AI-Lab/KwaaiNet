@@ -312,8 +312,10 @@ fn self_test() -> Result<()> {
     }
     .sign(&signing)?;
 
+    let observed =
+        crate::ledger_node::parse_work(body).context("self-test body should be meterable")?;
     claim
-        .verify_against(&grant, body, 3, 7)
+        .verify_against(&grant, body, &observed)
         .context("claim did not verify against its own quote")?;
     print_success("Signed a work claim and verified it against the quote.");
 
