@@ -244,6 +244,7 @@ impl LedgerNode {
             granted_at_unix_ms: now_unix_ms(),
             nonce: self.next_nonce(),
             key_epoch: KEY_EPOCH,
+            ext: Vec::new(),
         };
         match quote.sign(&self.signing) {
             Ok(g) => Some(g),
@@ -290,6 +291,7 @@ impl LedgerNode {
             valid_until_unix_ms: now_unix_ms() + CLAIM_VALIDITY_MS,
             nonce: self.next_nonce(),
             key_epoch: KEY_EPOCH,
+            ext: Vec::new(),
         };
         match payload.sign(&self.signing) {
             Ok(c) => Some(c),

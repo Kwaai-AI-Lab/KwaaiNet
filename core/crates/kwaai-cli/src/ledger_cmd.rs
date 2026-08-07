@@ -286,6 +286,7 @@ fn self_test() -> Result<()> {
         granted_at_unix_ms: now_unix_ms(),
         nonce: 1,
         key_epoch: KEY_EPOCH,
+        ext: Vec::new(),
     };
     let grant = quote.clone().sign(&signing)?;
     grant
@@ -307,6 +308,7 @@ fn self_test() -> Result<()> {
         valid_until_unix_ms: quote.granted_at_unix_ms + 60_000,
         nonce: 2,
         key_epoch: KEY_EPOCH,
+        ext: Vec::new(),
     }
     .sign(&signing)?;
 
