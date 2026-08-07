@@ -2564,3 +2564,38 @@ Speed/quality summary (axiomatic threshold sweep):
 - Eval: 165.0/209
 - Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260716_193955.log
 - Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260716_210535.json
+
+## 2026-07-16 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 181.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260716_221619.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260716_234124.json
+
+## 2026-07-19 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 190.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260719_174255.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260719_181610.json
+
+## 2026-07-20 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 177.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260720_201750.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260720_205110.json
+
+## 2026-07-21 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 185.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260721_144954.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260721_151941.json
+
+## 2026-07-21 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 178.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260721_171613.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260721_172017.json
+
+## 2026-07-21 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 175.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260721_192708.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260721_205141.json
+
+## 2026-07-22 Phase C relation thresholds=high:0.75/low:0.45
+- Eval: 184.0/209
+- Log: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_sweep_20260722_192352.log
+- Metrics: /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/results/relation_axiomatic_metrics_phC_h0.75_l0.45_20260722_204543.json

@@ -30,3 +30,14 @@ Baseline: D6 = 88.9% (v0.4.148 seed6)
 | MobyDick (semantic) | ret=87.0% gen=32.5% | — | — | 2026-07-09 | sem-low=0.3 |
 | Legal (semantic) | ret=94.4% gen=30.9% | — | — | 2026-07-09 | sem-low=0.3 |
 | Astrophysics | ret=0.0% gen=31.3% | — | Person,Organization,Publication | 2026-07-09 | sem-low=0.3 |
+| Manhattan | 73.4% | 0/79 | paragraph | — | 2026-08-04 | |
+| MobyDick | 74.4% | 0/78 | paragraph | — | 2026-08-04 | |
+| Legal | 77.5% | 0/80 | paragraph | — | 2026-08-04 | |
+| Meetings | 54.2% | 0/59 | paragraph | — | 2026-08-04 | |
+| PythonDocs | 58.7% | 0/63 | paragraph | — | 2026-08-04 | |
+| NIST | 69.4% | 0/72 | paragraph | — | 2026-08-04 | |
+| Climate | 61.3% | 0/62 | paragraph | — | 2026-08-04 | |
+| RFCs | 71.8% | 0/78 | paragraph | — | 2026-08-04 | |
+| DeepSea | 60.3% | 0/58 | paragraph | — | 2026-08-04 | |
+| DreamMem | 68.7% | 0/67 | paragraph | — | 2026-08-04 | |
+| Astrophysics | 62.7% | 0/75 | paragraph | — | 2026-08-04 | |
