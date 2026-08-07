@@ -37,10 +37,15 @@ use crate::MicroCredits;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CounterpartyWork {
     pub peer_did: String,
-    /// Tokens we served *to* this peer.
+    /// Chat tokens we served *to* this peer.
     pub tokens_served: u64,
-    /// Tokens this peer served *to us*.
+    /// Chat tokens this peer served *to us*.
     pub tokens_consumed: u64,
+    /// Embedding tokens we served. Tracked apart from chat because the two are
+    /// priced differently — an embedding pass is prefill only.
+    pub embed_tokens_served: u64,
+    /// Embedding tokens this peer served to us.
+    pub embed_tokens_consumed: u64,
 }
 
 /// Raw work volume per counterparty — the input every economy settles from.
@@ -64,6 +69,10 @@ pub struct RateCard {
     /// the schedule in force when it was earned.
     pub version: u32,
     pub micro_per_1k_chat_tokens: MicroCredits,
+    /// Embedding work is a single prefill pass with no autoregressive decode, so
+    /// it costs a provider materially less per token than generation. Pricing it
+    /// off the chat rate would systematically over-charge it.
+    pub micro_per_1k_embedding_tokens: MicroCredits,
 }
 
 /// Network-wide figures an economy may need that a single node cannot know from
@@ -131,6 +140,12 @@ fn value_of(tokens: u64, card: &RateCard) -> MicroCredits {
         .div_ceil(1000)
 }
 
+fn value_of_embed(tokens: u64, card: &RateCard) -> MicroCredits {
+    card.micro_per_1k_embedding_tokens
+        .saturating_mul(tokens)
+        .div_ceil(1000)
+}
+
 /// Effective counterparty count and the resulting weighting.
 ///
 /// `n_eff` is the inverse Herfindahl index over per-peer positive net: 1.0 when
@@ -165,8 +180,9 @@ fn net_positions(
     let mut positives = Vec::new();
 
     for e in &ledger.entries {
-        let served = value_of(e.tokens_served, card);
-        let consumed = value_of(e.tokens_consumed, card);
+        let served = value_of(e.tokens_served, card) + value_of_embed(e.embed_tokens_served, card);
+        let consumed =
+            value_of(e.tokens_consumed, card) + value_of_embed(e.embed_tokens_consumed, card);
         gross_served = gross_served.saturating_add(served);
         gross_consumed = gross_consumed.saturating_add(consumed);
         if served > consumed {
@@ -193,6 +209,7 @@ impl Economy for NoEconomy {
         RateCard {
             version: 0,
             micro_per_1k_chat_tokens: 0,
+            micro_per_1k_embedding_tokens: 0,
         }
     }
     fn welcome_grant(&self) -> MicroCredits {
@@ -230,8 +247,10 @@ impl Default for MilesEconomy {
     fn default() -> Self {
         Self {
             card: RateCard {
-                version: 1,
+                version: 2,
                 micro_per_1k_chat_tokens: 1_000,
+                // A quarter of chat: prefill only, no decode.
+                micro_per_1k_embedding_tokens: 250,
             },
             // 10 credits, enough to feel usable without being worth farming.
             welcome: 10 * crate::MICRO_PER_CREDIT,
@@ -295,8 +314,9 @@ impl Default for AsiShadowEconomy {
             // The card only converts tokens into a comparable weight here; the
             // payout is a share of the pool, so the absolute rate cancels out.
             card: RateCard {
-                version: 1,
+                version: 2,
                 micro_per_1k_chat_tokens: 1_000,
+                micro_per_1k_embedding_tokens: 250,
             },
         }
     }
@@ -355,18 +375,25 @@ impl Economy for AsiShadowEconomy {
 }
 
 /// Fold a set of per-peer balances into a [`WorkLedger`].
-pub fn work_ledger_from(rows: impl IntoIterator<Item = (String, u64, u64)>) -> WorkLedger {
+pub fn work_ledger_from(rows: impl IntoIterator<Item = (String, u8, u64, u64)>) -> WorkLedger {
     let mut acc: BTreeMap<String, CounterpartyWork> = BTreeMap::new();
-    for (peer_did, served, consumed) in rows {
+    for (peer_did, kind, served, consumed) in rows {
         let e = acc
             .entry(peer_did.clone())
             .or_insert_with(|| CounterpartyWork {
                 peer_did,
                 tokens_served: 0,
                 tokens_consumed: 0,
+                embed_tokens_served: 0,
+                embed_tokens_consumed: 0,
             });
-        e.tokens_served = e.tokens_served.saturating_add(served);
-        e.tokens_consumed = e.tokens_consumed.saturating_add(consumed);
+        if kind == crate::WORK_KIND_EMBEDDINGS {
+            e.embed_tokens_served = e.embed_tokens_served.saturating_add(served);
+            e.embed_tokens_consumed = e.embed_tokens_consumed.saturating_add(consumed);
+        } else {
+            e.tokens_served = e.tokens_served.saturating_add(served);
+            e.tokens_consumed = e.tokens_consumed.saturating_add(consumed);
+        }
     }
     WorkLedger {
         entries: acc.into_values().collect(),
@@ -378,7 +405,42 @@ mod tests {
     use super::*;
 
     fn work(pairs: &[(&str, u64, u64)]) -> WorkLedger {
-        work_ledger_from(pairs.iter().map(|(d, s, c)| ((*d).to_string(), *s, *c)))
+        work_ledger_from(
+            pairs
+                .iter()
+                .map(|(d, s, c)| ((*d).to_string(), crate::WORK_KIND_CHAT, *s, *c)),
+        )
+    }
+
+    fn embed_work(pairs: &[(&str, u64, u64)]) -> WorkLedger {
+        work_ledger_from(
+            pairs
+                .iter()
+                .map(|(d, s, c)| ((*d).to_string(), crate::WORK_KIND_EMBEDDINGS, *s, *c)),
+        )
+    }
+
+    #[test]
+    fn embedding_work_is_valued_at_its_own_rate() {
+        // Embeddings are prefill only; pricing them off the chat line would
+        // systematically over-reward them relative to generation.
+        let miles = MilesEconomy::default();
+        let same_tokens = 100_000u64;
+        let chat = miles.settle(
+            &work(&[("did:peer:b", same_tokens, 0)]),
+            &SettlementContext::default(),
+        );
+        let embed = miles.settle(
+            &embed_work(&[("did:peer:b", same_tokens, 0)]),
+            &SettlementContext::default(),
+        );
+        assert!(
+            embed.net_positive < chat.net_positive,
+            "identical token volume should be worth less as embeddings: {} vs {}",
+            embed.net_positive,
+            chat.net_positive
+        );
+        assert!(embed.net_positive > 0, "but still worth something");
     }
 
     #[test]
@@ -447,7 +509,14 @@ mod tests {
         let mut last = 0.0;
         for n in 1..=8u64 {
             let rows: Vec<_> = (0..n)
-                .map(|i| (format!("did:peer:{i}"), 120_000 / n, 0u64))
+                .map(|i| {
+                    (
+                        format!("did:peer:{i}"),
+                        crate::WORK_KIND_CHAT,
+                        120_000 / n,
+                        0u64,
+                    )
+                })
                 .collect();
             let s = miles.settle(&work_ledger_from(rows), &SettlementContext::default());
             assert!(

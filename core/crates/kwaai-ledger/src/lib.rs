@@ -113,7 +113,7 @@ const SIG_LEN: usize = 64;
 /// signature but opaque to a reader that doesn't know the new schema. Whether to
 /// honour such a receipt becomes a policy decision (the supported set) rather
 /// than a decode failure. That is what makes the compatibility window real.
-pub const PAYLOAD_VERSION: u16 = 2;
+pub const PAYLOAD_VERSION: u16 = 3;
 
 /// Payload versions this build will verify. Always contains
 /// [`PAYLOAD_VERSION`]; older entries are the compatibility window.
@@ -121,7 +121,73 @@ pub const PAYLOAD_VERSION: u16 = 2;
 /// Issuing and accepting are deliberately separate: a node issues exactly one
 /// version but honours several, so a release does not orphan receipts still in
 /// flight from the previous one.
-pub const SUPPORTED_PAYLOAD_VERSIONS: &[u16] = &[2];
+pub const SUPPORTED_PAYLOAD_VERSIONS: &[u16] = &[2, 3];
+
+/// Chat/completion tokens — the only kind v2 could express, and the default
+/// when a claim carries no extension.
+pub const WORK_KIND_CHAT: u8 = 0;
+
+/// Embedding work, billed on input tokens with vector count and dimension
+/// recorded as corroborating evidence.
+pub const WORK_KIND_EMBEDDINGS: u8 = 1;
+
+/// v3 extension carried in [`LeaseQuote::ext`].
+///
+/// Exists so the *embedding* price is committed to before any work happens, the
+/// same as the chat price. Without it a provider could serve embeddings and pick
+/// the rate afterwards, which is exactly the post-hoc pricing the quote exists to
+/// prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteExt {
+    pub price_micro_per_1k_embedding_tokens: MicroCredits,
+}
+
+impl QuoteExt {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        to_canonical(self)
+    }
+}
+
+/// v3 extension carried in [`WorkClaimPayload::ext`].
+///
+/// Encoded as its own canonical struct, so a v2 reader still decodes the claim
+/// and still verifies the signature — it simply cannot interpret these bytes and
+/// falls back to treating the work as chat. That is the compatibility window
+/// doing its job; this is its first real use.
+///
+/// `kind` is signed rather than left to be re-derived, so both parties commit to
+/// the *same* interpretation of the body. Without it, a response that happened to
+/// lack `eval_count` could be metered under either rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimExt {
+    pub kind: u8,
+    /// Embeddings: vectors returned. Chat: 0.
+    pub vectors: u64,
+    /// Embeddings: dimension of each vector. Chat: 0.
+    pub dimension: u32,
+}
+
+impl ClaimExt {
+    pub fn chat() -> Self {
+        Self {
+            kind: WORK_KIND_CHAT,
+            vectors: 0,
+            dimension: 0,
+        }
+    }
+
+    pub fn embeddings(vectors: u64, dimension: u32) -> Self {
+        Self {
+            kind: WORK_KIND_EMBEDDINGS,
+            vectors,
+            dimension,
+        }
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        to_canonical(self)
+    }
+}
 
 /// Which identity key signed an artifact. Recorded so a future key rotation
 /// does not silently invalidate historical receipts — cheap to carry now,
@@ -146,6 +212,11 @@ pub enum LedgerError {
     DigestMismatch,
     #[error("ledger store: {0}")]
     Store(String),
+    #[error(
+        "work kind mismatch — the claim describes kind {claimed} but the delivered \
+         response is kind {observed}"
+    )]
+    WorkKindMismatch { claimed: u8, observed: u8 },
     #[error(
         "unsupported {artifact} payload version {got} (this build accepts \
          {supported:?}) — the peer is running a different release"
@@ -210,13 +281,41 @@ impl LeaseQuote {
         to_canonical(self)
     }
 
-    /// Credits owed for `total_tokens` at this quote's price, rounding up so a
-    /// provider is never underpaid for a partial 1k block.
+    /// Credits owed for `total_tokens` at this quote's chat price, rounding up so
+    /// a provider is never underpaid for a partial 1k block.
     pub fn credits_for_tokens(&self, total_tokens: u64) -> Result<MicroCredits> {
         self.price_micro_per_1k_tokens
             .checked_mul(total_tokens)
             .ok_or(LedgerError::Overflow("price × tokens"))
             .map(|n| n.div_ceil(1000))
+    }
+
+    /// The quote's extension, if it carries one this build understands.
+    pub fn ext_opt(&self) -> Option<QuoteExt> {
+        if self.ext.is_empty() {
+            return None;
+        }
+        rmp_serde::from_slice(&self.ext).ok()
+    }
+
+    /// Credits owed for work of a given kind, at the price this quote committed
+    /// to.
+    ///
+    /// A quote with no embedding price — one issued by a peer a release behind —
+    /// falls back to the chat price. That is the conservative reading: an older
+    /// provider never offered a discount, so assuming one would let a consumer
+    /// underpay it.
+    pub fn credits_for(&self, kind: u8, total_tokens: u64) -> Result<MicroCredits> {
+        if kind == WORK_KIND_EMBEDDINGS {
+            if let Some(ext) = self.ext_opt() {
+                return ext
+                    .price_micro_per_1k_embedding_tokens
+                    .checked_mul(total_tokens)
+                    .ok_or(LedgerError::Overflow("embedding price × tokens"))
+                    .map(|n| n.div_ceil(1000));
+            }
+        }
+        self.credits_for_tokens(total_tokens)
     }
 
     pub fn sign(self, key: &SigningKey) -> Result<SignedLeaseGrant> {
@@ -287,6 +386,20 @@ impl WorkClaimPayload {
         to_canonical(self)
     }
 
+    /// The claim's extension, or the chat default.
+    ///
+    /// An empty `ext` means a v2 claim, which could only ever describe chat —
+    /// so this is a faithful reading of an older peer's claim, not a guess.
+    /// Undecodable bytes are also treated as chat: a reader that cannot parse a
+    /// newer extension must not silently mis-bill, and chat is the conservative
+    /// interpretation since it is what the token fields already mean.
+    pub fn ext_or_default(&self) -> ClaimExt {
+        if self.ext.is_empty() {
+            return ClaimExt::chat();
+        }
+        rmp_serde::from_slice(&self.ext).unwrap_or_else(|_| ClaimExt::chat())
+    }
+
     pub fn total_tokens(&self) -> Result<u64> {
         self.prompt_tokens
             .checked_add(self.completion_tokens)
@@ -343,14 +456,15 @@ impl WorkClaim {
         &self,
         grant: &SignedLeaseGrant,
         response_body: &[u8],
-        observed_prompt_tokens: u64,
-        observed_completion_tokens: u64,
+        observed: &ObservedWork,
     ) -> Result<()> {
         self.verify()?;
         grant.verify()?;
 
         let q = &grant.quote;
         let p = &self.payload;
+        let observed_prompt_tokens = observed.prompt_tokens;
+        let observed_completion_tokens = observed.completion_tokens;
         if p.lease_id != q.lease_id {
             return Err(LedgerError::QuoteMismatch(format!(
                 "lease_id {} != quoted {}",
@@ -365,6 +479,19 @@ impl WorkClaim {
         if p.response_digest != digest(response_body) {
             return Err(LedgerError::DigestMismatch);
         }
+        // The claimed interpretation of the body must match what the consumer
+        // independently derived from it — otherwise a provider could bill
+        // embedding work under the chat rate, or vice versa.
+        let claimed = p.ext_or_default();
+        if claimed.kind != observed.kind
+            || (claimed.kind == WORK_KIND_EMBEDDINGS
+                && (claimed.vectors != observed.vectors || claimed.dimension != observed.dimension))
+        {
+            return Err(LedgerError::WorkKindMismatch {
+                claimed: claimed.kind,
+                observed: observed.kind,
+            });
+        }
         if p.prompt_tokens != observed_prompt_tokens
             || p.completion_tokens != observed_completion_tokens
         {
@@ -375,7 +502,7 @@ impl WorkClaim {
                 observed_completion: observed_completion_tokens,
             });
         }
-        let expected = q.credits_for_tokens(p.total_tokens()?)?;
+        let expected = q.credits_for(claimed.kind, p.total_tokens()?)?;
         if p.credits_owed != expected {
             return Err(LedgerError::QuoteMismatch(format!(
                 "credits_owed {} != {expected} implied by the quoted price",
@@ -519,6 +646,25 @@ fn verify_sig(did: &str, preimage: &[u8], sig: &[u8], role: &'static str) -> Res
             role,
             did: did.to_string(),
         })
+}
+
+/// What a party independently derived from a delivered response body.
+///
+/// Both sides compute this from the same bytes with the same function, which is
+/// what makes the quantity agreed rather than asserted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObservedWork {
+    pub kind: u8,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub vectors: u64,
+    pub dimension: u32,
+}
+
+impl ObservedWork {
+    pub fn total_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_add(self.completion_tokens)
+    }
 }
 
 /// Compute the digest of a response body — exposed so callers on both sides use
@@ -854,7 +1000,19 @@ mod tests {
         );
 
         // The consumer parsed 5 + 12 out of the body itself.
-        let err = inflated.verify_against(&grant, body, 5, 12).unwrap_err();
+        let err = inflated
+            .verify_against(
+                &grant,
+                body,
+                &ObservedWork {
+                    kind: WORK_KIND_CHAT,
+                    prompt_tokens: 5,
+                    completion_tokens: 12,
+                    vectors: 0,
+                    dimension: 0,
+                },
+            )
+            .unwrap_err();
         assert!(
             matches!(
                 err,
@@ -877,7 +1035,19 @@ mod tests {
         // Claim was built over different bytes than the consumer received.
         let claim = claim_for(&grant, &p, b"some other response", 5, 12);
         assert!(matches!(
-            claim.verify_against(&grant, delivered, 5, 12).unwrap_err(),
+            claim
+                .verify_against(
+                    &grant,
+                    delivered,
+                    &ObservedWork {
+                        kind: WORK_KIND_CHAT,
+                        prompt_tokens: 5,
+                        completion_tokens: 12,
+                        vectors: 0,
+                        dimension: 0
+                    }
+                )
+                .unwrap_err(),
             LedgerError::DigestMismatch
         ));
     }
@@ -903,7 +1073,19 @@ mod tests {
         payload.consumer_did = other.did.clone();
         let mismatched = payload.sign(&p.signing).unwrap();
         assert!(matches!(
-            mismatched.verify_against(&grant, b"x", 1, 1).unwrap_err(),
+            mismatched
+                .verify_against(
+                    &grant,
+                    b"x",
+                    &ObservedWork {
+                        kind: WORK_KIND_CHAT,
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                        vectors: 0,
+                        dimension: 0
+                    }
+                )
+                .unwrap_err(),
             LedgerError::QuoteMismatch(_)
         ));
     }
@@ -1022,7 +1204,17 @@ mod tests {
 
         // Consumer independently parsed 10 prompt + 40 completion from `body`.
         claim
-            .verify_against(&grant, body, 10, 40)
+            .verify_against(
+                &grant,
+                body,
+                &ObservedWork {
+                    kind: WORK_KIND_CHAT,
+                    prompt_tokens: 10,
+                    completion_tokens: 40,
+                    vectors: 0,
+                    dimension: 0,
+                },
+            )
             .expect("claim is honest");
         let receipt = claim.counter_sign(&c.signing, 1).unwrap();
         receipt.verify().expect("co-signed receipt verifies");
