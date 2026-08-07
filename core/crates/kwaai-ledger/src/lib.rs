@@ -61,7 +61,12 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod economy;
 pub mod store;
+pub use economy::{
+    economy_by_id, AsiShadowEconomy, CounterpartyWork, Economy, MilesEconomy, NoEconomy, RateCard,
+    Settlement, SettlementContext, WorkLedger,
+};
 pub use store::{LedgerStore, PeerBalance, MIN_CLAIMS_FOR_RATIO};
 
 /// Server-minted lease identifier, scoped to the granting peer's process.
@@ -78,6 +83,19 @@ pub const MICRO_PER_CREDIT: MicroCredits = 1_000_000;
 /// Ed25519 signature length; enforced on verify since signatures travel as
 /// `Vec<u8>` (serde has no built-in impl for `[u8; 64]`).
 const SIG_LEN: usize = 64;
+
+/// Version of the signed-payload schema.
+///
+/// Carried **inside** the signed preimage as the first field, so it cannot be
+/// altered without invalidating the signature, and so a peer running a different
+/// release fails with a legible "unsupported version" rather than a
+/// `BadSignature` that looks like an attack.
+///
+/// This matters because releases are frequent and the network is therefore
+/// almost always running mixed versions. Changing any signed field's meaning,
+/// order, or count changes the preimage; bump this at the same time so the
+/// mismatch is self-describing.
+pub const PAYLOAD_VERSION: u16 = 1;
 
 /// Which identity key signed an artifact. Recorded so a future key rotation
 /// does not silently invalidate historical receipts — cheap to carry now,
@@ -103,6 +121,15 @@ pub enum LedgerError {
     #[error("ledger store: {0}")]
     Store(String),
     #[error(
+        "unsupported {artifact} payload version {got} (this build understands \
+         {supported}) — the peer is running a different release"
+    )]
+    UnsupportedVersion {
+        artifact: &'static str,
+        got: u16,
+        supported: u16,
+    },
+    #[error(
         "token count mismatch — provider claimed {claimed_prompt}+{claimed_completion} but the \
          delivered response reports {observed_prompt}+{observed_completion}"
     )]
@@ -126,6 +153,9 @@ type Result<T> = std::result::Result<T, LedgerError>;
 /// protocol version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseQuote {
+    /// Must be first: it is the first thing a verifier reads out of the
+    /// preimage, so a version mismatch is diagnosable before anything else.
+    pub version: u16,
     pub lease_id: LeaseId,
     pub provider_did: String,
     /// Binding the quote to one consumer is what stops a grant being replayed
@@ -174,7 +204,12 @@ pub struct SignedLeaseGrant {
 
 impl SignedLeaseGrant {
     /// Verify the provider actually issued this quote.
+    ///
+    /// Version is checked first: an unreadable schema is an upgrade problem, and
+    /// reporting it as a signature failure would send an operator hunting for an
+    /// attacker that isn't there.
     pub fn verify(&self) -> Result<()> {
+        check_version("quote", self.quote.version)?;
         verify_sig(
             &self.quote.provider_did,
             &self.quote.to_signing_bytes()?,
@@ -194,6 +229,8 @@ impl SignedLeaseGrant {
 /// possible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkClaimPayload {
+    /// See [`LeaseQuote::version`].
+    pub version: u16,
     pub lease_id: LeaseId,
     pub request_id: u64,
     pub provider_did: String,
@@ -241,6 +278,7 @@ pub struct WorkClaim {
 
 impl WorkClaim {
     pub fn verify(&self) -> Result<()> {
+        check_version("claim", self.payload.version)?;
         verify_sig(
             &self.payload.provider_did,
             &self.payload.to_signing_bytes()?,
@@ -405,6 +443,18 @@ fn to_canonical<T: Serialize>(v: &T) -> Result<Vec<u8>> {
     rmp_serde::to_vec(v).map_err(|e| LedgerError::Encode(e.to_string()))
 }
 
+fn check_version(artifact: &'static str, got: u16) -> Result<()> {
+    if got == PAYLOAD_VERSION {
+        Ok(())
+    } else {
+        Err(LedgerError::UnsupportedVersion {
+            artifact,
+            got,
+            supported: PAYLOAD_VERSION,
+        })
+    }
+}
+
 fn digest(bytes: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(bytes);
@@ -483,6 +533,7 @@ pub(crate) mod test_support {
 
     pub fn quote(provider: &Id, consumer: &Id) -> LeaseQuote {
         LeaseQuote {
+            version: PAYLOAD_VERSION,
             lease_id: 7,
             provider_did: provider.did.clone(),
             consumer_did: consumer.did.clone(),
@@ -505,6 +556,7 @@ pub(crate) mod test_support {
         let q = &grant.quote;
         let credits = q.credits_for_tokens(prompt + completion).unwrap();
         WorkClaimPayload {
+            version: PAYLOAD_VERSION,
             lease_id: q.lease_id,
             request_id: 1,
             provider_did: q.provider_did.clone(),
@@ -556,6 +608,65 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::*;
+
+    #[test]
+    fn a_future_payload_version_reports_an_upgrade_not_a_forgery() {
+        // Releases are frequent, so the network is nearly always running mixed
+        // versions. The failure a peer sees must say "different release", not
+        // "bad signature" — otherwise every upgrade window looks like an attack
+        // and operators go hunting for one.
+        let (p, c) = (make_id(), make_id());
+        let mut q = quote(&p, &c);
+        q.version = PAYLOAD_VERSION + 1;
+        // Signed correctly, by the right key, over the future payload.
+        let grant = q.sign(&p.signing).unwrap();
+
+        match grant.verify() {
+            Err(LedgerError::UnsupportedVersion {
+                artifact,
+                got,
+                supported,
+            }) => {
+                assert_eq!(artifact, "quote");
+                assert_eq!(got, PAYLOAD_VERSION + 1);
+                assert_eq!(supported, PAYLOAD_VERSION);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_version_is_covered_by_the_signature() {
+        // It must be inside the preimage: a downgrade attack that rewrites the
+        // version to something we accept has to break the signature.
+        let (p, c) = (make_id(), make_id());
+        let mut q = quote(&p, &c);
+        q.version = PAYLOAD_VERSION + 1;
+        let mut grant = q.sign(&p.signing).unwrap();
+
+        grant.quote.version = PAYLOAD_VERSION; // forge it back to something we take
+        assert!(
+            matches!(grant.verify(), Err(LedgerError::BadSignature { .. })),
+            "rewriting the version must invalidate the signature"
+        );
+    }
+
+    #[test]
+    fn a_future_claim_version_is_also_caught() {
+        let (p, c) = (make_id(), make_id());
+        let grant = quote(&p, &c).sign(&p.signing).unwrap();
+        let mut payload = claim_for(&grant, &p, b"body", 10, 40).payload;
+        payload.version = PAYLOAD_VERSION + 1;
+        let claim = payload.sign(&p.signing).unwrap();
+
+        assert!(matches!(
+            claim.verify(),
+            Err(LedgerError::UnsupportedVersion {
+                artifact: "claim",
+                ..
+            })
+        ));
+    }
 
     // ── The load-bearing test ────────────────────────────────────────────────
 
