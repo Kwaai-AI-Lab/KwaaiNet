@@ -84,29 +84,37 @@ fn proxy_client() -> &'static reqwest::Client {
 /// `lease_id` (legacy caller, or a negotiation that was denied/unsupported)
 /// forwards unconditionally, exactly as before this feature existed.
 ///
-/// Register with `client.add_unary_handler(OLLAMA_PROXY_PROTO, handler, false)`.
+/// Register with
+/// `client.add_unary_handler_with_peer(OLLAMA_PROXY_PROTO, handler, false)` —
+/// the handler needs the authenticated caller so work served here can be
+/// attributed to a peer. A peer id inside the request payload is self-declared
+/// and cannot be trusted.
 #[allow(clippy::type_complexity)]
 pub fn make_ollama_proxy_handler(
     lease_table: Arc<LeaseTable>,
 ) -> impl Fn(
     Vec<u8>,
+    PeerId,
 ) -> Pin<
     Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
 > + Send
        + Sync
        + 'static {
-    move |data: Vec<u8>| {
+    move |data: Vec<u8>, caller: PeerId| {
         let lease_table = lease_table.clone();
         Box::pin(async move {
             let req: ProxyRequest = match rmp_serde::from_slice(&data) {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("ollama_proxy server: bad request: {e}");
+                    warn!("ollama_proxy server: bad request from {caller}: {e}");
                     return encode_err(400, &format!("bad request: {e}"));
                 }
             };
 
-            debug!("ollama_proxy server: {} {}", req.method, req.path);
+            debug!(
+                "ollama_proxy server: {} {} from {caller}",
+                req.method, req.path
+            );
 
             if let Some(lease_id) = req.lease_id {
                 let ttl = std::time::Duration::from_secs(crate::capacity_lease::LEASE_TTL_SECS);
@@ -161,17 +169,20 @@ pub fn make_ollama_proxy_handler(
 /// shard API port written by `kwaainet shard api` at startup.
 ///
 /// Returns 503 immediately if the shard API is not running (port file absent).
-/// Register with `client.add_unary_handler(SHARD_PROXY_PROTO, handler, false)`.
+/// Register with
+/// `client.add_unary_handler_with_peer(SHARD_PROXY_PROTO, handler, false)`.
 #[allow(clippy::type_complexity)]
 pub fn make_shard_proxy_handler() -> impl Fn(
     Vec<u8>,
+    PeerId,
 ) -> Pin<
     Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
 > + Send
        + Sync
        + 'static {
-    move |data: Vec<u8>| {
+    move |data: Vec<u8>, caller: PeerId| {
         Box::pin(async move {
+            debug!("shard_proxy server: request from {caller}");
             let port = match std::fs::read_to_string(crate::shard_cmd::shard_api_port_file())
                 .ok()
                 .and_then(|s| s.trim().parse::<u16>().ok())

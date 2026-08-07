@@ -394,34 +394,39 @@ pub fn apply_breaker_outcome(
 // ── p2p:// unary transport ────────────────────────────────────────────────────
 
 /// Build a unary handler for `CAPACITY_LEASE_PROTO`, forwarding negotiation
-/// requests to `lease_table`. Register with
-/// `client.add_unary_handler(CAPACITY_LEASE_PROTO, handler, false)` —
-/// mirrors `ollama_proxy::make_ollama_proxy_handler`'s shape exactly so the
-/// two protocols register identically in `node.rs`/`shard_cmd.rs`.
+/// requests to `lease_table`. Mirrors `ollama_proxy::make_ollama_proxy_handler`'s
+/// shape exactly so the two protocols register identically in
+/// `node.rs`/`shard_cmd.rs`.
 ///
-/// Unary callers have no persistent connection for `release_connection` to
-/// key eager reclaim off of, so this path relies entirely on the periodic
-/// TTL sweep (`spawn_periodic_sweep`) for crash recovery — a fixed
-/// placeholder `connection_id` is used since nothing ever targets it for
-/// reclaim.
+/// Unary callers have no persistent connection, so eager reclaim on stream
+/// death is unavailable and this path leans on the periodic TTL sweep
+/// (`spawn_periodic_sweep`) for crash recovery.
+///
+/// The `connection_id` is nevertheless derived **per caller** rather than being
+/// a shared placeholder. Previously every unary caller on a node shared one id,
+/// which meant leases could not be attributed to a peer at all and a single
+/// `release_connection` would have reclaimed every unary caller's slot at once.
+///
+/// Register with
+/// `client.add_unary_handler_with_peer(CAPACITY_LEASE_PROTO, handler, false)`.
 #[allow(clippy::type_complexity)]
 pub fn make_capacity_lease_handler(
     lease_table: Arc<LeaseTable>,
 ) -> impl Fn(
     Vec<u8>,
+    PeerId,
 ) -> Pin<
     Box<dyn std::future::Future<Output = kwaai_p2p_daemon::error::Result<Vec<u8>>> + Send>,
 > + Send
        + Sync
        + 'static {
-    const UNARY_CONNECTION_ID: ConnectionId = 0;
-    move |data: Vec<u8>| {
+    move |data: Vec<u8>, caller: PeerId| {
         let lease_table = lease_table.clone();
         Box::pin(async move {
             let req: LeaseRequestPayload = match rmp_serde::from_slice(&data) {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!("capacity-lease server: bad request: {e}");
+                    tracing::warn!("capacity-lease server: bad request from {caller}: {e}");
                     return Err(kwaai_p2p_daemon::error::Error::Protocol(format!(
                         "bad request: {e}"
                     )));
@@ -429,13 +434,29 @@ pub fn make_capacity_lease_handler(
             };
             let outcome = lease_table.try_grant(
                 req.model.as_deref(),
-                UNARY_CONNECTION_ID,
+                connection_id_for_peer(&caller),
                 Duration::from_secs(LEASE_TTL_SECS),
             );
             rmp_serde::to_vec_named(&outcome)
                 .map_err(|e| kwaai_p2p_daemon::error::Error::Protocol(e.to_string()))
         })
     }
+}
+
+/// Stable per-process `ConnectionId` for a peer, so all of one caller's unary
+/// leases share an id and `release_connection` can reclaim exactly that peer's
+/// slots.
+///
+/// `ConnectionId` is process-scoped by contract (like `LeaseId`), so a hash that
+/// is only stable within a process is sufficient. Two peers colliding would let
+/// a reclaim of one release the other's leases; at 64 bits and realistic peer
+/// counts that is negligible, and the consequence is an early reclaim, not
+/// incorrect admission.
+pub fn connection_id_for_peer(peer: &PeerId) -> ConnectionId {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    peer.hash(&mut h);
+    h.finish()
 }
 
 /// Negotiate a lease over `CAPACITY_LEASE_PROTO` — the `p2p://` counterpart
@@ -485,6 +506,51 @@ mod tests {
     use super::*;
 
     const MODEL: &str = "llama3.1:8b";
+
+    fn test_peer(seed: u8) -> PeerId {
+        let sk = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut [seed; 32]).unwrap();
+        let kp = libp2p::identity::ed25519::Keypair::from(sk);
+        PeerId::from_public_key(&libp2p::identity::PublicKey::from(kp.public()))
+    }
+
+    #[test]
+    fn connection_ids_are_stable_per_peer_and_distinct_between_peers() {
+        let (a, b) = (test_peer(1), test_peer(2));
+        assert_eq!(
+            connection_id_for_peer(&a),
+            connection_id_for_peer(&a),
+            "all of one peer's unary leases must share an id"
+        );
+        assert_ne!(connection_id_for_peer(&a), connection_id_for_peer(&b));
+    }
+
+    #[tokio::test]
+    async fn reclaiming_one_unary_caller_does_not_release_anothers_lease() {
+        // The bug behind this change: every unary caller shared
+        // UNARY_CONNECTION_ID = 0, so leases could not be attributed to a peer
+        // and one release_connection would have taken every unary lease with it.
+        let table = LeaseTable::new(MODEL.to_string(), 2);
+        let (a, b) = (test_peer(1), test_peer(2));
+
+        let lease_a =
+            match table.try_grant(None, connection_id_for_peer(&a), Duration::from_secs(30)) {
+                NegotiationOutcome::Granted(g) => g.lease_id,
+                other => panic!("expected a grant, got {other:?}"),
+            };
+        let lease_b =
+            match table.try_grant(None, connection_id_for_peer(&b), Duration::from_secs(30)) {
+                NegotiationOutcome::Granted(g) => g.lease_id,
+                other => panic!("expected a grant, got {other:?}"),
+            };
+
+        table.release_connection(connection_id_for_peer(&a));
+
+        assert!(!table.is_active(lease_a), "A's lease should be reclaimed");
+        assert!(
+            table.is_active(lease_b),
+            "B's lease must survive — it belongs to a different caller"
+        );
+    }
 
     #[tokio::test]
     async fn is_active_reports_a_lease_gone_after_expiry_and_after_release() {
