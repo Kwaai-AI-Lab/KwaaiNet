@@ -1925,10 +1925,10 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
         total_blocks
     );
     println!(
-        "  {:<5}  {:<5}  {:<18} {:<10} NAME",
-        "START", "END", "PEER ID (prefix)", "TRUST"
+        "  {:<5}  {:<5}  {:<18} {:<10} {:<11} NAME",
+        "START", "END", "PEER ID (prefix)", "TRUST", "ECONOMY"
     );
-    println!("  {}", "─".repeat(65));
+    println!("  {}", "─".repeat(78));
     for entry in &chain {
         let peer_short = truncate_str(&entry.peer_id.to_base58(), 17);
         let tier_label = if let Some(ref store) = rep_store {
@@ -1937,11 +1937,12 @@ pub async fn cmd_shard_chain(args: ShardChainArgs) -> Result<()> {
             "—"
         };
         println!(
-            "  {:>5}  {:>5}  {:<18} {:<10} {}",
+            "  {:>5}  {:>5}  {:<18} {:<10} {:<11} {}",
             entry.start_block,
             entry.end_block,
             peer_short,
             tier_label,
+            truncate_str(&entry.economy, 11),
             truncate_str(&entry.public_name, 24),
         );
     }
@@ -1987,6 +1988,10 @@ pub struct BlockServerEntry {
     /// the shard-chain integration phase without another decoder pass.
     #[allow(dead_code)]
     pub lease_v1: bool,
+    /// Currency experiment this peer announced (`miles`, `asi-shadow`, `none`).
+    /// Self-declared and advisory — the DHT is unauthenticated — but enough to
+    /// see who is in which cohort during a month-long A/B.
+    pub economy: String,
 }
 
 /// Query bootstrap peers for all block keys of `dht_prefix` and return a
@@ -2141,7 +2146,7 @@ pub async fn discover_inference_peer(
             // Values stored under _kwaai.inference.nodes use the same
             // DHTServerInfo msgpack encoding as block records.
             if result.result_type == 1 {
-                if let Some((state, _, _, name, peer_id_b58, version, tps, _lease_v1)) =
+                if let Some((state, _, _, name, peer_id_b58, version, tps, _lease_v1, _economy)) =
                     decode_server_info_ext(&result.value)
                 {
                     if state == 2 && version_meets_minimum(&version) {
@@ -2284,8 +2289,17 @@ async fn pick_gap_blocks(
 /// synthesise a stable key from `public_name:start_block` so they still count
 /// for gap detection even though they cannot be routed to directly.
 fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)> {
-    let (state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1) =
-        decode_server_info_ext(bytes)?;
+    let (
+        state,
+        start_block,
+        end_block,
+        public_name,
+        peer_id_b58,
+        version,
+        throughput,
+        lease_v1,
+        economy,
+    ) = decode_server_info_ext(bytes)?;
     // Only include ONLINE nodes (state=2); skip JOINING (0) and OFFLINE (-1).
     if state != 2 {
         return None;
@@ -2309,6 +2323,7 @@ fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)
             public_name,
             throughput,
             trust_score: None,
+            economy,
             lease_v1,
         },
     ))
@@ -2380,6 +2395,7 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             version,
             throughput,
             lease_v1,
+            economy,
         )) = decode_server_info_ext(value_bytes)
         {
             if state != 2 {
@@ -2397,6 +2413,7 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
                 throughput,
                 trust_score: None,
                 lease_v1,
+                economy,
             });
         }
     }
@@ -2443,7 +2460,7 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
 #[allow(clippy::type_complexity)]
 fn decode_server_info_ext(
     bytes: &[u8],
-) -> Option<(i32, usize, usize, String, String, String, f64, bool)> {
+) -> Option<(i32, usize, usize, String, String, String, f64, bool, String)> {
     let val = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
     let inner_bytes = match &val {
         rmpv::Value::Ext(64, b) => b.as_slice(),
@@ -2484,6 +2501,18 @@ fn decode_server_info_ext(
         .and_then(|(_, v)| v.as_bool())
         .unwrap_or(false);
 
+    // Currency-experiment cohort. Absent for peers not participating, and for
+    // every peer built before the economy existed — both read as "none", which
+    // is the same thing from a settlement point of view.
+    let economy = {
+        let e = get_s("economy");
+        if e.is_empty() {
+            "none".to_string()
+        } else {
+            e
+        }
+    };
+
     Some((
         state,
         start_block,
@@ -2493,6 +2522,7 @@ fn decode_server_info_ext(
         version,
         throughput,
         lease_v1,
+        economy,
     ))
 }
 
@@ -2576,6 +2606,8 @@ impl SerializableEntry {
             end_block: self.end_block,
             public_name: self.public_name.clone(),
             throughput: 0.0,
+            // A cached-path entry carries no announcement to read this from.
+            economy: "none".to_string(),
             trust_score: None,
             // A persisted circuit doesn't record whether the peer supports
             // Capacity Lease — conservatively unknown/false, same as any
@@ -3504,7 +3536,7 @@ mod tests {
     #[test]
     fn decode_server_info_ext_reads_lease_v1_when_present() {
         let bytes = make_server_info_ext_bytes(Some(true));
-        let (_, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
+        let (_, _, _, _, _, _, _, lease_v1, _) = decode_server_info_ext(&bytes).expect("decodes");
         assert!(lease_v1);
     }
 
@@ -3514,7 +3546,8 @@ mod tests {
         // announcement looks like. Must decode successfully (not error) and
         // default to false, not panic or silently drop the record.
         let bytes = make_server_info_ext_bytes(None);
-        let (state, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
+        let (state, _, _, _, _, _, _, lease_v1, _) =
+            decode_server_info_ext(&bytes).expect("decodes");
         assert_eq!(
             state, 2,
             "pre-existing fields must still decode alongside the new one"
