@@ -1427,10 +1427,14 @@ mod tests {
             .map(|l| l.balances().unwrap().iter().map(|b| b.receipts).sum())
             .unwrap_or(0);
 
+        // KWAAI_TEST_STREAM=1 exercises the path that used to bill nothing:
+        // Ollama replies with NDJSON and only the final line carries the counts.
+        let stream = std::env::var("KWAAI_TEST_STREAM").is_ok();
+        println!("stream: {stream}");
         let body = serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
-            "stream": false,
+            "stream": stream,
             "options": {"num_ctx": 2048, "num_predict": 8},
         });
         let resp = client
