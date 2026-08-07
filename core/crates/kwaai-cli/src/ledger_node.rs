@@ -374,23 +374,69 @@ impl LedgerNode {
     }
 }
 
+/// How many trailing chunks of a streamed body to examine when looking for the
+/// usage block.
+///
+/// The block is always in the final chunk (Ollama's `"done":true` line) or the
+/// one before it (an SSE usage frame ahead of `data: [DONE]`), so a small window
+/// suffices and bounds the work on a large or malformed body. Both parties apply
+/// the same constant, so they always reach the same answer.
+const STREAM_TAIL_CHUNKS: usize = 64;
+
 /// Prompt and completion token counts from an inference response body.
 ///
-/// Handles both shapes this node actually receives, because `resolve_inference_urls`
-/// fronts a proxy that callers hit with either:
+/// Handles every shape this node actually receives, because `resolve_inference_urls`
+/// fronts a proxy that callers hit with any of:
 ///
-/// * Ollama native (`/api/chat`, `/api/generate`): `prompt_eval_count` / `eval_count`
-///   — already parsed this way in `shard_cmd.rs`.
-/// * OpenAI-compatible (`/v1/chat/completions`): `usage.prompt_tokens` /
-///   `usage.completion_tokens`.
+/// * Ollama native, non-streaming: top-level `prompt_eval_count` / `eval_count`.
+/// * Ollama native, **streaming** (`"stream": true`): NDJSON, where only the final
+///   `"done":true` line carries the counts.
+/// * OpenAI-compatible: `usage.prompt_tokens` / `usage.completion_tokens`, either
+///   in a single document or in a trailing SSE `data:` frame.
 ///
-/// `None` for anything else (embeddings, errors, streamed fragments). Both
-/// parties run this same function over the same bytes, so agreement is
+/// The streaming case is not hypothetical — it is the dominant one. The heaviest
+/// remote-GPU consumers in this repo all set `"stream": true` (`kwaai-rag`'s
+/// `graph.rs` entity extraction and `sequence.rs` temporal extraction), because
+/// streaming makes Ollama send headers immediately and avoids a relay send
+/// timeout. Parsing only the whole body as one JSON document therefore meant
+/// every graph build and dream cycle went completely unbilled.
+///
+/// `None` when the body carries no countable work — embeddings, upstream errors,
+/// or a streamed OpenAI-compatible response, since Ollama's `/v1` endpoint emits
+/// no usage block at all even with `stream_options.include_usage`. Declining is
+/// the right answer there: a guessed count would be signed.
+///
+/// Both parties run this same function over the same bytes, so agreement is
 /// automatic — which is why it lives here rather than in `kwaai-ledger`, whose
 /// job is to stay agnostic of any one provider's response schema.
 pub fn parse_token_counts(body: &[u8]) -> Option<(u64, u64)> {
-    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    // Fast path: a single non-streaming JSON document.
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
+        if let Some(counts) = counts_from_value(&v) {
+            return Some(counts);
+        }
+    }
 
+    // Streaming: NDJSON or SSE. Scan backwards — the usage block is always at
+    // the end, and stopping at the first chunk that has one avoids walking the
+    // whole transcript.
+    body.split(|b| *b == b'\n')
+        .rev()
+        .filter_map(|line| {
+            // Tolerate an SSE `data:` prefix so an OpenAI-compatible server that
+            // does emit a usage frame is metered correctly. `data: [DONE]` is not
+            // valid JSON and falls out here.
+            let line = line.trim_ascii();
+            let line = line.strip_prefix(b"data:").unwrap_or(line).trim_ascii();
+            (!line.is_empty()).then_some(line)
+        })
+        .take(STREAM_TAIL_CHUNKS)
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .find_map(|v| counts_from_value(&v))
+}
+
+/// Pull counts out of one decoded chunk, in either vendor's spelling.
+fn counts_from_value(v: &serde_json::Value) -> Option<(u64, u64)> {
     if let (Some(p), Some(c)) = (
         v.get("prompt_eval_count").and_then(|x| x.as_u64()),
         v.get("eval_count").and_then(|x| x.as_u64()),
@@ -449,6 +495,79 @@ mod tests {
     fn parses_openai_compatible_usage() {
         let body = br#"{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33}}"#;
         assert_eq!(parse_token_counts(body), Some((11, 22)));
+    }
+
+    // Captured verbatim from a live `POST /api/chat` with `"stream": true` —
+    // the exact shape kwaai-rag's graph and sequence extraction produce, and the
+    // one that used to bill nothing at all.
+    const OLLAMA_STREAMED: &[u8] = br#"{"model":"llama3.2:3b","created_at":"2026-08-07T02:10:28.8642Z","message":{"role":"assistant","content":"OK"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-08-07T02:10:28.874443Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":21803544250,"load_duration":21730667875,"prompt_eval_count":27,"prompt_eval_duration":49601000,"eval_count":2,"eval_duration":11555000}
+"#;
+
+    #[test]
+    fn parses_a_streamed_ollama_response() {
+        // The regression that matters: this is the dominant remote-GPU path in
+        // the repo and it produced no claim whatsoever before the fix.
+        assert_eq!(parse_token_counts(OLLAMA_STREAMED), Some((27, 2)));
+    }
+
+    #[test]
+    fn a_streamed_response_bills_the_same_as_its_non_streamed_twin() {
+        // Both parties must agree regardless of transport framing, or a provider
+        // could pick the encoding that pays better.
+        let non_streamed =
+            br#"{"message":{"content":"OK"},"done":true,"prompt_eval_count":27,"eval_count":2}"#;
+        assert_eq!(
+            parse_token_counts(OLLAMA_STREAMED),
+            parse_token_counts(non_streamed)
+        );
+    }
+
+    #[test]
+    fn streamed_parsing_tolerates_ragged_line_endings() {
+        // Trailing newlines, blank lines and \r\n all occur in practice; none of
+        // them may change the amount billed.
+        let base = std::str::from_utf8(OLLAMA_STREAMED).unwrap().trim_end();
+        for variant in [
+            base.to_string(),
+            format!("{base}\n"),
+            format!("{base}\n\n\n"),
+            base.replace('\n', "\r\n"),
+        ] {
+            assert_eq!(
+                parse_token_counts(variant.as_bytes()),
+                Some((27, 2)),
+                "framing changed the bill: {variant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_a_trailing_sse_usage_frame() {
+        // An OpenAI-compatible server that does emit usage before [DONE].
+        let body = b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":22}}\n\ndata: [DONE]\n\n";
+        assert_eq!(parse_token_counts(body), Some((11, 22)));
+    }
+
+    #[test]
+    fn a_stream_with_no_usage_anywhere_is_declined() {
+        // Ollama's own /v1 endpoint emits no usage even with
+        // stream_options.include_usage, so this is the real behaviour, not a
+        // hypothetical. Declining is correct \u2014 a guessed count would be signed.
+        let body = b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
+        assert_eq!(parse_token_counts(body), None);
+    }
+
+    #[test]
+    fn the_tail_window_is_bounded() {
+        // A usage block buried further back than STREAM_TAIL_CHUNKS is not found.
+        // Asserting it keeps the bound honest: both parties apply the same cap, so
+        // they still agree, but the cost of a huge body stays bounded.
+        let mut body = String::from("{\"prompt_eval_count\":1,\"eval_count\":1}\n");
+        for _ in 0..STREAM_TAIL_CHUNKS + 5 {
+            body.push_str("{\"done\":false}\n");
+        }
+        assert_eq!(parse_token_counts(body.as_bytes()), None);
     }
 
     #[test]
