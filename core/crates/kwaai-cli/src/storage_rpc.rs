@@ -91,6 +91,13 @@ pub struct HealthPayload {
 
 #[derive(Serialize, Deserialize)]
 pub struct CreateTenantPayload {
+    /// **Ignored by the server.** Ownership is taken from the authenticated
+    /// caller, never from the payload — this field is self-declared and was
+    /// previously written straight into the tenant record, which let anyone
+    /// create a tenant attributed to anyone.
+    ///
+    /// Retained so the wire format is unchanged for existing clients (they all
+    /// send their own id anyway, so enforcement is a no-op for them).
     pub peer_id: String,
     #[serde(default = "default_capacity")]
     pub capacity_limit_mb: i64,
@@ -134,33 +141,65 @@ pub struct DeleteVectorsPayload {
 // ── Server-side handler factory ───────────────────────────────────────────────
 
 /// Build a unary handler that dispatches storage RPC requests to the local
-/// `StorageDb`. Register it with `P2PClient::add_unary_handler`.
+/// `StorageDb`.
+///
+/// Must be registered with `P2PClient::add_unary_handler_with_peer` — every
+/// tenant-scoped operation authorises against the authenticated caller, so a
+/// registration that discards the caller would silently restore the
+/// no-authorisation behaviour this replaces.
+///
+/// `our_peer_id` is *this node's own* identity, reported in `Health`. It is not
+/// the caller and is never used for authorisation.
 #[allow(clippy::type_complexity)]
 pub fn make_storage_rpc_handler(
     db: StorageDb,
     capacity_gb: f64,
-    peer_id: String,
+    our_peer_id: String,
 ) -> impl Fn(
     Vec<u8>,
+    PeerId,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = kwaai_p2p_daemon::Result<Vec<u8>>> + Send>,
 > + Send
        + Sync
        + 'static {
-    move |req_bytes: Vec<u8>| {
+    move |req_bytes: Vec<u8>, caller: PeerId| {
         let db = db.clone();
-        let peer_id = peer_id.clone();
+        let our_peer_id = our_peer_id.clone();
         Box::pin(async move {
-            let resp = dispatch(db, capacity_gb, peer_id, req_bytes).await;
+            let resp = dispatch(db, capacity_gb, our_peer_id, caller.to_base58(), req_bytes).await;
             Ok(rmp_serde::to_vec_named(&resp).unwrap_or_default())
         })
+    }
+}
+
+/// Deliberately identical for "no such tenant" and "not yours".
+///
+/// Distinguishing them would turn the endpoint into an oracle for which tenant
+/// UUIDs exist on a node — which is most of what made `ListTenants` dangerous in
+/// the first place.
+fn tenant_denied() -> StorageResponse {
+    StorageResponse::err("tenant not found or not owned by caller")
+}
+
+/// Fetch a tenant only if the authenticated caller owns it.
+async fn owned_tenant(
+    tm: &TenantManager,
+    tid: Uuid,
+    caller: &str,
+) -> std::result::Result<kwaai_storage::TenantInfo, StorageResponse> {
+    match tm.get(tid).await {
+        Ok(Some(info)) if info.peer_id == caller => Ok(info),
+        Ok(_) => Err(tenant_denied()),
+        Err(e) => Err(StorageResponse::err(format!("tenant lookup: {e}"))),
     }
 }
 
 async fn dispatch(
     db: StorageDb,
     capacity_gb: f64,
-    peer_id: String,
+    our_peer_id: String,
+    caller: String,
     req_bytes: Vec<u8>,
 ) -> StorageResponse {
     let req: StorageRequest = match rmp_serde::from_slice(&req_bytes) {
@@ -187,7 +226,7 @@ async fn dispatch(
                 capacity_gb_total: capacity_gb,
                 capacity_gb_available: available,
                 version: env!("CARGO_PKG_VERSION").into(),
-                peer_id,
+                peer_id: our_peer_id,
             };
             encode_ok(&body)
         }
@@ -209,9 +248,16 @@ async fn dispatch(
                     available_mb, input.capacity_limit_mb,
                 ));
             }
+            if !input.peer_id.is_empty() && input.peer_id != caller {
+                tracing::warn!(
+                    "storage: CreateTenant declared owner {} but caller is {caller}; \
+                     using the authenticated caller",
+                    input.peer_id
+                );
+            }
             match tm
                 .create(
-                    &input.peer_id,
+                    &caller,
                     input.capacity_limit_mb,
                     input.display_name.as_deref(),
                     input.vector_dimension,
@@ -228,17 +274,23 @@ async fn dispatch(
                 return StorageResponse::err("missing tenant_id");
             };
             let tm = TenantManager::new(db);
-            match tm.get(tid).await {
-                Ok(Some(info)) => encode_ok(&info),
-                Ok(None) => StorageResponse::err("tenant not found"),
-                Err(e) => StorageResponse::err(e),
+            match owned_tenant(&tm, tid, &caller).await {
+                Ok(info) => encode_ok(&info),
+                Err(resp) => resp,
             }
         }
 
         StorageOp::ListTenants => {
+            // Scoped to the caller's own tenants. Returning every tenant handed
+            // out the tenant_id of every other tenant on the node — and since
+            // tenant_id was the only thing gating read, write and delete, that
+            // amounted to full access to all of them.
             let tm = TenantManager::new(db);
             match tm.list().await {
-                Ok(list) => encode_ok(&list),
+                Ok(list) => {
+                    let mine: Vec<_> = list.into_iter().filter(|t| t.peer_id == caller).collect();
+                    encode_ok(&mine)
+                }
                 Err(e) => StorageResponse::err(e),
             }
         }
@@ -248,6 +300,9 @@ async fn dispatch(
                 return StorageResponse::err("missing tenant_id");
             };
             let tm = TenantManager::new(db);
+            if let Err(resp) = owned_tenant(&tm, tid, &caller).await {
+                return resp;
+            }
             match tm.delete(tid).await {
                 Ok(()) => StorageResponse::ok(vec![]),
                 Err(e) => StorageResponse::err(e),
@@ -274,10 +329,9 @@ async fn dispatch(
             let incoming_bytes = input.vectors.len() as i64 * bytes_per_vec;
 
             // 1. Per-tenant quota.
-            let tenant_info = match tm.get(tid).await {
-                Ok(Some(i)) => i,
-                Ok(None) => return StorageResponse::err("tenant not found"),
-                Err(e) => return StorageResponse::err(format!("tenant lookup: {e}")),
+            let tenant_info = match owned_tenant(&tm, tid, &caller).await {
+                Ok(i) => i,
+                Err(resp) => return resp,
             };
             if tenant_info.capacity_limit_mb > 0 {
                 let stats = match tm.stats(tid).await {
@@ -327,6 +381,10 @@ async fn dispatch(
                 Ok(v) => v,
                 Err(e) => return StorageResponse::err(format!("payload: {e}")),
             };
+            let tm = TenantManager::new(db.clone());
+            if let Err(resp) = owned_tenant(&tm, tid, &caller).await {
+                return resp;
+            }
             let vs = VectorStore::new(db);
             match vs.search(tid, &input.query, input.top_k).await {
                 Ok(results) => encode_ok(&results),
@@ -342,6 +400,10 @@ async fn dispatch(
                 Ok(v) => v,
                 Err(e) => return StorageResponse::err(format!("payload: {e}")),
             };
+            let tm = TenantManager::new(db.clone());
+            if let Err(resp) = owned_tenant(&tm, tid, &caller).await {
+                return resp;
+            }
             let vs = VectorStore::new(db);
             match vs.delete(tid, &input.ids).await {
                 Ok(n) => encode_ok(&n),
@@ -660,4 +722,169 @@ pub async fn http_delete_vectors(
         );
     }
     Ok(resp.json::<HttpDeleteResp>().await?.deleted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kwaai_storage::StorageDb;
+
+    const ALICE: &str = "12D3KooWAliceAliceAliceAliceAliceAliceAliceAliceAlic";
+    const MALLORY: &str = "12D3KooWMalloryMalloryMalloryMalloryMalloryMalloryMa";
+
+    fn db() -> (tempfile::TempDir, StorageDb) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = StorageDb::open(tmp.path()).unwrap();
+        (tmp, db)
+    }
+
+    fn req(op: StorageOp, tenant_id: Option<String>, payload: Vec<u8>) -> Vec<u8> {
+        rmp_serde::to_vec_named(&StorageRequest {
+            op,
+            tenant_id,
+            payload,
+        })
+        .unwrap()
+    }
+
+    async fn call(db: &StorageDb, caller: &str, r: Vec<u8>) -> StorageResponse {
+        dispatch(db.clone(), 100.0, "eve".into(), caller.to_string(), r).await
+    }
+
+    /// Create a tenant as `owner` and return its id.
+    async fn make_tenant(db: &StorageDb, owner: &str) -> Uuid {
+        let payload = rmp_serde::to_vec_named(&CreateTenantPayload {
+            peer_id: owner.to_string(),
+            capacity_limit_mb: 16,
+            display_name: None,
+            vector_dimension: 4,
+        })
+        .unwrap();
+        let resp = call(db, owner, req(StorageOp::CreateTenant, None, payload)).await;
+        assert!(resp.ok, "create failed: {:?}", resp.error);
+        let info: kwaai_storage::TenantInfo = rmp_serde::from_slice(&resp.payload).unwrap();
+        assert_eq!(info.peer_id, owner);
+        info.tenant_id
+    }
+
+    #[tokio::test]
+    async fn ownership_comes_from_the_caller_not_the_payload() {
+        // The original hole: peer_id was self-declared and written straight into
+        // the record, so anyone could create a tenant attributed to anyone.
+        let (_tmp, db) = db();
+        let payload = rmp_serde::to_vec_named(&CreateTenantPayload {
+            peer_id: ALICE.to_string(), // Mallory claims to be Alice
+            capacity_limit_mb: 16,
+            display_name: None,
+            vector_dimension: 4,
+        })
+        .unwrap();
+        let resp = call(&db, MALLORY, req(StorageOp::CreateTenant, None, payload)).await;
+        assert!(resp.ok);
+        let info: kwaai_storage::TenantInfo = rmp_serde::from_slice(&resp.payload).unwrap();
+        assert_eq!(
+            info.peer_id, MALLORY,
+            "the authenticated caller must own it, not the claimed id"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_tenants_shows_only_the_callers_own() {
+        // This is the leak: ListTenants returned every TenantInfo — including
+        // tenant_id, which was the only thing gating read/write/delete. One call
+        // yielded full access to every tenant on the node.
+        let (_tmp, db) = db();
+        let alice_t = make_tenant(&db, ALICE).await;
+        let _mallory_t = make_tenant(&db, MALLORY).await;
+
+        let resp = call(&db, MALLORY, req(StorageOp::ListTenants, None, vec![])).await;
+        assert!(resp.ok);
+        let list: Vec<kwaai_storage::TenantInfo> = rmp_serde::from_slice(&resp.payload).unwrap();
+
+        assert!(
+            list.iter().all(|t| t.peer_id == MALLORY),
+            "another peer's tenant leaked into the listing"
+        );
+        assert!(
+            !list.iter().any(|t| t.tenant_id == alice_t),
+            "Alice's tenant_id — the bearer capability — leaked to Mallory"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_tenant_scoped_op_is_denied_to_a_non_owner() {
+        let (_tmp, db) = db();
+        let alice_t = make_tenant(&db, ALICE).await;
+        let tid = Some(alice_t.to_string());
+
+        let upload = rmp_serde::to_vec_named(&UploadPayload {
+            vectors: vec![VectorEntry {
+                id: 1,
+                embedding: vec![0.1, 0.2, 0.3, 0.4],
+            }],
+        })
+        .unwrap();
+        let search = rmp_serde::to_vec_named(&SearchPayload {
+            query: vec![0.1, 0.2, 0.3, 0.4],
+            top_k: 1,
+        })
+        .unwrap();
+        let del = rmp_serde::to_vec_named(&DeleteVectorsPayload { ids: vec![1] }).unwrap();
+
+        // Knowing the tenant_id must no longer be sufficient for anything.
+        for (op, payload) in [
+            (StorageOp::GetTenant, vec![]),
+            (StorageOp::DeleteTenant, vec![]),
+            (StorageOp::UploadVectors, upload),
+            (StorageOp::SearchVectors, search),
+            (StorageOp::DeleteVectors, del),
+        ] {
+            let resp = call(&db, MALLORY, req(op, tid.clone(), payload)).await;
+            assert!(!resp.ok, "{op:?} should be denied to a non-owner");
+        }
+
+        // And the owner is unaffected.
+        let resp = call(&db, ALICE, req(StorageOp::GetTenant, tid, vec![])).await;
+        assert!(resp.ok, "owner must still have access: {:?}", resp.error);
+    }
+
+    #[tokio::test]
+    async fn denial_does_not_reveal_whether_a_tenant_exists() {
+        // Otherwise the endpoint is an oracle for valid tenant UUIDs, which is
+        // most of what made the listing leak dangerous.
+        let (_tmp, db) = db();
+        let real = make_tenant(&db, ALICE).await;
+
+        let existing = call(
+            &db,
+            MALLORY,
+            req(StorageOp::GetTenant, Some(real.to_string()), vec![]),
+        )
+        .await;
+        let absent = call(
+            &db,
+            MALLORY,
+            req(
+                StorageOp::GetTenant,
+                Some(Uuid::new_v4().to_string()),
+                vec![],
+            ),
+        )
+        .await;
+
+        assert!(!existing.ok && !absent.ok);
+        assert_eq!(
+            existing.error, absent.error,
+            "the two cases must be indistinguishable"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_reports_this_node_not_the_caller() {
+        let (_tmp, db) = db();
+        let resp = call(&db, MALLORY, req(StorageOp::Health, None, vec![])).await;
+        assert!(resp.ok);
+        let h: HealthPayload = rmp_serde::from_slice(&resp.payload).unwrap();
+        assert_eq!(h.peer_id, "eve", "Health must report our own identity");
+    }
 }

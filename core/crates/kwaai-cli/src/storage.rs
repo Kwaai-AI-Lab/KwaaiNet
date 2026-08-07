@@ -227,7 +227,7 @@ async fn serve() -> Result<()> {
     let _p2p_client = match kwaai_p2p_daemon::P2PClient::connect(&daemon_addr).await {
         Ok(p2p_client) => {
             match p2p_client
-                .add_unary_handler(crate::storage_rpc::STORAGE_PROTO, handler, false)
+                .add_unary_handler_with_peer(crate::storage_rpc::STORAGE_PROTO, handler, false)
                 .await
             {
                 Ok(()) => print_success(&format!(
