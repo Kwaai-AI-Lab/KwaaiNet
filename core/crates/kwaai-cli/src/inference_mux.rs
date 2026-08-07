@@ -1495,6 +1495,190 @@ mod tests {
         }
     }
 
+    /// A claim payload as an older provider still on the branch emits it —
+    /// before `version` and `ext` existed.
+    #[derive(Serialize)]
+    struct LegacyClaimPayload {
+        lease_id: u64,
+        request_id: u64,
+        provider_did: String,
+        consumer_did: String,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        response_digest: [u8; 32],
+        credits_owed: u64,
+        valid_until_unix_ms: u64,
+        nonce: u64,
+        key_epoch: u32,
+    }
+
+    #[derive(Serialize)]
+    struct LegacyClaim {
+        payload: LegacyClaimPayload,
+        provider_sig: Vec<u8>,
+    }
+
+    #[derive(Serialize)]
+    struct LegacyResponse {
+        request_id: u64,
+        status: u16,
+        body: Vec<u8>,
+        claim: Option<LegacyClaim>,
+    }
+
+    #[derive(Serialize)]
+    enum LegacyFrameOut {
+        Response(LegacyResponse),
+    }
+
+    #[test]
+    fn an_older_providers_claim_does_not_cost_us_the_response() {
+        // The hazard: `claim` is #[serde(default)], which tolerates the field
+        // being ABSENT but not present-with-an-older-shape. If decoding the
+        // claim fails, the whole MuxFrame fails, the frame loop logs "bad frame"
+        // and continues, the pending oneshot is never resolved, and the caller
+        // waits out the full 120s timeout — losing the inference, not merely the
+        // billing. Upgrading a consumer must never break it against a provider
+        // that has not upgraded yet.
+        let legacy = LegacyFrameOut::Response(LegacyResponse {
+            request_id: 42,
+            status: 200,
+            body: b"{\"message\":{\"content\":\"ok\"}}".to_vec(),
+            claim: Some(LegacyClaim {
+                payload: LegacyClaimPayload {
+                    lease_id: 1,
+                    request_id: 42,
+                    provider_did: "did:peer:whoever".into(),
+                    consumer_did: "did:peer:us".into(),
+                    prompt_tokens: 10,
+                    completion_tokens: 4,
+                    response_digest: [0u8; 32],
+                    credits_owed: 14,
+                    valid_until_unix_ms: u64::MAX,
+                    nonce: 7,
+                    key_epoch: 1,
+                },
+                provider_sig: vec![0u8; 64],
+            }),
+        });
+        let bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy frame");
+
+        let frame: MuxFrame = rmp_serde::from_slice(&bytes)
+            .expect("an older provider's claim must not make the frame undecodable");
+        match frame {
+            MuxFrame::Response(r) => {
+                assert_eq!(r.status, 200);
+                assert_eq!(r.request_id, 42);
+                assert!(!r.body.is_empty(), "the response body must survive");
+            }
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
+    #[derive(Serialize)]
+    struct LegacyQuote {
+        lease_id: u64,
+        provider_did: String,
+        consumer_did: String,
+        model: String,
+        price_micro_per_1k_tokens: u64,
+        ttl_secs: u32,
+        granted_at_unix_ms: u64,
+        nonce: u64,
+        key_epoch: u32,
+    }
+
+    #[derive(Serialize)]
+    struct LegacyGrant {
+        quote: LegacyQuote,
+        provider_sig: Vec<u8>,
+    }
+
+    #[derive(Serialize)]
+    enum LegacyLeaseFrame {
+        LeaseResponse {
+            request_id: u64,
+            outcome: NegotiationOutcome,
+            quote: Option<LegacyGrant>,
+        },
+    }
+
+    #[test]
+    fn an_older_providers_quote_does_not_break_negotiation() {
+        // Same hazard as the claim, on the lease path: an undecodable
+        // LeaseResponse frame means the negotiation oneshot is never resolved and
+        // the caller waits out its timeout before proceeding unleased.
+        let bytes = rmp_serde::to_vec_named(&LegacyLeaseFrame::LeaseResponse {
+            request_id: 3,
+            outcome: NegotiationOutcome::Granted(crate::capacity_lease::LeaseGrant {
+                lease_id: 9,
+                ttl_secs: 30,
+            }),
+            quote: Some(LegacyGrant {
+                quote: LegacyQuote {
+                    lease_id: 9,
+                    provider_did: "did:peer:whoever".into(),
+                    consumer_did: "did:peer:us".into(),
+                    model: "m".into(),
+                    price_micro_per_1k_tokens: 1000,
+                    ttl_secs: 30,
+                    granted_at_unix_ms: 0,
+                    nonce: 1,
+                    key_epoch: 1,
+                },
+                provider_sig: vec![0u8; 64],
+            }),
+        })
+        .unwrap();
+
+        match rmp_serde::from_slice::<MuxFrame>(&bytes).expect("must stay decodable") {
+            MuxFrame::LeaseResponse {
+                request_id,
+                outcome,
+                quote,
+            } => {
+                assert_eq!(request_id, 3);
+                assert!(matches!(outcome, NegotiationOutcome::Granted(_)));
+                let q = quote.expect("the quote should decode");
+                assert_eq!(q.quote.version, 0, "absent version defaults to 0");
+                // ...and 0 is never accepted, so it cannot be billed against.
+                assert!(matches!(
+                    q.verify(),
+                    Err(kwaai_ledger::LedgerError::UnsupportedVersion { .. })
+                ));
+            }
+            other => panic!("expected LeaseResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_defaults_do_not_weaken_signing() {
+        // The serde defaults exist for wire decoding only. The signing preimage
+        // is built from the in-memory struct, so a current artifact must still
+        // round-trip and verify exactly as before.
+        let (signing, _peer, did) = identity_from([31u8; 32]);
+        let quote = LeaseQuote {
+            version: kwaai_ledger::PAYLOAD_VERSION,
+            lease_id: 1,
+            provider_did: did.clone(),
+            consumer_did: did,
+            model: "m".into(),
+            price_micro_per_1k_tokens: 1000,
+            ttl_secs: 30,
+            granted_at_unix_ms: 0,
+            nonce: 1,
+            key_epoch: 1,
+            ext: b"ext-bytes".to_vec(),
+        };
+        let grant = quote.sign(&signing).unwrap();
+        let wire = rmp_serde::to_vec_named(&grant).unwrap();
+        let back: kwaai_ledger::SignedLeaseGrant = rmp_serde::from_slice(&wire).unwrap();
+        assert_eq!(back.quote.version, kwaai_ledger::PAYLOAD_VERSION);
+        assert_eq!(back.quote.ext, b"ext-bytes");
+        back.verify()
+            .expect("must still verify after a named round-trip");
+    }
+
     #[test]
     fn a_v055_peer_can_still_decode_our_response_carrying_a_claim() {
         // The claim field is populated by the provider; an old consumer must

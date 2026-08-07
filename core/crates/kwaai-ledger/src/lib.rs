@@ -252,6 +252,16 @@ type Result<T> = std::result::Result<T, LedgerError>;
 pub struct LeaseQuote {
     /// Must be first: it is the first thing a verifier reads out of the
     /// preimage, so a version mismatch is diagnosable before anything else.
+    ///
+    /// `#[serde(default)]` is load-bearing for *wire* decoding, not for signing.
+    /// Frames are encoded with `to_vec_named`, so an artifact from a peer built
+    /// before this field existed arrives as a map without it — and a hard decode
+    /// failure there does not merely lose the billing, it makes the enclosing
+    /// frame undecodable and costs the caller the response. Defaulting to 0
+    /// (never a supported version) keeps the frame readable and leaves rejection
+    /// to `check_version`, where it belongs. Signing is unaffected: the preimage
+    /// is built from the in-memory struct, which always carries every field.
+    #[serde(default)]
     pub version: u16,
     pub lease_id: LeaseId,
     pub provider_did: String,
@@ -271,6 +281,11 @@ pub struct LeaseQuote {
     /// this version. A reader that does not understand the contents still
     /// decodes the payload and still verifies the signature, which is covered by
     /// these bytes.
+    ///
+    /// Defaults on decode for the same reason as `version`: an older peer's
+    /// artifact has no such field, and refusing to decode it would cost the
+    /// caller its response.
+    #[serde(default)]
     pub ext: Vec<u8>,
 }
 
@@ -361,7 +376,8 @@ impl SignedLeaseGrant {
 /// possible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkClaimPayload {
-    /// See [`LeaseQuote::version`].
+    /// See [`LeaseQuote::version`], including why this defaults on decode.
+    #[serde(default)]
     pub version: u16,
     pub lease_id: LeaseId,
     pub request_id: u64,
@@ -378,6 +394,7 @@ pub struct WorkClaimPayload {
     pub key_epoch: KeyEpoch,
     /// Version-specific extension — see [`LeaseQuote::ext`] and
     /// [`PAYLOAD_VERSION`].
+    #[serde(default)]
     pub ext: Vec<u8>,
 }
 
