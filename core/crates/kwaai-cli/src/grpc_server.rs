@@ -45,6 +45,11 @@ use kwaai_rpc::v1::{
     ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer,
     StorageReachability, StorageUpdate,
 };
+#[cfg(feature = "rag")]
+use kwaai_rpc::v1::{
+    rag_progress::RagPhase, RagChunk, RagIngestReply, RagIngestRequest, RagInitReply,
+    RagInitRequest, RagKb, RagProgress, RagQueryReply, RagQueryRequest, RagStatusUpdate,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -87,6 +92,19 @@ pub struct KwaaiNetService {
     /// Captured at service construction so StatusReply.uptime_secs can
     /// report a process-level uptime without a separate clock.
     started_at: Instant,
+    /// Serialises RAG data operations across the whole service.
+    ///
+    /// `MetaStore` / `StorageDb` are embedded, file-backed stores. The
+    /// CLI only ever opens them one command at a time, so nothing in
+    /// that layer is built to tolerate two writers in one process —
+    /// concurrent opens can hit file locking. A single service-wide
+    /// mutex is the conservative phase-1 answer: it costs us
+    /// cross-KB parallelism (a per-KB mutex map would recover that)
+    /// but it cannot deadlock and it matches the access pattern the
+    /// storage layer was written against. Revisit if RAG ops on
+    /// distinct KBs ever need to overlap.
+    #[cfg(feature = "rag")]
+    rag_lock: Arc<Mutex<()>>,
 }
 
 impl KwaaiNetService {
@@ -95,6 +113,8 @@ impl KwaaiNetService {
             config: Arc::new(config),
             inference: Arc::new(Mutex::new(None)),
             started_at: Instant::now(),
+            #[cfg(feature = "rag")]
+            rag_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -185,6 +205,8 @@ impl KwaaiNet for KwaaiNetService {
         let cfg = self.config.clone();
         let inference_slot = self.inference.clone();
         let started_at = self.started_at;
+        #[cfg(feature = "rag")]
+        let rag_lock = self.rag_lock.clone();
 
         tokio::spawn(async move {
             loop {
@@ -302,6 +324,56 @@ impl KwaaiNet for KwaaiNetService {
                                 )))
                                 .await;
                         }
+                    }
+
+                    // --- RAG ops ---
+                    //
+                    // Each spawns its own task so a slow ingest can't
+                    // stall the dispatch loop, and each takes `rag_lock`
+                    // inside that task (see the field comment).
+                    #[cfg(feature = "rag")]
+                    client_frame::Body::RagStatus(_) => {
+                        spawn_session_rag_status(id, out_tx.clone(), rag_lock.clone()).await;
+                    }
+
+                    #[cfg(feature = "rag")]
+                    client_frame::Body::RagInit(req) => {
+                        spawn_session_rag_init(id, req, out_tx.clone(), rag_lock.clone()).await;
+                    }
+
+                    #[cfg(feature = "rag")]
+                    client_frame::Body::RagIngest(req) => {
+                        spawn_session_rag_ingest(
+                            id,
+                            req,
+                            out_tx.clone(),
+                            cancels.clone(),
+                            rag_lock.clone(),
+                        )
+                        .await;
+                    }
+
+                    #[cfg(feature = "rag")]
+                    client_frame::Body::RagQuery(req) => {
+                        spawn_session_rag_query(id, req, out_tx.clone(), rag_lock.clone()).await;
+                    }
+
+                    // Built without the `rag` feature: the frames still
+                    // decode (the proto is one wire format for every
+                    // build), so answer UNIMPLEMENTED rather than
+                    // silently dropping them.
+                    #[cfg(not(feature = "rag"))]
+                    client_frame::Body::RagStatus(_)
+                    | client_frame::Body::RagInit(_)
+                    | client_frame::Body::RagIngest(_)
+                    | client_frame::Body::RagQuery(_) => {
+                        let _ = out_tx
+                            .send(Ok(error_frame(
+                                id,
+                                ErrorCode::Unimplemented,
+                                "this daemon was built without the 'rag' feature",
+                            )))
+                            .await;
                     }
                 }
             }
@@ -425,6 +497,568 @@ fn classify_shard_error(msg: &str) -> ErrorCode {
         return ErrorCode::AllCandidatesFailed;
     }
     ErrorCode::Internal
+}
+
+// ---------------------------------------------------------------------------
+// RAG session ops
+// ---------------------------------------------------------------------------
+//
+// Config freshness: the service holds an `Arc<KwaaiNetConfig>` captured at
+// startup, but `rag_init` *writes* config (it persists a new KB and calls
+// `cfg.save()`). If these handlers read the startup snapshot, an init would
+// be invisible to every later op in the same daemon process. So each handler
+// loads config from disk itself, exactly as the CLI does — the snapshot is
+// never consulted on the RAG path.
+//
+// Blocking: MetaStore / StorageDb opens, text extraction and the BM25 build
+// inside retrieve_hybrid are all sync and CPU/IO-heavy. Anything sync runs
+// under `spawn_blocking` so it stays off the gRPC reactor.
+
+/// Default `top_k` when the client sends 0.
+#[cfg(feature = "rag")]
+const RAG_DEFAULT_TOP_K: u32 = 20;
+
+/// Minimum gap between `RagProgress` frames during ingest.
+///
+/// `ingest_text` invokes its callback once per embedded chunk, which for a
+/// large document is far more often than any UI can use. Throttling to
+/// ~4 frames/sec keeps the stream useful without flooding it; the terminal
+/// count in `RagIngestReply` is authoritative either way, and the final
+/// pre-reply frame is always sent regardless of the throttle so a client
+/// never ends on a stale partial count.
+#[cfg(feature = "rag")]
+const RAG_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Map an anyhow error off the RAG path onto a wire [`ErrorCode`].
+///
+/// The RAG layer signals failure classes through message text (the CLI
+/// renders these strings directly), so match on them here rather than
+/// making every caller grep. `load_rag_config_for` produces the
+/// "not initialised" message, and `init_kb` remaps Ollama transport
+/// failures into the two operator-actionable forms.
+#[cfg(feature = "rag")]
+fn classify_rag_error(msg: &str) -> ErrorCode {
+    // A KB that was never initialised — the actionable "Run: kwaainet
+    // rag init …" message comes straight from load_rag_config_for.
+    if msg.contains("not initialised") {
+        return ErrorCode::NotFound;
+    }
+    // Caller-supplied arguments we rejected before touching any store.
+    // A nonexistent ingest path is INVALID_ARGUMENT rather than NOT_FOUND:
+    // NOT_FOUND is reserved here for "the KB doesn't exist", so a client
+    // can branch on the code alone without also parsing the message.
+    if msg.contains("no such file on the daemon host")
+        || msg.contains("requires a path")
+        || msg.contains("requires non-empty query text")
+    {
+        return ErrorCode::InvalidArgument;
+    }
+    // Phase-1 transport limit — the KB exists but we can't serve it here.
+    if msg.contains("not yet supported over gRPC") {
+        return ErrorCode::Unimplemented;
+    }
+    // Both branches of init_kb's probe_dim remap, plus the generic
+    // reqwest connect failure if it ever escapes unmapped.
+    if msg.contains("Cannot reach Ollama")
+        || msg.contains("is not available in Ollama")
+        || msg.contains("Connection refused")
+        || msg.contains("error sending request")
+    {
+        return ErrorCode::Unavailable;
+    }
+    ErrorCode::Internal
+}
+
+/// Emit an Error frame classified from an anyhow error, then return.
+///
+/// Uses the `{:#}` alternate form so anyhow's context chain (which is
+/// where the actionable text usually lives) reaches the client.
+#[cfg(feature = "rag")]
+async fn send_rag_error(
+    id: u64,
+    err: &anyhow::Error,
+    out_tx: &mpsc::Sender<Result<ServerFrame, Status>>,
+) {
+    let msg = format!("{err:#}");
+    let _ = out_tx
+        .send(Ok(error_frame(id, classify_rag_error(&msg), &msg)))
+        .await;
+}
+
+/// Blank KB name means "default", matching the CLI's `--kb` default.
+#[cfg(feature = "rag")]
+fn rag_kb_or_default(kb: &str) -> String {
+    if kb.trim().is_empty() {
+        "default".to_string()
+    } else {
+        kb.trim().to_string()
+    }
+}
+
+/// True when this KB's vectors do not live in the local embedded store.
+#[cfg(feature = "rag")]
+fn rag_is_remote(rag: &crate::config::RagConfig) -> bool {
+    rag.storage_url.as_deref() != Some("local")
+}
+
+/// Phase 1 serves only local-transport KBs. Remote-Eve / HTTP-storage KBs
+/// need P2PClient plumbing that deliberately stays out of the gRPC service
+/// for now, so reject them with a message that says so rather than
+/// half-working.
+#[cfg(feature = "rag")]
+fn reject_if_remote(kb: &str, rag: &crate::config::RagConfig) -> Result<()> {
+    if rag_is_remote(rag) {
+        anyhow::bail!(
+            "KB '{kb}' is backed by remote storage — remote Eve KBs are not yet supported over gRPC. Use the CLI: kwaainet rag query --kb {kb}"
+        );
+    }
+    Ok(())
+}
+
+/// `rag_status` — snapshot every configured KB.
+///
+/// Best-effort per KB: one KB whose MetaStore won't open (wiped data dir,
+/// schema from an older build) is reported with an empty doc list instead
+/// of failing the status of every other KB.
+#[cfg(feature = "rag")]
+async fn spawn_session_rag_status(
+    id: u64,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    rag_lock: Arc<Mutex<()>>,
+) {
+    tokio::spawn(async move {
+        let _guard = rag_lock.lock().await;
+
+        let kbs = tokio::task::spawn_blocking(collect_rag_kbs).await;
+
+        match kbs {
+            Ok(Ok(kbs)) => {
+                let _ = out_tx
+                    .send(Ok(ServerFrame {
+                        id,
+                        body: Some(server_frame::Body::RagStatus(RagStatusUpdate { kbs })),
+                    }))
+                    .await;
+                let _ = out_tx.send(Ok(done_frame(id))).await;
+            }
+            Ok(Err(e)) => send_rag_error(id, &e, &out_tx).await,
+            Err(e) => {
+                let _ = out_tx
+                    .send(Ok(error_frame(
+                        id,
+                        ErrorCode::Internal,
+                        &format!("rag status task panicked: {e}"),
+                    )))
+                    .await;
+            }
+        }
+    });
+}
+
+/// Sync half of `rag_status`. Runs on the blocking pool.
+#[cfg(feature = "rag")]
+fn collect_rag_kbs() -> Result<Vec<RagKb>> {
+    use kwaai_rag::meta_store::MetaStore;
+
+    // Fresh from disk — see the module comment on config freshness.
+    let cfg = KwaaiNetConfig::load_or_create()?;
+
+    let mut out = Vec::new();
+    for name in cfg.rag_kb_names() {
+        let Some(rag) = cfg.get_rag_kb(&name) else {
+            continue;
+        };
+
+        // A KB with no/invalid tenant id, or an unopenable store, still
+        // gets reported — the client should see it exists.
+        let docs = rag
+            .tenant_id
+            .as_deref()
+            .and_then(|t| t.parse::<uuid::Uuid>().ok())
+            .and_then(|tid| MetaStore::open(&rag.data_dir(), tid).ok())
+            .and_then(|ms| ms.list_docs().ok())
+            .unwrap_or_default();
+
+        out.push(RagKb {
+            name,
+            embed_model: rag.embed_model.clone(),
+            docs,
+            remote: rag_is_remote(rag),
+        });
+    }
+    Ok(out)
+}
+
+/// `rag_init` — create or idempotently refresh a knowledge base.
+#[cfg(feature = "rag")]
+async fn spawn_session_rag_init(
+    id: u64,
+    req: RagInitRequest,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    rag_lock: Arc<Mutex<()>>,
+) {
+    tokio::spawn(async move {
+        let _guard = rag_lock.lock().await;
+
+        let kb = rag_kb_or_default(&req.kb);
+        let embed_model = if req.embed_model.trim().is_empty() {
+            crate::config::RagConfig::default().embed_model
+        } else {
+            req.embed_model.trim().to_string()
+        };
+
+        // init_kb is async (it awaits the Ollama probe and the tenant
+        // create), so it is driven directly rather than via spawn_blocking;
+        // the sync store work inside it is short.
+        match crate::rag_cmd::init_kb(&kb, embed_model, None, |_| {}).await {
+            Ok(_) => {
+                // Re-read so the reply reflects persisted state rather
+                // than what we think we just wrote.
+                let kb_for_task = kb.clone();
+                let built = tokio::task::spawn_blocking(move || single_rag_kb(&kb_for_task)).await;
+
+                match built {
+                    Ok(Ok(kb_msg)) => {
+                        let _ = out_tx
+                            .send(Ok(ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::RagInit(RagInitReply {
+                                    kb: Some(kb_msg),
+                                })),
+                            }))
+                            .await;
+                        let _ = out_tx.send(Ok(done_frame(id))).await;
+                    }
+                    Ok(Err(e)) => send_rag_error(id, &e, &out_tx).await,
+                    Err(e) => {
+                        let _ = out_tx
+                            .send(Ok(error_frame(
+                                id,
+                                ErrorCode::Internal,
+                                &format!("rag init readback task panicked: {e}"),
+                            )))
+                            .await;
+                    }
+                }
+            }
+            Err(e) => send_rag_error(id, &e, &out_tx).await,
+        }
+    });
+}
+
+/// Build one [`RagKb`] from persisted config. Sync; run on the blocking pool.
+#[cfg(feature = "rag")]
+fn single_rag_kb(kb: &str) -> Result<RagKb> {
+    collect_rag_kbs()?
+        .into_iter()
+        .find(|k| k.name == kb)
+        .with_context(|| format!("KB '{kb}' missing from config immediately after init"))
+}
+
+/// `rag_ingest` — chunk, embed and store one document from the daemon's disk.
+#[cfg(feature = "rag")]
+async fn spawn_session_rag_ingest(
+    id: u64,
+    req: RagIngestRequest,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+    rag_lock: Arc<Mutex<()>>,
+) {
+    // Register the cancel channel BEFORE spawning, so a Cancel frame that
+    // arrives immediately after this one can still find it. Registering
+    // inside the task would race the dispatch loop.
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    tokio::spawn(async move {
+        let _guard = rag_lock.lock().await;
+
+        let result = tokio::select! {
+            biased;
+
+            _ = cancel_rx => {
+                let _ = out_tx
+                    .send(Ok(error_frame(id, ErrorCode::Cancelled, "ingest cancelled by client")))
+                    .await;
+                cancels.lock().await.remove(&id);
+                return;
+            }
+
+            r = run_rag_ingest(id, req, out_tx.clone()) => r,
+        };
+
+        // Whatever happened, this id is no longer cancellable.
+        cancels.lock().await.remove(&id);
+
+        match result {
+            Ok(reply) => {
+                let _ = out_tx
+                    .send(Ok(ServerFrame {
+                        id,
+                        body: Some(server_frame::Body::RagIngest(reply)),
+                    }))
+                    .await;
+                let _ = out_tx.send(Ok(done_frame(id))).await;
+            }
+            Err(e) => send_rag_error(id, &e, &out_tx).await,
+        }
+    });
+}
+
+/// The ingest pipeline proper. Emits progress frames as it goes and
+/// returns the terminal counts; the caller frames the outcome.
+#[cfg(feature = "rag")]
+async fn run_rag_ingest(
+    id: u64,
+    req: RagIngestRequest,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+) -> Result<RagIngestReply> {
+    use kwaai_rag::{
+        document,
+        embedder::EmbedClient,
+        ingestion::{ingest_text, IngestConfig},
+        meta_store::MetaStore,
+    };
+    use std::pin::Pin;
+
+    let kb = rag_kb_or_default(&req.kb);
+    let (rag_cfg, tenant_id) = crate::rag_cmd::load_rag_config_for(&kb)?;
+    reject_if_remote(&kb, &rag_cfg)?;
+
+    let path = std::path::PathBuf::from(&req.path);
+    if req.path.trim().is_empty() {
+        anyhow::bail!("rag_ingest requires a path");
+    }
+    // Checked up front so a missing file is INVALID_ARGUMENT rather than
+    // whatever extract_text happens to bail with. `classify_rag_error`
+    // keys off "no such file" to pick the code.
+    if !path.is_file() {
+        anyhow::bail!("no such file on the daemon host: {}", path.display());
+    }
+
+    let doc_name = if req.doc_name.trim().is_empty() {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        req.doc_name.trim().to_string()
+    };
+
+    // Extraction is sync and can be slow on big PDFs.
+    let _ = out_tx
+        .send(Ok(rag_progress_frame(
+            id,
+            RagPhase::Extracting,
+            0,
+            0,
+            &doc_name,
+        )))
+        .await;
+
+    let extract_path = path.clone();
+    let text = tokio::task::spawn_blocking(move || document::extract_text(&extract_path))
+        .await
+        .context("text extraction task panicked")??;
+
+    let data_dir = rag_cfg.data_dir();
+    let meta_dir = data_dir.clone();
+    let meta = tokio::task::spawn_blocking(move || MetaStore::open(&meta_dir, tenant_id))
+        .await
+        .context("metadata store task panicked")??;
+
+    let vs_dir = data_dir.clone();
+    let vs = tokio::task::spawn_blocking(move || crate::rag_cmd::open_local_vs(&vs_dir))
+        .await
+        .context("vector store task panicked")??;
+    let vs = Arc::new(vs);
+
+    let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+    let cfg = IngestConfig::new(embed);
+
+    // `ingest_text`'s progress callback is sync and called from inside the
+    // ingest future, so it can't await. Hand frames to a forwarder task
+    // over an unbounded channel and throttle on the receiving side.
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<(usize, usize)>();
+    let progress_out = out_tx.clone();
+    let progress_doc = doc_name.clone();
+    let forwarder = tokio::spawn(async move {
+        let mut last_sent = std::time::Instant::now() - RAG_PROGRESS_INTERVAL;
+        let mut pending: Option<(usize, usize)> = None;
+
+        while let Some((done, total)) = prog_rx.recv().await {
+            pending = Some((done, total));
+            if last_sent.elapsed() >= RAG_PROGRESS_INTERVAL {
+                let _ = progress_out
+                    .send(Ok(rag_progress_frame(
+                        id,
+                        RagPhase::Embedding,
+                        done as u32,
+                        total as u32,
+                        &progress_doc,
+                    )))
+                    .await;
+                last_sent = std::time::Instant::now();
+                pending = None;
+            }
+        }
+
+        // Always flush the final count, even if the throttle just fired —
+        // otherwise the client's last frame could show 97/100 forever.
+        if let Some((done, total)) = pending {
+            let _ = progress_out
+                .send(Ok(rag_progress_frame(
+                    id,
+                    RagPhase::Embedding,
+                    done as u32,
+                    total as u32,
+                    &progress_doc,
+                )))
+                .await;
+        }
+    });
+
+    let upload_vs = vs.clone();
+    let result = ingest_text(
+        &cfg,
+        &meta,
+        &doc_name,
+        &text,
+        move |vectors| {
+            let vs = upload_vs.clone();
+            Box::pin(async move { vs.upload(tenant_id, &vectors).await })
+                as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+        },
+        Some(move |done: usize, total: usize| {
+            let _ = prog_tx.send((done, total));
+        }),
+    )
+    .await?;
+
+    // Dropping the sender ends the forwarder's recv loop.
+    let _ = forwarder.await;
+
+    Ok(RagIngestReply {
+        chunks_ingested: result.chunks_ingested as u32,
+        vectors_uploaded: result.vectors_uploaded as u32,
+    })
+}
+
+#[cfg(feature = "rag")]
+fn rag_progress_frame(
+    id: u64,
+    phase: RagPhase,
+    done: u32,
+    total: u32,
+    detail: &str,
+) -> ServerFrame {
+    ServerFrame {
+        id,
+        body: Some(server_frame::Body::RagProgress(RagProgress {
+            phase: phase as i32,
+            done,
+            total,
+            detail: detail.to_string(),
+        })),
+    }
+}
+
+/// `rag_query` — hybrid retrieval over a local KB.
+#[cfg(feature = "rag")]
+async fn spawn_session_rag_query(
+    id: u64,
+    req: RagQueryRequest,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    rag_lock: Arc<Mutex<()>>,
+) {
+    tokio::spawn(async move {
+        let _guard = rag_lock.lock().await;
+
+        match run_rag_query(req).await {
+            Ok(chunks) => {
+                let _ = out_tx
+                    .send(Ok(ServerFrame {
+                        id,
+                        body: Some(server_frame::Body::RagQuery(RagQueryReply { chunks })),
+                    }))
+                    .await;
+                let _ = out_tx.send(Ok(done_frame(id))).await;
+            }
+            Err(e) => send_rag_error(id, &e, &out_tx).await,
+        }
+    });
+}
+
+#[cfg(feature = "rag")]
+async fn run_rag_query(req: RagQueryRequest) -> Result<Vec<RagChunk>> {
+    use kwaai_rag::{
+        embedder::EmbedClient,
+        meta_store::MetaStore,
+        retriever::{retrieve_hybrid, RetrieveConfig},
+    };
+    use std::pin::Pin;
+
+    let kb = rag_kb_or_default(&req.kb);
+    if req.text.trim().is_empty() {
+        anyhow::bail!("rag_query requires non-empty query text");
+    }
+
+    let (rag_cfg, tenant_id) = crate::rag_cmd::load_rag_config_for(&kb)?;
+    reject_if_remote(&kb, &rag_cfg)?;
+
+    let data_dir = rag_cfg.data_dir();
+    let meta_dir = data_dir.clone();
+    let meta = tokio::task::spawn_blocking(move || MetaStore::open(&meta_dir, tenant_id))
+        .await
+        .context("metadata store task panicked")??;
+
+    let vs_dir = data_dir.clone();
+    let vs = tokio::task::spawn_blocking(move || crate::rag_cmd::open_local_vs(&vs_dir))
+        .await
+        .context("vector store task panicked")??;
+    let vs = Arc::new(vs);
+
+    let top_k = if req.top_k == 0 {
+        RAG_DEFAULT_TOP_K
+    } else {
+        req.top_k
+    } as usize;
+
+    let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
+    let cfg = RetrieveConfig {
+        top_k,
+        min_score: req.min_score,
+        use_sentence_window: false,
+        hyde_inference_url: None,
+        hyde_model: None,
+        hyde_alpha: None,
+        ..Default::default()
+    };
+
+    // retrieve_hybrid embeds the query (async HTTP) and builds a BM25 index
+    // over the metadata store (sync, CPU-heavy) internally. The sync half
+    // is inside the library, so it can't be wrapped from here — the
+    // service-wide rag_lock at least keeps only one of these in flight.
+    let chunks = retrieve_hybrid(&req.text, &cfg, &embed, &meta, move |emb, k| {
+        let vs = vs.clone();
+        Box::pin(async move {
+            let raw = vs.search(tenant_id, &emb, k).await?;
+            Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
+        }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
+    })
+    .await?;
+
+    Ok(chunks
+        .iter()
+        .enumerate()
+        .map(|(i, r)| RagChunk {
+            rank: (i + 1) as u32,
+            score: r.score,
+            doc: r.chunk_meta.doc_name.clone(),
+            chunk_index: r.chunk_meta.chunk_index,
+            text: r.chunk_meta.text.clone(),
+        })
+        .collect())
 }
 
 /// Classify a local `generate` failure. The biggest category is model
@@ -1430,6 +2064,17 @@ fn unix_socket_path() -> PathBuf {
 /// running even if the IPC surface didn't come up (the node still serves
 /// p2p traffic).
 pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
+    spawn_on_port(config, DEFAULT_GRPC_TCP_PORT)
+}
+
+/// [`spawn`], but binding TCP on an explicit port.
+///
+/// Exists for tests: `spawn` uses a fixed port, so a real `kwaainet start`
+/// already running on the machine owns it and a test server would either
+/// fail to bind or — worse — the test client would connect to the real
+/// daemon and assert against the wrong process. Passing 0 lets the OS
+/// allocate a free port; the caller reads it back off the returned handle.
+pub fn spawn_on_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcServerHandle {
     let (shutdown_tcp_tx, shutdown_tcp_rx) = oneshot::channel::<()>();
     #[cfg(unix)]
     let (shutdown_unix_tx, shutdown_unix_rx) = oneshot::channel::<()>();
@@ -1437,16 +2082,44 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
     let svc_state = KwaaiNetService::new(config);
     let service = KwaaiNetServer::new(svc_state);
 
-    // TCP: every platform.
-    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{DEFAULT_GRPC_TCP_PORT}")
+    // TCP: every platform. Bind synchronously so the caller can learn the
+    // actual port (which matters when `tcp_port` is 0) before we hand the
+    // listener to tonic.
+    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{tcp_port}")
         .parse()
         .expect("valid loopback addr");
+    let listener = std::net::TcpListener::bind(tcp_addr);
+    let bound_port = listener
+        .as_ref()
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port());
+
     let tcp_service = service.clone();
     tokio::spawn(async move {
         info!("gRPC: binding TCP at {tcp_addr}");
+        let listener = match listener {
+            Ok(l) => l,
+            Err(e) => {
+                warn!("gRPC TCP bind failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = listener.set_nonblocking(true) {
+            warn!("gRPC TCP set_nonblocking failed: {e}");
+            return;
+        }
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(l) => l,
+            Err(e) => {
+                warn!("gRPC TCP listener conversion failed: {e}");
+                return;
+            }
+        };
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         let serve = Server::builder()
             .add_service(tcp_service)
-            .serve_with_shutdown(tcp_addr, async {
+            .serve_with_incoming_shutdown(incoming, async {
                 let _ = shutdown_tcp_rx.await;
             });
         if let Err(e) = serve.await {
@@ -1468,6 +2141,7 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
             shutdown_tcp: Some(shutdown_tcp_tx),
             #[cfg(unix)]
             shutdown_unix: Some(shutdown_unix_tx),
+            tcp_port: bound_port,
         }
     }
     #[cfg(not(unix))]
@@ -1475,6 +2149,7 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
         drop(service); // suppress unused warning on non-unix
         GrpcServerHandle {
             shutdown_tcp: Some(shutdown_tcp_tx),
+            tcp_port: bound_port,
         }
     }
 }
@@ -1527,9 +2202,21 @@ pub struct GrpcServerHandle {
     shutdown_tcp: Option<oneshot::Sender<()>>,
     #[cfg(unix)]
     shutdown_unix: Option<oneshot::Sender<()>>,
+    /// Port the TCP transport actually bound, or `None` if the bind
+    /// failed. Only interesting when [`spawn_on_port`] was given 0, which
+    /// today is the test path — hence `allow(dead_code)` for release
+    /// builds, where nothing reads it back.
+    #[cfg_attr(not(test), allow(dead_code))]
+    tcp_port: Option<u16>,
 }
 
 impl GrpcServerHandle {
+    /// The port the TCP transport bound, if it came up.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn tcp_port(&self) -> Option<u16> {
+        self.tcp_port
+    }
+
     /// Trigger a graceful shutdown of both transports. Safe to call multiple
     /// times; subsequent calls are no-ops.
     pub fn shutdown(&mut self) {
@@ -1632,22 +2319,28 @@ mod tests {
         }
     }
 
-    /// True iff a fresh TCP connect to the gRPC loopback port succeeds.
-    async fn tcp_accepting() -> bool {
-        tokio::net::TcpStream::connect(("127.0.0.1", DEFAULT_GRPC_TCP_PORT))
+    /// True iff a fresh TCP connect to `port` on loopback succeeds.
+    ///
+    /// Takes the port explicitly: these tests bind an OS-allocated port
+    /// rather than `DEFAULT_GRPC_TCP_PORT`, because a developer running a
+    /// real `kwaainet start` owns the default one — probing it would
+    /// report *that* daemon's liveness and the shutdown assertions could
+    /// never pass.
+    async fn tcp_accepting(port: u16) -> bool {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .is_ok()
     }
 
-    /// True iff a fresh TCP connect to the gRPC loopback port is refused
-    /// quickly (used to assert the listener is gone after shutdown).
-    async fn tcp_refused() -> bool {
+    /// True iff a fresh TCP connect to `port` is refused quickly (used to
+    /// assert the listener is gone after shutdown).
+    async fn tcp_refused(port: u16) -> bool {
         // ConnectionRefused is the happy-path answer; any other Err (e.g.
         // network unreachable) we also treat as "not accepting". We bound
         // the dial with a short timeout so a slow stack can't lie to us.
         match tokio::time::timeout(
             Duration::from_millis(250),
-            tokio::net::TcpStream::connect(("127.0.0.1", DEFAULT_GRPC_TCP_PORT)),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
         )
         .await
         {
@@ -1673,16 +2366,15 @@ mod tests {
         let _env = EnvGuard::set(tmp.path());
 
         let config = KwaaiNetConfig::default();
-        let handle = spawn(config);
+        // Port 0: let the OS pick, so this doesn't collide with a real
+        // daemon already holding DEFAULT_GRPC_TCP_PORT.
+        let handle = spawn_on_port(config, 0);
+        let port = handle.tcp_port().expect("server should bind a TCP port");
 
         // The server task is spawned on tokio; give it up to ~2 s to wire
         // up the TCP listener. In practice this happens in <50 ms locally.
-        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
-        assert!(
-            up,
-            "gRPC TCP listener never came up on 127.0.0.1:{}",
-            DEFAULT_GRPC_TCP_PORT
-        );
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
+        assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
 
         #[cfg(unix)]
         {
@@ -1719,11 +2411,10 @@ mod tests {
         // tonic's serve_with_shutdown returns -> listener is closed.
         drop(handle);
 
-        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
         assert!(
             down,
-            "TCP listener on 127.0.0.1:{} did not close within 2s of dropping the handle",
-            DEFAULT_GRPC_TCP_PORT
+            "TCP listener on 127.0.0.1:{port} did not close within 2s of dropping the handle"
         );
 
         #[cfg(unix)]
@@ -1766,13 +2457,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
         let _env = EnvGuard::set(tmp.path());
 
-        let handle = spawn(KwaaiNetConfig::default());
+        let handle = spawn_on_port(KwaaiNetConfig::default(), 0);
+        let port = handle.tcp_port().expect("server should bind a TCP port");
 
         // Make sure the server is accepting before we dial.
-        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
         assert!(up, "gRPC TCP listener never came up");
 
-        let endpoint = format!("http://127.0.0.1:{DEFAULT_GRPC_TCP_PORT}");
+        let endpoint = format!("http://127.0.0.1:{port}");
         let channel = tonic::transport::Endpoint::from_shared(endpoint)
             .expect("valid endpoint")
             .connect()
@@ -1801,9 +2493,7 @@ mod tests {
         );
 
         drop(handle);
-        // Wait for the listener to actually go away before the next test
-        // tries to bind the same port.
-        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
         assert!(down, "TCP listener did not close after handle drop");
     }
 
@@ -1989,5 +2679,326 @@ mod tests {
         retiered_peer.trust_tier = "TRUSTED".into();
         let retiered = update("2026-01-01T00:00:05Z", vec![peer("A", 0, 4), retiered_peer]);
         assert_ne!(coverage_identity(&a), coverage_identity(&retiered));
+    }
+
+    // -----------------------------------------------------------------
+    // RAG session ops
+    // -----------------------------------------------------------------
+    //
+    // These are hermetic: `EnvGuard` points HOME *and* KWAAINET_HOME at a
+    // tempdir, so `KwaaiNetConfig::load_or_create` reads and writes there
+    // and never touches the developer's real ~/.kwaainet. No Ollama and
+    // no network are required — every case below fails (or succeeds)
+    // before any embedding call would happen.
+
+    #[cfg(feature = "rag")]
+    mod rag {
+        use super::*;
+        use kwaai_rpc::v1::{
+            client_frame, kwaai_net_client::KwaaiNetClient, server_frame, ClientFrame,
+            RagIngestRequest, RagQueryRequest, RagStatusRequest,
+        };
+        use tokio_stream::wrappers::ReceiverStream;
+        use tokio_stream::StreamExt as _;
+
+        /// Boilerplate shared by every RAG round-trip test: bring the
+        /// server up, open a Session, send exactly one ClientFrame, and
+        /// collect ServerFrames until the op terminates.
+        ///
+        /// Returns every frame received for that id, terminator included,
+        /// so a caller can assert on both the payload and how it ended.
+        ///
+        /// Takes the port the server under test actually bound, rather
+        /// than assuming `DEFAULT_GRPC_TCP_PORT`. These tests spawn with
+        /// port 0 (see `spawn_test_server`), because a real
+        /// `kwaainet start` on the developer's machine owns the default
+        /// port — dialing it would silently interrogate *that* daemon and
+        /// assert against the wrong process.
+        async fn round_trip(port: u16, body: client_frame::Body) -> Vec<server_frame::Body> {
+            let endpoint = format!("http://127.0.0.1:{port}");
+            let channel = tonic::transport::Endpoint::from_shared(endpoint)
+                .expect("valid endpoint")
+                .connect()
+                .await
+                .expect("connect to the test server");
+            let mut client = KwaaiNetClient::new(channel);
+
+            let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
+            tx.send(ClientFrame {
+                id: 1,
+                body: Some(body),
+            })
+            .await
+            .expect("send request frame");
+            // Keep the send half open: dropping it closes the session
+            // before the server has replied.
+
+            let mut stream = client
+                .session(ReceiverStream::new(rx))
+                .await
+                .expect("open Session")
+                .into_inner();
+
+            let mut bodies = Vec::new();
+            // Bounded so a hang fails loudly instead of blocking the suite.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let next = tokio::time::timeout_at(deadline, stream.next()).await;
+                let frame = match next {
+                    Ok(Some(Ok(f))) => f,
+                    Ok(Some(Err(e))) => panic!("session stream error: {e}"),
+                    Ok(None) => break,
+                    Err(_) => panic!("timed out waiting for a terminal frame; got {bodies:?}"),
+                };
+                if let Some(b) = frame.body {
+                    let terminal = matches!(
+                        b,
+                        server_frame::Body::Done(_) | server_frame::Body::Error(_)
+                    );
+                    bodies.push(b);
+                    if terminal {
+                        break;
+                    }
+                }
+            }
+            bodies
+        }
+
+        /// Spawn a server on an OS-allocated port and return it with the
+        /// port it landed on. Every RAG test uses this rather than
+        /// `spawn`, so the suite never contends with (or accidentally
+        /// talks to) a real daemon on the fixed port.
+        fn spawn_test_server() -> (GrpcServerHandle, u16) {
+            let handle = spawn_on_port(KwaaiNetConfig::default(), 0);
+            let port = handle
+                .tcp_port()
+                .expect("test server should have bound an ephemeral TCP port");
+            (handle, port)
+        }
+
+        /// Assert the op ended in an Error frame with `want`, and return
+        /// its message for further assertions.
+        fn expect_error(bodies: &[server_frame::Body], want: ErrorCode) -> String {
+            let last = bodies.last().expect("at least one frame");
+            match last {
+                server_frame::Body::Error(e) => {
+                    assert_eq!(
+                        e.code, want as i32,
+                        "expected {want:?}, got code={} message={:?}",
+                        e.code, e.message
+                    );
+                    e.message.clone()
+                }
+                other => panic!("expected an Error frame, got {other:?}"),
+            }
+        }
+
+        /// A daemon with no RAG config at all reports zero KBs and ends
+        /// cleanly — this is how the GUI tells "nothing initialised yet"
+        /// apart from "this build has no RAG" (which is UNIMPLEMENTED).
+        #[tokio::test]
+        async fn rag_status_on_fresh_config_is_empty() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(port, client_frame::Body::RagStatus(RagStatusRequest {})).await;
+
+            assert!(
+                matches!(bodies.last(), Some(server_frame::Body::Done(_))),
+                "rag_status should end in Done, got {bodies:?}"
+            );
+            match bodies.first() {
+                Some(server_frame::Body::RagStatus(u)) => assert!(
+                    u.kbs.is_empty(),
+                    "fresh config should report no KBs, got {:?}",
+                    u.kbs
+                ),
+                other => panic!("expected a RagStatus frame first, got {other:?}"),
+            }
+
+            drop(handle);
+        }
+
+        /// Querying a KB that was never initialised must be NOT_FOUND and
+        /// must carry the actionable CLI hint, not a bare "missing key".
+        #[tokio::test]
+        async fn rag_query_uninitialised_kb_is_not_found() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagQuery(RagQueryRequest {
+                    kb: "nope".into(),
+                    text: "what is kwaainet".into(),
+                    top_k: 5,
+                    min_score: 0.0,
+                }),
+            )
+            .await;
+
+            let msg = expect_error(&bodies, ErrorCode::NotFound);
+            assert!(
+                msg.contains("not initialised") && msg.contains("rag init"),
+                "message should tell the operator how to fix it, got {msg:?}"
+            );
+
+            drop(handle);
+        }
+
+        /// A bad path is INVALID_ARGUMENT (NOT_FOUND is reserved for a
+        /// missing KB), and it is reported *before* any embedding work,
+        /// so this needs no Ollama.
+        #[tokio::test]
+        async fn rag_ingest_missing_file_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            // Give the KB a real local config so we get past the
+            // not-initialised gate and reach the path check.
+            let mut cfg = KwaaiNetConfig::load_or_create().expect("load config");
+            cfg.set_rag_kb(
+                "default",
+                crate::config::RagConfig {
+                    tenant_id: Some(uuid::Uuid::new_v4().to_string()),
+                    storage_url: Some("local".to_string()),
+                    rag_data_dir: Some(tmp.path().join("ragdata").to_string_lossy().into_owned()),
+                    ..crate::config::RagConfig::default()
+                },
+            );
+            cfg.save().expect("save config");
+
+            let (handle, port) = spawn_test_server();
+            let missing = tmp.path().join("definitely-not-here.txt");
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagIngest(RagIngestRequest {
+                    kb: "default".into(),
+                    path: missing.to_string_lossy().into_owned(),
+                    doc_name: String::new(),
+                }),
+            )
+            .await;
+
+            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+            assert!(
+                msg.contains("no such file"),
+                "message should name the problem, got {msg:?}"
+            );
+
+            drop(handle);
+        }
+
+        /// A KB pointed at remote storage is rejected up front rather
+        /// than half-served. Also proves the remote check runs before any
+        /// network call, so this stays hermetic.
+        #[tokio::test]
+        async fn rag_query_remote_kb_is_unimplemented() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let mut cfg = KwaaiNetConfig::load_or_create().expect("load config");
+            cfg.set_rag_kb(
+                "remote",
+                crate::config::RagConfig {
+                    tenant_id: Some(uuid::Uuid::new_v4().to_string()),
+                    // Anything other than "local" means remote storage.
+                    storage_url: Some("http://192.0.2.1:7432".to_string()),
+                    ..crate::config::RagConfig::default()
+                },
+            );
+            cfg.save().expect("save config");
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagQuery(RagQueryRequest {
+                    kb: "remote".into(),
+                    text: "anything".into(),
+                    top_k: 0,
+                    min_score: 0.0,
+                }),
+            )
+            .await;
+
+            let msg = expect_error(&bodies, ErrorCode::Unimplemented);
+            assert!(
+                msg.contains("not yet supported over gRPC"),
+                "message should explain the phase-1 limit, got {msg:?}"
+            );
+
+            drop(handle);
+        }
+
+        /// An empty query is rejected as INVALID_ARGUMENT before the KB
+        /// is even resolved.
+        #[tokio::test]
+        async fn rag_query_empty_text_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagQuery(RagQueryRequest {
+                    kb: String::new(),
+                    text: "   ".into(),
+                    top_k: 0,
+                    min_score: 0.0,
+                }),
+            )
+            .await;
+
+            expect_error(&bodies, ErrorCode::InvalidArgument);
+
+            drop(handle);
+        }
+
+        /// `rag_init` against an embedding endpoint that nothing is
+        /// listening on must surface UNAVAILABLE, not a generic Internal.
+        ///
+        /// Points at 127.0.0.1:1 (reserved, reliably refused) so the
+        /// connect fails immediately — no timeout tuning needed and the
+        /// test stays fast. `EmbedClient::new` falls back to
+        /// OLLAMA_BASE_URL when no explicit URL is passed, which is
+        /// exactly the path `init_kb` takes, so no real Ollama is
+        /// contacted even if one is running on this machine.
+        #[tokio::test]
+        async fn rag_init_with_unreachable_embed_url_is_unavailable() {
+            use kwaai_rpc::v1::RagInitRequest;
+
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let prev_ollama = std::env::var_os("OLLAMA_BASE_URL");
+            std::env::set_var("OLLAMA_BASE_URL", "http://127.0.0.1:1");
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagInit(RagInitRequest {
+                    kb: "probe".into(),
+                    embed_model: "nomic-embed-text".into(),
+                }),
+            )
+            .await;
+
+            match prev_ollama {
+                Some(v) => std::env::set_var("OLLAMA_BASE_URL", v),
+                None => std::env::remove_var("OLLAMA_BASE_URL"),
+            }
+
+            expect_error(&bodies, ErrorCode::Unavailable);
+
+            drop(handle);
+        }
     }
 }

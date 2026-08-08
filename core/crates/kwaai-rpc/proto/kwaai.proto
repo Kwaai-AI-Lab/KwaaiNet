@@ -80,6 +80,35 @@ message ClientFrame {
         // Cancel an in-flight operation by id.
         Cancel cancel = 14;
 
+        // --- RAG ops (tags 20-23, owned by feat/grpc-rag) ---
+        //
+        // Tags 15-19 are claimed by other in-flight branches
+        // (grpc-shards 15, grpc-vpk 16, grpc-peers 17-18,
+        // inference-events 19), so this branch starts at 20 and keeps
+        // the ClientFrame / ServerFrame numbering aligned.
+
+        // Snapshot of every configured knowledge base. One
+        // ServerFrame.rag_status reply, then Done. An empty kbs list
+        // means "RAG is compiled in but nothing is initialised"; a
+        // build without the `rag` feature answers UNIMPLEMENTED
+        // instead, so the client can tell the two apart.
+        RagStatusRequest rag_status = 20;
+
+        // Create (or idempotently re-create) a knowledge base. Probes
+        // the embedding model for its dimension, so it fails with
+        // UNAVAILABLE when Ollama isn't reachable.
+        RagInitRequest rag_init = 21;
+
+        // Ingest one document from a path on the *daemon's* filesystem.
+        // Emits zero or more ServerFrame.rag_progress frames before the
+        // terminal rag_ingest reply. Cancellable.
+        RagIngestRequest rag_ingest = 22;
+
+        // Retrieve chunks for a query. One ServerFrame.rag_query reply,
+        // then Done.
+        RagQueryRequest rag_query = 23;
+
+
         // Block-coverage snapshot / subscription. One-shot when
         // `subscribe` is false (one BlockCoverageUpdate reply, then
         // Done); a live feed when true (a BlockCoverageUpdate every
@@ -117,6 +146,29 @@ message ServerFrame {
 
         // Reply to a StatusRequest.
         StatusReply status = 14;
+
+        // --- RAG replies (tags 20-24, owned by feat/grpc-rag) ---
+        // Numbering deliberately mirrors the ClientFrame side for
+        // 20-23; 24 has no request counterpart because ingest's reply
+        // is distinct from its progress frames.
+
+        // Reply to RagStatusRequest.
+        RagStatusUpdate rag_status = 20;
+
+        // Reply to RagInitRequest.
+        RagInitReply rag_init = 21;
+
+        // Mid-operation progress for rag_ingest. Zero or more of these
+        // precede the terminal rag_ingest reply; a client that ignores
+        // them still gets a correct result.
+        RagProgress rag_progress = 22;
+
+        // Reply to RagQueryRequest.
+        RagQueryReply rag_query = 23;
+
+        // Terminal reply to RagIngestRequest.
+        RagIngestReply rag_ingest = 24;
+
 
         // Snapshot of model block coverage. Exactly one arrives for a
         // one-shot BlockCoverageRequest; a subscription delivers one
@@ -436,6 +488,146 @@ message StorageUpdate {
     // All discovered nodes, sorted by public_name then peer_id so the
     // ordering is stable across rounds.
     repeated StoragePeer peers = 3;
+}
+
+// =====================================================================
+// RAG bodies (feat/grpc-rag)
+//
+// These mirror the `kwaainet rag …` subcommands. The daemon and the
+// client are assumed to share a filesystem (the GUI runs on the same
+// machine), so ingest takes a path rather than streaming bytes.
+//
+// Transport note: phase 1 serves only knowledge bases whose
+// storage_url is "local" (the embedded vector store). KBs outsourced
+// to a remote Eve node answer UNAVAILABLE rather than silently
+// returning nothing.
+// =====================================================================
+
+// One knowledge base as reported by rag_status / rag_init.
+message RagKb {
+    // KB name, e.g. "default". Unique per daemon.
+    string name = 1;
+
+    // Ollama embedding model this KB was initialised with. Chunks
+    // embedded with a different model are not comparable, so this is
+    // effectively part of the KB's identity.
+    string embed_model = 2;
+
+    // Documents ingested so far, by name. Best-effort: a KB whose
+    // metadata store can't be opened is still reported, with an empty
+    // list, rather than failing the whole status op.
+    repeated string docs = 3;
+
+    // True when the KB's vectors live somewhere other than the local
+    // embedded store (a remote Eve node or an HTTP storage service).
+    // Phase 1 can report these but not query or ingest into them.
+    bool remote = 4;
+}
+
+message RagStatusRequest {
+}
+
+message RagStatusUpdate {
+    // Empty when RAG is compiled in but no KB has been initialised.
+    repeated RagKb kbs = 1;
+}
+
+message RagInitRequest {
+    // KB to create. Empty means "default".
+    string kb = 1;
+
+    // Ollama embedding model. Empty means the daemon's default.
+    string embed_model = 2;
+}
+
+message RagInitReply {
+    // The KB as it exists after init. `docs` is empty for a fresh KB
+    // and populated when init was a no-op on an existing one.
+    RagKb kb = 1;
+}
+
+message RagIngestRequest {
+    // KB to ingest into. Empty means "default".
+    string kb = 1;
+
+    // Absolute path on the *daemon's* filesystem. The daemon reads
+    // this directly; nothing is streamed over the wire.
+    string path = 2;
+
+    // Display name for the document. Empty means the file's basename.
+    string doc_name = 3;
+}
+
+// Progress for an in-flight ingest. Deliberately ONE flat message with
+// a phase enum rather than a oneof-per-phase: phases are a fixed,
+// ordered pipeline sharing the same done/total shape, and a flat
+// message lets a client render a progress bar without a match on
+// every variant. Adding a phase later is then an enum value, not a
+// new oneof arm every client must handle.
+message RagProgress {
+    enum RagPhase {
+        RAG_PHASE_UNSPECIFIED = 0;
+
+        // Reading and decoding the source file into plain text.
+        // done/total are not meaningful here (both 0) — this phase is
+        // a single indivisible step.
+        RAG_PHASE_EXTRACTING = 1;
+
+        // Chunking + embedding. done/total count chunks.
+        RAG_PHASE_EMBEDDING = 2;
+
+        // Writing vectors to the store. done/total count chunks.
+        RAG_PHASE_UPLOADING = 3;
+    }
+
+    RagPhase phase = 1;
+
+    // Units completed / expected for this phase. Both 0 when the
+    // phase has no meaningful subdivision.
+    uint32 done = 2;
+    uint32 total = 3;
+
+    // Optional human-readable detail (e.g. the document name).
+    string detail = 4;
+}
+
+message RagIngestReply {
+    uint32 chunks_ingested = 1;
+    uint32 vectors_uploaded = 2;
+}
+
+message RagQueryRequest {
+    // KB to query. Empty means "default".
+    string kb = 1;
+
+    // The query text.
+    string text = 2;
+
+    // Max chunks to return. 0 means the server default (20).
+    uint32 top_k = 3;
+
+    // Drop chunks scoring below this. 0 keeps everything.
+    double min_score = 4;
+}
+
+// One retrieved chunk. Mirrors the JSON the HTTP RAG API returns.
+message RagChunk {
+    // 1-based position in the result list.
+    uint32 rank = 1;
+    double score = 2;
+
+    // Document this chunk came from.
+    string doc = 3;
+
+    // 0-based index of the chunk within its document.
+    uint32 chunk_index = 4;
+
+    string text = 5;
+}
+
+message RagQueryReply {
+    // Ordered best-first. Empty when nothing cleared min_score.
+    repeated RagChunk chunks = 1;
 }
 
 // =====================================================================
