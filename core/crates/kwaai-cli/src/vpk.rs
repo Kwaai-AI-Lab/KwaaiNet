@@ -195,74 +195,7 @@ async fn discover(json_output: bool) -> Result<()> {
         cfg.initial_peers.clone()
     };
 
-    // Build the FIND request for the VPK nodes registry key.
-    // Python Hivemind validates that every node_id is a 20-byte DHTID (SHA1-range).
-    // Raw PeerId bytes are 38+ bytes and fail that check, so we SHA1 them first —
-    // same as DHTID.generate(peer_id.to_bytes()) in Python.
-    let key = vpk_dht_id("_kwaai.vpk.nodes");
-    let our_dhtid = Sha1::new()
-        .chain_update(peer_id.to_bytes())
-        .finalize()
-        .to_vec();
-    let find_req = FindRequest {
-        auth: Some(RequestAuthInfo::new()),
-        keys: vec![key],
-        peer: Some(NodeInfo { node_id: our_dhtid }),
-    };
-    let mut req_bytes = Vec::new();
-    find_req.encode(&mut req_bytes)?;
-
-    // Query each bootstrap peer; deduplicate results by peer_id.
-    let mut found: Vec<VpkNodeEntry> = Vec::new();
-
-    for addr in &bootstrap_peers {
-        let Some(peer_id_str) = addr.split("/p2p/").nth(1) else {
-            continue;
-        };
-        let bp = match peer_id_str.parse::<PeerId>() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        if client.connect_peer(addr).await.is_err() {
-            continue;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let resp_bytes = match client
-            .call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_find", &req_bytes)
-            .await
-        {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-
-        let Ok(resp) = FindResponse::decode(&resp_bytes[..]) else {
-            continue;
-        };
-
-        for result in resp.results {
-            let rt = result.result_type;
-            if result.value.is_empty() {
-                continue;
-            }
-            // FoundRegular = 1 (our Rust DHTStorage or single-entry bootstrap)
-            // FoundDictionary = 2 (Python Hivemind bootstrap with multiple nodes)
-            if rt == 1 {
-                if let Some(entry) = parse_vpk_regular(&result.value) {
-                    if !found.iter().any(|e| e.peer_id == entry.peer_id) {
-                        found.push(entry);
-                    }
-                }
-            } else if rt == 2 {
-                parse_vpk_dictionary(&result.value, &mut found);
-            }
-        }
-    }
-
-    // Remove the local node — dialling self is always rejected by p2pd.
-    let local_b58 = peer_id.to_string();
-    found.retain(|e| e.peer_id != local_b58);
+    let found = discover_nodes(&mut client, &peer_id, &bootstrap_peers).await?;
 
     if found.is_empty() {
         if json_output {
@@ -581,14 +514,101 @@ fn vpk_dht_id(raw_key: &str) -> Vec<u8> {
     Sha1::new().chain_update(&packed).finalize().to_vec()
 }
 
+/// DHT key under which VPK-capable nodes advertise themselves.
+pub const VPK_NODES_DHT_KEY: &str = "_kwaai.vpk.nodes";
+
+/// Query the bootstrap peers for the VPK node registry.
+///
+/// Shared by `kwaainet vpk discover` and the gRPC `storage_discovery`
+/// op so both see the same registry. Results are deduplicated by peer
+/// id, and the local node is removed — p2pd always rejects dialling
+/// self, so leaving it in would guarantee one bogus "unreachable" row.
+///
+/// Individual bootstrap failures are skipped rather than propagated:
+/// one unreachable bootstrap should not blank out a registry the other
+/// can still answer for.
+pub async fn discover_nodes(
+    client: &mut P2PClient,
+    our_peer_id: &PeerId,
+    bootstrap_peers: &[String],
+) -> Result<Vec<VpkNodeEntry>> {
+    // Python Hivemind validates that every node_id is a 20-byte DHTID (SHA1-range).
+    // Raw PeerId bytes are 38+ bytes and fail that check, so we SHA1 them first —
+    // same as DHTID.generate(peer_id.to_bytes()) in Python.
+    let key = vpk_dht_id(VPK_NODES_DHT_KEY);
+    let our_dhtid = Sha1::new()
+        .chain_update(our_peer_id.to_bytes())
+        .finalize()
+        .to_vec();
+    let find_req = FindRequest {
+        auth: Some(RequestAuthInfo::new()),
+        keys: vec![key],
+        peer: Some(NodeInfo { node_id: our_dhtid }),
+    };
+    let mut req_bytes = Vec::new();
+    find_req.encode(&mut req_bytes)?;
+
+    let mut found: Vec<VpkNodeEntry> = Vec::new();
+
+    for addr in bootstrap_peers {
+        let Some(peer_id_str) = addr.split("/p2p/").nth(1) else {
+            continue;
+        };
+        let bp = match peer_id_str.parse::<PeerId>() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if client.connect_peer(addr).await.is_err() {
+            continue;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let resp_bytes = match client
+            .call_unary_handler(&bp.to_bytes(), "DHTProtocol.rpc_find", &req_bytes)
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        let Ok(resp) = FindResponse::decode(&resp_bytes[..]) else {
+            continue;
+        };
+
+        for result in resp.results {
+            let rt = result.result_type;
+            if result.value.is_empty() {
+                continue;
+            }
+            // FoundRegular = 1 (our Rust DHTStorage or single-entry bootstrap)
+            // FoundDictionary = 2 (Python Hivemind bootstrap with multiple nodes)
+            if rt == 1 {
+                if let Some(entry) = parse_vpk_regular(&result.value) {
+                    if !found.iter().any(|e| e.peer_id == entry.peer_id) {
+                        found.push(entry);
+                    }
+                }
+            } else if rt == 2 {
+                parse_vpk_dictionary(&result.value, &mut found);
+            }
+        }
+    }
+
+    let local_b58 = our_peer_id.to_string();
+    found.retain(|e| e.peer_id != local_b58);
+
+    Ok(found)
+}
+
 /// A decoded VPK node advertisement from the DHT.
-struct VpkNodeEntry {
-    peer_id: String,
-    mode: String,
-    capacity_gb: f64,
-    tenant_count: u32,
-    vpk_version: String,
-    public_name: String,
+pub struct VpkNodeEntry {
+    pub peer_id: String,
+    pub mode: String,
+    pub capacity_gb: f64,
+    pub tenant_count: u32,
+    pub vpk_version: String,
+    pub public_name: String,
 }
 
 /// Decode a FoundRegular value (direct msgpack VPK map) into a VpkNodeEntry.
