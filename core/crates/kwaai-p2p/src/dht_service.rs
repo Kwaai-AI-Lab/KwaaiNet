@@ -135,9 +135,16 @@ fn handle_find(storage: &DHTStorage, data: &[u8]) -> Result<Vec<u8>, String> {
 /// **caller's** confidence in its own reachability, so a `false` costs the
 /// caller nothing but a missed confirmation from one peer — it does not affect
 /// whether our records are stored, found, or returned, and every other field in
-/// the response (our node ID, the DHT time) is fully valid. Deferred until the
-/// reachability state machine lands in Phase 4, which is where the dial-back
-/// belongs.
+/// the response (our node ID, the DHT time) is fully valid.
+///
+/// Not answerable from our own reachability: `available` says *"I dialed you
+/// back and you answered"* — a statement about the caller — so sourcing it from
+/// whether **we** are public would make a public node assert the reachability
+/// of every peer that pings it, which is worse than the honest `false`. Closing
+/// properly needs the `validate` dial-back itself: on a `PingRequest` with
+/// `validate` set, dial the caller at the address the request carries and
+/// answer on the outcome. That is a real network round-trip inside a unary
+/// handler and remains a tracked follow-up.
 ///
 /// `DHTStorage::handle_request` hardcodes `available = true`, which is why the
 /// ping arm is served here rather than delegated to it.

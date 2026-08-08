@@ -50,8 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Setup Kademlia with IPFS-compatible protocol
     let kademlia = {
         let store = MemoryStore::new(local_peer_id);
-        let mut kad_config = kad::Config::default();
-        kad_config.set_protocol_names(vec![libp2p::StreamProtocol::new("/ipfs/kad/1.0.0")]);
+        let kad_config = kad::Config::default();
         let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, kad_config);
         behaviour.set_mode(Some(Mode::Client));
         behaviour
@@ -120,7 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     SwarmEvent::Behaviour(DhtBehaviourEvent::Identify(
-                        identify::Event::Received { peer_id, info },
+                        identify::Event::Received { peer_id, info, .. },
                     )) => {
                         println!("[IDENTIFIED] {} - {}", peer_id, info.agent_version);
                         // Add discovered addresses to Kademlia
@@ -156,7 +155,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("[DHT] Found {} peers (total: {})", new_peers, peers_found);
 
                         for peer in &result.peers {
-                            println!("      {}", peer);
+                            println!("      {}", peer.peer_id);
                         }
                     }
                     SwarmEvent::Behaviour(DhtBehaviourEvent::Kademlia(

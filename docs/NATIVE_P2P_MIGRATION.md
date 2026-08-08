@@ -93,8 +93,12 @@ p2pd.
 2. **Behaviour composition**: ping, identify, kad(MemoryStore, auto client/server mode +
    `dht_server` config override), autonat(v1), relay client, `Toggle<relay server>`
    (`!config.no_relay`), dcutr, `Toggle<upnp>`, a **hand-rolled `unary::Behaviour`** for
-   ALL unary protocols, `libp2p_stream` for slashed raw-stream protocols (inference-mux,
-   block_rpc). Transport: SwarmBuilder TCP+noise+yamux + dns + relay client. TCP-only
+   ALL unary protocols, and a hand-rolled `raw_stream::Behaviour` for raw-stream
+   protocols (inference-mux, block_rpc, the `rpc_*` forwarding path). *(Revised in Phase 3
+   — the original plan said `libp2p_stream`, which cannot express slash-less protocol
+   IDs for the same reason it was ruled out for unary. `raw_stream` reuses
+   `unary::Protocols` for negotiation and diverges after it; see Phase 3 below.)*
+   Transport: SwarmBuilder TCP+noise+yamux + dns + relay client. TCP-only
    (fleet is TCP). Workspace libp2p features add: `ping, dcutr, autonat, upnp, dns`.
 
    *(Revised in Phase 2 — the original plan said `request_response<HivemindUnaryCodec>`,
@@ -234,11 +238,13 @@ node — the direction the `stream.rs` bug used to break).
 
 **Announce records** are extracted into `kwaai-cli/src/announce.rs`:
 `build_announce_records` / `build_unannounce_records` / `send_records_via_handle`
-alongside the record value types moved verbatim from `node.rs`. `run_node` still
-uses its p2pd path; the rewire is Phase 4.
+alongside the record value types moved verbatim from `node.rs`. The rewire landed in
+Phase 4 slice 1: `run_node` uses these when `native_p2p` is set, on the same
+300 s ± 30 s cadence, and the p2pd path still uses its own.
 
-*Still open in this phase:* wiring the re-announce loop to the native path
-(Phase 4, together with the announce watch channel).
+*Still open in this phase:* the announce **watch channel** — re-announcing on an address
+change rather than only on the timer — which belongs with the address discovery deferred
+to the Phase 4 NAT slice.
 
 #### Verified live against the production bootstraps
 
@@ -302,7 +308,7 @@ coverage:
 | DHT FIND_PEER | served (via `dht_find_peer`) |
 | PERSISTENT_CONN_UPGRADE + add/remove_unary_handler, call_unary_handler, unaryResponse | served |
 | PERSISTENT `cancel` | accepted as a no-op — `NetworkHandle` has no mid-flight abort; calls are bounded by `request_timeout` |
-| STREAM_OPEN, STREAM_HANDLER, REMOVE_STREAM_HANDLER | **stubbed** `"not supported"` — pipe mode, see below |
+| STREAM_OPEN, STREAM_HANDLER, REMOVE_STREAM_HANDLER | served — pipe mode, see below |
 | DHT put/get/provide/find_providers/get_closest/search/pubkey | **stubbed** `"not supported"` (Go's own wording for unsupported DHT verbs) |
 | PUBSUB, CONNMANAGER | **stubbed** `"not supported"` — never implemented by the client either |
 
@@ -325,20 +331,62 @@ completion order, not emission order. Two concurrent calls to *different* protoc
 connection could therefore swap replies. Now matched by negotiated protocol.
 Gated by `service_unary.rs::concurrent_calls_to_different_protocols_do_not_cross_talk`.
 
-*Gated by:* `kwaai-p2p-daemon/tests/control_server.rs` (11 in-process tests driving the
-**unmodified** `P2PClient` against a `ControlServer` over a real `NetworkService`) and
-`11_control_server_interop` (the cross-implementation matrix against a real p2pd: client
-via native → p2pd handler, client via p2pd → native handler, native → native, IDENTIFY
-shape parity, and the disconnect-release fix observed from the Go stack).
+*Also done (slice 2):* **pipe mode** — `STREAM_OPEN` / `STREAM_HANDLER` /
+`REMOVE_STREAM_HANDLER`, the raw byte relay `inference_mux` and `node.rs`'s `rpc_*`
+forwarding run on.
 
-*Still open in this phase:* **pipe mode** — `stream_open_raw` / `register_stream_handler`
-raw byte relay between the unix socket and a libp2p stream (`libp2p_stream`), with
-backpressure both ways; consumers are inference-mux and block_rpc. Also: threading the
-caller's `PeerId` into `add_unary_handler_boxed` so the dispatched `callUnary.peer` can
-carry it (Go rewrites that field, `persistent_stream.go:298`; we currently send it empty),
-the harness `TestNode` variant that runs the *existing* client-side tiers against the new
-server, and deciding per remaining DHT verb whether to back it with `kad` record/provider
-APIs or delete the client method at cutover.
+The libp2p half is a new `kwaai-p2p/src/raw_stream.rs`: a sibling of `unary::Behaviour`
+that reuses its `Protocols` upgrade and `UnaryProtocol` (so slash-less names still
+negotiate, which `libp2p_stream` cannot express) and then hands the negotiated `Stream`
+out untouched — no framing, no per-call timeout, no callId correlation. A raw stream may
+live for a node's whole session, which is exactly the lifetime model the unary path exists
+to prevent, so folding a "raw mode" flag into `unary::Handler` would have put two unrelated
+lifetime policies behind one set of queues. `NetworkHandle` gains `open_raw_stream` /
+`accept_streams` / `remove_stream_handler`; the unary path is untouched.
+
+The **fd handoff** was the restructure slice 1 flagged. A successful `STREAM_OPEN` is
+terminal for the connection exactly as `PERSISTENT_CONN_UPGRADE` is (Go writes the
+response, calls `doStreamPipe(c, s)`, returns — `conn.go:59-73`), so the socket's two
+halves must be rejoined into one duplex stream. Slice 1 boxed the write half behind
+`Arc<Mutex<Box<dyn AsyncWrite>>>`, and a boxed trait object cannot be reunited with
+anything. Resolved by keeping the socket's *concrete* type — a `ClientSocket` enum over
+Unix/TCP that splits inside `ConnState` and reunites on the way into pipe mode — with the
+writer slot becoming an `Option` that pipe mode takes. A late frame write then finds `None`
+and errors, which is correct: the socket is no longer a frame channel.
+
+Backpressure both ways is `tokio::io::copy_bidirectional`, whose flow control *is* awaiting
+each write before reading more, so a slow consumer stops the producer at the socket rather
+than accumulating in-process; yamux's window applies on top. Half-closes propagate, so a
+client that signals "request complete" by closing its write half still receives its reply.
+`STREAM_HANDLER` dials the client's listener per inbound stream and writes the
+length-delimited `StreamInfo` prologue every consumer already parses; a dial-back failure
+**resets** the inbound stream, matching Go's `handleStream`.
+
+Stream-handler registrations are **owned by the connection** and released on disconnect —
+a deliberate divergence from Go, whose `d.handlers` map is process-global and outlives the
+registering client, so a crashed `shard serve` there leaves the daemon advertising a
+protocol whose forwarding address refuses connections (every inbound stream then costs a
+dial timeout instead of a negotiation refusal). This matches the unary discipline from
+slice 1.
+
+*Gated by:* `kwaai-p2p/tests/raw_stream.rs` (12 tests: slash-less negotiation, protocol
+preference lists, 4 MiB each way concurrently, half-close as EOF with the reverse direction
+live, concurrent streams, dial-on-demand, clean refusals),
+`kwaai-p2p-daemon/tests/control_server.rs` (19 in-process tests driving the **unmodified**
+`P2PClient` against a `ControlServer` over a real `NetworkService` — 8 of them pipe mode,
+including a 2 MiB relay through two `copy_bidirectional` hops and the dial-back reset),
+`11_control_server_interop` (the unary cross-implementation matrix against a real p2pd) and
+`12_pipe_mode_interop` (the same matrix for pipe mode: native client → p2pd stream handler,
+p2pd client → native stream handler, `StreamInfo` prologue parity, and 1 MiB each way
+across the boundary where `io.Copy` meets `copy_bidirectional`).
+
+*Still open in this phase:* threading the caller's `PeerId` into `add_unary_handler_boxed`
+so the dispatched `callUnary.peer` can carry it (Go rewrites that field,
+`persistent_stream.go:298`; we currently send it empty) — note the *stream* path already
+carries it, since `StreamInfo.peer` comes from the connection; the harness `TestNode`
+variant that runs the *existing* client-side tiers against the new server; and deciding per
+remaining DHT verb whether to back it with `kad` record/provider APIs or delete the client
+method at cutover.
 
 *Testable:* the full existing daemon-client test suite green against the new server;
 multi-client smoke: `kwaainet status`, `p2p peers list`, `shard serve` (register handler +
@@ -346,18 +394,86 @@ receive inbound call), `storage serve`, inference-mux `stream_open_raw`, two cli
 concurrently; handler deregistration on client disconnect (kill `storage serve`, verify
 the protocol is refused afterward).
 
-*Expected issues:* **riskiest sub-piece** — bidirectional callUnary routing across
-concurrent socket clients (handler ownership, disconnect cleanup, UUID call-ID collisions
-between independent clients); `stream_open_raw` pipe-mode fidelity (raw byte relay between
-unix socket and libp2p stream, backpressure both ways); subtle p2pd response-shape details
-existing clients depend on (error encodings, IdentifyResponse addr byte format); Windows
-TCP-socket path parity.
+*Expected issues, and how they landed:* **riskiest sub-piece** — bidirectional callUnary
+routing across concurrent socket clients (handler ownership, disconnect cleanup, UUID
+call-ID collisions between independent clients): resolved in slice 1 by per-connection
+correlation state. `stream_open_raw` pipe-mode fidelity (raw byte relay, backpressure both
+ways): resolved in slice 2; the real obstacle turned out not to be the relay but the **fd
+handoff** — slice 1's boxed writer could not be reunited with its reader — see the slice-2
+notes above. Subtle p2pd response-shape details existing clients depend on (error
+encodings, IdentifyResponse addr byte format): covered by the interop tiers. **Windows
+TCP-socket path parity remains untested** — the `ClientSocket` TCP arm exists and the relay
+is transport-agnostic, but every test binds a unix socket; tracked in the follow-ups above.
 
 ### Phase 4 — node.rs integration behind flag + NAT traversal
 
 `native_p2p` selects the new path in run_node; hello/ollama-proxy/shard-proxy via
 `add_unary_handler`, inference-mux via `accept_streams`. autonat + upnp + RelayManager +
 dcutr + announce watch channel.
+
+*Done so far (slice 1 — the run_node integration):* **`native_p2p`** (`kwaai-cli/src/
+config.rs`, default false, settable via `kwaainet config set`) selects
+`node_native::run_native_node`. `NativeNode::start` assembles what Phases 1–3 built:
+the swarm on the configured port, `spawn_dht_service` over a `DHTStorage` (bootstrap-grade
+serving, the native equivalent of p2pd's `-b`), this node's own handlers, and a
+`ControlServer` on the same socket path p2pd would have used — resolved through the same
+`KWAAINET_SOCKET`-or-default rule every client uses, so the GUI, `kwaainet p2p …`,
+`shard serve` and the map crawler are unchanged. **No p2pd binary need be present.**
+
+Handler registration by protocol:
+
+| protocol | p2pd path | native path |
+| --- | --- | --- |
+| `DHTProtocol.rpc_{ping,store,find}` | TCP listener registered as a *stream handler*; p2pd forwards each request with a `StreamInfo` prologue and a `PersistentConnectionRequest` wrapper | `spawn_dht_service` → `add_unary_handler`, in-swarm, no wrapper |
+| `/kwaai/p2p/hello/1.0.0` | `P2PClient::add_unary_handler` | `NetworkHandle::add_unary_handler` |
+| `/kwaai/ollama-proxy/1.0.0`, `/kwaai/shard-proxy/1.0.0` | same | same, same handler bodies |
+| `/kwaai/inference-mux/1.0.0` | TCP listener + `register_stream_handler`, prologue consumed per stream | `accept_streams`, the libp2p stream directly |
+
+The **peer ID is identical on both paths** — same key file, same libp2p protobuf encoding
+(`kwaai-p2p::identity` and `kwaai-cli::NodeIdentity` are compatible on-disk by
+construction), so a migrating node keeps its DID, its credentials and its map entry.
+Announce and unannounce go through `announce.rs` byte-for-byte on the same 300 s ± 30 s
+jittered cadence against the 360 s TTL, with the `state = -1` tombstone on clean shutdown,
+and the per-bootstrap timings still feed the reputation store.
+
+Watchdog machinery is **absent, not stubbed**: no `find_p2pd_binary`, no crash detection,
+no `restart_p2pd*`, no 10 s heartbeat, no 60 s socket keepalive — there is no child
+process. Everything genuinely shared is shared rather than copied (`SigHup`, the Ollama
+watcher, the auto-update respawn, and the announce-input helpers were extracted from
+`run_node` in the same series), and `run_node`'s prologue and tail cover both paths.
+
+Gated by `13_native_node_assembly` — two native nodes where one announces and the other
+serves the record back as `FOUND_DICTIONARY` with the value byte-identical, an unchanged
+`P2PClient` doing identify + a unary round trip against the assembled node's own control
+socket, a check that the socket and the swarm are *one* node (a `ControlServer` on a
+different handle would pass every tier-11 test and still be broken), and the key-file
+identity property. A `kwaainet run-node` spawn test was deliberately skipped: it writes
+the real PID file, binds the real socket and takes the fixed gRPC port, so it collides
+with a developer's running node and with a second copy of itself, and would add only
+argument parsing and the config round trip over what tier 13 covers.
+
+*Deferred to slice 2 (the NAT slice) — a native node is currently reachable only if it is
+directly dialable:*
+
+- **autonat + upnp + RelayManager + dcutr.** `no_relay`, `force_private` and
+  `trusted_relays` are inert on the native path and documented as such on the config field.
+- **IDENTIFY-driven address discovery and the announce watch channel.** The p2pd path
+  polls observed addresses, restarts the daemon with new announce addrs, and defers that
+  restart while RPC streams are in flight. Natively there is no restart to defer — an
+  address change should re-announce in place — so the whole `discover_and_restart_with_announce`
+  / `pending_restart` / `collect_observed_addresses` cluster has no native counterpart yet.
+  Until it lands, a native node announces `announce_addr`/`public_ip` or warns that it has
+  none, and `using_relay` is simply "no address configured" rather than
+  `all_addrs_are_relay` over discovered addresses.
+- **`rpc_ping` `validate=true` dial-back** (tracked in the follow-ups above) — the
+  reachability state machine it belongs to is this slice.
+
+*API gaps in `kwaai-p2p` the NAT slice will need:* nothing blocked slice 1, but the native
+path found no equivalent of p2pd's announce-address override — `NetworkConfig` has
+`listen_addrs` but no "advertise this instead" field, so `announce_addr`/`public_ip`
+currently only reach the DHT record and never the swarm's own address book. The NAT slice
+needs that (external-address confirmation) plus a `NetworkHandle` event stream for address
+changes, since today's `observed_addrs()`/`listen_addrs()` are poll-only.
 
 *Testable (kwaaiai-env nat-test topology):* (a) direct node announces
 public_ip:public_port (incl. node-d asymmetric port map), (b) NATed↔NATed dcutr
@@ -437,9 +553,13 @@ gates).
 - **`callUnary.peer` on IPC-dispatched inbound calls** is sent empty by the
   ControlServer (Go rewrites it to the caller's ID). No current handler reads it; thread
   the caller PeerId through before any handler authenticates callers.
-- **ControlServer pipe mode** (`stream_open_raw`, `register_stream_handler`) deferred —
-  see the stubs in `kwaai-p2p-daemon/src/server.rs` and the risk notes in the Phase 3
-  section below.
+- **Windows TCP parity for pipe mode is untested.** `ClientSocket` has a TCP arm and the
+  relay is transport-agnostic, but every test in this tier binds a unix socket. The
+  Windows client path (`/ip4/127.0.0.1/tcp/5005`) needs a run on Windows CI before the
+  cutover, or at minimum a TCP-bound variant of the `control_server.rs` pipe tests.
+- **Stream-handler `balanced` is ignored**, as on the unary path: Go keeps a round-robin
+  list of forwarding addresses per protocol, we keep one owner and refuse the second. No
+  call site in this codebase passes `true`.
 
 ## Resolved verification items (Phase 0, `07_wire_interop` against a real p2pd)
 
@@ -461,11 +581,187 @@ gates).
 
 ## Critical files
 
-- `core/crates/kwaai-p2p/src/*` — rewritten (service/handle/behaviour/relay_manager/addresses)
+- `core/crates/kwaai-p2p/src/*` — rewritten (service/handle/behaviour/unary/raw_stream/relay_manager/addresses)
 - `core/crates/kwaai-hivemind-dht/src/{wire.rs(new),codec.rs,server.rs,lib.rs}`
 - `core/crates/kwaai-p2p-daemon/src/{server.rs(new),daemon.rs(delete),stream.rs(delete at cutover)}`, `build.rs`
-- `core/crates/kwaai-cli/src/{node.rs,daemon.rs,setup.rs,identity.rs}`
+- `core/crates/kwaai-cli/src/{node.rs,node_native.rs(new),announce.rs,config.rs,inference_mux.rs,daemon.rs,setup.rs,identity.rs}`
 - `core/crates/kwaai-network-tests/src/harness.rs`
 - `{flake.nix,nix/p2pd.nix,nix/crane.nix,Makefile,scripts/build-p2pd.sh,.github/workflows/release.yml,core/Cargo.toml}`
 - kwaaiai-env: `{docker-compose.yml,docker/p2pd-patched/,patches/go-multiaddr/,docker/nat-test/config-node-*.yaml,docs/nat-test-topology.md}`
 - KwaaiNetGUI: `.github/workflows/release.yml` (p2pd copy conditional)
+
+## Phase 4 slice 2 — NAT traversal design findings (2026-07-31)
+
+Source-verified design pass over libp2p 0.53.2 (autonat 0.12 / relay 0.17.2 / dcutr 0.11 /
+upnp 0.2.2), the old p2pd spawn flags, and the kwaaiai-env nat-test topology, ahead of
+implementation. These findings correct several Phase 4 "expected issues" and set the
+implementation slicing.
+
+### Ground truths (from source, not assumption)
+
+- **G1 — the announce record carries no multiaddrs.** `DHTServerInfo` has no address
+  field; peers resolve addresses via Kademlia + identify. The "announce watch channel"
+  therefore only carries `using_relay` + an announceable flag — address publication is
+  `Swarm::add_external_address` + identify push (already enabled). This shrinks the
+  flapping surface dramatically and removes the restart-to-change-addrs motivation.
+- **G2 — relay reservation refresh-on-expiry is already in libp2p** (renew at 3/4 TTL,
+  keep-alive while live). Only relay-*restart* recovery is ours to build.
+- **G3 — reservation loss surfaces as `SwarmEvent::ListenerClosed`**, not as a
+  relay-client event (`relay::client::Event` has no failure variant). Refusal/timeout →
+  `ListenerClosed{reason: Err}`; relay connection death → `ListenerClosed{reason: Ok}`.
+  The RelayManager is keyed on `ListenerId`, which makes duplicate circuit listens
+  structurally impossible.
+- **G4 — autonat 0.12 never calls `ExternalAddrConfirmed`**; confirming a
+  `NatStatus::Public(addr)` into the swarm's address set is our job. (relay-client and
+  upnp do confirm their own addrs.)
+- **G5 — exactly two RFC2544 (198.18/15) rejection sites in all of rust-libp2p 0.53**:
+  autonat's `is_benchmarking` behind `Config::only_global_ips` (default true), and a upnp
+  gateway check that is unreachable in the nat-test bed (no SSDP responder). kad,
+  identify, swarm, core, dcutr: zero address-class filtering (greps recorded). The whole
+  "RFC2544 classified unreachable somewhere" worry reduces to one config bool.
+- **G6 — identify advertises `listen ∪ external` addresses with no filter knob**, so a
+  NATed node leaks RFC1918 listen addrs to every peer (see risk R1).
+- **G7 — the nat-test trusted relay is node-a**, a KwaaiNet node, not a bootstrap; the
+  production bootstraps have a documented RESERVATION_REFUSED history. Refusal is a
+  normal outcome, not an error.
+- **G8 — p2pd was never spawned with a hole-punching flag**, so there is no dcutr parity
+  baseline; reframe acceptance as an absolute floor (≥7/10 cone-NAT upgrades over 10
+  trials, measured and recorded, not gating).
+- **G9 — `force_private` defaults to true** in kwaai-cli config; Private is the *default*
+  reachability state and AutoNAT is a promotion mechanism for opt-outs only.
+
+### Design decisions
+
+- **Behaviour additions**: `autonat` (client+server; `only_global_ips` from new
+  `require_global_ips` config, default false; boot_delay 5s, retry 30s, refresh 5min,
+  keep `confidence_max 3` as the flap damper), `relay_client` (via
+  `SwarmBuilder::with_relay_client` — the `with_behaviour` closure becomes two-arg),
+  `Toggle<relay::Behaviour>` hop server (default on, parity with `!no_relay`),
+  `dcutr`, `Toggle<upnp>` (off in tests).
+- **RelayManager** lives inside `NetworkService` as a plain state machine polled from the
+  select loop (needs `&mut Swarm` + swarm-level listener events). Slots keyed by
+  `ListenerId`; one reservation per relay; backoff `min(30s·2^(n−1), 15min)` ±20% jitter
+  with rotation orthogonal to backoff. Candidates: configured `trusted_relays` first,
+  then identify-discovered hop-capable peers (protocol list contains the hop protocol) —
+  explicitly *not* kad routing-table probing (that is the `-relayDiscovery` we always
+  disabled). Trusted relays are dialed alongside bootstraps to cut reservation latency.
+- **Reachability state machine** (`Unknown | Public{addr, source} | Private`, sources
+  `Declared > AutoNat > Upnp > IdentifyConsensus`): declared `external_addr` pins Public
+  and outranks `force_private` (with a warning); autonat Private demotes
+  IdentifyConsensus but never Declared; upnp expiry returns to Unknown, not Private.
+  Identify-consensus fallback: after a 45s grace still Unknown, promote the
+  highest-distinct-observer announceable observed addr if it has ≥
+  `identify_min_confirmations` observers, else Private. Whether bootstraps answer
+  autonat dialbacks is the one empirical unknown — measured by a read-only live identify
+  snapshot as implementation commit 1; the design is safe either way because
+  `use_connected: true` makes every autonat-speaking peer a probe target and an
+  unanswered probe leaves status Unknown (never a false flip).
+- **Announce watch channel**: `watch::Sender<AnnounceState{reachability_kind,
+  using_relay, announceable, epoch}>` — no multiaddrs (G1). Equality-gated sends; the
+  10s settle debounce lives in the run_node consumer, not the service. Closes slice 1's
+  known gaps (degraded `using_relay`, no re-announce on address change) and replaces the
+  p2pd path's restart cluster and relay-addr disk cache (which existed only for p2pd's
+  ~7-minute AutoRelay latency and would be harmful now).
+- **`addresses.rs` classifier**: port of node.rs `is_announceable_addr` /
+  `is_globally_routable_v4` (which already deliberately accept 198.18/15 and the
+  RFC5737 doc ranges for the test beds) into kwaai-p2p, with a golden test pinning
+  `198.18.0.20` as routable. `require_global_ips` opt-in tightens.
+- **Follow-up closure for free**: with reachability in hand, `dht_service`'s `rpc_ping`
+  can answer `available = is Public` instead of hardcoded false (open item above), via a
+  new `NetworkHandle::reachability()`.
+
+### New risks found
+
+- **R1 (high)** — identify's unfiltered listen-addr advertisement (G6) is the direct
+  cause of "Direct-but-unreachable" map entries. Accepted for this slice (go-libp2p
+  leaked the same before `-announceAddrs`); a ~60-line filtering identify wrapper is a
+  tracked follow-up. If a NATed node shows "Direct" with a 192.168.x address, this is why.
+- **R2 (medium)** — `default_trusted_relays()` points at the production bootstraps with
+  their refusal history; with an active RelayManager that yields a visible
+  backoff-rotate loop and no relay. Fix in the CLI wiring commit: empty default +
+  identify hop discovery as the real supply; `trusted_relays` becomes a pure operator
+  override.
+- **R3 (medium)** — `observed_addrs` in the service never expires entries; the
+  identify-consensus fallback would latch a stale address after a network move. Fixed by
+  pruning observers on `ConnectionClosed` (also fixes the latent staleness in the
+  existing `ObservedAddrs` handle command).
+- **R4 (low)** — autonat 0.12 is unconditionally also a dialback *server*
+  (`ProtocolSupport::Full`); bounded by its default throttles and observed-IP
+  substitution. Keep the throttles at defaults.
+- **R5 (low)** — `with_relay_client` changes the `with_behaviour` closure arity; the
+  compile error points at the closure, not the cause.
+- **R6 (low)** — autonat/dcutr enter Cargo.lock for the first time; nix/crane vendoring
+  must be regenerated in the same commit or offline CI breaks.
+
+### Implementation slicing (9 commits, only the last-but-one touches node.rs)
+
+1. live bootstrap protocol-list snapshot test (answers the autonat unknown, read-only);
+2. `addresses.rs` classifier + tests; 3. behaviours added inert (Cargo/behaviour/config/
+builder); 4. reachability state machine + observed-addrs pruning + `rpc_ping available`;
+5. RelayManager + in-process relay tests (restart recovery, refusal rotation, slot
+bounds); 6. announce watch channel; 7. dcutr plumbing tests; 8. CLI wiring into the
+native run_node path (`trusted_relays`/`no_relay`/`force_private`/`public_ip` →
+`NetworkConfig`, watch-driven announce loop, empty relay default); 9. doc update.
+In-process tests cover relay lifecycle, reachability rules, and dcutr plumbing; real
+hole punching and the (a)–(f) acceptance items remain kwaaiai-env nat-test topology work.
+
+### Slice 2 landed (2026-07-31)
+
+All nine planned commits are in (`b5d4cdc..3e2000d` + the settle-deadline fix).
+Full gate green: workspace build, unit suites, integration tiers 01–13 vs real p2pd,
+fmt/clippy clean (one pre-existing wire.rs type-complexity warning).
+
+- **The bootstrap-autonat unknown resolved favourably**: both production bootstraps
+  advertise `/libp2p/autonat/1.0.0`, both relay-hop/stop, and `/libp2p/dcutr`
+  (read-only identify snapshot; full lists in commit `b5d4cdc`). A native node gets two
+  AutoNAT servers from its first dial; identify consensus is a true fallback. Hop
+  advertisement is not a promise — the RESERVATION_REFUSED history stands, and refusal
+  rotates rather than fails.
+- Identify now records per-peer protocol lists (`NetworkHandle::peer_protocols`),
+  dropped on last disconnect; relay-hop discovery and AutoNAT probe targeting read it.
+- The announce settle window is a deadline armed in the watch arm and awaited in its own
+  select branch — an inline sleep would have blocked shutdown/SIGHUP for the window.
+
+**Remaining Phase 4 work**: the kwaaiai-env nat-test topology acceptance run —
+items (a)–(f) — which requires coordinating with the in-flight work in that repo,
+plus the tracked follow-ups above (identify RFC1918 address filter, record validators,
+eviction index, callUnary.peer threading, Windows TCP pipe tests).
+
+### Slice 2 adversarial review (2026-07-31)
+
+Findings fixed with regression tests (`ffb9b30`, `83ad739`, `1ba9f21`): the settle arm
+gated re-announce on `using_relay` alone (reachability-only transitions never
+re-published; epoch-gated now, and the 300 s tick folds in current state); the watch arm
+silently died with the service task (now shuts the node down); AutoNAT/UPnP promotions
+bypassed the announceability classifier (a LAN dialback could advertise an RFC1918
+address fleet-wide and tear down circuits); relay-candidate eviction mid-dial stranded
+the slot and froze rotation/backoff.
+
+Accepted as minor follow-ups: in-flight relay dials are forgotten (not aborted) on a
+Public flip — the service's connected-check compensates; `pick_candidate` reclones the
+candidate list per call; two relay tests need a positive control / an explicit timeout
+to fail rather than hang (`a_loopback_relay_is_never_discovered_by_identify`,
+`a_node_with_no_relay_candidates_does_not_spin`).
+
+### Live-fleet incident and fix: the dictionary-subkey type freeze (2026-07-31)
+
+First real-network validation of the native node surfaced a wire bug invisible to every
+self-consistent test: our `FOUND_DICTIONARY` blobs wrapped subkeys in msgpack **bin**,
+while hivemind re-encodes its (deserialized) subkeys as msgpack **str**. A Python
+hivemind client merging the same record from a bootstrap (str subkey) and from us
+(bytes subkey) hits `TypeError: '<' not supported between 'bytes' and 'str'` in its
+candidate heap, the traversal worker dies, and — because hivemind never resolves the
+outer future and the health-map updater wraps no timeout around `dht.get` — the
+map.kwaai.ai crawler froze. Reproduced twice against production (map freezes within one
+crawl cycle of a healthy native node joining) and then locally with a stock hivemind
+1.1.10.post2 client (full traceback). Fixed in `f872e2a`: subkeys now serialize as the
+msgpack object their raw bytes encode (str stays str; non-msgpack bytes still pass as
+bin); verified live — the same crawl completes in 0.7s with the native node in the
+traversal and its subkey present.
+
+Lessons recorded: (1) symmetric serialize/parse tests cannot catch asymmetric-encoding
+bugs — a Python-hivemind golden interop check belongs in the follow-ups; (2) the
+hivemind/health-service side has a real robustness gap (a poisoned record type hangs
+the crawler forever; the updater has no timeout and the map UI shows no staleness) —
+worth reporting upstream; (3) debugging artifact: a node run under CodeLLDB freezes on
+panic/pause and becomes a half-dead peer holding sockets in CLOSE_WAIT.

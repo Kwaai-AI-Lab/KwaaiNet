@@ -18,19 +18,21 @@
 //! and inbound dispatch is an unbounded send, which never blocks the loop.
 
 use std::collections::{hash_map::Entry, HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use libp2p::{
+    autonat,
     core::ConnectedPoint,
-    identify, identity, kad, noise, ping,
+    dcutr, identify, identity, kad, noise, ping, relay,
     swarm::{ConnectionId, DialError, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+    tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
+use crate::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_p2p};
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
@@ -39,6 +41,8 @@ use crate::handle::{
     NetworkHandle, PeerInfo,
 };
 use crate::raw_stream;
+use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
+use crate::relay_manager::{RelayAction, RelayManager};
 use crate::unary::{self, UnaryProtocol};
 
 /// How often the maintenance arm refreshes the Kademlia routing table.
@@ -47,6 +51,37 @@ const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Depth of the command channel. Deep enough that bursts of handle calls do not
 /// serialize on the event loop, shallow enough to apply backpressure.
 const COMMAND_CHANNEL_SIZE: usize = 64;
+
+/// How often the relay manager retries candidates whose backoff has expired.
+const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Cap on routing-table addresses per peer.
+///
+/// kad's own `Addresses` is an unbounded `SmallVec`: `insert` appends whatever
+/// it is given, and the only removal is reactive — `address_failed` drops one
+/// address per failed dial. Feeding it faster than dials fail makes the list
+/// grow without limit, and every entry is then dialed on the next attempt.
+///
+/// A peer behind a symmetric NAT supplies exactly that. Each of its outbound
+/// flows gets a fresh public port, it reports those ports as listen addresses
+/// over identify, and none of them is dialable once the flow it belonged to
+/// has closed. Measured in the NAT test bed: node-a accumulated 20+ addresses
+/// for node-h and re-added them ~7x faster than kad evicted them, fanning
+/// every dial out across the whole stale set.
+///
+/// With port reuse on, those dials all share one local port, so repeats
+/// against an address already being attempted collide on the 4-tuple and fail
+/// `AddrNotAvailable`. The cap is what keeps that from happening; it is not a
+/// port-exhaustion guard (a reused port exhausts nothing).
+///
+/// Six is `Addresses`' own `SmallVec` inline size — the width kad is built
+/// around, so staying at or under it also keeps the list from spilling to the
+/// heap.
+///
+/// go-libp2p bounds the same growth by TTL rather than count, ageing observed
+/// addresses out faster than listen addresses. rust-libp2p's kad has no TTL
+/// layer, so a count cap is the closest available approximation.
+const MAX_ADDRESSES_PER_PEER: usize = 6;
 
 /// A connection we are tracking for `list_peers`.
 #[derive(Debug, Clone)]
@@ -64,12 +99,25 @@ pub struct NetworkService {
     pending_dials: HashMap<ConnectionId, oneshot::Sender<P2PResult<PeerId>>>,
     /// DHT lookups awaiting query completion.
     pending_kad: HashMap<kad::QueryId, PendingKad>,
+    /// Stream requests parked behind a `RoutedDial` lookup, flushed when the
+    /// lookup completes or a connection to the peer establishes first.
+    pending_routed: HashMap<PeerId, Vec<RoutedRequest>>,
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
+    /// Whether the reserved documentation/benchmarking ranges count as
+    /// unroutable. Mirrors `NetworkConfig::require_global_ips`; held here
+    /// because identify-learned addresses are filtered before they reach kad,
+    /// and that decision has to match the one the reachability state makes.
+    require_global_ips: bool,
+    /// The protocol list each connected peer advertised over identify. This is
+    /// the capability feed: relay-hop support, AutoNAT and dcutr all show up
+    /// here. Dropped when the last connection to a peer closes, so an entry
+    /// always describes a peer we can act on.
+    peer_protocols: HashMap<PeerId, Vec<String>>,
     /// Registered unary handlers: negotiated protocol → the handler task's
     /// channel. Kept in lockstep with the behaviour's inbound protocol set, so
     /// an entry here means the protocol is advertised and vice versa.
@@ -79,6 +127,18 @@ pub struct NetworkService {
     /// separate protocol set — the two namespaces are independent, so a name
     /// registered here is not callable as a unary handler and vice versa.
     stream_handlers: HashMap<String, InboundStreamSender>,
+    /// Are we reachable from the outside, and on what evidence. Owns no I/O:
+    /// it returns [`Effect`]s that this loop applies.
+    reachability: ReachabilityState,
+    /// Circuit reservations held while we are unreachable. A plain state
+    /// machine rather than a task or a behaviour, because it needs `&mut Swarm`
+    /// and swarm-level `ListenerClosed` events — neither of which a behaviour
+    /// or a separate task can see.
+    relays: RelayManager,
+    /// Publishes [`AnnounceState`] to the announce loop. Sends are gated on a
+    /// real change, so a consumer that only ever reacts to `changed()` does not
+    /// re-announce on address churn.
+    announce_tx: watch::Sender<AnnounceState>,
 }
 
 /// A parked DHT lookup.
@@ -95,6 +155,35 @@ enum PendingKad {
     Bootstrap,
     /// The periodic maintenance refresh.
     Maintenance,
+    /// A peer lookup running on behalf of parked stream requests (see
+    /// `pending_routed`): on completion, forward them — the walk has populated
+    /// the routing table with whatever addresses exist.
+    RoutedDial { target: PeerId },
+}
+
+/// A stream request parked while a `RoutedDial` lookup finds addresses for its
+/// peer.
+///
+/// Go's p2pd wraps its host in a *routed host*: `NewStream` to a peer with no
+/// known addresses transparently runs a DHT `FindPeer` first. rust-libp2p has
+/// no equivalent — Kademlia only serves addresses it already has — so the
+/// service replicates that here for the commands that dial by bare peer ID.
+enum RoutedRequest {
+    Unary {
+        proto: String,
+        data: Vec<u8>,
+        reply: oneshot::Sender<unary::UnaryResult>,
+    },
+    RawStream {
+        protos: Vec<String>,
+        reply: oneshot::Sender<raw_stream::OpenResult>,
+    },
+    /// `ConnectPeer` with a bare `/p2p/<id>` address — no way to reach the
+    /// peer was supplied, so the connect *is* the lookup. Go's daemon accepts
+    /// exactly this from `shard run`'s pre-connect pass.
+    Connect {
+        reply: oneshot::Sender<P2PResult<PeerId>>,
+    },
 }
 
 impl NetworkService {
@@ -114,6 +203,28 @@ impl NetworkService {
         let mut swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
+                // No `.port_reuse(true)` here — since libp2p 0.54 the option is
+                // deprecated and does nothing, because reuse is decided per
+                // connection by the behaviour that asks for the dial.
+                //
+                // That per-connection policy is what DCUtR needs and what a
+                // global flag got wrong. A hole punch is a simultaneous open:
+                // each peer's outbound SYN opens the pinhole that admits the
+                // other's, which only works if the port each side dials *from*
+                // is the port the other side is dialing *to* — the listen port.
+                // `libp2p-dcutr` therefore requests `PortUse::Reuse` on its
+                // punch dials, and gets it, without every ordinary dial having
+                // to share one local port.
+                //
+                // Forcing reuse globally (which is what the old flag did) made
+                // every dial bind the listen port, so a second dial to an
+                // endpoint already connected collided on the 4-tuple and failed
+                // `AddrNotAvailable`. Upstream hit the same wall and added a
+                // fallback in libp2p-tcp 0.44: on that error it re-dials from a
+                // fresh port rather than failing the connection.
+                //
+                // Neither mechanism rescues a symmetric NAT, which re-maps the
+                // port per destination — that is what the relay fallback is for.
                 tcp::Config::default().nodelay(true),
                 noise::Config::new,
                 yamux::Config::default,
@@ -123,7 +234,16 @@ impl NetworkService {
             // addresses; without it those dials fail at the transport layer.
             .with_dns()
             .context("configuring DNS resolution")?
-            .with_behaviour(|kp| KwaaiBehaviour::new(kp, &behaviour_config))
+            // Wraps the transport so `/…/p2p-circuit` addresses dial through a
+            // relay, and hands back the matching client behaviour. It must come
+            // after `with_dns` (the circuit transport wraps the resolved one),
+            // and it is why the `with_behaviour` closure below takes two
+            // arguments rather than one.
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .context("configuring the relay client transport")?
+            .with_behaviour(|kp, relay_client| {
+                KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
+            })
             .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
             .with_swarm_config(|c| c.with_idle_connection_timeout(config.connection_timeout))
             .build();
@@ -140,22 +260,57 @@ impl NetworkService {
             }
         }
 
+        // A declared external address is an instruction, not a guess, so a
+        // malformed one is a hard error — silently ignoring it would leave the
+        // node quietly unreachable in exactly the deployment that took the
+        // trouble to configure it.
+        let declared = config
+            .external_addr
+            .as_deref()
+            .map(|addr| {
+                addr.parse::<Multiaddr>()
+                    .with_context(|| format!("parsing external_addr {addr}"))
+            })
+            .transpose()?;
+
+        let (reachability, startup_effects) = ReachabilityState::new(
+            config.force_private,
+            declared,
+            config.identify_min_confirmations,
+            config.require_global_ips,
+        );
+
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
-        let service = Self {
+        let (announce_tx, announce_rx) = watch::channel(AnnounceState::initial());
+        let mut service = Self {
             swarm,
             commands: rx,
             pending_dials: HashMap::new(),
             pending_kad: HashMap::new(),
+            pending_routed: HashMap::new(),
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
+            require_global_ips: config.require_global_ips,
+            peer_protocols: HashMap::new(),
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
+            reachability,
+            relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations),
+            announce_tx,
         };
+        service.apply_reachability_effects(startup_effects);
+        // `force_private` starts Private, so this is what makes reservations
+        // begin at t=0 rather than after the grace period.
+        service.sync_relay_enablement();
+        // A declared external address or `force_private` means the node already
+        // knows where it stands, so the announce loop can start immediately
+        // instead of waiting out the grace period.
+        service.publish_announce_state();
 
         let task = tokio::spawn(service.run());
         info!(peer_id = %local_peer_id, "network service started");
         Ok((
-            NetworkHandle::new(local_peer_id, tx, config.request_timeout),
+            NetworkHandle::new(local_peer_id, tx, config.request_timeout, announce_rx),
             task,
         ))
     }
@@ -166,6 +321,20 @@ impl NetworkService {
         // The first tick fires immediately; skip it so startup does not race
         // the initial bootstrap dial.
         maintenance.tick().await;
+
+        // Fires once. Until it does, "no evidence" means "not yet"; after it,
+        // the identify-consensus fallback decides and a node that has heard
+        // nothing settles on Private rather than staying Unknown — and
+        // therefore silent — indefinitely.
+        let identify_grace = tokio::time::sleep(IDENTIFY_GRACE);
+        tokio::pin!(identify_grace);
+        let mut grace_fired = false;
+
+        // Retries relays whose backoff has expired. Short, because it is the
+        // only thing that recovers a node whose every candidate was in backoff
+        // the last time it tried.
+        let mut relay_tick = tokio::time::interval(RELAY_TICK_INTERVAL);
+        relay_tick.tick().await;
 
         loop {
             tokio::select! {
@@ -191,6 +360,16 @@ impl NetworkService {
                 _ = maintenance.tick() => {
                     self.refresh_routing_table();
                 }
+                _ = &mut identify_grace, if !grace_fired => {
+                    grace_fired = true;
+                    let effects = self.reachability.on_grace_elapsed(&self.observed_addrs);
+                    self.apply_reachability_effects(effects);
+                    self.sync_relay_enablement();
+                }
+                _ = relay_tick.tick() => {
+                    let actions = self.relays.on_tick(Instant::now());
+                    self.apply_relay_actions(actions);
+                }
             }
         }
         info!("network service stopped");
@@ -204,14 +383,24 @@ impl NetworkService {
     /// in a pending map and resolved from `handle_swarm_event`.
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::ConnectPeer { addr, reply } => match self.dial(addr) {
-                Ok(connection_id) => {
-                    self.pending_dials.insert(connection_id, reply);
+            Command::ConnectPeer { addr, reply } => {
+                match peer_id_from_multiaddr(&addr) {
+                    // A bare `/p2p/<id>` carries no way to reach the peer:
+                    // resolve it through the DHT like Go's routed host instead
+                    // of dialing an address that has no transport.
+                    Some(peer) if strip_p2p(&addr).is_empty() => {
+                        self.dispatch_routed(peer, RoutedRequest::Connect { reply });
+                    }
+                    _ => match self.dial(addr) {
+                        Ok(connection_id) => {
+                            self.pending_dials.insert(connection_id, reply);
+                        }
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                        }
+                    },
                 }
-                Err(e) => {
-                    let _ = reply.send(Err(e));
-                }
-            },
+            }
 
             Command::DisconnectPeer { peer, reply } => {
                 let result = match self.swarm.disconnect_peer_id(peer) {
@@ -254,6 +443,14 @@ impl NetworkService {
                 let _ = reply.send(addrs);
             }
 
+            Command::PeerProtocols { peer, reply } => {
+                let _ = reply.send(self.peer_protocols.get(&peer).cloned());
+            }
+
+            Command::Reachability { reply } => {
+                let _ = reply.send(self.reachability.current().clone());
+            }
+
             // A walk over in-memory k-buckets — bounded by the routing table
             // size (k=20 per bucket, 256 buckets) and never touching the
             // network, so it is safe in the event loop.
@@ -292,6 +489,10 @@ impl NetworkService {
             }
 
             Command::AddKadAddress { peer, addr, reply } => {
+                // Deliberately not capped (unlike the identify path): this is
+                // the operator naming an address, not a peer claiming one. A
+                // symmetric-NAT peer flooding identify must never be able to
+                // evict a bootstrap address someone configured by hand.
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
                 let _ = reply.send(());
             }
@@ -300,18 +501,15 @@ impl NetworkService {
                 let _ = reply.send(self.start_bootstrap(peers));
             }
 
+            // While parked in `pending_routed` the service owns `reply`; see
+            // `fail_all_pending`.
             Command::CallUnary {
                 peer,
                 proto,
                 data,
                 reply,
             } => {
-                self.swarm.behaviour_mut().unary.send_request(
-                    peer,
-                    UnaryProtocol::new(proto),
-                    data,
-                    reply,
-                );
+                self.dispatch_routed(peer, RoutedRequest::Unary { proto, data, reply });
             }
 
             Command::AddUnaryHandler {
@@ -335,18 +533,13 @@ impl NetworkService {
                 let _ = reply.send(existed);
             }
 
-            // No pending-map entry, for the same reason as `CallUnary`: the
-            // behaviour owns `reply` and resolves it on every outcome.
+            // Same ownership story as `CallUnary`.
             Command::OpenRawStream {
                 peer,
                 protos,
                 reply,
             } => {
-                self.swarm.behaviour_mut().raw_stream.open_stream(
-                    peer,
-                    parse_protocols(&protos),
-                    reply,
-                );
+                self.dispatch_routed(peer, RoutedRequest::RawStream { protos, reply });
             }
 
             Command::AddStreamHandler {
@@ -403,14 +596,41 @@ impl NetworkService {
 
         if let Some(peer) = peer_id_from_multiaddr(&addr) {
             // Kad wants the address without the trailing /p2p component; it
-            // re-attaches it itself via `with_p2p`.
-            self.swarm
-                .behaviour_mut()
-                .kad
-                .add_address(&peer, strip_p2p(&addr));
+            // re-attaches it itself via `with_p2p`. A bare `/p2p/<id>` strips
+            // to an *empty* multiaddr — seeding that would poison the routing
+            // table with an undialable entry that `known_addresses` then
+            // mistakes for a way to reach the peer.
+            let stripped = strip_p2p(&addr);
+            if !stripped.is_empty() {
+                // Uncapped for the same reason as `AddKadAddress`: an address
+                // we are actively dialing is our own intent, not a remote
+                // claim, and is the one entry least worth evicting.
+                self.swarm.behaviour_mut().kad.add_address(&peer, stripped);
+            }
         }
 
-        let opts = DialOpts::from(addr.clone());
+        // `allocate_new_port()`, overriding the `DialOpts` default of
+        // best-effort port reuse.
+        //
+        // Reuse asks the transport to bind our listen port as the dial's source
+        // port. That is right for a DCUtR hole punch — `libp2p-dcutr` requests
+        // it on its own dials and still gets it — but wrong for an ordinary
+        // dial, because the bind fails outright: `SO_REUSEPORT` lets several
+        // *listeners* share a port, not a listener plus an outbound connect.
+        // Measured on macOS (errno 48) and Linux (errno 98) alike, with no
+        // prior connection to the target.
+        //
+        // libp2p-tcp 0.44 does retry on a fresh port, but only for
+        // `AddrNotAvailable` raised by `connect`. Our failure is `EADDRINUSE`
+        // from `bind`, one step earlier, where the `?` propagates before the
+        // fallback can run — so the dial simply fails.
+        // Built through `unknown_peer_id().address(..)` rather than
+        // `DialOpts::from(addr)`, because only the builder exposes
+        // `allocate_new_port()`; the two are otherwise the same dial.
+        let opts = DialOpts::unknown_peer_id()
+            .address(addr.clone())
+            .allocate_new_port()
+            .build();
         let connection_id = opts.connection_id();
         self.swarm
             .dial(opts)
@@ -471,12 +691,33 @@ impl NetworkService {
     /// Addresses we already know for `peer`: routing table entries first, then
     /// any live connection's address.
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
+        let strict = self.require_global_ips;
         let mut addrs: Vec<Multiaddr> = Vec::new();
 
         if let Some(bucket) = self.swarm.behaviour_mut().kad.kbucket(*peer) {
             for entry in bucket.iter() {
                 if entry.node.key.preimage() == peer {
-                    addrs.extend(entry.node.value.iter().cloned());
+                    // Skip empty entries: an address with no transport cannot
+                    // be dialed, only mistaken for reachability.
+                    //
+                    // Filter here, on the way *out*, because kad has more ways
+                    // in than we control. Identify is filtered at the handler,
+                    // but `kad::Behaviour::discovered` also inserts whatever
+                    // `multiaddrs` a remote peer reports during a query walk,
+                    // verbatim and inside libp2p — so a peer's loopback and LAN
+                    // addresses arrive without passing anything of ours. This
+                    // is the one place every consumer (connect, routed dial,
+                    // the GUI's peer table) reads them back, so one check here
+                    // covers paths that would otherwise need finding one at a
+                    // time.
+                    addrs.extend(
+                        entry
+                            .node
+                            .value
+                            .iter()
+                            .filter(|a| !a.is_empty() && is_announceable_with(a, strict))
+                            .cloned(),
+                    );
                 }
             }
         }
@@ -489,7 +730,177 @@ impl NetworkService {
             }
         }
 
+        // Hand back addresses *without* the `/p2p/<peer-id>` suffix: kad stores
+        // fully-qualified ones (since libp2p 0.54) while connection addresses
+        // never carry one, and callers append the id themselves — so a mixed
+        // bag yields `/p2p/<id>/p2p/<id>`, which parses and then fails to dial.
+        for addr in &mut addrs {
+            *addr = strip_p2p(addr);
+        }
+        addrs.retain(|a| !a.is_empty());
+        addrs.dedup();
+
         addrs
+    }
+
+    /// Route a stream request to `peer`, looking its addresses up in the DHT
+    /// first when we have none — Go's routed-host semantics (see
+    /// [`RoutedRequest`]). With a connection or known addresses, dispatch is
+    /// immediate.
+    fn dispatch_routed(&mut self, peer: PeerId, request: RoutedRequest) {
+        if self.swarm.is_connected(&peer) || !self.known_addresses(&peer).is_empty() {
+            self.forward_routed(peer, request);
+            return;
+        }
+        let parked = self.pending_routed.entry(peer).or_default();
+        // One lookup per burst: requests parked while a lookup is in flight
+        // ride along on its completion.
+        if parked.is_empty() {
+            let query_id = self.swarm.behaviour_mut().kad.get_closest_peers(peer);
+            self.pending_kad
+                .insert(query_id, PendingKad::RoutedDial { target: peer });
+            debug!(%peer, "no addresses for stream request — running find_peer first");
+        }
+        parked.push(request);
+    }
+
+    /// Hand a routed request to its behaviour, which owns `reply` from here on.
+    fn forward_routed(&mut self, peer: PeerId, request: RoutedRequest) {
+        match request {
+            RoutedRequest::Unary { proto, data, reply } => {
+                self.swarm.behaviour_mut().unary.send_request(
+                    peer,
+                    UnaryProtocol::new(proto),
+                    data,
+                    reply,
+                );
+            }
+            RoutedRequest::RawStream { protos, reply } => {
+                self.swarm.behaviour_mut().raw_stream.open_stream(
+                    peer,
+                    parse_protocols(&protos),
+                    reply,
+                );
+            }
+            RoutedRequest::Connect { reply } => {
+                use libp2p::swarm::dial_opts::DialOpts;
+                if self.swarm.is_connected(&peer) {
+                    let _ = reply.send(Ok(peer));
+                    return;
+                }
+                // A new port for the same reason as `dial()`: reuse
+                // asks the transport to bind our listen port, which
+                // `EADDRINUSE`s against our own listener.
+                let opts = DialOpts::peer_id(peer).allocate_new_port().build();
+                let connection_id = opts.connection_id();
+                match self.swarm.dial(opts) {
+                    Ok(()) => {
+                        self.pending_dials.insert(connection_id, reply);
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(dial_error(&e, Some(peer))));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flush every request parked for `peer`: forward them when the lookup (or
+    /// an incidental connection) produced a way to reach the peer, fail them
+    /// with a clear error when it did not.
+    fn flush_routed(&mut self, peer: PeerId) {
+        let Some(parked) = self.pending_routed.remove(&peer) else {
+            return;
+        };
+        if self.swarm.is_connected(&peer) || !self.known_addresses(&peer).is_empty() {
+            for request in parked {
+                self.forward_routed(peer, request);
+            }
+            return;
+        }
+        let text = format!("{peer}: peer not found in DHT (no addresses)");
+        debug!(%peer, "find_peer produced no addresses — failing parked requests");
+        for request in parked {
+            match request {
+                RoutedRequest::Unary { reply, .. } => {
+                    let _ = reply.send(Err(unary::UnaryError::DialFailure(text.clone())));
+                }
+                RoutedRequest::RawStream { reply, .. } => {
+                    let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(text.clone())));
+                }
+                RoutedRequest::Connect { reply } => {
+                    let _ = reply.send(Err(P2PError::DialFailed(text.clone())));
+                }
+            }
+        }
+    }
+
+    /// Seed one routing-table address for `peer`, holding the per-peer list at
+    /// `MAX_ADDRESSES_PER_PEER`.
+    ///
+    /// Every path that learns an address from a *remote claim* goes through
+    /// here. kad applies no bound of its own (see `MAX_ADDRESSES_PER_PEER`), so
+    /// without this a peer that reports a fresh address on every identify grows
+    /// its entry without limit and every stale entry is redialed forever.
+    ///
+    /// At the cap the oldest address is evicted to make room. Refusing the new
+    /// one instead would be simpler but wrong: a peer that legitimately moves
+    /// would be frozen at the six addresses it happened to report first, and
+    /// could never become reachable again. Oldest-out keeps the list tracking
+    /// where the peer is *now*, which is also the order kad's own
+    /// `Addresses::insert` appends in.
+    ///
+    /// Returns whether the address was seeded.
+    fn add_routing_address(&mut self, peer: &PeerId, addr: Multiaddr) -> bool {
+        let existing: Vec<Multiaddr> = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .kbucket(*peer)
+            .into_iter()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .filter(|entry| entry.node.key.preimage() == peer)
+                    .flat_map(|entry| entry.node.value.iter().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Already known. kad would dedupe this itself, but returning early
+        // keeps a repeat identify from counting as churn.
+        //
+        // Compare with `/p2p/<peer-id>` stripped: kad stores fully-qualified
+        // addresses, identify reports bare ones, and treating those as distinct
+        // would let the same address occupy several of the six slots.
+        let bare = strip_p2p(&addr);
+        if existing.iter().any(|a| strip_p2p(a) == bare) {
+            return false;
+        }
+
+        if existing.len() >= MAX_ADDRESSES_PER_PEER {
+            // `remove` refuses to drop the last address, which is what we want:
+            // kad keeps a peer in the table with one address rather than
+            // flushing it on a transient failure.
+            if let Some(oldest) = existing.first() {
+                let removed = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .remove_address(peer, oldest)
+                    .is_none();
+                trace!(
+                    %peer,
+                    %oldest,
+                    %addr,
+                    peer_removed = removed,
+                    "routing address cap reached; evicting the oldest"
+                );
+            }
+        }
+
+        self.swarm.behaviour_mut().kad.add_address(peer, addr);
+        true
     }
 
     /// Stop serving `proto`: drop the dispatch channel and stop advertising it.
@@ -594,6 +1005,23 @@ impl NetworkService {
                 let _ = reply.send(Err(error.clone()));
             }
         }
+        for (_, parked) in self.pending_routed.drain() {
+            for request in parked {
+                match request {
+                    RoutedRequest::Unary { reply, .. } => {
+                        let _ = reply.send(Err(unary::UnaryError::DialFailure(error.to_string())));
+                    }
+                    RoutedRequest::RawStream { reply, .. } => {
+                        let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(
+                            error.to_string(),
+                        )));
+                    }
+                    RoutedRequest::Connect { reply } => {
+                        let _ = reply.send(Err(error.clone()));
+                    }
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -602,8 +1030,51 @@ impl NetworkService {
 
     fn handle_swarm_event(&mut self, event: SwarmEvent<KwaaiBehaviourEvent>) {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => {
+            SwarmEvent::NewListenAddr {
+                listener_id,
+                address,
+            } => {
                 info!(%address, "listening on new address");
+                // A circuit address on a listener we opened means the relay
+                // accepted our reservation. relay-client confirms the address
+                // as external itself, so there is nothing to add here.
+                if self.relays.on_new_listen_addr(listener_id, &address) {
+                    // `using_relay` just became true.
+                    self.publish_announce_state();
+                }
+            }
+
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                reason,
+                ..
+            } => {
+                // The authoritative signal that a reservation is gone.
+                // `relay::client::Event` has no failure variant: a refusal or
+                // timeout arrives here as Err, and a relay whose connection
+                // died arrives as Ok.
+                let reason_str;
+                let reason = match &reason {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        reason_str = e.to_string();
+                        Err(reason_str.as_str())
+                    }
+                };
+                let (actions, lost) =
+                    self.relays
+                        .on_listener_closed(listener_id, reason, Instant::now());
+                self.apply_relay_actions(actions);
+                if lost {
+                    // A confirmed reservation went away, so `using_relay` may
+                    // have dropped. An unconfirmed one never reached the
+                    // announce state in the first place.
+                    self.publish_announce_state();
+                }
+            }
+
+            SwarmEvent::ListenerError { listener_id, error } => {
+                debug!(?listener_id, error = %error, "listener error");
             }
 
             SwarmEvent::ConnectionEstablished {
@@ -630,6 +1101,15 @@ impl NetworkService {
                 if let Some(reply) = self.pending_dials.remove(&connection_id) {
                     let _ = reply.send(Ok(peer_id));
                 }
+                // A connection beat a pending routed lookup (the peer dialed
+                // us, or another dial landed): flush now rather than making
+                // the parked requests wait out the DHT walk. The lookup's
+                // completion then finds nothing parked and is a no-op.
+                if self.pending_routed.contains_key(&peer_id) {
+                    self.flush_routed(peer_id);
+                }
+                // Note: a relay reservation is *not* requested here. It waits
+                // for identify — see `RelayManager::on_relay_ready`.
             }
 
             SwarmEvent::ConnectionClosed {
@@ -639,11 +1119,30 @@ impl NetworkService {
                 ..
             } => {
                 debug!(peer = %peer_id, ?cause, "connection closed");
-                if let Entry::Occupied(mut entry) = self.connections.entry(peer_id) {
-                    entry.get_mut().remove(&connection_id);
-                    if entry.get().is_empty() {
-                        entry.remove();
+                let last = match self.connections.entry(peer_id) {
+                    Entry::Occupied(mut entry) => {
+                        entry.get_mut().remove(&connection_id);
+                        let empty = entry.get().is_empty();
+                        if empty {
+                            entry.remove();
+                        }
+                        empty
                     }
+                    Entry::Vacant(_) => true,
+                };
+                if last {
+                    // The capability list describes a peer we can act on; a
+                    // disconnected peer's is stale by definition.
+                    self.peer_protocols.remove(&peer_id);
+                    // Same for its opinion about where it saw us. Without this
+                    // the map only ever grows, and the identify-consensus
+                    // fallback would keep counting observers that left —
+                    // latching an address from before a network move and never
+                    // letting go of it.
+                    self.observed_addrs.retain(|_, observers| {
+                        observers.remove(&peer_id);
+                        !observers.is_empty()
+                    });
                 }
             }
 
@@ -657,6 +1156,12 @@ impl NetworkService {
                     let _ = reply.send(Err(dial_error(&error, peer_id)));
                 } else {
                     debug!(?peer_id, error = %error, "outgoing connection error");
+                }
+
+                // A relay we cannot reach will never give us a reservation.
+                if let Some(peer) = peer_id {
+                    let actions = self.relays.on_relay_dial_failed(peer, Instant::now());
+                    self.apply_relay_actions(actions);
                 }
             }
 
@@ -688,12 +1193,227 @@ impl NetworkService {
             KwaaiBehaviourEvent::RawStream(raw_stream::Event::InboundStream(inbound)) => {
                 self.dispatch_stream(inbound)
             }
+
+            // ---- NAT traversal -------------------------------------
+            KwaaiBehaviourEvent::Autonat(event) => self.handle_autonat_event(event),
+
+            KwaaiBehaviourEvent::RelayClient(event) => match event {
+                relay::client::Event::ReservationReqAccepted {
+                    relay_peer_id,
+                    renewal,
+                    ..
+                } => info!(relay = %relay_peer_id, renewal, "relay reservation accepted"),
+                relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+                    debug!(relay = %relay_peer_id, "outbound circuit established")
+                }
+                relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+                    debug!(peer = %src_peer_id, "inbound circuit established")
+                }
+            },
+
+            KwaaiBehaviourEvent::RelayServer(event) => {
+                trace!(?event, "relay hop server event")
+            }
+
+            KwaaiBehaviourEvent::Dcutr(dcutr::Event {
+                remote_peer_id,
+                result,
+            }) => match result {
+                // A success here means the relayed connection was replaced by a
+                // direct one — the whole point of holding the circuit.
+                Ok(connection_id) => {
+                    info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded")
+                }
+                Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
+            },
+
+            KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
+        }
+    }
+
+    /// Apply what the reachability machine asked for.
+    ///
+    /// This is the *only* place external addresses are added or removed, which
+    /// is what keeps the swarm's address set and the machine's verdict from
+    /// drifting apart. AutoNAT 0.12 never emits `ExternalAddrConfirmed` itself,
+    /// so without this a `Public` verdict would be a log line and nothing more:
+    /// identify would keep advertising nothing and kad would stay in client
+    /// mode.
+    fn apply_reachability_effects(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::ConfirmExternal(addr) => {
+                    info!(%addr, "confirming external address");
+                    self.swarm.add_external_address(addr);
+                }
+                Effect::RetractExternal(addr) => {
+                    info!(%addr, "retracting external address");
+                    self.swarm.remove_external_address(&addr);
+                }
+            }
+        }
+    }
+
+    /// Recompute the announce state and publish it if anything a consumer acts
+    /// on changed.
+    ///
+    /// The equality gate is the whole point. A node's addresses churn
+    /// constantly — identify pushes, a reservation moving between relays, a
+    /// re-NAT — and none of that belongs in a DHT record that carries no
+    /// addresses (see [`AnnounceState`]). Only a change in *how reachable the
+    /// node is* wakes the announce loop.
+    fn publish_announce_state(&mut self) {
+        let current = self.reachability.current().clone();
+        let has_circuit = self.relays.has_circuit();
+        self.announce_tx.send_if_modified(|state| {
+            let next = AnnounceState::derive(&current, has_circuit, state.epoch);
+            if !next.differs(state) {
+                return false;
+            }
+            *state = AnnounceState {
+                epoch: state.epoch + 1,
+                ..next
+            };
+            info!(
+                reachability = ?state.reachability,
+                using_relay = state.using_relay,
+                announceable = state.announceable,
+                epoch = state.epoch,
+                "announce state changed"
+            );
+            true
+        });
+    }
+
+    /// Turn relay-seeking on or off to match the current reachability verdict.
+    ///
+    /// Private wants circuits; Public does not (holding one costs a relay real
+    /// resources and routes peers to us the slow way). Unknown deliberately
+    /// leaves the manager as it is: during the grace period we do not yet know
+    /// enough to start, and a `force_private` node was switched on at startup
+    /// and must not be switched off by a transient Unknown.
+    fn sync_relay_enablement(&mut self) {
+        let actions = match self.reachability.current() {
+            Reachability::Private => self.relays.set_enabled(true, Instant::now()),
+            Reachability::Public { .. } => self.relays.set_enabled(false, Instant::now()),
+            Reachability::Unknown => {
+                self.publish_announce_state();
+                return;
+            }
+        };
+        self.apply_relay_actions(actions);
+        // Reachability moved, and dropping reservations may have moved
+        // `using_relay` with it.
+        self.publish_announce_state();
+    }
+
+    /// Carry out what the relay manager asked for.
+    fn apply_relay_actions(&mut self, actions: Vec<RelayAction>) {
+        for action in actions {
+            match action {
+                RelayAction::Dial { relay, relay_addr } => {
+                    // Connected *and* identified — the reservation can be
+                    // negotiated right now. Having the connection is not
+                    // enough: until identify lands, hop is not in the
+                    // connection's supported protocol set.
+                    if self.connections.contains_key(&relay)
+                        && self.peer_protocols.contains_key(&relay)
+                    {
+                        let next = self.relays.on_relay_ready(relay, Instant::now());
+                        self.apply_relay_actions(next);
+                        continue;
+                    }
+                    let dialable = relay_addr.with(libp2p::multiaddr::Protocol::P2p(relay));
+                    if let Err(e) = self.dial(dialable) {
+                        debug!(%relay, error = %e, "dialing a relay candidate");
+                        let next = self.relays.on_relay_dial_failed(relay, Instant::now());
+                        self.apply_relay_actions(next);
+                    }
+                }
+
+                RelayAction::Listen {
+                    relay,
+                    circuit_addr,
+                } => {
+                    match self.swarm.listen_on(circuit_addr.clone()) {
+                        Ok(id) => {
+                            debug!(%relay, %circuit_addr, ?id, "circuit listener opened");
+                            self.relays.note_listener(id, relay, Instant::now());
+                        }
+                        Err(e) => {
+                            // No ListenerId exists, so there is no slot to
+                            // close — the manager has to be told separately or
+                            // this relay would never be marked failed.
+                            warn!(%relay, %circuit_addr, error = %e, "circuit listen failed");
+                            let actions = self.relays.note_listen_failed(relay, Instant::now());
+                            self.apply_relay_actions(actions);
+                        }
+                    }
+                }
+                RelayAction::StopListening(id) => {
+                    debug!(?id, "closing a circuit listener");
+                    self.swarm.remove_listener(id);
+                }
+            }
+        }
+    }
+
+    /// AutoNAT status and probe outcomes.
+    fn handle_autonat_event(&mut self, event: autonat::Event) {
+        match event {
+            autonat::Event::StatusChanged { old, new } => {
+                info!(?old, ?new, "autonat reachability status changed");
+                let effects = match new {
+                    autonat::NatStatus::Public(addr) => self.reachability.on_autonat_public(addr),
+                    autonat::NatStatus::Private => self.reachability.on_autonat_private(),
+                    // Unknown is not a verdict — it is autonat saying it has
+                    // stopped being sure. Whatever we last concluded stands
+                    // until something positive replaces it.
+                    autonat::NatStatus::Unknown => Vec::new(),
+                };
+                self.apply_reachability_effects(effects);
+                self.sync_relay_enablement();
+            }
+            autonat::Event::OutboundProbe(probe) => {
+                trace!(?probe, "autonat outbound probe");
+            }
+            autonat::Event::InboundProbe(probe) => {
+                trace!(?probe, "autonat inbound probe");
+            }
+        }
+    }
+
+    /// UPnP port-mapping outcomes.
+    ///
+    /// Every failure arm is informational, never an error: a node with no IGD
+    /// gateway, or one behind a gateway that refuses to map, is the *expected*
+    /// case on most networks and is exactly what relay reservations are for.
+    fn handle_upnp_event(&mut self, event: upnp::Event) {
+        match event {
+            upnp::Event::NewExternalAddr(addr) => {
+                info!(%addr, "upnp mapped an external address");
+                let effects = self.reachability.on_upnp_external(addr);
+                self.apply_reachability_effects(effects);
+                self.sync_relay_enablement();
+            }
+            upnp::Event::ExpiredExternalAddr(addr) => {
+                info!(%addr, "upnp mapping expired");
+                let effects = self.reachability.on_upnp_expired(&addr);
+                self.apply_reachability_effects(effects);
+                self.sync_relay_enablement();
+            }
+            upnp::Event::GatewayNotFound => {
+                debug!("no upnp gateway found; relying on autonat and relays");
+            }
+            upnp::Event::NonRoutableGateway => {
+                debug!("upnp gateway is not on a routable network; ignoring it");
+            }
         }
     }
 
     fn handle_identify_event(&mut self, event: identify::Event) {
         match event {
-            identify::Event::Received { peer_id, info } => {
+            identify::Event::Received { peer_id, info, .. } => {
                 debug!(
                     peer = %peer_id,
                     protocol_version = %info.protocol_version,
@@ -706,17 +1426,46 @@ impl NetworkService {
 
                 // (a) Feed the routing table. Only addresses the peer actually
                 // claims to listen on — the connection's ephemeral source port
-                // is useless to anyone else.
+                // is useless to anyone else — and only those a *third* party
+                // could dial.
+                //
+                // identify advertises every address the peer is listening on,
+                // loopback and LAN-private included, and rust-libp2p filters
+                // none of it (`Behaviour::all_addresses` chains listen and
+                // external addresses verbatim; the receive side drops only
+                // peer-id mismatches). go-libp2p strips these before sending,
+                // so this only bites on the native path.
+                //
+                // Storing them is worse than useless. A peer's `127.0.0.1`
+                // resolves to *us*, so dialing it opens a connection to
+                // ourselves that fails `WrongPeerId` — and it does so
+                // repeatedly, because kad keeps handing back the entry. Its
+                // RFC1918 address is unroutable from any other subnet. Both
+                // crowd out the circuit address that would actually have
+                // worked, which is how a NATed peer ends up unreachable to
+                // another NATed peer that can see it perfectly well in the DHT.
+                //
+                // `is_announceable_with` is the same test the reachability
+                // state and relay manager already apply, so a node cannot
+                // conclude an address is worth advertising while its peers
+                // conclude the reverse. Circuit addresses pass regardless —
+                // reaching the relay is what makes them dialable, and that is
+                // exactly the address a NATed peer needs.
                 let speaks_kad = info
                     .protocols
                     .iter()
                     .any(|p| self.swarm.behaviour().kad.protocol_names().contains(p));
                 if speaks_kad {
                     for addr in &info.listen_addrs {
-                        self.swarm
-                            .behaviour_mut()
-                            .kad
-                            .add_address(&peer_id, addr.clone());
+                        if !is_announceable_with(addr, self.require_global_ips) {
+                            trace!(
+                                peer = %peer_id,
+                                %addr,
+                                "skipping undialable listen addr from identify"
+                            );
+                            continue;
+                        }
+                        self.add_routing_address(&peer_id, addr.clone());
                     }
                 }
 
@@ -727,8 +1476,28 @@ impl NetworkService {
                     .entry(info.observed_addr)
                     .or_default()
                     .insert(peer_id);
+
+                // (c) Remember what the peer can do. Relay-hop, AutoNAT and
+                // dcutr capability are all read off this list.
+                let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
+                // Recorded *before* the relay manager runs: `apply_relay_actions`
+                // reads this map to decide whether a reservation can be
+                // negotiated immediately, and this identify is precisely what
+                // makes that true.
+                self.peer_protocols.insert(peer_id, protocols.clone());
+
+                // (d) A peer advertising relay hop is a relay candidate — and
+                // an identify from a relay we are already dialing is the signal
+                // that its reservation can now be requested at all.
+                let actions = self.relays.note_identify(
+                    peer_id,
+                    &protocols,
+                    &info.listen_addrs,
+                    Instant::now(),
+                );
+                self.apply_relay_actions(actions);
             }
-            identify::Event::Error { peer_id, error } => {
+            identify::Event::Error { peer_id, error, .. } => {
                 debug!(peer = %peer_id, error = %error, "identify failed");
             }
             other => trace!(?other, "identify event"),
@@ -750,10 +1519,13 @@ impl NetworkService {
                         Some(PendingKad::FindPeer { target, reply }),
                         kad::QueryResult::GetClosestPeers(result),
                     ) => {
+                        // Since libp2p 0.54 a closest-peers result carries
+                        // `PeerInfo { peer_id, addrs }` rather than a bare
+                        // `PeerId`, so match on the id field.
                         let found = match &result {
-                            Ok(ok) => ok.peers.contains(&target),
+                            Ok(ok) => ok.peers.iter().any(|p| p.peer_id == target),
                             Err(kad::GetClosestPeersError::Timeout { peers, .. }) => {
-                                peers.contains(&target)
+                                peers.iter().any(|p| p.peer_id == target)
                             }
                         };
                         let addrs = self.known_addresses(&target);
@@ -765,6 +1537,12 @@ impl NetworkService {
                         let _ = reply.send(Err(P2PError::DhtError(
                             "unexpected query result for find_peer".to_string(),
                         )));
+                    }
+                    // Whatever the walk's own outcome, it has populated the
+                    // routing table with everything it found — flush decides
+                    // between forwarding and failing from there.
+                    (Some(PendingKad::RoutedDial { target }), _) => {
+                        self.flush_routed(target);
                     }
                     (Some(PendingKad::Bootstrap), kad::QueryResult::Bootstrap(result)) => {
                         match result {
@@ -818,50 +1596,3 @@ fn dial_error(error: &DialError, peer_id: Option<PeerId>) -> P2PError {
     }
 }
 
-/// Extract the `/p2p/<peer-id>` component from a multiaddr, if present.
-fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
-    addr.iter().find_map(|p| match p {
-        libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
-        _ => None,
-    })
-}
-
-/// Drop a trailing `/p2p/<peer-id>` component.
-fn strip_p2p(addr: &Multiaddr) -> Multiaddr {
-    addr.iter()
-        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_peer_id_from_multiaddr() {
-        let addr: Multiaddr =
-            "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-                .parse()
-                .unwrap();
-        let peer = peer_id_from_multiaddr(&addr).expect("peer id present");
-        assert_eq!(
-            peer.to_base58(),
-            "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-        );
-    }
-
-    #[test]
-    fn no_peer_id_component_yields_none() {
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
-        assert!(peer_id_from_multiaddr(&addr).is_none());
-    }
-
-    #[test]
-    fn strips_the_p2p_component() {
-        let addr: Multiaddr =
-            "/ip4/1.2.3.4/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-                .parse()
-                .unwrap();
-        assert_eq!(strip_p2p(&addr).to_string(), "/ip4/1.2.3.4/tcp/8000");
-    }
-}
