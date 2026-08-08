@@ -14,7 +14,6 @@ use kwaai_hivemind_dht::{
 use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::{stream, P2PDaemon};
 use libp2p::PeerId;
-use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
     sync::{
@@ -33,260 +32,10 @@ use crate::identity::NodeIdentity;
 type SharedStorage = Arc<RwLock<DHTStorage>>;
 
 // ---------------------------------------------------------------------------
-// VPK capability info
+// DHT record types
 // ---------------------------------------------------------------------------
 
-/// VPK (Virtual Private Knowledge) capability snapshot used in DHT records.
-///
-/// Populated by polling `GET http://localhost:{vpk_local_port}/api/health`
-/// immediately before each DHT announcement. When VPK is unreachable the
-/// field is absent from both the per-block record and the nodes registry.
-///
-/// Nodes are identified solely by PeerId — no IP addresses are advertised.
-/// Remote Bobs connect via `/kwaai/storage/1.0.0` over the libp2p relay.
-struct VpkInfo {
-    mode: String,
-    capacity_gb: f64,
-    tenant_count: u32,
-    vpk_version: String,
-    public_name: String,
-}
-
-impl VpkInfo {
-    /// Build the rmpv Map that appears as the `"vpk"` value in DHT field maps.
-    fn to_msgpack_value(&self) -> rmpv::Value {
-        rmpv::Value::Map(vec![
-            (
-                rmpv::Value::from("mode"),
-                rmpv::Value::from(self.mode.as_str()),
-            ),
-            (
-                rmpv::Value::from("capacity_gb"),
-                rmpv::Value::from(self.capacity_gb),
-            ),
-            (
-                rmpv::Value::from("tenant_count"),
-                rmpv::Value::from(i64::from(self.tenant_count)),
-            ),
-            (
-                rmpv::Value::from("vpk_version"),
-                rmpv::Value::from(self.vpk_version.as_str()),
-            ),
-            (
-                rmpv::Value::from("public_name"),
-                rmpv::Value::from(self.public_name.as_str()),
-            ),
-        ])
-    }
-
-    /// Standalone msgpack bytes for the `_kwaai.vpk.nodes` DHT record value.
-    fn to_msgpack_bytes(&self) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        rmpv::encode::write_value(&mut buf, &self.to_msgpack_value())?;
-        Ok(buf)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DHT value types (Hivemind wire format)
-// ---------------------------------------------------------------------------
-
-/// Server info serialised as ExtType(64, [state, throughput, {fields}])
-/// — the exact format Python Hivemind / map.kwaai.ai expects.
-///
-/// The optional `trust_attestations` field carries the node's Verifiable
-/// Credentials as compact JSON strings. Clients that understand the KwaaiNet
-/// trust model (e.g., map.kwaai.ai v2) display trust badges; legacy clients
-/// ignore the field.
-struct DHTServerInfo {
-    pub state: i32,
-    throughput: f64,
-    start_block: i32,
-    end_block: i32,
-    public_name: String,
-    version: String,
-    torch_dtype: String,
-    using_relay: bool,
-    cache_tokens_left: i64,
-    #[allow(dead_code)]
-    next_pings: HashMap<String, f64>,
-    #[allow(dead_code)]
-    adapters: Vec<String>,
-    /// Compact JSON representations of the node's valid Verifiable Credentials.
-    /// Empty when no credentials are stored; included in the DHT fields map
-    /// only when non-empty to keep announcement payloads minimal.
-    trust_attestations: Vec<String>,
-
-    /// VPK capability snapshot. None when VPK is disabled or unreachable.
-    /// Included in the DHT fields map only when Some.
-    vpk_info: Option<VpkInfo>,
-
-    /// Peer ID in base58 encoding. Included in the value map so that chain
-    /// discovery can identify the serving peer even from FoundRegular responses
-    /// (which do not carry the DHT subkey). Unknown fields are silently ignored
-    /// by legacy Python Hivemind clients.
-    peer_id_b58: String,
-
-    /// Capacity Lease capability flag: this node supports negotiating a
-    /// GPU-slot lease before dispatch (see `capacity_lease.rs`), over
-    /// either `/kwaai/capacity-lease/1.0.0` (unary) or lease frames on an
-    /// already-open `/kwaai/inference-mux/1.0.0` stream. Always `true` for
-    /// any binary built with this field — it describes this binary's own
-    /// capability, not configuration, exactly like `version`. Lets a
-    /// requester skip straight to negotiation instead of an
-    /// attempt-and-fallback probe; absence of this key entirely (a legacy
-    /// pre-Capacity-Lease peer) is itself the "false" signal on decode.
-    lease_v1: bool,
-}
-
-impl DHTServerInfo {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        start: i32,
-        end: i32,
-        name: &str,
-        relay: bool,
-        throughput: f64,
-        trust_attestations: Vec<String>,
-        vpk_info: Option<VpkInfo>,
-        peer_id_b58: String,
-    ) -> Self {
-        Self {
-            state: if ShardManager::shard_is_ready() { 2 } else { 0 },
-            throughput,
-            start_block: start,
-            end_block: end,
-            public_name: name.to_string(),
-            version: concat!("kwaai-", env!("CARGO_PKG_VERSION")).to_string(),
-            torch_dtype: "float16".to_string(),
-            using_relay: relay,
-            cache_tokens_left: 100_000,
-            next_pings: HashMap::new(),
-            adapters: vec![],
-            trust_attestations,
-            vpk_info,
-            peer_id_b58,
-            lease_v1: true,
-        }
-    }
-
-    fn to_msgpack(&self) -> Result<Vec<u8>> {
-        let mut fields: Vec<(rmpv::Value, rmpv::Value)> = vec![
-            (
-                rmpv::Value::from("start_block"),
-                rmpv::Value::from(self.start_block),
-            ),
-            (
-                rmpv::Value::from("end_block"),
-                rmpv::Value::from(self.end_block),
-            ),
-            (
-                rmpv::Value::from("public_name"),
-                rmpv::Value::from(self.public_name.as_str()),
-            ),
-            (
-                rmpv::Value::from("version"),
-                rmpv::Value::from(self.version.as_str()),
-            ),
-            (
-                rmpv::Value::from("torch_dtype"),
-                rmpv::Value::from(self.torch_dtype.as_str()),
-            ),
-            (
-                rmpv::Value::from("using_relay"),
-                rmpv::Value::from(self.using_relay),
-            ),
-            (
-                rmpv::Value::from("cache_tokens_left"),
-                rmpv::Value::from(self.cache_tokens_left),
-            ),
-            (rmpv::Value::from("adapters"), rmpv::Value::Array(vec![])),
-            (rmpv::Value::from("next_pings"), rmpv::Value::Map(vec![])),
-            (
-                rmpv::Value::from("peer_id"),
-                rmpv::Value::from(self.peer_id_b58.as_str()),
-            ),
-            // Capacity Lease capability flag. Unconditional (unlike
-            // trust_attestations/vpk below) since this binary's own
-            // capability has no "empty" state to skip — legacy clients
-            // ignore the unknown key exactly as they do those two.
-            (
-                rmpv::Value::from("lease_v1"),
-                rmpv::Value::from(self.lease_v1),
-            ),
-        ];
-
-        // Include trust attestations when present — zero-cost for nodes without VCs.
-        // Legacy clients (Python Hivemind, old map viewers) ignore unknown fields.
-        if !self.trust_attestations.is_empty() {
-            let ta_values: Vec<rmpv::Value> = self
-                .trust_attestations
-                .iter()
-                .map(|s| rmpv::Value::String(rmpv::Utf8String::from(s.as_str())))
-                .collect();
-            fields.push((
-                rmpv::Value::from("trust_attestations"),
-                rmpv::Value::Array(ta_values),
-            ));
-        }
-
-        // Include VPK capability when enabled and reachable.
-        // Unknown map keys are silently ignored by legacy Hivemind clients
-        // and old map viewers — no backward-compatibility risk.
-        if let Some(ref vpk) = self.vpk_info {
-            fields.push((rmpv::Value::from("vpk"), vpk.to_msgpack_value()));
-        }
-
-        let inner = rmpv::Value::Array(vec![
-            rmpv::Value::from(self.state),
-            rmpv::Value::from(self.throughput),
-            rmpv::Value::Map(fields),
-        ]);
-
-        let mut inner_bytes = Vec::new();
-        rmpv::encode::write_value(&mut inner_bytes, &inner)?;
-
-        // Wrap in ExtType(64 = 0x40) — Python Hivemind tuple marker
-        let ext = rmpv::Value::Ext(64, inner_bytes);
-        let mut out = Vec::new();
-        rmpv::encode::write_value(&mut out, &ext)?;
-        Ok(out)
-    }
-}
-
-/// Model info stored in the `_petals.models` DHT registry.
-struct ModelInfo {
-    num_blocks: i32,
-    repository: String,
-}
-
-impl ModelInfo {
-    fn to_msgpack(&self) -> Result<Vec<u8>> {
-        let map = vec![
-            (
-                rmpv::Value::from("repository"),
-                rmpv::Value::from(self.repository.as_str()),
-            ),
-            (
-                rmpv::Value::from("num_blocks"),
-                rmpv::Value::from(self.num_blocks),
-            ),
-        ];
-        let mut buf = Vec::new();
-        rmpv::encode::write_value(&mut buf, &rmpv::Value::Map(map))?;
-        Ok(buf)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DHT key helpers
-// ---------------------------------------------------------------------------
-
-/// SHA1(msgpack(raw_key)) — Hivemind's DHTID.generate() equivalent.
-fn dht_id(raw_key: &str) -> Vec<u8> {
-    let packed = rmp_serde::to_vec(raw_key).expect("msgpack key");
-    Sha1::new().chain_update(&packed).finalize().to_vec()
-}
+use crate::announce::{dht_id, DHTServerInfo, ModelInfo, VpkInfo};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -1401,11 +1150,16 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 // DHT announcement / unannouncement
 // ---------------------------------------------------------------------------
 
-/// Remove this node's DHT records immediately on clean shutdown.
+/// Take this node off the map immediately on clean shutdown.
 ///
-/// Sends STORE requests with already-expired timestamps and state=-1 (offline)
-/// to all bootstrap peers. Bootstrap peers drop expired records immediately
-/// instead of waiting for the 360 s TTL to elapse naturally.
+/// Sends STORE requests carrying `state = -1` (offline) to all bootstrap peers.
+///
+/// The timestamps are **not** expired. Hivemind bootstraps reject a store whose
+/// expiration is already past, and reject one that is not strictly greater than
+/// the record it replaces — either would leave the live `state = 2` record
+/// standing until its TTL ran out. So the tombstone carries a normal
+/// `now + 360 s` expiration and does its work through the state field, which
+/// `map.kwaai.ai` reads as "remove now".
 async fn unannounce(
     client: &mut kwaai_p2p_daemon::P2PClient,
     peer_id: PeerId,
