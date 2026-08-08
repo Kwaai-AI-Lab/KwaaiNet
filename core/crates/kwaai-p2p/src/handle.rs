@@ -15,10 +15,50 @@
 //! on *both* the success and failure event, or the caller waits forever — see
 //! the error arms in `service.rs`.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{P2PError, P2PResult};
+use crate::unary::UnaryResult;
+
+/// One inbound unary call handed to a registered handler task.
+///
+/// The `responder` is `unary::InboundRequest::responder`: sending on it writes
+/// the success or error arm back on the caller's stream. Dropping it makes the
+/// stream worker synthesise an error arm, so a panicking handler still resolves
+/// the remote caller rather than stalling it until its own timeout.
+#[derive(Debug)]
+pub struct InboundUnaryCall {
+    /// The caller, derived from the connection — never from the frame's `peer`
+    /// field, which arrives unrewritten on this path.
+    pub peer: PeerId,
+    /// The raw application payload.
+    pub data: Vec<u8>,
+    /// Where this call's result goes.
+    pub responder: oneshot::Sender<Result<Vec<u8>, String>>,
+}
+
+/// The channel the service uses to hand inbound calls to a handler task.
+///
+/// Unbounded, and therefore never blocking the swarm event loop — the bound
+/// that matters is `unary::Config::max_concurrent_streams`, applied per
+/// connection before a request is ever decoded.
+pub type InboundUnarySender = mpsc::UnboundedSender<InboundUnaryCall>;
+
+/// A registered unary handler: request bytes in, response-or-error-arm out.
+///
+/// Boxed rather than generic because handlers for different protocols live in
+/// one map. The shape mirrors `kwaai_p2p_daemon::P2PClient::add_unary_handler`'s
+/// `F: Fn(Vec<u8>) -> Fut` so call sites migrate without restructuring.
+pub type UnaryHandler = Box<
+    dyn Fn(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// A connected peer, as reported by [`NetworkHandle::list_peers`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +138,29 @@ pub enum Command {
         peers: Vec<Multiaddr>,
         reply: oneshot::Sender<P2PResult<()>>,
     },
+    /// Call a hivemind unary handler on a remote peer.
+    ///
+    /// Unlike the other slow commands this carries no pending-map entry: the
+    /// `reply` is handed to `unary::Behaviour::send_request`, which resolves it
+    /// on every outcome including dial failure and timeout.
+    CallUnary {
+        peer: PeerId,
+        proto: String,
+        data: Vec<u8>,
+        reply: oneshot::Sender<UnaryResult>,
+    },
+    /// Start serving `proto`, routing inbound calls to `sender`.
+    AddUnaryHandler {
+        proto: String,
+        sender: InboundUnarySender,
+        reply: oneshot::Sender<()>,
+    },
+    /// Stop serving `proto`. Subsequent calls to it get a clean negotiation
+    /// refusal. Reports whether a handler was actually registered.
+    RemoveUnaryHandler {
+        proto: String,
+        reply: oneshot::Sender<bool>,
+    },
     /// Stop the event loop.
     Shutdown { reply: oneshot::Sender<()> },
 }
@@ -107,13 +170,22 @@ pub enum Command {
 pub struct NetworkHandle {
     local_peer_id: PeerId,
     commands: mpsc::Sender<Command>,
+    /// The configured per-call unary budget, kept here purely so a timeout can
+    /// be reported as [`P2PError::Timeout`] with the real number of
+    /// milliseconds rather than a placeholder.
+    request_timeout: std::time::Duration,
 }
 
 impl NetworkHandle {
-    pub(crate) fn new(local_peer_id: PeerId, commands: mpsc::Sender<Command>) -> Self {
+    pub(crate) fn new(
+        local_peer_id: PeerId,
+        commands: mpsc::Sender<Command>,
+        request_timeout: std::time::Duration,
+    ) -> Self {
         Self {
             local_peer_id,
             commands,
+            request_timeout,
         }
     }
 
@@ -201,9 +273,133 @@ impl NetworkHandle {
         .await?
     }
 
+    /// Call the unary handler `proto` on `peer` with `data`.
+    ///
+    /// Mirrors `kwaai_p2p_daemon::P2PClient::call_unary_handler` (which takes
+    /// peer-ID *bytes*; here the peer is already typed). Dials on demand, so a
+    /// call to a peer we are not connected to works as long as some behaviour —
+    /// Kademlia in practice — can supply an address, matching Go's
+    /// `host.NewStream` semantics.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::unary::UnaryError`] maps onto [`P2PError`] as follows, chosen so
+    /// call sites can keep the coarse distinctions they already make:
+    ///
+    /// | `UnaryError` | `P2PError` | why |
+    /// | --- | --- | --- |
+    /// | `Timeout` | [`P2PError::Timeout`] | carries the configured budget in ms |
+    /// | `UnsupportedProtocol` | [`P2PError::Protocol`] | a clean refusal is a protocol-level answer, not a transport fault |
+    /// | `DialFailure` | [`P2PError::DialFailed`] | we never reached the peer |
+    /// | `Remote` | [`P2PError::Protocol`] | the remote handler ran and returned its error arm; its text is preserved verbatim |
+    /// | `Wire` | [`P2PError::Transport`] | the exchange broke below the application layer |
+    pub async fn call_unary_handler(
+        &self,
+        peer: PeerId,
+        proto: &str,
+        data: &[u8],
+    ) -> P2PResult<Vec<u8>> {
+        let result = self
+            .call(|reply| Command::CallUnary {
+                peer,
+                proto: proto.to_string(),
+                data: data.to_vec(),
+                reply,
+            })
+            .await?;
+        result.map_err(|e| unary_error(e, proto, self.request_timeout))
+    }
+
+    /// Serve `proto`, dispatching each inbound call to `handler`.
+    ///
+    /// Mirrors `kwaai_p2p_daemon::P2PClient::add_unary_handler` minus its
+    /// `balanced` flag, which is a p2pd-side load-balancing knob with no
+    /// meaning for an in-process handler.
+    ///
+    /// Spawns one long-lived dispatch task that owns the receiving end of the
+    /// service's dispatch channel and spawns a task **per call**, so a slow
+    /// handler delays only its own caller. Registering a protocol that is
+    /// already served replaces the previous handler; the old dispatch task ends
+    /// when the service drops its sender.
+    pub async fn add_unary_handler<F, Fut>(&self, proto: &str, handler: F) -> P2PResult<()>
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<u8>, String>> + Send + 'static,
+    {
+        let handler: UnaryHandler = Box::new(move |data| Box::pin(handler(data)));
+        self.add_unary_handler_boxed(proto, handler).await
+    }
+
+    /// [`NetworkHandle::add_unary_handler`] with the handler already boxed, for
+    /// call sites that store handlers in a collection (Phase 3's IPC server
+    /// dispatches by protocol name at runtime).
+    pub async fn add_unary_handler_boxed(
+        &self,
+        proto: &str,
+        handler: UnaryHandler,
+    ) -> P2PResult<()> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<InboundUnaryCall>();
+
+        self.call(|reply| Command::AddUnaryHandler {
+            proto: proto.to_string(),
+            sender: tx,
+            reply,
+        })
+        .await?;
+
+        let handler = std::sync::Arc::new(handler);
+        // Ends when the service drops its sender — on shutdown, on
+        // `remove_unary_handler`, or when this protocol is re-registered.
+        tokio::spawn(async move {
+            while let Some(call) = rx.recv().await {
+                let handler = std::sync::Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let result = handler(call.data).await;
+                    // The receiver is gone only if the stream worker already
+                    // gave up (its own timeout); nothing left to report.
+                    let _ = call.responder.send(result);
+                });
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Stop serving `proto`. Returns `true` if a handler was registered.
+    ///
+    /// After this resolves, calls to `proto` are refused during negotiation —
+    /// the remote sees [`crate::unary::UnaryError::UnsupportedProtocol`], the
+    /// same clean refusal a never-registered protocol produces.
+    pub async fn remove_unary_handler(&self, proto: &str) -> P2PResult<bool> {
+        self.call(|reply| Command::RemoveUnaryHandler {
+            proto: proto.to_string(),
+            reply,
+        })
+        .await
+    }
+
     /// Ask the event loop to stop. Returns once it has acknowledged; await the
     /// `JoinHandle` from `NetworkService::spawn` to know it has fully exited.
     pub async fn shutdown(&self) -> P2PResult<()> {
         self.call(|reply| Command::Shutdown { reply }).await
+    }
+}
+
+/// Map a unary failure onto the crate error type. See
+/// [`NetworkHandle::call_unary_handler`] for the rationale behind each arm.
+fn unary_error(
+    error: crate::unary::UnaryError,
+    proto: &str,
+    request_timeout: std::time::Duration,
+) -> P2PError {
+    use crate::unary::UnaryError;
+    match error {
+        UnaryError::Timeout => P2PError::Timeout(request_timeout.as_millis() as u64),
+        UnaryError::UnsupportedProtocol(p) => {
+            P2PError::Protocol(format!("remote does not support protocol {p}"))
+        }
+        UnaryError::DialFailure(e) => P2PError::DialFailed(e),
+        UnaryError::Remote(e) => P2PError::Protocol(format!("remote handler error ({proto}): {e}")),
+        UnaryError::Wire(e) => P2PError::Transport(e),
     }
 }
