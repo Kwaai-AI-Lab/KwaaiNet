@@ -228,16 +228,36 @@ async fn handle_mux_stream_server(
     connection_id: ConnectionId,
 ) {
     let (mut reader, writer) = stream.into_split();
-    let writer = Arc::new(Mutex::new(writer));
 
     // go-libp2p-daemon sends a gogo-protobuf StreamInfo message before piping data.
-    // Consume it before entering the mux frame loop.
+    // Consume it before entering the mux frame loop. Only the p2pd path has this
+    // prologue: it is the daemon describing the stream it is about to forward
+    // over a *separate* TCP connection. The native path receives the libp2p
+    // stream itself, so there is nothing in front of the first mux frame.
     if let Err(e) = read_p2pd_stream_info(&mut reader).await {
         warn!("inference-mux server: failed to read p2pd StreamInfo prologue: {e}");
         return;
     }
     debug!("inference-mux server: StreamInfo prologue consumed — entering mux frame loop");
 
+    serve_mux_frames(reader, writer, lease_table, connection_id).await;
+}
+
+/// The mux frame loop, over any split stream: one task per request, replies
+/// written back in completion order under a shared writer lock.
+///
+/// `lease_table` is the one process-wide table, so a native caller and a p2pd
+/// caller contend for the same Capacity Lease slots.
+async fn serve_mux_frames<R, W>(
+    mut reader: R,
+    writer: W,
+    lease_table: Arc<LeaseTable>,
+    connection_id: ConnectionId,
+) where
+    R: AsyncReadExt + Unpin + Send + 'static,
+    W: AsyncWriteExt + Unpin + Send + 'static,
+{
+    let writer = Arc::new(Mutex::new(writer));
     let ttl = Duration::from_secs(LEASE_TTL_SECS);
 
     loop {
@@ -313,10 +333,11 @@ async fn handle_mux_stream_server(
     }
 }
 
-/// Encode and write one `MuxFrame`, logging (not panicking) on failure —
-/// mirrors the original inline write-response logic, now shared across the
-/// several places the server writes a frame back.
-async fn write_mux_frame(writer: &Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>, frame: MuxFrame) {
+/// Encode and write one `MuxFrame`, logging (not panicking) on failure.
+async fn write_mux_frame<W>(writer: &Arc<Mutex<W>>, frame: MuxFrame)
+where
+    W: AsyncWriteExt + Unpin,
+{
     match rmp_serde::to_vec_named(&frame) {
         Ok(payload) => {
             let mut w = writer.lock().await;
@@ -326,6 +347,57 @@ async fn write_mux_frame(writer: &Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>, f
         }
         Err(e) => warn!("inference-mux server: encode frame: {e}"),
     }
+}
+
+/// Serve `MUX_PROTO` over a [`NetworkHandle`] instead of a p2pd stream handler.
+///
+/// The p2pd path ([`start_inference_mux_server`]) binds a local TCP listener and
+/// tells the daemon to forward inbound streams to it; the daemon writes a
+/// `StreamInfo` prologue and then pipes bytes. Natively there is no forwarding
+/// hop at all — [`kwaai_p2p::NetworkHandle::accept_streams`] hands us the
+/// negotiated libp2p stream — so there is no listener to bind, no prologue to
+/// consume, and one fewer place for backpressure to be lost.
+///
+/// Returns the accept-loop task. It ends when the network service shuts down and
+/// drops its sender.
+pub async fn start_native_inference_mux_server(
+    handle: &kwaai_p2p::NetworkHandle,
+    lease_table: Arc<LeaseTable>,
+) -> Result<JoinHandle<()>> {
+    let (mut inbound, refused) = handle
+        .accept_streams(vec![MUX_PROTO.to_string()])
+        .await
+        .context("register native inference-mux stream handler")?;
+    if !refused.is_empty() {
+        anyhow::bail!("inference-mux protocol already served by another handler");
+    }
+
+    info!("inference-mux: serving {MUX_PROTO} natively");
+
+    // Same per-connection id scheme as the p2pd path — scopes
+    // `release_connection()` on stream death. The two loops keep separate
+    // counters, which is fine: ids are only ever compared within one table
+    // entry's own connection, never across paths.
+    let next_connection_id = Arc::new(AtomicU64::new(1));
+
+    Ok(tokio::spawn(async move {
+        use tokio_util::compat::FuturesAsyncReadCompatExt;
+        while let Some(stream) = inbound.recv().await {
+            debug!(
+                "inference-mux server: accepted native stream from {}",
+                stream.peer
+            );
+            let (reader, writer) = tokio::io::split(stream.stream.compat());
+            let connection_id = next_connection_id.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(serve_mux_frames(
+                reader,
+                writer,
+                lease_table.clone(),
+                connection_id,
+            ));
+        }
+        debug!("inference-mux server: native accept loop ended");
+    }))
 }
 
 static OLLAMA_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
