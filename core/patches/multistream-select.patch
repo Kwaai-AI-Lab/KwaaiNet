@@ -1,0 +1,46 @@
+--- a/src/protocol.rs
++++ b/src/protocol.rs
+@@ -79,7 +79,13 @@
+     type Error = ProtocolError;
+ 
+     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+-        if !value.as_ref().starts_with(b"/") {
++        // KWAAI PATCH: upstream requires protocol names to start with `/`.
++        // go-libp2p imposes no such rule, and the hivemind network negotiates
++        // bare handler names (`DHTProtocol.rpc_store`) on the wire — both as
++        // dialer and listener. Validation is relaxed to what the message
++        // framing actually requires: non-empty UTF-8 without a newline
++        // (newline terminates a multistream-select message).
++        if value.is_empty() || value.as_ref().contains(&b'\n') {
+             return Err(ProtocolError::InvalidProtocol);
+         }
+         let protocol_as_string =
+@@ -101,7 +107,8 @@
+     type Error = ProtocolError;
+ 
+     fn try_from(value: &str) -> Result<Self, Self::Error> {
+-        if !value.starts_with('/') {
++        // KWAAI PATCH: see `TryFrom<Bytes>` above.
++        if value.is_empty() || value.contains('\n') {
+             return Err(ProtocolError::InvalidProtocol);
+         }
+ 
+@@ -191,10 +198,14 @@
+             return Ok(Message::ListProtocols);
+         }
+ 
+-        // If it starts with a `/`, ends with a line feed without any
+-        // other line feeds in-between, it must be a protocol name.
+-        if msg.first() == Some(&b'/')
+-            && msg.last() == Some(&b'\n')
++        // KWAAI PATCH: upstream recognizes a protocol proposal by its leading
++        // `/`, which rejects hivemind's bare handler names. Any non-empty
++        // single line (that is not one of the fixed messages above) is a
++        // protocol name instead. The branch below this one — an `ls` response —
++        // is thereby shadowed for single-name lists, which is safe: neither
++        // rust-libp2p nor go-libp2p sends `ls` during negotiation.
++        if msg.last() == Some(&b'\n')
++            && msg.len() > 1
+             && !msg[..msg.len() - 1].contains(&b'\n')
+         {
+             let p = Protocol::try_from(msg.split_to(msg.len() - 1))?;

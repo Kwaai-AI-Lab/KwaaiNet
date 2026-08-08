@@ -13,6 +13,7 @@
   protoRs,
   packages,
   makeWrapper,
+  pkgs,
   cargoTarget ? null, # e.g., "aarch64-unknown-linux-gnu" — null for native builds
 }:
 
@@ -21,9 +22,30 @@ let
   cargoToml = builtins.fromTOML (builtins.readFile (./.. + "/core/Cargo.toml"));
   version = cargoToml.package.version;
 
+  # multistream-select with the slash-less protocol-ID patch. The working-tree
+  # copy is produced by core/patches/fetch-multistream-select.sh and is
+  # gitignored, so the flake materializes it the same way: pristine crates.io
+  # tarball (same pinned sha256 as the script) plus the tracked patch file.
+  # See core/patches/README.md.
+  multistreamSelectPatched =
+    pkgs.runCommand "multistream-select-0.13.0-slashless"
+      {
+        # tar/gzip/patch all come with stdenv's default build utilities.
+        crate = pkgs.fetchurl {
+          url = "https://static.crates.io/crates/multistream-select/multistream-select-0.13.0.crate";
+          sha256 = "ea0df8e5eec2298a62b326ee4f0d7fe1a6b90a09dfcf9df37b38f947a8c42f19";
+        };
+      }
+      ''
+        tar -xzf "$crate"
+        mv multistream-select-0.13.0 $out
+        cd $out
+        patch -p1 < ${./.. + "/core/patches/multistream-select.patch"}
+      '';
+
   # Source filter: keep .rs, .toml, .lock, .proto, and non-code assets
   # that are embedded at compile time via include_str!() (.html, .sql).
-  src =
+  filteredSrc =
     let
       extraFilter = path: _type: builtins.match ".*\\.(proto|html|sql)$" path != null;
       sourceFilter = path: type: (extraFilter path type) || (craneLib.filterCargoSources path type);
@@ -32,6 +54,18 @@ let
       src = craneLib.path (./.. + "/core");
       filter = sourceFilter;
     };
+
+  # The patched crate must live inside the source derivation itself (not be
+  # copied in by a build hook): crane's deps-only phase parses the manifest
+  # from a dummified copy of `src`, and `[patch.crates-io]` needs the path
+  # present there too.
+  src = pkgs.runCommand "kwaainet-src-with-patches" { } ''
+    cp -r ${filteredSrc} $out
+    chmod -R u+w $out
+    mkdir -p $out/patches
+    rm -rf $out/patches/multistream-select
+    cp -r ${multistreamSelectPatched} $out/patches/multistream-select
+  '';
 
   commonArgs = {
     inherit src version;
