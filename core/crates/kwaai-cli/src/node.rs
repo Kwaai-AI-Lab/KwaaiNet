@@ -471,7 +471,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         // Pre-declaring private blocks AutoNAT from ever promoting the node
         // to public, even if it actually is. Only honour an explicit opt-in.
         .force_reachability_private(config.force_private)
-        .nat_portmap(true)
+        .nat_portmap(config.enable_upnp)
         .host_addrs([host_addr.clone()])
         .bootstrap_peers(bootstrap_peers.clone())
         .trusted_relays(trusted_relays.clone())
@@ -668,6 +668,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             &p2pd_path,
             &handler_addr,
             config.no_relay,
+            config.enable_upnp,
             config.port,
             config.identify_min_confirmations,
             config.identify_timeout_secs,
@@ -1120,6 +1121,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                             &mut daemon, &mut client, new_addrs,
                             &host_addr, &bootstrap_peers, &identity_key_path,
                             &p2pd_path, &handler_addr, config.no_relay,
+                            config.enable_upnp,
                         ).await {
                             warn!("Deferred p2pd restart failed: {}", e);
                         } else {
@@ -1796,6 +1798,7 @@ async fn restart_p2pd_with_addrs(
     p2pd_path: &Option<std::path::PathBuf>,
     handler_addr: &std::net::SocketAddr,
     no_relay: bool,
+    enable_upnp: bool,
 ) -> anyhow::Result<()> {
     let handler_addr_str = format!("/ip4/127.0.0.1/tcp/{}", handler_addr.port());
     let dht_protocols = vec![
@@ -1819,7 +1822,7 @@ async fn restart_p2pd_with_addrs(
         .relay(!no_relay)
         .auto_relay(true)
         .auto_nat(true)
-        .nat_portmap(true)
+        .nat_portmap(enable_upnp)
         .host_addrs([host_addr])
         .bootstrap_peers(bootstrap_peers.to_vec())
         .announce_addrs(announce_addrs.iter().map(|s| s.as_str()))
@@ -1936,6 +1939,7 @@ async fn discover_and_restart_with_announce(
     p2pd_path: &Option<std::path::PathBuf>,
     handler_addr: &std::net::SocketAddr,
     no_relay: bool,
+    enable_upnp: bool,
     port: u16,
     min_confirmations: usize,
     timeout_secs: u64,
@@ -1963,6 +1967,7 @@ async fn discover_and_restart_with_announce(
             p2pd_path,
             handler_addr,
             no_relay,
+            enable_upnp,
         )
         .await?;
         return Ok((daemon, client, cached));
@@ -2007,6 +2012,7 @@ async fn discover_and_restart_with_announce(
         p2pd_path,
         handler_addr,
         no_relay,
+        enable_upnp,
     )
     .await?;
 
@@ -2567,7 +2573,7 @@ async fn restart_p2pd(
         .auto_relay(true)
         .auto_nat(true)
         .force_reachability_private(config.force_private)
-        .nat_portmap(true)
+        .nat_portmap(config.enable_upnp)
         .host_addrs([host_addr])
         .bootstrap_peers(bootstrap_peers.to_vec())
         .trusted_relays(config.trusted_relays.clone())

@@ -286,7 +286,7 @@ pub enum ConfigAction {
     ///
     /// Valid keys:
     ///   model, blocks, start_block, port, use_gpu, log_level,
-    ///   public_name, public_ip, announce_addr, no_relay,
+    ///   public_name, public_ip, announce_addr, no_relay, enable_upnp,
     ///   vpk_enabled, vpk_mode, vpk_local_port,
     ///   auto_rebalance, rebalance_interval_secs, rebalance_min_redundancy
     ///
