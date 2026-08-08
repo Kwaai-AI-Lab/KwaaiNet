@@ -1,0 +1,85 @@
+syntax = "proto2";
+
+// Hivemind unary-RPC wrapper as it appears ON THE LIBP2P WIRE between peers.
+//
+// This is a minimal, wire-compatible subset of go-libp2p-daemon's `p2pd.proto`
+// (see `crates/kwaai-p2p-daemon/proto/p2pd.proto`, package `p2pd.pb`). Field
+// numbers and types are copied verbatim — do not renumber.
+//
+// The Go daemon (`persistent_stream.go`) drives the peer-to-peer exchange like
+// this:
+//
+//   Caller side (`Daemon.exchangeMessages`):
+//     1. `host.NewStream(peer, protocol.ID(proto))` — the libp2p protocol ID is
+//        the BARE handler name, no leading slash (e.g. `DHTProtocol.rpc_store`).
+//     2. Writes ONE uvarint-length-delimited `PersistentConnectionRequest`
+//        with `callId` + `callUnary{peer, proto, data}`. `data` is the raw
+//        application protobuf (StoreRequest / FindRequest / PingRequest).
+//     3. Reads ONE uvarint-delimited `PersistentConnectionRequest` back and
+//        takes `remoteResp.GetUnaryResponse()`.
+//     4. Stream closes.
+//
+//   Responder side (`Daemon.persistentStreamHandler`):
+//     Reads the `PersistentConnectionRequest`, overwrites
+//     `callUnary.peer` with the CALLER's peer ID (so a value set by the
+//     caller — as hivemind's Python client does — is ignored), dispatches to
+//     the registered handler, and writes back a `PersistentConnectionRequest`
+//     carrying `unaryResponse` (field 4).
+//
+// NOTE THE ASYMMETRY: the reply on the libp2p wire is a
+// `PersistentConnectionRequest` with the `unaryResponse` oneof arm set — NOT a
+// `PersistentConnectionResponse`. `PersistentConnectionResponse` exists only on
+// the daemon's local control socket. Encoding the reply as a
+// `PersistentConnectionResponse` makes Go callers fail to unmarshal, because
+// field 2 there is `CallUnaryResponse` while field 2 of
+// `PersistentConnectionRequest` is `AddUnaryHandlerRequest` — whose proto2
+// `required` fields are absent.
+//
+// This file documents the schema of record. The Rust types live in `src/wire.rs`
+// as hand-written `prost::Message` derives, matching how `src/protocol.rs`
+// mirrors `proto/dht.proto` (this crate has no build.rs / prost-build step).
+
+package p2pd.pb;
+
+// Written by the caller onto the libp2p stream, and — with the `unaryResponse`
+// arm — written back by the responder.
+message PersistentConnectionRequest {
+  required bytes callId = 1;
+
+  oneof message {
+    AddUnaryHandlerRequest addUnaryHandler = 2;
+    CallUnaryRequest  callUnary = 3;
+    CallUnaryResponse unaryResponse = 4;
+    Cancel cancel = 5;
+    RemoveUnaryHandlerRequest removeUnaryHandler = 6;
+  }
+}
+
+message CallUnaryRequest {
+  required bytes peer = 1;
+  required string proto = 2;
+  required bytes data = 3;
+}
+
+message CallUnaryResponse {
+  oneof result {
+    bytes response = 1;
+    bytes error = 2;
+  }
+}
+
+message AddUnaryHandlerRequest {
+  required string proto = 1;
+  required bool balanced = 2;
+}
+
+message RemoveUnaryHandlerRequest {
+  required string proto = 1;
+}
+
+message DaemonError {
+  optional string message = 1;
+}
+
+message Cancel {
+}
