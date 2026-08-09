@@ -911,6 +911,12 @@ impl KwaaiNetConfig {
         }
     }
 
+    /// Re-read config.yaml before a save so writes by other processes are kept;
+    /// falls back to `self` if the file cannot be read.
+    pub fn reloaded(&self) -> Self {
+        Self::load_or_create().unwrap_or_else(|_| self.clone())
+    }
+
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
     pub fn load_or_create() -> Result<Self> {
         let cfg_file = config_file();
