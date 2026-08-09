@@ -223,6 +223,16 @@ message StatusReply {
 
     // Daemon process uptime in seconds.
     uint64 uptime_secs = 5;
+
+    // Version of the running daemon binary (CARGO_PKG_VERSION), e.g.
+    // "0.5.4" — no leading "v". Lets a client report the version of the
+    // process it is actually talking to, which can differ from whatever
+    // binary is on disk after an upgrade or a config change that has not
+    // been restarted into yet.
+    //
+    // Empty when talking to a daemon built before this field existed;
+    // clients should treat "" as unknown rather than as a version.
+    string version = 6;
 }
 
 // =====================================================================
