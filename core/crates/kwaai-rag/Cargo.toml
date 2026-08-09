@@ -22,7 +22,7 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.36", features = ["encoding"] }
 tantivy = { workspace = true }
-pdf-extract = { version = "0.10", optional = true }
+pdf-extract = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
