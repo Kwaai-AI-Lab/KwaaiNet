@@ -529,6 +529,17 @@ const RAG_DEFAULT_TOP_K: u32 = 20;
 #[cfg(feature = "rag")]
 const RAG_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Ceiling on the text-extraction step of an ingest.
+///
+/// pdf-extract can take effectively unbounded time on pathological PDFs
+/// (huge object counts, malformed xref tables), and a blocking task cannot
+/// be killed — without a ceiling the op would hold the RAG lock forever and
+/// the client would never see another frame. On timeout the op fails with a
+/// clear message, but note the abandoned extraction thread runs on until
+/// the parse finishes; only a daemon restart reclaims it sooner.
+#[cfg(feature = "rag")]
+const RAG_EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Map an anyhow error off the RAG path onto a wire [`ErrorCode`].
 ///
 /// The RAG layer signals failure classes through message text (the CLI
@@ -857,9 +868,16 @@ async fn run_rag_ingest(
         .await;
 
     let extract_path = path.clone();
-    let text = tokio::task::spawn_blocking(move || document::extract_text(&extract_path))
-        .await
-        .context("text extraction task panicked")??;
+    let extract = tokio::task::spawn_blocking(move || document::extract_text(&extract_path));
+    let text = match tokio::time::timeout(RAG_EXTRACT_TIMEOUT, extract).await {
+        Ok(joined) => joined.context("text extraction task panicked")??,
+        Err(_) => anyhow::bail!(
+            "text extraction timed out after {}s — the file may be too large or too \
+             complex for the parser (extraction continues in the background; restart \
+             the daemon to reclaim the thread)",
+            RAG_EXTRACT_TIMEOUT.as_secs()
+        ),
+    };
 
     let data_dir = rag_cfg.data_dir();
     let meta_dir = data_dir.clone();
