@@ -1254,10 +1254,22 @@ async fn run_rag_delete(req: RagDeleteRequest, rag_stores: RagStores) -> Result<
         anyhow::bail!("document '{doc_name}' is not in KB '{kb}'");
     }
 
+    // `VectorStore::delete` is `async` in name only: its body is a SQLite
+    // transaction and a std Mutex over the in-memory index, with nothing
+    // to await. Awaiting it directly blocks a reactor thread for one
+    // statement per chunk — ~900 for a single book-sized document — while
+    // this op holds `rag_lock`, which stalls every other RAG request and
+    // reads to the user as a hang. Hand it to the blocking pool like the
+    // other sync work on this path.
     let vs = cached_local_vs(&rag_stores, &data_dir).await?;
-    vs.delete(tenant_id, &ids)
-        .await
-        .with_context(|| format!("removing {} vectors for '{doc_name}'", ids.len()))?;
+    let delete_ids = ids.clone();
+    let vs_for_delete = vs.clone();
+    tokio::task::spawn_blocking(move || {
+        futures::executor::block_on(vs_for_delete.delete(tenant_id, &delete_ids))
+    })
+    .await
+    .context("vector delete task panicked")?
+    .with_context(|| format!("removing {} vectors for '{doc_name}'", ids.len()))?;
 
     // Best-effort by design: the index is a derived cache, and a stale
     // entry only costs a keyword hit on text that no longer resolves to a
