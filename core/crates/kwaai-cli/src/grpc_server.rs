@@ -125,6 +125,18 @@ pub struct KwaaiNetService {
     /// distinct KBs ever need to overlap.
     #[cfg(feature = "rag")]
     rag_lock: Arc<Mutex<()>>,
+    /// Opened local vector stores, cached per data dir for the daemon's
+    /// lifetime.
+    ///
+    /// `StorageDb::open` replays every stored vector into an in-memory
+    /// HNSW graph — O(corpus) work that would otherwise run on every
+    /// RAG op. The daemon is long-lived, so open once and reuse, exactly
+    /// as `rag serve` does. All users hold `rag_lock`, so the map itself
+    /// sees no contention. Inherited trade-off from `rag serve`: vectors
+    /// written by another process (e.g. a CLI ingest) aren't visible
+    /// until the daemon restarts.
+    #[cfg(feature = "rag")]
+    rag_stores: Arc<Mutex<HashMap<PathBuf, Arc<kwaai_storage::VectorStore>>>>,
 }
 
 impl KwaaiNetService {
@@ -136,6 +148,8 @@ impl KwaaiNetService {
             started_at: Instant::now(),
             #[cfg(feature = "rag")]
             rag_lock: Arc::new(Mutex::new(())),
+            #[cfg(feature = "rag")]
+            rag_stores: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -229,6 +243,8 @@ impl KwaaiNet for KwaaiNetService {
         let started_at = self.started_at;
         #[cfg(feature = "rag")]
         let rag_lock = self.rag_lock.clone();
+        #[cfg(feature = "rag")]
+        let rag_stores = self.rag_stores.clone();
 
         tokio::spawn(async move {
             loop {
@@ -405,13 +421,21 @@ impl KwaaiNet for KwaaiNetService {
                             out_tx.clone(),
                             cancels.clone(),
                             rag_lock.clone(),
+                            rag_stores.clone(),
                         )
                         .await;
                     }
 
                     #[cfg(feature = "rag")]
                     client_frame::Body::RagQuery(req) => {
-                        spawn_session_rag_query(id, req, out_tx.clone(), rag_lock.clone()).await;
+                        spawn_session_rag_query(
+                            id,
+                            req,
+                            out_tx.clone(),
+                            rag_lock.clone(),
+                            rag_stores.clone(),
+                        )
+                        .await;
                     }
 
                     // Built without the `rag` feature: the frames still
@@ -671,6 +695,36 @@ const RAG_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_mil
 #[cfg(feature = "rag")]
 const RAG_EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The service's per-data-dir cache of opened local vector stores.
+/// See the `rag_stores` field comment for semantics.
+#[cfg(feature = "rag")]
+type RagStores = Arc<Mutex<HashMap<PathBuf, Arc<kwaai_storage::VectorStore>>>>;
+
+/// Fetch (or open and cache) the local vector store for `data_dir`.
+///
+/// The open replays every stored vector into the in-memory HNSW graph,
+/// so it runs off the reactor and only on first use. Callers hold
+/// `rag_lock`, which is what makes the get-then-insert sequence safe.
+#[cfg(feature = "rag")]
+async fn cached_local_vs(
+    stores: &RagStores,
+    data_dir: &std::path::Path,
+) -> Result<Arc<kwaai_storage::VectorStore>> {
+    if let Some(vs) = stores.lock().await.get(data_dir) {
+        return Ok(vs.clone());
+    }
+    let dir = data_dir.to_path_buf();
+    let vs = tokio::task::spawn_blocking(move || crate::rag_cmd::open_local_vs(&dir))
+        .await
+        .context("vector store task panicked")??;
+    let vs = Arc::new(vs);
+    stores
+        .lock()
+        .await
+        .insert(data_dir.to_path_buf(), vs.clone());
+    Ok(vs)
+}
+
 /// Map an anyhow error off the RAG path onto a wire [`ErrorCode`].
 ///
 /// The RAG layer signals failure classes through message text (the CLI
@@ -905,6 +959,7 @@ async fn spawn_session_rag_ingest(
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
     cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
     rag_lock: Arc<Mutex<()>>,
+    rag_stores: RagStores,
 ) {
     // Register the cancel channel BEFORE spawning, so a Cancel frame that
     // arrives immediately after this one can still find it. Registering
@@ -926,7 +981,7 @@ async fn spawn_session_rag_ingest(
                 return;
             }
 
-            r = run_rag_ingest(id, req, out_tx.clone()) => r,
+            r = run_rag_ingest(id, req, out_tx.clone(), rag_stores) => r,
         };
 
         // Whatever happened, this id is no longer cancellable.
@@ -954,6 +1009,7 @@ async fn run_rag_ingest(
     id: u64,
     req: RagIngestRequest,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    rag_stores: RagStores,
 ) -> Result<RagIngestReply> {
     use kwaai_rag::{
         document,
@@ -1016,11 +1072,7 @@ async fn run_rag_ingest(
         .await
         .context("metadata store task panicked")??;
 
-    let vs_dir = data_dir.clone();
-    let vs = tokio::task::spawn_blocking(move || crate::rag_cmd::open_local_vs(&vs_dir))
-        .await
-        .context("vector store task panicked")??;
-    let vs = Arc::new(vs);
+    let vs = cached_local_vs(&rag_stores, &data_dir).await?;
 
     // Persistent keyword index, kept in step with this ingest so queries
     // never rebuild it from the full corpus. Opening may backfill a
@@ -1144,11 +1196,12 @@ async fn spawn_session_rag_query(
     req: RagQueryRequest,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
     rag_lock: Arc<Mutex<()>>,
+    rag_stores: RagStores,
 ) {
     tokio::spawn(async move {
         let _guard = rag_lock.lock().await;
 
-        match run_rag_query(req).await {
+        match run_rag_query(req, rag_stores).await {
             Ok(chunks) => {
                 let _ = out_tx
                     .send(Ok(ServerFrame {
@@ -1164,7 +1217,7 @@ async fn spawn_session_rag_query(
 }
 
 #[cfg(feature = "rag")]
-async fn run_rag_query(req: RagQueryRequest) -> Result<Vec<RagChunk>> {
+async fn run_rag_query(req: RagQueryRequest, rag_stores: RagStores) -> Result<Vec<RagChunk>> {
     use kwaai_rag::{
         embedder::EmbedClient,
         meta_store::MetaStore,
@@ -1186,11 +1239,7 @@ async fn run_rag_query(req: RagQueryRequest) -> Result<Vec<RagChunk>> {
         .await
         .context("metadata store task panicked")??;
 
-    let vs_dir = data_dir.clone();
-    let vs = tokio::task::spawn_blocking(move || crate::rag_cmd::open_local_vs(&vs_dir))
-        .await
-        .context("vector store task panicked")??;
-    let vs = Arc::new(vs);
+    let vs = cached_local_vs(&rag_stores, &data_dir).await?;
 
     let top_k = if req.top_k == 0 {
         RAG_DEFAULT_TOP_K
