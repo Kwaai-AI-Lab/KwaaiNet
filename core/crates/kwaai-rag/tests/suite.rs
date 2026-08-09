@@ -145,7 +145,7 @@ fn bm25_special_chars_in_query_handled() {
 #[test]
 fn bm25_persistent_open_and_delete() {
     let dir = TempDir::new().unwrap();
-    let idx = BM25Index::open(dir.path()).unwrap();
+    let idx = BM25Index::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
     let chunks = vec![
         (10i64, "doc_a.txt", "hello world foo bar"),
         (11i64, "doc_b.txt", "apartheid segregation history"),
@@ -161,7 +161,7 @@ fn bm25_persistent_open_and_delete() {
 #[test]
 fn bm25_rebuild_is_idempotent() {
     let dir = TempDir::new().unwrap();
-    let idx = BM25Index::open(dir.path()).unwrap();
+    let idx = BM25Index::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
     let chunks = vec![(1i64, "doc.txt", "cape town district history")];
     idx.build_from_chunks(&chunks).unwrap();
     // Second rebuild should clear old docs and re-add

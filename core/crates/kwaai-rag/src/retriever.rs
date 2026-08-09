@@ -97,6 +97,14 @@ pub struct RetrieveConfig {
     /// When true, run Round 2.5: cosine-search over HiRAG summary nodes and
     /// expand matched summaries to their child chunks.
     pub use_summary_expansion: bool,
+    /// Prebuilt BM25 index for the keyword half of hybrid retrieval.
+    ///
+    /// When `None`, each call loads every chunk from the metadata store and
+    /// builds a transient in-RAM index — O(corpus) per query, acceptable
+    /// only for one-shot CLI use. Long-lived callers should pass
+    /// `BM25Index::open_backfilled` so queries search the persistent index
+    /// instead.
+    pub bm25: Option<std::sync::Arc<crate::bm25::BM25Index>>,
 }
 
 impl Default for RetrieveConfig {
@@ -112,6 +120,7 @@ impl Default for RetrieveConfig {
             query_classify: crate::query_understand::ClassifyMethod::Rule,
             query_multi_hop: false,
             use_summary_expansion: false,
+            bm25: None,
         }
     }
 }
@@ -140,13 +149,22 @@ pub async fn retrieve_hybrid(
     meta: &MetaStore,
     search_fn: impl Fn(Vec<f32>, usize) -> Pin<Box<dyn Future<Output = Result<Vec<(i64, f64)>>> + Send>>,
 ) -> Result<Vec<RetrievedChunk>> {
-    // Build BM25 index from all stored chunks (including doc name for title-word discrimination).
-    let all = meta.all_chunks()?;
-    let triples: Vec<(i64, &str, &str)> = all
-        .iter()
-        .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
-        .collect();
-    let bm25 = BM25Index::build_in_ram(&triples)?;
+    // Keyword index: the caller's persistent index when provided, else a
+    // transient rebuild from all stored chunks (including doc name for
+    // title-word discrimination).
+    let built;
+    let bm25: &BM25Index = match cfg.bm25 {
+        Some(ref idx) => idx,
+        None => {
+            let all = meta.all_chunks()?;
+            let triples: Vec<(i64, &str, &str)> = all
+                .iter()
+                .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
+                .collect();
+            built = BM25Index::build_in_ram(&triples)?;
+            &built
+        }
+    };
 
     let candidate_k = cfg.top_k * 4;
 
@@ -302,13 +320,21 @@ pub async fn retrieve_graph_anchored(
             .collect()
     };
 
-    // 5. Hybrid vector+BM25 retrieval.
-    let all = meta.all_chunks()?;
-    let triples: Vec<(i64, &str, &str)> = all
-        .iter()
-        .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
-        .collect();
-    let bm25 = BM25Index::build_in_ram(&triples)?;
+    // 5. Hybrid vector+BM25 retrieval. Same index-or-rebuild choice as
+    // `retrieve_hybrid`.
+    let built;
+    let bm25: &BM25Index = match cfg.bm25 {
+        Some(ref idx) => idx,
+        None => {
+            let all = meta.all_chunks()?;
+            let triples: Vec<(i64, &str, &str)> = all
+                .iter()
+                .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
+                .collect();
+            built = BM25Index::build_in_ram(&triples)?;
+            &built
+        }
+    };
     let semantic_raw = search_fn(embedding, candidate_k).await?;
     let keyword_raw = bm25.search(query, candidate_k);
     let vector_chunks = rrf_merge(&semantic_raw, &keyword_raw, candidate_k);

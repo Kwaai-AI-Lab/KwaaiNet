@@ -33,6 +33,14 @@ pub struct BM25Index {
     body_field: Field,
 }
 
+// Hand-written because tantivy's Index isn't Debug, and RetrieveConfig
+// (which now carries an optional Arc<BM25Index>) derives it.
+impl std::fmt::Debug for BM25Index {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BM25Index").finish_non_exhaustive()
+    }
+}
+
 impl BM25Index {
     /// Build a transient in-RAM index from chunks. No disk persistence.
     /// Used for single-shot CLI queries where per-query rebuild is acceptable.
@@ -54,9 +62,12 @@ impl BM25Index {
         Ok(this)
     }
 
-    /// Open (or create) the tantivy index at `data_dir/tantivy/`.
-    pub fn open(data_dir: &Path) -> Result<Self> {
-        let index_dir = data_dir.join("tantivy");
+    /// Open (or create) the tantivy index at `data_dir/tantivy/<tenant>/`.
+    ///
+    /// Scoped per tenant because every KB shares one `data_dir` — a single
+    /// index would leak chunks across knowledge bases at search time.
+    pub fn open(data_dir: &Path, tenant_id: uuid::Uuid) -> Result<Self> {
+        let index_dir = data_dir.join("tantivy").join(tenant_id.to_string());
         std::fs::create_dir_all(&index_dir)?;
 
         let schema = Self::build_schema();
@@ -80,6 +91,38 @@ impl BM25Index {
             title_field,
             body_field,
         })
+    }
+
+    /// Open the persistent index, rebuilding from the metadata store when
+    /// the two disagree.
+    ///
+    /// Drift happens when chunks were ingested by a binary that predates
+    /// persistent-index maintenance, or when a best-effort index write
+    /// failed mid-ingest. Comparing counts is cheap and catches both, at
+    /// the cost of a one-off full rebuild the first time a stale KB is
+    /// opened.
+    pub fn open_backfilled(data_dir: &Path, meta: &crate::meta_store::MetaStore) -> Result<Self> {
+        let idx = Self::open(data_dir, meta.tenant_id())?;
+        if idx.num_docs() as usize != meta.chunk_count()? {
+            let all = meta.all_chunks()?;
+            let triples: Vec<(i64, &str, &str)> = all
+                .iter()
+                .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
+                .collect();
+            idx.build_from_chunks(&triples)?;
+        }
+        Ok(idx)
+    }
+
+    /// Number of documents (chunks) currently searchable. 0 when the
+    /// reader cannot be opened, which callers treat the same as empty.
+    pub fn num_docs(&self) -> u64 {
+        self.index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .map(|r: tantivy::IndexReader| r.searcher().num_docs())
+            .unwrap_or(0)
     }
 
     fn build_schema() -> Schema {
@@ -256,7 +299,7 @@ mod tests {
 
     fn make_index() -> (TempDir, BM25Index) {
         let dir = TempDir::new().unwrap();
-        let idx = BM25Index::open(dir.path()).unwrap();
+        let idx = BM25Index::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
         (dir, idx)
     }
 
@@ -308,6 +351,54 @@ mod tests {
         let res = idx.search("apartheid", 5);
         // doc_b deleted — should no longer appear
         assert!(res.is_empty() || res.iter().all(|(id, _)| *id != 11));
+    }
+
+    #[test]
+    fn open_backfilled_rebuilds_on_drift() {
+        use crate::meta_store::{ChunkMeta, MetaStore};
+        let dir = TempDir::new().unwrap();
+        let tenant = uuid::Uuid::new_v4();
+        let meta = MetaStore::open(dir.path(), tenant).unwrap();
+        let cm = ChunkMeta {
+            doc_name: "doc_a.txt".into(),
+            chunk_index: 0,
+            text: "apartheid segregation history".into(),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: MetaStore::now_rfc3339(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: Default::default(),
+        };
+        meta.put_chunks(std::slice::from_ref(&cm), &[1]).unwrap();
+
+        // Chunks exist but the index was never maintained — open must
+        // detect the drift and rebuild from the metadata store.
+        let idx = BM25Index::open_backfilled(dir.path(), &meta).unwrap();
+        assert_eq!(idx.num_docs(), 1);
+        assert!(!idx.search("apartheid", 5).is_empty());
+
+        // A second open finds the counts in agreement and keeps the index.
+        let idx2 = BM25Index::open_backfilled(dir.path(), &meta).unwrap();
+        assert_eq!(idx2.num_docs(), 1);
+        assert!(!idx2.search("segregation", 5).is_empty());
+    }
+
+    #[test]
+    fn tenant_scoped_indexes_do_not_mix() {
+        use crate::meta_store::MetaStore;
+        let dir = TempDir::new().unwrap();
+        let (t1, t2) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let idx1 = BM25Index::open(dir.path(), t1).unwrap();
+        idx1.add_chunks(&[(1, "a.txt", "cricket bat wicket")])
+            .unwrap();
+
+        // A different tenant in the same data dir sees an empty index.
+        let meta2 = MetaStore::open(dir.path(), t2).unwrap();
+        let idx2 = BM25Index::open_backfilled(dir.path(), &meta2).unwrap();
+        assert_eq!(idx2.num_docs(), 0);
+        assert!(idx2.search("cricket", 5).is_empty());
     }
 
     #[test]
