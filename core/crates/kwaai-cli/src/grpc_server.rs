@@ -891,8 +891,28 @@ async fn run_rag_ingest(
         .context("vector store task panicked")??;
     let vs = Arc::new(vs);
 
+    // Persistent keyword index, kept in step with this ingest so queries
+    // never rebuild it from the full corpus. Opening may backfill a
+    // drifted index (sync, CPU-heavy) — run off the reactor. Best-effort:
+    // on failure the ingest proceeds unindexed and the next query's
+    // open_backfilled repairs the drift.
+    let meta = Arc::new(meta);
+    let bm25 = {
+        let meta = meta.clone();
+        let dir = data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            kwaai_rag::bm25::BM25Index::open_backfilled(&dir, &meta)
+        })
+        .await
+        .context("BM25 open task panicked")?
+        .map_err(|e| warn!(error = format!("{e:#}"), "BM25 index unavailable; ingest will not update it"))
+        .ok()
+        .map(Arc::new)
+    };
+
     let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
-    let cfg = IngestConfig::new(embed);
+    let mut cfg = IngestConfig::new(embed);
+    cfg.bm25 = bm25;
 
     // `ingest_text`'s progress callback is sync and called from inside the
     // ingest future, so it can't await. Hand frames to a forwarder task
@@ -1042,6 +1062,26 @@ async fn run_rag_query(req: RagQueryRequest) -> Result<Vec<RagChunk>> {
         req.top_k
     } as usize;
 
+    // Persistent keyword index. `open_backfilled` may rebuild from the
+    // full metadata store the first time it sees a drifted KB (sync,
+    // CPU-heavy), so it runs off the reactor; after that queries reuse
+    // the on-disk index instead of rebuilding O(corpus) per query.
+    // Best-effort: None falls back to the old in-RAM build inside
+    // retrieve_hybrid — slower, never wrong.
+    let meta = Arc::new(meta);
+    let bm25 = {
+        let meta = meta.clone();
+        let dir = data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            kwaai_rag::bm25::BM25Index::open_backfilled(&dir, &meta)
+        })
+        .await
+        .context("BM25 open task panicked")?
+        .map_err(|e| warn!(error = format!("{e:#}"), "BM25 index unavailable; using in-RAM fallback"))
+        .ok()
+        .map(Arc::new)
+    };
+
     let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
     let cfg = RetrieveConfig {
         top_k,
@@ -1050,13 +1090,14 @@ async fn run_rag_query(req: RagQueryRequest) -> Result<Vec<RagChunk>> {
         hyde_inference_url: None,
         hyde_model: None,
         hyde_alpha: None,
+        bm25,
         ..Default::default()
     };
 
-    // retrieve_hybrid embeds the query (async HTTP) and builds a BM25 index
-    // over the metadata store (sync, CPU-heavy) internally. The sync half
-    // is inside the library, so it can't be wrapped from here — the
-    // service-wide rag_lock at least keeps only one of these in flight.
+    // retrieve_hybrid embeds the query (async HTTP); with cfg.bm25 set the
+    // keyword half searches the persistent index rather than loading and
+    // indexing every chunk. The residual sync work is small, and the
+    // service-wide rag_lock keeps only one of these in flight.
     let chunks = retrieve_hybrid(&req.text, &cfg, &embed, &meta, move |emb, k| {
         let vs = vs.clone();
         Box::pin(async move {
