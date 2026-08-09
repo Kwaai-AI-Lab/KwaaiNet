@@ -47,7 +47,7 @@ use kwaai_rpc::v1::{
 };
 #[cfg(feature = "rag")]
 use kwaai_rpc::v1::{
-    rag_progress::RagPhase, RagChunk, RagDeleteReply, RagDeleteRequest, RagIngestReply,
+    rag_progress::RagPhase, RagChunk, RagDeleteReply, RagDeleteRequest, RagDoc, RagIngestReply,
     RagIngestRequest, RagInitReply, RagInitRequest, RagKb, RagProgress, RagQueryReply,
     RagQueryRequest, RagStatusUpdate,
 };
@@ -754,19 +754,24 @@ fn collect_rag_kbs() -> Result<Vec<RagKb>> {
 
         // A KB with no/invalid tenant id, or an unopenable store, still
         // gets reported — the client should see it exists.
-        let docs = rag
+        let documents: Vec<RagDoc> = rag
             .tenant_id
             .as_deref()
             .and_then(|t| t.parse::<uuid::Uuid>().ok())
             .and_then(|tid| MetaStore::open(&rag.data_dir(), tid).ok())
-            .and_then(|ms| ms.list_docs().ok())
-            .unwrap_or_default();
+            .and_then(|ms| ms.list_docs_with_counts().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, chunks)| RagDoc { name, chunks })
+            .collect();
 
         out.push(RagKb {
             name,
             embed_model: rag.embed_model.clone(),
-            docs,
+            // Kept in step with `documents` for clients that predate it.
+            docs: documents.iter().map(|d| d.name.clone()).collect(),
             remote: rag_is_remote(rag),
+            documents,
         });
     }
     Ok(out)

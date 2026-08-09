@@ -525,12 +525,31 @@ message RagKb {
     // Documents ingested so far, by name. Best-effort: a KB whose
     // metadata store can't be opened is still reported, with an empty
     // list, rather than failing the whole status op.
+    //
+    // Superseded by `documents`, which carries the same names plus their
+    // chunk counts. Still populated — an older client reading only this
+    // field keeps working — so the two are always the same length and in
+    // the same order.
     repeated string docs = 3;
 
     // True when the KB's vectors live somewhere other than the local
     // embedded store (a remote Eve node or an HTTP storage service).
     // Phase 1 can report these but not query or ingest into them.
     bool remote = 4;
+
+    // Documents with the size of each. Same set as `docs`; prefer this.
+    repeated RagDoc documents = 5;
+}
+
+// One ingested document, as reported by rag_status.
+message RagDoc {
+    // Display name recorded at ingest — what rag_delete expects back.
+    string name = 1;
+
+    // Chunks this document contributed, which is also its vector count.
+    // 0 when the metadata row exists but couldn't be read, rather than
+    // omitting the document entirely.
+    uint32 chunks = 2;
 }
 
 message RagStatusRequest {
