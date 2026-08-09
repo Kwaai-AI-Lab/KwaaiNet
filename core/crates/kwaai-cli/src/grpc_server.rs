@@ -3221,5 +3221,96 @@ mod tests {
 
             drop(handle);
         }
+
+        /// Deleting from a KB that was never initialised is NOT_FOUND,
+        /// same as querying one.
+        #[tokio::test]
+        async fn rag_delete_uninitialised_kb_is_not_found() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagDelete(RagDeleteRequest {
+                    kb: "nope".into(),
+                    doc_name: "handbook.pdf".into(),
+                }),
+            )
+            .await;
+
+            let msg = expect_error(&bodies, ErrorCode::NotFound);
+            assert!(
+                msg.contains("not initialised"),
+                "message should name the real problem, got {msg:?}"
+            );
+
+            drop(handle);
+        }
+
+        /// Deleting a document the KB doesn't hold is NOT_FOUND rather
+        /// than a silent success — a stale UI row must not report that it
+        /// deleted something that was never there.
+        ///
+        /// Reaches the MetaStore (which a fresh KB opens empty), so it
+        /// exercises the real lookup rather than an early argument gate.
+        #[tokio::test]
+        async fn rag_delete_unknown_doc_is_not_found() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let mut cfg = KwaaiNetConfig::load_or_create().expect("load config");
+            cfg.set_rag_kb(
+                "default",
+                crate::config::RagConfig {
+                    tenant_id: Some(uuid::Uuid::new_v4().to_string()),
+                    storage_url: Some("local".to_string()),
+                    ..crate::config::RagConfig::default()
+                },
+            );
+            cfg.save().expect("save config");
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagDelete(RagDeleteRequest {
+                    kb: "default".into(),
+                    doc_name: "never-ingested.pdf".into(),
+                }),
+            )
+            .await;
+
+            let msg = expect_error(&bodies, ErrorCode::NotFound);
+            assert!(
+                msg.contains("never-ingested.pdf"),
+                "message should name the document, got {msg:?}"
+            );
+
+            drop(handle);
+        }
+
+        /// An empty document name is rejected before the KB is resolved.
+        #[tokio::test]
+        async fn rag_delete_empty_doc_name_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+
+            let (handle, port) = spawn_test_server();
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagDelete(RagDeleteRequest {
+                    kb: String::new(),
+                    doc_name: "   ".into(),
+                }),
+            )
+            .await;
+
+            expect_error(&bodies, ErrorCode::InvalidArgument);
+
+            drop(handle);
+        }
     }
 }
