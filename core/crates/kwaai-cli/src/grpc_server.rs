@@ -47,8 +47,9 @@ use kwaai_rpc::v1::{
 };
 #[cfg(feature = "rag")]
 use kwaai_rpc::v1::{
-    rag_progress::RagPhase, RagChunk, RagIngestReply, RagIngestRequest, RagInitReply,
-    RagInitRequest, RagKb, RagProgress, RagQueryReply, RagQueryRequest, RagStatusUpdate,
+    rag_progress::RagPhase, RagChunk, RagDeleteReply, RagDeleteRequest, RagIngestReply,
+    RagIngestRequest, RagInitReply, RagInitRequest, RagKb, RagProgress, RagQueryReply,
+    RagQueryRequest, RagStatusUpdate,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -382,6 +383,18 @@ impl KwaaiNet for KwaaiNetService {
                         .await;
                     }
 
+                    #[cfg(feature = "rag")]
+                    client_frame::Body::RagDelete(req) => {
+                        spawn_session_rag_delete(
+                            id,
+                            req,
+                            out_tx.clone(),
+                            rag_lock.clone(),
+                            rag_stores.clone(),
+                        )
+                        .await;
+                    }
+
                     // Built without the `rag` feature: the frames still
                     // decode (the proto is one wire format for every
                     // build), so answer UNIMPLEMENTED rather than
@@ -390,7 +403,8 @@ impl KwaaiNet for KwaaiNetService {
                     client_frame::Body::RagStatus(_)
                     | client_frame::Body::RagInit(_)
                     | client_frame::Body::RagIngest(_)
-                    | client_frame::Body::RagQuery(_) => {
+                    | client_frame::Body::RagQuery(_)
+                    | client_frame::Body::RagDelete(_) => {
                         let _ = out_tx
                             .send(Ok(error_frame(
                                 id,
@@ -603,18 +617,22 @@ async fn cached_local_vs(
 /// failures into the two operator-actionable forms.
 #[cfg(feature = "rag")]
 fn classify_rag_error(msg: &str) -> ErrorCode {
-    // A KB that was never initialised — the actionable "Run: kwaainet
-    // rag init …" message comes straight from load_rag_config_for.
-    if msg.contains("not initialised") {
+    // Something the client named doesn't exist: a KB that was never
+    // initialised (the actionable "Run: kwaainet rag init …" message comes
+    // straight from load_rag_config_for), or a document the KB doesn't
+    // hold. Both are NOT_FOUND — the client already knows which it asked
+    // for, so the code need only say "the thing you named isn't there".
+    if msg.contains("not initialised") || msg.contains("is not in KB") {
         return ErrorCode::NotFound;
     }
     // Caller-supplied arguments we rejected before touching any store.
     // A nonexistent ingest path is INVALID_ARGUMENT rather than NOT_FOUND:
-    // NOT_FOUND is reserved here for "the KB doesn't exist", so a client
-    // can branch on the code alone without also parsing the message.
+    // that path is the client's own filesystem claim, not a name it looked
+    // up in a reply we sent it.
     if msg.contains("no such file on the daemon host")
         || msg.contains("requires a path")
         || msg.contains("requires non-empty query text")
+        || msg.contains("requires a document name")
     {
         return ErrorCode::InvalidArgument;
     }
@@ -1167,6 +1185,101 @@ async fn run_rag_query(req: RagQueryRequest, rag_stores: RagStores) -> Result<Ve
             text: r.chunk_meta.text.clone(),
         })
         .collect())
+}
+
+/// `rag_delete` — drop one document and everything derived from it.
+#[cfg(feature = "rag")]
+async fn spawn_session_rag_delete(
+    id: u64,
+    req: RagDeleteRequest,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    rag_lock: Arc<Mutex<()>>,
+    rag_stores: RagStores,
+) {
+    tokio::spawn(async move {
+        let _guard = rag_lock.lock().await;
+
+        match run_rag_delete(req, rag_stores).await {
+            Ok(reply) => {
+                let _ = out_tx
+                    .send(Ok(ServerFrame {
+                        id,
+                        body: Some(server_frame::Body::RagDelete(reply)),
+                    }))
+                    .await;
+                let _ = out_tx.send(Ok(done_frame(id))).await;
+            }
+            Err(e) => send_rag_error(id, &e, &out_tx).await,
+        }
+    });
+}
+
+/// Remove `doc_name` from the metadata store, the vector store and the
+/// keyword index.
+///
+/// Order matters: the MetaStore delete is what *tells us which vectors to
+/// drop* (it returns the chunk ids it removed), so it has to go first. That
+/// makes it the commit point — if the vector or BM25 delete then fails, the
+/// document is already gone from the corpus a query walks, so the residue
+/// is unreachable rather than half-visible. Neither residue is silently
+/// ignored: both are logged, and the vector store's is the one worth
+/// reclaiming, so it fails the op rather than reporting a clean delete.
+#[cfg(feature = "rag")]
+async fn run_rag_delete(req: RagDeleteRequest, rag_stores: RagStores) -> Result<RagDeleteReply> {
+    use kwaai_rag::meta_store::MetaStore;
+
+    let kb = rag_kb_or_default(&req.kb);
+    let doc_name = req.doc_name.trim().to_string();
+    if doc_name.is_empty() {
+        anyhow::bail!("rag_delete requires a document name");
+    }
+
+    let (rag_cfg, tenant_id) = crate::rag_cmd::load_rag_config_for(&kb)?;
+    reject_if_remote(&kb, &rag_cfg)?;
+
+    let data_dir = rag_cfg.data_dir();
+    let meta_dir = data_dir.clone();
+    let meta = tokio::task::spawn_blocking(move || MetaStore::open(&meta_dir, tenant_id))
+        .await
+        .context("metadata store task panicked")??;
+
+    // Returns the chunk ids it removed, which are exactly the vector ids.
+    // An empty list means the KB never held this document.
+    let delete_doc = doc_name.clone();
+    let ids = tokio::task::spawn_blocking(move || meta.delete_doc(&delete_doc))
+        .await
+        .context("metadata delete task panicked")??;
+
+    if ids.is_empty() {
+        anyhow::bail!("document '{doc_name}' is not in KB '{kb}'");
+    }
+
+    let vs = cached_local_vs(&rag_stores, &data_dir).await?;
+    vs.delete(tenant_id, &ids)
+        .await
+        .with_context(|| format!("removing {} vectors for '{doc_name}'", ids.len()))?;
+
+    // Best-effort by design: the index is a derived cache, and a stale
+    // entry only costs a keyword hit on text that no longer resolves to a
+    // chunk. `open_backfilled` repairs the drift on a later ingest.
+    let bm25_dir = data_dir.clone();
+    let bm25_doc = doc_name.clone();
+    let bm25 = tokio::task::spawn_blocking(move || {
+        kwaai_rag::bm25::BM25Index::open(&bm25_dir, tenant_id)?.delete_doc(&bm25_doc)
+    })
+    .await
+    .context("BM25 delete task panicked")?;
+    if let Err(e) = bm25 {
+        warn!(
+            error = format!("{e:#}"),
+            doc = %doc_name,
+            "BM25 index not updated on delete; it will be repaired on the next ingest"
+        );
+    }
+
+    Ok(RagDeleteReply {
+        chunks_deleted: ids.len() as u32,
+    })
 }
 
 /// Classify a local `generate` failure. The biggest category is model

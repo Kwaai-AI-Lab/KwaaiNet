@@ -80,7 +80,7 @@ message ClientFrame {
         // Cancel an in-flight operation by id.
         Cancel cancel = 14;
 
-        // --- RAG ops (tags 20-23, owned by feat/grpc-rag) ---
+        // --- RAG ops (tags 20-25, owned by feat/grpc-rag) ---
         //
         // Tags 15-19 are claimed by other in-flight branches
         // (grpc-shards 15, grpc-vpk 16, grpc-peers 17-18,
@@ -120,6 +120,12 @@ message ClientFrame {
         // yields *two* StorageUpdate replies before Done — see
         // StorageUpdate.probes_pending.
         StorageDiscoveryRequest storage_discovery = 16;
+
+        // Remove one document and every chunk it contributed. One
+        // ServerFrame.rag_delete reply, then Done. Deleting a document
+        // the KB doesn't hold is NOT_FOUND rather than a silent no-op,
+        // so a stale UI row doesn't read as a successful delete.
+        RagDeleteRequest rag_delete = 25;
     }
 }
 
@@ -147,10 +153,10 @@ message ServerFrame {
         // Reply to a StatusRequest.
         StatusReply status = 14;
 
-        // --- RAG replies (tags 20-24, owned by feat/grpc-rag) ---
+        // --- RAG replies (tags 20-25, owned by feat/grpc-rag) ---
         // Numbering deliberately mirrors the ClientFrame side for
-        // 20-23; 24 has no request counterpart because ingest's reply
-        // is distinct from its progress frames.
+        // 20-23 and 25; 24 has no request counterpart because ingest's
+        // reply is distinct from its progress frames.
 
         // Reply to RagStatusRequest.
         RagStatusUpdate rag_status = 20;
@@ -179,6 +185,9 @@ message ServerFrame {
         // per discovery round: one with probes_pending set, then one
         // with reachability resolved.
         StorageUpdate storage = 16;
+
+        // Reply to RagDeleteRequest.
+        RagDeleteReply rag_delete = 25;
     }
 }
 
@@ -628,6 +637,24 @@ message RagChunk {
 message RagQueryReply {
     // Ordered best-first. Empty when nothing cleared min_score.
     repeated RagChunk chunks = 1;
+}
+
+message RagDeleteRequest {
+    // KB to delete from. Empty means "default".
+    string kb = 1;
+
+    // Document name as reported in RagKb.docs — the display name the
+    // ingest recorded, not a filesystem path. Deleting by name rather
+    // than by chunk id keeps the client from having to know how a
+    // document was split.
+    string doc_name = 2;
+}
+
+message RagDeleteReply {
+    // Chunks removed from the metadata store, which is also the number
+    // of vectors dropped. Never 0 on success: a document with no chunks
+    // answers NOT_FOUND instead.
+    uint32 chunks_deleted = 1;
 }
 
 // =====================================================================
