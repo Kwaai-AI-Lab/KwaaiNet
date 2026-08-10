@@ -101,10 +101,9 @@ were never there.
 
 ---
 
-## OPEN BUG — a loopback address gets attributed to a remote peer
+## FIXED — an address filed under the wrong peer never got evicted
 
 Found 2026-08-10 by the bake-off harness, *after* the circuit-address fix landed.
-**Not fixed.**
 
 Symptom: unary calls to metro-win fail, intermittently and then persistently,
 with the native node dialing **its own machine**:
@@ -135,13 +134,46 @@ This is the same class the branch already has two commits against ("cap
 routing-table addresses learned from identify", "filter kad addresses on the way
 out, not just on the way in"). The remaining hole is the by-PeerId dial.
 
-### Suggested fix direction
+### The fix, and the approach that did not work
 
-Filter on the way **in** as well — reject non-announceable addresses before they
-reach `kad.add_address`, rather than only when reading back — or supply
-`DialOpts` with an explicitly filtered address list instead of letting the swarm
-resolve them. A regression test should assert that a loopback address learned for
-a *remote* peer never becomes dialable.
+First attempt was a proactive sweep: before each routed dispatch, evict anything
+kad held for the peer that failed `is_announceable`. It passed the existing tests
+and was **wrong**. `is_announceable` answers *"is this worth telling the world
+about"*, not *"can I dial it"* — and loopback and LAN addresses are exactly how
+two nodes on one machine, or one subnet, reach each other. That sweep would have
+broken the two-nodes-on-one-Mac setup while fixing the fleet. The existing tests
+did not catch it only because `dht_find_peer` does not route through the path the
+sweep was added to.
+
+What distinguishes a poisoned address from a legitimate loopback one is not its
+shape — it is that dialing it reaches **somebody else**. So the eviction is
+evidence-based: on `DialError::WrongPeerId`, drop that address for that peer.
+Nothing is evicted on suspicion; an address is removed only once it has proven it
+does not belong to the peer it was filed under.
+
+That also covers the case a shape-based filter never could: an address that is
+perfectly routable and simply belongs to a different node.
+
+### Regression cover
+
+`kwaai-p2p/tests/swarm.rs::an_address_that_answers_with_the_wrong_peer_id_is_evicted`
+reproduces the production shape — Bob's real address filed in kad under a ghost
+peer id, then a unary call to the ghost (the by-PeerId path). It asserts the
+entry is gone afterwards.
+
+Verified it actually catches the bug: with the eviction removed the test fails
+(times out after 20s waiting for the entry to disappear); with it, it passes.
+
+### Verified live
+
+Rebuilt, restarted, and re-run through the bake-off harness — the same harness
+that found it:
+
+| | before | after |
+|---|---|---|
+| visibility parity vs p2pd | missing 1 peer | **missing 0** |
+| metro-win reachability | 0% (flapping 100%/0% across runs) | **100%** |
+| scorecard verdict | FAIL | **PASS** |
 
 ## No memory leak, no FD leak — 60-minute soak
 

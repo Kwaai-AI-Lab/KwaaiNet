@@ -432,3 +432,61 @@ async fn add_kad_address_makes_a_peer_resolvable_without_a_dial() {
         "the manually-added address should be resolvable"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Routing-table poisoning: an address that belongs to somebody else
+// ---------------------------------------------------------------------------
+
+/// Regression cover for the 2026-08-10 finding.
+///
+/// A live address filed in kad under the *wrong* peer id makes every dial to
+/// that peer land on whoever actually owns the address. Before the fix the
+/// entry survived the failure, so kad handed the same wrong address back on the
+/// next attempt and the peer stayed unreachable — in production a stale
+/// `/ip4/127.0.0.1/tcp/8080` under metro-win's id meant calls to metro-win hit
+/// a different local node forever, and the working circuit address was never
+/// tried.
+///
+/// `known_addresses` cannot prevent this: the address is perfectly routable, and
+/// a dial by PeerId never passes through that filter anyway.
+#[tokio::test]
+async fn an_address_that_answers_with_the_wrong_peer_id_is_evicted() {
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    // A peer that does not exist, pointed at Bob's real address. Dialing it
+    // reaches Bob, who reports his own id — exactly the production shape.
+    let ghost_id = Keypair::generate_ed25519().public().to_peer_id();
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    let stripped: Multiaddr = bob_addr
+        .iter()
+        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        .collect();
+
+    alice
+        .add_kad_address(ghost_id, stripped.clone())
+        .await
+        .unwrap();
+    assert!(
+        alice.routing_peers().await.unwrap().contains(&ghost_id),
+        "the poisoned entry should be in the routing table to begin with"
+    );
+
+    // A unary call is the production path: it dispatches by PeerId, so the
+    // swarm resolves addresses from kad directly rather than through
+    // `known_addresses`. The call is expected to fail — the point is what the
+    // failure leaves behind.
+    let _ = alice.call_unary_handler(ghost_id, "hello", b"ping").await;
+
+    // The failure is evidence the address is not the ghost's, so it must go.
+    // Its only address gone, kad drops the peer with it.
+    eventually("the mis-filed address to be evicted", || async {
+        let still_there = alice
+            .routing_peers()
+            .await
+            .map(|peers| peers.contains(&ghost_id))
+            .unwrap_or(true);
+        (!still_there).then_some(())
+    })
+    .await;
+}
