@@ -1175,6 +1175,41 @@ impl NetworkService {
                     debug!(?peer_id, error = %error, "outgoing connection error");
                 }
 
+                // `WrongPeerId` is *proof* this address does not belong to the
+                // peer we filed it under — somebody else answered at it. Evict
+                // it, or kad hands the same wrong address back on every
+                // subsequent dial and the peer stays unreachable for as long as
+                // the entry lives.
+                //
+                // Why eviction has to be evidence-based rather than a filter:
+                // kad learns addresses we never see (`Behaviour::discovered`
+                // inserts what remote peers report during a query walk, verbatim
+                // and inside libp2p), and a dial *by PeerId* — which is how
+                // every routed unary and stream request reaches the swarm —
+                // asks the behaviours for addresses directly, so it never passes
+                // through `known_addresses`' filter. But we cannot pre-emptively
+                // drop everything that fails `is_announceable`: that answers
+                // "worth telling the world about", not "dialable by me", and
+                // loopback and LAN addresses are exactly how two nodes on one
+                // machine or one subnet reach each other. Only a failed dial
+                // distinguishes the two, so only a failed dial evicts.
+                //
+                // Observed on 2026-08-10: `/ip4/127.0.0.1/tcp/8080` filed under
+                // metro-win's peer id resolved to a *different local node*, so
+                // every call to metro-win hit it, failed, and never tried the
+                // circuit address that would have worked. Reachability flapped
+                // 100%/0% as the entry aged in and out of the table.
+                if let (Some(peer), libp2p::swarm::DialError::WrongPeerId { obtained, address }) =
+                    (peer_id, &error)
+                {
+                    warn!(
+                        %peer, addr = %address, %obtained,
+                        "address answered with a different peer id; evicting from the routing table"
+                    );
+                    let addr = address.clone();
+                    self.swarm.behaviour_mut().kad.remove_address(&peer, &addr);
+                }
+
                 // A relay we cannot reach will never give us a reservation.
                 if let Some(peer) = peer_id {
                     let actions = self.relays.on_relay_dial_failed(peer, Instant::now());
