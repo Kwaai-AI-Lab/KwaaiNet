@@ -32,7 +32,9 @@ use libp2p::{
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
-use crate::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_p2p};
+use crate::addresses::{
+    dest_peer_id, is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
+};
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
@@ -594,13 +596,21 @@ impl NetworkService {
     fn dial(&mut self, addr: Multiaddr) -> P2PResult<ConnectionId> {
         use libp2p::swarm::dial_opts::DialOpts;
 
-        if let Some(peer) = peer_id_from_multiaddr(&addr) {
+        // `dest_peer_id`, not `peer_id_from_multiaddr`: the latter returns the
+        // *first* `/p2p`, which on a circuit address is the relay. Filing the
+        // circuit under the relay's key would both pollute the relay's entry
+        // and leave the destination with no route.
+        if let Some(peer) = dest_peer_id(&addr) {
             // Kad wants the address without the trailing /p2p component; it
             // re-attaches it itself via `with_p2p`. A bare `/p2p/<id>` strips
             // to an *empty* multiaddr — seeding that would poison the routing
             // table with an undialable entry that `known_addresses` then
             // mistakes for a way to reach the peer.
-            let stripped = strip_p2p(&addr);
+            //
+            // `strip_dest_p2p` keeps a circuit's relay hop: without it the
+            // stored entry reads `/…/p2p-circuit` with no relay named, and
+            // every later dial of it fails with "Missing relay peer id".
+            let stripped = strip_dest_p2p(&addr);
             if !stripped.is_empty() {
                 // Uncapped for the same reason as `AddKadAddress`: an address
                 // we are actively dialing is our own intent, not a remote
@@ -730,12 +740,19 @@ impl NetworkService {
             }
         }
 
-        // Hand back addresses *without* the `/p2p/<peer-id>` suffix: kad stores
-        // fully-qualified ones (since libp2p 0.54) while connection addresses
-        // never carry one, and callers append the id themselves — so a mixed
-        // bag yields `/p2p/<id>/p2p/<id>`, which parses and then fails to dial.
+        // Hand back addresses *without* the destination `/p2p/<peer-id>`: kad
+        // stores fully-qualified ones (since libp2p 0.54) while connection
+        // addresses never carry one, and callers append the id themselves — so
+        // a mixed bag yields `/p2p/<id>/p2p/<id>`, which parses and then fails
+        // to dial.
+        //
+        // Only the *destination* id goes. A circuit address also carries the
+        // relay's id before `/p2p-circuit`, and that one has to survive: this
+        // is the single place `connect`, the routed dial and the GUI peer table
+        // all read addresses back, so stripping it here made every relay-only
+        // peer undialable from the native path while p2pd reached them fine.
         for addr in &mut addrs {
-            *addr = strip_p2p(addr);
+            *addr = strip_dest_p2p(addr);
         }
         addrs.retain(|a| !a.is_empty());
         addrs.dedup();

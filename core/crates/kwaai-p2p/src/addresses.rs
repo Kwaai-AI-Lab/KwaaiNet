@@ -160,10 +160,72 @@ pub fn strip_p2p(addr: &Multiaddr) -> Multiaddr {
         .collect()
 }
 
+/// Drop the *destination* `/p2p/<peer-id>` while keeping a circuit's relay hop.
+///
+/// [`strip_p2p`] removes every `/p2p` component. That is right for a direct
+/// address, where the only one names the peer the caller re-attaches anyway,
+/// and wrong for a circuit address, where there are two with different jobs:
+///
+/// ```text
+/// /ip4/<relay-ip>/tcp/<port>/p2p/<relay>/p2p-circuit/p2p/<dest>
+///                           ^^^^^^^^^^^^             ^^^^^^^^^^
+///                           which relay to           who to reach
+///                           dial *through*           through it
+/// ```
+///
+/// Stripping the relay hop leaves `/ip4/…/tcp/…/p2p-circuit/p2p/<dest>`, which
+/// rust-libp2p refuses to dial outright — `Missing relay peer id.` — because a
+/// circuit dial has to name the relay to ask. go-libp2p accepts the shortened
+/// form (it learned the address *from* that relay, so the identity is implicit),
+/// which is why the p2pd path reached relay-only peers that the native path
+/// could not. Observed live against metro-win, 2026-08-10.
+///
+/// Only the component *after* `/p2p-circuit` is the destination, so only that
+/// one is safe to drop.
+pub fn strip_dest_p2p(addr: &Multiaddr) -> Multiaddr {
+    if !is_circuit(addr) {
+        return strip_p2p(addr);
+    }
+    let mut past_circuit = false;
+    addr.iter()
+        .filter(|p| {
+            if matches!(p, Protocol::P2pCircuit) {
+                past_circuit = true;
+                return true;
+            }
+            !(past_circuit && matches!(p, Protocol::P2p(_)))
+        })
+        .collect()
+}
+
 /// Extract the `/p2p/<peer-id>` component from a multiaddr, if present.
+///
+/// Returns the **first** one. On a circuit address that is the *relay*, not the
+/// destination — use [`dest_peer_id`] when you want "who does this address
+/// reach".
 pub fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
     addr.iter().find_map(|p| match p {
         Protocol::P2p(peer) => Some(peer),
+        _ => None,
+    })
+}
+
+/// The peer this address *reaches*, as opposed to the one it routes through.
+///
+/// For a direct address that is the only `/p2p` component. For a circuit it is
+/// the one after `/p2p-circuit`; the one before names the relay. Returns `None`
+/// for a circuit address that names a relay but no destination.
+pub fn dest_peer_id(addr: &Multiaddr) -> Option<PeerId> {
+    if !is_circuit(addr) {
+        return peer_id_from_multiaddr(addr);
+    }
+    let mut past_circuit = false;
+    addr.iter().find_map(|p| match p {
+        Protocol::P2pCircuit => {
+            past_circuit = true;
+            None
+        }
+        Protocol::P2p(peer) if past_circuit => Some(peer),
         _ => None,
     })
 }
@@ -289,6 +351,102 @@ mod tests {
             "strict must not break it"
         );
         assert!(is_circuit(&addr));
+    }
+
+    // -- circuit addresses must keep the relay hop ------------------------
+    //
+    // Regression cover for the 2026-08-10 finding: a relay-only peer was
+    // reachable from the Go p2pd path and undialable from the native one,
+    // because `known_addresses` ran every address through `strip_p2p` and that
+    // deleted the relay's peer id along with the destination's. rust-libp2p
+    // then rejected the result with "Missing relay peer id."
+
+    const RELAY: &str = "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc";
+    const DEST: &str = "12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE";
+
+    fn full_circuit() -> Multiaddr {
+        ma(&format!(
+            "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit/p2p/{DEST}"
+        ))
+    }
+
+    #[test]
+    fn strip_dest_p2p_keeps_the_relay_and_drops_the_destination() {
+        assert_eq!(
+            strip_dest_p2p(&full_circuit()).to_string(),
+            format!("/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"),
+        );
+    }
+
+    #[test]
+    fn a_stripped_circuit_readdressed_to_its_destination_is_dialable() {
+        // Exactly the round trip `known_addresses` -> caller performs: strip on
+        // the way out, re-attach the destination on the way in. The relay hop
+        // has to survive it, or the dial fails before it leaves the process.
+        let round_tripped = strip_dest_p2p(&full_circuit())
+            .with(Protocol::P2p(DEST.parse().expect("dest peer id")));
+        assert_eq!(round_tripped, full_circuit());
+        assert!(
+            round_tripped.iter().any(|p| matches!(p, Protocol::P2p(id) if id.to_string() == RELAY)),
+            "the relay hop is what makes a circuit address dialable"
+        );
+    }
+
+    #[test]
+    fn the_old_strip_p2p_would_have_broken_the_circuit() {
+        // Pins *why* `strip_dest_p2p` exists. `strip_p2p` is still correct for
+        // a plain relay address (see `circuit_listen_addr`), so it stays — this
+        // asserts the two are genuinely different on a circuit.
+        let broken = strip_p2p(&full_circuit());
+        assert_eq!(broken.to_string(), "/ip4/18.219.43.67/tcp/8000/p2p-circuit");
+        assert!(
+            !broken.iter().any(|p| matches!(p, Protocol::P2p(_))),
+            "no relay named — this is the address rust-libp2p refuses"
+        );
+        assert_ne!(broken, strip_dest_p2p(&full_circuit()));
+    }
+
+    #[test]
+    fn strip_dest_p2p_matches_strip_p2p_on_direct_addresses() {
+        let direct = ma(&format!("/ip4/75.141.127.202/tcp/8080/p2p/{DEST}"));
+        assert_eq!(strip_dest_p2p(&direct), strip_p2p(&direct));
+        assert_eq!(
+            strip_dest_p2p(&direct).to_string(),
+            "/ip4/75.141.127.202/tcp/8080"
+        );
+    }
+
+    #[test]
+    fn dest_peer_id_reads_through_the_relay_not_the_relay_itself() {
+        // `peer_id_from_multiaddr` returns the *first* /p2p, which on a circuit
+        // is the relay. Filing a circuit under that key would leave the
+        // destination with no route at all.
+        assert_eq!(
+            dest_peer_id(&full_circuit()).map(|p| p.to_string()),
+            Some(DEST.to_string())
+        );
+        assert_eq!(
+            peer_id_from_multiaddr(&full_circuit()).map(|p| p.to_string()),
+            Some(RELAY.to_string()),
+            "documents the trap dest_peer_id exists to avoid"
+        );
+    }
+
+    #[test]
+    fn dest_peer_id_is_none_when_a_circuit_names_no_destination() {
+        // Our own reservation-listen address: a relay and a circuit, nobody on
+        // the far end yet. Nothing to file it under.
+        let listen = ma(&format!("/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"));
+        assert_eq!(dest_peer_id(&listen), None);
+    }
+
+    #[test]
+    fn dest_peer_id_on_a_direct_address_is_the_peer() {
+        let direct = ma(&format!("/ip4/75.141.127.202/tcp/8080/p2p/{DEST}"));
+        assert_eq!(
+            dest_peer_id(&direct).map(|p| p.to_string()),
+            Some(DEST.to_string())
+        );
     }
 
     #[test]
