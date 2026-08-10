@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use kwaai_rag::{
+    bm25::BM25Index,
     embedder::EmbedClient,
     graph::GraphStore,
     ingestion::{ingest_text, IngestConfig},
@@ -44,6 +45,9 @@ struct RagState {
     client: Option<Arc<Mutex<P2PClient>>>,
     embed: EmbedClient,
     meta: Arc<MetaStore>,
+    /// Persistent keyword index; None means fall back to per-query in-RAM
+    /// builds (never wrong, just slower).
+    bm25: Option<Arc<BM25Index>>,
     inference_url: String,
     top_k: usize,
     http: reqwest::Client,
@@ -97,6 +101,14 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
         };
         let meta = Arc::new(MetaStore::open(&rag.data_dir(), tenant_id)?);
 
+        let bm25 = match BM25Index::open_backfilled(&rag.data_dir(), &meta) {
+            Ok(idx) => Some(Arc::new(idx)),
+            Err(e) => {
+                tracing::warn!("BM25 index unavailable ({e:#}); using in-RAM fallback");
+                None
+            }
+        };
+
         let doc_context: Option<String> = GraphStore::open(&rag.data_dir(), tenant_id)
             .ok()
             .and_then(|g| {
@@ -120,6 +132,7 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
             client: p2p_client,
             embed,
             meta,
+            bm25,
             inference_url: inference_url.clone(),
             top_k,
             http: reqwest::Client::new(),
@@ -237,6 +250,7 @@ async fn do_chat(state: &RagState, req: ChatRequest) -> Result<serde_json::Value
             hyde_inference_url: None,
             hyde_model: None,
             hyde_alpha: None,
+            bm25: state.bm25.clone(),
             ..Default::default()
         };
 
@@ -406,6 +420,7 @@ async fn do_search(
             hyde_inference_url: None,
             hyde_model: None,
             hyde_alpha: None,
+            bm25: state.bm25.clone(),
             ..Default::default()
         };
         let chunks = match state.storage_url.as_deref() {
@@ -507,6 +522,11 @@ async fn api_delete_doc(
         if ids.is_empty() {
             return (axum::http::StatusCode::NOT_FOUND, "document not found").into_response();
         }
+        // Best-effort: on failure the count drift makes the next
+        // open_backfilled rebuild the index without the deleted doc.
+        if let Some(ref idx) = state.bm25 {
+            let _ = idx.delete_doc(&name);
+        }
         match state.storage_url.as_deref() {
             Some("local") => {
                 if let Some(ref vs) = state.local_vs {
@@ -566,7 +586,8 @@ async fn api_ingest(
 
             let tenant_id = state.tenant_id;
             let meta = state.meta.clone();
-            let cfg = IngestConfig::new(state.embed.clone());
+            let mut cfg = IngestConfig::new(state.embed.clone());
+            cfg.bm25 = state.bm25.clone();
 
             let result = match state.storage_url.as_deref() {
                 Some("local") => {

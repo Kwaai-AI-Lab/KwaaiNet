@@ -116,6 +116,14 @@ pub struct IngestConfig {
     pub doc_meta: HashMap<String, String>,
     /// Optional document schema — controls section tagging, skip flags, and narrator overrides.
     pub doc_schema: Option<DocSchema>,
+    /// Persistent BM25 index to keep in sync with the metadata store.
+    ///
+    /// When set, newly ingested chunks are added incrementally so hybrid
+    /// retrieval never has to rebuild the keyword index from the full
+    /// corpus. Maintenance is best-effort: a failed index write is logged
+    /// and ingest continues, because `BM25Index::open_backfilled` detects
+    /// the resulting count drift and rebuilds on the next query.
+    pub bm25: Option<std::sync::Arc<crate::bm25::BM25Index>>,
 }
 
 impl IngestConfig {
@@ -127,6 +135,7 @@ impl IngestConfig {
             graph: None,
             doc_meta: HashMap::new(),
             doc_schema: None,
+            bm25: None,
         }
     }
 }
@@ -210,6 +219,19 @@ pub async fn ingest_text(
     }
 
     meta.put_chunks(&metas, &ids)?;
+
+    if let Some(ref bm25) = cfg.bm25 {
+        let triples: Vec<(i64, &str, &str)> = metas
+            .iter()
+            .zip(ids.iter())
+            .map(|(m, id)| (*id, m.doc_name.as_str(), m.text.as_str()))
+            .collect();
+        if let Err(e) = bm25.add_chunks(&triples) {
+            // Best-effort: a busy tantivy writer lock (e.g. a concurrent
+            // ingest in another process) must not fail the ingest itself.
+            warn!(error = %e, doc = doc_name, "BM25 index update failed; will rebuild on next query");
+        }
+    }
 
     // Optional: extract entities from each chunk and populate the knowledge graph.
     if let Some(graph_cfg) = &cfg.graph {

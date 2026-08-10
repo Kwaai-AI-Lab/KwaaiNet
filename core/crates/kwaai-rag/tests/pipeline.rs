@@ -117,7 +117,7 @@ fn pipeline_delete_doc_removes_from_meta_store() {
 #[test]
 fn pipeline_bm25_indexes_chunk_text_and_returns_hit() {
     let dir = TempDir::new().unwrap();
-    let index = BM25Index::open(dir.path()).unwrap();
+    let index = BM25Index::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
 
     let text = "District Six was a vibrant community in Cape Town before forced removals.";
     let chunks = split_text(text, "d6.txt", &default_cfg(), None);
@@ -143,7 +143,7 @@ fn pipeline_bm25_indexes_chunk_text_and_returns_hit() {
 #[test]
 fn pipeline_bm25_search_miss_for_absent_term() {
     let dir = TempDir::new().unwrap();
-    let index = BM25Index::open(dir.path()).unwrap();
+    let index = BM25Index::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
 
     let text = "Alice went to the park and fed the ducks by the pond.";
     let chunks = split_text(text, "park.txt", &default_cfg(), None);
@@ -164,7 +164,7 @@ fn pipeline_bm25_search_miss_for_absent_term() {
 #[test]
 fn pipeline_bm25_delete_doc_removes_from_index() {
     let dir = TempDir::new().unwrap();
-    let index = BM25Index::open(dir.path()).unwrap();
+    let index = BM25Index::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
 
     let text = "Walied Rassool was born in Cape Town and attended local schools.";
     let chunks = split_text(text, "walied.txt", &default_cfg(), None);

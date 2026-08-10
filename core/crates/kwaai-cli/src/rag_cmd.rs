@@ -7,6 +7,7 @@ use libp2p::PeerId;
 use uuid::Uuid;
 
 use kwaai_rag::{
+    bm25::BM25Index,
     cache::QueryCache,
     document,
     embedder::EmbedClient,
@@ -587,6 +588,7 @@ async fn cmd_ingest(
         cfg.chunk_cfg.min_chunk_len = min_chunk_len;
         cfg.chunk_cfg.strategy = parse_chunk_strategy(&chunk_strategy);
         cfg.chunk_cfg.surr_mode = parse_surr_mode(&surr_mode);
+        cfg.bm25 = open_bm25(&rag_cfg, &meta, &kb);
 
         if let Some(path) = doc_meta_path {
             cfg.doc_meta = load_doc_meta(&path)?;
@@ -997,6 +999,7 @@ async fn cmd_query(
             query_classify: parse_classify_method(&query_classify),
             query_multi_hop: false,
             use_summary_expansion: false,
+            bm25: None, // per-KB index attached inside the loop below
         };
         let mut spinner = if json_out {
             None
@@ -1017,6 +1020,11 @@ async fn cmd_query(
             let embed =
                 EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
             let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+            let retrieve_cfg = {
+                let mut c = retrieve_cfg.clone();
+                c.bm25 = open_bm25(&rag_cfg, &meta, kb_name);
+                c
+            };
             let infer_url = inference_url
                 .clone()
                 .unwrap_or_else(|| rag_cfg.inference_url.clone());
@@ -1532,6 +1540,7 @@ async fn cmd_chat(
             query_classify: kwaai_rag::query_understand::ClassifyMethod::Rule,
             query_multi_hop: false,
             use_summary_expansion: false,
+            bm25: open_bm25(&rag_cfg, &meta, &kb),
         };
 
         let http = reqwest::Client::new();
@@ -1846,6 +1855,12 @@ async fn cmd_delete_doc(name: String, yes: bool, kb: String) -> Result<()> {
             return Ok(());
         }
 
+        // Best-effort: on failure the count drift makes the next
+        // open_backfilled rebuild the index without the deleted doc.
+        if let Ok(idx) = BM25Index::open(&rag_cfg.data_dir(), tenant_id) {
+            let _ = idx.delete_doc(&name);
+        }
+
         match rag_cfg.storage_url.as_deref() {
             Some("local") => {
                 let vs = open_local_vs(&rag_cfg.data_dir())?;
@@ -1874,6 +1889,23 @@ async fn cmd_delete_doc(name: String, yes: bool, kb: String) -> Result<()> {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Open the KB's persistent BM25 index, backfilling if it has drifted from
+/// the metadata store.
+///
+/// Best-effort by design: `None` (e.g. another process holds the tantivy
+/// writer lock) makes ingest skip index maintenance and retrieval fall back
+/// to a transient in-RAM build — slower, never wrong, and the next
+/// successful open rebuilds from the authoritative metadata store.
+fn open_bm25(rag_cfg: &RagConfig, meta: &MetaStore, label: &str) -> Option<Arc<BM25Index>> {
+    match BM25Index::open_backfilled(&rag_cfg.data_dir(), meta) {
+        Ok(idx) => Some(Arc::new(idx)),
+        Err(e) => {
+            tracing::warn!("BM25 index unavailable for {label} ({e:#}); using in-RAM fallback");
+            None
+        }
+    }
+}
 
 fn load_rag_config_for(kb: &str) -> Result<(RagConfig, Uuid)> {
     let cfg = KwaaiNetConfig::load_or_create()?;
@@ -2560,6 +2592,7 @@ async fn run_sync_pass(
 
     let (rag_cfg, tenant_id) = load_rag_config_for(kb)?;
     let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+    let bm25 = open_bm25(&rag_cfg, &meta, kb);
 
     // Discover all matching files under the folder.
     let mut disk_files: Vec<(String, std::path::PathBuf)> = Vec::new();
@@ -2604,6 +2637,9 @@ async fn run_sync_pass(
                 sync_delete_vectors(&rag_cfg, tenant_id, old_ids).await;
             }
             meta.delete_sync_meta(doc_name)?;
+            if let Some(ref idx) = bm25 {
+                let _ = idx.delete_doc(doc_name);
+            }
         }
 
         // Ingest the file.
@@ -2620,6 +2656,7 @@ async fn run_sync_pass(
         let mut ingest_cfg = IngestConfig::new(embed);
         ingest_cfg.chunk_cfg = chunk_cfg.clone();
         ingest_cfg.doc_meta = doc_meta.clone();
+        ingest_cfg.bm25 = bm25.clone();
 
         if extract_entities {
             let infer_url = inference_url
@@ -2750,6 +2787,9 @@ async fn run_sync_pass(
             meta.delete_sync_meta(&doc_name)?;
             if !old_ids.is_empty() {
                 sync_delete_vectors(&rag_cfg, tenant_id, old_ids).await;
+            }
+            if let Some(ref idx) = bm25 {
+                let _ = idx.delete_doc(&doc_name);
             }
             println!("  - deleted  '{}' (source: {})", doc_name, sync.file_path);
             result.deleted += 1;
@@ -7894,6 +7934,7 @@ async fn cmd_eval(
             query_classify: parse_classify_method(&query_classify),
             query_multi_hop: false,
             use_summary_expansion: summary_expansion,
+            bm25: open_bm25(&rag_cfg, &meta, &kb),
         };
 
         // Load document context preamble from persisted schema metadata (if any).

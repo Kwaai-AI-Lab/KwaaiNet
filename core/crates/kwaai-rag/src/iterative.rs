@@ -127,12 +127,21 @@ where
 {
     let candidate_k = cfg.top_k * 4;
 
-    let all = meta.all_chunks()?;
-    let triples: Vec<(i64, &str, &str)> = all
-        .iter()
-        .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
-        .collect();
-    let bm25 = BM25Index::build_in_ram(&triples)?;
+    // Keyword index: the caller's persistent index when provided, else a
+    // transient rebuild — same choice as `retrieve_hybrid`.
+    let built;
+    let bm25: &BM25Index = match cfg.bm25 {
+        Some(ref idx) => idx,
+        None => {
+            let all = meta.all_chunks()?;
+            let triples: Vec<(i64, &str, &str)> = all
+                .iter()
+                .map(|(id, cm)| (*id, cm.doc_name.as_str(), cm.text.as_str()))
+                .collect();
+            built = BM25Index::build_in_ram(&triples)?;
+            &built
+        }
+    };
 
     // ── Round 1: vector+graph fusion ──────────────────────────────────────────
 

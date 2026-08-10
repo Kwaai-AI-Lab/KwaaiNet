@@ -201,6 +201,37 @@ impl MetaStore {
         Ok(out)
     }
 
+    /// Tenant this store is scoped to.
+    pub fn tenant_id(&self) -> Uuid {
+        self.tenant_id
+    }
+
+    /// Number of chunks stored for this tenant.
+    ///
+    /// A COUNT over the key range — cheap even for large corpora, unlike
+    /// `all_chunks` which deserialises every chunk body. Used to detect
+    /// BM25 index drift without paying for a full load.
+    pub fn chunk_count(&self) -> Result<usize> {
+        let prefix = self.tenant_id.as_bytes();
+        let start: [u8; 24] = {
+            let mut k = [0u8; 24];
+            k[..16].copy_from_slice(prefix);
+            k
+        };
+        let end: [u8; 24] = {
+            let mut k = [0xffu8; 24];
+            k[..16].copy_from_slice(prefix);
+            k
+        };
+        let db = self.db();
+        let n: i64 = db.0.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE key >= ?1 AND key <= ?2",
+            params![start.as_ref(), end.as_ref()],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     pub fn list_docs(&self) -> Result<Vec<String>> {
         let prefix = self.tenant_id.as_bytes();
         let start: Vec<u8> = prefix.to_vec();
