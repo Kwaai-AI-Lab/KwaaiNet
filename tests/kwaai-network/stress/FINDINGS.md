@@ -101,6 +101,48 @@ were never there.
 
 ---
 
+## OPEN BUG — a loopback address gets attributed to a remote peer
+
+Found 2026-08-10 by the bake-off harness, *after* the circuit-address fix landed.
+**Not fixed.**
+
+Symptom: unary calls to metro-win fail, intermittently and then persistently,
+with the native node dialing **its own machine**:
+
+```
+Dial error: Unexpected peer ID 12D3KooWAourfFox… at
+  /ip4/127.0.0.1/tcp/8080/p2p/12D3KooWLMizEbVi…
+```
+
+`/ip4/127.0.0.1/tcp/8080` is the *local* production p2pd node, filed in kad under
+**metro-win's** peer id. Once that entry exists every dial to metro-win hits the
+local node, gets the wrong peer id back, and fails — the perfectly good circuit
+addresses in the DHT are never tried. It clears when the entry is evicted, which
+is why reachability flaps: metro-win measured 100%, then 0%, then 100%, then 0%
+across four runs an hour apart.
+
+### Why the existing filter does not catch it
+
+`known_addresses` filters non-announceable addresses (loopback included) on the
+way out, and its comment calls itself "the one place every consumer reads them
+back". That is not quite true. The routed dispatch path calls
+`unary.send_request(peer, …)`, which dials **by PeerId** — so the swarm resolves
+addresses from the behaviours directly, and kad hands over everything it holds,
+including the loopback entry our filter never sees. The filter guards our read
+path, not libp2p's own address resolution.
+
+This is the same class the branch already has two commits against ("cap
+routing-table addresses learned from identify", "filter kad addresses on the way
+out, not just on the way in"). The remaining hole is the by-PeerId dial.
+
+### Suggested fix direction
+
+Filter on the way **in** as well — reject non-announceable addresses before they
+reach `kad.add_address`, rather than only when reading back — or supply
+`DialOpts` with an explicitly filtered address list instead of letting the swarm
+resolve them. A regression test should assert that a loopback address learned for
+a *remote* peer never becomes dialable.
+
 ## No memory leak, no FD leak — 60-minute soak
 
 macOS native node, 8 workers, payloads 64B → 1MiB, **60,945 RPCs**.
