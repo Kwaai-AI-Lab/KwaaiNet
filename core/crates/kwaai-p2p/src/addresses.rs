@@ -150,6 +150,28 @@ pub fn is_circuit(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::P2pCircuit))
 }
 
+/// Whether a peer reachable at `addr` can serve as *our* relay.
+///
+/// Deliberately **not** [`is_announceable`], which answers a different question.
+/// That one says "is this address worth telling the world about" and returns
+/// true for any circuit address unconditionally (rule 1 in the module docs) —
+/// correct for advertising our own reserved address, wrong for picking a relay.
+///
+/// A relay has to be **directly dialable**. A peer that is itself only reachable
+/// through someone else's circuit cannot host our reservation: asking for one
+/// builds `<their-circuit>/p2p/<them>/p2p-circuit`, a doubly-nested address that
+/// `Swarm::listen_on` rejects outright. Every reservation attempt against such a
+/// candidate fails, forever, on backoff.
+///
+/// Observed on metro-win 2026-08-11: its one good reservation lapsed, the relay
+/// manager rotated onto identify-discovered candidates that were themselves
+/// relay-only, and it never obtained another circuit — 2350 `listen_on refused`
+/// failures across ~12 candidates, while the node still reported healthy because
+/// DHT re-announce kept succeeding.
+pub fn is_relay_candidate_addr(addr: &Multiaddr) -> bool {
+    is_announceable(addr) && !is_circuit(addr)
+}
+
 /// Drop a trailing `/p2p/<peer-id>` component.
 ///
 /// Kademlia stores addresses without it and re-attaches it itself, so anything
@@ -236,10 +258,21 @@ pub fn dest_peer_id(addr: &Multiaddr) -> Option<PeerId> {
 /// This is what `Swarm::listen_on` is given to request a reservation. The relay
 /// address must *not* already carry a `/p2p` component, or the peer id ends up
 /// in the address twice and the dial resolves to nothing.
-pub fn circuit_listen_addr(relay_addr: &Multiaddr, relay: PeerId) -> Multiaddr {
-    strip_p2p(relay_addr)
-        .with(Protocol::P2p(relay))
-        .with(Protocol::P2pCircuit)
+pub fn circuit_listen_addr(relay_addr: &Multiaddr, relay: PeerId) -> Option<Multiaddr> {
+    // A relay reached through another relay cannot host a reservation, and
+    // appending to its circuit address silently produces
+    // `<their-circuit>/p2p/<them>/p2p-circuit` — nested, undialable, and
+    // rejected by `listen_on` on every retry. Refuse to build it at all;
+    // `is_relay_candidate_addr` should have filtered this out upstream, and a
+    // `None` here means it did not.
+    if is_circuit(relay_addr) {
+        return None;
+    }
+    Some(
+        strip_p2p(relay_addr)
+            .with(Protocol::P2p(relay))
+            .with(Protocol::P2pCircuit),
+    )
 }
 
 #[cfg(test)]
@@ -454,6 +487,42 @@ mod tests {
     }
 
     #[test]
+    fn a_circuit_address_is_never_a_relay_candidate() {
+        // `is_announceable` says yes to every circuit address by design; the
+        // relay-candidate question is a different one and must say no.
+        let circuit = ma(&format!(
+            "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
+        ));
+        assert!(is_announceable(&circuit), "still announceable as our own");
+        assert!(
+            !is_relay_candidate_addr(&circuit),
+            "but useless as a relay we reserve on"
+        );
+        let direct = ma("/ip4/198.51.100.7/tcp/8080");
+        assert!(is_relay_candidate_addr(&direct));
+        assert!(
+            !is_relay_candidate_addr(&ma("/ip4/192.168.1.7/tcp/8080")),
+            "LAN-only relays are still rejected"
+        );
+    }
+
+    #[test]
+    fn circuit_listen_addr_refuses_to_nest_circuits() {
+        // The doubly-nested address that listen_on rejected forever.
+        let relay: PeerId = RELAY.parse().unwrap();
+        let already_circuit = ma("/ip4/18.219.43.67/tcp/8000/p2p-circuit");
+        assert_eq!(circuit_listen_addr(&already_circuit, relay), None);
+
+        let direct = ma("/ip4/18.219.43.67/tcp/8000");
+        assert_eq!(
+            circuit_listen_addr(&direct, relay).map(|a| a.to_string()),
+            Some(format!(
+                "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
+            ))
+        );
+    }
+
+    #[test]
     fn a_mixed_address_is_rejected() {
         // Routable and unroutable IPs in one address: the unroutable one is a
         // local interface that leaked in, so the whole address is suspect.
@@ -499,7 +568,7 @@ mod tests {
         // second one would produce an address that dials nowhere.
         let with_p2p =
             ma("/ip4/198.18.0.20/tcp/8080/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc");
-        let listen = circuit_listen_addr(&with_p2p, relay);
+        let listen = circuit_listen_addr(&with_p2p, relay).expect("a direct relay address builds");
         assert_eq!(
             listen.to_string(),
             "/ip4/198.18.0.20/tcp/8080/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc/p2p-circuit"

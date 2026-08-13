@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use libp2p::{core::transport::ListenerId, Multiaddr, PeerId};
 use tracing::{debug, info, warn};
 
-use crate::addresses::{circuit_listen_addr, is_announceable, strip_p2p};
+use crate::addresses::{circuit_listen_addr, is_relay_candidate_addr, strip_p2p};
 
 /// Base backoff after a relay fails us, doubling per consecutive failure.
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
@@ -247,9 +247,15 @@ impl RelayManager {
             return self.on_relay_ready(peer, now);
         }
         // A relay we can only reach at a LAN address is no use to peers who are
-        // not on that LAN.
-        let Some(addr) = listen_addrs.iter().find(|a| is_announceable(a)) else {
-            debug!(%peer, "peer offers relay hop but has no announceable address");
+        // not on that LAN — and a relay we can only reach *through another
+        // relay* is no use to anyone, ourselves included. `is_relay_candidate_addr`
+        // is the second point: `is_announceable` passes any circuit address
+        // unconditionally, which is right for advertising our own reserved
+        // address and wrong here. Accepting one produced a nested
+        // `<their-circuit>/p2p/<them>/p2p-circuit` that `listen_on` rejected on
+        // every retry — see `is_relay_candidate_addr`.
+        let Some(addr) = listen_addrs.iter().find(|a| is_relay_candidate_addr(a)) else {
+            debug!(%peer, "peer offers relay hop but no directly-dialable address");
             return Vec::new();
         };
 
@@ -417,7 +423,18 @@ impl RelayManager {
             self.fail(relay, "the relay was evicted from the candidate list", now);
             return self.fill_slots(now);
         };
-        let circuit_addr = circuit_listen_addr(&relay_addr, relay);
+        let Some(circuit_addr) = circuit_listen_addr(&relay_addr, relay) else {
+            // Belt and braces: `note_identify` keeps circuit-addressed peers off
+            // the candidate list, so arriving here means one slipped through.
+            // Fail it properly rather than handing `listen_on` an address it
+            // rejects on every retry, forever, while the slot stays occupied.
+            self.fail(
+                relay,
+                "the relay is itself only reachable through a circuit",
+                now,
+            );
+            return self.fill_slots(now);
+        };
         debug!(%relay, %circuit_addr, "relay connected; requesting the reservation");
         vec![RelayAction::Listen {
             relay,
@@ -847,6 +864,51 @@ mod tests {
             now,
         );
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn a_relay_that_is_itself_relay_only_is_not_a_candidate() {
+        // Regression: metro-win, 2026-08-11. `is_announceable` passes any
+        // circuit address unconditionally — right for advertising our own
+        // reserved address, wrong for choosing a relay. Accepting one built
+        // `<their-circuit>/p2p/<them>/p2p-circuit`, which `listen_on` rejects on
+        // every retry, so the node never regained a circuit after its one good
+        // reservation lapsed.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(&[], 1);
+        mgr.set_enabled(true, now);
+        let actions = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &[
+                format!("/ip4/18.219.43.67/tcp/8000/p2p-circuit/p2p/{}", peer(7))
+                    .parse()
+                    .unwrap(),
+            ],
+            now,
+        );
+        assert!(
+            actions.is_empty(),
+            "a peer reachable only through another relay cannot host our reservation"
+        );
+    }
+
+    #[test]
+    fn a_directly_dialable_relay_is_still_a_candidate() {
+        // The guard above must not cost us ordinary relays.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(&[], 1);
+        mgr.set_enabled(true, now);
+        let actions = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            now,
+        );
+        assert!(
+            !actions.is_empty(),
+            "a directly-dialable relay must still be picked up"
+        );
     }
 
     #[test]
