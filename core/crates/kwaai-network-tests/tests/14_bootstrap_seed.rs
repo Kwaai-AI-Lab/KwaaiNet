@@ -19,9 +19,17 @@
 //! | `the_seed_serves_many_peers_under_one_key` | subkeyed dictionary accumulation — many servers, one block key |
 //! | `the_seed_keeps_the_identity_key_files_peer_id` | the `/p2p/<id>` multiaddrs baked into node configs stay valid |
 //!
-//! The seed is assembled here the way `kwaai-cli::bootstrap::BootstrapSeed`
-//! assembles it, in the same order — the CLI is a binary crate, so this cannot
-//! call it directly, and the glue on top is one call per line.
+//! The seed is assembled here the way the CLI assembles it — the CLI is a
+//! binary crate, so this cannot call it directly, and the glue on top is one
+//! call per line.
+//!
+//! Since `feat/bootstrap-serve` converged the seed onto the ordinary node,
+//! `kwaai-cli::bootstrap` is a config preset (`announce_self = false`,
+//! `dht_server = true`) handed to `node::run_node`, and the swarm below is
+//! what that preset produces: kad server mode, `spawn_dht_service` over a
+//! `DHTStorage`, and no announce loop. What is asserted here is the seed's
+//! *wire contract*, which is why these tests survived the convergence
+//! untouched — they only ever talked to it as a peer.
 //!
 //! Gate: `KWAAI_INTEGRATION_TESTS=1`, like tiers 07–13.
 
