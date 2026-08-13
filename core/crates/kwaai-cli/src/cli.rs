@@ -165,6 +165,9 @@ A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
     /// Build and query a local RAG knowledge base
     Rag(RagArgs),
 
+    /// Run a DHT bootstrap seed (replaces the Python `petals.cli.run_dht`)
+    Bootstrap(BootstrapArgs),
+
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
     RunNode,
@@ -2380,6 +2383,64 @@ pub enum CacheAction {
     Stats,
     /// Remove all cached queries
     Clear,
+}
+
+// ---------------------------------------------------------------------------
+// bootstrap
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct BootstrapArgs {
+    #[command(subcommand)]
+    pub action: BootstrapAction,
+}
+
+#[derive(Subcommand)]
+pub enum BootstrapAction {
+    /// Serve the hivemind DHT as a bootstrap seed, in the foreground
+    #[command(long_about = "Run a DHT bootstrap seed in the foreground.
+
+The native replacement for `python -m petals.cli.run_dht`: an in-process
+libp2p swarm that answers rpc_ping/rpc_store/rpc_find for other peers, runs
+Kademlia in server mode, and offers a circuit relay hop service so NATed nodes
+can reserve through it.
+
+A seed announces nothing to the DHT itself — it stores what other peers
+publish and publishes none of its own records. Storage is in-memory, matching
+run_dht: a restarted seed refills from the nodes' 300 s re-announce loop.
+
+  kwaainet bootstrap serve \\
+    --identity-key /config/bootstrap_key1.bin \\
+    --listen /ip4/0.0.0.0/tcp/8000 \\
+    --announce /dns4/bootstrap1/tcp/8000")]
+    Serve(BootstrapServeArgs),
+}
+
+#[derive(Args)]
+pub struct BootstrapServeArgs {
+    /// libp2p-protobuf-encoded identity key file (RSA-2048 or Ed25519).
+    ///
+    /// Required and never generated: a seed's peer ID is pinned into every
+    /// node's bootstrap multiaddr, so a fresh identity would silently orphan
+    /// the network rather than fail.
+    #[arg(long, value_name = "PATH")]
+    pub identity_key: std::path::PathBuf,
+
+    /// Multiaddr to listen on
+    #[arg(long, default_value = crate::bootstrap::DEFAULT_LISTEN)]
+    pub listen: String,
+
+    /// Multiaddr to announce to peers (repeatable; the first is declared as
+    /// the external address identify reports)
+    #[arg(long, value_name = "MULTIADDR")]
+    pub announce: Vec<String>,
+
+    /// Do not offer the circuit relay hop service.
+    ///
+    /// On by default, because NATed nodes reserve circuits through the
+    /// bootstraps.
+    #[arg(long)]
+    pub no_relay: bool,
 }
 
 // ---------------------------------------------------------------------------
