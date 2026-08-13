@@ -248,7 +248,10 @@ pub async fn start_local_proxy(
     breaker: Arc<CircuitBreaker>,
     lease_id: Option<LeaseId>,
 ) -> Result<(u16, tokio::task::JoinHandle<()>)> {
-    start_proxy_with_proto(client, peer_id, OLLAMA_PROXY_PROTO, breaker, lease_id).await
+    // Wrapped in a `ProxyLease` so a lapse can be replaced in flight; see its
+    // docs for why a frozen id silently loses work.
+    let lease = Some(ProxyLease::new(lease_id));
+    start_proxy_with_proto(client, peer_id, OLLAMA_PROXY_PROTO, breaker, lease).await
 }
 
 /// Start a local TCP listener that proxies HTTP → P2P → remote shard API.
@@ -271,7 +274,7 @@ async fn start_proxy_with_proto(
     peer_id: PeerId,
     protocol: &'static str,
     breaker: Arc<CircuitBreaker>,
-    lease_id: Option<LeaseId>,
+    lease: Option<Arc<ProxyLease>>,
 ) -> Result<(u16, tokio::task::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -289,13 +292,81 @@ async fn start_proxy_with_proto(
             };
             let client = client.clone();
             let breaker = breaker.clone();
+            let lease = lease.clone();
             tokio::spawn(handle_connection(
-                stream, client, peer_id, protocol, breaker, lease_id,
+                stream, client, peer_id, protocol, breaker, lease,
             ));
         }
     });
 
     Ok((port, handle))
+}
+
+/// The Capacity Lease this proxy dispatches under, shared by every connection
+/// and **replaceable**.
+///
+/// It used to be a bare `Option<LeaseId>` copied into each connection, frozen
+/// for the life of the proxy. The server renews a lease only when a request
+/// arrives under it, and `LEASE_TTL_SECS` is 30 — so a caller whose *own*
+/// inference calls take longer than 30s lets the lease lapse between requests
+/// and every later request is refused 409. Measured on a distributed D6 graph
+/// build: ~26s mean per call, 38 of 200 chunks lost, and all 38 burned their
+/// full three retries without one recovery, because the retry re-sent the same
+/// dead `lease_id` on a schedule (immediate, +15s, +30s) that only widened the
+/// gap it was failing on.
+///
+/// `mux://` has never had this problem — `inference_mux` holds a [`LeaseHolder`]
+/// and sends a `LeaseKeepalive` frame when `needs_keepalive_probe()` says the
+/// lease is going stale. That machinery simply was never wired to the `p2p://`
+/// path, which is the transport every RAG pipeline actually uses.
+///
+/// [`LeaseHolder`]: crate::capacity_lease::LeaseHolder
+struct ProxyLease {
+    current: tokio::sync::RwLock<Option<LeaseId>>,
+}
+
+impl ProxyLease {
+    fn new(lease_id: Option<LeaseId>) -> Arc<Self> {
+        Arc::new(Self {
+            current: tokio::sync::RwLock::new(lease_id),
+        })
+    }
+
+    async fn get(&self) -> Option<LeaseId> {
+        *self.current.read().await
+    }
+
+    /// Negotiate a replacement after the peer refused the current one.
+    ///
+    /// Held across the negotiation so a burst of concurrent 409s produces one
+    /// new lease rather than one per connection; whoever loses the race sees
+    /// the winner's lease and retries under it.
+    async fn renegotiate(
+        &self,
+        client: &P2PClient,
+        peer_id: PeerId,
+        breaker: &CircuitBreaker,
+        refused: Option<LeaseId>,
+    ) -> Option<LeaseId> {
+        let mut slot = self.current.write().await;
+        if *slot != refused {
+            return *slot; // someone else already replaced it
+        }
+        // `model: None` for the same reason the initial negotiation uses it —
+        // the target model lives in the request body, not in the URL.
+        match crate::capacity_lease::negotiate_lease_unary(client, peer_id, None, breaker).await {
+            crate::capacity_lease::NegotiationOutcome::Granted(grant) => {
+                debug!(%peer_id, lease_id = grant.lease_id, "capacity lease renewed after 409");
+                *slot = Some(grant.lease_id);
+                *slot
+            }
+            other => {
+                warn!(%peer_id, ?other, "capacity lease could not be renewed after 409");
+                *slot = None; // fall through to uncontracted dispatch
+                None
+            }
+        }
+    }
 }
 
 async fn handle_connection(
@@ -304,7 +375,7 @@ async fn handle_connection(
     peer_id: PeerId,
     protocol: &'static str,
     breaker: Arc<CircuitBreaker>,
-    lease_id: Option<LeaseId>,
+    lease: Option<Arc<ProxyLease>>,
 ) {
     // Read the full HTTP request in two phases so that large LLM prompts
     // (~20-50 KB) delivered over a relay connection are not silently truncated
@@ -372,26 +443,38 @@ async fn handle_connection(
         }
     };
 
-    let req_bytes = match rmp_serde::to_vec_named(&ProxyRequest {
-        method,
-        path,
-        body,
-        lease_id,
-    }) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("ollama_proxy: serialise: {e}");
-            return;
+    // One round trip under a given lease. Kept as a closure so the 409 retry
+    // below re-sends the *same* request under a fresh lease rather than
+    // reconstructing it — the body is the expensive part and must not change.
+    let send = |lease_id: Option<LeaseId>| {
+        let client = client.clone();
+        let method = method.clone();
+        let path = path.clone();
+        let body = body.clone();
+        async move {
+            let req_bytes = rmp_serde::to_vec_named(&ProxyRequest {
+                method,
+                path,
+                body,
+                lease_id,
+            })
+            .map_err(|e| format!("serialise: {e}"))?;
+            client
+                .call_unary_handler(&peer_id.to_bytes(), protocol, &req_bytes)
+                .await
+                .map_err(|e| format!("P2P call to {peer_id} via {protocol}: {e}"))
         }
     };
 
-    let resp_bytes = match client
-        .call_unary_handler(&peer_id.to_bytes(), protocol, &req_bytes)
-        .await
-    {
+    let lease_in_use = match &lease {
+        Some(l) => l.get().await,
+        None => None,
+    };
+
+    let resp_bytes = match send(lease_in_use).await {
         Ok(b) => b,
         Err(e) => {
-            warn!("inference_proxy: P2P call to {peer_id} via {protocol}: {e}");
+            warn!("inference_proxy: {e}");
             breaker.record_failure(&peer_id);
             let msg = b"Bad Gateway";
             let _ = stream
@@ -409,13 +492,34 @@ async fn handle_connection(
     };
     breaker.record_success(&peer_id);
 
-    let resp: ProxyResponse = match rmp_serde::from_slice(&resp_bytes) {
+    let mut resp: ProxyResponse = match rmp_serde::from_slice(&resp_bytes) {
         Ok(r) => r,
         Err(e) => {
             warn!("ollama_proxy: deserialise resp: {e}");
             return;
         }
     };
+
+    // 409 means the peer refused this lease, not that the work failed. Renew
+    // and re-send once. Retrying under the refused lease — which is what the
+    // caller's generic retry loop does — can never succeed, so this has to be
+    // handled here, where the lease actually lives.
+    if resp.status == 409 && lease_in_use.is_some() {
+        if let Some(l) = &lease {
+            if let Some(fresh) = l
+                .renegotiate(&client, peer_id, &breaker, lease_in_use)
+                .await
+            {
+                match send(Some(fresh)).await {
+                    Ok(b) => match rmp_serde::from_slice::<ProxyResponse>(&b) {
+                        Ok(r) => resp = r,
+                        Err(e) => warn!("ollama_proxy: deserialise retry resp: {e}"),
+                    },
+                    Err(e) => warn!("inference_proxy: retry after lease renewal: {e}"),
+                }
+            }
+        }
+    }
 
     let header = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -561,6 +665,62 @@ pub async fn resolve_inference_urls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for the 2026-08-11 distributed-build data loss.
+    ///
+    /// The server renews a lease only when a request arrives under it, with a
+    /// 30s TTL. A caller whose inference calls take longer than that lets the
+    /// lease lapse *between* its own requests, and every later request is
+    /// refused — 38 of 200 chunks lost on a D6 graph build, every one of them
+    /// burning all three retries because the retry re-sent the same dead id.
+    ///
+    /// This pins the two halves of the remedy: a lapsed lease really is
+    /// refused (so the 409 is not spurious), and a freshly granted one really
+    /// is accepted (so renegotiating is the fix, where retrying is not).
+    #[tokio::test]
+    async fn a_lapsed_lease_is_refused_but_a_renewed_one_is_accepted() {
+        use crate::capacity_lease::LeaseTable;
+        use std::time::Duration;
+
+        let table = LeaseTable::new("test-model".to_string(), 4);
+        let grant = match table.try_grant(None, 1u64, Duration::from_millis(40)) {
+            crate::capacity_lease::NegotiationOutcome::Granted(g) => g,
+            other => panic!("expected a grant, got {other:?}"),
+        };
+
+        // Still inside its TTL: renewal succeeds, so no 409 would be sent.
+        assert!(
+            table.renew(grant.lease_id, Duration::from_millis(40)),
+            "a live lease must renew"
+        );
+
+        // Simulate a single inference call outrunning the TTL.
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        table.sweep_expired();
+        assert!(
+            !table.renew(grant.lease_id, Duration::from_millis(40)),
+            "a lapsed lease must be refused — this is the 409 the caller sees"
+        );
+
+        // Retrying under the refused id stays refused, however long you wait:
+        // this is why the generic retry loop recovered 0 of 38.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !table.renew(grant.lease_id, Duration::from_millis(40)),
+            "retrying under a refused lease can never succeed"
+        );
+
+        // Renegotiating does.
+        let fresh = match table.try_grant(None, 2u64, Duration::from_millis(40)) {
+            crate::capacity_lease::NegotiationOutcome::Granted(g) => g,
+            other => panic!("expected a fresh grant, got {other:?}"),
+        };
+        assert_ne!(fresh.lease_id, grant.lease_id);
+        assert!(
+            table.renew(fresh.lease_id, Duration::from_millis(40)),
+            "a renegotiated lease must be accepted"
+        );
+    }
 
     #[test]
     fn proxy_request_lease_id_defaults_to_none_for_legacy_wire_bytes() {
