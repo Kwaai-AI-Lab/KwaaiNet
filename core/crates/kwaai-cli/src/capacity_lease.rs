@@ -124,20 +124,89 @@ struct LeaseRow {
 /// actual shared resource (the whole Ollama process's concurrency), not any
 /// one connection or protocol, or two independent callers would each believe
 /// they hold exclusive capacity while still colliding inside Ollama.
+/// Where [`LeaseTable`] and [`LeaseHolder`] read the time from.
+///
+/// Exists so expiry can be tested without sleeping. The tests here used to
+/// assert across real `thread::sleep`s with ~25ms of headroom, which is fine on
+/// an idle laptop and not fine on a shared CI runner: `renew_extends_expiry_
+/// past_the_original_deadline` went red on macOS on 2026-08-10 and took `main`
+/// with it, having passed on the PR — the macOS leg only runs on pushes to
+/// `main`, so a timing flake there cannot be caught before merge.
+///
+/// Production uses [`SystemClock`]; tests drive [`TestClock`] by hand and the
+/// sleeps disappear entirely.
+pub trait Clock: Send + Sync + std::fmt::Debug {
+    fn now(&self) -> Instant;
+}
+
+/// The real clock. Zero-sized; the `Arc` around it costs nothing meaningful
+/// against a lease table that lives for the process.
+#[derive(Debug)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// A clock that only moves when told to.
+///
+/// `cfg(test)`: nothing in a release build should be able to stop time.
+///
+/// `Instant` cannot be constructed from an arbitrary value, so this holds a
+/// real base captured at construction and adds an offset the test advances.
+/// That keeps the arithmetic identical to production while making it exact.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct TestClock {
+    base: Instant,
+    offset: Mutex<Duration>,
+}
+
+#[cfg(test)]
+impl TestClock {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            base: Instant::now(),
+            offset: Mutex::new(Duration::ZERO),
+        })
+    }
+
+    /// Move time forward. The only way this clock ever changes.
+    pub fn advance(&self, by: Duration) {
+        *self.offset.lock().unwrap() += by;
+    }
+}
+
+#[cfg(test)]
+impl Clock for TestClock {
+    fn now(&self) -> Instant {
+        self.base + *self.offset.lock().unwrap()
+    }
+}
+
 pub struct LeaseTable {
     semaphore: Arc<Semaphore>,
     rows: Mutex<HashMap<LeaseId, LeaseRow>>,
     next_lease_id: AtomicU64,
     model: String,
+    clock: Arc<dyn Clock>,
 }
 
 impl LeaseTable {
     pub fn new(model: String, max_concurrent: usize) -> Arc<Self> {
+        Self::with_clock(model, max_concurrent, Arc::new(SystemClock))
+    }
+
+    /// [`Self::new`] against a caller-supplied clock — see [`Clock`].
+    pub fn with_clock(model: String, max_concurrent: usize, clock: Arc<dyn Clock>) -> Arc<Self> {
         Arc::new(Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             rows: Mutex::new(HashMap::new()),
             next_lease_id: AtomicU64::new(1),
             model,
+            clock,
         })
     }
 
@@ -169,7 +238,7 @@ impl LeaseTable {
         match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => {
                 let lease_id = self.next_lease_id.fetch_add(1, Ordering::Relaxed);
-                let expires_at = Instant::now() + ttl;
+                let expires_at = self.clock.now() + ttl;
                 self.rows.lock().unwrap().insert(
                     lease_id,
                     LeaseRow {
@@ -204,7 +273,7 @@ impl LeaseTable {
         let mut rows = self.rows.lock().unwrap();
         match rows.get_mut(&lease_id) {
             Some(row) => {
-                row.expires_at = Instant::now() + ttl;
+                row.expires_at = self.clock.now() + ttl;
                 true
             }
             None => false,
@@ -237,7 +306,7 @@ impl LeaseTable {
     /// `try_grant`) and/or from a coarse periodic timer; not required for
     /// correctness on every call, only eventually.
     pub fn sweep_expired(&self) {
-        let now = Instant::now();
+        let now = self.clock.now();
         self.rows
             .lock()
             .unwrap()
@@ -284,14 +353,22 @@ pub struct LeaseHolder {
     pub lease_id: LeaseId,
     ttl: Duration,
     last_request_sent_at: Mutex<Instant>,
+    clock: Arc<dyn Clock>,
 }
 
 impl LeaseHolder {
     pub fn new(grant: LeaseGrant) -> Self {
+        Self::with_clock(grant, Arc::new(SystemClock))
+    }
+
+    /// [`Self::new`] against a caller-supplied clock — see [`Clock`].
+    pub fn with_clock(grant: LeaseGrant, clock: Arc<dyn Clock>) -> Self {
+        let now = clock.now();
         Self {
             lease_id: grant.lease_id,
             ttl: Duration::from_secs(grant.ttl_secs as u64),
-            last_request_sent_at: Mutex::new(Instant::now()),
+            last_request_sent_at: Mutex::new(now),
+            clock,
         }
     }
 
@@ -299,13 +376,14 @@ impl LeaseHolder {
     /// caller should send a `LeaseKeepalive` frame before issuing the next
     /// real request to avoid the lease lapsing during a slow local gap.
     pub fn needs_keepalive_probe(&self) -> bool {
-        self.last_request_sent_at.lock().unwrap().elapsed() >= self.ttl / 2
+        let last = *self.last_request_sent_at.lock().unwrap();
+        self.clock.now().saturating_duration_since(last) >= self.ttl / 2
     }
 
     /// Record that a real request just went out under this lease — the
     /// implicit-renewal bookkeeping counterpart to the server's `renew()`.
     pub fn mark_request_sent(&self) {
-        *self.last_request_sent_at.lock().unwrap() = Instant::now();
+        *self.last_request_sent_at.lock().unwrap() = self.clock.now();
     }
 }
 
@@ -477,26 +555,28 @@ mod tests {
 
     const MODEL: &str = "llama3.1:8b";
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn periodic_sweep_reclaims_an_abandoned_lease() {
         // The crash-safety backstop for callers that vanish without ever
         // triggering release_connection (a killed process, a network
         // partition, or any p2p-unary caller, which has no persistent
         // stream to key a release off of at all).
-        // Wide margins (this test flaked at 5ms ttl / 60ms wait under heavy
-        // parallel test-suite + background-build CPU contention on this
-        // machine) — the sweeper only needs one tick past the ttl, but
-        // scheduling jitter under real load can be tens of ms, not just a
-        // couple, so give it a full order of magnitude more room than that.
-        let table = LeaseTable::new(MODEL.to_string(), 1);
+        //
+        // Both halves are deterministic: `TestClock` decides whether the
+        // lease has expired, and `start_paused` makes tokio's interval ticks
+        // virtual so the sweeper runs without waiting on the wall clock. The
+        // sleeping version flaked at 5ms ttl / 60ms wait under CPU contention
+        // and had its margins widened twice.
+        let clock = TestClock::new();
+        let table = LeaseTable::with_clock(MODEL.to_string(), 1, clock.clone());
         let ttl = Duration::from_millis(20);
         let grant = table.try_grant(Some(MODEL), 1, ttl);
         assert!(matches!(grant, NegotiationOutcome::Granted(_)));
 
         let handle = table.spawn_periodic_sweep(Duration::from_millis(10));
 
-        // Give the sweeper many ticks to run past the lease's TTL, without
-        // ever calling sweep_expired()/release() ourselves.
+        // Expire it on our clock, then let the sweeper tick on tokio's.
+        clock.advance(Duration::from_millis(50));
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
@@ -531,57 +611,66 @@ mod tests {
 
     #[test]
     fn expiry_reclaims_slot_without_explicit_release() {
-        let table = LeaseTable::new(MODEL.to_string(), 1);
-        let short_ttl = Duration::from_millis(20);
-        let grant = table.try_grant(Some(MODEL), 1, short_ttl);
+        let clock = TestClock::new();
+        let table = LeaseTable::with_clock(MODEL.to_string(), 1, clock.clone());
+        let ttl = Duration::from_millis(100);
+        let grant = table.try_grant(Some(MODEL), 1, ttl);
         assert!(matches!(grant, NegotiationOutcome::Granted(_)));
         assert!(matches!(
-            table.try_grant(Some(MODEL), 2, short_ttl),
+            table.try_grant(Some(MODEL), 2, ttl),
             NegotiationOutcome::DeniedAtCapacity { .. }
         ));
 
-        std::thread::sleep(Duration::from_millis(150));
+        clock.advance(Duration::from_millis(150));
         table.sweep_expired();
-
         assert!(
             matches!(
-                table.try_grant(Some(MODEL), 3, short_ttl),
+                table.try_grant(Some(MODEL), 2, ttl),
                 NegotiationOutcome::Granted(_)
             ),
-            "slot must be free again after the original lease's TTL lapses"
+            "an expired lease must free its slot without an explicit release"
         );
     }
 
     #[test]
     fn renew_extends_expiry_past_the_original_deadline() {
-        // Generous margins throughout (this test flaked at 15ms/10ms/10ms
-        // under full-suite parallel load — scheduler jitter easily eats a
-        // few ms of a `std::thread::sleep`, so timing assertions need
-        // headroom well beyond the nominal durations, not just a hair's
-        // width more than them).
-        let table = LeaseTable::new(MODEL.to_string(), 1);
+        // Was three `thread::sleep`s with 25ms of headroom. It flaked at
+        // 15/10/10ms, was widened to 50/75ms, and still went red on macOS CI
+        // on 2026-08-10 — taking `main` with it, because the macOS leg only
+        // runs on pushes to `main` and so cannot fail a PR. Driving the clock
+        // by hand makes the boundary exact instead of merely likely.
+        let clock = TestClock::new();
+        let table = LeaseTable::with_clock(MODEL.to_string(), 1, clock.clone());
         let ttl = Duration::from_millis(100);
         let grant = match table.try_grant(Some(MODEL), 1, ttl) {
             NegotiationOutcome::Granted(g) => g,
             other => panic!("expected Granted, got {other:?}"),
         };
 
-        std::thread::sleep(Duration::from_millis(50));
+        clock.advance(Duration::from_millis(50));
         assert!(
             table.renew(grant.lease_id, ttl),
             "renew on a live lease must succeed"
         );
 
-        // Elapsed since grant is now ~125ms: past the ORIGINAL 100ms ttl
-        // (with a 25ms margin) but well before the renewed deadline of
-        // ~150ms (renew happened at T=50ms, +100ms ttl) — also a 25ms
-        // margin, symmetric headroom against scheduler jitter either way.
-        std::thread::sleep(Duration::from_millis(75));
+        // T=125ms: past the ORIGINAL 100ms deadline, before the renewed one
+        // at T=150ms. Both boundaries are now exact, not approximate.
+        clock.advance(Duration::from_millis(75));
         table.sweep_expired();
         assert_eq!(
             table.active_lease_count(),
             1,
             "a renewed lease must survive past its original (pre-renewal) deadline"
+        );
+
+        // And it does still expire on the renewed deadline — the half of this
+        // the sleeping version could never assert without another 25ms wager.
+        clock.advance(Duration::from_millis(30));
+        table.sweep_expired();
+        assert_eq!(
+            table.active_lease_count(),
+            0,
+            "past the renewed deadline it must be reclaimed"
         );
     }
 
@@ -605,22 +694,24 @@ mod tests {
 
     #[test]
     fn denied_lease_unknown_on_stale_or_never_granted_renew() {
-        let table = LeaseTable::new(MODEL.to_string(), 1);
+        let clock = TestClock::new();
+        let table = LeaseTable::with_clock(MODEL.to_string(), 1, clock.clone());
         assert!(
-            !table.renew(999, Duration::from_secs(30)),
-            "renewing a lease_id that was never granted must fail, not panic or silently succeed"
+            !table.renew(999, Duration::from_millis(100)),
+            "a lease id that was never granted must not renew"
         );
 
-        let ttl = Duration::from_millis(20);
+        let ttl = Duration::from_millis(100);
         let grant = match table.try_grant(Some(MODEL), 1, ttl) {
             NegotiationOutcome::Granted(g) => g,
             other => panic!("expected Granted, got {other:?}"),
         };
-        std::thread::sleep(Duration::from_millis(150));
+
+        clock.advance(Duration::from_millis(150));
         table.sweep_expired();
         assert!(
             !table.renew(grant.lease_id, ttl),
-            "renewing an already-expired lease_id must fail"
+            "a lapsed lease must not renew — this is the 409 a caller sees"
         );
     }
 
@@ -671,32 +762,47 @@ mod tests {
 
     #[test]
     fn lease_holder_needs_keepalive_after_ttl_half_idle() {
-        let holder = LeaseHolder::new(LeaseGrant {
-            lease_id: 1,
-            ttl_secs: 0,
-        });
-        // ttl_secs: 0 -> ttl/2 = 0, so any elapsed time triggers the probe —
-        // exercises the boundary without needing a real multi-second sleep.
-        std::thread::sleep(Duration::from_millis(1));
-        assert!(holder.needs_keepalive_probe());
+        // Was pinned to `ttl_secs: 0` purely to avoid a multi-second sleep,
+        // which made it a degenerate case that could not exercise the real
+        // ttl/2 boundary at all. A driven clock tests the actual 30s lease.
+        let clock = TestClock::new();
+        let holder = LeaseHolder::with_clock(
+            LeaseGrant {
+                lease_id: 1,
+                ttl_secs: 30,
+            },
+            clock.clone(),
+        );
 
-        holder.mark_request_sent();
-        // Immediately after marking activity, elapsed (~0) should not yet
-        // exceed ttl/2 (0) — this is a >= comparison so a zero-ttl holder is
-        // an intentionally degenerate case; use a nonzero ttl for the
-        // "does NOT need a probe right after activity" assertion instead.
-        let holder = LeaseHolder::new(LeaseGrant {
-            lease_id: 2,
-            ttl_secs: 30,
-        });
         assert!(
             !holder.needs_keepalive_probe(),
             "must not need a probe immediately after grant"
         );
+
+        // Just short of ttl/2 — still quiet.
+        clock.advance(Duration::from_secs(14));
+        assert!(
+            !holder.needs_keepalive_probe(),
+            "must not need a probe before ttl/2"
+        );
+
+        // Crossing ttl/2 (15s) is the whole point of the mechanism.
+        clock.advance(Duration::from_secs(2));
+        assert!(
+            holder.needs_keepalive_probe(),
+            "must need a probe once ttl/2 has elapsed since the last request"
+        );
+
+        // Real activity resets the window.
         holder.mark_request_sent();
         assert!(
             !holder.needs_keepalive_probe(),
             "must not need a probe immediately after activity"
+        );
+        clock.advance(Duration::from_secs(16));
+        assert!(
+            holder.needs_keepalive_probe(),
+            "and the window restarts from that activity, not from the grant"
         );
     }
 }
