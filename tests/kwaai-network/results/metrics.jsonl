@@ -1376,3 +1376,8 @@
 {"timestamp":"2026-07-31T17:13:43.501211+00:00","git_rev":"2871d26","test":"integration::pipe_mode::stream_info_shape_parity","tier":"integration","passed":true,"duration_ms":144,"metrics":{}}
 {"timestamp":"2026-07-31T17:13:43.501790+00:00","git_rev":"2871d26","test":"integration::pipe_mode::daemon_client_to_native_handler","tier":"integration","passed":true,"duration_ms":145,"metrics":{"reply_len":20}}
 {"timestamp":"2026-07-31T17:13:43.547162+00:00","git_rev":"2871d26","test":"integration::pipe_mode::large_payload_cross_impl","tier":"integration","passed":true,"duration_ms":189,"metrics":{"bytes_each_way":1048576}}
+{"timestamp":"2026-08-13T05:25:45.498166+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::identity_is_the_key_file","tier":"integration","passed":true,"duration_ms":16,"metrics":{}}
+{"timestamp":"2026-08-13T05:25:45.502938+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::store_and_find_round_trip","tier":"integration","passed":true,"duration_ms":27,"metrics":{}}
+{"timestamp":"2026-08-13T05:25:45.506790+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::tombstone_and_expiration_rules","tier":"integration","passed":true,"duration_ms":31,"metrics":{}}
+{"timestamp":"2026-08-13T05:25:45.507277+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::announces_nothing","tier":"integration","passed":true,"duration_ms":32,"metrics":{}}
+{"timestamp":"2026-08-13T05:25:45.508163+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::many_peers_one_key","tier":"integration","passed":true,"duration_ms":33,"metrics":{}}
