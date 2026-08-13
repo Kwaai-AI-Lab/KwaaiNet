@@ -148,6 +148,55 @@ pub struct KwaaiNetConfig {
     #[serde(default)]
     pub native_p2p: bool,
 
+    /// Whether this node publishes DHT records *of its own*.
+    ///
+    /// Defaults to true: an ordinary node exists to be found, so it announces
+    /// its block range, its `_petals.models` entry, its
+    /// `_kwaai.inference.nodes` entry and (when enabled) its VPK registry
+    /// record, then re-announces every 300 s and writes a `state = -1`
+    /// tombstone on the way out.
+    ///
+    /// Set false and the node publishes *nothing* — no announce round at
+    /// startup, none on the timer, none on a reachability change or a SIGHUP,
+    /// and correspondingly no unannounce tombstone at shutdown, because there
+    /// is nothing to retract. This is what makes a bootstrap seed a seed: it
+    /// stores and serves everyone else's records while appearing on the map as
+    /// nothing at all. A seed that announced itself would show up as an
+    /// inference node offering zero blocks.
+    ///
+    /// This is about *publishing*, not about *serving*. The DHT server role —
+    /// answering rpc_ping/rpc_store/rpc_find and holding other peers' records —
+    /// is untouched by this flag; see `dht_server` for that.
+    #[serde(default = "default_true")]
+    pub announce_self: bool,
+
+    /// Force Kademlia server mode unconditionally, rather than letting libp2p
+    /// decide from observed reachability.
+    ///
+    /// Defaults to false, which is the ordinary node behaviour: `node_native`
+    /// already puts a regular node into server mode to match the p2pd path's
+    /// `-b` flag, and auto-detection governs the rest.
+    ///
+    /// Set true and the node answers Kademlia queries from t=0, before any
+    /// external address has been confirmed. A bootstrap seed needs exactly
+    /// this: it exists to answer queries, and the auto-detected path would
+    /// leave it in client mode — refusing the very lookups it was deployed to
+    /// serve — until an AutoNAT round confirmed an address for it.
+    #[serde(default)]
+    pub dht_server: bool,
+
+    /// Ask the local gateway for a port mapping via UPnP (p2pd's `-natPortMap`).
+    ///
+    /// Defaults to true, which is what a home or office node wants: it is the
+    /// cheapest route from "behind a NAT" to "directly dialable", and it costs
+    /// one SSDP round on the LAN.
+    ///
+    /// Set false for a node deployed at a known, already-reachable address — a
+    /// bootstrap seed being the case that matters. It has no gateway to ask,
+    /// and multicasting SSDP from a datacentre subnet is noise at best.
+    #[serde(default = "default_true")]
+    pub enable_upnp: bool,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -653,6 +702,9 @@ impl Default for KwaaiNetConfig {
             trusted_relays: default_trusted_relays(),
             force_private: default_force_private(),
             native_p2p: false,
+            announce_self: true,
+            dht_server: false,
+            enable_upnp: true,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -886,6 +938,9 @@ impl KwaaiNetConfig {
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
             "native_p2p" => self.native_p2p = parse_bool(value)?,
+            "announce_self" => self.announce_self = parse_bool(value)?,
+            "dht_server" => self.dht_server = parse_bool(value)?,
+            "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "start_block" => {
                 self.start_block = value
                     .parse()
@@ -979,5 +1034,87 @@ mod tests {
         // 70B has 80 blocks; 72 + 32 = 104 → clamped to 80
         let c = cfg(72, 32, "meta/Llama-2-70B");
         assert_eq!(c.effective_end_block(), 80);
+    }
+
+    // ── The bootstrap-seed config keys ─────────────────────────────────────
+
+    /// The three keys the seed preset relies on default to ordinary-node
+    /// behaviour, so an existing `config.yaml` written before they existed
+    /// deserialises into a node that behaves exactly as it did.
+    #[test]
+    fn the_new_keys_default_to_ordinary_node_behaviour() {
+        let c = KwaaiNetConfig::default();
+        assert!(
+            c.announce_self,
+            "an ordinary node publishes its own records"
+        );
+        assert!(
+            !c.dht_server,
+            "an ordinary node does not force server mode; node_native already enables it"
+        );
+        assert!(
+            c.enable_upnp,
+            "an ordinary node asks its gateway for a mapping"
+        );
+    }
+
+    /// A config file predating these keys still loads, and the missing fields
+    /// take the ordinary-node defaults rather than `bool::default()` — which
+    /// for `announce_self` and `enable_upnp` would silently be the *seed's*
+    /// value and mute every existing node on the network.
+    #[test]
+    fn a_config_without_the_new_keys_deserialises_to_node_defaults() {
+        let c: KwaaiNetConfig =
+            serde_yaml::from_str("model: unsloth/Llama-3-8B\nblocks: 8\n").expect("legacy config");
+        assert!(
+            c.announce_self,
+            "a config written before announce_self existed must keep announcing"
+        );
+        assert!(c.enable_upnp, "likewise for enable_upnp");
+        assert!(!c.dht_server);
+    }
+
+    /// `config set` round-trips each key through YAML, which is how an operator
+    /// configures a seed without the `bootstrap serve` wrapper.
+    #[test]
+    fn the_new_keys_round_trip_through_set_and_save() {
+        let home = tempfile::tempdir().expect("tmpdir");
+        std::env::set_var("KWAAINET_HOME", home.path());
+
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("announce_self", "false")
+            .expect("announce_self is a valid key");
+        c.set_key("dht_server", "true")
+            .expect("dht_server is a valid key");
+        c.set_key("enable_upnp", "false")
+            .expect("enable_upnp is a valid key");
+
+        let reloaded = KwaaiNetConfig::load_or_create().expect("the saved config must reload");
+        assert!(!reloaded.announce_self);
+        assert!(reloaded.dht_server);
+        assert!(!reloaded.enable_upnp);
+
+        // And back again, so neither direction is a one-way door.
+        let mut c = reloaded;
+        c.set_key("announce_self", "true").expect("set back");
+        let reloaded = KwaaiNetConfig::load_or_create().expect("reload");
+        assert!(reloaded.announce_self);
+
+        std::env::remove_var("KWAAINET_HOME");
+    }
+
+    /// A non-boolean value is rejected rather than coerced, so a typo'd
+    /// `config set announce_self flase` fails instead of muting the node.
+    #[test]
+    fn a_non_boolean_value_is_rejected() {
+        let home = tempfile::tempdir().expect("tmpdir");
+        std::env::set_var("KWAAINET_HOME", home.path());
+        let mut c = KwaaiNetConfig::default();
+        assert!(c.set_key("announce_self", "flase").is_err());
+        assert!(
+            c.announce_self,
+            "a rejected set must not have changed the field"
+        );
+        std::env::remove_var("KWAAINET_HOME");
     }
 }

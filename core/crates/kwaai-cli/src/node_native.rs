@@ -59,7 +59,7 @@ use kwaai_p2p::{NetworkConfig, NetworkHandle, NetworkService};
 use kwaai_p2p_daemon::ControlServer;
 use libp2p::PeerId;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::announce::{
     build_announce_records, build_unannounce_records, send_records_via_handle, AnnounceContext,
@@ -76,6 +76,14 @@ use crate::node::SigHup;
 /// (`NetworkConfig::request_timeout`), so `send_records_via_handle` needs no
 /// timeout of its own.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether an ordinary node runs Kademlia in server mode.
+///
+/// True on every node, matching p2pd's `-b`: a node that only issued queries
+/// would never be advertised into peers' routing tables. Named rather than
+/// inlined so `config.dht_server` — the seed's "server mode regardless of
+/// reachability" — reads as the second input it is, not as dead logic.
+const NODE_DHT_SERVER: bool = true;
 
 /// How long to let reachability settle before acting on a change.
 ///
@@ -97,6 +105,10 @@ pub struct NativeNode {
     pub peer_id: PeerId,
     /// The DHT records this node serves to other peers.
     pub storage: DHTStorage,
+    /// Whether this node publishes records *of its own* — `config.announce_self`,
+    /// captured at start. False on a bootstrap seed, which serves the DHT
+    /// without joining it. Serving other peers' records is unaffected.
+    announce_self: bool,
     /// Background tasks: swarm loop, DHT maintenance, control socket, mux.
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -138,8 +150,15 @@ impl NativeNode {
             initial_peers: bootstrap_peers.to_vec(),
             // p2pd runs with `-b` (Kademlia bootstrap) on every node, which is
             // what makes a node answer DHT queries rather than only issuing
-            // them. `dht_server` is the native equivalent.
-            dht_server: true,
+            // them. `dht_server` is the native equivalent, and it is on for
+            // every node today — so `config.dht_server = true` (the bootstrap
+            // seed's preset) currently asks for what it would already get.
+            //
+            // It is still read rather than ignored: the seed's requirement is
+            // "server mode regardless of reachability", and stating it through
+            // the config is what stops a future change to the ordinary-node
+            // default from silently demoting a seed to client mode.
+            dht_server: NODE_DHT_SERVER || config.dht_server,
 
             // ── NAT traversal ──────────────────────────────────────────────
             // Each of these has a p2pd flag it corresponds to, so a node
@@ -151,8 +170,9 @@ impl NativeNode {
             trusted_relays: config.trusted_relays.clone(),
             // `-relay`.
             relay_server: !config.no_relay,
-            // `-natPortMap`.
-            enable_upnp: true,
+            // `-natPortMap`. On by default; off for a node deployed at a known
+            // address (the bootstrap seed preset), which has no gateway to ask.
+            enable_upnp: config.enable_upnp,
             // `-forceReachabilityPrivate`. Defaults true, so relay reservations
             // start immediately rather than after an AutoNAT round.
             force_private: config.force_private,
@@ -187,8 +207,16 @@ impl NativeNode {
         // Dials the configured peers and seeds Kademlia. Non-fatal: a node with
         // no reachable bootstrap still serves its own DHT and control socket,
         // and the announce loop retries every 300 s.
+        // An empty list is normal for a seed and a misconfiguration for a node,
+        // so the two say different things. Either way it is not an error and
+        // there is no retry loop: nothing is dialled, and `handle.bootstrap` is
+        // simply never called.
         if bootstrap_peers.is_empty() {
-            warn!("No bootstrap peers configured — this node will not join the network");
+            if config.announce_self {
+                warn!("No bootstrap peers configured — this node will not join the network");
+            } else {
+                info!("No bootstrap peers — a seed dials nobody; peers come to it");
+            }
         } else {
             let addrs = bootstrap_peers
                 .iter()
@@ -245,6 +273,7 @@ impl NativeNode {
             handle,
             peer_id,
             storage,
+            announce_self: config.announce_self,
             tasks,
         })
     }
@@ -254,12 +283,27 @@ impl NativeNode {
     ///
     /// Returns the per-bootstrap timings `node.rs` feeds to the reputation
     /// store — the announce doubles as the reputation probe on both paths.
+    ///
+    /// `announce_self = false` makes this a no-op returning no timings: no
+    /// block records, no `_petals.models`, no `_kwaai.inference.nodes`, no VPK
+    /// registry entry, and nothing written into our own storage either. That
+    /// is what a bootstrap seed is — it serves the DHT without joining it.
+    ///
+    /// The gate is here, one call above `build_announce_records`, rather than
+    /// inside the builders: those own the wire format, have their own tests,
+    /// and are called from elsewhere, so the seed must be stopped from *asking*
+    /// for a round instead of being handed builders hollowed out to return
+    /// nothing.
     pub async fn announce(
         &self,
         ctx: &AnnounceContext<'_>,
         server_info: &DHTServerInfo,
         bootstrap_peers: &[String],
     ) -> Result<Vec<crate::announce::StoreTiming>> {
+        if !self.announce_self {
+            debug!("announce_self = false — publishing nothing");
+            return Ok(Vec::new());
+        }
         let records = build_announce_records(ctx, server_info)?;
         for record in &records {
             self.storage.handle_store(record.clone());
@@ -278,12 +322,22 @@ impl NativeNode {
 
     /// Write the `state = -1` tombstone so the map drops this node immediately
     /// rather than waiting out the 360 s TTL.
+    ///
+    /// Gated on `announce_self` for the same reason as [`Self::announce`], and
+    /// gating both directions is what keeps the pair consistent: a tombstone
+    /// retracts an announce, so a node that published nothing has nothing to
+    /// retract. Without this, a seed's one and only DHT record would be a
+    /// `state = -1` for a node the network never heard of.
     pub async fn unannounce(
         &self,
         ctx: &AnnounceContext<'_>,
         server_info: &DHTServerInfo,
         bootstrap_peers: &[String],
     ) {
+        if !self.announce_self {
+            debug!("announce_self = false — nothing was announced, so nothing is retracted");
+            return;
+        }
         let records = match build_unannounce_records(ctx, server_info) {
             Ok(r) => r,
             Err(e) => {
@@ -346,7 +400,17 @@ pub async fn run_native_node(
     let peer_id = node.peer_id;
 
     // ── Announce inputs ────────────────────────────────────────────────────
-    info!("[2/4] Preparing the DHT announcement...");
+    // Everything from here to the initial announce describes a record this node
+    // is about to publish. With `announce_self = false` no record is ever
+    // built, so the measurements behind it are skipped rather than computed and
+    // discarded — the bandwidth probe in particular is a real network round
+    // trip, and a seed has no model to measure a throughput for.
+    let announce_self = config.announce_self;
+    if announce_self {
+        info!("[2/4] Preparing the DHT announcement...");
+    } else {
+        info!("[2/4] announce_self = false — serving the DHT, publishing nothing");
+    }
 
     // `using_relay` is true when a circuit reservation is actually confirmed.
     let mut announce_state = node.handle.announce_state();
@@ -357,21 +421,42 @@ pub async fn run_native_node(
     // re-announces; `using_relay` alone would miss Private→Public with no
     // circuit, leaving the record stale until the 300 s tick.
     let mut last_announced_epoch = startup_state.epoch;
-    if let Some(addr) = configured_announce_addr(config) {
-        info!("  Announce addr: {addr} (declared)");
-    } else {
-        info!("  Announce addr: discovered (autonat, upnp or identify consensus)");
+    if announce_self {
+        if let Some(addr) = configured_announce_addr(config) {
+            info!("  Announce addr: {addr} (declared)");
+        } else {
+            info!("  Announce addr: discovered (autonat, upnp or identify consensus)");
+        }
     }
 
-    let dl_bps = crate::node::measure_download_bps_for(&config.model).await;
-    let throughput = crate::node::report_effective_tps(&config.model, dl_bps, using_relay);
+    // `measure_download_bps_for` is already a no-op without a benchmarked
+    // throughput entry for the model, but a seed skips it outright: it has no
+    // model, and the probe it would otherwise run is a live download.
+    let dl_bps = if announce_self {
+        crate::node::measure_download_bps_for(&config.model).await
+    } else {
+        0.0
+    };
     let prefix = config.effective_dht_prefix();
     let repository = crate::node::effective_repository(config);
-    info!("  DHT prefix:  {}", prefix);
-    info!("  Repository:  {}", repository);
-    info!("  Using relay: {}", using_relay);
+    let throughput = if announce_self {
+        let t = crate::node::report_effective_tps(&config.model, dl_bps, using_relay);
+        info!("  DHT prefix:  {}", prefix);
+        info!("  Repository:  {}", repository);
+        info!("  Using relay: {}", using_relay);
+        t
+    } else {
+        0.0
+    };
 
-    let vpk_info = crate::node::initial_vpk_info(config, public_name).await;
+    // Guarded by `vpk_enabled` too, which the seed preset turns off; skipping
+    // it here as well means the seed never polls a VPK endpoint even if a
+    // stray config left that flag on.
+    let vpk_info = if announce_self {
+        crate::node::initial_vpk_info(config, public_name).await
+    } else {
+        None
+    };
 
     let ctx = AnnounceContext {
         peer_id,
@@ -393,21 +478,36 @@ pub async fn run_native_node(
     );
 
     // ── Initial announcement ───────────────────────────────────────────────
-    info!("[3/4] Announcing to DHT...");
-    if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
-        warn!("Initial announce failed: {e:#} — will retry at the 300 s tick");
+    if announce_self {
+        info!("[3/4] Announcing to DHT...");
+        if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+            warn!("Initial announce failed: {e:#} — will retry at the 300 s tick");
+        }
+    } else {
+        info!("[3/4] Skipping the announcement — announce_self = false");
     }
 
-    info!("[4/4] ✅ KwaaiNet node running (native p2p)");
-    info!("   Peer ID : {}", peer_id.to_base58());
-    info!("   Name    : {}", public_name);
-    info!("   Model   : {}", config.model);
-    info!(
-        "   Blocks  : {}–{}",
-        config.start_block,
-        config.effective_end_block()
-    );
-    info!("   Map     : https://map.kwaai.ai");
+    if announce_self {
+        info!("[4/4] ✅ KwaaiNet node running (native p2p)");
+        info!("   Peer ID : {}", peer_id.to_base58());
+        info!("   Name    : {}", public_name);
+        info!("   Model   : {}", config.model);
+        info!(
+            "   Blocks  : {}–{}",
+            config.start_block,
+            config.effective_end_block()
+        );
+        info!("   Map     : https://map.kwaai.ai");
+    } else {
+        // A seed's summary names what it does — serve — and omits the model and
+        // block range, which it has neither of. No model is loaded and no shard
+        // is spawned on this path: those are started by `shard serve`, never by
+        // the node runner, so the preset reaches no download code at all.
+        info!("[4/4] ✅ KwaaiNet bootstrap seed running (native p2p)");
+        info!("   Peer ID : {}", peer_id.to_base58());
+        info!("   Serving : the hivemind DHT (rpc_ping/rpc_store/rpc_find)");
+        info!("   Announcing: nothing");
+    }
 
     // ── Event loop ─────────────────────────────────────────────────────────
     // Same 300 s ± 30 s jittered cadence as the p2pd path: the DHT TTL is 360 s,
@@ -417,7 +517,19 @@ pub async fn run_native_node(
     let mut next_announce = Box::pin(tokio::time::sleep(Duration::from_secs(
         crate::node::jitter_secs(300, 30),
     )));
-    let mut ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
+    // The Ollama watcher exists to trigger a re-announce when inference comes
+    // back. A seed announces nothing, so the watcher would poll a port it does
+    // not serve every 15 s in order to fire a signal whose handler is a no-op.
+    //
+    // A dangling receiver stands in so the `select!` arm below keeps its type.
+    // The sender is *held* rather than dropped: dropping it would close the
+    // channel, and while `Some(()) = …recv()` would still disable the branch on
+    // `None`, holding the sender keeps the branch simply-never-ready, which
+    // does not depend on that subtlety.
+    let (_ollama_recovery_tx, mut ollama_recovery_rx) = tokio::sync::mpsc::channel::<()>(1);
+    if announce_self {
+        ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
+    }
     let mut pending_update_version: Option<String> = None;
     // Deadline for the reachability-change settle window; None = no change pending.
     let mut announce_settle: Option<tokio::time::Instant> = None;
@@ -557,8 +669,12 @@ pub async fn run_native_node(
     }
 
     // Tombstone before tearing down the swarm, so the map drops us immediately
-    // rather than waiting out the TTL.
-    info!("Unannouncing from DHT...");
+    // rather than waiting out the TTL. `unannounce` is itself gated on
+    // `announce_self`; the log line is gated here too so a seed's shutdown does
+    // not claim a retraction it correctly never sends.
+    if announce_self {
+        info!("Unannouncing from DHT...");
+    }
     node.unannounce(&ctx, &server_info, bootstrap_peers).await;
     node.shutdown().await;
 
@@ -715,5 +831,168 @@ async fn register_node_handlers(
         .await
     {
         warn!("registering shard-proxy handler failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::announce::dht_id;
+    use kwaai_hivemind_dht::protocol::{FindRequest, RequestAuthInfo, ResultType};
+
+    /// Build a node on an ephemeral loopback port with the given
+    /// `announce_self`, and a config that touches nothing outside the tempdir.
+    ///
+    /// `port: 0` lets the OS pick, so two of these can run concurrently and
+    /// neither collides with a developer's real node on 8080.
+    fn seed_like_config(announce_self: bool, home: &std::path::Path) -> KwaaiNetConfig {
+        KwaaiNetConfig {
+            native_p2p: true,
+            announce_self,
+            dht_server: true,
+            enable_upnp: false,
+            port: 0,
+            initial_peers: Vec::new(),
+            vpk_enabled: false,
+            ollama_manage: false,
+            identity_key: Some(home.join("identity.key")),
+            ..KwaaiNetConfig::default()
+        }
+    }
+
+    /// The keys an announce round would publish under, in the order
+    /// `build_announce_records` emits them.
+    fn announced_keys(config: &KwaaiNetConfig) -> Vec<String> {
+        vec![
+            format!("{}.{}", config.effective_dht_prefix(), config.start_block),
+            "_petals.models".to_string(),
+            "_kwaai.inference.nodes".to_string(),
+        ]
+    }
+
+    /// Nothing is findable in a node's own storage under any key it would have
+    /// announced.
+    fn storage_has_nothing_under(storage: &DHTStorage, keys: &[String]) -> bool {
+        keys.iter().all(|key| {
+            let response = storage.handle_find(FindRequest {
+                auth: Some(RequestAuthInfo::new()),
+                keys: vec![dht_id(key)],
+                peer: None,
+            });
+            response.results[0].result_type == ResultType::NotFound as i32
+        })
+    }
+
+    /// `announce_self` decides whether a node publishes anything at all.
+    ///
+    /// Both directions live in one test, run sequentially, because
+    /// `KWAAINET_SOCKET` is process-global: each node binds a control socket,
+    /// and two `#[tokio::test]`s running in parallel would either collide on
+    /// the default path or race each other's env var.
+    ///
+    /// The assertion is made at the deliver seam rather than by counting
+    /// outbound RPCs: the first thing `announce` does on the happy path is
+    /// write every record into its *own* storage, so a storage that stays empty
+    /// across an explicit `announce()` proves no record was built, let alone
+    /// sent. With no bootstrap peers there is nowhere to send to either, which
+    /// keeps this free of a second process.
+    #[tokio::test]
+    async fn announce_self_decides_whether_anything_is_published() {
+        // ── announce_self = false: a seed publishes nothing ─────────────────
+        let home = tempfile::tempdir().expect("tmpdir");
+        let config = seed_like_config(false, home.path());
+        std::env::set_var("KWAAINET_SOCKET", home.path().join("seed.sock"));
+        kwaai_p2p::identity::generate_keypair(config.identity_key.as_ref().unwrap())
+            .expect("the fixture key must generate");
+
+        let node = NativeNode::start(&config, &[])
+            .await
+            .expect("a seed-preset node must start with no bootstrap peers");
+
+        let prefix = config.effective_dht_prefix();
+        let ctx = AnnounceContext {
+            peer_id: node.peer_id,
+            prefix: &prefix,
+            repository: "https://huggingface.co/Qwen/Qwen3-8B",
+            total_blocks: 32,
+        };
+        let server_info = DHTServerInfo::new(
+            config.start_block as i32,
+            config.effective_end_block() as i32,
+            "seed-under-test",
+            false,
+            0.0,
+            Vec::new(),
+            None,
+            node.peer_id.to_base58(),
+        );
+
+        let timings = node
+            .announce(&ctx, &server_info, &[])
+            .await
+            .expect("a suppressed announce is a success, not an error");
+        assert!(
+            timings.is_empty(),
+            "no record was sent, so there is no per-bootstrap timing to report"
+        );
+
+        let keys = announced_keys(&config);
+        assert!(
+            storage_has_nothing_under(&node.storage, &keys),
+            "announce_self = false must publish nothing — not even into our own storage"
+        );
+
+        // The tombstone is gated too: with nothing announced there is nothing
+        // to retract, and a seed's only record must never be a `state = -1`.
+        node.unannounce(&ctx, &server_info, &[]).await;
+        assert!(
+            storage_has_nothing_under(&node.storage, &keys),
+            "an unannounce must publish no tombstone when nothing was announced"
+        );
+
+        node.shutdown().await;
+        drop(home);
+
+        // ── announce_self = true: an ordinary node still publishes ──────────
+        // Without this half, the assertions above would pass just as happily
+        // against an announce path that was broken outright.
+        let home = tempfile::tempdir().expect("tmpdir");
+        let config = seed_like_config(true, home.path());
+        std::env::set_var("KWAAINET_SOCKET", home.path().join("node.sock"));
+        kwaai_p2p::identity::generate_keypair(config.identity_key.as_ref().unwrap())
+            .expect("the fixture key must generate");
+
+        let node = NativeNode::start(&config, &[])
+            .await
+            .expect("an ordinary node must start");
+
+        let prefix = config.effective_dht_prefix();
+        let ctx = AnnounceContext {
+            peer_id: node.peer_id,
+            prefix: &prefix,
+            repository: "https://huggingface.co/Qwen/Qwen3-8B",
+            total_blocks: 32,
+        };
+        let server_info = DHTServerInfo::new(
+            config.start_block as i32,
+            config.effective_end_block() as i32,
+            "node-under-test",
+            false,
+            0.0,
+            Vec::new(),
+            None,
+            node.peer_id.to_base58(),
+        );
+
+        node.announce(&ctx, &server_info, &[])
+            .await
+            .expect("an ordinary announce must build its records");
+        assert!(
+            !storage_has_nothing_under(&node.storage, &announced_keys(&config)),
+            "an announcing node must write its own records into its storage"
+        );
+
+        node.shutdown().await;
+        std::env::remove_var("KWAAINET_SOCKET");
     }
 }
