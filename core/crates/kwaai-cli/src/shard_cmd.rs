@@ -2157,8 +2157,81 @@ pub struct BlockServerEntry {
     pub lease_v1: bool,
 }
 
+/// The peers a DHT read should query, given the configured list.
+///
+/// With `decentralized_dht` off this is the configured list unchanged, so
+/// every discovery path behaves exactly as before.
+///
+/// With it on, the peers this node is *actually* connected to are added. The
+/// configured entries stay in the set rather than being replaced: they are
+/// ordinary peers now, and on a cold start they may be all we have.
+///
+/// # Why this widens rather than narrows
+///
+/// Placement writes each key to the `k` peers nearest it, so a complete read
+/// of one key would ask exactly those `k`. Discovery here is a different
+/// shape — `discover_chain` asks for *every block key at once* in a single
+/// `FindRequest`, and different keys have different nearest sets, so no single
+/// small set of peers holds the whole answer. Asking everyone we know and
+/// merging is therefore both simpler and more complete than ranking per key
+/// would be at this call site, and a hivemind server answers a multi-key
+/// `rpc_find` from its whole store regardless of distance.
+///
+/// The seam for a full iterative beam search is [`crate::placement`]: when the
+/// network outgrows "ask everyone we know", the per-key ranking already exists
+/// and this function becomes the place that consults it.
+async fn resolve_query_peers(client: &mut P2PClient, configured: &[String]) -> Vec<String> {
+    match KwaaiNetConfig::load_or_create() {
+        Ok(c) if c.decentralized_dht => {}
+        // Flag off, or the config could not be read: behave exactly as before.
+        _ => return configured.to_vec(),
+    }
+
+    let mut out: Vec<String> = configured.to_vec();
+    let seen: std::collections::HashSet<String> = configured
+        .iter()
+        .filter_map(|a| a.split("/p2p/").nth(1).map(str::to_string))
+        .collect();
+
+    match client.list_peers().await {
+        Ok(peers) => {
+            for peer in peers {
+                let Ok(pid) = PeerId::from_bytes(&peer.id) else {
+                    continue;
+                };
+                if seen.contains(&pid.to_base58()) {
+                    continue;
+                }
+                // Any one dialable address is enough; the daemon dials on
+                // demand once the peer ID is known.
+                let Some(addr) = peer.addrs.first() else {
+                    continue;
+                };
+                let Ok(ma) = libp2p::Multiaddr::try_from(addr.clone()) else {
+                    continue;
+                };
+                out.push(format!("{ma}/p2p/{pid}"));
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Decentralized discovery: could not list peers ({e})");
+        }
+    }
+
+    // Cached peers, so a node whose configured peers are gone can still read.
+    let cached =
+        crate::peer_cache::PeerCache::load_default().dial_addrs(&out.iter().cloned().collect());
+    out.extend(cached);
+    out
+}
+
 /// Query bootstrap peers for all block keys of `dht_prefix` and return a
 /// sorted, deduplicated list of [`BlockServerEntry`].
+///
+/// When `decentralized_dht` is set, the query set is widened from the
+/// configured bootstraps to every peer this node knows — see
+/// [`resolve_query_peers`]. Results are merged across peers either way, so a
+/// partial answer from any one peer is filled in by the others.
 pub async fn discover_chain(
     client: &mut P2PClient,
     our_peer_id: &PeerId,
@@ -2188,7 +2261,9 @@ pub async fn discover_chain(
 
     let mut servers: HashMap<String, BlockServerEntry> = HashMap::new();
 
-    for addr in bootstrap_peers {
+    let query_peers = resolve_query_peers(client, bootstrap_peers).await;
+
+    for addr in &query_peers {
         let Some(peer_str) = addr.split("/p2p/").nth(1) else {
             continue;
         };
@@ -2300,7 +2375,9 @@ pub async fn discover_inference_peer(
 
     let mut candidates: Vec<(f64, PeerId, String)> = Vec::new(); // (throughput, peer_id, name)
 
-    for addr in bootstrap_peers {
+    let query_peers = resolve_query_peers(client, bootstrap_peers).await;
+
+    for addr in &query_peers {
         let Some(peer_str) = addr.split("/p2p/").nth(1) else {
             continue;
         };

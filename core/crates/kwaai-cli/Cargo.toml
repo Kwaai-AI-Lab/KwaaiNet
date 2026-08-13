@@ -117,6 +117,9 @@ tempfile = "3"
 # they assert on exact boundaries instead of racing the wall clock. See the
 # `Clock` docs in capacity_lease.rs for why that matters here.
 tokio = { workspace = true, features = ["test-util"] }
+# `placement`'s keyspace test asserts that placement is *not* computed in
+# libp2p-kad's SHA256 space. Test-only: nothing in the binary hashes with it.
+sha2 = "0.10"
 
 [features]
 default = ["storage", "rag"]
