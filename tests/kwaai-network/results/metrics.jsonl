@@ -1381,3 +1381,13 @@
 {"timestamp":"2026-08-13T05:25:45.506790+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::tombstone_and_expiration_rules","tier":"integration","passed":true,"duration_ms":31,"metrics":{}}
 {"timestamp":"2026-08-13T05:25:45.507277+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::announces_nothing","tier":"integration","passed":true,"duration_ms":32,"metrics":{}}
 {"timestamp":"2026-08-13T05:25:45.508163+00:00","git_rev":"633af3a8","test":"integration::bootstrap_seed::many_peers_one_key","tier":"integration","passed":true,"duration_ms":33,"metrics":{}}
+{"timestamp":"2026-08-13T15:26:13.282893+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::identity_is_the_key_file","tier":"integration","passed":true,"duration_ms":19,"metrics":{}}
+{"timestamp":"2026-08-13T15:26:13.293276+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::store_and_find_round_trip","tier":"integration","passed":true,"duration_ms":29,"metrics":{}}
+{"timestamp":"2026-08-13T15:26:13.294790+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::tombstone_and_expiration_rules","tier":"integration","passed":true,"duration_ms":31,"metrics":{}}
+{"timestamp":"2026-08-13T15:26:13.294787+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::announces_nothing","tier":"integration","passed":true,"duration_ms":31,"metrics":{}}
+{"timestamp":"2026-08-13T15:26:13.302783+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::many_peers_one_key","tier":"integration","passed":true,"duration_ms":39,"metrics":{}}
+{"timestamp":"2026-08-13T15:42:31.854755+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::identity_is_the_key_file","tier":"integration","passed":true,"duration_ms":17,"metrics":{}}
+{"timestamp":"2026-08-13T15:42:31.863168+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::store_and_find_round_trip","tier":"integration","passed":true,"duration_ms":27,"metrics":{}}
+{"timestamp":"2026-08-13T15:42:31.864937+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::announces_nothing","tier":"integration","passed":true,"duration_ms":29,"metrics":{}}
+{"timestamp":"2026-08-13T15:42:31.865521+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::tombstone_and_expiration_rules","tier":"integration","passed":true,"duration_ms":30,"metrics":{}}
+{"timestamp":"2026-08-13T15:42:31.871498+00:00","git_rev":"468b40c9","test":"integration::bootstrap_seed::many_peers_one_key","tier":"integration","passed":true,"duration_ms":36,"metrics":{}}
