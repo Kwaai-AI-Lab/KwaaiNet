@@ -73,6 +73,30 @@ pub struct PeerInfo {
     pub direction: Direction,
 }
 
+/// A peer we know at least one dialable address for, as reported by
+/// [`NetworkHandle::known_peers`].
+///
+/// Unlike [`PeerInfo`] this is *not* limited to live connections: it merges the
+/// Kademlia routing table with the connected set, which is what a
+/// decentralized-placement caller needs — the peer nearest a record key is very
+/// often one we have merely heard of rather than one we are talking to.
+///
+/// A peer with no address survives in kad's buckets but cannot be dialed, so
+/// such entries are dropped here rather than handed to a caller that would only
+/// fail on them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownPeer {
+    /// The peer's ID.
+    pub peer_id: PeerId,
+    /// Every address we hold for it, routing-table and connection addresses
+    /// merged, deduplicated, and filtered to the announceable set.
+    pub addrs: Vec<Multiaddr>,
+    /// Whether there is a live connection to this peer right now. A caller may
+    /// prefer connected peers on a tie, but an unconnected peer is still a
+    /// legitimate candidate — the handle dials on demand.
+    pub connected: bool,
+}
+
 /// Which end dialed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -134,6 +158,11 @@ pub enum Command {
     },
     /// Every peer currently in the Kademlia routing table.
     RoutingPeers { reply: oneshot::Sender<Vec<PeerId>> },
+    /// Every peer we know a dialable address for — routing table plus live
+    /// connections, deduplicated.
+    KnownPeers {
+        reply: oneshot::Sender<Vec<KnownPeer>>,
+    },
     /// Kademlia lookup for a peer's addresses.
     DhtFindPeer {
         peer: PeerId,
@@ -357,6 +386,23 @@ impl NetworkHandle {
     /// not block the event loop.
     pub async fn routing_peers(&self) -> P2PResult<Vec<PeerId>> {
         self.call(|reply| Command::RoutingPeers { reply }).await
+    }
+
+    /// Every peer we hold a dialable address for: the Kademlia routing table
+    /// merged with the currently connected set.
+    ///
+    /// This is the candidate enumeration behind decentralized DHT placement.
+    /// [`NetworkHandle::routing_peers`] answers "who is in my k-buckets" and
+    /// returns bare IDs; that is enough to feed hivemind's `rpc_find` nearest
+    /// lists, but not enough to *place* a record, because a peer with no
+    /// address cannot be stored to. This call keeps only peers with at least
+    /// one announceable address and reports whether each is connected.
+    ///
+    /// Like `routing_peers` this is a synchronous walk over in-memory state —
+    /// k-buckets plus the connected-peer map — so it does not block the event
+    /// loop and issues no network traffic.
+    pub async fn known_peers(&self) -> P2PResult<Vec<KnownPeer>> {
+        self.call(|reply| Command::KnownPeers { reply }).await
     }
 
     /// Resolve a peer's addresses through Kademlia.
