@@ -1396,7 +1396,7 @@ impl NetworkService {
                             // No ListenerId exists, so there is no slot to
                             // close — the manager has to be told separately or
                             // this relay would never be marked failed.
-                            warn!(%relay, %circuit_addr, error = %e, "circuit listen failed");
+                            warn!(%relay, %circuit_addr, error = ?e, "circuit listen failed");
                             let actions = self.relays.note_listen_failed(relay, Instant::now());
                             self.apply_relay_actions(actions);
                         }
