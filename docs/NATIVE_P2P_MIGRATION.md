@@ -220,7 +220,58 @@ one task per call, so neither a slow handler nor a dead one can stall the select
 Gated by `kwaai-p2p/tests/service_unary.rs` and `09_service_unary_interop.rs` (a full
 `NetworkService` against a real p2pd, both directions).
 
-*Still open in this phase:* DHT serving and the announce/re-announce lifecycle.
+*Also done:* **DHT serving** (`kwaai-p2p/src/dht_service.rs`) — `spawn_dht_service`
+registers `DHTProtocol.rpc_{ping,store,find}` as unary handlers over
+`kwaai-hivemind-dht`'s `DHTStorage`, plus a 60 s maintenance task that feeds the
+storage's routing table from `NetworkHandle::routing_peers()` (a new kad
+k-bucket read) and runs `cleanup_expired()`. Nothing called `update_peers` or
+`cleanup_expired` before. `rpc_ping` answers `available = false` — hivemind sets
+true only after dialing the caller back, which is Phase 4 reachability work; the
+field feeds the *caller's* confidence in its own reachability, so under-claiming
+is the safe direction. Gated by `kwaai-p2p/tests/dht_service.rs` (in-process) and
+`10_native_dht_interop` (a real p2pd storing into and reading from our native
+node — the direction the `stream.rs` bug used to break).
+
+**Announce records** are extracted into `kwaai-cli/src/announce.rs`:
+`build_announce_records` / `build_unannounce_records` / `send_records_via_handle`
+alongside the record value types moved verbatim from `node.rs`. `run_node` still
+uses its p2pd path; the rewire is Phase 4.
+
+*Still open in this phase:* wiring the re-announce loop to the native path
+(Phase 4, together with the announce watch channel).
+
+#### Verified live against the production bootstraps
+
+`kwaai-p2p/tests/live_dht_announce.rs` (gated `#[ignore]` **and**
+`KWAAI_LIVE_DHT_WRITE=1`, because it writes to the real DHT) ran green:
+
+- **The RSA dial path works.** Both Python bootstraps (`Qm…`, RSA-2048) complete
+  the noise handshake from rust-libp2p in ~200 ms. This was the single biggest
+  Phase 1 unknown and it is now closed empirically. Identify reports
+  `agent_version=p2pd/0.1` and a protocol list without any `DHTProtocol.*` entry
+  (those are served by the Python process behind the daemon, not advertised).
+- **A Python bootstrap accepts our native `rpc_store`**: `store_ok = [true]`,
+  ~170 ms.
+- **A subkeyed record reads back as rt=2 `FOUND_DICTIONARY`** with the subkey and
+  value byte-identical, ~167 ms.
+- **The tombstone rule is confirmed as documented**: a store with an expiration
+  *strictly greater* than the live record replaces it. A store can never delete —
+  the key remains `FOUND`, only the value changes.
+
+Two findings that contradict prior assumptions:
+
+- **`rpc_store` is single-hop.** A record stored on bootstrap #1 is *not* visible
+  on bootstrap #2. It writes to the receiving node and replicates nothing;
+  hivemind's `DHTNode.store` gets redundancy by calling `rpc_store` on each of
+  the `k` nearest nodes from the **client** side. Today's `send_to_bootstrap`
+  fan-out to every bootstrap is therefore load-bearing, not belt-and-braces —
+  removing it in favour of "store once and let the DHT propagate" would silently
+  halve our record redundancy.
+- **The live bootstraps answer `NOT_FOUND` with an empty nearest-peers list.**
+  Hivemind's `rpc_find` does attach nearest peers (`protocol.py:362-364`) and our
+  `DHTStorage` does too, so this reflects those deployments' routing tables
+  rather than the protocol. Worth knowing before relying on a bootstrap to route
+  an iterative lookup: it will not.
 
 *Testable:* node announces to bootstraps and shows on the health map; `rpc_find` against a
 Python bootstrap returns our record; a p2pd-based caller successfully calls our `rpc_ping`

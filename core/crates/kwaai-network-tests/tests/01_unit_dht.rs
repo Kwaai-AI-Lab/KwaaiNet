@@ -9,7 +9,7 @@ use kwaai_hivemind_dht::{
         FindRequest, FindResult, NodeInfo, PingRequest, RequestAuthInfo, ResultType, StoreRequest,
     },
     value::{get_dht_time, DHTValueBuilder},
-    DHTStorage, DHTValue,
+    DHTStorage, DHTValue, IS_REGULAR_VALUE,
 };
 use kwaai_network_tests::metrics::MetricsRecorder;
 use libp2p::PeerId;
@@ -147,10 +147,13 @@ fn storage_store_and_find() {
 
     let node = NodeInfo::from_peer_id(peer);
     let exp = get_dht_time() + 3600.0;
+    // A subkey-less store uses the IS_REGULAR_VALUE sentinel (msgpack nil,
+    // `hivemind/dht/protocol.py:33`). An *empty* tag is IS_DICTIONARY and would
+    // mean "this value is a whole serialized DictionaryDHTValue".
     let store_req = StoreRequest {
         auth: Some(RequestAuthInfo::new()),
         keys: vec![b"block.0".to_vec()],
-        subkeys: vec![vec![]],
+        subkeys: vec![IS_REGULAR_VALUE.to_vec()],
         values: vec![b"server_data".to_vec()],
         expiration_time: vec![exp],
         in_cache: vec![false],
@@ -185,7 +188,7 @@ fn storage_rejects_expired_store() {
     let store_req = StoreRequest {
         auth: Some(RequestAuthInfo::new()),
         keys: vec![b"stale_key".to_vec()],
-        subkeys: vec![vec![]],
+        subkeys: vec![IS_REGULAR_VALUE.to_vec()],
         values: vec![b"ignored".to_vec()],
         expiration_time: vec![0.0], // epoch 0 — already expired
         in_cache: vec![false],
@@ -227,7 +230,7 @@ fn storage_cleanup_removes_expired() {
     let store_req = StoreRequest {
         auth: Some(RequestAuthInfo::new()),
         keys: vec![b"live".to_vec()],
-        subkeys: vec![vec![]],
+        subkeys: vec![IS_REGULAR_VALUE.to_vec()],
         values: vec![b"v".to_vec()],
         expiration_time: vec![exp_future],
         in_cache: vec![false],
@@ -274,7 +277,7 @@ fn storage_multi_key_batch() {
     let store_req = StoreRequest {
         auth: Some(RequestAuthInfo::new()),
         keys: (0..n).map(|i| format!("key{i}").into_bytes()).collect(),
-        subkeys: vec![vec![]; n],
+        subkeys: vec![IS_REGULAR_VALUE.to_vec(); n],
         values: (0..n).map(|i| format!("val{i}").into_bytes()).collect(),
         expiration_time: vec![exp; n],
         in_cache: vec![false; n],
@@ -323,15 +326,25 @@ fn result_type_roundtrip() {
 // NodeInfo ↔ PeerId roundtrip
 // ============================================================================
 
+/// `NodeInfo.node_id` is a hivemind DHTID — `SHA1(peer_id.to_bytes())`, 20 bytes
+/// (`hivemind/dht/routing.py:261-271,288-290`) — not the peer multihash.
+///
+/// This test previously asserted a `PeerId` round trip, which only held because
+/// `from_peer_id` was emitting the raw multihash. That is a one-way hash, so a
+/// round trip is not possible for a spec-conformant peer; caller identity comes
+/// from the libp2p connection instead.
 #[test]
-fn node_info_peer_id_roundtrip() {
-    let rec = MetricsRecorder::start("unit::dht::node_info_peer_id_roundtrip", "unit");
+fn node_info_carries_a_20_byte_dht_id() {
+    let rec = MetricsRecorder::start("unit::dht::node_info_carries_a_20_byte_dht_id", "unit");
     let original = PeerId::random();
     let ni = NodeInfo::from_peer_id(original);
-    let recovered = ni
-        .to_peer_id()
-        .expect("should recover PeerId from NodeInfo");
-    assert_eq!(original, recovered);
+
+    assert_eq!(ni.node_id.len(), 20, "DHTID.to_bytes() is 20 bytes");
+    assert_eq!(
+        ni.node_id,
+        kwaai_hivemind_dht::dht_id_from_peer_id(&original)
+    );
+    assert_ne!(ni.node_id, original.to_bytes(), "must not be the multihash");
     rec.finish(true);
 }
 
