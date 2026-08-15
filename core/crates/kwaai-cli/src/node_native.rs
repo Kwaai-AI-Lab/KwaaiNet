@@ -189,15 +189,13 @@ impl NativeNode {
         // Dials the configured peers and seeds Kademlia. Non-fatal: a node with
         // no reachable bootstrap still serves its own DHT and control socket,
         // and the announce loop retries every 300 s.
-        // An empty list is normal for a bootstrap and a misconfiguration for a
-        // node, so the two say different things. Either way it is not an error
-        // and there is no retry loop: nothing is dialled, and `handle.bootstrap`
-        // is simply never called.
+        // An empty list is a misconfiguration for an ordinary node and normal
+        // for a bootstrap, which dials nobody. Either way it is not an error and
+        // there is no retry loop: nothing is dialled and `handle.bootstrap` is
+        // never called.
         if bootstrap_peers.is_empty() {
             if config.announce_self {
                 warn!("No bootstrap peers configured — this node will not join the network");
-            } else {
-                info!("No bootstrap peers — a bootstrap node dials nobody; peers come to it");
             }
         } else {
             let addrs = bootstrap_peers
@@ -289,10 +287,6 @@ impl NativeNode {
 
     /// Write the `state = -1` tombstone so the map drops this node immediately
     /// rather than waiting out the 360 s TTL.
-    ///
-    /// Only called when the node announced in the first place: a tombstone
-    /// retracts an announce, so a node that published nothing has nothing to
-    /// retract.
     pub async fn unannounce(
         &self,
         ctx: &AnnounceContext<'_>,
@@ -389,8 +383,6 @@ pub async fn run_native_node(
     let (dl_bps, throughput, vpk_info) = if announce_self {
         if let Some(addr) = configured_announce_addr(config) {
             info!("  Announce addr: {addr} (declared)");
-        } else {
-            info!("  Announce addr: discovered (autonat, upnp or identify consensus)");
         }
         let dl_bps = crate::node::measure_download_bps_for(&config.model).await;
         let tps = crate::node::report_effective_tps(&config.model, dl_bps, using_relay);
