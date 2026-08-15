@@ -161,42 +161,26 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
-    /// Whether this node publishes DHT records *of its own*.
+    /// Whether this node publishes DHT records *of its own* — its block range,
+    /// `_petals.models`, `_kwaai.inference.nodes` and the VPK registry entry —
+    /// and, symmetrically, the `state = -1` tombstone on shutdown.
     ///
-    /// Defaults to true: an ordinary node exists to be found, so it announces
-    /// its block range, its `_petals.models` entry, its
-    /// `_kwaai.inference.nodes` entry and (when enabled) its VPK registry
-    /// record, then re-announces every 300 s and writes a `state = -1`
-    /// tombstone on the way out.
+    /// A bootstrap node should set this false: it stores and serves other
+    /// peers' records without publishing any. Left true, it would appear on the
+    /// map as an inference node offering zero blocks.
     ///
-    /// Set false and the node publishes *nothing* — no announce round at
-    /// startup, none on the timer, none on a reachability change or a SIGHUP,
-    /// and correspondingly no unannounce tombstone at shutdown, because there
-    /// is nothing to retract. This is what makes a bootstrap a bootstrap: it
-    /// stores and serves everyone else's records while appearing on the map as
-    /// nothing at all. A bootstrap that announced itself would show up as an
-    /// inference node offering zero blocks.
-    ///
-    /// This is about *publishing*, not about *serving*. The DHT server role —
-    /// answering rpc_ping/rpc_store/rpc_find and holding other peers' records —
-    /// is untouched by this flag; see `dht_server` for that.
+    /// This is about *publishing*, not *serving*: answering
+    /// rpc_ping/rpc_store/rpc_find is governed by `dht_server`.
     #[serde(default = "default_true")]
     pub announce_self: bool,
 
-    /// Force Kademlia server mode unconditionally, rather than letting libp2p
-    /// decide from observed reachability.
+    /// Force Kademlia server mode rather than letting libp2p decide from
+    /// observed reachability: the node answers queries from t=0, before any
+    /// external address is confirmed. False leaves kad in auto-mode — client
+    /// until an address is confirmed, server after.
     ///
-    /// Defaults to **true**, matching the p2pd path's `-b` on every node: a
-    /// node that only issued queries would never be advertised into peers'
-    /// routing tables. True means the node answers Kademlia queries from t=0,
-    /// before any external address has been confirmed. A bootstrap needs
-    /// exactly this — it exists to answer queries, and waiting on AutoNAT
-    /// would leave it in client mode, refusing the very lookups it was
-    /// deployed to serve.
-    ///
-    /// Set false to leave Kademlia in auto-mode instead: client until an
-    /// external address is confirmed, server after. Reasonable for a node
-    /// behind a NAT it cannot traverse, which cannot serve queries anyway.
+    /// A bootstrap node needs this on, or it sits in client mode refusing the
+    /// lookups it was deployed to serve.
     #[serde(default = "default_true")]
     pub dht_server: bool,
 
