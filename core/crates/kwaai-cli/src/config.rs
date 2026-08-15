@@ -1064,8 +1064,9 @@ mod tests {
 
     /// A config file predating these keys still loads, and the missing fields
     /// take the ordinary-node defaults rather than `bool::default()` — which
-    /// for `announce_self` and `enable_upnp` would silently be the *seed's*
-    /// value and mute every existing node on the network.
+    /// for `announce_self` would be `false` and silently mute every existing
+    /// node on the network, and for `enable_upnp` would drop the port mapping
+    /// a NATed node depends on.
     #[test]
     fn a_config_without_the_new_keys_deserialises_to_node_defaults() {
         let c: KwaaiNetConfig =
