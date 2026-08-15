@@ -55,8 +55,9 @@ const ANNOUNCE_TTL_SECS: f64 = 360.0;
 // The seed under test
 // ============================================================================
 
-/// A DHT seed assembled as `BootstrapSeed::start` assembles it: identity from a
+/// A DHT seed assembled as the seed config produces it: identity loaded from a
 /// key file, swarm in kad server mode, DHT service over `DHTStorage`.
+/// See `docs/BOOTSTRAP.md` for the config keys that select this shape.
 ///
 /// No control socket, no announce loop, no node handlers — that absence is the
 /// point of a seed, and `the_seed_announces_nothing_of_its_own` asserts it.
