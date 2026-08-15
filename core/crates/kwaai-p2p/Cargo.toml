@@ -16,6 +16,8 @@ async-trait = { workspace = true }
 
 # P2P
 libp2p = { workspace = true }
+kwaai-hivemind-dht = { workspace = true }  # hivemind unary wire codec
+uuid = { workspace = true }                # 16-byte call IDs on the unary wire
 
 # Serialization
 serde = { workspace = true }
