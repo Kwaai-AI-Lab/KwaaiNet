@@ -171,7 +171,7 @@ async-trait = "0.1"
 # P2P networking
 # `rsa` feature lets Keypair::from_protobuf_encoding decode RSA keys (e.g. the
 # bootstrap_key{N}.bin files used by kwaaiai bootstrap servers).
-libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "noise", "tcp", "yamux", "macros", "request-response", "relay", "rsa"] }
+libp2p = { version = "0.53", features = ["tokio", "kad", "identify", "ping", "dns", "noise", "tcp", "yamux", "macros", "request-response", "relay", "rsa"] }
 
 # ML/Inference
 candle-core = "0.10"

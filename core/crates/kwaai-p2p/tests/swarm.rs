@@ -1,0 +1,314 @@
+//! In-process swarm tests.
+//!
+//! Every swarm here binds an ephemeral port on 127.0.0.1 with a freshly
+//! generated key — no shared sockets, no on-disk identity, nothing that can
+//! collide with a node running on the same machine.
+
+use std::time::Duration;
+
+use kwaai_p2p::{Direction, NetworkConfig, NetworkHandle, NetworkService};
+use libp2p::{identity::Keypair, Multiaddr, PeerId};
+
+/// Ceiling on any "wait for the network to settle" loop. Loopback is fast; a
+/// test that needs longer than this is failing, not slow.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Spin up a loopback swarm and return its handle plus the task, so the caller
+/// can keep the task alive for the duration of the test.
+fn spawn_test_swarm() -> (NetworkHandle, tokio::task::JoinHandle<()>, PeerId) {
+    let keypair = Keypair::generate_ed25519();
+    let peer_id = keypair.public().to_peer_id();
+    let (handle, task) =
+        NetworkService::spawn(NetworkConfig::for_tests(), keypair).expect("swarm should start");
+    (handle, task, peer_id)
+}
+
+/// Poll `f` until it yields `Some`, or fail the test after [`SETTLE_TIMEOUT`].
+async fn eventually<T, F, Fut>(what: &str, mut f: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        if let Some(value) = f().await {
+            return value;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out after {SETTLE_TIMEOUT:?} waiting for: {what}");
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// The first listen address a swarm reports, with `/p2p/<peer-id>` appended so
+/// it is directly dialable.
+async fn dialable_addr(handle: &NetworkHandle, peer_id: PeerId) -> Multiaddr {
+    let addr = eventually("swarm to report a listen address", || async {
+        handle.listen_addrs().await.ok()?.into_iter().next()
+    })
+    .await;
+    addr.with(libp2p::multiaddr::Protocol::P2p(peer_id))
+}
+
+// ---------------------------------------------------------------------------
+// Two-swarm: dial, identify, list_peers, disconnect
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn two_swarms_dial_identify_and_disconnect() {
+    let (alice, _alice_task, alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    assert_ne!(alice_id, bob_id, "swarms must have distinct identities");
+    assert_eq!(alice.peer_id(), alice_id);
+    assert_eq!(alice.local_peer_id(), alice_id.to_base58());
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+
+    // --- dial ---------------------------------------------------------
+    let connected = alice
+        .connect_peer(&bob_addr.to_string())
+        .await
+        .expect("dial to a loopback peer should succeed");
+    assert_eq!(connected, bob_id, "connect_peer returns the dialed peer id");
+
+    // --- list_peers, both sides --------------------------------------
+    let alice_view = eventually("alice to list bob", || async {
+        let peers = alice.list_peers().await.ok()?;
+        peers.into_iter().find(|p| p.peer_id == bob_id)
+    })
+    .await;
+    assert_eq!(
+        alice_view.direction,
+        Direction::Outbound,
+        "alice dialed, so her side is outbound"
+    );
+
+    let bob_view = eventually("bob to list alice", || async {
+        let peers = bob.list_peers().await.ok()?;
+        peers.into_iter().find(|p| p.peer_id == alice_id)
+    })
+    .await;
+    assert_eq!(
+        bob_view.direction,
+        Direction::Inbound,
+        "bob was dialed, so his side is inbound"
+    );
+
+    // --- identify: each side learns an observed address for itself ----
+    // Bob observes Alice's ephemeral source port; Alice observes the address
+    // Bob saw her connect from. Both are evidence the identify exchange ran.
+    let alice_observed = eventually("alice to receive an observed address", || async {
+        let addrs = alice.observed_addrs().await.ok()?;
+        (!addrs.is_empty()).then_some(addrs)
+    })
+    .await;
+    let (addr, observers) = &alice_observed[0];
+    assert_eq!(*observers, 1, "exactly one peer has observed us so far");
+    assert!(
+        addr.to_string().contains("/ip4/127.0.0.1/"),
+        "observed address should be loopback, got {addr}"
+    );
+
+    eventually("bob to receive an observed address", || async {
+        let addrs = bob.observed_addrs().await.ok()?;
+        (!addrs.is_empty()).then_some(())
+    })
+    .await;
+
+    // --- disconnect ---------------------------------------------------
+    alice
+        .disconnect_peer(bob_id)
+        .await
+        .expect("disconnecting a connected peer should succeed");
+
+    eventually("alice's peer list to drop bob", || async {
+        let peers = alice.list_peers().await.ok()?;
+        peers.iter().all(|p| p.peer_id != bob_id).then_some(())
+    })
+    .await;
+
+    eventually("bob's peer list to drop alice", || async {
+        let peers = bob.list_peers().await.ok()?;
+        peers.iter().all(|p| p.peer_id != alice_id).then_some(())
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// Three-swarm Kademlia: A knows B, B knows C, A resolves C
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn kad_resolves_a_peer_two_hops_away() {
+    let (a, _a_task, a_id) = spawn_test_swarm();
+    let (b, _b_task, b_id) = spawn_test_swarm();
+    let (c, _c_task, c_id) = spawn_test_swarm();
+
+    let b_addr = dialable_addr(&b, b_id).await;
+    let c_addr = dialable_addr(&c, c_id).await;
+
+    // A knows B.
+    a.connect_peer(&b_addr.to_string()).await.expect("A → B");
+    // B knows C.
+    b.connect_peer(&c_addr.to_string()).await.expect("B → C");
+
+    // Let identify populate each side's kad routing table with the peers'
+    // *listen* addresses (not the ephemeral dial source ports).
+    eventually("B's routing table to learn C", || async {
+        let addrs = b.dht_find_peer(c_id).await.ok()?;
+        (!addrs.is_empty()).then_some(())
+    })
+    .await;
+
+    // A has never seen C. The lookup must walk to B and come back with C's
+    // address before A can dial it.
+    let c_addrs = eventually("A to resolve C through the DHT", || async {
+        let addrs = a.dht_find_peer(c_id).await.ok()?;
+        (!addrs.is_empty()).then_some(addrs)
+    })
+    .await;
+
+    assert!(
+        c_addrs
+            .iter()
+            .any(|addr| addr.to_string().contains("/tcp/")),
+        "resolved addresses should be dialable TCP addrs: {c_addrs:?}"
+    );
+
+    // Prove the resolution is real: dial C using only what the DHT returned.
+    let resolved = c_addrs[0]
+        .clone()
+        .with(libp2p::multiaddr::Protocol::P2p(c_id));
+    let connected = a
+        .connect_peer(&resolved.to_string())
+        .await
+        .expect("dialing the DHT-resolved address should work");
+    assert_eq!(connected, c_id);
+    assert_ne!(a_id, c_id);
+}
+
+// ---------------------------------------------------------------------------
+// Handle semantics
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dialing_an_unreachable_address_returns_an_error_not_a_hang() {
+    let (handle, _task, _id) = spawn_test_swarm();
+
+    // Reserved-for-documentation address with a syntactically valid peer id:
+    // the dial must fail, and crucially the pending-dial entry must be cleaned
+    // up so the caller is not left awaiting a reply forever.
+    let addr = "/ip4/192.0.2.1/tcp/1/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN";
+    let result = tokio::time::timeout(SETTLE_TIMEOUT, handle.connect_peer(addr)).await;
+
+    match result {
+        Ok(Err(_)) => {} // expected: dial failed, reply delivered
+        Ok(Ok(_)) => panic!("dial to 192.0.2.1 should not have succeeded"),
+        Err(_) => panic!("connect_peer hung — a pending dial was leaked on the error path"),
+    }
+}
+
+#[tokio::test]
+async fn malformed_multiaddr_is_rejected_before_dialing() {
+    let (handle, _task, _id) = spawn_test_swarm();
+    assert!(handle.connect_peer("not-a-multiaddr").await.is_err());
+    // Still usable afterwards — a bad input must not poison the event loop.
+    assert!(handle.list_peers().await.is_ok());
+}
+
+#[tokio::test]
+async fn disconnecting_an_unconnected_peer_errors() {
+    let (handle, _task, _id) = spawn_test_swarm();
+    let stranger = Keypair::generate_ed25519().public().to_peer_id();
+    assert!(handle.disconnect_peer(stranger).await.is_err());
+}
+
+#[tokio::test]
+async fn handle_is_clonable_and_shares_one_swarm() {
+    let (handle, _task, peer_id) = spawn_test_swarm();
+    let clone = handle.clone();
+    assert_eq!(clone.peer_id(), peer_id);
+
+    let addrs = dialable_addr(&handle, peer_id).await;
+    let via_clone = clone.listen_addrs().await.unwrap();
+    assert!(
+        via_clone
+            .iter()
+            .any(|a| addrs.to_string().starts_with(&a.to_string())),
+        "both handles must observe the same listeners"
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_with_no_reachable_peers_reports_failure() {
+    let (handle, _task, _id) = spawn_test_swarm();
+    // Nothing dialable and no peers in the routing table → kad has no peers.
+    let result = handle.bootstrap(vec![]).await;
+    assert!(
+        result.is_err(),
+        "bootstrapping with an empty peer set should fail"
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_dials_initial_peers() {
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+
+    alice
+        .bootstrap(vec![bob_addr])
+        .await
+        .expect("bootstrap with one reachable peer should succeed");
+
+    eventually("alice to connect to her bootstrap peer", || async {
+        let peers = alice.list_peers().await.ok()?;
+        peers.iter().any(|p| p.peer_id == bob_id).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn shutdown_stops_the_event_loop() {
+    let (handle, task, _id) = spawn_test_swarm();
+    handle.shutdown().await.expect("shutdown ack");
+
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("event loop should exit promptly after shutdown")
+        .expect("event loop should not panic");
+
+    // Commands after shutdown fail rather than hang.
+    assert!(handle.list_peers().await.is_err());
+}
+
+#[tokio::test]
+async fn add_kad_address_makes_a_peer_resolvable_without_a_dial() {
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    let stripped: Multiaddr = bob_addr
+        .iter()
+        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        .collect();
+
+    assert!(
+        alice.dht_find_peer(bob_id).await.unwrap().is_empty(),
+        "bob should be unknown before add_kad_address"
+    );
+
+    alice
+        .add_kad_address(bob_id, stripped.clone())
+        .await
+        .unwrap();
+
+    let addrs = alice.dht_find_peer(bob_id).await.unwrap();
+    assert!(
+        !addrs.is_empty(),
+        "the manually-added address should be resolvable"
+    );
+}
