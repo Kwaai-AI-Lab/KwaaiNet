@@ -70,6 +70,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -133,6 +136,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -329,6 +335,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - name: Install build deps (manylinux container)
         if: matrix.container
         shell: bash
@@ -587,6 +596,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - name: Install cached dist
         uses: actions/download-artifact@v7
         with:
@@ -660,6 +672,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - name: Install cached dist
         uses: actions/download-artifact@v7
         with:
@@ -727,6 +742,9 @@ jobs:
           persist-credentials: true
           repository: "Kwaai-AI-Lab/homebrew-tap"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       # So we have access to the formula
       - name: Fetch homebrew formulae
         uses: actions/download-artifact@v7
@@ -773,6 +791,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install OpenSSL
@@ -824,4 +845,7 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
 

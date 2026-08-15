@@ -27,6 +27,9 @@ jobs:
         working-directory: core
     steps:
       - uses: actions/checkout@v4
+      - name: fetch patched deps
+        run: bash core/patches/fetch-multistream-select.sh
+        working-directory: ${{ github.workspace }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

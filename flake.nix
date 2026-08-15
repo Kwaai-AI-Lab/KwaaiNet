@@ -29,6 +29,7 @@
             p2pd
             protoRs
             packages
+            pkgs
             ;
           inherit (pkgs) lib makeWrapper;
         };
