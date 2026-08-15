@@ -153,23 +153,32 @@ pub fn unwrap_stream_handler_request(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)>
     Ok((call_id, dht_data))
 }
 
-/// Encode a DHT response as a varint-framed `PersistentConnectionResponse`.
+/// Encode a DHT response as a varint-framed `PersistentConnectionRequest`
+/// carrying the `unaryResponse` oneof arm (field 4).
 ///
 /// `call_id` must be the bytes extracted by `unwrap_stream_handler_request`.
 /// `response_data` is the raw protobuf of the DHT response.
 ///
 /// Returns the varint-framed bytes ready to write back to the TCP stream.
+///
+/// # Why `PersistentConnectionRequest` and not `...Response`
+///
+/// `PersistentConnectionResponse` exists only on the daemon's *local control
+/// socket*. On the libp2p wire between peers both directions are
+/// `PersistentConnectionRequest`: go-libp2p-daemon's `Daemon.exchangeMessages`
+/// (persistent_stream.go) reads the reply into `&pb.PersistentConnectionRequest{}`
+/// and takes `GetUnaryResponse()` — field 4.
 pub fn wrap_stream_handler_response(call_id: Vec<u8>, response_data: Vec<u8>) -> Vec<u8> {
     use crate::protocol::p2pd::{
-        call_unary_response, persistent_connection_response, CallUnaryResponse,
-        PersistentConnectionResponse,
+        call_unary_response, persistent_connection_request, CallUnaryResponse,
+        PersistentConnectionRequest,
     };
     use prost::Message as _;
     use unsigned_varint::encode as varint_encode;
 
-    let wrapper = PersistentConnectionResponse {
+    let wrapper = PersistentConnectionRequest {
         call_id,
-        message: Some(persistent_connection_response::Message::CallUnaryResponse(
+        message: Some(persistent_connection_request::Message::UnaryResponse(
             CallUnaryResponse {
                 result: Some(call_unary_response::Result::Response(response_data)),
             },
@@ -187,6 +196,128 @@ pub fn wrap_stream_handler_response(call_id: Vec<u8>, response_data: Vec<u8>) ->
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::protocol::p2pd::{
+        call_unary_response, persistent_connection_request, persistent_connection_response,
+        CallUnaryResponse, PersistentConnectionRequest, PersistentConnectionResponse,
+    };
+
+    fn call_id() -> Vec<u8> {
+        (0u8..16).collect()
+    }
+
+    /// Strip the uvarint prefix off a framed message.
+    fn unframe(framed: &[u8]) -> &[u8] {
+        let (len, rest) = unsigned_varint::decode::usize(framed).expect("varint prefix");
+        assert_eq!(rest.len(), len, "frame length prefix must match payload");
+        rest
+    }
+
+    /// The reply a Go caller sees must decode as `PersistentConnectionRequest`
+    /// with the `unaryResponse` arm — this is what `Daemon.exchangeMessages`
+    /// does (`ReadMsg(&pb.PersistentConnectionRequest{})` + `GetUnaryResponse()`).
+    #[test]
+    fn wrapped_response_decodes_as_persistent_connection_request() {
+        let framed = wrap_stream_handler_response(call_id(), b"dht-response".to_vec());
+        let payload = unframe(&framed);
+
+        let decoded =
+            PersistentConnectionRequest::decode(payload).expect("must decode as ...Request");
+
+        assert_eq!(decoded.call_id, call_id(), "callId must be echoed verbatim");
+        match decoded.message {
+            Some(persistent_connection_request::Message::UnaryResponse(r)) => match r.result {
+                Some(call_unary_response::Result::Response(data)) => {
+                    assert_eq!(data, b"dht-response");
+                }
+                other => panic!("expected Response arm, got {other:?}"),
+            },
+            other => panic!("expected unaryResponse arm, got {other:?}"),
+        }
+    }
+
+    /// The oneof arm must land on field 4.
+    #[test]
+    fn wrapped_response_uses_field_4() {
+        let framed = wrap_stream_handler_response(call_id(), b"pong".to_vec());
+        let payload = unframe(&framed);
+
+        // callId: field 1, wire type 2.
+        assert_eq!(payload[0], 0x0a);
+        assert_eq!(payload[1], 16);
+        assert_eq!(&payload[2..18], &call_id()[..]);
+        // unaryResponse: field 4, wire type 2 → (4 << 3) | 2 == 0x22.
+        assert_eq!(
+            payload[18], 0x22,
+            "reply oneof must be field 4 (unaryResponse), not field 2"
+        );
+    }
+
+    /// A field-2 arm decodes as `AddUnaryHandlerRequest`: Go's gogo (proto2)
+    /// rejects it for the absent `required bool balanced`, while prost accepts
+    /// it and mis-decodes the payload as a handler name. `GetUnaryResponse()`
+    /// is nil either way.
+    #[test]
+    fn response_shaped_reply_does_not_yield_a_unary_response() {
+        let old = PersistentConnectionResponse {
+            call_id: call_id(),
+            message: Some(persistent_connection_response::Message::CallUnaryResponse(
+                CallUnaryResponse {
+                    result: Some(call_unary_response::Result::Response(b"pong".to_vec())),
+                },
+            )),
+        };
+        let bytes = old.encode_to_vec();
+
+        // Field 2 on the wire, exactly where AddUnaryHandlerRequest lives.
+        assert_eq!(bytes[18], 0x12, "old shape put its arm at field 2");
+
+        match PersistentConnectionRequest::decode(bytes.as_slice()) {
+            // Go's gogo unmarshal fails outright here (required fields absent).
+            Err(_) => {}
+            Ok(decoded) => {
+                // prost's observed behaviour: the response payload "pong" lands
+                // in AddUnaryHandlerRequest.proto. Nonsense, but not a
+                // unaryResponse — which is the point.
+                assert!(
+                    matches!(
+                        decoded.message,
+                        Some(persistent_connection_request::Message::AddUnaryHandler(ref h))
+                            if h.proto == "pong" && !h.balanced
+                    ),
+                    "expected the payload to be mis-read as AddUnaryHandlerRequest, got {:?}",
+                    decoded.message
+                );
+            }
+        }
+    }
+
+    /// Round trip through the pair of helpers a stream handler actually uses.
+    #[test]
+    fn unwrap_request_then_wrap_response_round_trip() {
+        use crate::protocol::p2pd::CallUnaryRequest;
+
+        let inbound = PersistentConnectionRequest {
+            call_id: call_id(),
+            message: Some(persistent_connection_request::Message::CallUnary(
+                CallUnaryRequest {
+                    peer: b"caller-peer".to_vec(),
+                    proto: "DHTProtocol.rpc_ping".to_string(),
+                    data: b"ping-payload".to_vec(),
+                },
+            )),
+        }
+        .encode_to_vec();
+
+        let (id, data) = unwrap_stream_handler_request(&inbound).expect("unwrap");
+        assert_eq!(id, call_id());
+        assert_eq!(data, b"ping-payload");
+
+        let framed = wrap_stream_handler_response(id.clone(), b"pong-payload".to_vec());
+        let decoded = PersistentConnectionRequest::decode(unframe(&framed)).expect("decode");
+        assert_eq!(decoded.call_id, id);
+    }
+
     #[test]
     fn test_varint_encoding() {
         let payload = b"test payload";
