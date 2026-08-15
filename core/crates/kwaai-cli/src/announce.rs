@@ -35,12 +35,15 @@ use crate::daemon::ShardManager;
 /// Hivemind bootstraps reject a store whose expiration is not **strictly
 /// greater** than the record it replaces, so the re-announce interval must stay
 /// comfortably below this and every refresh must move the timestamp forward.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub const ANNOUNCE_TTL_SECS: f64 = 360.0;
 
 /// The `_petals.models` registry key — one entry per model prefix.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub const PETALS_MODELS_KEY: &str = "_petals.models";
 
 /// The `_kwaai.vpk.nodes` registry key — one entry per VPK-capable node.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub const VPK_NODES_KEY: &str = "_kwaai.vpk.nodes";
 
 // ---------------------------------------------------------------------------
@@ -309,6 +312,7 @@ pub fn dht_id(raw_key: &str) -> Vec<u8> {
 
 /// What this node is publishing, minus the values that are derived from
 /// [`DHTServerInfo`] itself.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub struct AnnounceContext<'a> {
     /// This node's peer ID; the base58 form becomes every record's subkey.
     pub peer_id: PeerId,
@@ -328,6 +332,7 @@ pub struct AnnounceContext<'a> {
 ///
 /// All expirations are `now + `[`ANNOUNCE_TTL_SECS`], computed once per call so
 /// every record in one round shares a timestamp.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub fn build_announce_records(
     ctx: &AnnounceContext<'_>,
     server_info: &DHTServerInfo,
@@ -424,6 +429,7 @@ pub fn build_announce_records(
 /// out. So the tombstone carries a normal `now + `[`ANNOUNCE_TTL_SECS`]
 /// expiration and does its work through `state = -1` (offline), which the map
 /// treats as "remove immediately".
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub fn build_unannounce_records(
     ctx: &AnnounceContext<'_>,
     server_info: &DHTServerInfo,
@@ -502,6 +508,7 @@ pub fn build_unannounce_records(
 ///
 /// Fed to `reputation::ReputationStore` — the announce path doubles as the
 /// reputation probe, so no extra RPCs are needed.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub type StoreTiming = (String, String, f64, bool);
 
 /// Push `records` to every bootstrap peer over a native [`NetworkHandle`].
@@ -515,6 +522,7 @@ pub type StoreTiming = (String, String, f64, bool);
 /// [`NetworkHandle::call_unary_handler`] and surfacing as
 /// [`kwaai_p2p::P2PError::Timeout`]. The handle dials the bootstrap if not
 /// already connected, matching Go's `host.NewStream`.
+#[allow(dead_code)] // used from node_native in the NAT-traversal layer (pr7)
 pub async fn send_records_via_handle(
     handle: &NetworkHandle,
     bootstrap_peers: &[String],
