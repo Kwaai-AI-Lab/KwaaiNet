@@ -465,14 +465,10 @@ pub async fn run_native_node(
         crate::node::jitter_secs(300, 30),
     )));
     // The Ollama watcher exists to trigger a re-announce when inference comes
-    // back. A bootstrap announces nothing, so the watcher would poll a port it does
-    // not serve every 15 s in order to fire a signal whose handler is a no-op.
-    //
-    // A dangling receiver stands in so the `select!` arm below keeps its type.
-    // The sender is *held* rather than dropped: dropping it would close the
-    // channel, and while `Some(()) = …recv()` would still disable the branch on
-    // `None`, holding the sender keeps the branch simply-never-ready, which
-    // does not depend on that subtlety.
+    // back, so a bootstrap does not start one: it would poll a port it does not
+    // serve every 15 s to fire a signal for an arm that is disabled anyway.
+    // A dangling receiver stands in so the `select!` arm keeps its type, and the
+    // sender is held rather than dropped so the branch is simply never ready.
     let (_ollama_recovery_tx, mut ollama_recovery_rx) = tokio::sync::mpsc::channel::<()>(1);
     if announce_self {
         ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
@@ -609,13 +605,11 @@ pub async fn run_native_node(
 
             // Ollama came back up — re-announce immediately so clients learn the
             // host is usable again without waiting out the 300 s tick.
-            Some(()) = ollama_recovery_rx.recv() => {
+            Some(()) = ollama_recovery_rx.recv(), if announce_self => {
                 info!("Ollama recovered — triggering immediate re-announce");
                 refresh_server_info(&mut server_info, &config);
-                if announce_self {
-                    if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
-                        warn!("Re-announce after Ollama recovery failed: {e:#}");
-                    }
+                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    warn!("Re-announce after Ollama recovery failed: {e:#}");
                 }
             }
 
