@@ -9,23 +9,28 @@ set -euo pipefail
 
 # SHA-256 front end. Stock macOS ships `shasum` (a perl script) but not
 # `sha256sum`; most Linux images ship `sha256sum` and usually, but not always,
-# `shasum`. Git Bash on a Windows runner is the case that motivated this: it is
-# reached through `run: bash …` in release.yml, and that path only executes on a
-# tag push, so a missing tool would surface for the first time during a release
-# rather than in any PR check. Prefer `shasum` (unchanged behaviour where it
-# exists), fall back to `sha256sum`, and fail with a readable message rather
-# than a bare "command not found" if neither is there.
+# `shasum`. Git Bash on a Windows runner reaches this script through
+# `run: bash …` in release.yml, and that path runs only on a tag push — so a
+# hashing problem there would surface during a release rather than in any PR
+# check. Rather than establish which tool every host has, use whichever works.
+#
+# Probed by running them, not by `command -v`: `shasum` is a perl script, so it
+# can exist on PATH and still fail (a Git Bash with a broken or absent perl is
+# exactly that shape). Existence is not usability, and picking a present-but-
+# broken tool would skip a working fallback — verified against a stub `shasum`
+# that exits 2 with a perl error.
 #
 # Both accept the same `HASH  FILE` input in `-c` mode, so one shim covers the
 # stamp calculation and the crate verification alike.
-if command -v shasum >/dev/null 2>&1; then
+if echo | shasum -a 256 >/dev/null 2>&1; then
     sha256() { shasum -a 256 "$@"; }
-elif command -v sha256sum >/dev/null 2>&1; then
+elif echo | sha256sum >/dev/null 2>&1; then
     sha256() { sha256sum "$@"; }
 else
-    echo "error: need 'shasum' or 'sha256sum' on PATH to verify the download" >&2
-    echo "       (macOS: shasum ships with perl; Debian/Ubuntu: coreutils;" >&2
-    echo "        Windows: use Git Bash, which provides both)" >&2
+    echo "error: need a working 'shasum' or 'sha256sum' to verify the download" >&2
+    echo "       (macOS: shasum, via perl; Debian/Ubuntu: coreutils;" >&2
+    echo "        Windows: Git Bash — if shasum is present but failing, perl is" >&2
+    echo "        the usual cause)" >&2
     exit 1
 fi
 
