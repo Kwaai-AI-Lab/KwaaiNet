@@ -293,6 +293,7 @@ pub fn encode_unary_request(call_id: &[u8], peer: &[u8], proto: &str, data: &[u8
 ///
 /// Use [`read_framed`] or [`unframe`] first. Errors when the envelope carries
 /// any oneof arm other than `callUnary`.
+#[allow(clippy::type_complexity)]
 pub fn decode_unary_request(payload: &[u8]) -> WireResult<(Vec<u8>, Vec<u8>, String, Vec<u8>)> {
     let req = PersistentConnectionRequest::decode(payload)?;
     match req.message {
