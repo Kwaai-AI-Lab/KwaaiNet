@@ -173,16 +173,18 @@ pub struct KwaaiNetConfig {
     /// Force Kademlia server mode unconditionally, rather than letting libp2p
     /// decide from observed reachability.
     ///
-    /// Defaults to false, which is the ordinary node behaviour: `node_native`
-    /// already puts a regular node into server mode to match the p2pd path's
-    /// `-b` flag, and auto-detection governs the rest.
+    /// Defaults to **true**, matching the p2pd path's `-b` on every node: a
+    /// node that only issued queries would never be advertised into peers'
+    /// routing tables. True means the node answers Kademlia queries from t=0,
+    /// before any external address has been confirmed. A bootstrap needs
+    /// exactly this — it exists to answer queries, and waiting on AutoNAT
+    /// would leave it in client mode, refusing the very lookups it was
+    /// deployed to serve.
     ///
-    /// Set true and the node answers Kademlia queries from t=0, before any
-    /// external address has been confirmed. A bootstrap node needs exactly
-    /// this: it exists to answer queries, and the auto-detected path would
-    /// leave it in client mode — refusing the very lookups it was deployed to
-    /// serve — until an AutoNAT round confirmed an address for it.
-    #[serde(default)]
+    /// Set false to leave Kademlia in auto-mode instead: client until an
+    /// external address is confirmed, server after. Reasonable for a node
+    /// behind a NAT it cannot traverse, which cannot serve queries anyway.
+    #[serde(default = "default_true")]
     pub dht_server: bool,
 
     /// Ask the local gateway for a port mapping via UPnP (p2pd's `-natPortMap`).
@@ -704,7 +706,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: false,
             announce_self: true,
-            dht_server: false,
+            dht_server: true,
             enable_upnp: true,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
@@ -1050,8 +1052,8 @@ mod tests {
             "an ordinary node publishes its own records"
         );
         assert!(
-            !c.dht_server,
-            "an ordinary node does not force server mode; node_native already enables it"
+            c.dht_server,
+            "every node answers DHT queries, matching p2pd's -b"
         );
         assert!(
             c.enable_upnp,
@@ -1073,7 +1075,10 @@ mod tests {
             "a config written before announce_self existed must keep announcing"
         );
         assert!(c.enable_upnp, "likewise for enable_upnp");
-        assert!(!c.dht_server);
+        assert!(
+            c.dht_server,
+            "and for dht_server — false would demote every existing node to kad auto-mode"
+        );
     }
 
     /// `config set` round-trips each key through YAML, which is how an operator
