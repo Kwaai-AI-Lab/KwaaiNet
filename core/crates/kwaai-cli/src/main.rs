@@ -3,7 +3,6 @@
 mod announce;
 mod api;
 mod block_rpc;
-mod bootstrap;
 mod calibration;
 mod capacity_lease;
 mod circuit_breaker;
@@ -119,14 +118,11 @@ async fn main() -> Result<()> {
 
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
-    // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    // `bootstrap` joins these: a seed is a container entrypoint with no
-    // operator watching stdout for an upgrade hint, and its host may have no
-    // route to the update endpoint at all.
-    let skip_update_hint = matches!(
-        cli.command,
-        Command::Update(_) | Command::RunNode | Command::Bootstrap(_)
-    );
+    // Skipped for `update` (redundant) and `run-node` (internal daemon process,
+    // and the entry a bootstrap seed's container entrypoint uses — no operator
+    // watches its stdout for an upgrade hint, and its host may have no route to
+    // the update endpoint at all).
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode);
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
@@ -1666,13 +1662,6 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Identity(args) => {
             identity::run_identity_command(args).await?;
-        }
-
-        // -------------------------------------------------------------------
-        // bootstrap
-        // -------------------------------------------------------------------
-        Command::Bootstrap(args) => {
-            bootstrap::run_bootstrap_command(args).await?;
         }
 
         // -------------------------------------------------------------------
