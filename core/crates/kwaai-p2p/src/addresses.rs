@@ -387,7 +387,9 @@ mod tests {
             .with(Protocol::P2p(DEST.parse().expect("dest peer id")));
         assert_eq!(round_tripped, full_circuit());
         assert!(
-            round_tripped.iter().any(|p| matches!(p, Protocol::P2p(id) if id.to_string() == RELAY)),
+            round_tripped
+                .iter()
+                .any(|p| matches!(p, Protocol::P2p(id) if id.to_string() == RELAY)),
             "the relay hop is what makes a circuit address dialable"
         );
     }
@@ -436,7 +438,9 @@ mod tests {
     fn dest_peer_id_is_none_when_a_circuit_names_no_destination() {
         // Our own reservation-listen address: a relay and a circuit, nobody on
         // the far end yet. Nothing to file it under.
-        let listen = ma(&format!("/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"));
+        let listen = ma(&format!(
+            "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
+        ));
         assert_eq!(dest_peer_id(&listen), None);
     }
 
@@ -528,23 +532,36 @@ mod tests {
         // Rejected: nothing outside the advertising peer's own host or LAN can
         // use these.
         assert!(!is_announceable_with(&ma("/ip4/127.0.0.1/tcp/8080"), false));
-        assert!(!is_announceable_with(&ma("/ip4/192.168.1.10/tcp/8080"), false));
+        assert!(!is_announceable_with(
+            &ma("/ip4/192.168.1.10/tcp/8080"),
+            false
+        ));
         assert!(!is_announceable_with(&ma("/ip4/10.0.0.5/tcp/8080"), false));
-        assert!(!is_announceable_with(&ma("/ip4/172.16.0.9/tcp/8080"), false));
+        assert!(!is_announceable_with(
+            &ma("/ip4/172.16.0.9/tcp/8080"),
+            false
+        ));
         assert!(!is_announceable_with(&ma("/ip6/::1/tcp/8080"), false));
-        assert!(!is_announceable_with(&ma("/ip4/169.254.1.1/tcp/8080"), false));
-        assert!(!is_announceable_with(&ma("/ip4/100.64.0.1/tcp/8080"), false));
+        assert!(!is_announceable_with(
+            &ma("/ip4/169.254.1.1/tcp/8080"),
+            false
+        ));
+        assert!(!is_announceable_with(
+            &ma("/ip4/100.64.0.1/tcp/8080"),
+            false
+        ));
 
         // Accepted: a real public address.
-        assert!(is_announceable_with(&ma("/ip4/18.219.43.67/tcp/8080"), false));
+        assert!(is_announceable_with(
+            &ma("/ip4/18.219.43.67/tcp/8080"),
+            false
+        ));
 
         // Accepted, and load-bearing: this is how a NATed peer says "reach me
         // through this relay". Filtering it out is what leaves two NATed peers
         // unable to connect while each sees the other in the DHT.
-        let circuit = ma(
-            "/ip4/198.18.0.20/tcp/8080/p2p/\
-             QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc/p2p-circuit",
-        );
+        let circuit = ma("/ip4/198.18.0.20/tcp/8080/p2p/\
+             QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc/p2p-circuit");
         assert!(is_announceable_with(&circuit, false));
     }
 

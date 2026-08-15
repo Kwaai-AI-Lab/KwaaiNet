@@ -48,8 +48,8 @@ use futures::future::BoxFuture;
 use futures::io::AsyncWriteExt as _;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, SinkExt, StreamExt};
-use libp2p::core::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use libp2p::core::transport::PortUse;
+use libp2p::core::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use libp2p::core::{Endpoint, Multiaddr};
 use libp2p::swarm::handler::{
     ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,

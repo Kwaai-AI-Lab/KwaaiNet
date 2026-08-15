@@ -467,7 +467,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         warn!("Outbound failure: {:?}", error);
                     }
                     SwarmEvent::Behaviour(TensorExchangeBehaviourEvent::Identify(
-                        identify::Event::Received { peer_id: pid, info, .. },
+                        identify::Event::Received {
+                            peer_id: pid, info, ..
+                        },
                     )) => {
                         info!("Identified: {} ({})", pid, info.protocol_version);
                     }

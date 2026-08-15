@@ -1647,4 +1647,3 @@ fn dial_error(error: &DialError, peer_id: Option<PeerId>) -> P2PError {
         other => P2PError::ConnectionFailed(format!("{who}: {other}")),
     }
 }
-
