@@ -165,7 +165,6 @@ A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
     /// Build and query a local RAG knowledge base
     Rag(RagArgs),
 
-
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
     RunNode,
