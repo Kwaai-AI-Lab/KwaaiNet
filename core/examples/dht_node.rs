@@ -242,7 +242,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 warn!("Get record failed: {:?}", e);
                 println!("\n  FAILED: Could not retrieve value\n");
             }
-            SwarmEvent::Behaviour(DhtBehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
+            SwarmEvent::Behaviour(DhtBehaviourEvent::Identify(identify::Event::Received {
+                peer_id,
+                info,
+                ..
+            })) => {
                 info!("Identified: {} ({})", peer_id, info.protocol_version);
                 for addr in info.listen_addrs {
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
