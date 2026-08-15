@@ -677,47 +677,50 @@ mod tests {
     /// This pins the two halves of the remedy: a lapsed lease really is
     /// refused (so the 409 is not spurious), and a freshly granted one really
     /// is accepted (so renegotiating is the fix, where retrying is not).
-    #[tokio::test]
-    async fn a_lapsed_lease_is_refused_but_a_renewed_one_is_accepted() {
-        use crate::capacity_lease::LeaseTable;
+    #[test]
+    fn a_lapsed_lease_is_refused_but_a_renewed_one_is_accepted() {
+        use crate::capacity_lease::{LeaseTable, TestClock};
         use std::time::Duration;
 
-        let table = LeaseTable::new("test-model".to_string(), 4);
-        let grant = match table.try_grant(None, 1u64, Duration::from_millis(40)) {
+        // Driven clock rather than sleeps: the same timing-flake class that
+        // took `main` red on macOS on 2026-08-10 lives in this subsystem, and
+        // this test asserts on exactly those expiry boundaries.
+        let clock = TestClock::new();
+        let table = LeaseTable::with_clock("test-model".to_string(), 4, clock.clone());
+        let ttl = Duration::from_secs(30);
+        let grant = match table.try_grant(None, 1, ttl) {
             crate::capacity_lease::NegotiationOutcome::Granted(g) => g,
             other => panic!("expected a grant, got {other:?}"),
         };
 
-        // Still inside its TTL: renewal succeeds, so no 409 would be sent.
-        assert!(
-            table.renew(grant.lease_id, Duration::from_millis(40)),
-            "a live lease must renew"
-        );
+        // Inside its TTL: renewal succeeds, so no 409 would be sent.
+        clock.advance(Duration::from_secs(20));
+        assert!(table.renew(grant.lease_id, ttl), "a live lease must renew");
 
-        // Simulate a single inference call outrunning the TTL.
-        tokio::time::sleep(Duration::from_millis(90)).await;
+        // A single inference call outrunning the TTL — the production shape.
+        clock.advance(Duration::from_secs(31));
         table.sweep_expired();
         assert!(
-            !table.renew(grant.lease_id, Duration::from_millis(40)),
+            !table.renew(grant.lease_id, ttl),
             "a lapsed lease must be refused — this is the 409 the caller sees"
         );
 
-        // Retrying under the refused id stays refused, however long you wait:
-        // this is why the generic retry loop recovered 0 of 38.
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Retrying under the refused id stays refused however long you wait:
+        // this is why the generic retry loop recovered 0 of 38 chunks.
+        clock.advance(Duration::from_secs(45));
         assert!(
-            !table.renew(grant.lease_id, Duration::from_millis(40)),
+            !table.renew(grant.lease_id, ttl),
             "retrying under a refused lease can never succeed"
         );
 
         // Renegotiating does.
-        let fresh = match table.try_grant(None, 2u64, Duration::from_millis(40)) {
+        let fresh = match table.try_grant(None, 2, ttl) {
             crate::capacity_lease::NegotiationOutcome::Granted(g) => g,
             other => panic!("expected a fresh grant, got {other:?}"),
         };
         assert_ne!(fresh.lease_id, grant.lease_id);
         assert!(
-            table.renew(fresh.lease_id, Duration::from_millis(40)),
+            table.renew(fresh.lease_id, ttl),
             "a renegotiated lease must be accepted"
         );
     }
