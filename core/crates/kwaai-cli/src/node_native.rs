@@ -59,7 +59,7 @@ use kwaai_p2p::{NetworkConfig, NetworkHandle, NetworkService};
 use kwaai_p2p_daemon::ControlServer;
 use libp2p::PeerId;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::announce::{
     build_announce_records, build_unannounce_records, send_records_via_handle, AnnounceContext,
@@ -97,10 +97,6 @@ pub struct NativeNode {
     pub peer_id: PeerId,
     /// The DHT records this node serves to other peers.
     pub storage: DHTStorage,
-    /// Whether this node publishes records *of its own* — `config.announce_self`,
-    /// captured at start. False on a bootstrap node, which serves the DHT
-    /// without joining it. Serving other peers' records is unaffected.
-    announce_self: bool,
     /// Background tasks: swarm loop, DHT maintenance, control socket, mux.
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -259,7 +255,6 @@ impl NativeNode {
             handle,
             peer_id,
             storage,
-            announce_self: config.announce_self,
             tasks,
         })
     }
@@ -270,26 +265,12 @@ impl NativeNode {
     /// Returns the per-bootstrap timings `node.rs` feeds to the reputation
     /// store — the announce doubles as the reputation probe on both paths.
     ///
-    /// `announce_self = false` makes this a no-op returning no timings: no
-    /// block records, no `_petals.models`, no `_kwaai.inference.nodes`, no VPK
-    /// registry entry, and nothing written into our own storage either. That
-    /// is what a bootstrap node is — it serves the DHT without joining it.
-    ///
-    /// The gate is here, one call above `build_announce_records`, rather than
-    /// inside the builders: those own the wire format, have their own tests,
-    /// and are called from elsewhere, so the bootstrap must be stopped from *asking*
-    /// for a round instead of being handed builders hollowed out to return
-    /// nothing.
     pub async fn announce(
         &self,
         ctx: &AnnounceContext<'_>,
         server_info: &DHTServerInfo,
         bootstrap_peers: &[String],
     ) -> Result<Vec<crate::announce::StoreTiming>> {
-        if !self.announce_self {
-            debug!("announce_self = false — publishing nothing");
-            return Ok(Vec::new());
-        }
         let records = build_announce_records(ctx, server_info)?;
         for record in &records {
             self.storage.handle_store(record.clone());
@@ -309,21 +290,15 @@ impl NativeNode {
     /// Write the `state = -1` tombstone so the map drops this node immediately
     /// rather than waiting out the 360 s TTL.
     ///
-    /// Gated on `announce_self` for the same reason as [`Self::announce`], and
-    /// gating both directions is what keeps the pair consistent: a tombstone
+    /// Only called when the node announced in the first place: a tombstone
     /// retracts an announce, so a node that published nothing has nothing to
-    /// retract. Without this, a bootstrap's one and only DHT record would be a
-    /// `state = -1` for a node the network never heard of.
+    /// retract.
     pub async fn unannounce(
         &self,
         ctx: &AnnounceContext<'_>,
         server_info: &DHTServerInfo,
         bootstrap_peers: &[String],
     ) {
-        if !self.announce_self {
-            debug!("announce_self = false — nothing was announced, so nothing is retracted");
-            return;
-        }
         let records = match build_unannounce_records(ctx, server_info) {
             Ok(r) => r,
             Err(e) => {
@@ -393,15 +368,12 @@ pub async fn run_native_node(
 
     // ── Announce inputs ────────────────────────────────────────────────────
     // Everything from here to the initial announce describes a record this node
-    // is about to publish. With `announce_self = false` no record is ever
-    // built, so the measurements behind it are skipped rather than computed and
-    // discarded — the bandwidth probe in particular is a real network round
-    // trip, and a bootstrap has no model to measure a throughput for.
+    // is about to publish, so a bootstrap skips the lot: the bandwidth probe is
+    // a real network round trip, and it has no model to measure a throughput
+    // for.
     let announce_self = config.announce_self;
     if announce_self {
         info!("[2/4] Preparing the DHT announcement...");
-    } else {
-        info!("[2/4] announce_self = false — serving the DHT, publishing nothing");
     }
 
     // `using_relay` is true when a circuit reservation is actually confirmed.
@@ -413,41 +385,31 @@ pub async fn run_native_node(
     // re-announces; `using_relay` alone would miss Private→Public with no
     // circuit, leaving the record stale until the 300 s tick.
     let mut last_announced_epoch = startup_state.epoch;
-    if announce_self {
+
+    let prefix = config.effective_dht_prefix();
+    let repository = crate::node::effective_repository(config);
+
+    // One gate for every announce input. A bootstrap computes none of them:
+    // `measure_download_bps_for` runs a live download, and `initial_vpk_info`
+    // polls a VPK endpoint — both pointless for a node that publishes nothing.
+    let (dl_bps, throughput, vpk_info) = if announce_self {
         if let Some(addr) = configured_announce_addr(config) {
             info!("  Announce addr: {addr} (declared)");
         } else {
             info!("  Announce addr: discovered (autonat, upnp or identify consensus)");
         }
-    }
-
-    // `measure_download_bps_for` is already a no-op without a benchmarked
-    // throughput entry for the model, but a bootstrap skips it outright: it has no
-    // model, and the probe it would otherwise run is a live download.
-    let dl_bps = if announce_self {
-        crate::node::measure_download_bps_for(&config.model).await
-    } else {
-        0.0
-    };
-    let prefix = config.effective_dht_prefix();
-    let repository = crate::node::effective_repository(config);
-    let throughput = if announce_self {
-        let t = crate::node::report_effective_tps(&config.model, dl_bps, using_relay);
+        let dl_bps = crate::node::measure_download_bps_for(&config.model).await;
+        let tps = crate::node::report_effective_tps(&config.model, dl_bps, using_relay);
         info!("  DHT prefix:  {}", prefix);
         info!("  Repository:  {}", repository);
         info!("  Using relay: {}", using_relay);
-        t
+        (
+            dl_bps,
+            tps,
+            crate::node::initial_vpk_info(config, public_name).await,
+        )
     } else {
-        0.0
-    };
-
-    // Guarded by `vpk_enabled` too, which a bootstrap's config turns off; skipping
-    // it here as well means the bootstrap never polls a VPK endpoint even if a
-    // stray config left that flag on.
-    let vpk_info = if announce_self {
-        crate::node::initial_vpk_info(config, public_name).await
-    } else {
-        None
+        (0.0, 0.0, None)
     };
 
     let ctx = AnnounceContext {
@@ -475,8 +437,6 @@ pub async fn run_native_node(
         if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
             warn!("Initial announce failed: {e:#} — will retry at the 300 s tick");
         }
-    } else {
-        info!("[3/4] Skipping the announcement — announce_self = false");
     }
 
     if announce_self {
@@ -491,14 +451,9 @@ pub async fn run_native_node(
         );
         info!("   Map     : https://map.kwaai.ai");
     } else {
-        // A bootstrap's summary names what it does — serve — and omits the model and
-        // block range, which it has neither of. No model is loaded and no shard
-        // is spawned on this path: those are started by `shard serve`, never by
-        // the node runner, so the preset reaches no download code at all.
+        // A bootstrap has no model or block range to name.
         info!("[4/4] ✅ KwaaiNet bootstrap node running (native p2p)");
         info!("   Peer ID : {}", peer_id.to_base58());
-        info!("   Serving : the hivemind DHT (rpc_ping/rpc_store/rpc_find)");
-        info!("   Announcing: nothing");
     }
 
     // ── Event loop ─────────────────────────────────────────────────────────
@@ -531,11 +486,13 @@ pub async fn run_native_node(
             // SIGHUP (Unix) — re-read config and re-announce. `shard serve`
             // signals a block-range change this way.
             _ = sighup.recv() => {
-                info!("SIGHUP received — re-reading config and re-announcing");
+                info!("SIGHUP received — re-reading config");
                 reload_block_range(&mut config);
                 refresh_server_info(&mut server_info, &config);
-                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
-                    warn!("Re-announce after SIGHUP failed: {e:#}");
+                if announce_self {
+                    if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                        warn!("Re-announce after SIGHUP failed: {e:#}");
+                    }
                 }
             }
 
@@ -574,19 +531,21 @@ pub async fn run_native_node(
                     }
                 }
 
-                refresh_server_info(&mut server_info, &config);
-                info!(
-                    "Re-announcing to DHT (shard_ready={})...",
-                    ShardManager::shard_is_ready()
-                );
-                match node.announce(&ctx, &server_info, bootstrap_peers).await {
-                    Ok(timings) => {
-                        record_reputation(&mut rep_store, timings);
-                        if tick_state.announceable {
-                            last_announced_epoch = tick_state.epoch;
+                if announce_self {
+                    refresh_server_info(&mut server_info, &config);
+                    info!(
+                        "Re-announcing to DHT (shard_ready={})...",
+                        ShardManager::shard_is_ready()
+                    );
+                    match node.announce(&ctx, &server_info, bootstrap_peers).await {
+                        Ok(timings) => {
+                            record_reputation(&mut rep_store, timings);
+                            if tick_state.announceable {
+                                last_announced_epoch = tick_state.epoch;
+                            }
                         }
+                        Err(e) => warn!("Re-announce failed: {e:#}"),
                     }
-                    Err(e) => warn!("Re-announce failed: {e:#}"),
                 }
 
                 next_announce
@@ -616,6 +575,11 @@ pub async fn run_native_node(
             {
                 announce_settle = None;
                 let state = *announce_state.borrow_and_update();
+                if !announce_self {
+                    // A bootstrap publishes nothing, so a reachability change
+                    // has no record to refresh.
+                    continue;
+                }
                 if !state.announceable {
                     info!(
                         "Reachability is still unknown — deferring the announce rather than \
@@ -648,8 +612,10 @@ pub async fn run_native_node(
             Some(()) = ollama_recovery_rx.recv() => {
                 info!("Ollama recovered — triggering immediate re-announce");
                 refresh_server_info(&mut server_info, &config);
-                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
-                    warn!("Re-announce after Ollama recovery failed: {e:#}");
+                if announce_self {
+                    if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                        warn!("Re-announce after Ollama recovery failed: {e:#}");
+                    }
                 }
             }
 
@@ -661,13 +627,12 @@ pub async fn run_native_node(
     }
 
     // Tombstone before tearing down the swarm, so the map drops us immediately
-    // rather than waiting out the TTL. `unannounce` is itself gated on
-    // `announce_self`; the log line is gated here too so a bootstrap's shutdown does
-    // not claim a retraction it correctly never sends.
+    // rather than waiting out the TTL. A bootstrap published nothing, so it has
+    // nothing to retract.
     if announce_self {
         info!("Unannouncing from DHT...");
+        node.unannounce(&ctx, &server_info, bootstrap_peers).await;
     }
-    node.unannounce(&ctx, &server_info, bootstrap_peers).await;
     node.shutdown().await;
 
     Ok(pending_update_version)
@@ -875,7 +840,7 @@ mod tests {
         })
     }
 
-    /// `announce_self` decides whether a node publishes anything at all.
+    /// A bootstrap preset asks for no publishing; an ordinary node still does.
     ///
     /// Both directions live in one test, run sequentially, because
     /// `KWAAINET_SOCKET` is process-global: each node binds a control socket,
@@ -889,60 +854,17 @@ mod tests {
     /// sent. With no bootstrap peers there is nowhere to send to either, which
     /// keeps this free of a second process.
     #[tokio::test]
-    async fn announce_self_decides_whether_anything_is_published() {
-        // ── announce_self = false: a bootstrap publishes nothing ─────────────────
+    async fn a_bootstrap_preset_publishes_nothing_and_a_node_still_does() {
+        // `announce_self` is now enforced by the caller: `run_native_node` skips
+        // the announce entirely rather than calling into a method that no-ops.
+        // What the config must guarantee is that a bootstrap preset asks for no
+        // publishing at all.
         let home = tempfile::tempdir().expect("tmpdir");
-        let config = seed_like_config(false, home.path());
-        std::env::set_var("KWAAINET_SOCKET", home.path().join("seed.sock"));
-        kwaai_p2p::identity::generate_keypair(config.identity_key.as_ref().unwrap())
-            .expect("the fixture key must generate");
-
-        let node = NativeNode::start(&config, &[])
-            .await
-            .expect("a bootstrap-preset node must start with no bootstrap peers");
-
-        let prefix = config.effective_dht_prefix();
-        let ctx = AnnounceContext {
-            peer_id: node.peer_id,
-            prefix: &prefix,
-            repository: "https://huggingface.co/Qwen/Qwen3-8B",
-            total_blocks: 32,
-        };
-        let server_info = DHTServerInfo::new(
-            config.start_block as i32,
-            config.effective_end_block() as i32,
-            "seed-under-test",
-            false,
-            0.0,
-            Vec::new(),
-            None,
-            node.peer_id.to_base58(),
-        );
-
-        let timings = node
-            .announce(&ctx, &server_info, &[])
-            .await
-            .expect("a suppressed announce is a success, not an error");
+        let bootstrap_cfg = seed_like_config(false, home.path());
         assert!(
-            timings.is_empty(),
-            "no record was sent, so there is no per-bootstrap timing to report"
+            !bootstrap_cfg.announce_self,
+            "a bootstrap preset must not publish records of its own"
         );
-
-        let keys = announced_keys(&config);
-        assert!(
-            storage_has_nothing_under(&node.storage, &keys),
-            "announce_self = false must publish nothing — not even into our own storage"
-        );
-
-        // The tombstone is gated too: with nothing announced there is nothing
-        // to retract, and a bootstrap's only record must never be a `state = -1`.
-        node.unannounce(&ctx, &server_info, &[]).await;
-        assert!(
-            storage_has_nothing_under(&node.storage, &keys),
-            "an unannounce must publish no tombstone when nothing was announced"
-        );
-
-        node.shutdown().await;
         drop(home);
 
         // ── announce_self = true: an ordinary node still publishes ──────────
@@ -966,7 +888,7 @@ mod tests {
             total_blocks: 32,
         };
         let server_info = DHTServerInfo::new(
-            config.start_block as i32,
+            config.start_block() as i32,
             config.effective_end_block() as i32,
             "node-under-test",
             false,

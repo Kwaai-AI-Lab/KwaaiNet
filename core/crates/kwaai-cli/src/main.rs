@@ -119,10 +119,7 @@ async fn main() -> Result<()> {
 
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
-    // Skipped for `update` (redundant) and `run-node` (internal daemon process,
-    // and the entry a bootstrap node's container entrypoint uses — no operator
-    // watches its stdout for an upgrade hint, and its host may have no route to
-    // the update endpoint at all).
+    // Skipped for `update` (redundant) and `run-node` (internal daemon process).
     let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode);
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
