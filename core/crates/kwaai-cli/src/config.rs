@@ -239,9 +239,9 @@ pub struct KwaaiNetConfig {
     /// Set false and the node publishes *nothing* — no announce round at
     /// startup, none on the timer, none on a reachability change or a SIGHUP,
     /// and correspondingly no unannounce tombstone at shutdown, because there
-    /// is nothing to retract. This is what makes a bootstrap seed a seed: it
+    /// is nothing to retract. This is what makes a bootstrap a bootstrap: it
     /// stores and serves everyone else's records while appearing on the map as
-    /// nothing at all. A seed that announced itself would show up as an
+    /// nothing at all. A bootstrap that announced itself would show up as an
     /// inference node offering zero blocks.
     ///
     /// This is about *publishing*, not about *serving*. The DHT server role —
@@ -258,7 +258,7 @@ pub struct KwaaiNetConfig {
     /// `-b` flag, and auto-detection governs the rest.
     ///
     /// Set true and the node answers Kademlia queries from t=0, before any
-    /// external address has been confirmed. A bootstrap seed needs exactly
+    /// external address has been confirmed. A bootstrap node needs exactly
     /// this: it exists to answer queries, and the auto-detected path would
     /// leave it in client mode — refusing the very lookups it was deployed to
     /// serve — until an AutoNAT round confirmed an address for it.
@@ -1417,9 +1417,9 @@ mod tests {
         assert_eq!(c.effective_end_block(), 80);
     }
 
-    // ── The bootstrap-seed config keys ─────────────────────────────────────
+    // ── The bootstrap-node config keys ─────────────────────────────────────
 
-    /// The three keys the seed preset relies on default to ordinary-node
+    /// The three keys a bootstrap relies on default to ordinary-node
     /// behaviour, so an existing `config.yaml` written before they existed
     /// deserialises into a node that behaves exactly as it did.
     #[test]
@@ -1457,7 +1457,7 @@ mod tests {
     }
 
     /// `config set` round-trips each key through YAML, which is how an operator
-    /// configures a seed without the `bootstrap serve` wrapper.
+    /// configures a bootstrap node; see `docs/BOOTSTRAP.md`.
     #[test]
     fn the_new_keys_round_trip_through_set_and_save() {
         let home = tempfile::tempdir().expect("tmpdir");
