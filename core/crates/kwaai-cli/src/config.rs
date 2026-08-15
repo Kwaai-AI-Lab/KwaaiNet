@@ -189,11 +189,12 @@ pub struct KwaaiNetConfig {
     ///
     /// Defaults to true, which is what a home or office node wants: it is the
     /// cheapest route from "behind a NAT" to "directly dialable", and it costs
-    /// one SSDP round on the LAN.
+    /// one SSDP round on the LAN. Set false for a node deployed at a known,
+    /// already-reachable address, where there is no gateway to ask.
     ///
-    /// Set false for a node deployed at a known, already-reachable address — a
-    /// bootstrap seed being the case that matters. It has no gateway to ask,
-    /// and multicasting SSDP from a datacentre subnet is noise at best.
+    /// Independent of every other key: nothing derives or overrides it, so it
+    /// means the same thing on every node. (Owned by `feat/upnp-toggle`, #77;
+    /// defined here only so this branch builds standalone.)
     #[serde(default = "default_true")]
     pub enable_upnp: bool,
 
@@ -1060,8 +1061,9 @@ mod tests {
 
     /// A config file predating these keys still loads, and the missing fields
     /// take the ordinary-node defaults rather than `bool::default()` — which
-    /// for `announce_self` and `enable_upnp` would silently be the *seed's*
-    /// value and mute every existing node on the network.
+    /// for `announce_self` would be `false` and silently mute every existing
+    /// node on the network, and for `enable_upnp` would drop the port mapping
+    /// a NATed node depends on.
     #[test]
     fn a_config_without_the_new_keys_deserialises_to_node_defaults() {
         let c: KwaaiNetConfig =

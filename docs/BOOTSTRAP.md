@@ -36,8 +36,17 @@ Without these, the process is a normal node, not a seed.
 |-----|-----------|---------|-----|
 | `announce_addr` | the reachable multiaddr | *(none)* | What identify reports to peers — the `ANNOUNCE_MADDRS` analogue. Declared, so it outranks AutoNAT and is confirmed at t=0 rather than after a probe round. Without it the seed advertises only its container-internal address. |
 | `port` | `8000` | `31337` | The listen port. The address built is `/ip4/0.0.0.0/tcp/<port>`. |
-| `enable_upnp` | `false` | `true` | A seed is deployed at a known address; there is no gateway mapping to negotiate. |
 | `no_relay` | `false` | `false` | Keep the circuit relay hop service **on**: NATed nodes reserve circuits through the bootstraps. Set `true` only to deliberately withhold relay. |
+
+### Independent keys worth setting
+
+Nothing about being a seed changes what these mean, and no code derives them
+from the keys above — they are listed because the answer is usually obvious for
+a machine deployed at a fixed address, not because a seed requires them.
+
+| key | usual seed value | default | why |
+|-----|-----------------|---------|-----|
+| `enable_upnp` | `false` | `true` | A host at a known, already-reachable address has no gateway to ask, and SSDP multicast from a datacentre subnet is noise. Set it to whatever is true of the host; a seed behind a home router may well want it left on. |
 
 ### Turn off what a seed has no use for
 
@@ -63,12 +72,14 @@ identity_key: /config/bootstrap_key1.bin
 initial_peers: []
 announce_addr: /dns4/bootstrap1/tcp/8000
 port: 8000
-enable_upnp: false
 no_relay: false
 vpk_enabled: false
 ollama_manage: false
 health_monitoring:
   enabled: false
+
+# Independent of the above — set to whatever is true of this host.
+enable_upnp: false
 ```
 
 ## Storage
