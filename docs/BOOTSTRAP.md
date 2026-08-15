@@ -26,7 +26,6 @@ Without these, the process is an ordinary node, not a bootstrap.
 |---|---|---|---|
 | `native_p2p` | `true` | `false` | The Rust bootstrap exists only on the native stack. |
 | `announce_self` | `false` | `true` | Publishes none of its own records — no blocks, no `_petals.models`, no `_kwaai.inference.nodes`, no VPK entry — and writes no `state = -1` tombstone on exit. It stores and serves what *other* peers publish, while appearing on the map as nothing at all. A bootstrap that announced itself would show up as an inference node offering zero blocks. |
-| `dht_server` | `true` | `false` | Kademlia server mode from t=0, before any external address is confirmed. Without it the node waits on a reachability probe it does not need. |
 | `identity_key` | path to the key file | *(none)* | **Load, never generate.** A bootstrap's peer ID is pinned into every other node's `initial_peers` multiaddr, so a fresh identity silently orphans the network. Setting this selects the load-don't-generate path: a missing file is an error, not a new identity. |
 | `initial_peers` | `[]` | public bootstraps | A bootstrap dials nobody. The empty list is honoured only because `announce_self` is false; an ordinary node with no peers still falls back to the public bootstraps. |
 
@@ -37,6 +36,7 @@ Without these, the process is an ordinary node, not a bootstrap.
 | `announce_addr` | the reachable multiaddr | *(none)* | What identify reports to peers — the `ANNOUNCE_MADDRS` analogue. Declared, so it outranks AutoNAT and is confirmed at t=0 rather than after a probe round. Without it the node advertises only its container-internal address. |
 | `port` | `8000` | `31337` | The listen port. The address built is `/ip4/0.0.0.0/tcp/<port>`. |
 | `no_relay` | `false` | `false` | Keep the circuit relay hop service **on**: NATed nodes reserve circuits through the bootstraps. Set `true` only to deliberately withhold relay. |
+| `dht_server` | `true` | `true` | Kademlia server mode from t=0, before any external address is confirmed. Already the default for every node, so a bootstrap normally leaves it alone — listed because a bootstrap that had it set to `false` would sit in client mode, refusing the lookups it was deployed to serve. |
 
 ### Independent keys worth setting
 
@@ -68,7 +68,6 @@ announce record, which `announce_self = false` short-circuits first.
 ```yaml
 native_p2p: true
 announce_self: false
-dht_server: true
 identity_key: /config/bootstrap_key1.bin
 initial_peers: []
 announce_addr: /dns4/bootstrap1/tcp/8000
