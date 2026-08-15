@@ -2063,6 +2063,26 @@ pub async fn discover_chain(
     chain
 }
 
+/// Connect to the local p2pd and resolve everything [`discover_chain`]
+/// needs: the client, our own peer id, and the bootstrap peer list.
+/// Shared by the CLI paths and the gRPC block-coverage handler.
+pub async fn connect_for_discovery(
+    cfg: &KwaaiNetConfig,
+) -> Result<(P2PClient, PeerId, Vec<String>)> {
+    let mut client = P2PClient::connect(&daemon_socket())
+        .await
+        .context("connecting to p2pd (is `kwaainet start` running?)")?;
+    let peer_id_hex = client.identify().await.context("identify peer")?;
+    let our_peer_id =
+        PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
+    let bootstrap_peers = if cfg.initial_peers.is_empty() {
+        NetworkConfig::with_petals_bootstrap().bootstrap_peers
+    } else {
+        cfg.initial_peers.clone()
+    };
+    Ok((client, our_peer_id, bootstrap_peers))
+}
+
 // ── Inference peer discovery ───────────────────────────────────────────────────
 
 /// DHT key under which nodes advertise Ollama / shard-API availability.
