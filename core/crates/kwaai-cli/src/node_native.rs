@@ -77,14 +77,6 @@ use crate::node::SigHup;
 /// timeout of its own.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Whether an ordinary node runs Kademlia in server mode.
-///
-/// True on every node, matching p2pd's `-b`: a node that only issued queries
-/// would never be advertised into peers' routing tables. Named rather than
-/// inlined so `config.dht_server` — a bootstrap's "server mode regardless of
-/// reachability" — reads as the second input it is, not as dead logic.
-const NODE_DHT_SERVER: bool = true;
-
 /// How long to let reachability settle before acting on a change.
 ///
 /// At startup a reservation being confirmed and AutoNAT confirming an address
@@ -150,15 +142,9 @@ impl NativeNode {
             initial_peers: bootstrap_peers.to_vec(),
             // p2pd runs with `-b` (Kademlia bootstrap) on every node, which is
             // what makes a node answer DHT queries rather than only issuing
-            // them. `dht_server` is the native equivalent, and it is on for
-            // every node today — so `config.dht_server = true` (the bootstrap
-            // a bootstrap's config) currently asks for what it would already get.
-            //
-            // It is still read rather than ignored: a bootstrap's requirement is
-            // "server mode regardless of reachability", and stating it through
-            // the config is what stops a future change to the ordinary-node
-            // default from silently demoting a bootstrap to client mode.
-            dht_server: NODE_DHT_SERVER || config.dht_server,
+            // them. `dht_server` is the native equivalent and defaults to true
+            // for the same reason; false leaves kad in auto-mode instead.
+            dht_server: config.dht_server,
 
             // ── NAT traversal ──────────────────────────────────────────────
             // Each of these has a p2pd flag it corresponds to, so a node
