@@ -56,7 +56,7 @@ pub use config::{
 };
 pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};
-pub use handle::{Direction, InboundUnaryCall, NetworkHandle, PeerInfo, UnaryHandler};
+pub use handle::{Direction, InboundUnaryCall, KnownPeer, NetworkHandle, PeerInfo, UnaryHandler};
 pub use raw_stream::{InboundStream, RawStream, RawStreamError};
 pub use reachability::{
     AnnounceState, Reachability, ReachabilityKind, Source as ReachabilitySource,

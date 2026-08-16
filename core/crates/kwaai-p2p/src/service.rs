@@ -40,7 +40,7 @@ use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
-    NetworkHandle, PeerInfo,
+    KnownPeer, NetworkHandle, PeerInfo,
 };
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
@@ -470,6 +470,52 @@ impl NetworkService {
                     })
                     .collect();
                 let _ = reply.send(peers);
+            }
+
+            // Routing table ∪ connected set, address-filtered. Same in-memory
+            // walk as `RoutingPeers`, plus a pass over `connections`, so it is
+            // equally safe in the event loop.
+            Command::KnownPeers { reply } => {
+                let routing: Vec<PeerId> = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .kbuckets()
+                    .flat_map(|bucket| {
+                        bucket
+                            .iter()
+                            .map(|entry| *entry.node.key.preimage())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                let connected: Vec<PeerId> = self.connections.keys().copied().collect();
+
+                let mut merged: HashMap<PeerId, KnownPeer> = HashMap::new();
+                for peer in routing.into_iter().chain(connected.into_iter()) {
+                    if merged.contains_key(&peer) {
+                        continue;
+                    }
+                    // `known_addresses` already merges the routing-table entry
+                    // with live connection addresses and applies the
+                    // announceable filter, so there is one source of truth for
+                    // "can this be dialed".
+                    let addrs = self.known_addresses(&peer);
+                    if addrs.is_empty() {
+                        continue;
+                    }
+                    let connected = self.connections.contains_key(&peer);
+                    merged.insert(
+                        peer,
+                        KnownPeer {
+                            peer_id: peer,
+                            addrs,
+                            connected,
+                        },
+                    );
+                }
+
+                let _ = reply.send(merged.into_values().collect());
             }
 
             Command::DhtFindPeer { peer, reply } => {
