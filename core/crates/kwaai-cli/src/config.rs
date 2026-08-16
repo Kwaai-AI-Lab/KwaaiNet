@@ -992,6 +992,15 @@ mod dirs_sys {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that drive `KWAAINET_HOME`.
+    ///
+    /// The var is process-global. These tests each point it at their own
+    /// tempdir and some remove it when done, so run concurrently one test
+    /// reads another's directory — or none at all — and sees the wrong
+    /// config back. Identical block on every branch that adds such a test,
+    /// so the copies merge as a duplicate rather than a conflict.
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn cfg(start: u32, blocks: u32, total_hint: &str) -> KwaaiNetConfig {
         KwaaiNetConfig {
             model: total_hint.to_string(), // name heuristic drives model_total_blocks()
@@ -1012,6 +1021,15 @@ mod tests {
 
     #[test]
     fn announce_online_without_shard_round_trips() {
+        let _env_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // `set_key` persists to $KWAAINET_HOME. Without our own tempdir this
+        // writes into whichever directory another test has pointed the var
+        // at — and fails with ENOENT when that test's TempDir drops mid-run.
+        // Harmless on this branch alone; a ~1-in-6 flake once `combined` puts
+        // it alongside the bootstrap-serve tests that drive the same var.
+        let home = tempfile::tempdir().expect("tmpdir");
+        std::env::set_var("KWAAINET_HOME", home.path());
+
         let mut c = KwaaiNetConfig::default();
         c.set_key("announce_online_without_shard", "true").unwrap();
         assert!(c.announce_online_without_shard);
