@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 ///
 /// Supported formats:
 /// - `.txt`, `.md`, `.rst`, `.csv`, `.json`, `.yaml`, `.toml` — read as UTF-8
-/// - `.pdf` — extracted via pdf-extract (requires the "pdf" feature)
+/// - `.pdf` — extracted via unpdf (requires the "pdf" feature)
 /// - `.docx` — extracted from the embedded XML (no extra tools needed)
 /// - `.doc`  — extracted via `antiword` or `libreoffice --headless` (must be installed)
 pub fn extract_text(path: &Path) -> Result<String> {
@@ -36,78 +36,50 @@ pub fn supported_extensions() -> &'static [&'static str] {
 
 #[cfg(feature = "pdf")]
 fn extract_pdf(path: &Path) -> Result<String> {
-    // pdf-extract panics on malformed PDFs (e.g. wrong object types). Catch those
-    // panics and convert them to errors so a single bad file doesn't crash sync.
+    // A parser panic on a malformed PDF must not take down a whole sync, so the
+    // extraction is contained the same way it was under pdf-extract.
     let path_owned = path.to_path_buf();
-    match std::panic::catch_unwind(move || pdf_extract::extract_text(&path_owned)) {
-        Ok(Ok(text)) => Ok(clean_pdf_text(&text)),
-        Ok(Err(e)) => anyhow::bail!("extracting PDF text from {}: {e}", path.display()),
-        Err(_) => anyhow::bail!(
+    let extracted = std::panic::catch_unwind(move || -> Result<String> {
+        let doc = unpdf::parse_file(&path_owned)
+            .map_err(|e| anyhow::anyhow!("parsing PDF {}: {e}", path_owned.display()))?;
+        unpdf::render::to_text(&doc, &pdf_render_options())
+            .map_err(|e| anyhow::anyhow!("rendering PDF text {}: {e}", path_owned.display()))
+    });
+
+    match extracted {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(e)) => bail!("extracting PDF text from {}: {e}", path.display()),
+        Err(_) => bail!(
             "extracting PDF text from {}: PDF is malformed (internal parser panic)",
             path.display()
         ),
     }
 }
 
-/// Fix underscore artifacts introduced by pdf-extract's glyph-to-Unicode mapping.
+/// Render options tuned for tokenizer ingestion.
 ///
-/// Some PDFs encode periods and apostrophes using glyph IDs that pdf-extract maps
-/// to `_` instead of the intended character:
-///   "Dr_"       → "Dr."      (period after abbreviation)
-///   "J_ M_ H_"  → "J. M. H." (spaced initials)
-///   "M_K_"      → "M.K."     (chained initials — next char is uppercase)
-///   "Wooding_s" → "Wooding's" (apostrophe in possessive)
+/// The `standard` cleanup preset is right for RAG — it normalizes Unicode,
+/// strips page numbers and TOC dot-leaders, and collapses whitespace runs that
+/// would otherwise burn tokens. One step has to be disabled:
 ///
-/// Rules applied in order per `_`:
-///   1. `_s` at a word boundary → `'s`
-///   2. `_` preceded by a letter and followed by whitespace, end, or an uppercase
-///      letter (chained initial) → `.`
-///   3. All other underscores → stripped
-#[allow(dead_code)]
-fn clean_pdf_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut i = 0;
-    while i < n {
-        let c = chars[i];
-        if c != '_' {
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        // Rule 1: `_s` where s is followed by non-alpha or end → apostrophe-s
-        if i + 1 < n && chars[i + 1] == 's' {
-            let after = i + 2;
-            let at_boundary = after >= n || !chars[after].is_alphabetic();
-            if at_boundary {
-                out.push('\'');
-                out.push('s');
-                i += 2;
-                continue;
-            }
-        }
-        // Rule 2: `_` preceded by a letter and followed by whitespace, end, or an
-        // uppercase letter (chained initials like M_K_ → M.K.) → period
-        let prev_is_alpha = out
-            .chars()
-            .last()
-            .map(|p| p.is_alphabetic())
-            .unwrap_or(false);
-        let next_is_break_or_initial = i + 1 >= n
-            || chars[i + 1].is_whitespace()
-            || chars[i + 1] == '\n'
-            || chars[i + 1] == '\r'
-            || chars[i + 1].is_uppercase();
-        if prev_is_alpha && next_is_break_or_initial {
-            out.push('.');
-            i += 1;
-            continue;
-        }
-        // Rule 3: strip
-        i += 1;
+/// `fix_hyphenation` joins `([a-zA-Z])-\s*\n?\s*([a-z])`, and because the `\n`
+/// is optional it also fuses ordinary same-line compounds — `aide-de-camp`
+/// becomes `aidedecamp`. On a Project Gutenberg War and Peace it destroyed 93%
+/// of the document's hyphens (1771 → 126). unpdf already rejoins genuine
+/// line-wrapped words while reconstructing layout, so turning this off loses
+/// nothing: measured output has zero dangling line-end hyphens either way, and
+/// the hyphen count then matches `pdftotext` exactly.
+#[cfg(feature = "pdf")]
+fn pdf_render_options() -> unpdf::render::RenderOptions {
+    let cleanup = unpdf::render::CleanupOptions {
+        fix_hyphenation: false,
+        ..unpdf::render::CleanupOptions::standard()
+    };
+
+    unpdf::render::RenderOptions {
+        cleanup: Some(cleanup),
+        ..Default::default()
     }
-    out
 }
 
 #[cfg(not(feature = "pdf"))]
@@ -215,18 +187,22 @@ fn extract_doc_legacy(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// Guards the one cleanup step we deliberately turn off. If a future unpdf
+    /// release fixes the over-broad regex and we drop the override, this keeps
+    /// the intent visible; if someone restores the default preset, it fails.
+    #[cfg(feature = "pdf")]
     #[test]
-    fn test_clean_pdf_text_chained_initials() {
-        // Chained initials without spaces: M_K_ → M.K.
-        assert_eq!(clean_pdf_text("M_K_ Gandhi"), "M.K. Gandhi");
-        // Initials with spaces: J_ M_ H_ → J. M. H.
-        assert_eq!(clean_pdf_text("J_ M_ H_ Gool"), "J. M. H. Gool");
-        // Trailing period on title: Dr_ → Dr.
-        assert_eq!(clean_pdf_text("Dr_ Smith"), "Dr. Smith");
-        // Possessive: Wooding_s → Wooding's
-        assert_eq!(clean_pdf_text("Wooding_s house"), "Wooding's house");
-        // E_S_ Reddy → E.S. Reddy
-        assert_eq!(clean_pdf_text("E_S_ Reddy"), "E.S. Reddy");
+    fn pdf_cleanup_keeps_compound_hyphens() {
+        let cleanup = pdf_render_options()
+            .cleanup
+            .expect("render options must carry explicit cleanup settings");
+        assert!(
+            !cleanup.fix_hyphenation,
+            "fix_hyphenation fuses same-line compounds (aide-de-camp → aidedecamp)"
+        );
+        // The rest of the standard preset should still be in force.
+        assert!(cleanup.normalize_unicode);
+        assert!(cleanup.normalize_whitespace);
     }
 
     #[test]
