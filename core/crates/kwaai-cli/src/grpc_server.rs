@@ -1467,6 +1467,7 @@ mod tests {
             public_name: "peer".into(),
             throughput: 1.0,
             trust_score: None,
+            lease_v1: false,
         };
 
         // Gap at block 3: [0,3) + [4,8).
