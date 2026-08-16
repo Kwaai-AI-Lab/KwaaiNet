@@ -283,7 +283,14 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         // If pick_gap returns the same range already in config the daemon is
         // already announcing the correct blocks — nothing to do.
         if s as u32 != cfg.start_block {
-            let mut updated = cfg.clone();
+            // Reload from disk before saving: `cfg` was read when this serve
+            // pass started, and pick_gap_blocks can take minutes over p2p.
+            // Other processes (rag init, config set) may have written the
+            // file since — saving the stale snapshot would silently revert
+            // them (this wiped rag_kbs in the field). The reload narrows the
+            // race to the microseconds between load and save.
+            let mut updated =
+                crate::config::KwaaiNetConfig::load_or_create().unwrap_or_else(|_| cfg.clone());
             updated.start_block = s as u32;
             updated.save().context("Failed to save config.yaml")?;
             print_info("Updated config.yaml — signalling daemon to re-announce…");
@@ -299,7 +306,10 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         let s = args.start_block.unwrap_or(cfg.start_block) as usize;
         let total = cfg.model_total_blocks() as usize;
         let e = (s + target_blocks).min(total);
-        let mut updated = cfg.clone();
+        // Reload before saving — same stale-snapshot hazard as the auto
+        // path above.
+        let mut updated =
+            crate::config::KwaaiNetConfig::load_or_create().unwrap_or_else(|_| cfg.clone());
         updated.start_block = s as u32;
         updated.blocks = (e - s) as u32;
         if updated.start_block != cfg.start_block || updated.blocks != cfg.blocks {

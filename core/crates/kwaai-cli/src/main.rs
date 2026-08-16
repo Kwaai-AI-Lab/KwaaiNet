@@ -246,7 +246,17 @@ async fn main() -> Result<()> {
                                         cfg.model_repository = None;
                                     }
                                     // Persist so the daemon child picks it up.
-                                    let _ = cfg.save();
+                                    // Reload from disk first: the map query
+                                    // above takes time, and another process
+                                    // may have written config.yaml since we
+                                    // loaded — saving our stale snapshot
+                                    // would silently revert those changes.
+                                    let mut persisted = KwaaiNetConfig::load_or_create()
+                                        .unwrap_or_else(|_| cfg.clone());
+                                    persisted.model = cfg.model.clone();
+                                    persisted.model_dht_prefix = cfg.model_dht_prefix.clone();
+                                    persisted.model_repository = cfg.model_repository.clone();
+                                    let _ = persisted.save();
                                 }
                                 None => {
                                     print_info(&format!(
