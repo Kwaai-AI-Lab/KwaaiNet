@@ -138,14 +138,7 @@ impl NativeNode {
             initial_peers: bootstrap_peers.to_vec(),
             // p2pd runs with `-b` (Kademlia bootstrap) on every node, which is
             // what makes a node answer DHT queries rather than only issuing
-            // them. True on every node here for the same reason.
-            //
-            // Not a config key. The only case for turning it off is a node too
-            // NATed to serve queries, and kad's auto-mode already reaches that
-            // state on its own — it stays a client until the reachability
-            // machine confirms an external address (see `apply_reachability_
-            // effects` in kwaai-p2p's service.rs). A key would let an operator
-            // assert what the swarm already observes, and get it wrong.
+            // them. `dht_server` is the native equivalent.
             dht_server: true,
 
             // ── NAT traversal ──────────────────────────────────────────────
@@ -365,8 +358,7 @@ pub async fn run_native_node(
     // is about to publish, so a bootstrap skips the lot: the bandwidth probe is
     // a real network round trip, and it has no model to measure a throughput
     // for.
-    let announce_self = config.announce_self;
-    if announce_self {
+    if config.announce_self {
         info!("[2/4] Preparing the DHT announcement...");
     }
 
@@ -386,7 +378,7 @@ pub async fn run_native_node(
     // One gate for every announce input. A bootstrap computes none of them:
     // `measure_download_bps_for` runs a live download, and `initial_vpk_info`
     // polls a VPK endpoint — both pointless for a node that publishes nothing.
-    let (dl_bps, throughput, vpk_info) = if !announce_self {
+    let (dl_bps, throughput, vpk_info) = if !config.announce_self {
         (0.0, 0.0, None)
     } else {
         if let Some(addr) = configured_announce_addr(config) {
@@ -424,7 +416,7 @@ pub async fn run_native_node(
     );
 
     // ── Initial announcement ───────────────────────────────────────────────
-    if announce_self {
+    if config.announce_self {
         info!("[3/4] Announcing to DHT...");
         if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
             warn!("Initial announce failed: {e:#} — will retry at the 300 s tick");
@@ -434,7 +426,7 @@ pub async fn run_native_node(
     info!("[4/4] ✅ KwaaiNet node running");
     info!("   Peer ID : {}", peer_id.to_base58());
     // A bootstrap has no name, model or block range to report.
-    if announce_self {
+    if config.announce_self {
         info!("   Name    : {}", public_name);
         info!("   Model   : {}", config.model);
         info!(
@@ -459,7 +451,7 @@ pub async fn run_native_node(
     // A dangling receiver stands in so the `select!` arm keeps its type, and the
     // sender is held rather than dropped so the branch is simply never ready.
     let (_ollama_recovery_tx, mut ollama_recovery_rx) = tokio::sync::mpsc::channel::<()>(1);
-    if announce_self {
+    if config.announce_self {
         ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     }
     let mut pending_update_version: Option<String> = None;
@@ -474,7 +466,7 @@ pub async fn run_native_node(
                 info!("SIGHUP received — re-reading config");
                 reload_block_range(&mut config);
                 refresh_server_info(&mut server_info, &config);
-                if announce_self {
+                if config.announce_self {
                     if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
                         warn!("Re-announce after SIGHUP failed: {e:#}");
                     }
@@ -516,7 +508,7 @@ pub async fn run_native_node(
                     }
                 }
 
-                if announce_self {
+                if config.announce_self {
                     refresh_server_info(&mut server_info, &config);
                     info!(
                         "Re-announcing to DHT (shard_ready={})...",
@@ -560,7 +552,7 @@ pub async fn run_native_node(
             {
                 announce_settle = None;
                 let state = *announce_state.borrow_and_update();
-                if !announce_self {
+                if !config.announce_self {
                     // A bootstrap publishes nothing, so a reachability change
                     // has no record to refresh.
                     continue;
@@ -594,7 +586,7 @@ pub async fn run_native_node(
 
             // Ollama came back up — re-announce immediately so clients learn the
             // host is usable again without waiting out the 300 s tick.
-            Some(()) = ollama_recovery_rx.recv(), if announce_self => {
+            Some(()) = ollama_recovery_rx.recv(), if config.announce_self => {
                 info!("Ollama recovered — triggering immediate re-announce");
                 refresh_server_info(&mut server_info, &config);
                 if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
@@ -612,7 +604,7 @@ pub async fn run_native_node(
     // Tombstone before tearing down the swarm, so the map drops us immediately
     // rather than waiting out the TTL. A bootstrap published nothing, so it has
     // nothing to retract.
-    if announce_self {
+    if config.announce_self {
         info!("Unannouncing from DHT...");
         node.unannounce(&ctx, &server_info, bootstrap_peers).await;
     }
