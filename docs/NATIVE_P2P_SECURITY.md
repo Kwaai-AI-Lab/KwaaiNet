@@ -34,7 +34,7 @@ was not, and should be read that way.
 
 ## 2. Open issues
 
-### 2.1 No record validators — unauthenticated DHT writes, on every native node
+### 2.1 No record validators — any peer can write any key, on every native node
 
 **Status: open. Highest-priority item in this document.**
 
@@ -50,11 +50,17 @@ native node registers `rpc_store` / `rpc_find` / `rpc_ping` and accepts stores
 from any peer that can reach it. The exposure is not waiting on a bootstrap; it
 shipped with the stack.
 
-There is also **no operator control over this on `main`** — the `dht_server`
-config key does not exist there (0 occurrences in `kwaai-cli/src/config.rs`; the
-`dht_server` in `kwaai-p2p`'s `NetworkConfig` is a different setting, selecting
-libp2p-kad server mode). #94 proposes the operator-facing key, and it does not
-work — see 2.2.
+Note the wording: not *unauthenticated* writes, which would imply a check being
+skipped. There is no authentication layer at all. `RequestAuthInfo` on the wire
+is a hivemind-compatible shape that nothing reads, so the accurate statement is
+simply that **any peer able to open a connection can write any key**.
+
+There is also **no operator control over this, and none coming** — the
+`dht_server` config key does not exist on `main` (0 occurrences in
+`kwaai-cli/src/config.rs`; the `dht_server` in `kwaai-p2p`'s `NetworkConfig` is a
+different setting, selecting libp2p-kad server mode). #94 briefly proposed an
+operator-facing key and then dropped it, correctly — see 2.2. Validators are now
+the only answer.
 
 What stands in for authentication today is capacity bounding:
 
@@ -64,24 +70,25 @@ What stands in for authentication today is capacity bounding:
 | `DEFAULT_STORAGE_SIZE` | 1,048,576 entries | `server.rs:59` |
 | `DEFAULT_CACHE_SIZE` | 32,768 | `server.rs:47` |
 
-Those prevent unbounded memory growth. They do not prevent an unauthenticated
-peer from writing *content* — overwriting or crowding out records for keys it has
-no relationship to. Impact scales with how much the network trusts DHT contents:
+Those prevent unbounded memory growth. They do not prevent a peer from writing
+*content* — overwriting or crowding out records for keys it has no relationship
+to. Impact scales with how much the network trusts DHT contents:
 today those records are largely block-coverage and node-discovery metadata, so
 the practical damage is misrouting and pollution rather than compromise. That
 changes if anything security-relevant ever lands in a DHT record.
 
 **Recommendation.** Treat validators as a prerequisite for (a) running any Rust
 bootstrap, (b) enabling `decentralized_dht`, and (c) placing any
-trust-establishing data in DHT records. Until then, `dht_server: false` should be
-a working mitigation — see 2.2, because it is not.
+trust-establishing data in DHT records. There is no interim mitigation to fall
+back on: the one that was proposed would not have worked, and was withdrawn
+rather than fixed (2.2).
 
-### 2.2 The proposed `dht_server: false` does not stop the node serving DHT writes
+### 2.2 The proposed `dht_server: false` did not stop the node serving DHT writes
 
-**Status: open, raised on #94 (CHANGES_REQUESTED). Not on `main` — this is a
-finding against the PR that would introduce the mitigation for 2.1.**
+**Status: resolved by withdrawal. Raised on #94 (CHANGES_REQUESTED); the key was
+dropped from the branch entirely rather than fixed. Never on `main`.**
 
-In #94 the config key documents itself as:
+As proposed, the config key documented itself as:
 
 > rpc_ping/rpc_store/rpc_find is governed by `dht_server`.
 
@@ -94,11 +101,30 @@ handlers are registered unconditionally, with no guard in the enclosing scope.
 | libp2p-kad server mode | yes |
 | hivemind `rpc_store`/`rpc_find`/`rpc_ping` | **no — always on** |
 
-This matters because, with validators absent, this key would be the only lever an
-operator has for declining unauthenticated writes — and an operator who sets it
-believing the documentation gets no protection and no warning. A silently
-ineffective security control is worse than an absent one, which is why this is
-worth fixing before #94 lands rather than after.
+This mattered because, with validators absent, the key would have been the only
+lever an operator had — and one who set it believing the documentation would get
+no protection and no warning. A silently ineffective security control is worse
+than an absent one.
+
+**Why withdrawal was the right resolution, and not merely the cheap one.** The
+gate was first added as suggested, then removed on a stronger argument: turning
+off the handlers is invisible to *placement*. `gather_candidates`
+(`announce.rs:620`) draws from the routing table with no filter on who serves, so
+a non-serving node is still chosen among the *k* nearest, its store fails, and
+the loss surfaces only as an aggregate `total_shortfall` (`announce.rs:796`) that
+names neither the peer nor the cause. Python hivemind avoids this — a
+`client_mode` node sends an empty `node_info`, so peers never route to it — and
+this port has no equivalent. A gate fixing the local half while leaving the
+network still routing to the node would have been the same class of defect the
+finding was about.
+
+One caveat on the rationale as recorded in `BOOTSTRAP.md`: it also argues kad's
+auto-mode makes the key unnecessary, reaching client-or-server from observed
+reachability. That is true of `kwaai-p2p` as a library but not of anything
+shipped — `node_native.rs` hardcodes `dht_server: true`, so `behaviour.rs:131`
+always pins server mode and the auto-mode branch is unreachable for a kwaainet
+node. The accurate statement is that serving is unconditional with no
+evidence-driven fallback, which argues for withdrawal more strongly, not less.
 
 ### 2.3 O(n) eviction under the write lock — availability cliff at capacity
 
@@ -114,8 +140,7 @@ reached exactly when a node is busiest. An ordinary node will not fill a million
 entries. A bootstrap will, and a fleet using decentralized placement (#96) makes
 it likelier that *some* node does.
 
-Combined with 2.1, an unauthenticated writer can push a node toward that cliff
-deliberately — bounded by `MAX_STORE_KEYS_PER_REQUEST` per request, but not
+Combined with 2.1, any writer can push a node toward that cliff deliberately — bounded by `MAX_STORE_KEYS_PER_REQUEST` per request, but not
 overall. Python hivemind uses an expiration heap; an expiration-ordered index
 here would remove both the cliff and that lever.
 
@@ -232,12 +257,12 @@ Neither #94 nor #96 can be enabled safely without 2.1, and both make its blast
 radius larger:
 
 - **#94 (bootstrap node)** — a bootstrap is the deployment that reaches the
-  storage bound, so 2.3 becomes load-bearing. Its own `dht_server` control does
-  not currently work (2.2).
+  storage bound, so 2.3 becomes load-bearing. It ships with no operator control
+  over serving, the proposed one having been withdrawn (2.2).
 - **#96 (decentralized placement)** — defaults to `false`, correctly. Enabling it
   changes the topology from "two operator-run bootstraps hold nearly everything"
-  to "every reachable node stores keys it did not choose, written by peers it
-  cannot authenticate". That is a different risk profile, and the flag's doc
+  to "every reachable node stores keys it did not choose, written by peers whose
+  writes nothing checks". That is a different risk profile, and the flag's doc
   comment should say so where an operator will see it.
 
 `decentralized_dht: false` and `native_p2p: false` are both correct defaults, and
