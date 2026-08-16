@@ -15,6 +15,15 @@ use kwaai_p2p::unary::{self, UnaryError, UnaryProtocol, UnaryResult};
 use libp2p::{swarm::SwarmEvent, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use tokio::sync::{mpsc, oneshot};
 
+/// Inbound responders held without answering, so a test can park requests
+/// and control when (or whether) each one completes.
+///
+/// Named rather than written inline because rustfmt 1.93's clippy flags the
+/// spelled-out form as `type_complexity`; CI's toolchain does not, so the
+/// unaliased version failed only on a local `--all-targets` run.
+type ParkedResponders =
+    std::sync::Arc<std::sync::Mutex<Vec<oneshot::Sender<Result<Vec<u8>, String>>>>>;
+
 const PROTO: &str = "DHTProtocol.rpc_ping";
 
 /// A per-test cap so a lost reply oneshot fails the test rather than hanging it.
@@ -406,8 +415,7 @@ async fn inbound_overflow_gets_a_capacity_refusal() {
     let peer_id = *swarm.local_peer_id();
     let addr = listen(&mut swarm).await;
 
-    let parked: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let parked: ParkedResponders = Arc::new(Mutex::new(Vec::new()));
     let parked_in_loop = Arc::clone(&parked);
     tokio::spawn(async move {
         loop {
