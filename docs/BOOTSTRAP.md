@@ -100,19 +100,23 @@ it — no signature is checked, because none is verified. The `RequestAuthInfo`
 on the wire is a hivemind-compatible shape that nothing reads.
 
 An earlier draft of this branch offered `dht_server: false` as an off-switch.
-It was dropped, for two reasons worth recording so it is not re-proposed:
+It was dropped because **a serving switch would be half a control**: turning
+off the handlers is invisible to placement. With `decentralized_dht` on,
+candidates come from the routing table with no filter on who serves, so a
+non-serving node is still selected among the *k* nearest, its store fails, and
+the loss surfaces only as a shortfall count — which names neither the peers
+that refused nor the reason. The operator who flipped the switch and the
+operator seeing thin replication are not connected. Hivemind avoids this: a
+`client_mode` node sends an empty `node_info`, so peers never add it to their
+routing tables and never route to it. We have no equivalent, and building one
+is the prerequisite for re-proposing the key.
 
-- **Kademlia does not need it.** The only case for declining to serve kad
-  queries is a node too NATed to answer them, and kad's auto-mode reaches that
-  state on its own — client until the reachability machine confirms an external
-  address, server after. A key would let an operator assert what the swarm
-  already observes, and get it wrong.
-- **A serving switch would be half a control.** Turning off the handlers is
-  invisible to placement: with `decentralized_dht` on, candidates are drawn
-  from the routing table with no filter on who serves, so a non-serving node is
-  still selected among the *k* nearest, its store fails, and replication
-  silently degrades. Hivemind avoids this — a `client_mode` node sends an empty
-  `node_info` so peers never route to it — and we have no equivalent.
+Note what is *not* the argument, since it is easy to assume: kad does **not**
+fall back to client mode for an unreachable node. `NetworkConfig::dht_server`
+is force-vs-auto, and every kwaainet node pins it `true`, so the auto-mode path
+— client until an external address is confirmed, server after — is one no node
+here takes. Serving kad is unconditional too, with no evidence-driven fallback,
+which is why the dropped key would have been the only way to opt out of either.
 
 Record validators are the control for unvalidated writes. A config key is not a
 substitute for one, and shipping it as though it were would be worse than its
