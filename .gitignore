@@ -109,3 +109,11 @@ tests/rag-bench/results/*.md
 
 tests/rag-bench/.env
 core/patches/multistream-select/
+
+# Human-readable renderings of tracked source docs (.docx/.pdf from .md).
+# Generated on request, never the source of truth — mirrors the source path,
+# e.g. docs/FOO.md -> rendered/docs/FOO.docx
+/rendered/
+
+# Word lock files (created while a .docx is open)
+~$*

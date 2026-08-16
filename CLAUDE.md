@@ -45,6 +45,21 @@ Per-crate shortcuts also exist: `core/crates/{crate}/CLAUDE.md` points back to t
 
 ---
 
+## Readable renderings of docs
+
+`.md` is the source of truth; `.docx` is for reading. When a readable copy of a
+tracked document is wanted, render it to **`rendered/`, mirroring the source
+path** — `docs/FOO.md` becomes `rendered/docs/FOO.docx`.
+
+```bash
+pandoc docs/FOO.md -o rendered/docs/FOO.docx --toc --toc-depth=3
+```
+
+`rendered/` is gitignored. These are build outputs, never committed and never
+the thing to edit — a fix goes in the `.md` and the rendering is regenerated.
+(The handful of `.docx` files tracked under `docs/` and `projects/*/plans/` are
+authored in Word, not generated from markdown; they are not part of this.)
+
 ## Tests
 
 `tests/{project}/` — integration and evaluation scripts per domain.
