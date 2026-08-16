@@ -36,7 +36,6 @@ Without these, the process is an ordinary node, not a bootstrap.
 | `announce_addr` | the reachable multiaddr | *(none)* | What identify reports to peers — the `ANNOUNCE_MADDRS` analogue. Declared, so it outranks AutoNAT and is confirmed at t=0 rather than after a probe round. Without it the node advertises only its container-internal address. |
 | `port` | `8000` | `31337` | The listen port. The address built is `/ip4/0.0.0.0/tcp/<port>`. |
 | `no_relay` | `false` | `false` | Keep the circuit relay hop service **on**: NATed nodes reserve circuits through the bootstraps. Set `true` only to deliberately withhold relay. |
-| `dht_server` | `true` | `true` | Kademlia server mode from t=0, before any external address is confirmed. Already the default for every node, so a bootstrap normally leaves it alone — listed because a bootstrap that had it set to `false` would sit in client mode, refusing the lookups it was deployed to serve. |
 
 ### Independent keys worth setting
 
@@ -87,3 +86,34 @@ enable_upnp: false
 In-memory, matching `run_dht`. A restarted bootstrap refills from the other
 nodes' 300 s re-announce loop; nothing on disk needs preserving except the
 identity key.
+
+## What is not configurable: serving
+
+Answering `rpc_ping` / `rpc_store` / `rpc_find` for other peers is not a config
+key. Every native node does it, which is what `main` already did before this
+branch — a bootstrap is not distinguished by serving, only by publishing
+nothing and dialing nobody.
+
+Worth stating plainly, because it is the same thing said two ways: there is no
+record validation. A served store accepts any key from any peer that can reach
+it — no signature is checked, because none is verified. The `RequestAuthInfo`
+on the wire is a hivemind-compatible shape that nothing reads.
+
+An earlier draft of this branch offered `dht_server: false` as an off-switch.
+It was dropped, for two reasons worth recording so it is not re-proposed:
+
+- **Kademlia does not need it.** The only case for declining to serve kad
+  queries is a node too NATed to answer them, and kad's auto-mode reaches that
+  state on its own — client until the reachability machine confirms an external
+  address, server after. A key would let an operator assert what the swarm
+  already observes, and get it wrong.
+- **A serving switch would be half a control.** Turning off the handlers is
+  invisible to placement: with `decentralized_dht` on, candidates are drawn
+  from the routing table with no filter on who serves, so a non-serving node is
+  still selected among the *k* nearest, its store fails, and replication
+  silently degrades. Hivemind avoids this — a `client_mode` node sends an empty
+  `node_info` so peers never route to it — and we have no equivalent.
+
+Record validators are the control for unvalidated writes. A config key is not a
+substitute for one, and shipping it as though it were would be worse than its
+absence.

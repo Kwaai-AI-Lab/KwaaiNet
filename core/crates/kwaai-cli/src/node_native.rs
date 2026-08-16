@@ -138,9 +138,15 @@ impl NativeNode {
             initial_peers: bootstrap_peers.to_vec(),
             // p2pd runs with `-b` (Kademlia bootstrap) on every node, which is
             // what makes a node answer DHT queries rather than only issuing
-            // them. `dht_server` is the native equivalent and defaults to true
-            // for the same reason; false leaves kad in auto-mode instead.
-            dht_server: config.dht_server,
+            // them. True on every node here for the same reason.
+            //
+            // Not a config key. The only case for turning it off is a node too
+            // NATed to serve queries, and kad's auto-mode already reaches that
+            // state on its own — it stays a client until the reachability
+            // machine confirms an external address (see `apply_reachability_
+            // effects` in kwaai-p2p's service.rs). A key would let an operator
+            // assert what the swarm already observes, and get it wrong.
+            dht_server: true,
 
             // ── NAT traversal ──────────────────────────────────────────────
             // Each of these has a p2pd flag it corresponds to, so a node
@@ -789,7 +795,6 @@ mod tests {
         KwaaiNetConfig {
             native_p2p: Some(true),
             announce_self,
-            dht_server: true,
             enable_upnp: false,
             port: 0,
             initial_peers: Vec::new(),

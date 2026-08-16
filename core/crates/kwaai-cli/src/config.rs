@@ -236,20 +236,13 @@ pub struct KwaaiNetConfig {
     /// peers' records without publishing any. Left true, it would appear on the
     /// map as an inference node offering zero blocks.
     ///
-    /// This is about *publishing*, not *serving*: answering
-    /// rpc_ping/rpc_store/rpc_find is governed by `dht_server`.
+    /// This is about *publishing*, not *serving*. Serving — answering
+    /// rpc_ping/rpc_store/rpc_find for other peers — is not configurable: every
+    /// native node does it, and there is no record validation, so a served
+    /// store accepts any key from any peer that can reach it. Validators are
+    /// the control for that, not a config key.
     #[serde(default = "default_true")]
     pub announce_self: bool,
-
-    /// Force Kademlia server mode rather than letting libp2p decide from
-    /// observed reachability: the node answers queries from t=0, before any
-    /// external address is confirmed. False leaves kad in auto-mode — client
-    /// until an address is confirmed, server after.
-    ///
-    /// A bootstrap node needs this on, or it sits in client mode refusing the
-    /// lookups it was deployed to serve.
-    #[serde(default = "default_true")]
-    pub dht_server: bool,
 
     #[serde(default)]
     pub health_monitoring: HealthConfig,
@@ -815,7 +808,6 @@ impl Default for KwaaiNetConfig {
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
             announce_self: true,
-            dht_server: true,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -1118,7 +1110,6 @@ impl KwaaiNetConfig {
             "no_relay" => self.no_relay = parse_bool(value)?,
             "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
             "announce_self" => self.announce_self = parse_bool(value)?,
-            "dht_server" => self.dht_server = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "start_block" => {
                 self.start_block =
@@ -1414,19 +1405,15 @@ mod tests {
 
     // ── The bootstrap-node config keys ─────────────────────────────────────
 
-    /// The three keys a bootstrap relies on default to ordinary-node
-    /// behaviour, so an existing `config.yaml` written before they existed
-    /// deserialises into a node that behaves exactly as it did.
+    /// Both new keys default to ordinary-node behaviour, so an existing
+    /// `config.yaml` written before they existed deserialises into a node that
+    /// behaves exactly as it did.
     #[test]
     fn the_new_keys_default_to_ordinary_node_behaviour() {
         let c = KwaaiNetConfig::default();
         assert!(
             c.announce_self,
             "an ordinary node publishes its own records"
-        );
-        assert!(
-            c.dht_server,
-            "every node answers DHT queries, matching p2pd's -b"
         );
         assert!(
             c.enable_upnp,
@@ -1448,10 +1435,6 @@ mod tests {
             "a config written before announce_self existed must keep announcing"
         );
         assert!(c.enable_upnp, "likewise for enable_upnp");
-        assert!(
-            c.dht_server,
-            "and for dht_server — false would demote every existing node to kad auto-mode"
-        );
     }
 
     /// `config set` round-trips each key through YAML, which is how an operator
@@ -1465,8 +1448,6 @@ mod tests {
         let mut c = KwaaiNetConfig::default();
         c.set_key("announce_self", "false")
             .expect("announce_self is a valid key");
-        c.set_key("dht_server", "true")
-            .expect("dht_server is a valid key");
         c.set_key("enable_upnp", "false")
             .expect("enable_upnp is a valid key");
         // set_key mutates only; persisting is the caller's job (#132). Both
@@ -1476,7 +1457,6 @@ mod tests {
 
         let reloaded = KwaaiNetConfig::load_or_create().expect("the saved config must reload");
         assert!(!reloaded.announce_self);
-        assert!(reloaded.dht_server);
         assert!(!reloaded.enable_upnp);
 
         // And back again, so neither direction is a one-way door.
