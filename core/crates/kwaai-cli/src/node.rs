@@ -66,7 +66,10 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // straight away. Failure here is non-fatal: the p2p node must
     // keep running even if the IPC surface didn't come up. The
     // handle's Drop signals graceful shutdown when run_node returns.
-    let _grpc_handle = crate::grpc_server::spawn(config.clone());
+    //
+    // The native path also hands it the swarm once that exists, which is what
+    // lets the Network op serve; see `attach_network`.
+    let grpc_handle = crate::grpc_server::spawn(config.clone());
 
     // -----------------------------------------------------------------------
     // Persistent identity — load or generate the keypair so the PeerId is
@@ -149,6 +152,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             &public_name,
             trust_attestations,
             &mut sighup,
+            &grpc_handle,
         )
         .await?;
 

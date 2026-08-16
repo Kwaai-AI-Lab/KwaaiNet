@@ -33,14 +33,15 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
-    dest_peer_id, is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
+    dest_peer_id, is_announceable_with, is_circuit, peer_id_from_multiaddr, strip_dest_p2p,
+    strip_p2p,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
-    NetworkHandle, PeerInfo,
+    NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
 };
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
@@ -90,6 +91,17 @@ const MAX_ADDRESSES_PER_PEER: usize = 6;
 struct Connection {
     addr: Multiaddr,
     direction: Direction,
+    /// For an inbound relayed connection, our circuit listener — which names
+    /// the relay. `None` for outbound (the dialled address already carries the
+    /// relay) and for plain inbound (our own bind address says nothing).
+    via: Option<Multiaddr>,
+    /// Whether DCUtR upgraded this connection from a relayed path to a direct
+    /// one. Set when `dcutr::Event` reports success for this connection id.
+    ///
+    /// Worth distinguishing from a plain direct connection: it is direct
+    /// *despite* both ends being behind NAT, which is the difference between
+    /// "no NAT in the way" and "the NAT was traversed".
+    dcutr: bool,
 }
 
 /// Owns the swarm and drives it. Construct with [`NetworkService::spawn`].
@@ -120,6 +132,15 @@ pub struct NetworkService {
     /// here. Dropped when the last connection to a peer closes, so an entry
     /// always describes a peer we can act on.
     peer_protocols: HashMap<PeerId, Vec<String>>,
+    /// Most recent ping round-trip time per peer. Sampled: overwritten on every
+    /// ping event rather than accumulated, so this is "latency now", not an
+    /// average. Same lifetime as `peer_protocols` — dropped with the last
+    /// connection, so an entry always describes a peer we can act on.
+    peer_rtt: HashMap<PeerId, Duration>,
+    /// The agent version each connected peer advertised over identify (the
+    /// remote's software build, e.g. `kwaainet/0.5.4`). Same lifetime as
+    /// `peer_protocols`.
+    peer_agent: HashMap<PeerId, String>,
     /// Registered unary handlers: negotiated protocol → the handler task's
     /// channel. Kept in lockstep with the behaviour's inbound protocol set, so
     /// an entry here means the protocol is advertised and vice versa.
@@ -294,6 +315,8 @@ impl NetworkService {
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
             peer_protocols: HashMap::new(),
+            peer_rtt: HashMap::new(),
+            peer_agent: HashMap::new(),
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             reachability,
@@ -393,9 +416,18 @@ impl NetworkService {
                     Some(peer) if strip_p2p(&addr).is_empty() => {
                         self.dispatch_routed(peer, RoutedRequest::Connect { reply });
                     }
-                    _ => match self.dial(addr) {
+                    _ => match self.dial(addr.clone()) {
                         Ok(connection_id) => {
                             self.pending_dials.insert(connection_id, reply);
+                        }
+                        // Already connected: the caller asked to be connected
+                        // and is, so answer success rather than surfacing an
+                        // error for a no-op.
+                        Err(P2PError::AlreadyConnected) => {
+                            let resolved = peer_id_from_multiaddr(&addr);
+                            let _ = reply.send(
+                                resolved.ok_or_else(|| P2PError::DialFailed(addr.to_string())),
+                            );
                         }
                         Err(e) => {
                             let _ = reply.send(Err(e));
@@ -414,18 +446,28 @@ impl NetworkService {
             }
 
             Command::ListPeers { reply } => {
-                let peers = self
-                    .connections
+                let _ = reply.send(self.collect_peers());
+            }
+
+            Command::NetworkSnapshot { reply } => {
+                let routing = self.collect_routing_peers();
+                let mut observed: Vec<(Multiaddr, usize)> = self
+                    .observed_addrs
                     .iter()
-                    .flat_map(|(peer_id, conns)| {
-                        conns.values().map(move |c| PeerInfo {
-                            peer_id: *peer_id,
-                            addr: c.addr.clone(),
-                            direction: c.direction,
-                        })
-                    })
+                    .map(|(addr, observers)| (addr.clone(), observers.len()))
                     .collect();
-                let _ = reply.send(peers);
+                observed.sort_by(|a, b| b.1.cmp(&a.1));
+
+                let _ = reply.send(NetworkSnapshot {
+                    local_peer_id: *self.swarm.local_peer_id(),
+                    peers: self.collect_peers(),
+                    routing,
+                    reachability: self.reachability.current().clone(),
+                    relay_addrs: self.relays.confirmed_addrs(),
+                    observed_addrs: observed,
+                    listen_addrs: self.swarm.listeners().cloned().collect(),
+                    local_protocols: self.collect_local_protocols(),
+                });
             }
 
             Command::ObservedAddrs { reply } => {
@@ -457,19 +499,12 @@ impl NetworkService {
             // size (k=20 per bucket, 256 buckets) and never touching the
             // network, so it is safe in the event loop.
             Command::RoutingPeers { reply } => {
-                let peers = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .kbuckets()
-                    .flat_map(|bucket| {
-                        bucket
-                            .iter()
-                            .map(|entry| *entry.node.key.preimage())
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                let _ = reply.send(peers);
+                let _ = reply.send(
+                    self.collect_routing_peers()
+                        .into_iter()
+                        .map(|e| e.peer_id)
+                        .collect(),
+                );
             }
 
             Command::DhtFindPeer { peer, reply } => {
@@ -591,10 +626,113 @@ impl NetworkService {
         }
     }
 
+    /// One [`PeerInfo`] per live connection, enriched with whatever identify
+    /// and ping have learned so far.
+    ///
+    /// Per-connection, not per-peer: a peer with both a relay path and a direct
+    /// path appears twice, deliberately — that duplication is how a hole-punch
+    /// upgrade becomes visible. The enrichment fields are keyed by peer, so the
+    /// two rows share them.
+    fn collect_peers(&self) -> Vec<PeerInfo> {
+        self.connections
+            .iter()
+            .flat_map(|(peer_id, conns)| {
+                let rtt = self.peer_rtt.get(peer_id).copied();
+                let agent_version = self.peer_agent.get(peer_id).cloned();
+                let protocols = self
+                    .peer_protocols
+                    .get(peer_id)
+                    .cloned()
+                    .unwrap_or_default();
+                conns.values().map(move |c| PeerInfo {
+                    peer_id: *peer_id,
+                    addr: c.addr.clone(),
+                    direction: c.direction,
+                    via: c.via.clone(),
+                    dcutr: c.dcutr,
+                    rtt,
+                    agent_version: agent_version.clone(),
+                    protocols: protocols.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Protocols this node serves, sorted and deduplicated.
+    ///
+    /// Read off the registered handlers rather than from the swarm: libp2p
+    /// keeps its advertised protocol set private to `Swarm`, and the handlers
+    /// are the more honest answer anyway — they are what this node will
+    /// actually do for a peer that asks.
+    fn collect_local_protocols(&mut self) -> Vec<String> {
+        let mut protos: Vec<String> = self
+            .unary_handlers
+            .keys()
+            .chain(self.stream_handlers.keys())
+            .cloned()
+            .collect();
+        protos.extend(
+            self.swarm
+                .behaviour_mut()
+                .kad
+                .protocol_names()
+                .iter()
+                .map(|p| p.to_string()),
+        );
+        protos.sort();
+        protos.dedup();
+        protos
+    }
+
+    /// Every peer in the Kademlia routing table.
+    ///
+    /// A walk over in-memory k-buckets — bounded by the routing table size
+    /// (k=20 per bucket, 256 buckets) and never touching the network, so it is
+    /// safe in the event loop.
+    fn collect_routing_peers(&mut self) -> Vec<RoutingEntry> {
+        self.swarm
+            .behaviour_mut()
+            .kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|entry| RoutingEntry {
+                        peer_id: *entry.node.key.preimage(),
+                        // Reported alongside the peer rather than dropped: an
+                        // entry with no usable address is a peer we know of but
+                        // cannot dial, and without the addresses that is
+                        // indistinguishable on screen from one we simply have
+                        // not connected to yet.
+                        addrs: entry
+                            .node
+                            .value
+                            .iter()
+                            .filter(|a| !a.is_empty())
+                            .cloned()
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     /// Dial `addr`, seeding the routing table with it when it carries a
     /// `/p2p/<peer-id>` component.
+    ///
+    /// Redundant when we are already connected to the named peer, so those
+    /// dials are suppressed. `DialOpts::from(Multiaddr)` cannot express that:
+    /// it builds the *unknown-peer-id* variant, which hardcodes
+    /// `PeerCondition::Always` and offers no `condition()` at all. The result
+    /// was a second connection to every bootstrap on each re-dial — same peer,
+    /// byte-identical address, indistinguishable in `list_peers` — held until
+    /// libp2p reaped it on keepalive ~45 s later.
+    ///
+    /// When the address names a peer we can use the peer-id builder instead,
+    /// which does take a condition. A bare address (no `/p2p/`) has no peer to
+    /// compare against and keeps the old unconditional behaviour.
     fn dial(&mut self, addr: Multiaddr) -> P2PResult<ConnectionId> {
-        use libp2p::swarm::dial_opts::DialOpts;
+        use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 
         // `dest_peer_id`, not `peer_id_from_multiaddr`: the latter returns the
         // *first* `/p2p`, which on a circuit address is the relay. Filing the
@@ -619,8 +757,17 @@ impl NetworkService {
             }
         }
 
-        // `allocate_new_port()`, overriding the `DialOpts` default of
-        // best-effort port reuse.
+        // Only for a plain address naming one peer. A circuit address carries
+        // *two* `/p2p/` components — the relay's and the target's — and
+        // `peer_id_from_multiaddr` returns the first, which is the relay.
+        // Conditioning on that would skip a dial to the target whenever we
+        // happened to be connected to the relay, which is always: holding a
+        // connection to the relay is what makes the circuit dialable at all.
+        let peer = peer_id_from_multiaddr(&addr);
+        let condition_safe = peer.is_some() && !is_circuit(&addr);
+
+        // Both arms call `allocate_new_port()`, overriding the `DialOpts`
+        // default of best-effort port reuse.
         //
         // Reuse asks the transport to bind our listen port as the dial's source
         // port. That is right for a DCUtR hole punch — `libp2p-dcutr` requests
@@ -634,19 +781,40 @@ impl NetworkService {
         // `AddrNotAvailable` raised by `connect`. Our failure is `EADDRINUSE`
         // from `bind`, one step earlier, where the `?` propagates before the
         // fallback can run — so the dial simply fails.
-        // Built through `unknown_peer_id().address(..)` rather than
-        // `DialOpts::from(addr)`, because only the builder exposes
-        // `allocate_new_port()`; the two are otherwise the same dial.
-        let opts = DialOpts::unknown_peer_id()
-            .address(addr.clone())
-            .allocate_new_port()
-            .build();
+        let opts = match peer {
+            // DisconnectedAndNotDialing rather than Disconnected: the latter
+            // still permits a second dial while the first is in flight, which
+            // is exactly the window a periodic re-dial lands in.
+            Some(peer) if condition_safe => DialOpts::peer_id(peer)
+                .addresses(vec![addr.clone()])
+                .condition(PeerCondition::DisconnectedAndNotDialing)
+                .allocate_new_port()
+                .build(),
+            // `unknown_peer_id().address(..)` rather than
+            // `DialOpts::from(addr)`, because only the builder exposes
+            // `allocate_new_port()`; the two are otherwise the same dial.
+            _ => DialOpts::unknown_peer_id()
+                .address(addr.clone())
+                .allocate_new_port()
+                .build(),
+        };
         let connection_id = opts.connection_id();
-        self.swarm
-            .dial(opts)
-            .map_err(|e| P2PError::DialFailed(format!("{addr}: {e}")))?;
-        debug!(%addr, ?connection_id, "dialing");
-        Ok(connection_id)
+        match self.swarm.dial(opts) {
+            Ok(()) => {
+                debug!(%addr, ?connection_id, "dialing");
+                Ok(connection_id)
+            }
+            // Not a failure: the condition held, meaning we are already
+            // connected or already dialing. Reported as its own error so
+            // callers can tell "no dial was needed" from "the dial failed" —
+            // `ConnectPeer` in particular must answer success here, since the
+            // caller's goal (be connected to this peer) is already met.
+            Err(DialError::DialPeerConditionFalse(_)) => {
+                debug!(%addr, "already connected or dialing — skipping redundant dial");
+                Err(P2PError::AlreadyConnected)
+            }
+            Err(e) => Err(P2PError::DialFailed(format!("{addr}: {e}"))),
+        }
     }
 
     /// Dial every bootstrap address and kick off a Kademlia bootstrap.
@@ -659,7 +827,11 @@ impl NetworkService {
         let mut last_error = None;
         for addr in peers {
             match self.dial(addr.clone()) {
-                Ok(_) => dialed += 1,
+                // A skipped dial counts as reached: we are already connected
+                // to that bootstrap, which is what the dial was for. Counting
+                // it as a failure would make a re-bootstrap on a healthy node
+                // look like a total failure.
+                Ok(_) | Err(P2PError::AlreadyConnected) => dialed += 1,
                 Err(e) => {
                     warn!(%addr, error = %e, "bootstrap dial failed to start");
                     last_error = Some(e);
@@ -1100,20 +1272,39 @@ impl NetworkService {
                 endpoint,
                 ..
             } => {
-                let (addr, direction) = match &endpoint {
+                // `via` is the local end of an inbound connection. For a
+                // relayed one that is our circuit listener, which names the
+                // relay's address and peer id — the only place that appears.
+                // `send_back_addr` alone is a bare `/p2p/<peer>`: it says who
+                // reached us and nothing at all about how.
+                let (addr, direction, via) = match &endpoint {
                     ConnectedPoint::Dialer { address, .. } => {
-                        (address.clone(), Direction::Outbound)
+                        (address.clone(), Direction::Outbound, None)
                     }
-                    ConnectedPoint::Listener { send_back_addr, .. } => {
-                        (send_back_addr.clone(), Direction::Inbound)
-                    }
+                    ConnectedPoint::Listener {
+                        send_back_addr,
+                        local_addr,
+                    } => (
+                        send_back_addr.clone(),
+                        Direction::Inbound,
+                        // Only when it tells us something the address does not:
+                        // a plain TCP listener is just our own bind address.
+                        is_circuit(local_addr).then(|| local_addr.clone()),
+                    ),
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
-                self.connections
-                    .entry(peer_id)
-                    .or_default()
-                    .insert(connection_id, Connection { addr, direction });
+                self.connections.entry(peer_id).or_default().insert(
+                    connection_id,
+                    Connection {
+                        addr,
+                        direction,
+                        via,
+                        // Set later if dcutr reports success for this id;
+                        // the upgrade always follows establishment.
+                        dcutr: false,
+                    },
+                );
 
                 if let Some(reply) = self.pending_dials.remove(&connection_id) {
                     let _ = reply.send(Ok(peer_id));
@@ -1151,6 +1342,11 @@ impl NetworkService {
                     // The capability list describes a peer we can act on; a
                     // disconnected peer's is stale by definition.
                     self.peer_protocols.remove(&peer_id);
+                    // Latency and build version are properties of a live
+                    // connection too. Keeping them would let a reconnected peer
+                    // briefly report the *previous* session's RTT.
+                    self.peer_rtt.remove(&peer_id);
+                    self.peer_agent.remove(&peer_id);
                     // Same for its opinion about where it saw us. Without this
                     // the map only ever grows, and the identify-consensus
                     // fallback would keep counting observers that left —
@@ -1236,7 +1432,15 @@ impl NetworkService {
             KwaaiBehaviourEvent::Identify(event) => self.handle_identify_event(event),
             KwaaiBehaviourEvent::Kad(event) => self.handle_kad_event(event),
             KwaaiBehaviourEvent::Ping(ping::Event { peer, result, .. }) => match result {
-                Ok(rtt) => trace!(peer = %peer, ?rtt, "ping"),
+                Ok(rtt) => {
+                    trace!(peer = %peer, ?rtt, "ping");
+                    // Last-write-wins: the peer table reports current latency,
+                    // not a smoothed average. A failed ping deliberately leaves
+                    // the previous value rather than clearing it — one lost
+                    // probe is not evidence the peer is gone, and libp2p will
+                    // close the connection (clearing this) if it really is.
+                    self.peer_rtt.insert(peer, rtt);
+                }
                 Err(e) => debug!(peer = %peer, error = %e, "ping failed"),
             },
             KwaaiBehaviourEvent::Unary(unary::Event::InboundRequest { peer, request }) => {
@@ -1274,7 +1478,15 @@ impl NetworkService {
                 // A success here means the relayed connection was replaced by a
                 // direct one — the whole point of holding the circuit.
                 Ok(connection_id) => {
-                    info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded")
+                    info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded");
+                    // Mark the specific connection, not the peer: a peer can
+                    // hold both an upgraded connection and a plain one, and
+                    // only the former was earned by DCUtR.
+                    if let Some(conns) = self.connections.get_mut(&remote_peer_id) {
+                        if let Some(conn) = conns.get_mut(&connection_id) {
+                            conn.dcutr = true;
+                        }
+                    }
                 }
                 Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
             },
@@ -1376,7 +1588,15 @@ impl NetworkService {
                         continue;
                     }
                     let dialable = relay_addr.with(libp2p::multiaddr::Protocol::P2p(relay));
+                    // AlreadyConnected is not a dial failure and must not back
+                    // the candidate off: the connection this dial wanted
+                    // exists. The guard above usually catches that first, but
+                    // it also requires identify to have landed, so this arm is
+                    // reachable in the window between the two.
                     if let Err(e) = self.dial(dialable) {
+                        if matches!(e, P2PError::AlreadyConnected) {
+                            continue;
+                        }
                         debug!(%relay, error = %e, "dialing a relay candidate");
                         let next = self.relays.on_relay_dial_failed(relay, Instant::now());
                         self.apply_relay_actions(next);
@@ -1530,7 +1750,11 @@ impl NetworkService {
                     .insert(peer_id);
 
                 // (c) Remember what the peer can do. Relay-hop, AutoNAT and
-                // dcutr capability are all read off this list.
+                // dcutr capability are all read off this list. The agent
+                // version rides along: purely descriptive (nothing branches on
+                // it), but it is what makes a peer table diagnosable when one
+                // build in the mesh misbehaves.
+                self.peer_agent.insert(peer_id, info.agent_version.clone());
                 let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
                 // Recorded *before* the relay manager runs: `apply_relay_actions`
                 // reads this map to decide whether a reservation can be
