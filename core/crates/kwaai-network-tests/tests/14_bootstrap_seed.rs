@@ -24,10 +24,11 @@
 //! call per line.
 //!
 //! Since `feat/bootstrap-serve` converged the seed onto the ordinary node,
-//! `kwaai-cli::bootstrap` is a config preset (`announce_self = false`,
-//! `dht_server = true`) handed to `node::run_node`, and the swarm below is
-//! what that preset produces: kad server mode, `spawn_dht_service` over a
-//! `DHTStorage`, and no announce loop. What is asserted here is the seed's
+//! `kwaai-cli::bootstrap` is a config preset (`announce_self = false`, no
+//! initial peers) handed to `node::run_node`, and the swarm below is what that
+//! preset produces: kad server mode, `spawn_dht_service` over a `DHTStorage`,
+//! and no announce loop. Serving is unconditional on both — it is publishing
+//! and dialing that a bootstrap declines. What is asserted here is the seed's
 //! *wire contract*, which is why these tests survived the convergence
 //! untouched — they only ever talked to it as a peer.
 //!
