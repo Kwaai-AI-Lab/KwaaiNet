@@ -1366,6 +1366,15 @@ mod native_p2p_tri_state {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that drive `KWAAINET_HOME`.
+    ///
+    /// The var is process-global. These tests each point it at their own
+    /// tempdir and some remove it when done, so run concurrently one test
+    /// reads another's directory — or none at all — and sees the wrong
+    /// config back. Identical block on every branch that adds such a test,
+    /// so the copies merge as a duplicate rather than a conflict.
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn cfg(start: u32, blocks: u32, total_hint: &str) -> KwaaiNetConfig {
         KwaaiNetConfig {
             model: total_hint.to_string(), // name heuristic drives model_total_blocks()
@@ -1449,6 +1458,7 @@ mod tests {
     /// configures a bootstrap node; see `docs/BOOTSTRAP.md`.
     #[test]
     fn the_new_keys_round_trip_through_set_and_save() {
+        let _env_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().expect("tmpdir");
         std::env::set_var("KWAAINET_HOME", home.path());
 
@@ -1483,6 +1493,7 @@ mod tests {
     /// `config set announce_self flase` fails instead of muting the node.
     #[test]
     fn a_non_boolean_value_is_rejected() {
+        let _env_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().expect("tmpdir");
         std::env::set_var("KWAAINET_HOME", home.path());
         let mut c = KwaaiNetConfig::default();
