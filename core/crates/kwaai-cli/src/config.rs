@@ -3,6 +3,7 @@
 //! Config file lives at `~/.kwaainet/config.yaml`.
 //! On first run a default config is written and returned.
 
+use crate::daemon::ShardManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -108,12 +109,15 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_peers")]
     pub initial_peers: Vec<String>,
 
-    /// Multiaddrs of peers to use as trusted circuit relays (for AutoRelay).
-    /// When set, AutoRelay reserves circuits with these peers instead of (or
-    /// in addition to) discovering relays via the DHT. Useful when DHT
-    /// discovery is unreliable (small networks, NAT-isolated test topologies)
-    /// or when you want to force traffic through specific known-good relays.
-    /// Empty means "let AutoRelay discover relays via DHT" (the default).
+    /// Multiaddrs of peers to pin as circuit relays.
+    ///
+    /// An **operator override**, empty by default. Relay candidates normally
+    /// come from identify: any peer advertising
+    /// `/libp2p/circuit/relay/0.2.0/hop` is one, which on the live network
+    /// includes both bootstraps and every KwaaiNet node not run with
+    /// `no_relay`. Set this to force traffic through specific known-good
+    /// relays — a NAT-isolated test topology, or a deployment where one relay
+    /// must be preferred. Pinned relays are tried before discovered ones.
     #[serde(default = "default_trusted_relays")]
     pub trusted_relays: Vec<String>,
 
@@ -133,10 +137,11 @@ pub struct KwaaiNetConfig {
     /// `initial_peers`, `identity_key` (so the PeerId is identical either way)
     /// and `KWAAINET_SOCKET` — and serves the same p2pd control socket, so
     /// external clients (the GUI, `kwaainet p2p …`, `shard serve`) cannot tell
-    /// the two apart. What it does **not** do yet is NAT traversal: AutoNAT,
-    /// circuit relay, DCUtR and UPnP are still p2pd-only, so a node behind a NAT
-    /// is only reachable on the p2pd path. `no_relay`, `force_private` and
-    /// `trusted_relays` are therefore ignored while this is true.
+    /// the two apart. NAT traversal is included: AutoNAT, circuit relay, DCUtR
+    /// and UPnP all run in-process, and `no_relay`, `force_private`,
+    /// `trusted_relays`, `announce_addr` and `public_ip` all take effect on
+    /// this path (see `node_native`'s module docs for the flag-by-flag mapping
+    /// against p2pd).
     ///
     /// Defaults to false — the p2pd path stays the default until the NAT slice
     /// lands and the cutover in Phase 5 flips it.
@@ -579,13 +584,10 @@ fn default_peers() -> Vec<String> {
             .to_string(),
     ]
 }
+/// No trusted relays by default — candidates come from identify hop discovery;
+/// see the `trusted_relays` field.
 fn default_trusted_relays() -> Vec<String> {
-    vec![
-        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
-            .to_string(),
-        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
-            .to_string(),
-    ]
+    Vec::new()
 }
 fn default_force_private() -> bool {
     true
@@ -724,6 +726,20 @@ impl Default for ReconnectionConfig {
 // ---------------------------------------------------------------------------
 
 impl KwaaiNetConfig {
+    /// The `state` field for a DHT announcement: `2` ONLINE, `0` JOINING.
+    ///
+    /// ONLINE means "this node will serve inference", not merely "this node is
+    /// up" — `shard run` filters on `state == 2`, so a node that claims it
+    /// without a loaded shard gets dialled and fails the session with
+    /// "protocols not supported". Hence the gate on `shard_is_ready()`.
+    pub fn announce_state() -> i32 {
+        if ShardManager::shard_is_ready() {
+            2
+        } else {
+            0
+        }
+    }
+
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
     pub fn load_or_create() -> Result<Self> {
         let cfg_file = config_file();

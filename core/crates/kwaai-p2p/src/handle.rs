@@ -19,7 +19,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use libp2p::{Multiaddr, PeerId};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::error::{P2PError, P2PResult};
 use crate::raw_stream::{InboundStream, OpenResult, RawStream, RawStreamError};
@@ -123,6 +123,15 @@ pub enum Command {
     ListenAddrs {
         reply: oneshot::Sender<Vec<Multiaddr>>,
     },
+    /// The protocol list a connected peer advertised over identify.
+    PeerProtocols {
+        peer: PeerId,
+        reply: oneshot::Sender<Option<Vec<String>>>,
+    },
+    /// What this node currently believes about its own reachability.
+    Reachability {
+        reply: oneshot::Sender<crate::reachability::Reachability>,
+    },
     /// Every peer currently in the Kademlia routing table.
     RoutingPeers { reply: oneshot::Sender<Vec<PeerId>> },
     /// Kademlia lookup for a peer's addresses.
@@ -212,6 +221,9 @@ pub type InboundStreamSender = mpsc::UnboundedSender<InboundStream>;
 pub struct NetworkHandle {
     local_peer_id: PeerId,
     commands: mpsc::Sender<Command>,
+    /// A live view of the announce-relevant state, held rather than fetched so
+    /// the announce loop can `await` a change instead of polling for one.
+    announce_rx: watch::Receiver<crate::reachability::AnnounceState>,
     /// The configured per-call unary budget, kept here purely so a timeout can
     /// be reported as [`P2PError::Timeout`] with the real number of
     /// milliseconds rather than a placeholder.
@@ -223,12 +235,35 @@ impl NetworkHandle {
         local_peer_id: PeerId,
         commands: mpsc::Sender<Command>,
         request_timeout: std::time::Duration,
+        announce_rx: watch::Receiver<crate::reachability::AnnounceState>,
     ) -> Self {
         Self {
             local_peer_id,
             commands,
+            announce_rx,
             request_timeout,
         }
+    }
+
+    /// A receiver for [`crate::reachability::AnnounceState`] changes.
+    ///
+    /// The announce loop's wake-up signal. Each caller gets its own receiver
+    /// marked as having seen the current value, so `changed()` resolves on the
+    /// *next* real change rather than firing immediately.
+    ///
+    /// Sends are equality-gated in the service: an address moving, a
+    /// reservation migrating between relays, an identify push — none of it
+    /// wakes this. Only reachability or `using_relay` actually changing does,
+    /// which is what makes it safe to re-announce on every notification.
+    pub fn announce_state(&self) -> watch::Receiver<crate::reachability::AnnounceState> {
+        let mut rx = self.announce_rx.clone();
+        rx.borrow_and_update();
+        rx
+    }
+
+    /// The announce state right now, without waiting for a change.
+    pub fn current_announce_state(&self) -> crate::reachability::AnnounceState {
+        *self.announce_rx.borrow()
     }
 
     /// This node's peer ID. Available without touching the event loop.
@@ -284,6 +319,23 @@ impl NetworkHandle {
     /// `/tcp/0` shows the real port).
     pub async fn listen_addrs(&self) -> P2PResult<Vec<Multiaddr>> {
         self.call(|reply| Command::ListenAddrs { reply }).await
+    }
+
+    /// The protocols `peer` advertised in its most recent identify response, or
+    /// `None` if identify has not completed with that peer yet.
+    ///
+    /// This is what the identify-driven capability checks read: relay-hop
+    /// support (`/libp2p/circuit/relay/0.2.0/hop`), AutoNAT
+    /// (`/libp2p/autonat/1.0.0`) and dcutr all announce themselves here.
+    pub async fn peer_protocols(&self, peer: PeerId) -> P2PResult<Option<Vec<String>>> {
+        self.call(|reply| Command::PeerProtocols { peer, reply })
+            .await
+    }
+
+    /// What this node currently believes about its own reachability, and on
+    /// what evidence. See [`crate::reachability`] for the priority ladder.
+    pub async fn reachability(&self) -> P2PResult<crate::reachability::Reachability> {
+        self.call(|reply| Command::Reachability { reply }).await
     }
 
     /// Every peer in the Kademlia routing table, nearest bucket first.

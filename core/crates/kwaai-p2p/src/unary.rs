@@ -48,6 +48,7 @@ use futures::future::BoxFuture;
 use futures::io::AsyncWriteExt as _;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, SinkExt, StreamExt};
+use libp2p::core::transport::PortUse;
 use libp2p::core::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use libp2p::core::{Endpoint, Multiaddr};
 use libp2p::swarm::handler::{
@@ -720,7 +721,9 @@ impl Behaviour {
                 // flight ride along on the connection it establishes.
                 if parked.is_empty() {
                     self.pending_events.push_back(ToSwarm::Dial {
-                        opts: DialOpts::peer_id(peer).build(),
+                        // A new port: binding our listen port as a dial
+                        // source fails `EADDRINUSE` against our own listener.
+                        opts: DialOpts::peer_id(peer).allocate_new_port().build(),
                     });
                 }
                 parked.push(message);
@@ -765,6 +768,7 @@ impl NetworkBehaviour for Behaviour {
         peer: PeerId,
         _addr: &Multiaddr,
         _role_override: Endpoint,
+        _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         let mut handler = Handler::new(
             peer,

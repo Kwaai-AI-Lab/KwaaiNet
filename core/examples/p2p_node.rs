@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             SwarmEvent::Behaviour(NodeBehaviourEvent::Identify(identify::Event::Received {
                 peer_id,
                 info,
+                ..
             })) => {
                 info!(
                     "Identified peer {}: {} ({})",

@@ -305,6 +305,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     SwarmEvent::Behaviour(TensorExchangeBehaviourEvent::TensorExchange(
                         request_response::Event::Message {
                             peer,
+                            connection_id: _,
                             message:
                                 request_response::Message::Request {
                                     request, channel, ..
@@ -383,7 +384,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     SwarmEvent::Behaviour(TensorExchangeBehaviourEvent::Identify(
-                        identify::Event::Received { peer_id, info },
+                        identify::Event::Received { peer_id, info, .. },
                     )) => {
                         info!("Identified: {} ({})", peer_id, info.protocol_version);
                         for addr in info.listen_addrs {
@@ -466,7 +467,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         warn!("Outbound failure: {:?}", error);
                     }
                     SwarmEvent::Behaviour(TensorExchangeBehaviourEvent::Identify(
-                        identify::Event::Received { peer_id: pid, info },
+                        identify::Event::Received {
+                            peer_id: pid, info, ..
+                        },
                     )) => {
                         info!("Identified: {} ({})", pid, info.protocol_version);
                     }

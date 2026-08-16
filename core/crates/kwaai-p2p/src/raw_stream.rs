@@ -41,6 +41,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 
+use libp2p::core::transport::PortUse;
 use libp2p::core::{Endpoint, Multiaddr};
 use libp2p::swarm::handler::{
     ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
@@ -402,7 +403,9 @@ impl Behaviour {
                 // establishes.
                 if parked.is_empty() {
                     self.pending_events.push_back(ToSwarm::Dial {
-                        opts: DialOpts::peer_id(peer).build(),
+                        // A new port: binding our listen port as a dial
+                        // source fails `EADDRINUSE` against our own listener.
+                        opts: DialOpts::peer_id(peer).allocate_new_port().build(),
                     });
                 }
                 parked.push(open);
@@ -443,6 +446,7 @@ impl NetworkBehaviour for Behaviour {
         peer: PeerId,
         _addr: &Multiaddr,
         _role_override: Endpoint,
+        _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         let mut handler = Handler::new(Arc::clone(&self.inbound_protocols));
         self.preload_new_handler(&mut handler, peer);

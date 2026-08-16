@@ -285,6 +285,126 @@ async fn shutdown_stops_the_event_loop() {
     assert!(handle.list_peers().await.is_err());
 }
 
+// ---------------------------------------------------------------------------
+// NAT-traversal behaviours are present and do not disturb the base swarm
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn nat_behaviours_advertise_their_protocols_over_identify() {
+    // The behaviours are inert at this point — nothing drives reservations or
+    // acts on an AutoNAT verdict yet — but they are *composed in*, and identify
+    // is where that becomes observable to another node. This is also the exact
+    // signal `bootstraps_protocol_list_snapshot` reads off the live network, so
+    // the two use one mechanism.
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+
+    // Bob runs a hop server, which the default test config leaves off.
+    let keypair = Keypair::generate_ed25519();
+    let bob_id = keypair.public().to_peer_id();
+    let (bob, _bob_task) = NetworkService::spawn(
+        NetworkConfig {
+            relay_server: true,
+            ..NetworkConfig::for_tests()
+        },
+        keypair,
+    )
+    .expect("relay-serving swarm should start");
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    alice
+        .connect_peer(&bob_addr.to_string())
+        .await
+        .expect("dial");
+
+    let protocols = eventually("alice to receive bob's protocol list", || async {
+        alice.peer_protocols(bob_id).await.ok().flatten()
+    })
+    .await;
+
+    let has = |name: &str| protocols.iter().any(|p| p == name);
+    assert!(has("/libp2p/autonat/1.0.0"), "autonat: {protocols:?}");
+    // The client side of relay: this is what a relay needs to see before it
+    // will forward a circuit to us.
+    assert!(
+        has("/libp2p/circuit/relay/0.2.0/stop"),
+        "relay stop: {protocols:?}"
+    );
+    // `/libp2p/dcutr` is deliberately NOT asserted. rust-libp2p 0.53 installs
+    // the dcutr handler only on *relayed* connections, so it never appears in
+    // an identify exchange over a direct one — unlike go-libp2p, which
+    // advertises it statically (the live bootstraps list it; see
+    // `live_bootstrap::bootstraps_protocol_list_snapshot`). Nothing depends on
+    // us advertising it: dcutr is initiated by the peer holding the relayed
+    // *inbound* connection, which negotiates on that connection directly.
+    assert!(
+        !has("/libp2p/dcutr"),
+        "if rust-libp2p starts advertising dcutr on direct connections this note \
+         is stale and tests/dcutr.rs should assert it instead: {protocols:?}"
+    );
+    // And the server side, which only appears because bob toggled it on.
+    assert!(
+        has("/libp2p/circuit/relay/0.2.0/hop"),
+        "relay hop should be advertised when relay_server is set: {protocols:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_hop_protocol_is_absent_when_the_relay_server_is_off() {
+    // `for_tests()` turns the hop server off, so the Toggle really has to be
+    // toggling something — a `Toggle` that is always enabled would pass the
+    // test above and be silently wrong.
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    alice
+        .connect_peer(&bob_addr.to_string())
+        .await
+        .expect("dial");
+
+    let protocols = eventually("alice to receive bob's protocol list", || async {
+        alice.peer_protocols(bob_id).await.ok().flatten()
+    })
+    .await;
+
+    assert!(
+        !protocols
+            .iter()
+            .any(|p| p == "/libp2p/circuit/relay/0.2.0/hop"),
+        "hop must not be advertised with relay_server off: {protocols:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_disconnected_peers_protocol_list_is_dropped() {
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    alice
+        .connect_peer(&bob_addr.to_string())
+        .await
+        .expect("dial");
+    eventually("alice to learn bob's protocols", || async {
+        alice.peer_protocols(bob_id).await.ok().flatten()
+    })
+    .await;
+
+    alice.disconnect_peer(bob_id).await.expect("disconnect");
+
+    // Relay-candidate selection reads this feed; a list left behind for a peer
+    // we can no longer reach would send it dialing a ghost.
+    eventually("bob's protocol list to be forgotten", || async {
+        alice
+            .peer_protocols(bob_id)
+            .await
+            .ok()?
+            .is_none()
+            .then_some(())
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn add_kad_address_makes_a_peer_resolvable_without_a_dial() {
     let (alice, _alice_task, _alice_id) = spawn_test_swarm();
@@ -311,4 +431,62 @@ async fn add_kad_address_makes_a_peer_resolvable_without_a_dial() {
         !addrs.is_empty(),
         "the manually-added address should be resolvable"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Routing-table poisoning: an address that belongs to somebody else
+// ---------------------------------------------------------------------------
+
+/// Regression cover for the 2026-08-10 finding.
+///
+/// A live address filed in kad under the *wrong* peer id makes every dial to
+/// that peer land on whoever actually owns the address. Before the fix the
+/// entry survived the failure, so kad handed the same wrong address back on the
+/// next attempt and the peer stayed unreachable — in production a stale
+/// `/ip4/127.0.0.1/tcp/8080` under metro-win's id meant calls to metro-win hit
+/// a different local node forever, and the working circuit address was never
+/// tried.
+///
+/// `known_addresses` cannot prevent this: the address is perfectly routable, and
+/// a dial by PeerId never passes through that filter anyway.
+#[tokio::test]
+async fn an_address_that_answers_with_the_wrong_peer_id_is_evicted() {
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    // A peer that does not exist, pointed at Bob's real address. Dialing it
+    // reaches Bob, who reports his own id — exactly the production shape.
+    let ghost_id = Keypair::generate_ed25519().public().to_peer_id();
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    let stripped: Multiaddr = bob_addr
+        .iter()
+        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        .collect();
+
+    alice
+        .add_kad_address(ghost_id, stripped.clone())
+        .await
+        .unwrap();
+    assert!(
+        alice.routing_peers().await.unwrap().contains(&ghost_id),
+        "the poisoned entry should be in the routing table to begin with"
+    );
+
+    // A unary call is the production path: it dispatches by PeerId, so the
+    // swarm resolves addresses from kad directly rather than through
+    // `known_addresses`. The call is expected to fail — the point is what the
+    // failure leaves behind.
+    let _ = alice.call_unary_handler(ghost_id, "hello", b"ping").await;
+
+    // The failure is evidence the address is not the ghost's, so it must go.
+    // Its only address gone, kad drops the peer with it.
+    eventually("the mis-filed address to be evicted", || async {
+        let still_there = alice
+            .routing_peers()
+            .await
+            .map(|peers| peers.contains(&ghost_id))
+            .unwrap_or(true);
+        (!still_there).then_some(())
+    })
+    .await;
 }

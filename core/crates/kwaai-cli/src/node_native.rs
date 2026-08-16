@@ -25,10 +25,8 @@
 //!   the payload. Natively, `spawn_dht_service` registers them as unary
 //!   handlers directly on the swarm — same protocol IDs, same `DHTStorage`,
 //!   two fewer hops and no wrapper to unwrap.
-//! * **No IDENTIFY-driven restart cycle.** The p2pd path re-spawns the daemon
-//!   to change its announce addresses. Address discovery and re-announce on
-//!   change belong to the NAT slice; until then a native node announces what
-//!   `announce_addr`/`public_ip` say, or nothing.
+//! * **No IDENTIFY-driven restart cycle.** Reachability changes arrive on a
+//!   watch channel and the record is re-published in place.
 //!
 //! # What is deliberately identical
 //!
@@ -39,13 +37,21 @@
 //! cadence** (300 s ± 30 s jitter, 360 s TTL), the **tombstone on shutdown**,
 //! and the **protocol IDs** of every handler.
 //!
-//! # Not yet here — the NAT slice
+//! # NAT traversal
 //!
-//! AutoNAT, circuit relay, DCUtR and UPnP are p2pd-only. A native node is
-//! therefore reachable only if it is directly dialable: it can always *call*
-//! out (so it announces, stores and finds fine from behind a NAT), but inbound
-//! connections need a public address. `no_relay`, `force_private` and
-//! `trusted_relays` have no effect on this path.
+//! AutoNAT, circuit relay, DCUtR and UPnP all run natively now, each mapped
+//! from the config field that drove the corresponding p2pd flag:
+//!
+//! | config | p2pd flag | native |
+//! | --- | --- | --- |
+//! | `force_private` | `-forceReachabilityPrivate` | reachability starts Private, so reservations begin at t=0 |
+//! | `no_relay` | `-relay` | toggles the circuit **hop server** |
+//! | `trusted_relays` | `-trustedRelays` | operator override; the real supply is identify hop discovery |
+//! | `announce_addr` / `public_ip` | `-announceAddrs` | declared external address, outranking AutoNAT |
+//! | — | `-natPortMap` | UPnP, always on |
+//!
+//! What is *not* in reach in-process is real hole punching, which needs actual
+//! NATs — that is docker nat-test topology work.
 
 use anyhow::{Context, Result};
 use kwaai_hivemind_dht::DHTStorage;
@@ -53,7 +59,7 @@ use kwaai_p2p::{NetworkConfig, NetworkHandle, NetworkService};
 use kwaai_p2p_daemon::ControlServer;
 use libp2p::PeerId;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::announce::{
     build_announce_records, build_unannounce_records, send_records_via_handle, AnnounceContext,
@@ -70,6 +76,13 @@ use crate::node::SigHup;
 /// (`NetworkConfig::request_timeout`), so `send_records_via_handle` needs no
 /// timeout of its own.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to let reachability settle before acting on a change.
+///
+/// At startup a reservation being confirmed and AutoNAT confirming an address
+/// land within seconds of each other; announcing once for the pair beats
+/// announcing twice.
+const ANNOUNCE_SETTLE: Duration = Duration::from_secs(10);
 
 /// Everything the native path starts, kept together so shutdown is one call and
 /// nothing can be forgotten.
@@ -127,6 +140,29 @@ impl NativeNode {
             // what makes a node answer DHT queries rather than only issuing
             // them. `dht_server` is the native equivalent.
             dht_server: true,
+
+            // ── NAT traversal ──────────────────────────────────────────────
+            // Each of these has a p2pd flag it corresponds to, so a node
+            // migrating between the two paths behaves the same way.
+            //
+            // `-trustedRelays`. Empty by default now: the real supply of relay
+            // candidates is identify hop discovery, and the bootstraps offer
+            // hop. See `default_trusted_relays` in config.rs.
+            trusted_relays: config.trusted_relays.clone(),
+            // `-relay`.
+            relay_server: !config.no_relay,
+            // `-natPortMap`.
+            enable_upnp: true,
+            // `-forceReachabilityPrivate`. Defaults true, so relay reservations
+            // start immediately rather than after an AutoNAT round.
+            force_private: config.force_private,
+            // `-announceAddrs`. An operator declaration, so it outranks
+            // `force_private` and AutoNAT cannot demote it.
+            external_addr: configured_announce_addr(config),
+            // Deliberately permissive: this is the only address-class filter in
+            // rust-libp2p 0.53, and turning it on would classify the docker
+            // nat-test topology's `198.18/15` addresses unreachable.
+            require_global_ips: false,
             ..NetworkConfig::default()
         };
 
@@ -293,9 +329,9 @@ impl NativeNode {
 /// | inbound DHT RPC | **gone** — served in-swarm by `spawn_dht_service`, not over a forwarded TCP stream |
 /// | SIGHUP re-announce | same |
 /// | 300 s ± 30 s re-announce | same, minus the daemon watchdog that gated it |
-/// | periodic IDENTIFY + restart | **deferred to the NAT slice** |
+/// | periodic IDENTIFY + restart | **gone** — a watch channel re-announces in place |
 /// | 10 s p2pd heartbeat | **gone** — no child process to outlive us |
-/// | 60 s relay keepalive | **gone** — no unix socket to a child, no relay circuit yet |
+/// | 60 s relay keepalive | **gone** — libp2p-relay renews reservations at 3/4 TTL by itself |
 /// | Ollama recovery | same |
 /// | shutdown | same |
 pub async fn run_native_node(
@@ -312,22 +348,19 @@ pub async fn run_native_node(
     // ── Announce inputs ────────────────────────────────────────────────────
     info!("[2/4] Preparing the DHT announcement...");
 
-    // Without NAT traversal a native node is "direct" when it has an address to
-    // advertise and unreachable otherwise; there is no relay circuit that could
-    // make the middle case ("reachable, but only via a relay") true yet. The
-    // p2pd path's `all_addrs_are_relay` check over IDENTIFY-discovered addresses
-    // has no native counterpart until the NAT slice lands, so this reports
-    // relay=false whenever an address is configured and relay=true when none is
-    // — the same "no usable address means don't claim Direct" rule.
-    let announce_addr = configured_announce_addr(config);
-    let using_relay = announce_addr.is_none();
-    if let Some(ref addr) = announce_addr {
-        info!("  Announce addr: {addr}");
+    // `using_relay` is true when a circuit reservation is actually confirmed.
+    let mut announce_state = node.handle.announce_state();
+    let startup_state = node.handle.current_announce_state();
+    let mut using_relay = startup_state.using_relay;
+    // Epoch of the last state actually published to the DHT. Gating on the
+    // epoch (not on `using_relay`) means a reachability-only transition still
+    // re-announces; `using_relay` alone would miss Private→Public with no
+    // circuit, leaving the record stale until the 300 s tick.
+    let mut last_announced_epoch = startup_state.epoch;
+    if let Some(addr) = configured_announce_addr(config) {
+        info!("  Announce addr: {addr} (declared)");
     } else {
-        warn!(
-            "No announce_addr/public_ip configured — a native node has no NAT traversal yet, so \
-             it will only be reachable if its listen address is directly dialable"
-        );
+        info!("  Announce addr: discovered (autonat, upnp or identify consensus)");
     }
 
     let dl_bps = crate::node::measure_download_bps_for(&config.model).await;
@@ -386,6 +419,8 @@ pub async fn run_native_node(
     )));
     let mut ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     let mut pending_update_version: Option<String> = None;
+    // Deadline for the reachability-change settle window; None = no change pending.
+    let mut announce_settle: Option<tokio::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -411,6 +446,14 @@ pub async fn run_native_node(
                     }
                 }
 
+                // Fold in the current reachability so the periodic record is
+                // never staler than the swarm. `borrow` (not `borrow_and_update`)
+                // leaves the change notification for the settle arm.
+                let tick_state = *announce_state.borrow();
+                if tick_state.announceable {
+                    using_relay = tick_state.using_relay;
+                    server_info.using_relay = using_relay;
+                }
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 crate::node::refresh_vpk_info(&mut server_info, &config, public_name).await;
 
@@ -433,7 +476,12 @@ pub async fn run_native_node(
                     ShardManager::shard_is_ready()
                 );
                 match node.announce(&ctx, &server_info, bootstrap_peers).await {
-                    Ok(timings) => record_reputation(&mut rep_store, timings),
+                    Ok(timings) => {
+                        record_reputation(&mut rep_store, timings);
+                        if tick_state.announceable {
+                            last_announced_epoch = tick_state.epoch;
+                        }
+                    }
                     Err(e) => warn!("Re-announce failed: {e:#}"),
                 }
 
@@ -441,6 +489,54 @@ pub async fn run_native_node(
                     .as_mut()
                     .reset(tokio::time::Instant::now()
                         + Duration::from_secs(crate::node::jitter_secs(300, 30)));
+            }
+
+            // Reachability or relay status changed — re-publish in place.
+            //
+            // The delay is a deadline armed here and awaited in its own branch,
+            // not an inline sleep: sleeping inside the arm would hold up every
+            // other branch — most visibly shutdown — for the full settle window.
+            changed = announce_state.changed(), if announce_settle.is_none() => {
+                if changed.is_err() {
+                    // Every sender lives in the service task; an error here
+                    // means the swarm is gone. Continuing would keep announcing
+                    // a node that can no longer be reached.
+                    error!("Network service ended unexpectedly — shutting down");
+                    break;
+                }
+                announce_settle = Some(tokio::time::Instant::now() + ANNOUNCE_SETTLE);
+            }
+
+            _ = async { tokio::time::sleep_until(announce_settle.unwrap()).await },
+                if announce_settle.is_some() =>
+            {
+                announce_settle = None;
+                let state = *announce_state.borrow_and_update();
+                if !state.announceable {
+                    info!(
+                        "Reachability is still unknown — deferring the announce rather than \
+                         claiming a reachability we cannot back up"
+                    );
+                    continue;
+                }
+                if state.epoch == last_announced_epoch {
+                    // Nothing new since the last successful publish.
+                    continue;
+                }
+                using_relay = state.using_relay;
+                info!(
+                    "Reachability changed ({:?}, using_relay={}) — re-announcing",
+                    state.reachability, using_relay
+                );
+                crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
+                server_info.using_relay = using_relay;
+                refresh_server_info(&mut server_info, &config);
+                match node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    // Only a successful publish consumes the epoch; on failure
+                    // the next settle window or the 300 s tick retries it.
+                    Ok(_) => last_announced_epoch = state.epoch,
+                    Err(e) => warn!("Re-announce after a reachability change failed: {e:#}"),
+                }
             }
 
             // Ollama came back up — re-announce immediately so clients learn the
@@ -510,7 +606,7 @@ fn reload_block_range(config: &mut KwaaiNetConfig) {
 fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
     server_info.start_block = config.start_block as i32;
     server_info.end_block = config.effective_end_block() as i32;
-    server_info.state = if ShardManager::shard_is_ready() { 2 } else { 0 };
+    server_info.state = KwaaiNetConfig::announce_state();
 }
 
 /// Fold one announce round's per-bootstrap timings into the reputation store.
