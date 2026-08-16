@@ -41,7 +41,7 @@ use crate::config::NetworkConfig;
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
-    NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
+    KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
 };
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
@@ -507,6 +507,52 @@ impl NetworkService {
                 );
             }
 
+            // Routing table ∪ connected set, address-filtered. Same in-memory
+            // walk as `RoutingPeers`, plus a pass over `connections`, so it is
+            // equally safe in the event loop.
+            Command::KnownPeers { reply } => {
+                let routing: Vec<PeerId> = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .kbuckets()
+                    .flat_map(|bucket| {
+                        bucket
+                            .iter()
+                            .map(|entry| *entry.node.key.preimage())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                let connected: Vec<PeerId> = self.connections.keys().copied().collect();
+
+                let mut merged: HashMap<PeerId, KnownPeer> = HashMap::new();
+                for peer in routing.into_iter().chain(connected.into_iter()) {
+                    if merged.contains_key(&peer) {
+                        continue;
+                    }
+                    // `known_addresses` already merges the routing-table entry
+                    // with live connection addresses and applies the
+                    // announceable filter, so there is one source of truth for
+                    // "can this be dialed".
+                    let addrs = self.known_addresses(&peer);
+                    if addrs.is_empty() {
+                        continue;
+                    }
+                    let connected = self.connections.contains_key(&peer);
+                    merged.insert(
+                        peer,
+                        KnownPeer {
+                            peer_id: peer,
+                            addrs,
+                            connected,
+                        },
+                    );
+                }
+
+                let _ = reply.send(merged.into_values().collect());
+            }
+
             Command::DhtFindPeer { peer, reply } => {
                 // Short-circuit: if we already have addresses (routing table or
                 // a live connection) there is no need for a network walk.
@@ -757,13 +803,17 @@ impl NetworkService {
             }
         }
 
+        // For the dial *condition* the first `/p2p` is the right one to look
+        // at (see below) — this deliberately differs from the kad seeding
+        // above, which files the address under the circuit *destination*.
+        let peer = peer_id_from_multiaddr(&addr);
+
         // Only for a plain address naming one peer. A circuit address carries
         // *two* `/p2p/` components — the relay's and the target's — and
         // `peer_id_from_multiaddr` returns the first, which is the relay.
         // Conditioning on that would skip a dial to the target whenever we
         // happened to be connected to the relay, which is always: holding a
         // connection to the relay is what makes the circuit dialable at all.
-        let peer = peer_id_from_multiaddr(&addr);
         let condition_safe = peer.is_some() && !is_circuit(&addr);
 
         // Both arms call `allocate_new_port()`, overriding the `DialOpts`

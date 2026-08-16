@@ -288,7 +288,7 @@ pub enum ConfigAction {
     ///   model, blocks, start_block, port, use_gpu, log_level,
     ///   public_name, public_ip, announce_addr, no_relay, native_p2p,
     ///   enable_upnp, announce_online_without_shard,
-    ///   announce_self,
+    ///   announce_self, decentralized_dht, dht_replication,
     ///   vpk_enabled, vpk_mode, vpk_local_port,
     ///   auto_rebalance, rebalance_interval_secs, rebalance_min_redundancy
     ///

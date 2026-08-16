@@ -193,6 +193,39 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_true")]
     pub announce_self: bool,
 
+    /// Place and find DHT records on the **k peers nearest each record key**
+    /// instead of fanning out to the configured bootstrap list.
+    ///
+    /// With this off (the default) the announce path stores every record on
+    /// every entry in `initial_peers` and discovery reads them back from the
+    /// same list — correct, but it makes those few addresses load-bearing: a
+    /// node whose configured bootstraps are all gone cannot publish at all,
+    /// however many other peers it is connected to.
+    ///
+    /// With it on, each record is placed on the [`Self::dht_replication`]
+    /// peers whose hivemind DHTID (`SHA1(peer_id.to_bytes())`) is nearest the
+    /// record's own DHTID by XOR — drawn from *every* peer we know a dialable
+    /// address for, with the configured bootstraps demoted to ordinary
+    /// candidates. Any reachable node then serves as a join point.
+    ///
+    /// Also gates the peer cache (`peer_cache.rs`), so an established node
+    /// rejoins from remembered peers even when every configured peer is gone.
+    ///
+    /// **Native path only** (`native_p2p = true`). The p2pd path ignores this
+    /// and keeps the bootstrap fan-out regardless.
+    #[serde(default)]
+    pub decentralized_dht: bool,
+
+    /// How many peers each record is placed on when
+    /// [`Self::decentralized_dht`] is set.
+    ///
+    /// Placement attempts the nearest candidates in order and advances past
+    /// failures until this many stores succeed, so it is a target rather than
+    /// a quota — a smaller network simply stores everywhere. Ignored entirely
+    /// when `decentralized_dht` is false.
+    #[serde(default = "default_dht_replication")]
+    pub dht_replication: usize,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -676,6 +709,14 @@ fn default_rebalance_min_redundancy() -> usize {
     1
 }
 
+/// Replication factor for decentralized DHT placement.
+///
+/// Three is hivemind's own default `num_replicas` and the smallest count that
+/// survives one peer leaving without the record depending on a single host.
+fn default_dht_replication() -> usize {
+    3
+}
+
 impl Default for KwaaiNetConfig {
     fn default() -> Self {
         Self {
@@ -704,6 +745,8 @@ impl Default for KwaaiNetConfig {
             enable_upnp: default_enable_upnp(),
             announce_online_without_shard: false,
             announce_self: true,
+            decentralized_dht: false,
+            dht_replication: default_dht_replication(),
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -952,6 +995,16 @@ impl KwaaiNetConfig {
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "announce_online_without_shard" => {
                 self.announce_online_without_shard = parse_bool(value)?
+            }
+            "decentralized_dht" => self.decentralized_dht = parse_bool(value)?,
+            "dht_replication" => {
+                let k: usize = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("dht_replication must be a positive integer"))?;
+                if k == 0 {
+                    anyhow::bail!("dht_replication must be at least 1");
+                }
+                self.dht_replication = k;
             }
             "start_block" => {
                 self.start_block = value
