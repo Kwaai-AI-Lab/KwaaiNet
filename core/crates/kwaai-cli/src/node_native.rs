@@ -386,7 +386,9 @@ pub async fn run_native_node(
     // One gate for every announce input. A bootstrap computes none of them:
     // `measure_download_bps_for` runs a live download, and `initial_vpk_info`
     // polls a VPK endpoint — both pointless for a node that publishes nothing.
-    let (dl_bps, throughput, vpk_info) = if announce_self {
+    let (dl_bps, throughput, vpk_info) = if !announce_self {
+        (0.0, 0.0, None)
+    } else {
         if let Some(addr) = configured_announce_addr(config) {
             info!("  Announce addr: {addr} (declared)");
         }
@@ -400,8 +402,6 @@ pub async fn run_native_node(
             tps,
             crate::node::initial_vpk_info(config, public_name).await,
         )
-    } else {
-        (0.0, 0.0, None)
     };
 
     let ctx = AnnounceContext {
@@ -431,9 +431,10 @@ pub async fn run_native_node(
         }
     }
 
+    info!("[4/4] ✅ KwaaiNet node running");
+    info!("   Peer ID : {}", peer_id.to_base58());
+    // A bootstrap has no name, model or block range to report.
     if announce_self {
-        info!("[4/4] ✅ KwaaiNet node running (native p2p)");
-        info!("   Peer ID : {}", peer_id.to_base58());
         info!("   Name    : {}", public_name);
         info!("   Model   : {}", config.model);
         info!(
@@ -442,10 +443,6 @@ pub async fn run_native_node(
             config.effective_end_block()
         );
         info!("   Map     : https://map.kwaai.ai");
-    } else {
-        // A bootstrap has no model or block range to name.
-        info!("[4/4] ✅ KwaaiNet bootstrap node running (native p2p)");
-        info!("   Peer ID : {}", peer_id.to_base58());
     }
 
     // ── Event loop ─────────────────────────────────────────────────────────
