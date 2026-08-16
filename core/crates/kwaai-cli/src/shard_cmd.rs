@@ -1317,8 +1317,19 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             data,
         };
 
-        // Forward through the pinned path
-        let mut token_hops: Vec<HopTiming> = Vec::new();
+        // Forward through the pinned path. The sink accumulates the same
+        // per-hop timings the `--stats` table has always used; nothing else
+        // consumes progress on the CLI path.
+        let hop_sink = HopTimingSink::new();
+        let sink_ref: Option<&dyn ProgressSink> =
+            show_stats.then_some(&hop_sink as &dyn ProgressSink);
+        let token_ctx = TokenContext::new(
+            generated_ids.len(),
+            generated_ids.is_empty(),
+            generation_start,
+            session_id,
+            seq_pos as u32,
+        );
         let logits_bytes = match forward_through_chain(
             &mut client,
             &pinned_path,
@@ -1328,8 +1339,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             request,
             Some(&our_peer_id),
             &mut failed_peers,
-            show_stats.then_some(&mut token_hops),
+            sink_ref,
             reputation.clone(),
+            token_ctx,
         )
         .await
         {
@@ -1344,7 +1356,10 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
                 ));
                 pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
-                token_hops.clear();
+                // Discard the partial hops from the attempt that failed, so the
+                // stats table reports only the path that actually produced the
+                // token — matching the pre-sink `token_hops.clear()`.
+                let _ = hop_sink.take();
                 // Retry this token with the new path
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
@@ -1363,8 +1378,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     retry_req,
                     Some(&our_peer_id),
                     &mut failed_peers,
-                    show_stats.then_some(&mut token_hops),
+                    sink_ref,
                     reputation.clone(),
+                    token_ctx,
                 )
                 .await?;
                 // Re-indent so the resumed token stream starts cleanly.
@@ -1376,8 +1392,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 result
             }
         };
-        if show_stats && !token_hops.is_empty() {
-            all_hop_timings.push(token_hops);
+        if show_stats {
+            let token_hops = hop_sink.take();
+            if !token_hops.is_empty() {
+                all_hop_timings.push(token_hops);
+            }
         }
 
         // Stop prefill spinner and print "Assistant:" header after the first forward pass.
@@ -1555,6 +1574,12 @@ pub struct ShardRunOptions {
     pub max_tokens: Option<usize>,
     /// Pre-formed circuit id to use instead of fresh DHT discovery.
     pub circuit_id: Option<String>,
+    /// Emit [`ShardRunEvent::Progress`] describing peer/block routing as it
+    /// happens. Off by default: a chain of N hops over T tokens produces
+    /// O(N*T) events, which is real formatting work — and they share the
+    /// run's channel with tokens, so producing them unasked adds
+    /// backpressure to the path the caller is actually waiting on.
+    pub events: bool,
 }
 
 /// Events emitted by [`run_streaming`]. Every successful generation ends with
@@ -1563,10 +1588,380 @@ pub enum ShardRunEvent {
     /// A decoded text piece for the next generated token. Multiple `Token`s
     /// arrive before the terminator.
     Token(String),
+    /// Structured progress describing what the run is doing — chain
+    /// discovery, the pinned route, per-block peer dispatch. Only produced
+    /// when [`ShardRunOptions::events`] is set; a consumer that does not
+    /// care can ignore this arm without any change in behaviour.
+    Progress(Box<InferenceProgress>),
     /// Generation finished cleanly (EOS hit or `max_tokens` reached).
     Done,
     /// Unrecoverable error mid-generation. No further events follow.
     Error(anyhow::Error),
+}
+
+// ── Progress telemetry ────────────────────────────────────────────────────────
+
+/// What stage of a distributed run an [`InferenceProgress`] describes.
+///
+/// Mirrors `kwaai.v1.InferencePhase`; see that enum for which fields each
+/// phase populates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressPhase {
+    Resolved,
+    DiscoveryStart,
+    DiscoveryResult,
+    CircuitLoaded,
+    ChainPinned,
+    PeerDial,
+    HopStart,
+    HopOk,
+    HopFailed,
+    PathRebuild,
+    TokenSampled,
+    Complete,
+}
+
+/// Why a hop failed, which decides whether the peer stays eligible for the
+/// rest of the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HopFailureKind {
+    /// Peer has no inference handler registered. Blacklisted for the run.
+    NoHandler,
+    /// Stream reset / early eof / connection closed. Not blacklisted — the
+    /// peer may recover and is retried on the next token.
+    Transient,
+    /// Exceeded the per-hop deadline. Blacklisted for the run.
+    Timeout,
+    /// Anything else. Blacklisted for the run.
+    Other,
+}
+
+/// One hop of a pinned route, for [`ProgressPhase::ChainPinned`].
+#[derive(Debug, Clone)]
+pub struct ProgressHop {
+    pub peer_id: String,
+    pub peer_name: String,
+    pub block_start: usize,
+    pub block_end: usize,
+    pub is_self: bool,
+    pub trust_score: Option<f64>,
+    pub throughput: f64,
+}
+
+/// A single point-in-time record of what a distributed run is doing.
+///
+/// Mirrors `kwaai.v1.InferenceEvent` but stays free of generated proto types,
+/// so `shard_cmd` remains usable from the CLI without the rpc crate;
+/// `grpc_server` owns the mapping to the wire type.
+#[derive(Debug, Clone)]
+pub struct InferenceProgress {
+    pub elapsed_ms: u64,
+    pub phase: ProgressPhase,
+    pub message: String,
+    pub peer_id: Option<String>,
+    pub peer_name: Option<String>,
+    pub is_self: bool,
+    pub block_start: Option<usize>,
+    pub block_end: Option<usize>,
+    pub total_blocks: Option<usize>,
+    pub covered_blocks: Option<usize>,
+    pub duration_ms: Option<f64>,
+    pub token_index: Option<usize>,
+    pub is_prefill: bool,
+    pub candidate_index: Option<usize>,
+    pub attempt: Option<usize>,
+    pub ok: bool,
+    /// The run's session id, as a string — see the proto field for why.
+    pub session_id: Option<String>,
+    /// Global sequence position of this call's first token. Not the token
+    /// index: prefill advances it by the whole prompt length.
+    pub seq_pos: Option<u32>,
+    pub failure: Option<HopFailureKind>,
+    pub model: Option<String>,
+    pub dht_prefix: Option<String>,
+    pub peer_count: Option<usize>,
+    pub circuit_id: Option<String>,
+    pub hops: Vec<ProgressHop>,
+}
+
+impl InferenceProgress {
+    /// Empty event of `phase`, stamped relative to the run's start.
+    ///
+    /// The remaining fields are filled in by the builder methods below —
+    /// with ~20 of them, naming only the ones a phase actually uses keeps
+    /// the call sites readable.
+    pub fn new(started: std::time::Instant, phase: ProgressPhase) -> Self {
+        Self {
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            phase,
+            message: String::new(),
+            session_id: None,
+            seq_pos: None,
+            peer_id: None,
+            peer_name: None,
+            is_self: false,
+            block_start: None,
+            block_end: None,
+            total_blocks: None,
+            covered_blocks: None,
+            duration_ms: None,
+            token_index: None,
+            is_prefill: false,
+            candidate_index: None,
+            attempt: None,
+            ok: false,
+            failure: None,
+            model: None,
+            dht_prefix: None,
+            peer_count: None,
+            circuit_id: None,
+            hops: Vec::new(),
+        }
+    }
+
+    pub fn msg(mut self, m: impl Into<String>) -> Self {
+        self.message = m.into();
+        self
+    }
+
+    /// Identify the peer this event concerns, from a discovered chain entry.
+    pub fn peer(mut self, entry: &BlockServerEntry, is_self: bool) -> Self {
+        self.peer_id = Some(entry.peer_id.to_base58());
+        self.peer_name = Some(entry.public_name.clone());
+        self.is_self = is_self;
+        self
+    }
+
+    pub fn blocks(mut self, start: usize, end: usize) -> Self {
+        self.block_start = Some(start);
+        self.block_end = Some(end);
+        self
+    }
+
+    pub fn total_blocks(mut self, n: usize) -> Self {
+        self.total_blocks = Some(n);
+        self
+    }
+
+    pub fn covered(mut self, n: usize) -> Self {
+        self.covered_blocks = Some(n);
+        self
+    }
+
+    pub fn ms(mut self, d: f64) -> Self {
+        self.duration_ms = Some(d);
+        self
+    }
+
+    pub fn token(mut self, ctx: TokenContext) -> Self {
+        self.token_index = Some(ctx.index);
+        self.is_prefill = ctx.is_prefill;
+        // Carried on the same builder call as the token identity, so every
+        // existing hop emit site gains the correlation ids without each
+        // having to remember to attach them.
+        self.session_id = Some(ctx.session_id.to_string());
+        self.seq_pos = Some(ctx.seq_pos);
+        self
+    }
+
+    pub fn token_index(mut self, idx: usize, is_prefill: bool) -> Self {
+        self.token_index = Some(idx);
+        self.is_prefill = is_prefill;
+        self
+    }
+
+    pub fn candidate(mut self, idx: usize) -> Self {
+        self.candidate_index = Some(idx);
+        self
+    }
+
+    pub fn attempt(mut self, n: usize) -> Self {
+        self.attempt = Some(n);
+        self
+    }
+
+    pub fn ok(mut self, ok: bool) -> Self {
+        self.ok = ok;
+        self
+    }
+
+    pub fn failure(mut self, kind: HopFailureKind) -> Self {
+        self.failure = Some(kind);
+        self
+    }
+
+    pub fn model(mut self, model: impl Into<String>, dht_prefix: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self.dht_prefix = Some(dht_prefix.into());
+        self
+    }
+
+    pub fn dht_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.dht_prefix = Some(prefix.into());
+        self
+    }
+
+    pub fn peer_count(mut self, n: usize) -> Self {
+        self.peer_count = Some(n);
+        self
+    }
+
+    pub fn circuit(mut self, id: impl Into<String>) -> Self {
+        self.circuit_id = Some(id.into());
+        self
+    }
+
+    pub fn hops(mut self, hops: Vec<ProgressHop>) -> Self {
+        self.hops = hops;
+        self
+    }
+}
+
+/// Which generated token a forward pass belongs to. Telemetry only.
+///
+/// Threaded rather than derived from `seq_pos`, because that is a *sequence*
+/// position, not a token ordinal — the two diverge after prefill, where one
+/// pass covers the whole prompt.
+#[derive(Debug, Clone, Copy)]
+pub struct TokenContext {
+    pub index: usize,
+    pub is_prefill: bool,
+    /// Run start, so every event carries a consistent `elapsed_ms`.
+    pub started: std::time::Instant,
+    /// The run's session id — the same value sent in every
+    /// `InferenceRequest` and used by each server as its KV-cache key, so
+    /// a hop reported here can be found in that server's own log.
+    pub session_id: u64,
+    /// Global sequence position of this call's first token, as sent on the
+    /// wire. Distinct from `index` for the reason given above.
+    pub seq_pos: u32,
+}
+
+impl TokenContext {
+    pub fn new(
+        index: usize,
+        is_prefill: bool,
+        started: std::time::Instant,
+        session_id: u64,
+        seq_pos: u32,
+    ) -> Self {
+        Self {
+            index,
+            is_prefill,
+            started,
+            session_id,
+            seq_pos,
+        }
+    }
+}
+
+/// Where [`forward_through_chain`] reports what it is doing.
+///
+/// Two consumers want different shapes: the CLI wants a `Vec<HopTiming>` it
+/// can aggregate into a stats table afterwards, the daemon wants each event
+/// pushed to a gRPC client as it happens. One sink with two implementations
+/// keeps a single instrumentation point, so a new hop-level fact does not
+/// have to be threaded twice and drift.
+///
+/// `emit` is sync and takes `&self` deliberately. `forward_through_chain`
+/// holds `&mut P2PClient` and a borrow of the candidate across the hop loop;
+/// an async or `&mut` sink would force reborrows through every timeout and
+/// select boundary. Interior mutability sidesteps that entirely — and both
+/// implementations are non-blocking, so the hot loop never awaits the sink.
+pub trait ProgressSink: Send + Sync {
+    fn emit(&self, ev: InferenceProgress);
+}
+
+/// Construct and emit an event only when a sink is attached.
+///
+/// Takes a closure so the event — which allocates strings — is never built
+/// when `sink` is `None`. That is what makes `events: false` genuinely free
+/// rather than merely unused.
+#[inline]
+pub fn emit_progress(sink: Option<&dyn ProgressSink>, ev: impl FnOnce() -> InferenceProgress) {
+    if let Some(s) = sink {
+        s.emit(ev());
+    }
+}
+
+/// CLI sink: keeps successful hops as [`HopTiming`] for the `--stats` table
+/// and drops everything else, so `cmd_shard_run`'s output is unchanged.
+///
+/// Uses a `Mutex` rather than a `RefCell` because [`ProgressSink`] is
+/// `Send + Sync`: a `!Sync` sink would make `forward_through_chain`'s future
+/// `!Send` and fail at the `tokio::spawn` in [`run_streaming`], with an
+/// error pointing nowhere near the cause.
+#[derive(Default)]
+pub struct HopTimingSink {
+    timings: std::sync::Mutex<Vec<HopTiming>>,
+}
+
+impl HopTimingSink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drain the accumulated timings, leaving the sink empty and reusable.
+    pub fn take(&self) -> Vec<HopTiming> {
+        match self.timings.lock() {
+            Ok(mut g) => std::mem::take(&mut *g),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+impl ProgressSink for HopTimingSink {
+    fn emit(&self, ev: InferenceProgress) {
+        if ev.phase != ProgressPhase::HopOk {
+            return;
+        }
+        // Rebuild exactly the tuple the pre-sink code pushed.
+        if let (Some(name), Some(start), Some(end), Some(ms)) =
+            (ev.peer_name, ev.block_start, ev.block_end, ev.duration_ms)
+        {
+            if let Ok(mut g) = self.timings.lock() {
+                g.push((name, start, end, ms));
+            }
+        }
+    }
+}
+
+/// Daemon sink: forwards progress onto the run's [`ShardRunEvent`] channel.
+///
+/// Uses `try_send`, so a slow or stalled consumer can never backpressure the
+/// inference loop — telemetry is advisory, and dropping an event is strictly
+/// better than delaying a token. Drops are counted so a caller can tell that
+/// a client's view has gaps.
+pub struct ChannelProgressSink {
+    tx: tokio::sync::mpsc::Sender<ShardRunEvent>,
+    dropped: std::sync::atomic::AtomicU64,
+}
+
+impl ChannelProgressSink {
+    pub fn new(tx: tokio::sync::mpsc::Sender<ShardRunEvent>) -> Self {
+        Self {
+            tx,
+            dropped: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// How many events were dropped because the channel was full.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl ProgressSink for ChannelProgressSink {
+    fn emit(&self, ev: InferenceProgress) {
+        if self
+            .tx
+            .try_send(ShardRunEvent::Progress(Box::new(ev)))
+            .is_err()
+        {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// Drive distributed inference end-to-end and yield [`ShardRunEvent`]s as
@@ -1592,7 +1987,13 @@ pub fn run_streaming(opts: ShardRunOptions) -> impl futures::Stream<Item = Shard
     // through an mpsc channel. This avoids the awkwardness of `?`-across-
     // `yield` inside `async_stream::stream!` and means the worker can use
     // ordinary Result propagation. The stream! body just forwards.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ShardRunEvent>(64);
+    //
+    // Sized for progress events rather than tokens: when `opts.events` is set
+    // a single token contributes two events per hop, so a multi-hop chain
+    // bursts well past what a token-only channel needed. Progress is sent
+    // with `try_send` and dropped when full, so a tight bound would silently
+    // thin out the very telemetry the caller asked for.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ShardRunEvent>(256);
 
     tokio::spawn(async move {
         let result = run_streaming_inner(opts, tx.clone()).await;
@@ -1632,6 +2033,19 @@ async fn run_streaming_inner(
     };
     let total_blocks = cfg.model_total_blocks() as usize;
 
+    // Run clock. Every progress event is stamped relative to this, so a
+    // client can lay out a timeline without trusting clock skew between us.
+    let run_started = std::time::Instant::now();
+    let progress = opts.events.then(|| ChannelProgressSink::new(tx.clone()));
+    let sink: Option<&dyn ProgressSink> = progress.as_ref().map(|s| s as &dyn ProgressSink);
+
+    emit_progress(sink, || {
+        InferenceProgress::new(run_started, ProgressPhase::Resolved)
+            .model(&model_ref, &dht_prefix)
+            .total_blocks(total_blocks)
+            .msg(format!("{model_ref} · {total_blocks} blocks"))
+    });
+
     // Default max_tokens matches the CLI's clap default (see ShardRunArgs).
     let max_tokens = opts.max_tokens.unwrap_or(200);
     // Sampling defaults also mirror ShardRunArgs.
@@ -1658,7 +2072,15 @@ async fn run_streaming_inner(
             c.last_used_epoch = circuit.last_used_epoch;
         }
         let _ = save_circuits(&all);
-        circuit.chain.iter().filter_map(|e| e.to_entry()).collect()
+        let entries: Vec<BlockServerEntry> =
+            circuit.chain.iter().filter_map(|e| e.to_entry()).collect();
+        emit_progress(sink, || {
+            InferenceProgress::new(run_started, ProgressPhase::CircuitLoaded)
+                .circuit(cid)
+                .peer_count(entries.len())
+                .msg(format!("circuit {cid} · {} peers", entries.len()))
+        });
+        entries
     } else {
         let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
             NetworkConfig::with_petals_bootstrap().bootstrap_peers
@@ -1666,19 +2088,20 @@ async fn run_streaming_inner(
             cfg.initial_peers.clone()
         };
 
-        // Poll DHT up to 30 s for peers serving this model.
+        // Poll DHT up to 30 s for peers serving this model. Each round is
+        // reported, so a client can distinguish "still looking" from "wedged"
+        // during the wait — the failure mode this whole panel exists to show.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let mut chain = discover_chain(
-            &mut client,
-            &our_peer_id,
-            &dht_prefix,
-            total_blocks,
-            &bootstrap_peers,
-        )
-        .await;
-        while chain.is_empty() && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            chain = discover_chain(
+        let mut attempt = 0usize;
+        let chain = loop {
+            attempt += 1;
+            emit_progress(sink, || {
+                InferenceProgress::new(run_started, ProgressPhase::DiscoveryStart)
+                    .attempt(attempt)
+                    .dht_prefix(&dht_prefix)
+                    .msg(format!("DHT lookup for {dht_prefix} (round {attempt})"))
+            });
+            let found = discover_chain(
                 &mut client,
                 &our_peer_id,
                 &dht_prefix,
@@ -1686,7 +2109,30 @@ async fn run_streaming_inner(
                 &bootstrap_peers,
             )
             .await;
-        }
+            emit_progress(sink, || {
+                let covered = covered_block_count(&found, total_blocks);
+                InferenceProgress::new(run_started, ProgressPhase::DiscoveryResult)
+                    .attempt(attempt)
+                    .peer_count(found.len())
+                    .covered(covered)
+                    .total_blocks(total_blocks)
+                    .msg(if found.is_empty() {
+                        "no peers found".to_string()
+                    } else {
+                        format!(
+                            "{} peer(s), {covered}/{total_blocks} blocks covered",
+                            found.len()
+                        )
+                    })
+            });
+            if !found.is_empty() {
+                break found;
+            }
+            if std::time::Instant::now() >= deadline {
+                break found;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        };
         if chain.is_empty() {
             bail!("no peers serving model {dht_prefix} (waited 30s)");
         }
@@ -1738,20 +2184,48 @@ async fn run_streaming_inner(
 
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {
-        let _ = client
+        let dialed = client
             .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
-            .await;
+            .await
+            .is_ok();
+        emit_progress(sink, || {
+            // A failed dial here is routine, not fatal: the peer may still be
+            // reachable when its hop is actually made, so this is reported as
+            // an outcome rather than an error.
+            InferenceProgress::new(run_started, ProgressPhase::PeerDial)
+                .peer(entry, our_peer_id == entry.peer_id)
+                .ok(dialed)
+                .msg(if dialed { "dialed" } else { "dial failed" })
+        });
     }
 
     // Pin the path for this session.
     let mut failed_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
     let mut pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+    // Generation of the pinned path: incremented on every rebuild, so a client
+    // can tell the reroute after a failure from the original route.
+    let mut path_attempt = 1usize;
+    emit_progress(sink, || {
+        InferenceProgress::new(run_started, ProgressPhase::ChainPinned)
+            .hops(progress_hops(&pinned_path, &our_peer_id))
+            .total_blocks(total_blocks)
+            .attempt(path_attempt)
+            .msg(format!("{} hop(s)", pinned_path.len()))
+    });
 
     let mut generated_ids: Vec<u32> = Vec::new();
     let mut seq_pos: usize = 0;
     let mut current_ids = token_ids.clone();
 
     loop {
+        let token_started = std::time::Instant::now();
+        let token_ctx = TokenContext::new(
+            generated_ids.len(),
+            generated_ids.is_empty(),
+            run_started,
+            session_id,
+            seq_pos as u32,
+        );
         let (shape, data) = token_ids_to_bytes(&current_ids);
         let request = InferenceRequest {
             session_id,
@@ -1770,16 +2244,33 @@ async fn run_streaming_inner(
             request,
             Some(&our_peer_id),
             &mut failed_peers,
-            None,
+            sink,
             reputation.clone(),
+            token_ctx,
         )
         .await
         {
             Ok(r) => r,
-            Err(_) => {
+            Err(e) => {
                 // Rebuild path on transient failure and retry once,
                 // matching cmd_shard_run's recovery behaviour.
+                emit_progress(sink, || {
+                    InferenceProgress::new(run_started, ProgressPhase::PathRebuild)
+                        .token(token_ctx)
+                        .attempt(path_attempt + 1)
+                        .msg(format!(
+                            "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
+                        ))
+                });
                 pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+                path_attempt += 1;
+                emit_progress(sink, || {
+                    InferenceProgress::new(run_started, ProgressPhase::ChainPinned)
+                        .hops(progress_hops(&pinned_path, &our_peer_id))
+                        .total_blocks(total_blocks)
+                        .attempt(path_attempt)
+                        .msg(format!("{} hop(s)", pinned_path.len()))
+                });
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
                     session_id,
@@ -1797,8 +2288,9 @@ async fn run_streaming_inner(
                     retry_req,
                     Some(&our_peer_id),
                     &mut failed_peers,
-                    None,
+                    sink,
                     reputation.clone(),
+                    token_ctx,
                 )
                 .await?
             }
@@ -1824,16 +2316,63 @@ async fn run_streaming_inner(
             }
         }
 
+        emit_progress(sink, || {
+            InferenceProgress::new(run_started, ProgressPhase::TokenSampled)
+                .token(token_ctx)
+                .ms(token_started.elapsed().as_secs_f64() * 1000.0)
+        });
+
         generated_ids.push(next_id);
         seq_pos += current_ids.len();
 
         if next_id == eos_id || generated_ids.len() >= max_tokens {
+            let stop_reason = if next_id == eos_id {
+                "eos"
+            } else {
+                "max_tokens"
+            };
+            // Emitted here rather than from `run_streaming`'s wrapper: only
+            // this scope knows why generation stopped. FIFO on the shared
+            // channel then guarantees it precedes the terminal Done.
+            emit_progress(sink, || {
+                InferenceProgress::new(run_started, ProgressPhase::Complete)
+                    .token_index(generated_ids.len(), false)
+                    .ms(run_started.elapsed().as_secs_f64() * 1000.0)
+                    .msg(stop_reason)
+            });
+            // Progress is dropped rather than queued when the channel backs
+            // up, so say when a client's view has gaps — otherwise a missing
+            // hop looks like a hop that never happened.
+            if let Some(ref s) = progress {
+                let dropped = s.dropped();
+                if dropped > 0 {
+                    tracing::warn!(
+                        dropped,
+                        "inference progress events dropped — client view is incomplete"
+                    );
+                }
+            }
             break;
         }
         current_ids = vec![next_id];
     }
 
     Ok(())
+}
+
+/// Snapshot a pinned path as telemetry hops.
+fn progress_hops(path: &[BlockServerEntry], our_peer_id: &PeerId) -> Vec<ProgressHop> {
+    path.iter()
+        .map(|e| ProgressHop {
+            peer_id: e.peer_id.to_base58(),
+            peer_name: e.public_name.clone(),
+            block_start: e.start_block,
+            block_end: e.end_block,
+            is_self: &e.peer_id == our_peer_id,
+            trust_score: e.trust_score,
+            throughput: e.throughput,
+        })
+        .collect()
 }
 
 // ── status ────────────────────────────────────────────────────────────────────
@@ -2530,6 +3069,23 @@ fn decode_server_info_ext(
 
 // ── Pinned path ──────────────────────────────────────────────────────────────
 
+/// How many of `[0, total_blocks)` at least one entry in `chain` serves.
+///
+/// Counts distinct positions rather than summing range widths, since ranges
+/// routinely overlap — several peers serving blocks 0-8 is one eighth of a
+/// 64-block model covered, not several times over. Used to report whether a
+/// discovery round found a *complete* chain, which is what decides between
+/// inference running and failing with a coverage gap.
+pub fn covered_block_count(chain: &[BlockServerEntry], total_blocks: usize) -> usize {
+    (0..total_blocks)
+        .filter(|pos| {
+            chain
+                .iter()
+                .any(|e| e.start_block <= *pos && e.end_block > *pos)
+        })
+        .count()
+}
+
 /// Build a deterministic, non-overlapping peer path for a session.
 ///
 /// Greedy walk from block 0: at each position, pick the widest-coverage
@@ -2857,6 +3413,30 @@ async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
 /// Per-hop timing record: (peer display name, start_block, end_block, elapsed_ms).
 pub type HopTiming = (String, usize, usize, f64);
 
+/// Marker in the error a hop timeout produces, so the failure classifier can
+/// tell it apart from an error the peer itself reported.
+const HOP_TIMEOUT_MARKER: &str = "hop timeout after";
+
+/// Classify a hop failure from its error text.
+///
+/// Split out of the dispatch loop so the policy — which failures blacklist a
+/// peer for the rest of the run and which leave it eligible — is testable
+/// without a live peer.
+pub fn classify_hop_failure(err: &str) -> HopFailureKind {
+    if err.contains("protocols not supported") {
+        HopFailureKind::NoHandler
+    } else if err.contains(HOP_TIMEOUT_MARKER) {
+        HopFailureKind::Timeout
+    } else if err.contains("stream reset")
+        || err.contains("early eof")
+        || err.contains("connection closed")
+    {
+        HopFailureKind::Transient
+    } else {
+        HopFailureKind::Other
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn forward_through_chain(
     client: &mut P2PClient,
@@ -2867,8 +3447,9 @@ pub async fn forward_through_chain(
     first_request: InferenceRequest,
     our_peer_id: Option<&PeerId>,
     failed_peers: &mut std::collections::HashSet<PeerId>,
-    mut hop_timings: Option<&mut Vec<HopTiming>>,
+    sink: Option<&dyn ProgressSink>,
     reputation: Option<Arc<std::sync::Mutex<ReputationStore>>>,
+    token_ctx: TokenContext,
 ) -> Result<crate::block_rpc::InferenceResponse> {
     use crate::block_rpc::InferenceResponse;
 
@@ -2924,9 +3505,16 @@ pub async fn forward_through_chain(
         const HOP_TIMEOUT: Duration = Duration::from_secs(300);
 
         let mut succeeded = false;
-        for candidate in &candidates {
+        for (cand_idx, candidate) in candidates.iter().enumerate() {
             // Self-bypass: avoid libp2p "dial to self" by using the local TCP server.
             let is_self = our_peer_id == Some(&candidate.peer_id);
+            emit_progress(sink, || {
+                InferenceProgress::new(token_ctx.started, ProgressPhase::HopStart)
+                    .peer(candidate, is_self)
+                    .blocks(candidate.start_block, candidate.end_block)
+                    .token(token_ctx)
+                    .candidate(cand_idx)
+            });
             let hop_start = std::time::Instant::now();
             let result = tokio::time::timeout(HOP_TIMEOUT, async {
                 if is_self {
@@ -2943,7 +3531,7 @@ pub async fn forward_through_chain(
             .await
             .unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
-                    "hop timeout after {}s — peer unresponsive or compute too slow",
+                    "{HOP_TIMEOUT_MARKER} {}s — peer unresponsive or compute too slow",
                     HOP_TIMEOUT.as_secs()
                 ))
             });
@@ -2968,14 +3556,15 @@ pub async fn forward_through_chain(
                             );
                         }
                     }
-                    if let Some(ref mut timings) = hop_timings {
-                        timings.push((
-                            candidate.public_name.clone(),
-                            candidate.start_block,
-                            candidate.end_block,
-                            hop_ms,
-                        ));
-                    }
+                    emit_progress(sink, || {
+                        InferenceProgress::new(token_ctx.started, ProgressPhase::HopOk)
+                            .peer(candidate, is_self)
+                            .blocks(candidate.start_block, candidate.end_block)
+                            .token(token_ctx)
+                            .candidate(cand_idx)
+                            .ms(hop_ms)
+                            .ok(true)
+                    });
                     pos = candidate.end_block;
                     if pos < total_blocks {
                         request = InferenceRequest {
@@ -3009,48 +3598,63 @@ pub async fn forward_through_chain(
                         }
                     }
                     let err_str = format!("{e:#}");
-                    let is_transient = err_str.contains("stream reset")
-                        || err_str.contains("early eof")
-                        || err_str.contains("connection closed");
+                    let kind = classify_hop_failure(&err_str);
+                    emit_progress(sink, || {
+                        InferenceProgress::new(token_ctx.started, ProgressPhase::HopFailed)
+                            .peer(candidate, is_self)
+                            .blocks(candidate.start_block, candidate.end_block)
+                            .token(token_ctx)
+                            .candidate(cand_idx)
+                            .ms(hop_ms)
+                            .failure(kind)
+                            .msg(err_str.clone())
+                    });
                     // Protocol negotiation failures mean the peer has no inference
                     // handler registered — blacklist for the session.
                     // Transient stream errors are NOT blacklisted: the peer may recover.
-                    if err_str.contains("protocols not supported") {
-                        failed_peers.insert(candidate.peer_id);
-                        print_warning(&format!(
-                            "Peer {} ({}) has no inference handler — skipping for this session",
-                            candidate
-                                .peer_id
-                                .to_base58()
-                                .chars()
-                                .take(12)
-                                .collect::<String>(),
-                            candidate.public_name,
-                        ));
-                    } else if is_transient {
-                        // Transient: warn but keep peer eligible for future tokens.
-                        print_warning(&format!(
-                            "Peer {} ({}) transient error (not blacklisted): {e:#}",
-                            candidate
-                                .peer_id
-                                .to_base58()
-                                .chars()
-                                .take(12)
-                                .collect::<String>(),
-                            candidate.public_name,
-                        ));
-                    } else {
-                        failed_peers.insert(candidate.peer_id);
-                        print_warning(&format!(
-                            "Peer {} ({}) failed: {e:#}",
-                            candidate
-                                .peer_id
-                                .to_base58()
-                                .chars()
-                                .take(12)
-                                .collect::<String>(),
-                            candidate.public_name,
-                        ));
+                    match kind {
+                        HopFailureKind::NoHandler => {
+                            failed_peers.insert(candidate.peer_id);
+                            print_warning(&format!(
+                                "Peer {} ({}) has no inference handler — skipping for this session",
+                                candidate
+                                    .peer_id
+                                    .to_base58()
+                                    .chars()
+                                    .take(12)
+                                    .collect::<String>(),
+                                candidate.public_name,
+                            ));
+                        }
+                        HopFailureKind::Transient => {
+                            // Transient: warn but keep peer eligible for future tokens.
+                            print_warning(&format!(
+                                "Peer {} ({}) transient error (not blacklisted): {e:#}",
+                                candidate
+                                    .peer_id
+                                    .to_base58()
+                                    .chars()
+                                    .take(12)
+                                    .collect::<String>(),
+                                candidate.public_name,
+                            ));
+                        }
+                        // A timeout is a peer that never answered, so it is
+                        // blacklisted like any other hard failure — it is split
+                        // out only so telemetry can name it.
+                        HopFailureKind::Timeout | HopFailureKind::Other => {
+                            failed_peers.insert(candidate.peer_id);
+                            print_warning(&format!(
+                                "Peer {} ({}) failed: {e:#}",
+                                candidate
+                                    .peer_id
+                                    .to_base58()
+                                    .chars()
+                                    .take(12)
+                                    .collect::<String>(),
+                                candidate.public_name,
+                            ));
+                        }
                     }
                 }
             }
@@ -3569,5 +4173,124 @@ mod tests {
         assert_eq!(snap_to_valid_blocks(25), 32);
         assert_eq!(snap_to_valid_blocks(32), 32);
         assert_eq!(snap_to_valid_blocks(64), 32);
+    }
+
+    // ── Progress telemetry ────────────────────────────────────────────────
+
+    fn progress(phase: ProgressPhase) -> InferenceProgress {
+        InferenceProgress::new(std::time::Instant::now(), phase)
+    }
+
+    /// The `--stats` table is fed by this sink, so a HopOk must still produce
+    /// exactly the tuple the pre-sink code pushed. This is the regression
+    /// guard for the CLI output.
+    #[test]
+    fn hop_timing_sink_rebuilds_the_cli_tuple() {
+        let sink = HopTimingSink::new();
+        sink.emit(
+            progress(ProgressPhase::HopOk)
+                .blocks(4, 8)
+                .ms(184.0)
+                .msg("ignored"),
+        );
+        // peer_name comes from `.peer()` in real use; set it directly here so
+        // the test needs no PeerId fixture.
+        let mut ev = progress(ProgressPhase::HopOk).blocks(8, 12).ms(210.5);
+        ev.peer_name = Some("node-c".to_string());
+        sink.emit(ev);
+
+        let timings = sink.take();
+        // The first event had no peer_name, so it is incomplete and skipped.
+        assert_eq!(timings, vec![("node-c".to_string(), 8, 12, 210.5)]);
+        // `take` drains: a second call sees an empty sink, which is what lets
+        // the CLI reuse one sink per token.
+        assert!(sink.take().is_empty());
+    }
+
+    #[test]
+    fn hop_timing_sink_ignores_non_hop_ok_phases() {
+        let sink = HopTimingSink::new();
+        for phase in [
+            ProgressPhase::HopStart,
+            ProgressPhase::HopFailed,
+            ProgressPhase::ChainPinned,
+            ProgressPhase::TokenSampled,
+            ProgressPhase::Complete,
+        ] {
+            let mut ev = progress(phase).blocks(0, 4).ms(1.0);
+            ev.peer_name = Some("node-a".to_string());
+            sink.emit(ev);
+        }
+        assert!(sink.take().is_empty());
+    }
+
+    /// Telemetry must never backpressure the token path: a full channel drops
+    /// the event and counts it rather than blocking the inference loop.
+    #[tokio::test]
+    async fn channel_progress_sink_drops_instead_of_blocking() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ShardRunEvent>(1);
+        let sink = ChannelProgressSink::new(tx);
+
+        sink.emit(progress(ProgressPhase::HopStart));
+        assert_eq!(sink.dropped(), 0, "first event fits in the channel");
+
+        // Channel is now full; these have nowhere to go.
+        sink.emit(progress(ProgressPhase::HopOk));
+        sink.emit(progress(ProgressPhase::HopOk));
+        assert_eq!(sink.dropped(), 2);
+    }
+
+    #[test]
+    fn classify_hop_failure_maps_the_real_error_strings() {
+        assert_eq!(
+            classify_hop_failure("protocols not supported: /kwaai/inference/1.0.0"),
+            HopFailureKind::NoHandler
+        );
+        assert_eq!(
+            classify_hop_failure("hop timeout after 300s — peer unresponsive"),
+            HopFailureKind::Timeout
+        );
+        for transient in ["stream reset", "early eof", "connection closed by peer"] {
+            assert_eq!(
+                classify_hop_failure(transient),
+                HopFailureKind::Transient,
+                "{transient} should stay eligible for retry"
+            );
+        }
+        assert_eq!(
+            classify_hop_failure("something else entirely"),
+            HopFailureKind::Other
+        );
+    }
+
+    /// A timeout must classify as Timeout rather than Transient, even though
+    /// the timeout text could otherwise be mistaken for a stream error. The
+    /// distinction matters: transient failures keep a peer eligible, timeouts
+    /// blacklist it.
+    #[test]
+    fn classify_hop_failure_prefers_timeout_over_transient() {
+        let msg = "hop timeout after 300s — connection closed";
+        assert_eq!(classify_hop_failure(msg), HopFailureKind::Timeout);
+    }
+
+    #[test]
+    fn covered_block_count_counts_positions_not_range_widths() {
+        let entry = |start: usize, end: usize| BlockServerEntry {
+            peer_id: PeerId::random(),
+            start_block: start,
+            end_block: end,
+            public_name: String::new(),
+            throughput: 0.0,
+            trust_score: None,
+            lease_v1: false,
+        };
+
+        // Fully covered by two adjacent ranges.
+        assert_eq!(covered_block_count(&[entry(0, 8), entry(8, 16)], 16), 16);
+        // Overlapping ranges must not double-count: 0-8 twice is still 8.
+        assert_eq!(covered_block_count(&[entry(0, 8), entry(0, 8)], 16), 8);
+        // A gap in the middle is visible as a shortfall.
+        assert_eq!(covered_block_count(&[entry(0, 4), entry(8, 16)], 16), 12);
+        assert_eq!(covered_block_count(&[], 16), 0);
     }
 }
