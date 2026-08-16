@@ -2046,7 +2046,7 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     );
 
     if let Err(e) = checker.install_update(&update.version).await {
-        warn!("Auto-update install failed: {e}");
+        warn!("Auto-update install failed: {e:?}");
         return None;
     }
 
