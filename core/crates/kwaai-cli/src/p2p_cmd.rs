@@ -761,12 +761,24 @@ enum Sample {
 
 /// Classify a call outcome. Refusal is success for our purposes; anything that
 /// failed before reaching the peer is not a latency sample at all.
+///
+/// The two transports word the refusal differently, and matching only one of
+/// them makes the probe report "could not reach the peer" against a peer it
+/// reached perfectly well:
+///
+/// ```text
+/// p2pd:   failed to negotiate protocol: protocols not supported: [/kwaai/…]
+/// native: remote does not support protocol /kwaai/…
+/// ```
+///
+/// Matching on `not support` covers both, and any similar phrasing a future
+/// transport picks — the alternative is a list that silently rots the next time
+/// one of them rewords an error string.
 fn classify(result: Result<Vec<u8>, String>) -> Sample {
     match result {
         Ok(_) => Sample::RoundTrip,
         Err(e) => {
-            let low = e.to_lowercase();
-            if low.contains("protocols not supported") || low.contains("protocol not supported") {
+            if e.to_lowercase().contains("not support") {
                 Sample::RoundTrip
             } else {
                 Sample::NoRoundTrip(e)
@@ -943,11 +955,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_refused_protocol_is_a_valid_round_trip() {
+    fn a_refused_protocol_is_a_valid_round_trip_on_p2pd() {
         // The whole probe rests on this: the default protocol is refused, and
         // that refusal is the measurement, not an error.
         let err = "Protocol error: Daemon error: failed to negotiate protocol: \
                    protocols not supported: [/kwaai/probe-unrouted/1.0.0]";
+        assert_eq!(classify(Err(err.to_string())), Sample::RoundTrip);
+    }
+
+    #[test]
+    fn a_refused_protocol_is_a_valid_round_trip_on_native() {
+        // Regression: the native stack words this differently, and matching only
+        // p2pd's phrasing made the probe report "could not reach the peer"
+        // against a peer it had just round-tripped to. Caught by running the
+        // probe under `native_p2p: true`, not by any test that existed then.
+        let err = "Protocol error: Daemon error: Protocol error: remote does not \
+                   support protocol /kwaai/probe-unrouted/1.0.0";
         assert_eq!(classify(Err(err.to_string())), Sample::RoundTrip);
     }
 
