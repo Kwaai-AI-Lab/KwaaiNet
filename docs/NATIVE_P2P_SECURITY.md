@@ -144,6 +144,56 @@ Combined with 2.1, any writer can push a node toward that cliff deliberately —
 overall. Python hivemind uses an expiration heap; an expiration-ordered index
 here would remove both the cliff and that lever.
 
+### 2.4 A DNS dependency on the dial path carries an advisory with no fix
+
+**Status: open. `cargo audit` 0.22.2 against 1,216 advisories, run after the
+original draft — this section replaces the gap §6 used to record.**
+
+The native path is **206 crates**, of which `libp2p 0.56` contributes 19
+sub-crates. Four carry advisories:
+
+| crate | advisory | assessment |
+|---|---|---|
+| `hickory-proto 0.25.2` | RUSTSEC-2026-0119 (O(n²) name compression, CPU exhaustion) and **RUSTSEC-2026-0118 (NSEC3 proof validation enters an unbounded loop; no fixed version exists)** | the one that matters |
+| `crossbeam-epoch 0.9.18` | RUSTSEC-2026-0204, invalid pointer dereference in the `Debug` impl for `Atomic`/`Shared` | low: requires an already-invalid pointer to be formatted. Fix is a patch bump to ≥0.9.20 |
+| `bincode 1.3.3` | RUSTSEC-2025-0141, unmaintained | warning |
+| `anyhow 1.0.102` | RUSTSEC-2026-0190, unsound `Error::downcast_mut()` | warning |
+
+`hickory` arrives as `libp2p[dns] → libp2p-dns 0.44 → hickory-resolver 0.25 →
+hickory-proto`, which puts it on the **untrusted-input path**: DNS responses are
+attacker-influenceable, and name resolution runs on every dial to a `/dns/`
+multiaddr — which the bootstrap addresses are (`/dns/bootstrap-1.kwaai.ai/…`).
+The feature is therefore load-bearing and cannot simply be dropped.
+
+Two reasons the exposure is probably narrower than the advisory titles suggest,
+both **worth confirming rather than assuming**: 0119 is in message *encoding*
+while a resolver predominantly decodes, and 0118 is DNSSEC NSEC3 validation,
+which a stub resolver does not normally perform. Neither has a clean remedy here
+— `libp2p-dns 0.44` pins `hickory-resolver 0.25`, so the upgrade must come from
+upstream libp2p rather than from this repo.
+
+Two structural notes fall out of the same scan:
+
+- **The `dns` feature is declared in only one of the two places `libp2p` is
+  configured** — present in `[workspace.dependencies]` (`core/Cargo.toml:174`),
+  absent from `[dependencies]` (`:52`). Cargo unions features so nothing is
+  broken today, but the one dependency with an unfixable advisory is reached
+  through a feature list that two hand-maintained declarations already disagree
+  about.
+- **Twelve crates build at two or more versions**, including `yamux` at both
+  0.12.1 and 0.13.10 — two implementations of the muxer that frames every
+  connection, linked into one binary — plus `prost` 0.12/0.14 and
+  `unsigned-varint` 0.7/0.8, both on the wire-framing path.
+
+The workspace's high-severity findings are **not** on the p2p path: `lopdf`
+(7.5, stack overflow on nested PDF objects, via `pdf-extract` — the dependency
+#87 upgrades) and `quick-xml` (two at 7.5), both in `kwaai-rag`'s document
+ingestion. Recorded here only so the boundary is explicit.
+
+Note what an advisory scan is: a check against *known, reported* problems in
+dependencies. It says nothing about this repo's own code, and nothing about
+unreported problems in theirs.
+
 ---
 
 ## 3. Issues found and resolved during the stack
@@ -294,8 +344,15 @@ of their absence:
   deliberately, so the RFC2544/RFC5737 ranges used by the docker nat-test bed are
   treated as routable. Correct for testing; worth confirming nobody runs a
   production node with an address in those ranges reachable.
-- **No dependency audit** of the libp2p 0.56 tree (`cargo audit` / `cargo deny`
-  were not run as part of this work).
+- **Licence and supply-chain policy** is unexamined: `cargo deny` was not run, so
+  nothing here speaks to licence compatibility, banned crates, or source
+  provenance beyond the one vendored dependency noted below. The advisory scan
+  that *was* run is at 2.4, and covers only known-and-reported vulnerabilities.
+- **The vendored `multistream-select`** (`patches/multistream-select`, crates.io
+  0.13.0 with its protocol-name validation relaxed for hivemind's slash-less
+  names) is the one dependency not resolved from the registry. The fetch script
+  pins a checksum, but the patched code itself was not re-reviewed here — and it
+  sits directly on the negotiation path for every inbound stream.
 
 The two cheapest high-value additions would be a fuzz target over `wire.rs`'s
 decoder and a deliberately hostile peer in the interop tier — both are small next
