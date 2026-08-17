@@ -247,7 +247,25 @@ impl NetworkService {
                 KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
             })
             .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
-            .with_swarm_config(|c| c.with_idle_connection_timeout(config.connection_timeout))
+            .with_swarm_config(|c| {
+                c.with_idle_connection_timeout(config.connection_timeout)
+                    // 0-RTT protocol negotiation on outbound substreams.
+                    //
+                    // The default, `V1`, writes the multistream-select proposal,
+                    // waits for the peer to confirm it, and only then sends the
+                    // payload — two round trips for one request. `V1Lazy` buffers
+                    // the proposal and flushes it together with the first
+                    // application data, which is what go-libp2p does and why the
+                    // p2pd path costs one round trip where this cost two.
+                    //
+                    // Safe in a mixed fleet: the wire bytes are identical and a
+                    // *listener* behaves as `V1` regardless, so this only changes
+                    // what we do as dialer. It applies when the dialer offers a
+                    // single protocol, which every unary call here does.
+                    .with_substream_upgrade_protocol_override(
+                        libp2p::core::upgrade::Version::V1Lazy,
+                    )
+            })
             .build();
 
         for addr in config.swarm_listen_addrs() {
