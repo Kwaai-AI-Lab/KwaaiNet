@@ -2392,6 +2392,56 @@ pub enum P2pAction {
 
     /// Inspect active connections to other peers
     Peers(PeersArgs),
+
+    /// Measure round-trip latency to a peer.
+    ///
+    /// Sends the smallest request the fabric allows and times the reply. By
+    /// default it names a protocol deliberately left unimplemented, so the peer
+    /// refuses it during protocol negotiation — a refusal still completes a full
+    /// round trip, which means **this works against any libp2p peer without its
+    /// cooperation**, including bootstrap nodes and peers not running kwaainet.
+    ///
+    /// A minimal request costs one round trip and no more: payload size makes no
+    /// difference up to at least 256KB, and it does not matter whether a handler
+    /// runs. So the figure here is the peer's network distance, and it is the
+    /// entire per-call transport cost of anything else you ask that peer to do.
+    Probe(ProbeArgs),
+}
+
+#[derive(Args)]
+pub struct ProbeArgs {
+    /// Peer ID (base58) to probe. Must already be connected — check
+    /// `p2p peers list`. Probing an unconnected peer measures the dial as
+    /// well as the round trip, and is reported as such rather than averaged in.
+    #[arg(long)]
+    pub peer: String,
+
+    /// Number of timed round trips. One warm-up call runs first and is
+    /// excluded, so a cold connection does not skew the result.
+    #[arg(long, default_value_t = 7)]
+    pub count: usize,
+
+    /// Protocol to invoke instead of the unimplemented default. Use this to
+    /// time a real handler — the difference against the default is what that
+    /// handler costs. A protocol the peer does implement replies normally.
+    #[arg(long)]
+    pub proto: Option<String>,
+
+    /// Also measure how well calls overlap, by issuing this many at once.
+    /// Round trips to a peer are independent, so wall time close to a single
+    /// call means latency can be hidden by running work concurrently.
+    #[arg(long)]
+    pub concurrency: Option<usize>,
+
+    /// Payload size in bytes. Sizes up to at least 256KB cost the same as an
+    /// empty call, so raise this to confirm you are latency- and not
+    /// bandwidth-bound on a particular path.
+    #[arg(long, default_value_t = 1)]
+    pub payload_bytes: usize,
+
+    /// Per-call timeout in seconds.
+    #[arg(long, default_value_t = 10)]
+    pub timeout: u64,
 }
 
 #[derive(Args)]
