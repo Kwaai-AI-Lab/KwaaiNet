@@ -118,7 +118,7 @@ async fn dht_roundtrip_latency() {
         .await;
     let find_ms = t_find.elapsed().as_millis() as u64;
 
-    let found = result.map_or(false, |p| p.is_some());
+    let found = result.is_ok_and(|p| p.is_some());
     rec.metric("provide_ms", provide_ms);
     rec.metric("find_ms", find_ms);
     rec.metric("found", found);
@@ -155,7 +155,7 @@ async fn vpk_nodes_discoverable() {
         .await;
     let lookup_ms = t.elapsed().as_millis() as u64;
 
-    let found = result.map_or(false, |p| p.is_some());
+    let found = result.is_ok_and(|p| p.is_some());
     rec.metric("lookup_ms", lookup_ms);
     rec.metric("vpk_providers_found", found);
     rec.finish(true); // Not a failure if no VPK nodes online — just report

@@ -161,7 +161,7 @@ async fn swarm_calls_daemon_handler() {
         .expect("register unary handler on daemon");
 
     let (daemon_id, daemon_addr) = daemon_peer(&daemon);
-    let swarm = SwarmNode::spawn(Some((daemon_id, daemon_addr)), |data| Ok(data)).await;
+    let swarm = SwarmNode::spawn(Some((daemon_id, daemon_addr)), Ok).await;
 
     let response = swarm
         .call(daemon_id, PROTO, b"from-swarm")
@@ -228,7 +228,7 @@ async fn swarm_gets_clean_refusal_from_daemon() {
         .expect("register unary handler on daemon");
 
     let (daemon_id, daemon_addr) = daemon_peer(&daemon);
-    let swarm = SwarmNode::spawn(Some((daemon_id, daemon_addr)), |data| Ok(data)).await;
+    let swarm = SwarmNode::spawn(Some((daemon_id, daemon_addr)), Ok).await;
 
     let error = swarm
         .call(daemon_id, "DHTProtocol.rpc_nonexistent", b"x")

@@ -1430,6 +1430,16 @@ fn unix_socket_path() -> PathBuf {
 /// running even if the IPC surface didn't come up (the node still serves
 /// p2p traffic).
 pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
+    spawn_on_tcp_port(config, DEFAULT_GRPC_TCP_PORT)
+}
+
+/// As [`spawn`], but binds TCP on an explicit port.
+///
+/// Exists so tests can take an ephemeral port instead of the well-known one.
+/// Binding the real port made the lifecycle tests fail on any machine with a
+/// node already running — the listener they were asserting had closed was the
+/// daemon's, not theirs.
+pub(crate) fn spawn_on_tcp_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcServerHandle {
     let (shutdown_tcp_tx, shutdown_tcp_rx) = oneshot::channel::<()>();
     #[cfg(unix)]
     let (shutdown_unix_tx, shutdown_unix_rx) = oneshot::channel::<()>();
@@ -1438,7 +1448,7 @@ pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
     let service = KwaaiNetServer::new(svc_state);
 
     // TCP: every platform.
-    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{DEFAULT_GRPC_TCP_PORT}")
+    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{tcp_port}")
         .parse()
         .expect("valid loopback addr");
     let tcp_service = service.clone();
@@ -1632,22 +1642,36 @@ mod tests {
         }
     }
 
-    /// True iff a fresh TCP connect to the gRPC loopback port succeeds.
-    async fn tcp_accepting() -> bool {
-        tokio::net::TcpStream::connect(("127.0.0.1", DEFAULT_GRPC_TCP_PORT))
+    /// Ask the OS for a free loopback port.
+    ///
+    /// The listener is dropped before the value is returned, so there is a
+    /// small window where something else could claim it. That is still far
+    /// safer than the well-known port, which a running `kwaainet run-node`
+    /// holds for the life of the machine.
+    fn ephemeral_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral loopback port")
+            .local_addr()
+            .expect("read ephemeral local addr")
+            .port()
+    }
+
+    /// True iff a fresh TCP connect to `port` succeeds.
+    async fn tcp_accepting(port: u16) -> bool {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .is_ok()
     }
 
-    /// True iff a fresh TCP connect to the gRPC loopback port is refused
-    /// quickly (used to assert the listener is gone after shutdown).
-    async fn tcp_refused() -> bool {
+    /// True iff a fresh TCP connect to `port` is refused quickly (used to
+    /// assert the listener is gone after shutdown).
+    async fn tcp_refused(port: u16) -> bool {
         // ConnectionRefused is the happy-path answer; any other Err (e.g.
         // network unreachable) we also treat as "not accepting". We bound
         // the dial with a short timeout so a slow stack can't lie to us.
         match tokio::time::timeout(
             Duration::from_millis(250),
-            tokio::net::TcpStream::connect(("127.0.0.1", DEFAULT_GRPC_TCP_PORT)),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
         )
         .await
         {
@@ -1673,16 +1697,13 @@ mod tests {
         let _env = EnvGuard::set(tmp.path());
 
         let config = KwaaiNetConfig::default();
-        let handle = spawn(config);
+        let port = ephemeral_port();
+        let handle = spawn_on_tcp_port(config, port);
 
         // The server task is spawned on tokio; give it up to ~2 s to wire
         // up the TCP listener. In practice this happens in <50 ms locally.
-        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
-        assert!(
-            up,
-            "gRPC TCP listener never came up on 127.0.0.1:{}",
-            DEFAULT_GRPC_TCP_PORT
-        );
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
+        assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
 
         #[cfg(unix)]
         {
@@ -1719,11 +1740,10 @@ mod tests {
         // tonic's serve_with_shutdown returns -> listener is closed.
         drop(handle);
 
-        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
         assert!(
             down,
-            "TCP listener on 127.0.0.1:{} did not close within 2s of dropping the handle",
-            DEFAULT_GRPC_TCP_PORT
+            "TCP listener on 127.0.0.1:{port} did not close within 2s of dropping the handle"
         );
 
         #[cfg(unix)]
@@ -1766,13 +1786,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
         let _env = EnvGuard::set(tmp.path());
 
-        let handle = spawn(KwaaiNetConfig::default());
+        let port = ephemeral_port();
+        let handle = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
 
         // Make sure the server is accepting before we dial.
-        let up = wait_for(Duration::from_secs(2), tcp_accepting).await;
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
         assert!(up, "gRPC TCP listener never came up");
 
-        let endpoint = format!("http://127.0.0.1:{DEFAULT_GRPC_TCP_PORT}");
+        let endpoint = format!("http://127.0.0.1:{port}");
         let channel = tonic::transport::Endpoint::from_shared(endpoint)
             .expect("valid endpoint")
             .connect()
@@ -1803,7 +1824,7 @@ mod tests {
         drop(handle);
         // Wait for the listener to actually go away before the next test
         // tries to bind the same port.
-        let down = wait_for(Duration::from_secs(2), tcp_refused).await;
+        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
         assert!(down, "TCP listener did not close after handle drop");
     }
 

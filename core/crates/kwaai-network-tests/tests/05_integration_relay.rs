@@ -240,7 +240,7 @@ async fn dht_provide_by_nat_node_findable_by_observer() {
         .await;
     let find_ms = t.elapsed().as_millis() as u64;
 
-    let found = result.map_or(false, |p| p.is_some());
+    let found = result.is_ok_and(|p| p.is_some());
     rec.metric("find_ms", find_ms);
     rec.metric("found", found);
     rec.finish(found);
