@@ -163,7 +163,29 @@ fn parse_ooxml_text(xml: &str) -> Result<String> {
             }
             Ok(Event::End(_)) => {}
             Ok(Event::Text(e)) if in_text => {
-                out.push_str(e.unescape().as_deref().unwrap_or(""));
+                // 0.41 renamed the decode step and no longer folds entity
+                // references in here — see GeneralRef below.
+                out.push_str(e.xml10_content().as_deref().unwrap_or(""));
+            }
+            // quick-xml 0.41 emits `&amp;`, `&#39;` and friends as their own
+            // event instead of unescaping them into the surrounding Text. Left
+            // unhandled they fall through the catch-all and vanish silently,
+            // which in a .docx means dropped ampersands and apostrophes.
+            Ok(Event::GeneralRef(e)) if in_text => {
+                match e.resolve_char_ref() {
+                    // Numeric: &#39; / &#x27;
+                    Ok(Some(ch)) => out.push(ch),
+                    // Named: &amp; &lt; &gt; &quot; &apos;
+                    Ok(None) => {
+                        if let Ok(name) = e.decode() {
+                            if let Some(text) = quick_xml::escape::resolve_predefined_entity(&name)
+                            {
+                                out.push_str(text);
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
             }
             Ok(Event::Eof) => break,
             Err(e) => bail!("XML parse error in DOCX: {e}"),
@@ -241,5 +263,54 @@ mod tests {
         let text = parse_ooxml_text(xml).unwrap();
         assert!(text.contains("Hello world."), "got: {text:?}");
         assert!(text.contains("Second paragraph."), "got: {text:?}");
+    }
+
+    /// Entity references must survive extraction.
+    ///
+    /// quick-xml 0.41 stopped folding entities into `Text` and started emitting
+    /// them as `Event::GeneralRef`. Before this was handled they fell through the
+    /// catch-all arm and disappeared — "R&amp;D" silently became "RD". Named and
+    /// numeric forms both matter: Word writes `&amp;` for ampersands and numeric
+    /// refs for typographic punctuation.
+    #[test]
+    fn test_parse_ooxml_entities_are_preserved() {
+        let xml = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Smith &amp; Wesson</w:t></w:r></w:p>
+    <w:p><w:r><w:t>5 &lt; 7 &gt; 3</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Wooding&#39;s house</w:t></w:r></w:p>
+    <w:p><w:r><w:t>caf&#xE9; society</w:t></w:r></w:p>
+    <w:p><w:r><w:t>She said &quot;hello&quot;</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let text = parse_ooxml_text(xml).unwrap();
+        assert!(
+            text.contains("Smith & Wesson"),
+            "named entity lost: {text:?}"
+        );
+        assert!(text.contains("5 < 7 > 3"), "lt/gt lost: {text:?}");
+        assert!(
+            text.contains("Wooding's house"),
+            "decimal char ref lost: {text:?}"
+        );
+        assert!(text.contains("café society"), "hex char ref lost: {text:?}");
+        assert!(
+            text.contains("She said \"hello\""),
+            "quot entity lost: {text:?}"
+        );
+    }
+
+    /// An entity split across runs must not lose the surrounding text either.
+    #[test]
+    fn test_parse_ooxml_entity_between_runs() {
+        let xml = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>R</w:t></w:r><w:r><w:t>&amp;</w:t></w:r><w:r><w:t>D budget</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let text = parse_ooxml_text(xml).unwrap();
+        assert!(text.contains("R&D budget"), "got: {text:?}");
     }
 }
