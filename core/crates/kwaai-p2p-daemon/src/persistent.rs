@@ -311,7 +311,14 @@ impl PersistentConnection {
             Some(persistent_connection_response::Message::DaemonError(err)) => {
                 let err_msg = err.message.unwrap_or_else(|| "Unknown error".to_string());
                 // "stream reset" is a transient network event, not a bug — log at debug.
-                if err_msg.contains("stream reset") || err_msg.contains("early eof") {
+                // "protocols not supported" likewise says something true about the
+                // peer rather than wrong about us: it is the ordinary answer when
+                // asking whether a peer speaks a protocol, which is exactly what
+                // `p2p probe` does on every call.
+                if err_msg.contains("stream reset")
+                    || err_msg.contains("early eof")
+                    || err_msg.contains("protocols not supported")
+                {
                     debug!("Daemon transient error for call {}: {}", call_id, err_msg);
                 } else {
                     warn!("Daemon error for call {}: {}", call_id, err_msg);

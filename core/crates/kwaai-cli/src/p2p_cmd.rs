@@ -11,7 +11,7 @@ use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::P2PClient;
 use libp2p::{Multiaddr, PeerId};
 
-use crate::cli::{P2pAction, P2pArgs, PeersAction, PeersArgs};
+use crate::cli::{P2pAction, P2pArgs, PeersAction, PeersArgs, ProbeArgs};
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::shard_cmd::daemon_socket;
@@ -20,6 +20,7 @@ pub async fn run(args: P2pArgs) -> Result<()> {
     match args.action {
         P2pAction::Info => info().await,
         P2pAction::Peers(p) => peers(p).await,
+        P2pAction::Probe(p) => probe(p).await,
     }
 }
 
@@ -730,5 +731,293 @@ fn print_response(resp: &[u8]) {
                 suffix
             ));
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// probe
+// ---------------------------------------------------------------------------
+
+/// A protocol this project undertakes never to implement.
+///
+/// The probe's default, and the reason it needs nothing from the peer: any
+/// libp2p node refuses an unknown protocol during multistream-select, and that
+/// refusal still crosses the network and comes back. Implementing this protocol
+/// anywhere would silently turn every probe into a measurement of the handler
+/// instead of the path.
+const PROBE_PROTO: &str = "/kwaai/probe-unrouted/1.0.0";
+
+/// What a single call tells us about the path, as distinct from whether it
+/// "succeeded" — a refusal is the expected result and a perfectly good sample.
+#[derive(Debug, PartialEq, Eq)]
+enum Sample {
+    /// Full round trip: either a handler replied, or the peer refused the
+    /// protocol. Both crossed the network and came back.
+    RoundTrip,
+    /// Never reached the peer, so the elapsed time measures a local failure
+    /// (no route, dial failed, timeout) and must not enter the statistics.
+    NoRoundTrip(String),
+}
+
+/// Classify a call outcome. Refusal is success for our purposes; anything that
+/// failed before reaching the peer is not a latency sample at all.
+///
+/// The two transports word the refusal differently, and matching only one of
+/// them makes the probe report "could not reach the peer" against a peer it
+/// reached perfectly well:
+///
+/// ```text
+/// p2pd:   failed to negotiate protocol: protocols not supported: [/kwaai/…]
+/// native: remote does not support protocol /kwaai/…
+/// ```
+///
+/// Matching on `not support` covers both, and any similar phrasing a future
+/// transport picks — the alternative is a list that silently rots the next time
+/// one of them rewords an error string.
+fn classify(result: Result<Vec<u8>, String>) -> Sample {
+    match result {
+        Ok(_) => Sample::RoundTrip,
+        Err(e) => {
+            if e.to_lowercase().contains("not support") {
+                Sample::RoundTrip
+            } else {
+                Sample::NoRoundTrip(e)
+            }
+        }
+    }
+}
+
+/// min / median / max / mean over the samples, in milliseconds.
+///
+/// Median rather than mean is the headline elsewhere in the output because a
+/// single scheduling hiccup skews a small sample's mean noticeably.
+fn summarize(samples: &[f64]) -> Option<(f64, f64, f64, f64)> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut s = samples.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).expect("no NaN in elapsed times"));
+    let median = if s.len().is_multiple_of(2) {
+        (s[s.len() / 2 - 1] + s[s.len() / 2]) / 2.0
+    } else {
+        s[s.len() / 2]
+    };
+    let mean = s.iter().sum::<f64>() / s.len() as f64;
+    Some((s[0], median, s[s.len() - 1], mean))
+}
+
+/// One call, timed, with the outcome classified. The clock covers exactly the
+/// call, so a timeout contributes its own duration and nothing else.
+async fn timed_call(
+    client: &P2PClient,
+    peer: &[u8],
+    proto: &str,
+    payload: &[u8],
+    timeout: std::time::Duration,
+) -> (Sample, f64) {
+    let t = std::time::Instant::now();
+    let outcome = match tokio::time::timeout(
+        timeout,
+        client.call_unary_handler(peer, proto, payload),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(e)) => Err(format!("{e}")),
+        Err(_) => Err("timed out".to_string()),
+    };
+    (classify(outcome), t.elapsed().as_secs_f64() * 1000.0)
+}
+
+async fn probe(args: ProbeArgs) -> Result<()> {
+    let dest_peer: PeerId = match args.peer.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            print_error(&format!("invalid peer ID: {}", e));
+            print_separator();
+            return Ok(());
+        }
+    };
+
+    if args.count == 0 {
+        print_error("--count must be at least 1");
+        print_separator();
+        return Ok(());
+    }
+
+    let Some(client) = connect_p2pd().await? else {
+        return Ok(());
+    };
+
+    let proto = args
+        .proto
+        .clone()
+        .unwrap_or_else(|| PROBE_PROTO.to_string());
+    let payload = vec![b'k'; args.payload_bytes];
+    let dest_bytes = dest_peer.to_bytes();
+
+    print_box_header("🛰  KwaaiNet P2P — Latency Probe");
+    println!("  Peer:    {}", dest_peer);
+    println!(
+        "  Proto:   {}{}",
+        proto,
+        if args.proto.is_none() {
+            "  (unimplemented by design — a refusal is a full round trip)"
+        } else {
+            ""
+        }
+    );
+    println!("  Payload: {} bytes", payload.len());
+    println!("  Calls:   {} (plus 1 warm-up, excluded)", args.count);
+    println!();
+
+    let timeout = std::time::Duration::from_secs(args.timeout);
+
+    // Warm-up, discarded: a first call to a peer that is connected but idle can
+    // include work the steady state does not repeat.
+    let (warm, _) = timed_call(&client, &dest_bytes, &proto, &payload, timeout).await;
+    if let Sample::NoRoundTrip(e) = warm {
+        print_error(&format!("could not reach the peer: {e}"));
+        print_info("The peer must already be connected — check: kwaainet p2p peers list");
+        print_info("To establish a connection first: kwaainet p2p peers connect --peer <ID>");
+        print_separator();
+        return Ok(());
+    }
+
+    let mut samples = Vec::with_capacity(args.count);
+    let mut failures = Vec::new();
+    for _ in 0..args.count {
+        match timed_call(&client, &dest_bytes, &proto, &payload, timeout).await {
+            (Sample::RoundTrip, ms) => samples.push(ms),
+            (Sample::NoRoundTrip(e), _) => failures.push(e),
+        }
+    }
+
+    match summarize(&samples) {
+        Some((min, median, max, mean)) => {
+            print_success(&format!("Round-trip time: {median:.1} ms (median)"));
+            println!(
+                "  min {min:.1} ms   median {median:.1} ms   max {max:.1} ms   mean {mean:.1} ms   \
+                 n={}",
+                samples.len()
+            );
+        }
+        None => {
+            print_error("No call completed a round trip.");
+            for e in failures.iter().take(3) {
+                print_info(e);
+            }
+            print_separator();
+            return Ok(());
+        }
+    }
+
+    if !failures.is_empty() {
+        print_warning(&format!(
+            "{} of {} calls never reached the peer and were excluded",
+            failures.len(),
+            args.count
+        ));
+    }
+
+    if let Some(n) = args.concurrency {
+        if n >= 2 {
+            println!();
+            let t = std::time::Instant::now();
+            let calls = (0..n).map(|_| timed_call(&client, &dest_bytes, &proto, &payload, timeout));
+            let results = futures::future::join_all(calls).await;
+            let wall = t.elapsed().as_secs_f64() * 1000.0;
+            let ok = results
+                .iter()
+                .filter(|(s, _)| *s == Sample::RoundTrip)
+                .count();
+            let serial_estimate = summarize(&samples).map(|(_, m, _, _)| m * n as f64);
+            print_info(&format!(
+                "{n} concurrent calls completed in {wall:.1} ms ({ok}/{n} round-tripped)"
+            ));
+            if let Some(est) = serial_estimate {
+                print_info(&format!(
+                    "Run one at a time that would be ~{est:.0} ms — {:.1}x overlap",
+                    est / wall
+                ));
+            }
+        } else {
+            print_warning("--concurrency below 2 measures nothing; skipped");
+        }
+    }
+
+    print_separator();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_protocol_is_a_valid_round_trip_on_p2pd() {
+        // The whole probe rests on this: the default protocol is refused, and
+        // that refusal is the measurement, not an error.
+        let err = "Protocol error: Daemon error: failed to negotiate protocol: \
+                   protocols not supported: [/kwaai/probe-unrouted/1.0.0]";
+        assert_eq!(classify(Err(err.to_string())), Sample::RoundTrip);
+    }
+
+    #[test]
+    fn a_refused_protocol_is_a_valid_round_trip_on_native() {
+        // Regression: the native stack words this differently, and matching only
+        // p2pd's phrasing made the probe report "could not reach the peer"
+        // against a peer it had just round-tripped to. Caught by running the
+        // probe under `native_p2p: true`, not by any test that existed then.
+        let err = "Protocol error: Daemon error: Protocol error: remote does not \
+                   support protocol /kwaai/probe-unrouted/1.0.0";
+        assert_eq!(classify(Err(err.to_string())), Sample::RoundTrip);
+    }
+
+    #[test]
+    fn a_successful_reply_is_a_round_trip() {
+        assert_eq!(classify(Ok(b"ok".to_vec())), Sample::RoundTrip);
+    }
+
+    #[test]
+    fn a_dial_failure_is_not_a_latency_sample() {
+        // Timing a failure that never left the machine would silently report a
+        // fast "round trip" to a peer that was never reached.
+        let s = classify(Err("no addresses for peer".to_string()));
+        assert!(matches!(s, Sample::NoRoundTrip(_)));
+    }
+
+    #[test]
+    fn a_timeout_is_not_a_latency_sample() {
+        assert!(matches!(
+            classify(Err("timed out".to_string())),
+            Sample::NoRoundTrip(_)
+        ));
+    }
+
+    #[test]
+    fn summarize_is_none_for_no_samples() {
+        assert!(summarize(&[]).is_none());
+    }
+
+    #[test]
+    fn summarize_reports_order_statistics() {
+        let (min, median, max, mean) = summarize(&[30.0, 10.0, 20.0]).expect("three samples");
+        assert_eq!(min, 10.0);
+        assert_eq!(median, 20.0);
+        assert_eq!(max, 30.0);
+        assert_eq!(mean, 20.0);
+    }
+
+    #[test]
+    fn summarize_averages_the_middle_pair_when_even() {
+        let (_, median, _, _) = summarize(&[10.0, 20.0, 30.0, 40.0]).expect("four samples");
+        assert_eq!(median, 25.0);
+    }
+
+    #[test]
+    fn summarize_handles_a_single_sample() {
+        let (min, median, max, mean) = summarize(&[42.0]).expect("one sample");
+        assert_eq!((min, median, max, mean), (42.0, 42.0, 42.0, 42.0));
     }
 }
