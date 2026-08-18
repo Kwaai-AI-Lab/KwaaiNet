@@ -13,10 +13,10 @@
 
 ## Tests
 - [ ] Complete D6 rebuild once metro machines are accessible via p2p relay
-- [ ] Run `kwaainet rag eval` after rebuild and record accuracy in `d6_accuracy_progress.md`
+- [ ] Run `kwaainet rag eval` after rebuild and record accuracy in `plans/d6_accuracy_progress.md`
 - [ ] Graph seed round-trip test: seed YAML → graph → retrieval includes seeded relations
 - [ ] Doc schema auto-detect test: D6 PDF header → auto-detected ISBN/publisher/author
 
 ## Docs
 - [ ] Design docs: overview.md and data-flows.md (see `design/`)
-- [ ] Update `d6_accuracy_progress.md` after next full rebuild + eval
+- [ ] Update `plans/d6_accuracy_progress.md` after next full rebuild + eval

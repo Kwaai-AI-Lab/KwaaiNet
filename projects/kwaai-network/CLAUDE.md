@@ -15,6 +15,7 @@ logic, storage, or identity — it uses them.
 | `kwaai-p2p-daemon` | `core/crates/kwaai-p2p-daemon/` | Long-running p2pd process |
 | `kwaai-hivemind-dht` | `core/crates/kwaai-hivemind-dht/` | Hivemind DHT compatibility layer |
 | `kwaai-rpc` | `core/crates/kwaai-rpc/` | RPC protocol definitions |
+| `kwaai-network-tests` | `core/crates/kwaai-network-tests/` | Three-tier connectivity/robustness suite (`publish = false`) |
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `p2p_cmd.rs` — `kwaainet p2p` subcommands

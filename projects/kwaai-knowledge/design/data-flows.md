@@ -103,5 +103,5 @@ sequenceDiagram
         Eval->>Eval: record pass/fail
     end
     Eval-->>CLI: {total, passed, failed, accuracy_pct}
-    CLI->>CLI: append to d6_accuracy_progress.md
+    CLI->>CLI: append to plans/d6_accuracy_progress.md
 ```

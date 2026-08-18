@@ -1,7 +1,7 @@
 {
   "folders": [
     { "path": "../../core/crates/kwaai-storage", "name": "kwaai-storage (crate)" },
-    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (vpk)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (vpk, storage_rpc)" },
     { "path": ".", "name": "project docs" },
     { "path": "../../tests/kwaai-storage", "name": "tests" }
   ],

@@ -11,20 +11,23 @@ It does **not** handle P2P transport, inference, or storage.
 | Crate | Path | Description |
 |-------|------|-------------|
 | `kwaai-trust` | `core/crates/kwaai-trust/` | Identity, VC wallet, trust scoring |
+| `kwaai-ledger` | `core/crates/kwaai-ledger/` | Work receipts — quote/claim/receipt, bilateral mutual credit |
 | `kwaai-wasm` | `core/crates/kwaai-wasm/` | WASM bindings for browser nodes |
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `identity.rs` — `kwaainet identity` subcommands (create, show, export)
 - `trust.rs` — `kwaainet trust` subcommands (score, issue, verify)
+- `reputation.rs`, `reputation_cmd.rs` — `kwaainet reputation` subcommands
+- `ledger_cmd.rs`, `ledger_node.rs` — `kwaainet ledger` subcommands and node-side receipt handling
 
 ## Build & test
 
 ```bash
 # Build only trust crates
-cargo build -p kwaai-trust -p kwaai-wasm
+cargo build -p kwaai-trust -p kwaai-ledger -p kwaai-wasm
 
 # Run tests
-cargo test -p kwaai-trust
+cargo test -p kwaai-trust -p kwaai-ledger
 
 # WASM build (requires wasm-pack)
 wasm-pack build core/crates/kwaai-wasm --target bundler

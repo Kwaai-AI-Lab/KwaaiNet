@@ -1,8 +1,9 @@
 {
   "folders": [
     { "path": "../../core/crates/kwaai-trust", "name": "kwaai-trust (crate)" },
+    { "path": "../../core/crates/kwaai-ledger", "name": "kwaai-ledger (crate)" },
     { "path": "../../core/crates/kwaai-wasm", "name": "kwaai-wasm (crate)" },
-    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (identity, trust)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (identity, trust, reputation, ledger)" },
     { "path": ".", "name": "project docs" },
     { "path": "../../tests/kwaai-trust", "name": "tests" }
   ],

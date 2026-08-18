@@ -4,7 +4,8 @@
     { "path": "../../core/crates/kwaai-p2p-daemon", "name": "kwaai-p2p-daemon (crate)" },
     { "path": "../../core/crates/kwaai-hivemind-dht", "name": "kwaai-hivemind-dht (crate)" },
     { "path": "../../core/crates/kwaai-rpc", "name": "kwaai-rpc (crate)" },
-    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (node, p2p_cmd)" },
+    { "path": "../../core/crates/kwaai-network-tests", "name": "kwaai-network-tests (crate)" },
+    { "path": "../../core/crates/kwaai-cli/src", "name": "kwaai-cli/src (node, p2p_cmd, grpc_server)" },
     { "path": ".", "name": "project docs" },
     { "path": "../../tests/kwaai-network", "name": "tests" }
   ],

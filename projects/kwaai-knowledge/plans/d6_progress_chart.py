@@ -2,11 +2,11 @@
 D6 RAG Accuracy Progress Chart — research paper figure.
 
 Usage:
-    python3 projects/kwaai-knowledge/d6_progress_chart.py
+    python3 projects/kwaai-knowledge/plans/d6_progress_chart.py
 
 Outputs:
-    projects/kwaai-knowledge/d6_progress_chart.png  (300 dpi)
-    projects/kwaai-knowledge/d6_progress_chart.pdf
+    projects/kwaai-knowledge/plans/d6_progress_chart.png  (300 dpi)
+    projects/kwaai-knowledge/plans/d6_progress_chart.pdf
 """
 
 import matplotlib
@@ -261,7 +261,7 @@ ax.set_title(
 # ---------------------------------------------------------------------------
 # Save
 # ---------------------------------------------------------------------------
-out_base = "projects/kwaai-knowledge/d6_progress_chart"
+out_base = "projects/kwaai-knowledge/plans/d6_progress_chart"
 fig.savefig(out_base + ".png", dpi=300, bbox_inches="tight")
 fig.savefig(out_base + ".pdf", bbox_inches="tight")
 print(f"Saved {out_base}.png and {out_base}.pdf")
