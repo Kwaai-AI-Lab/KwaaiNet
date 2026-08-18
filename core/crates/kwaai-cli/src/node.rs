@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 use tokio::{io::AsyncWriteExt, net::TcpListener, signal, sync::RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::KwaaiNetConfig;
 use crate::daemon::{DaemonManager, ShardManager};
@@ -1883,7 +1883,11 @@ async fn handle_rpc_stream(tcp: &mut tokio::net::TcpStream, storage: SharedStora
     let info = stream::parse_stream_info(tcp)
         .await
         .map_err(|e| anyhow::anyhow!("parse stream info: {}", e))?;
-    info!("RPC {}", info.proto);
+    // Per-request, so it grows with network traffic and never stops. At INFO
+    // this was 94% of the daemon log's volume and the reason it reached 6.9 GB
+    // with no rotation to bound it. The protocol name of a routine DHT stream
+    // is debugging detail, not an event worth a permanent record.
+    debug!("RPC {}", info.proto);
 
     use prost::Message as _;
 
