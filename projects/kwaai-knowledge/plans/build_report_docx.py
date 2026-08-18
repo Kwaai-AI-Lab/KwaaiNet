@@ -95,6 +95,8 @@ def tbls(doc):
     return [b for b in doc.element.body if b.tag.split("}")[1] == "tbl"]
 
 # ── Open fresh base (never the output file) ───────────────────────────────────
+# _base.docx is deliberately untracked (see .gitignore) — it is a local pandoc
+# template. Regenerate it with `pandoc -o _base.docx` from any source doc if missing.
 doc = Document("_base.docx")
 
 # ── Landscape ─────────────────────────────────────────────────────────────────
