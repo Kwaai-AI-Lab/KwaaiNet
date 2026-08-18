@@ -223,7 +223,7 @@ async fn dht_provide_node_a_find_node_b() {
         .await;
     let find_ms = t.elapsed().as_millis() as u64;
 
-    let found = result.map_or(false, |p| p.is_some());
+    let found = result.is_ok_and(|p| p.is_some());
     rec.metric("cross_find_ms", find_ms);
     rec.metric("found", found);
     // Cross-node provider propagation may vary in small local nets

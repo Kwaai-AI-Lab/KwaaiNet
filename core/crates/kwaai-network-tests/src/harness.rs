@@ -11,9 +11,9 @@
 //! - `TestNode::new_dht_client(bootstrap)` — dht, auto_relay, bootstraps from
 //!   the provided multiaddr.
 //! - `TestNode::new_nat_client(bootstrap, relay_addr)` — force_reachability_private
-//!   + auto_relay, bootstraps from `bootstrap`, uses `relay_addr` as trusted relay.
-//!   This forces the node to obtain a /p2p-circuit address, giving us a relay path
-//!   to test against.
+//!   and auto_relay, bootstraps from `bootstrap`, uses `relay_addr` as trusted
+//!   relay. This forces the node to obtain a /p2p-circuit address, giving us a
+//!   relay path to test against.
 //! - `RelayHarness::new()` — relay + two clients (one "NAT", one direct). Used by
 //!   the relay connectivity tests.
 

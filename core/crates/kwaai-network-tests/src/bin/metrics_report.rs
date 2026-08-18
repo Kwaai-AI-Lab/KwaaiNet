@@ -51,8 +51,8 @@ fn main() -> anyhow::Result<()> {
     );
     println!();
     println!(
-        "{:<name_w$}  {:>5}  {:>6}  {:>9}  {:>8}  {}",
-        "Test", "Runs", "Pass%", "Avg(ms)", "Last(ms)", "Trend"
+        "{:<name_w$}  {:>5}  {:>6}  {:>9}  {:>8}  Trend",
+        "Test", "Runs", "Pass%", "Avg(ms)", "Last(ms)"
     );
     println!("{}", "─".repeat(name_w + 40));
 

@@ -319,7 +319,9 @@ mod tests {
             &Device::Cpu,
         )
         .unwrap();
-        let compressed = averager.compress_gradients(&[g.clone()]).unwrap();
+        let compressed = averager
+            .compress_gradients(std::slice::from_ref(&g))
+            .unwrap();
         let recovered = averager.decompress_gradients(&compressed).unwrap();
         let orig: Vec<f32> = g.to_vec1().unwrap();
         let got: Vec<f32> = recovered[0].to_vec1().unwrap();
