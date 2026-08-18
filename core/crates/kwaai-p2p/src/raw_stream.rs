@@ -87,6 +87,30 @@ pub enum RawStreamError {
     Io(String),
 }
 
+/// A protocol nobody serves, appended to every *outbound* raw-stream
+/// negotiation to keep refusals eager.
+///
+/// The swarm negotiates outbound substreams with `Version::V1Lazy` (see
+/// `service.rs`), which wins a round trip per unary call but hands back a
+/// stream before the peer has confirmed the protocol. For a raw stream that is
+/// the wrong trade: [`RawStreamError::UnsupportedProtocol`] has to be decided
+/// *before* the caller is handed a stream, or the control socket enters pipe
+/// mode for a protocol the remote does not serve — a divergence from p2pd, and
+/// one the socket client cannot recover from because the reply slot is gone.
+///
+/// multistream-select only takes the lazy shortcut for the **last** protocol it
+/// has to offer (`dialer_select.rs`, the `protocols.peek().is_some()` branch).
+/// Appending one more entry therefore keeps every real protocol on the eager
+/// path, negotiated exactly as it was before, at the same one round trip: a
+/// long-lived stream pays that once, so there is nothing to win here anyway.
+///
+/// It is a marker, not a protocol. Reaching it means every real protocol was
+/// already refused, so [`Handler`] turns it straight back into
+/// `UnsupportedProtocol` and drops the stream. It is never proposed on the wire
+/// in the accepted case, and never advertised inbound — `listen_protocol` is
+/// built from the registered set alone.
+const NEGOTIATION_SENTINEL: &str = "kwaai.__negotiation_probe__";
+
 /// The result of an [`Behaviour::open_stream`] request: the protocol
 /// multistream-select settled on, plus the stream itself.
 pub type OpenResult = Result<(UnaryProtocol, RawStream), RawStreamError>;
@@ -267,7 +291,12 @@ impl ConnectionHandler for Handler {
         // clients, not by remote behaviour. The unary cap exists because there
         // a remote can open streams faster than handlers retire them.
         if let Some(open) = self.pending_outbound.pop_front() {
-            let protocols = Protocols::new(open.protocols.clone());
+            // Real protocols first, then the sentinel — see
+            // `NEGOTIATION_SENTINEL`. `open.protocols` itself is left alone, so
+            // error messages and bookkeeping only ever mention real names.
+            let mut offered = open.protocols.clone();
+            offered.push(UnaryProtocol::new(NEGOTIATION_SENTINEL));
+            let protocols = Protocols::new(offered);
             let id = self.next_outbound_id;
             self.next_outbound_id += 1;
             self.requested_outbound.insert(id, open);
@@ -296,6 +325,16 @@ impl ConnectionHandler for Handler {
                 protocol: (stream, proto),
                 info,
             }) => match self.requested_outbound.remove(&info) {
+                Some(open) if proto.as_ref() == NEGOTIATION_SENTINEL => {
+                    // Nothing real survived negotiation. `stream` is dropped
+                    // with this arm, which resets it — the remote never sees a
+                    // sentinel it would have to answer.
+                    let names: Vec<&str> = open.protocols.iter().map(|p| p.as_ref()).collect();
+                    trace!(protocols = %names.join(", "), "raw stream refused by the remote");
+                    let _ = open
+                        .reply
+                        .send(Err(RawStreamError::UnsupportedProtocol(names.join(", "))));
+                }
                 Some(open) => {
                     trace!(%proto, "outbound raw stream negotiated");
                     // If the caller has gone away the stream is dropped here,

@@ -215,6 +215,51 @@ async fn an_unserved_protocol_is_refused_not_hung() {
     );
 }
 
+/// A whole candidate list can be refused, and the refusal still arrives before
+/// the caller is handed anything.
+///
+/// This is the path the negotiation sentinel exists for. Outbound negotiation
+/// offers the real protocols and then one entry nobody serves, because
+/// multistream-select only takes its lazy shortcut on the *last* protocol it
+/// has to offer. Every real name here is therefore refused eagerly, one after
+/// another, and only the sentinel is reached lazily — where the handler turns
+/// it back into a refusal rather than surfacing it. A regression drops the
+/// caller into a stream for a protocol the remote never agreed to, and the
+/// error stops naming what was actually asked for.
+#[tokio::test]
+async fn a_candidate_list_that_is_entirely_unserved_is_refused() {
+    let (caller, _responder, responder_id, _tasks) = connected_pair().await;
+
+    let error = within(
+        "refusal of a full list",
+        caller.open_raw_stream(
+            responder_id,
+            vec![
+                "nobody.serves.this".to_string(),
+                "nor.this.one".to_string(),
+                "nor.this.either".to_string(),
+            ],
+        ),
+    )
+    .await
+    .expect_err("a list with nothing served must not yield a stream");
+
+    assert!(
+        matches!(error, P2PError::Protocol(_)),
+        "a clean negotiation refusal is a protocol-level answer, got: {error:?}"
+    );
+    for name in ["nobody.serves.this", "nor.this.one", "nor.this.either"] {
+        assert!(
+            error.to_string().contains(name),
+            "the error must name every protocol that was refused, missing {name}: {error}"
+        );
+    }
+    assert!(
+        !error.to_string().contains("__negotiation_probe__"),
+        "the sentinel is an implementation detail and must never reach a caller: {error}"
+    );
+}
+
 /// Removing a handler stops negotiation, observable to the remote as the same
 /// clean refusal an unregistered protocol produces.
 #[tokio::test]
