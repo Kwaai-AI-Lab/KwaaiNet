@@ -22,7 +22,14 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.41", features = ["encoding"] }
 tantivy = { workspace = true }
-pdf-extract = { version = "0.10", optional = true }
+# Two pdf-extract majors on purpose — see extract_pdf() in src/document.rs.
+# 0.12 is the fast, secure default (lopdf 0.42, fixes RUSTSEC-2026-0187), but it
+# garbles text on some font encodings. 0.10 is slower and carries the advisory,
+# so it is only ever invoked as a second opinion when 0.12's output fails the
+# lexical check — never on the happy path. Same renamed-dependency trick as
+# prost/prost013 in kwaai-network-tests.
+pdf-extract = { version = "0.12", optional = true }
+pdf-extract-legacy = { package = "pdf-extract", version = "0.10", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -31,4 +38,4 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-pdf = ["pdf-extract"]
+pdf = ["pdf-extract", "pdf-extract-legacy"]
