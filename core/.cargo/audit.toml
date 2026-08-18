@@ -1,0 +1,24 @@
+# cargo-audit configuration.
+#
+# Only advisories that CANNOT be fixed from this repository belong here. Anything
+# resolvable by a version bump should be bumped instead — the point of this file
+# is to keep `cargo audit` meaningful enough to gate on, not to quiet it.
+#
+# Review whenever libp2p is upgraded: both entries below unblock the moment
+# upstream moves off hickory 0.25.
+
+[advisories]
+ignore = [
+    # hickory-proto 0.25.2 — CPU exhaustion during message encoding, O(n²) name
+    # compression. Fixed in >=0.26.1, which we cannot reach: libp2p 0.56 (the
+    # newest release) pins libp2p-dns 0.44 and libp2p-mdns 0.48, and both require
+    # hickory-proto ^0.25. Blocked on upstream libp2p.
+    "RUSTSEC-2026-0119",
+
+    # hickory-proto 0.25.2 — NSEC3 closest-encloser proof validation enters an
+    # unbounded loop on cross-zone responses. No fixed version exists at any
+    # release, so this cannot be bumped away even if libp2p moves. Reached only
+    # through DNSSEC validation of resolver responses while resolving /dnsaddr
+    # bootstrap multiaddrs.
+    "RUSTSEC-2026-0118",
+]
