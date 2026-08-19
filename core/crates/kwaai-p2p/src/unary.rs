@@ -515,11 +515,13 @@ impl Handler {
             StreamUpgradeError::NegotiationFailed => {
                 UnaryError::UnsupportedProtocol(message.proto.to_string())
             }
-            // A refusal reaches us here, not as `NegotiationFailed`, whenever
-            // the substream upgrade ran lazily — see `is_negotiation_failure`.
-            StreamUpgradeError::Io(ref e) if is_negotiation_failure(e) => {
-                UnaryError::UnsupportedProtocol(message.proto.to_string())
-            }
+            // No refusal arm here on purpose. Under `V1Lazy` the upgrade
+            // *succeeds* and the refusal surfaces during the exchange, so it is
+            // classified by `wire_or_refusal`. A guard on this arm would be dead
+            // code either way: `to_stream_upgrade_error`
+            // (libp2p-swarm `connection.rs`) maps `NegotiationError::Failed` to
+            // `NegotiationFailed` above, and only ever puts a bare io error or a
+            // `ProtocolError` inside `Io`.
             StreamUpgradeError::Io(e) => UnaryError::Wire(e.to_string()),
             StreamUpgradeError::Apply(infallible) => match infallible {},
         };
@@ -543,11 +545,22 @@ impl Handler {
 /// means negotiation itself broke down — a truncated or malformed message —
 /// which is a real wire failure and keeps mapping to [`UnaryError::Wire`].
 ///
-/// One inherited wrinkle, worth knowing but not worth working around:
-/// multistream-select also reports a clean EOF mid-negotiation as `Failed`,
-/// deliberately, treating a peer that hangs up rather than answering as a way
-/// of saying no. Such a peer is indistinguishable here from one that answered
-/// `na`, and both mean the call cannot be served.
+/// **A refusal and a hang-up are different, and that is correct.** Only a
+/// literal `na` reaches us as `NegotiationError::Failed`. A peer that resets or
+/// hangs up mid-negotiation takes a different path — `negotiated.rs`
+/// `State::Expecting` maps EOF to `ProtocolError::IoError(UnexpectedEof)`, and
+/// `From<NegotiationError> for io::Error` unwraps a `ProtocolError` rather than
+/// preserving the enum — so it classifies as [`UnaryError::Wire`].
+///
+/// This matches p2pd, which is the point: go-multistream returns its refusal
+/// error only for a literal `na`, and a reset surfaces as
+/// `failed to negotiate protocol: stream reset` — a wire error, never a
+/// refusal. The pre-V1Lazy native path was the outlier in conflating the two.
+/// Do not "fix" this toward treating a hang-up as a refusal; that breaks parity.
+///
+/// (The eager `dialer_select.rs::AwaitProtocol` path *does* fold EOF into
+/// `Failed`, which is where the old comment came from. V1Lazy does not reach it
+/// for a single-protocol offer.)
 fn is_negotiation_failure(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut cause = Some(e);
     while let Some(err) = cause {
@@ -967,12 +980,25 @@ mod tests {
 
     #[test]
     fn a_broken_negotiation_is_not_a_refusal() {
-        // `ProtocolError` means the negotiation itself malfunctioned. Folding
-        // it into "unsupported" would report a corrupt stream as a peer that
-        // simply does not serve the handler.
-        let e: std::io::Error =
-            NegotiationError::ProtocolError(ProtocolError::InvalidMessage).into();
-        assert!(!is_negotiation_failure(&e));
+        // A malfunctioning negotiation must not read as "unsupported" — that
+        // would report a corrupt stream as a peer that does not serve the
+        // handler.
+        //
+        // Construct the wrapper explicitly rather than via
+        // `NegotiationError::ProtocolError(..).into()`: that conversion unwraps
+        // to a plain `ProtocolError`-derived io error, so the assertion would
+        // hold no matter what `is_negotiation_failure` did.
+        #[derive(Debug, thiserror::Error)]
+        #[error("negotiation: {0}")]
+        struct Wrapped(#[source] NegotiationError);
+
+        let e = Wrapped(NegotiationError::ProtocolError(
+            ProtocolError::InvalidMessage,
+        ));
+        assert!(
+            !is_negotiation_failure(&e),
+            "only NegotiationError::Failed is a refusal; ProtocolError is a wire failure"
+        );
     }
 
     #[test]

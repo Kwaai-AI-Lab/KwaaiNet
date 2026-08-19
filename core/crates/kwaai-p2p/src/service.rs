@@ -259,9 +259,36 @@ impl NetworkService {
                     // p2pd path costs one round trip where this cost two.
                     //
                     // Safe in a mixed fleet: the wire bytes are identical and a
-                    // *listener* behaves as `V1` regardless, so this only changes
-                    // what we do as dialer. It applies when the dialer offers a
-                    // single protocol, which every unary call here does.
+                    // *listener* behaves as `V1` regardless, so only our dialer
+                    // changes.
+                    //
+                    // SCOPE: this sits on the swarm pool config and therefore
+                    // applies to **every outbound substream of every
+                    // behaviour** — ping, identify, kad, autonat, relay, dcutr,
+                    // upnp and the raw-stream handler, not just unary. libp2p-
+                    // swarm 0.47 has no per-behaviour override, so the two
+                    // consequences below are accepted deliberately rather than
+                    // worked around:
+                    //
+                    // - `ping`: its only transition to `State::Inactive` is the
+                    //   `NegotiationFailed` arm, now unreachable. A peer not
+                    //   serving `/ipfs/ping/1.0.0` is re-pinged every 30s for
+                    //   the connection's life. Latent today — every fleet peer
+                    //   serves ping, and the go daemon does so unconditionally.
+                    // - `kad`: `on_fully_negotiated_outbound` marks the protocol
+                    //   supported on the first negotiated substream, which now
+                    //   fires before the remote confirms anything. A query to a
+                    //   connected non-kad peer can insert it into the routing
+                    //   table until identify corrects it. This is net new versus
+                    //   p2pd, where go-libp2p-kad-dht admits peers only from
+                    //   identify plus a live FIND_NODE probe.
+                    //
+                    // Closing both at the source means gating laziness on
+                    // identify's known-protocol set, as go does. Tracked as a
+                    // follow-up, not done here.
+                    //
+                    // Raw streams opt out via a trailing sentinel protocol, so
+                    // their refusals stay eager — see `raw_stream.rs`.
                     .with_substream_upgrade_protocol_override(
                         libp2p::core::upgrade::Version::V1Lazy,
                     )

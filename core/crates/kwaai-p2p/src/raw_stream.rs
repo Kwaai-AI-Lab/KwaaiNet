@@ -109,7 +109,17 @@ pub enum RawStreamError {
 /// `UnsupportedProtocol` and drops the stream. It is never proposed on the wire
 /// in the accepted case, and never advertised inbound — `listen_protocol` is
 /// built from the registered set alone.
-const NEGOTIATION_SENTINEL: &str = "kwaai.__negotiation_probe__";
+pub(crate) const NEGOTIATION_SENTINEL: &str = "kwaai.__negotiation_probe__";
+
+/// True for the reserved sentinel name. Callers and remote registrations must
+/// never use it: [`Handler::on_connection_event`] identifies the sentinel by
+/// name, so a caller-supplied `kwaai.__negotiation_probe__` would make
+/// `offered` read `[sentinel, sentinel]`, negotiate the *first* one eagerly and
+/// successfully, then trip the guard on the name — resetting a live stream
+/// under the remote while telling the caller it was unsupported.
+pub(crate) fn is_reserved(proto: &UnaryProtocol) -> bool {
+    proto.as_ref() == NEGOTIATION_SENTINEL
+}
 
 /// The result of an [`Behaviour::open_stream`] request: the protocol
 /// multistream-select settled on, plus the stream itself.
@@ -382,6 +392,10 @@ impl Behaviour {
     /// Start advertising `proto` for inbound raw streams. Idempotent, and
     /// visible to connections that already exist.
     pub fn register_protocol(&mut self, proto: UnaryProtocol) {
+        if is_reserved(&proto) {
+            debug!(%proto, "refusing to register the reserved negotiation sentinel");
+            return;
+        }
         self.inbound_protocols
             .write()
             .expect("raw stream protocol set lock poisoned")
@@ -419,6 +433,12 @@ impl Behaviour {
         protocols: Vec<UnaryProtocol>,
         reply: oneshot::Sender<OpenResult>,
     ) {
+        if protocols.iter().any(is_reserved) {
+            let _ = reply.send(Err(RawStreamError::UnsupportedProtocol(format!(
+                "{NEGOTIATION_SENTINEL} is reserved"
+            ))));
+            return;
+        }
         if protocols.is_empty() {
             let _ = reply.send(Err(RawStreamError::UnsupportedProtocol(
                 "no protocols requested".to_string(),
