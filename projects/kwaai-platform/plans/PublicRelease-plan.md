@@ -57,6 +57,48 @@ it needs the issuer from `TokenEconomy-plan.md`. Deferring CC keeps the
 zero-sum-ledger-first ordering intact and still leaves a Feed that delivers the
 document's core promise.
 
+## Sizing scale — calibrated against what already exists
+
+T-shirt sizes below are anchored to measured bodies of functionality in the
+current tree, so they mean something. Src LOC excludes tests.
+
+| Body | Src LOC | Test LOC | Test fns | Size |
+|---|---|---|---|---|
+| Knowledge / RAG (`kwaai-rag` + `rag_cmd`, `rag_api`) | 35,209 | 4,115 | 359 | **XL** |
+| P2P network + DHT (`kwaai-p2p`, `-daemon`, `-hivemind-dht`, `-rpc` + `node`, `p2p_cmd`) | 22,370 | 10,570 | ~290 | **XL** |
+| Distributed inference (`kwaai-inference`, `-distributed`, `-compression` + `shard_*`, `grpc_server`) | 17,617 | 0 | 82 | **L** |
+| Platform / CLI shell (`main`, `cli`, `config`, `updater` + `map-server`) | 8,429 | 0 | ~94 | **M** |
+| Storage / VPK (`kwaai-storage` + `vpk*`, `storage_rpc`) | 4,141 | 618 | 58 | **M** |
+| Ledger (unmerged, `feat/kwaai-ledger`) | ~2,440 | — | — | **S–M** |
+| Trust / identity (`kwaai-trust`, `-wasm` + `identity`, `reputation`) | 2,156 | 0 | 6 | **S** |
+
+Roughly: **S** ≈ 1–3k · **M** ≈ 4–9k · **L** ≈ 15–20k · **XL** ≈ 20k+.
+
+**Two caveats, because LOC misleads in opposite directions here.** P2P is 22k
+lines against RAG's 35k but was the harder build — compare the test ratios, 47%
+against 17%. Distributed-systems work costs far more per line, and PR #107 /
+issue #108 are the class of bug that lives there. Sized by *difficulty* rather
+than volume, P2P is the XL and RAG is a large-but-tractable pipeline with fast
+feedback loops. Separately, distributed inference carries **no dedicated `tests/`
+directory at all** — 17.6k lines on 82 inline tests, the thinnest coverage of any
+major body, which is worth knowing independently of this plan.
+
+### What the calibration changed
+
+Sizes were first assigned by feel and then checked against the table above. Two
+were wrong in ways worth recording:
+
+| Block | First estimate | Calibrated | Why it moved |
+|---|---|---|---|
+| Unified Feed | XL | **XL** | Unchanged. Plausibly the largest body attempted here |
+| Tokenomics ph.1 | M | **S** | ~2,440 lines already written on `feat/kwaai-ledger`. "Already built" was under-weighted |
+| Tokenomics ph.2 | XL | **L–XL** | Issuer + minting + escrow + settlement — larger than Storage/VPK's 4.1k, plus regulatory work |
+| UX | L | **M + L** | Was one size for two separable pieces. `kwaai-api` is M against the 8.4k Platform shell; the browser journey is the L |
+| Agentic harness | L | **M** adopting | Integrating OpenClaw behind an adapter is much less than building a runtime. Stays **L** only if the bake-off says build our own |
+
+The pattern in both errors is the same: sizing the *problem* rather than the
+*remaining work*. Worth repeating the check before committing to a schedule.
+
 ---
 
 ## Block 1 — Unified Feed · `kwaai-feed` + `kwaai-twin` · **XL**
@@ -89,34 +131,34 @@ twin-to-twin.
 
 Deferred to phase 2: all CC negotiation, Indiscriminate Price, vendor intent-pitching.
 
-## Block 2 — Tokenomics · `kwaai-ledger` (exists) → `kwaai-economy` · **M then XL**
+## Block 2 — Tokenomics · `kwaai-ledger` (exists) → `kwaai-economy` · **S then L–XL**
 
-**Phase 1 — land the ledger (M).** Rebase `feat/kwaai-ledger` onto `main` (16 ahead /
+**Phase 1 — land the ledger (S).** Rebase `feat/kwaai-ledger` onto `main` (16 ahead /
 22 behind), re-verify cross-platform, merge. Delete `summit-server` and its 13 external
 references (`Dockerfile.eve`, root `CLAUDE.md`, `CONTRIBUTORS.md`,
 `.github/workflows/ci-kwaai-platform.yml`, `docs/{ARCHITECTURE,TODO,BOOTSTRAP_SERVER_V2_REQUIREMENTS}.md`,
 five `projects/kwaai-platform/` files). Purge Verida from ~10 docs.
 
-**Phase 2 — the token economy (XL).** Per `TokenEconomy-plan.md`: trust (local,
+**Phase 2 — the token economy (L–XL).** Per `TokenEconomy-plan.md`: trust (local,
 non-transferable, earned by uptime/routing) kept strictly separate from miles
 (network-wide, minted by an issuer at settlement, earned by provable work). Needs a new
 issuer service — the trust assumption is not new, since the two bootstrap servers are
 already fully trusted. **CC rides on this phase**, adding escrow, reclaim, and tipping.
 The cash-out path carries real regulatory weight and must be designed in, not bolted on.
 
-## Block 3 — UX · `kwaai-api` · **L**
+## Block 3 — UX · `kwaai-api` **M** + browser-first journey **L**
 
 - **`kwaai-api` (M)** — Rust crate exposing the node's HTTP/WS API. Consumed by the
   existing Node backend, by the Flutter client, and by the Feed UI. API only; the Node
   backend and React frontend stay.
-- **Browser-first journey (M–L)** — the public release's front door. Requires first
+- **Browser-first journey (L)** — the public release's front door. Requires first
   **revising** `MASS_ADOPTION_STRATEGY.md`: it is a year old and its architecture
   assumes Verida throughout, which is now dropped. The WASM thesis (via
   `core/crates/kwaai-wasm`) survives that revision; the data-sovereignty layer needs a
   replacement answer.
 - Thick client stays in `KwaaiNetGUI` (Darren), consuming `kwaai-api`.
 
-## Block 4 — Agentic harness · `kwaai-agent` · **L**
+## Block 4 — Agentic harness · `kwaai-agent` · **M** adopting, **L** building
 
 Define a narrow `Harness` trait — tool registry, act loop, memory, channels — then
 spike three adapters against **one** real task: the Twin vetting and scoring an inbound
