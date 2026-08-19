@@ -1,7 +1,8 @@
 # GitHub Discussion draft — libp2p binding
 
 **Where:** `trustoverip/dtgwg-trust-tasks-tf` → Discussions → **Ideas**
-**Status:** **ON HOLD — do not post yet.** See "Erika Bjune" below.
+**Status:** ready to post. The conversation belongs here rather than in a Google
+Doc so it is tracked — Glenn's point, and Reza's decision on 2026-08-19.
 
 **Why this exists:** Glenn Gore's feedback on the 2026-08-19 call — *"it seems to
 me that this should be a Discussion on the TF GH so that the decision is
@@ -58,6 +59,19 @@ Secondary: a libp2p connection is full-duplex and multiplexed, so a consumer
 behind NAT can receive Trust Tasks over the connection it opened, rather than
 polling or relying on mediator callbacks.
 
+### We would rather co-author this than own it
+
+We understand we are not the only group here running a libp2p stack and working
+on these problems. That is welcome — a binding identifier is worth reserving
+precisely when more than one implementation needs it, and a specification written
+against two independent stacks will pin the wire contract far better than one
+written against a single crate.
+
+If another group is further along, say so here and we will support your
+specification rather than advance our own. The binding existing matters
+considerably more to us than whose name is on it, particularly as our own
+implementation is not scheduled before Q1 2027.
+
 ### What we are asking
 
 Whether a libp2p binding is **in scope for the task force**. If it is, we would
@@ -91,35 +105,22 @@ Happy to be told this belongs somewhere else in the process.
 
 ---
 
-## Blocking: talk to Erika Bjune first
+## Why post rather than take it private first
 
-On the same call (2026-08-19, 08:41), Erika Bjune: *"Hi Reza, we really need to
-talk. Ours is a libp2p stack and we're working on these issues as well."*
+The earlier draft of this file said to hold until we had spoken privately with
+the other libp2p group in DTGWG. That was the wrong instinct once the venue moved
+to GitHub.
 
-**Do not post this as a Kwaai proposal until that conversation happens.** Posting
-hours after someone says they are already working on the problem reads as
-claiming the `libp2p` slug ahead of them, which is a poor first move in a group
-we want a long relationship with.
+The risk was never *proposing* — it was proposing in a way that ignored a known
+parallel effort, which reads as claiming the `libp2p` slug. A public Discussion
+that says plainly we would rather co-author than own removes that risk, and does
+it in the open where the group can see it. A private conversation followed by a
+public proposal is strictly worse: same outcome, less visible, and it leaves the
+task force's decision undocumented — the exact problem Glenn raised.
 
-It is also a worse proposal alone than it would be together. A task force
-deciding whether to reserve a binding identifier wants evidence of more than one
-implementation. Two independent libp2p stacks asking for the same binding turns
-"Kwaai wants this" into "the libp2p constituency needs this" — a much easier yes.
-
-Three ways this could go, in rough order of preference:
-
-1. **Joint Discussion**, co-authored. Strongest signal, and it makes the slug
-   reservation obviously worth doing.
-2. **We post, naming her effort** and inviting her in. Faster, still collegial,
-   but it puts Kwaai's name on the identifier first.
-3. **She posts, we support.** Fine if her work is further along than ours — the
-   binding existing matters more to us than whose name is on it, given we are not
-   scheduled to build it until Q1 2027 anyway.
-
-Worth establishing early: whether her stack is rust-libp2p or go-libp2p. If Go,
-the binding needs to specify the wire contract carefully enough that both
-implementations interoperate — which is a better specification either way, and is
-exactly the kind of thing that justifies a binding spec rather than one crate.
+So the collaboration invitation is in the post itself, near the top. If their work
+is further along, the Discussion is where they say so and we support their
+specification instead.
 
 ---
 
