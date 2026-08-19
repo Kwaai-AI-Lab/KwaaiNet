@@ -156,6 +156,38 @@ Two known defects gate any of this, both recorded in `Ledger-plan.md`: the
 `did:key` vs `did:peer` verification mismatch, and a canonicalisation bug. Both
 already block VC-carrying-weight work.
 
+**Kwaai is a participant, not an adopter.** We have four volunteers in the working
+group, which means influence over specs still in draft and early access to the
+reference code — and it makes contributing back the cheaper path than diverging.
+
+**DTGWG ships code, not only specifications.** Repos under
+[`github.com/trustoverip`](https://github.com/trustoverip):
+
+| Repo | What | Language |
+|---|---|---|
+| `dtgwg-trust-tasks-tf` | **Trust Tasks** — transport-agnostic protocol for managing tasks | **Rust** (`trust-tasks-rs`, plus TS bindings, DIDComm + HTTPS transports) |
+| `dtgwg-cred-tf` | Credentials task force (the specified credential set) | spec |
+| `dtgwg-zkp-tf` | ZKP conformance requirements | spec |
+| `aimwg-tsp-enabled-ai-agent-protocols` | TSP-enabled **AI agent** protocols | spec/JS |
+| `tswg-tsp-specification` | Trust Spanning Protocol | spec/JS |
+
+`trust-tasks-rs` is the one to look at first: a Trust Task is a self-contained,
+transport-agnostic JSON document describing finite work, schema-validated, with a
+live registry at `trusttasks.org/registry`. Specs move draft → candidate →
+standard.
+
+**The fit is unusually good.** Trust Tasks is deliberately transport-agnostic and
+ships DIDComm and HTTPS bindings; KwaaiNet has a p2p unary transport that already
+works. So `kwaai-twin` should *consume* `trust-tasks-rs` and carry it over
+`kwaai-p2p` rather than invent a twin-to-twin protocol — and a libp2p transport
+binding is then an obvious contribution back, which is exactly what having four
+volunteers in the group is for.
+
+**Due diligence before depending on it:** GitHub reports the licence as
+NOASSERTION; the repo splits it (Open Web Foundation agreement for specs,
+`SOURCE_CODE.md` for code) and requires DCO plus CLA. Confirm the code licence is
+compatible before it enters the workspace.
+
 **Block 1 depends on this.** The Feed needs *domain-specific* sender reputation —
 "Alice's opinion on X but not Y" — which is precisely a subjective trust graph.
 The Twin cannot vet or prioritise properly without it.
@@ -192,7 +224,9 @@ Two agents with **different trust boundaries**, which is why this is two crates:
 
 - **`kwaai-twin`** — external-facing. Receives all inbound, verifies origin, deletes
   suspicious, checks provenance, scores importance/credibility, negotiates access
-  (CC in phase 2), and proactively discovers information. Speaks p2p twin-to-twin.
+  (CC in phase 2), and proactively discovers information. Speaks twin-to-twin over
+  `kwaai-p2p` — evaluate `trust-tasks-rs` (DTGWG, Rust) as the protocol rather than
+  inventing one; see the trust section.
 - **`kwaai-feed`** — local. The VA role plus the feed itself: item model, store,
   connectors, prioritisation engine, owner rules, mode awareness, summarisation.
 
@@ -314,10 +348,12 @@ would be indefensible in a consumer product.
    integration": `kwaai-storage`'s multi-tenant encrypted vector storage is the
    candidate. Decide whether the launch *claims* sovereignty, because that decides
    whether VPK is on the release path or after it.
-5. **Twin-to-twin protocol** — agent-to-agent negotiation is unspecified. Check
-   DTGWG's **Trust Task Protocols** and **Agent Names** task forces before designing
-   one: agent-to-agent addressing and trust interactions are exactly their scope, and
-   an interoperable Twin is worth more than a bespoke one.
+5. **Twin-to-twin protocol — likely solved, do not invent one.** DTGWG's
+   `dtgwg-trust-tasks-tf` is a transport-agnostic protocol for exactly this, and it
+   is **Rust**. Evaluate `trust-tasks-rs` carried over `kwaai-p2p` before designing
+   anything bespoke; also check the Agent Names task force for addressing. Remaining
+   question is scope fit — Trust Tasks models *finite work*, and Feed access
+   negotiation may or may not fit that shape.
 6. **Two different "issuers" — do not conflate them.** An earlier draft of this plan
    treated deleting summit-server as leaving a credential gap. That was wrong.
    DTGWG issues credentials **peer-to-peer with no central authority**, so removing
