@@ -183,10 +183,34 @@ works. So `kwaai-twin` should *consume* `trust-tasks-rs` and carry it over
 binding is then an obvious contribution back, which is exactly what having four
 volunteers in the group is for.
 
-**Due diligence before depending on it:** GitHub reports the licence as
-NOASSERTION; the repo splits it (Open Web Foundation agreement for specs,
-`SOURCE_CODE.md` for code) and requires DCO plus CLA. Confirm the code licence is
-compatible before it enters the workspace.
+**Licence: checked and clear.** GitHub reports NOASSERTION only because the repo
+splits its licensing across two files. Verified:
+
+| | Licence | Verdict against our MIT |
+|---|---|---|
+| Source code (`SOURCE_CODE.md`, and `license = "Apache-2.0"` in `Cargo.toml`) | **Apache-2.0** | **Compatible.** Permissive, no copyleft. Standard practice in the Rust ecosystem |
+| Specifications (`LICENSE.md`) | **OWFa 1.0** | Grants copyright *and patent* rights for implementing conformantly — a benefit |
+
+crates.io metadata agrees: `trust-tasks-rs` 0.9.0 is published as `Apache-2.0`.
+Depending on it does not affect KwaaiNet staying MIT. Apache-2.0 also carries an
+explicit **patent grant**, which plain-MIT dependencies do not.
+
+Two conditions rather than blockers:
+
+- If we ever *vendor* their source the way we vendor multistream-select, Apache-2.0
+  §4 requires keeping the licence, attributing, and stating changes. There is no
+  upstream `NOTICE` file, so nothing to propagate. Depending via crates.io avoids
+  this entirely — prefer that.
+- DCO plus CLA apply to **contributing back**, not to consuming. Relevant when we
+  offer the libp2p binding, and our four volunteers are presumably already covered.
+
+**It is a real, used ecosystem, and pre-1.0.** `trust-tasks-rs` has ~28.8k
+downloads, with `trust-tasks-https` (12.2k), `trust-tasks-proof` (11.8k),
+`trust-tasks-capability-client` (8.1k), `trust-tasks-didcomm` (4.6k) and
+`trust-tasks-tsp` alongside it. Note the transport bindings are **separate
+crates** — which is exactly the seam a `trust-tasks-libp2p` contribution would
+slot into. The caveat is 0.9.0: pre-1.0, so expect API churn and pin
+accordingly.
 
 **Block 1 depends on this.** The Feed needs *domain-specific* sender reputation —
 "Alice's opinion on X but not Y" — which is precisely a subjective trust graph.
