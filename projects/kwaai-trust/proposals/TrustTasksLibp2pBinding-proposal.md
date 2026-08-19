@@ -67,9 +67,11 @@ the polling or mediator-callback patterns the request/response bindings imply.
 - **A production libp2p deployment.** KwaaiNet is a decentralised AI fabric built
   on rust-libp2p 0.56 — Kademlia DHT, circuit relay, AutoNAT, DCUtR, Noise,
   yamux — running across macOS, Linux and Windows nodes in the field.
-- **Measured interop experience.** Our fabric is mixed Rust and Go libp2p, and we
-  maintain a tiered interop harness between the two. We have carried protocol
-  changes across that boundary and know where it is sharp.
+- **Operational experience under real network conditions.** Those nodes sit
+  behind residential NAT, reach each other over circuit relay, and upgrade to
+  direct connections via DCUtR. We maintain a tiered integration harness and
+  measure per-call round-trip latency in the field, so we can characterise a
+  binding's cost rather than assert it.
 - **Four Kwaai volunteers already participate in DTGWG.** This contribution is
   intended as ongoing participation rather than a code drop.
 
@@ -80,7 +82,7 @@ the polling or mediator-callback patterns the request/response bindings imply.
 | `bindings/libp2p/0.1/spec.md` | Binding specification following the HTTPS binding's structure — YAML front matter, document carriage, identity handling under §4.8.1, error mapping to the §8.3 vocabulary |
 | `trust-tasks-libp2p` crate | Client and listener over a libp2p `Swarm`, mirroring the `HttpsClient` / `HttpsServer` shape |
 | Binding URI | `https://trusttasks.org/binding/libp2p/0.1` (slug `libp2p`, subject to the task force's preference) |
-| Interop evidence | Round-trip against an existing binding, plus Rust↔Go libp2p interop results |
+| Interop evidence | Round-trip against an existing binding — the relevant comparison for a transport binding — plus measured latency over direct and relayed connections |
 
 We would follow `CONTRIBUTING-SPECS.md`: fork, branch, folder, `npm run build`
 to validate, PR for CODEOWNERS routing. DCO and CLA as required.
