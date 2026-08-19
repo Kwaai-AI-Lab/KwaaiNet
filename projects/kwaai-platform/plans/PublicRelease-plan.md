@@ -238,9 +238,96 @@ story. It is **not** on the Feed MVP path, but it is on the *narrative* path for
 a release that claims sovereignty — decide deliberately which of those the launch
 needs.
 
+## DTGWG code availability — what it changes
+
+Reviewed after confirming Kwaai participates in the working group. The question
+is which blocks shrink because code already exists.
+
+| Available | Licence | Maturity | Effect on our sizing |
+|---|---|---|---|
+| `trust-tasks-rs` 0.9.0 + `-https`, `-didcomm`, `-tsp`, `-proof`, `-capability-client` | Apache-2.0 | ~28.8k downloads, pre-1.0 | **Twin protocol: adopt, do not design.** Transport bindings are separate crates, so `trust-tasks-libp2p` is the contribution seam |
+| `ssi` 0.16.0 (Spruce) | Apache-2.0 | ~182k downloads | Candidate fix for the `did:key`/`did:peer` mismatch and canonicalisation bug — adopt a maintained DID/VC stack rather than repairing ours |
+| VTI — `vta-sdk`, `vti-common`, `vtc-service` ([OpenVTC](https://github.com/OpenVTC/verifiable-trust-infrastructure)) | Apache-2.0 | 1,478 commits, active | Reference implementation of VTA/VTC. **Probably not adopted** — service- and organisation-oriented (incl. AWS Nitro enclaves), where we need node-local personal agents. Worth reading, not depending on |
+| `dtgwg-cred-tf`, `dtgwg-zkp-tf`, `aimwg-tsp-enabled-ai-agent-protocols` | OWFa 1.0 | spec, active | Specifications to conform to; no code to adopt |
+
+**Net effect: two blocks shrink, one is unaffected.**
+
+- **`kwaai-twin`** loses protocol design and implementation — the largest and
+  riskiest part of it. It becomes a Trust Tasks integration carried over
+  `kwaai-p2p`, plus Feed-specific vetting policy.
+- **`kwaai-trust`** shifts from "repair our DID/VC implementation" to "adopt a
+  maintained one and conform". Same size, materially higher confidence.
+- **`kwaai-agent`** is untouched — DTGWG has no harness.
+
+The residual risk is `trust-tasks-rs` being **0.9.0**: pre-1.0 API churn, and an
+unproven scope fit, since Trust Tasks models *finite work* and Feed access
+negotiation may not be that shape. Prove that on a spike before committing.
+
+## Schedule — derived from measured velocity
+
+### Observed velocity
+
+| Signal | Value |
+|---|---|
+| Repo span | 2025-09-11 → 2026-08-18 (~11 months, ~9 active) |
+| Rust LOC added | ~127,000 gross, ~107,000 net currently in tree |
+| Sustained output, all bodies in parallel | **~11–12k LOC/month** |
+| **One focused XL body** (`kwaai-rag`: 28.5k LOC, 240 commits, 2026-05-08 → 2026-08-18) | **~8.5k LOC/month → 3.4 months** |
+
+`kwaai-rag` is the cleanest anchor: a single contiguous XL build with no gaps.
+Crate commit counts elsewhere understate effort because the native-p2p stack
+landed via squash merges.
+
+Derived durations, one focused body at a time:
+
+| Size | LOC | Duration |
+|---|---|---|
+| S | 1–3k | ~1–2 weeks |
+| M | 4–9k | ~3–5 weeks |
+| L | 15–20k | ~2 months |
+| XL | 20k+ | ~3.5 months |
+
+### The honest caveat, which matters more than the arithmetic
+
+**Commit cadence has fallen sharply**: 347 (May) → 246 (Jun) → 72 (Jul) → 34
+(Aug). August's LOC looks healthy only because it is squash-merged work authored
+earlier. Any schedule built on peak velocity is fiction. Both scenarios below are
+given for that reason.
+
+### Critical path to a public release
+
+Feed MVP (no CC) reachable in a browser, on a landed ledger:
+
+| Step | Size | Peak velocity | Recent velocity |
+|---|---|---|---|
+| 0. Foundation — #107, #108, cutover | S | 1 wk | 2 wk |
+| 1. Land `kwaai-ledger` | S | 2 wk | 3 wk |
+| 2. `kwaai-trust` ToIP ∥ `kwaai-agent` bake-off | S + M | 5 wk | 8 wk |
+| 3. `kwaai-api` (∥ with 2) | M | — | — |
+| 4. `kwaai-feed` + `kwaai-twin` | XL | 14 wk | 20 wk |
+| 5. Browser journey (overlaps 4's back half) | L | 4 wk net | 6 wk net |
+| **To Feed MVP in a browser** | | **~6 months** | **~9 months** |
+| 6. `kwaai-economy` + CC | L–XL | +3 mo | +4.5 mo |
+| **To the full vision incl. CC** | | **~9 months** | **~13 months** |
+
+Steps 2 and 3 run in parallel; step 5 overlaps step 4. Steps 4 and 6 are the only
+true long poles.
+
+### What would move these dates
+
+- **Team size.** All of the above is one focused body at a time. `kwaai-feed`
+  and `kwaai-api` are separable across people; `kwaai-twin` is separable from
+  `kwaai-feed` once the Trust Tasks decision is made.
+- **The bake-off outcome.** Adopting a harness keeps step 2 at M; building our own
+  makes it L and adds ~4 weeks.
+- **Outside our control:** Darren's review on #107, sharded inference on Metal
+  (driver support, scoped out), and `trust-tasks-rs` reaching 1.0.
+- **Not on this path:** VPK integration and Metal sharding, both deliberately
+  excluded above.
+
 ---
 
-## Block 1 — Unified Feed · `kwaai-feed` + `kwaai-twin` · **XL**
+## Block 1 — Unified Feed · `kwaai-feed` **XL** + `kwaai-twin` **M** (was part of XL)
 
 The product. A single prioritised stream replacing app-switching.
 
