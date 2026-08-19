@@ -281,7 +281,14 @@ That gives four rules:
    checksum-pinned fetch script, and a re-apply chore on every libp2p bump. Do
    not repeat that here — a fork stops improvements reaching us by definition.
 2. **Contribute `trust-tasks-libp2p` upstream, not in-tree.** This is the whole
-   mechanism. In their workspace, their refactors carry our binding along, as
+   mechanism. **No p2p binding exists today** — `bindings/` holds `didcomm`,
+   `didcomm-v1`, `https`, `push` and `tsp`, and only eight `trust-tasks-*` crates
+   are published (`push` is in-repo but unpublished, so not every binding reaches
+   crates.io). The gap is real and the shape is well defined: implement the
+   transport trait directly over libp2p, exactly as `trust-tasks-https` does over
+   HTTP. Note TSP is **not** a shortcut — `trust-tasks-tsp` merely wraps
+   `affinidi-tsp`, a third-party implementation, so TSP is a peer binding rather
+   than an abstraction we could slot libp2p underneath. In their workspace, their refactors carry our binding along, as
    they have for the other four bindings across 13 lockstep releases. In ours, we
    absorb every break ourselves. Contributing is the cheap path, not the generous
    one.
