@@ -3,7 +3,8 @@
 **To:** LF ToIP Decentralized Trust Graph Working Group, Trust Tasks Task Force
 **From:** Kwaai AI Lab
 **Date:** 2026-08-19
-**Status:** draft for Kwaai internal review — **not yet submitted**
+**Status:** **shared with the DTGWG weekly call, 2026-08-19.** Awaiting task-force
+response on the four asks below. Superseded by that response, not by this draft.
 
 ---
 
@@ -133,11 +134,12 @@ following the framework reaching a stable enough surface — realistically Q1
 
 ---
 
-### Internal notes — remove before submission
+### Internal notes
 
-- **This has not been reviewed by the four Kwaai DTGWG volunteers.** They should
-  see it first; they know the room and whether this lands as useful or as
-  overreach.
+*(These were present in the version shared on 2026-08-19. Retained rather than
+quietly deleted, so the record matches what the working group actually saw.)*
+
+- This was shared without prior review by the four Kwaai DTGWG volunteers.
 - Licence checked: framework source is Apache-2.0 (`SOURCE_CODE.md`, and
   `license = "Apache-2.0"` in `Cargo.toml`); specifications are OWFa 1.0.
   Compatible with KwaaiNet's MIT, and contributing requires DCO plus CLA.
