@@ -378,6 +378,37 @@ over 3.4 months, the one contiguous XL build in the tree.
 | 2 · Browser front door | 19 wk | 2 | Likely — inside one engaged month |
 | 3 · Feed Preview | 33 wk | 16 | Fragile — two people sustained through Q4 |
 
+### Contributor fit
+
+Christophe's specialities are **networking, cyber and IoT**, which map almost
+exactly onto rung 1's riskiest piece.
+
+| Who | Shape | Best brief | Why |
+|---|---|---|---|
+| **Christophe** | New, senior | **Authorization**, then **#108** | Signed DHT writes, tenant ownership and per-peer quotas are a security brief in a networking stack — his two specialities intersecting. #108 (loopback dial) is a small, security-adjacent networking bug: an ideal first merge |
+| **Darren** | Bursty, lands subsystems | **Cutover completion**, #107 | He built the native stack; finishing it needs no ramp and suits a burst |
+| **Reza** | Continuous | **`kwaai-api`**, ledger, coordination | The API's shape is decided once for all three rungs, so it belongs with the contributor who will still be here in rung 3 |
+
+**This is upside, not dependency — and that is the point.** Rung 1 was sized for
+Reza solo at 14 weeks. If Christophe delivers authorization, Reza's critical path
+drops to `foundation → ledger → kwaai-api` = **9 weeks**, and the year looks very
+different:
+
+- Rung 1 completes around **week 9**, leaving 8 weeks of slack
+- Rung 2 (browser front door) lands around **week 14** — comfortably inside
+- Rung 3 still misses; it needs a further 14 weeks and would land at week 28
+
+If Christophe does not materialise, Reza absorbs authorization and rung 1 still
+fits at 14 weeks with 3 to spare. **The commitment does not move either way**,
+which is exactly the property a volunteer plan needs.
+
+Two notes beyond rung 1. His cyber background suits an ongoing **security review**
+role — the tree currently has no authorization anywhere, and PR #98's native-p2p
+security analysis has no standing owner. And **IoT is where the platform is
+heading**: the mass-adoption thesis is browser plus mobile plus edge, carried by
+`kwaai-wasm`. Not rung 1 work, but worth him knowing it is on the map — a
+volunteer who can see their speciality in the roadmap stays.
+
 ### Designing for volunteers rather than around them
 
 A volunteer schedule fails when one person's disappearance blocks three others.
@@ -400,6 +431,8 @@ than the release. Probably correct — but it should be a conscious choice.
 
 - **Availability, first and last.** Re-read who has shown up at week 6, not how
   fast they went.
+- **Christophe ramping.** If authorization lands with him, rung 2 becomes likely
+  and rung 1 finishes five weeks early. If it does not, nothing breaks.
 - **#107 unreviewed.** Step 0 of every rung, green and idle.
 - **DHT signing vs Go peers.** The one estimate that could move; signatures
   should ride as an ignored extension field, unproven until the interop harness
