@@ -131,12 +131,21 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         "Configuring KwaaiNet node"
     );
 
-    // Bootstrap peers — prefer config, fall back to Petals defaults
-    let net_cfg = NetworkConfig::with_petals_bootstrap();
-    let bootstrap_peers: Vec<String> = if config.initial_peers.is_empty() {
-        net_cfg.bootstrap_peers.clone()
-    } else {
+    // Bootstrap peers — prefer config, fall back to Petals defaults.
+    //
+    // The fallback is gated on `announce_self`, because "empty" means two
+    // different things. For a node it means "not configured", and dialling the
+    // public Petals bootstraps is a better guess than joining nothing. For a
+    // bootstrap (`announce_self = false`) it is a *deliberate* empty list: a
+    // bootstrap dials nobody, peers come to it, and inheriting the defaults
+    // would have every bootstrap open connections to the public network on
+    // startup.
+    let bootstrap_peers: Vec<String> = if !config.initial_peers.is_empty() {
         config.initial_peers.clone()
+    } else if config.announce_self {
+        NetworkConfig::with_petals_bootstrap().bootstrap_peers
+    } else {
+        Vec::new()
     };
 
     // The native stack has its own whole lifecycle — no child process to spawn,

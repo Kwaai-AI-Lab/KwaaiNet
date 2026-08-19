@@ -161,6 +161,22 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
+    /// Whether this node publishes DHT records *of its own* — its block range,
+    /// `_petals.models`, `_kwaai.inference.nodes` and the VPK registry entry —
+    /// and, symmetrically, the `state = -1` tombstone on shutdown.
+    ///
+    /// A bootstrap node should set this false: it stores and serves other
+    /// peers' records without publishing any. Left true, it would appear on the
+    /// map as an inference node offering zero blocks.
+    ///
+    /// This is about *publishing*, not *serving*. Serving — answering
+    /// rpc_ping/rpc_store/rpc_find for other peers — is not configurable: every
+    /// native node does it, and there is no record validation, so a served
+    /// store accepts any key from any peer that can reach it. Validators are
+    /// the control for that, not a config key.
+    #[serde(default = "default_true")]
+    pub announce_self: bool,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -670,6 +686,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: false,
             enable_upnp: default_enable_upnp(),
+            announce_self: true,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -903,6 +920,7 @@ impl KwaaiNetConfig {
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
             "native_p2p" => self.native_p2p = parse_bool(value)?,
+            "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "start_block" => {
                 self.start_block = value
@@ -962,6 +980,15 @@ mod dirs_sys {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that drive `KWAAINET_HOME`.
+    ///
+    /// The var is process-global. These tests each point it at their own
+    /// tempdir and some remove it when done, so run concurrently one test
+    /// reads another's directory — or none at all — and sees the wrong
+    /// config back. Identical block on every branch that adds such a test,
+    /// so the copies merge as a duplicate rather than a conflict.
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn cfg(start: u32, blocks: u32, total_hint: &str) -> KwaaiNetConfig {
         KwaaiNetConfig {
             model: total_hint.to_string(), // name heuristic drives model_total_blocks()
@@ -997,5 +1024,82 @@ mod tests {
         // 70B has 80 blocks; 72 + 32 = 104 → clamped to 80
         let c = cfg(72, 32, "meta/Llama-2-70B");
         assert_eq!(c.effective_end_block(), 80);
+    }
+
+    // ── The bootstrap-node config keys ─────────────────────────────────────
+
+    /// Both new keys default to ordinary-node behaviour, so an existing
+    /// `config.yaml` written before they existed deserialises into a node that
+    /// behaves exactly as it did.
+    #[test]
+    fn the_new_keys_default_to_ordinary_node_behaviour() {
+        let c = KwaaiNetConfig::default();
+        assert!(
+            c.announce_self,
+            "an ordinary node publishes its own records"
+        );
+        assert!(
+            c.enable_upnp,
+            "an ordinary node asks its gateway for a mapping"
+        );
+    }
+
+    /// A config file predating these keys still loads, and the missing fields
+    /// take the ordinary-node defaults rather than `bool::default()` — which
+    /// for `announce_self` would be `false` and silently mute every existing
+    /// node on the network, and for `enable_upnp` would drop the port mapping
+    /// a NATed node depends on.
+    #[test]
+    fn a_config_without_the_new_keys_deserialises_to_node_defaults() {
+        let c: KwaaiNetConfig =
+            serde_yaml::from_str("model: unsloth/Llama-3-8B\nblocks: 8\n").expect("legacy config");
+        assert!(
+            c.announce_self,
+            "a config written before announce_self existed must keep announcing"
+        );
+        assert!(c.enable_upnp, "likewise for enable_upnp");
+    }
+
+    /// `config set` round-trips each key through YAML, which is how an operator
+    /// configures a bootstrap node; see `docs/BOOTSTRAP.md`.
+    #[test]
+    fn the_new_keys_round_trip_through_set_and_save() {
+        let _env_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tmpdir");
+        std::env::set_var("KWAAINET_HOME", home.path());
+
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("announce_self", "false")
+            .expect("announce_self is a valid key");
+        c.set_key("enable_upnp", "false")
+            .expect("enable_upnp is a valid key");
+
+        let reloaded = KwaaiNetConfig::load_or_create().expect("the saved config must reload");
+        assert!(!reloaded.announce_self);
+        assert!(!reloaded.enable_upnp);
+
+        // And back again, so neither direction is a one-way door.
+        let mut c = reloaded;
+        c.set_key("announce_self", "true").expect("set back");
+        let reloaded = KwaaiNetConfig::load_or_create().expect("reload");
+        assert!(reloaded.announce_self);
+
+        std::env::remove_var("KWAAINET_HOME");
+    }
+
+    /// A non-boolean value is rejected rather than coerced, so a typo'd
+    /// `config set announce_self flase` fails instead of muting the node.
+    #[test]
+    fn a_non_boolean_value_is_rejected() {
+        let _env_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tmpdir");
+        std::env::set_var("KWAAINET_HOME", home.path());
+        let mut c = KwaaiNetConfig::default();
+        assert!(c.set_key("announce_self", "flase").is_err());
+        assert!(
+            c.announce_self,
+            "a rejected set must not have changed the field"
+        );
+        std::env::remove_var("KWAAINET_HOME");
     }
 }
