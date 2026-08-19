@@ -99,6 +99,68 @@ were wrong in ways worth recording:
 The pattern in both errors is the same: sizing the *problem* rather than the
 *remaining work*. Worth repeating the check before committing to a schedule.
 
+## State of the existing bodies — what is left
+
+Size says what is built; this says what remains. Some of it gates the release.
+
+| Body | Size | Maturity | Remaining |
+|---|---|---|---|
+| Knowledge / RAG | XL | **Production** | Nothing gating the release |
+| P2P network + DHT | XL | **MVP after the v0.6 cutover** | Land #107, fix #108, complete the cutover |
+| Distributed inference | L | **Incomplete — paused Feb 2026** | Sharded inference does not work on Mac Metal; paused awaiting driver support |
+| Platform / CLI shell | M | **API planned** | `map-server` is Python in the OpenPetal project — rewrite in Rust; ultimately each node discovers and serves its own map |
+| Storage / VPK | M | **Needs VPK integration** | See the data-sovereignty item below |
+| Ledger | S–M | **Written, unmerged; plan good** | Rebase and land |
+| Trust / identity | S | **Needs ToIP DTGWG update** | Align to the Linux Foundation ToIP Decentralized Trust Graph work |
+
+### The Mac Metal gap is scoped, not a release blocker
+
+Worth stating precisely, because "distributed inference is broken on Mac" reads
+like a release blocker and is not one. What does not work on Metal is **sharded**
+inference — the Petals-style block path. **Full-model inference on Macs works
+today** via `kwaai-cli/src/llama_local.rs`, which uses llama-cpp-2 with Metal
+acceleration.
+
+So a Mac user in the public release can run a model locally or reach one over
+p2p. What they cannot do is *participate in sharded inference of a model too
+large for one device*. That makes sharding a **scale feature, not a gate**, as
+long as the Feed's inference needs are served by full-model local or remote p2p
+— which they are. Confirm rather than assume when the Feed's inference path is
+designed.
+
+### Trust: ToIP DTGWG alignment is conformance, not redesign
+
+The Decentralized Trust Graph Working Group (formed March 2025, joint ToIP/DIF)
+standardises decentralised trust graphs on W3C DIDs 1.0 and VC Data Model 2.0,
+with **no central database — every party holds its own portable subgraph** of
+trust relationships.
+
+KwaaiNet's `reputation.rs` is already local-subjective by explicit design, which
+is the same philosophy, so this is conformance work rather than a rewrite. Two
+known defects gate it, both already recorded in `Ledger-plan.md`: the
+`did:key` vs `did:peer` verification mismatch, and a canonicalisation bug. Both
+block any VC-carrying-weight work.
+
+**Block 1 depends on this.** The Feed requires *domain-specific* sender
+reputation — "Alice's opinion on X but not Y" — which is precisely a trust graph.
+The Twin cannot vet and prioritise properly without it.
+
+### The map becomes a node capability, not a service
+
+"Each node discovers and serves its own map" folds `map-server` into `kwaai-api`
+rather than keeping a separately deployed service, and the Python original lives
+out of tree in OpenPetal. This removes another central component — the same
+direction as deleting summit-server — and is why the UX block owns the rewrite.
+
+### VPK integration answers the post-Verida sovereignty question
+
+Open item 4 asks what replaces Verida for data sovereignty now that it is
+dropped. Storage needing VPK integration and that question are the same question:
+`kwaai-storage`'s multi-tenant encrypted vector storage is the sovereign-data
+story. It is **not** on the Feed MVP path, but it is on the *narrative* path for
+a release that claims sovereignty — decide deliberately which of those the launch
+needs.
+
 ---
 
 ## Block 1 — Unified Feed · `kwaai-feed` + `kwaai-twin` · **XL**
@@ -182,14 +244,20 @@ mentions.
 Dependencies, not the numbering above:
 
 ```
-0. Foundation      land PR #107 (V1Lazy) and fix issue #108 (loopback dial)
+0. Foundation      land PR #107, fix issue #108 -> completes the v0.6 cutover,
+                   which is what takes P2P to MVP
 1. kwaai-ledger    rebase + merge; delete summit-server; purge Verida
-2. kwaai-agent     Harness trait + 3 spikes -> pick one
-3. kwaai-api       API surface the Feed and clients need
+2. kwaai-trust     ToIP DTGWG alignment; fix did:key/did:peer + canonicalisation
+   kwaai-agent     Harness trait + 3 spikes -> pick one
+3. kwaai-api       API surface; absorb map-server as a Rust, node-served map
 4. kwaai-feed      VA, store, prioritisation, email+calendar connectors
-   kwaai-twin      vetting, provenance, twin-to-twin p2p
+   kwaai-twin      vetting, provenance, twin-to-twin p2p  (needs step 2 trust)
 5. browser journey revise adoption doc, then build the front door
 6. kwaai-economy   miles + issuer -> then CC in the Feed
+
+deliberately off the release path:
+   VPK integration      -> the sovereignty story; decide if the launch claims it
+   sharded on Metal     -> blocked on drivers; a scale feature, not a gate
 ```
 
 Steps 2 and 3 can run in parallel. Step 0 is small and already in flight; #108 matters
@@ -221,6 +289,16 @@ would be indefensible in a consumer product.
 3. **VC issuer** — deleting summit-server leaves nothing issuing Verifiable
    Credentials. Fine now; phase 2's issuer must fill this.
 4. **Data sovereignty after Verida** — the adoption strategy leaned on it for the
-   storage/identity story. `kwaai-storage` VPK is the obvious candidate; needs deciding.
+   storage/identity story. This is the same question as "storage needs VPK
+   integration": `kwaai-storage`'s multi-tenant encrypted vector storage is the
+   candidate. Decide whether the launch *claims* sovereignty, because that decides
+   whether VPK is on the release path or after it.
 5. **Twin-to-twin protocol** — agent-to-agent negotiation is unspecified. Worth a short
    design note before `kwaai-twin` starts.
+6. **VC issuer, again** — items 3 and the trust work collide. ToIP DTGWG conformance
+   assumes credentials that something must issue, and summit-server (the only issuer)
+   is being deleted. Sequence the trust alignment against the phase-2 issuer, or the
+   Twin's reputation has no credentials to stand on.
+7. **Sharded inference on Metal** — paused since Feb 2026 awaiting driver support.
+   Scoped out of the release above, but it is the one item whose unblocking is
+   *outside our control*, so it should be re-checked rather than assumed dormant.
