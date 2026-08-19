@@ -1,147 +1,133 @@
-# Proposal: a libp2p transport binding for Trust Tasks
+# A libp2p binding for Trust Tasks — revised
 
-**To:** LF ToIP Decentralized Trust Graph Working Group, Trust Tasks Task Force
 **From:** Kwaai AI Lab
-**Date:** 2026-08-19
-**Status:** shared with the DTGWG weekly call, 2026-08-19. Revised 2026-08-19
-following feedback on that call.
+**Revised:** 2026-08-19, after @stormer78's review
+**Discussion:** [dtgwg-trust-tasks-tf#248](https://github.com/trustoverip/dtgwg-trust-tasks-tf/discussions/248)
+
+*Written to be posted as a reply in the Discussion, and to replace the shared
+document.*
 
 ---
 
-## Summary
+Thanks @stormer78 — the review corrected three things we had wrong and pointed at
+a better idea than the one we brought. This is the revised version.
 
-Kwaai AI Lab proposes to contribute a **libp2p transport binding** for the Trust
-Tasks framework — a binding specification under
-`bindings/libp2p/<version>/spec.md` and a `trust-tasks-libp2p` crate alongside
-the existing `-https`, `-didcomm` and `-tsp` implementations.
+## What we got wrong
 
-Trust Tasks currently ships bindings for HTTPS, DIDComm v1/v2, push and TSP.
-None of them carries Trust Tasks between two parties where **neither has a
-reachable public endpoint**, and none derives sender identity from a
-cryptographic transport handshake. A libp2p binding addresses both.
+Our case rested on three claimed gaps. All three were mistaken:
 
-We are asking the task force for agreement in principle, a reserved binding slug
-and URI, and guidance on the target framework version — not for a decision on
-merge today.
+- **"None of the existing bindings derives sender identity from a cryptographic
+  transport handshake."** Not true — the delivery implementation is swappable.
+- **"Neither party needs a public endpoint" as a libp2p advantage.** DIDComm and
+  TSP are messages and can travel peer-to-peer. Mediators are a choice, not a
+  requirement, and multi-relay hopping provides sender privacy that plain libp2p
+  circuit relay does not.
+- **"Full-duplex removes polling or mediator-callback patterns."** Mediators
+  already use bi-directional websockets with event-based delivery.
 
-## Why libp2p, specifically
+The error was ours: we read the HTTPS binding specification closely and then
+generalised its properties to DIDComm and TSP, which we had not read. Those are
+messaging protocols with their own identity and routing models, and the
+generalisation does not hold.
 
-### 1. Transport-derived identity that is cryptographic, not configured
+**libp2p is not technically superior to what Trust Tasks already supports.** The
+honest case is narrower, and it is below.
 
-SPEC §4.8.1 defines the precedence of in-band over transport-derived identity,
-and the HTTPS binding satisfies it with a bearer token mapped to a *Verifiable
-Identifier*. That mapping is a deployment concern: its strength depends on how
-the token was issued and how carefully the receiver maintains the mapping.
+## The revised proposal: start with the bridge
 
-libp2p authenticates **every** connection with a Noise handshake over the peer's
-long-term key. The peer ID *is* the public key. Transport-derived identity is
-therefore established cryptographically before the first byte of a Trust Task
-document is read, and the peer ID resolves to a *Verifiable Identifier* by
-derivation from that same key rather than by a lookup table.
+@stormer78's suggestion:
 
-We think that makes libp2p a useful second data point for §4.8.1 — a binding
-where transport-derived identity is strong enough that the precedence rule is
-doing real work, rather than deferring to in-band identity by default.
+> a real innovation here would be a bridge between libp2p and TSP/DIDComm where
+> you could mix the protocols together. We do this already with TSP+DIDComm where
+> you can use TSP for routing, and the final delivery is via DIDComm for example.
+> So you could use TSP for routing, carrying a libp2p payload or vice-versa.
 
-### 2. Neither party needs a public endpoint
+This is a better proposition than another transport binding, and we would rather
+pursue it. Composing protocols so each does what it is best at — TSP routing with
+libp2p delivery, or libp2p routing carrying a TSP payload — is more interesting
+than adding a fifth way to move the same document.
 
-The HTTPS binding requires a reachable server; DIDComm in practice usually does
-too, via a mediator. That excludes a class of deployment the DTGWG charter
-speaks directly to: two agents, each on a personal device, each behind NAT, with
-no server between them.
+It also matches what we can actually offer. Kwaai's contribution is not a novel
+transport; it is a production libp2p fabric that could serve as one leg of such a
+bridge, plus people to do the work.
 
-libp2p handles this natively — circuit relay for reachability plus DCUtR hole
-punching to upgrade to a direct connection where the network allows it. A trust
-graph in which "all parties control their own subgraph" is more credible when
-two parties can exchange Trust Tasks without either of them running
-infrastructure.
+## The honest case for a libp2p binding underneath it
 
-### 3. Full-duplex and multiplexed
+Narrower than our first version, and we think it still holds:
 
-A libp2p connection carries many concurrent streams in both directions. A
-consumer behind NAT can *receive* Trust Tasks, not only send them, over the same
-connection it opened. For long-lived agent-to-agent relationships this removes
-the polling or mediator-callback patterns the request/response bindings imply.
+**libp2p is a transport a lot of people already run.** Meeting an existing
+deployment where it is has value even when it offers no new capability — much the
+reason a REST binding would be worth having. We are aware of at least one other
+libp2p stack in this group, which suggests the constituency is real.
 
-## What Kwaai brings
+**Addressing maps cleanly onto `did:peer`.** A peer's multiaddrs, including
+circuit-relay addresses, can ride in the DID's service endpoints. That makes the
+libp2p-addressing-to-VID conversion concrete rather than aspirational, which
+matters for the cross-binding interoperability below.
 
-- **A production libp2p deployment.** KwaaiNet is a decentralised AI fabric built
-  on rust-libp2p 0.56 — Kademlia DHT, circuit relay, AutoNAT, DCUtR, Noise,
-  yamux — running across macOS, Linux and Windows nodes in the field.
-- **Operational experience under real network conditions.** Those nodes sit
-  behind residential NAT, reach each other over circuit relay, and upgrade to
-  direct connections via DCUtR. We maintain a tiered integration harness and
-  measure per-call round-trip latency in the field, so we can characterise a
-  binding's cost rather than assert it.
-- **Four Kwaai volunteers already participate in DTGWG.** This contribution is
-  intended as ongoing participation rather than a code drop.
+That is the whole argument. A binding is worth having because people are already
+on libp2p, not because libp2p does something the others cannot.
 
-## What we propose to deliver
+## Accepting the guidance
 
-| Deliverable | Shape |
-| --- | --- |
-| `bindings/libp2p/0.1/spec.md` | Binding specification following the HTTPS binding's structure — YAML front matter, document carriage, identity handling under §4.8.1, error mapping to the §8.3 vocabulary |
-| `trust-tasks-libp2p` crate | Client and listener over a libp2p `Swarm`, mirroring the `HttpsClient` / `HttpsServer` shape |
-| Binding URI | `https://trusttasks.org/binding/libp2p/0.1` (slug `libp2p`, subject to the task force's preference) |
-| Interop evidence | Round-trip against an existing binding — the relevant comparison for a transport binding — plus measured latency over direct and relayed connections |
+**Shim architecture — agreed.** A thin shim producing the payload, with a trait
+overlay and pluggable libp2p behind it, exactly as the TSP and DIDComm bindings
+do. It keeps spec churn in the shim and the transport out of the framework's way,
+and it is a better fit than the `HttpsClient`/`HttpsServer` shape we originally
+described.
 
-We would follow `CONTRIBUTING-SPECS.md`: fork, branch, folder, `npm run build`
-to validate, PR for CODEOWNERS routing. DCO and CLA as required.
+**Target the latest framework — agreed**, rather than pinning to `0.2`.
 
-## What we are asking for
+**§4.8.1 unchanged — agreed.** Converting libp2p addressing to a DID/VID for
+interoperability inside a VTC is a better outcome than a special case: a libp2p
+peer and a TSP peer in the same VTC should be able to talk.
 
-1. **Agreement in principle** that a libp2p binding is in scope for the task
-   force, before we invest in the specification.
-2. **A reserved slug and binding URI**, so the work targets a stable identifier.
-3. **Target framework version.** The HTTPS binding targets framework `0.2`;
-   we would like to know whether a new binding should target `0.2` or a later
-   draft.
-4. **Maintenance in-tree, published to crates.io.** The existing bindings are
-   versioned in lockstep with `trust-tasks-rs` — `-https`, `-didcomm`, `-proof`
-   and `-tsp` each have thirteen releases tracking the core's minor line. We are
-   asking for the same treatment rather than carrying a binding out-of-tree.
-   To be plain about the incentive: this serves us as much as the framework —
-   lockstep maintenance is how upstream refactors keep our binding working. We
-   note `bindings/push` exists in-repo without a published crate, so publication
-   seems worth agreeing rather than assuming.
+**Relay properties documented, not editorialised — agreed.** The binding should
+explain how libp2p behaves and let implementers make an informed choice.
 
-## On other libp2p implementations
+**Maintainers keeping the binding in sync — thank you.** That was our main
+reservation about tracking a pre-1.0 framework, and it resolves it.
 
-We understand from the 19 August call that Kwaai is not the only group in DTGWG
-running a libp2p stack and working on these problems. That is welcome, and it
-strengthens rather than complicates the case: a binding identifier is worth
-reserving precisely when more than one implementation needs it.
+## Answering the two questions
 
-We would rather co-author this than own it. If another group is further along, we
-are glad to support their specification instead of advancing our own — the
-binding existing matters considerably more to us than whose name is on it. We
-would also want the specification to pin the wire contract tightly enough that
-independent implementations interoperate, whichever libp2p stack they are built
-on.
+**"Is `libp2p` the right protocol name (aka DIDComm or TSP)?"**
 
-## Open questions we would raise, not resolve
+We think so, by analogy with `https`. That binding is named for the transport and
+then specifies the particulars — `POST` to `/trust-tasks`. A libp2p binding would
+be named for the transport and specify the libp2p **protocol ID** carrying a Trust
+Task document — say `/trust-tasks/1.0.0` — negotiated by multistream-select on a
+libp2p stream. So `https` : `/trust-tasks` :: `libp2p` : `/trust-tasks/1.0.0`.
 
-- **Identity precedence.** Does a cryptographically-authenticated transport
-  change how §4.8.1 should be applied, or is the existing precedence rule
-  sufficient as written? We have a view but not a strong one, and it is properly
-  the task force's call.
-- **Relayed connections.** When a connection traverses a circuit relay, the relay
-  sees traffic shape and endpoints though not content. Whether that warrants
-  anything in the binding specification is worth discussing.
-- **Peer ID to VID — which DID method?** Both `did:key` and `did:peer` are
-  derivable from the same Ed25519 key, and the choice is not obvious. KwaaiNet
-  uses `did:peer` today; the framework's other bindings lean toward `did:key`.
-  Whichever the task force prefers, key rotation and multi-key peers deserve a
-  stated rule rather than an implied one. We would rather the binding specify
-  this than leave each implementation to guess.
-- **Framework stability.** `trust-tasks-rs` has published 86 versions since May
-  2026, moving 0.5 → 0.9 in eight days. We are comfortable tracking that, but the
-  binding's own version cadence should be agreed rather than discovered.
+That said, you raised it, so you may have a reason to prefer otherwise. And if
+the bridge is the more interesting artefact, the naming question may want
+settling in that context instead.
+
+**Which DID method?**
+
+`did:peer`, on your recommendation and for your reason — routing information in
+the DID. KwaaiNet already issues `did:peer`, so this needs no change on our side.
+
+## What we would contribute
+
+- A production rust-libp2p fabric — Kademlia DHT, circuit relay, AutoNAT, DCUtR,
+  Noise, yamux — running across macOS, Linux and Windows nodes behind residential
+  NAT, with a tiered integration harness and measured per-call latency.
+- Four Kwaai people already participating in DTGWG.
+- Work on the shim, and on the bridge if the task force wants to pursue it.
+
+## Still open
+
+- **Whether to lead with the bridge or the binding.** The bridge is the more
+  valuable artefact; the binding may be the necessary substrate. We have no
+  strong view on sequencing and would follow the task force's.
+- **Whether another group should lead.** We are not the only libp2p stack here.
+  If someone else is further along, we would rather support their specification
+  than advance our own — the binding existing matters more to us than whose name
+  is on it.
 
 ## Timing
 
-Kwaai's committed engineering scope for 2026 does not include this work; our
-year-end release is platform hardening. We would expect to begin the
-specification once the task force agrees in principle, with implementation
-following the framework reaching a stable enough surface — realistically Q1
-2027. We would rather say that plainly than commit to a date we would miss.
+This is not in Kwaai's committed engineering scope for 2026; our year-end release
+is platform hardening. Realistically we would begin in Q1 2027. We would rather
+say that plainly than commit to a date we would miss — and it is another reason
+we are glad for someone else to lead if they are ready sooner.
