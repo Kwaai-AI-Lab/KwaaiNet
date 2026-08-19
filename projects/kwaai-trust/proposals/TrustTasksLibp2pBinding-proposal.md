@@ -3,8 +3,8 @@
 **To:** LF ToIP Decentralized Trust Graph Working Group, Trust Tasks Task Force
 **From:** Kwaai AI Lab
 **Date:** 2026-08-19
-**Status:** **shared with the DTGWG weekly call, 2026-08-19.** Awaiting task-force
-response on the four asks below. Superseded by that response, not by this draft.
+**Status:** shared with the DTGWG weekly call, 2026-08-19. Revised 2026-08-19
+following feedback on that call.
 
 ---
 
@@ -99,11 +99,25 @@ to validate, PR for CODEOWNERS routing. DCO and CLA as required.
 4. **Maintenance in-tree, published to crates.io.** The existing bindings are
    versioned in lockstep with `trust-tasks-rs` — `-https`, `-didcomm`, `-proof`
    and `-tsp` each have thirteen releases tracking the core's minor line. We are
-   explicitly asking for the same treatment rather than maintaining a binding
-   out-of-tree, and we should be transparent that this is as much to our benefit
-   as to the framework's: it is the mechanism by which upstream refactors keep
-   our binding working. We note `bindings/push` exists in-repo without a
-   published crate, so publication is worth agreeing rather than assuming.
+   asking for the same treatment rather than carrying a binding out-of-tree.
+   To be plain about the incentive: this serves us as much as the framework —
+   lockstep maintenance is how upstream refactors keep our binding working. We
+   note `bindings/push` exists in-repo without a published crate, so publication
+   seems worth agreeing rather than assuming.
+
+## On other libp2p implementations
+
+We understand from the 19 August call that Kwaai is not the only group in DTGWG
+running a libp2p stack and working on these problems. That is welcome, and it
+strengthens rather than complicates the case: a binding identifier is worth
+reserving precisely when more than one implementation needs it.
+
+We would rather co-author this than own it. If another group is further along, we
+are glad to support their specification instead of advancing our own — the
+binding existing matters considerably more to us than whose name is on it. We
+would also want the specification to pin the wire contract tightly enough that
+independent implementations interoperate, whichever libp2p stack they are built
+on.
 
 ## Open questions we would raise, not resolve
 
@@ -131,20 +145,3 @@ year-end release is platform hardening. We would expect to begin the
 specification once the task force agrees in principle, with implementation
 following the framework reaching a stable enough surface — realistically Q1
 2027. We would rather say that plainly than commit to a date we would miss.
-
----
-
-### Internal notes
-
-*(These were present in the version shared on 2026-08-19. Retained rather than
-quietly deleted, so the record matches what the working group actually saw.)*
-
-- This was shared without prior review by the four Kwaai DTGWG volunteers.
-- Licence checked: framework source is Apache-2.0 (`SOURCE_CODE.md`, and
-  `license = "Apache-2.0"` in `Cargo.toml`); specifications are OWFa 1.0.
-  Compatible with KwaaiNet's MIT, and contributing requires DCO plus CLA.
-- The ask in point 4 (in-tree, published) is the commercially meaningful one for
-  us. Worth deciding whether to lead with it or leave it where it is.
-- No claim in this document should outrun what we can show. The interop harness
-  and the production deployment are real; the Q1 2027 timing is a genuine
-  estimate, not a hedge.
