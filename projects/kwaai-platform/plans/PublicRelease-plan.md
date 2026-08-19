@@ -259,9 +259,48 @@ is which blocks shrink because code already exists.
   maintained one and conform". Same size, materially higher confidence.
 - **`kwaai-agent`** is untouched — DTGWG has no harness.
 
-The residual risk is `trust-tasks-rs` being **0.9.0**: pre-1.0 API churn, and an
-unproven scope fit, since Trust Tasks models *finite work* and Feed access
-negotiation may not be that shape. Prove that on a spike before committing.
+### Staying current with their improvements
+
+Yes — but it depends entirely on *how* we consume it, and the release data says
+the naive approach would hurt.
+
+**The churn is real.** `trust-tasks-rs` has published **86 versions since
+2026-05-18**, going 0.5 → 0.6 → 0.7 → 0.8 → 0.9 in **eight days**. Under 0.x
+semver every one of those minor bumps is a breaking change.
+
+**But the transport bindings are maintained in lockstep**, and that is the
+important signal: `-https`, `-didcomm`, `-tsp` and `-proof` each have exactly 13
+versions, all first published 2026-05-18, all now at 0.9.0. They bump only on
+core's minor line. In other words, when upstream breaks the transport trait, they
+fix every binding in their own workspace at the same time.
+
+That gives four rules:
+
+1. **Depend via crates.io. Never vendor.** We already carry one patched
+   dependency (`patches/multistream-select`) and it costs a patch file, a
+   checksum-pinned fetch script, and a re-apply chore on every libp2p bump. Do
+   not repeat that here — a fork stops improvements reaching us by definition.
+2. **Contribute `trust-tasks-libp2p` upstream, not in-tree.** This is the whole
+   mechanism. In their workspace, their refactors carry our binding along, as
+   they have for the other four bindings across 13 lockstep releases. In ours, we
+   absorb every break ourselves. Contributing is the cheap path, not the generous
+   one.
+3. **Pin exactly and upgrade deliberately.** At this cadence, floating is
+   thrash. Batch upgrades, and use our four working-group volunteers as the early
+   warning for breaking changes — that is a concrete, ongoing use for that seat.
+4. **Isolate the dependency behind a thin internal adapter** inside `kwaai-twin`,
+   the same shape as the `Harness` trait in Block 4. Churn then hits one module
+   rather than the crate.
+
+**The timing works in our favour.** `kwaai-twin` sits at step 4 of the build
+order — months out on either velocity scenario. `trust-tasks-rs` went from 0.1.0
+to 0.9.0 in three months; on that trajectory it plausibly reaches 1.0 well before
+we couple to it deeply. Spike it early to prove scope fit, then integrate for
+real once the API settles.
+
+Residual risk remains the **scope fit**, not the churn: Trust Tasks models
+*finite work*, and Feed access negotiation may not be that shape. Prove that on
+the spike before committing.
 
 ## Schedule — derived from measured velocity
 
