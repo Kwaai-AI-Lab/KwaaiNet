@@ -16,9 +16,10 @@ money), and the UX (the Feed **is** the primary UI). The other three are its
 substrate. Build order therefore differs from the numbering below, which is kept as
 the user stated it.
 
-Sources read: `Unified Feed w_Use Cases.pdf` (20pp, Apr 2025), and on branch
-`feat/kwaai-ledger`: `projects/kwaai-trust/plans/Ledger-plan.md`,
-`projects/kwaai-trust/plans/TokenEconomy-plan.md`.
+Sources read: `Unified Feed w_Use Cases.pdf` (20pp, Apr 2025); on branch
+`feat/kwaai-ledger`: `projects/kwaai-trust/plans/Ledger-plan.md` and
+`projects/kwaai-trust/plans/TokenEconomy-plan.md`; and the LF ToIP [Decentralized
+Trust Graph Working Group](https://lf-toip.atlassian.net/wiki/spaces/HOME/pages/257785857/Decentralized+Trust+Graph+Working+Group).
 
 ## What already exists — do not rebuild
 
@@ -111,7 +112,7 @@ Size says what is built; this says what remains. Some of it gates the release.
 | Platform / CLI shell | M | **API planned** | `map-server` is Python in the OpenPetal project — rewrite in Rust; ultimately each node discovers and serves its own map |
 | Storage / VPK | M | **Needs VPK integration** | See the data-sovereignty item below |
 | Ledger | S–M | **Written, unmerged; plan good** | Rebase and land |
-| Trust / identity | S | **Needs ToIP DTGWG update** | Align to the Linux Foundation ToIP Decentralized Trust Graph work |
+| Trust / identity | S | **Needs ToIP DTGWG update** | Adopt VRC/PHC/r-cards; peer-to-peer issuance, no central authority |
 
 ### The Mac Metal gap is scoped, not a release blocker
 
@@ -130,20 +131,40 @@ designed.
 
 ### Trust: ToIP DTGWG alignment is conformance, not redesign
 
+**There is no central credential authority. Trust is relative and subjective.**
+That is the model, and KwaaiNet already matches it — `reputation.rs` is
+local-subjective by explicit design. So this is conformance work, not a rewrite.
+
 The Decentralized Trust Graph Working Group (formed March 2025, joint ToIP/DIF)
-standardises decentralised trust graphs on W3C DIDs 1.0 and VC Data Model 2.0,
-with **no central database — every party holds its own portable subgraph** of
-trust relationships.
+standardises *portable* trust graphs between people, groups, organisations and AI
+agents, on W3C DIDs and Verifiable Credentials, where **all parties control their
+own subgraph** and **credentials are issued peer-to-peer rather than by
+centralised authorities**.
 
-KwaaiNet's `reputation.rs` is already local-subjective by explicit design, which
-is the same philosophy, so this is conformance work rather than a rewrite. Two
-known defects gate it, both already recorded in `Ledger-plan.md`: the
+Primitives worth designing against rather than reinventing:
+
+| Primitive | What it is | Where it lands for us |
+|---|---|---|
+| **VRC** — Verifiable Relationship Credential | Attests a trust connection between two entities | The Twin's sender reputation |
+| **PHC** — Personhood Credential | Verifies an individual is a person | Sybil resistance, incl. the phase-2 welcome balance |
+| **r-cards** | Portable relationship data | Trust that travels with the user, not the node |
+| **Social vouching / out-of-band introduction** | How trust is established without an authority | How an *unknown* sender earns a path in |
+| **Trust task protocols**, **Agent Names** | Active task forces | Twin-to-twin negotiation and addressing — see open item 5 |
+| Zero-knowledge proofs | Privacy-preserving assertions | Disclosing trust without disclosing the graph |
+
+Two known defects gate any of this, both recorded in `Ledger-plan.md`: the
 `did:key` vs `did:peer` verification mismatch, and a canonicalisation bug. Both
-block any VC-carrying-weight work.
+already block VC-carrying-weight work.
 
-**Block 1 depends on this.** The Feed requires *domain-specific* sender
-reputation — "Alice's opinion on X but not Y" — which is precisely a trust graph.
-The Twin cannot vet and prioritise properly without it.
+**Block 1 depends on this.** The Feed needs *domain-specific* sender reputation —
+"Alice's opinion on X but not Y" — which is precisely a subjective trust graph.
+The Twin cannot vet or prioritise properly without it.
+
+**And it resolves a design question in the Feed.** A trust graph handles *known*
+senders; the Indiscriminate Price handles the rest. Those are not competing
+mechanisms — the CC price is the economic fallback for exactly the case where no
+trust path exists, and social vouching is the non-economic one. Unknown senders
+either pay or get vouched for.
 
 ### The map becomes a node capability, not a service
 
@@ -293,12 +314,17 @@ would be indefensible in a consumer product.
    integration": `kwaai-storage`'s multi-tenant encrypted vector storage is the
    candidate. Decide whether the launch *claims* sovereignty, because that decides
    whether VPK is on the release path or after it.
-5. **Twin-to-twin protocol** — agent-to-agent negotiation is unspecified. Worth a short
-   design note before `kwaai-twin` starts.
-6. **VC issuer, again** — items 3 and the trust work collide. ToIP DTGWG conformance
-   assumes credentials that something must issue, and summit-server (the only issuer)
-   is being deleted. Sequence the trust alignment against the phase-2 issuer, or the
-   Twin's reputation has no credentials to stand on.
+5. **Twin-to-twin protocol** — agent-to-agent negotiation is unspecified. Check
+   DTGWG's **Trust Task Protocols** and **Agent Names** task forces before designing
+   one: agent-to-agent addressing and trust interactions are exactly their scope, and
+   an interoperable Twin is worth more than a bespoke one.
+6. **Two different "issuers" — do not conflate them.** An earlier draft of this plan
+   treated deleting summit-server as leaving a credential gap. That was wrong.
+   DTGWG issues credentials **peer-to-peer with no central authority**, so removing
+   the only central VC issuer is *aligned with* the model, not a hole in it — each
+   node attests for itself. What phase 2 needs is an **economic** issuer to mint
+   miles, which is a deliberate, separate trust assumption and already argued in
+   `TokenEconomy-plan.md`. Identity credentials: decentralised. Currency: issued.
 7. **Sharded inference on Metal** — paused since Feb 2026 awaiting driver support.
    Scoped out of the release above, but it is the one item whose unblocking is
    *outside our control*, so it should be re-checked rather than assumed dormant.
