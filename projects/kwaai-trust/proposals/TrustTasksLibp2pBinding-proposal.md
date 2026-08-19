@@ -35,8 +35,8 @@ the token was issued and how carefully the receiver maintains the mapping.
 libp2p authenticates **every** connection with a Noise handshake over the peer's
 long-term key. The peer ID *is* the public key. Transport-derived identity is
 therefore established cryptographically before the first byte of a Trust Task
-document is read, and mapping a peer ID to a `did:key` VID is a direct derivation
-rather than a lookup table.
+document is read, and the peer ID resolves to a *Verifiable Identifier* by
+derivation from that same key rather than by a lookup table.
 
 We think that makes libp2p a useful second data point for §4.8.1 — a binding
 where transport-derived identity is strong enough that the precedence rule is
@@ -76,7 +76,7 @@ the polling or mediator-callback patterns the request/response bindings imply.
 ## What we propose to deliver
 
 | Deliverable | Shape |
-|---|---|
+| --- | --- |
 | `bindings/libp2p/0.1/spec.md` | Binding specification following the HTTPS binding's structure — YAML front matter, document carriage, identity handling under §4.8.1, error mapping to the §8.3 vocabulary |
 | `trust-tasks-libp2p` crate | Client and listener over a libp2p `Swarm`, mirroring the `HttpsClient` / `HttpsServer` shape |
 | Binding URI | `https://trusttasks.org/binding/libp2p/0.1` (slug `libp2p`, subject to the task force's preference) |
@@ -111,9 +111,12 @@ to validate, PR for CODEOWNERS routing. DCO and CLA as required.
 - **Relayed connections.** When a connection traverses a circuit relay, the relay
   sees traffic shape and endpoints though not content. Whether that warrants
   anything in the binding specification is worth discussing.
-- **Peer ID to VID.** Deriving `did:key` from the Ed25519 peer ID is the obvious
-  mapping, but multi-key peers and key rotation deserve a stated rule rather than
-  an implied one.
+- **Peer ID to VID — which DID method?** Both `did:key` and `did:peer` are
+  derivable from the same Ed25519 key, and the choice is not obvious. KwaaiNet
+  uses `did:peer` today; the framework's other bindings lean toward `did:key`.
+  Whichever the task force prefers, key rotation and multi-key peers deserve a
+  stated rule rather than an implied one. We would rather the binding specify
+  this than leave each implementation to guess.
 - **Framework stability.** `trust-tasks-rs` has published 86 versions since May
   2026, moving 0.5 → 0.9 in eight days. We are comfortable tracking that, but the
   binding's own version cadence should be agreed rather than discovered.
@@ -136,7 +139,7 @@ following the framework reaching a stable enough surface — realistically Q1
 - Licence checked: framework source is Apache-2.0 (`SOURCE_CODE.md`, and
   `license = "Apache-2.0"` in `Cargo.toml`); specifications are OWFa 1.0.
   Compatible with KwaaiNet's MIT, and contributing requires DCO plus CLA.
-- The ask in point 5 (in-tree, published) is the commercially meaningful one for
+- The ask in point 4 (in-tree, published) is the commercially meaningful one for
   us. Worth deciding whether to lead with it or leave it where it is.
 - No claim in this document should outrun what we can show. The interop harness
   and the production deployment are real; the Q1 2027 timing is a genuine
