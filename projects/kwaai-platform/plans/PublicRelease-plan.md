@@ -1,5 +1,23 @@
 # KwaaiNet Public Release — four blocks of functionality
 
+
+## Plan of record
+
+**Committed scope for 2026: Rung 1 — Secure Network.** The v0.6 cutover,
+authorization, the ledger landed, and `kwaai-api`. Approved 2026-08-18.
+
+Everything else on this page is upside, not commitment.
+
+| Rung | Adds | Solo weeks | Volunteer weeks needed | Status |
+|---|---|---|---|---|
+| **1 · Secure Network** | Cutover, authorization, ledger, `kwaai-api` | 14 | **0** | **Committed** |
+| 2 · Browser front door | Public, browser-reachable node | 19 | 2 | Likely — one engaged volunteer month |
+| 3 · Feed Preview | Agent harness, email connector, ranking | 33 | 16 | Pursue, do not announce |
+
+Rung 1 is the only scope that depends on nobody volunteering. Build so rungs 2
+and 3 attach without rework, and let availability decide where the year ends.
+
+
 **Status:** approved 2026-08-18. Sizes are t-shirt, not estimates.
 
 ## Context
@@ -309,172 +327,125 @@ Residual risk remains the **scope fit**, not the churn: Trust Tasks models
 *finite work*, and Feed access negotiation may not be that shape. Prove that on
 the spike before committing.
 
-## Schedule — derived from measured velocity
+## Schedule — availability, not velocity
 
-### Observed velocity
+Kwaai is volunteer-driven. The binding constraint is not how fast anyone codes;
+it is whether they are there that month. Planning by aggregate velocity produces
+a schedule that only works if everyone shows up, which is the wrong shape for
+this organisation.
 
-| Signal | Value |
-|---|---|
-| Repo span | 2025-09-11 → 2026-08-18 (~11 months, ~9 active) |
-| Rust LOC added | ~127,000 gross, ~107,000 net currently in tree |
-| Sustained output, all bodies in parallel | **~11–12k LOC/month** |
-| **One focused XL body** (`kwaai-rag`: 28.5k LOC, 240 commits, 2026-05-08 → 2026-08-18) | **~8.5k LOC/month → 3.4 months** |
+### Correction: August was not a slowdown
 
-`kwaai-rag` is the cleanest anchor: a single contiguous XL build with no gaps.
-Crate commit counts elsewhere understate effort because the native-p2p stack
-landed via squash merges.
+An earlier revision read "34 commits in August against 347 in May" as the team
+stalling and hedged every date on it. **That was wrong.** Reza's authoring
+dropped; Darren shipped **24,430 LOC** that month — the whole native-p2p stack,
+#75 through #86 — as squash-merged PRs that commit counts structurally cannot
+see. August was the second-strongest month of the year.
 
-Derived durations, one focused body at a time:
-
-| Size | LOC | Duration |
-|---|---|---|
-| S | 1–3k | ~1–2 weeks |
-| M | 4–9k | ~3–5 weeks |
-| L | 15–20k | ~2 months |
-| XL | 20k+ | ~3.5 months |
-
-### The honest caveat, which matters more than the arithmetic
-
-**Commit cadence has fallen sharply**: 347 (May) → 246 (Jun) → 72 (Jul) → 34
-(Aug). August's LOC looks healthy only because it is squash-merged work authored
-earlier. Any schedule built on peak velocity is fiction. Both scenarios below are
-given for that reason.
-
-### Critical path to a public release
-
-Feed MVP (no CC) reachable in a browser, on a landed ledger:
-
-| Step | Size | Peak velocity | Recent velocity |
+| Month | Reza | Darren | Team |
 |---|---|---|---|
-| 0. Foundation — #107, #108, cutover | S | 1 wk | 2 wk |
-| 1. Land `kwaai-ledger` | S | 2 wk | 3 wk |
-| 2. `kwaai-trust` ToIP ∥ `kwaai-agent` bake-off | S + M | 5 wk | 8 wk |
-| 3. `kwaai-api` (∥ with 2) | M | — | — |
-| 4. `kwaai-feed` + `kwaai-twin` | XL | 14 wk | 20 wk |
-| 5. Browser journey (overlaps 4's back half) | L | 4 wk net | 6 wk net |
-| **To Feed MVP in a browser** | | **~6 months** | **~9 months** |
-| 6. `kwaai-economy` + CC | L–XL | +3 mo | +4.5 mo |
-| **To the full vision incl. CC** | | **~9 months** | **~13 months** |
+| May 2026 | 35,361 | 3,789 | 39,150 |
+| June | 16,222 | 0 | 16,222 |
+| July | 9,837 | 0 | 9,837 |
+| August | 3,011 | 24,430 | 27,441 |
 
-Steps 2 and 3 run in parallel; step 5 overlaps step 4. Steps 4 and 6 are the only
-true long poles.
+Team output averages **23,162 LOC/month** over the last four months. Velocity
+was never the problem, so the dates below are built on availability instead.
+
+### Two contributors, two shapes
+
+Totals are closer than commit counts suggest — 675 LOC/commit against 163 is
+what squash-merging looks like. The *shapes* are not close.
+
+- **Reza — continuous.** Nine active months of twelve, 10–16k LOC/month
+  sustained, 35k peak, while also carrying review, ops and planning. **The only
+  capacity that can be committed to a date.**
+- **Darren — bursty.** Four active months of twelve, but 24k in a peak one; he
+  lands whole subsystems at a time. The risk is presence, not rate: an engaged
+  month is worth one of Reza's, an absent month is worth zero.
+- **Christophe — onboarding.** Senior, and already runs nodes, so not cold on
+  the domain. Treat as upside until demonstrated.
+
+### The rungs
+
+17 effective weeks remain to 31 December (19.3 calendar, less holidays).
+Durations are one contributor on one body, anchored on `kwaai-rag` — 28.5k LOC
+over 3.4 months, the one contiguous XL build in the tree.
+
+| Rung | Solo | Volunteer weeks needed | Confidence |
+|---|---|---|---|
+| 1 · Secure Network | 14 wk | 0 | **Commit** — 3 weeks spare |
+| 2 · Browser front door | 19 wk | 2 | Likely — inside one engaged month |
+| 3 · Feed Preview | 33 wk | 16 | Fragile — two people sustained through Q4 |
+
+### Designing for volunteers rather than around them
+
+A volunteer schedule fails when one person's disappearance blocks three others.
+Keep the critical path on the continuous contributor, and give volunteers work
+that is **bounded, specified up front, and merge-ready in isolation** — exactly
+the shape of Darren's August: eight PRs, one subsystem, landed in a burst.
+
+Two pieces fit that shape well:
+
+- **Authorization** — self-contained, spec-able before anyone is available, and
+  testable against the existing interop harness.
+- **`trust-tasks-libp2p`** — bounded, upstream, and carrying the external credit
+  volunteers are motivated by.
+
+Note that **four Kwaai volunteers are already committed to the LF ToIP working
+group.** That is real capacity, deliberately spent on standards influence rather
+than the release. Probably correct — but it should be a conscious choice.
 
 ### What would move these dates
 
-- **Team size.** All of the above is one focused body at a time. `kwaai-feed`
-  and `kwaai-api` are separable across people; `kwaai-twin` is separable from
-  `kwaai-feed` once the Trust Tasks decision is made.
-- **The bake-off outcome.** Adopting a harness keeps step 2 at M; building our own
-  makes it L and adds ~4 weeks.
-- **Outside our control:** Darren's review on #107, sharded inference on Metal
-  (driver support, scoped out), and `trust-tasks-rs` reaching 1.0.
-- **Not on this path:** VPK integration and Metal sharding, both deliberately
-  excluded above.
+- **Availability, first and last.** Re-read who has shown up at week 6, not how
+  fast they went.
+- **#107 unreviewed.** Step 0 of every rung, green and idle.
+- **DHT signing vs Go peers.** The one estimate that could move; signatures
+  should ride as an ignored extension field, unproven until the interop harness
+  says so. Prove it early.
+- **Not on this path:** VPK integration, Metal sharding, CC.
 
----
-
-## Block 1 — Unified Feed · `kwaai-feed` **XL** + `kwaai-twin` **M** (was part of XL)
-
-The product. A single prioritised stream replacing app-switching.
-
-Two agents with **different trust boundaries**, which is why this is two crates:
-
-- **`kwaai-twin`** — external-facing. Receives all inbound, verifies origin, deletes
-  suspicious, checks provenance, scores importance/credibility, negotiates access
-  (CC in phase 2), and proactively discovers information. Speaks twin-to-twin over
-  `kwaai-p2p` — evaluate `trust-tasks-rs` (DTGWG, Rust) as the protocol rather than
-  inventing one; see the trust section.
-- **`kwaai-feed`** — local. The VA role plus the feed itself: item model, store,
-  connectors, prioritisation engine, owner rules, mode awareness, summarisation.
-
-Scope for the release:
-
-- Item model + store; connectors for **email + calendar**
-- Prioritisation: owner-defined rules (deterministic, override) → AI learning from
-  behaviour → urgency (sender-declared, modulated by Twin; deadline-driven; dynamic
-  decay for neglected contacts) → sender reputation
-- UI contract: single-line previews, hover-to-expand without marking read,
-  click-to-engage, reappearance of unresolved items, notification batching,
-  on-demand summarisation, **prioritisation transparency** (why is this here?)
-- Outbox with follow-up tracking
-
-Reuse: `kwaai-rag` for summaries and contextual assistance; `kwaai-inference` for
-prioritisation and composition; `kwaai-trust::reputation` for sender trust (note it is
-local-subjective by design — see `docs/reputation.md`); `kwaai-p2p` unary for
-twin-to-twin.
-
-Deferred to phase 2: all CC negotiation, Indiscriminate Price, vendor intent-pitching.
-
-## Block 2 — Tokenomics · `kwaai-ledger` (exists) → `kwaai-economy` · **S then L–XL**
-
-**Phase 1 — land the ledger (S).** Rebase `feat/kwaai-ledger` onto `main` (16 ahead /
-22 behind), re-verify cross-platform, merge. Delete `summit-server` and its 13 external
-references (`Dockerfile.eve`, root `CLAUDE.md`, `CONTRIBUTORS.md`,
-`.github/workflows/ci-kwaai-platform.yml`, `docs/{ARCHITECTURE,TODO,BOOTSTRAP_SERVER_V2_REQUIREMENTS}.md`,
-five `projects/kwaai-platform/` files). Purge Verida from ~10 docs.
-
-**Phase 2 — the token economy (L–XL).** Per `TokenEconomy-plan.md`: trust (local,
-non-transferable, earned by uptime/routing) kept strictly separate from miles
-(network-wide, minted by an issuer at settlement, earned by provable work). Needs a new
-issuer service — the trust assumption is not new, since the two bootstrap servers are
-already fully trusted. **CC rides on this phase**, adding escrow, reclaim, and tipping.
-The cash-out path carries real regulatory weight and must be designed in, not bolted on.
-
-## Block 3 — UX · `kwaai-api` **M** + browser-first journey **L**
-
-- **`kwaai-api` (M)** — Rust crate exposing the node's HTTP/WS API. Consumed by the
-  existing Node backend, by the Flutter client, and by the Feed UI. API only; the Node
-  backend and React frontend stay.
-- **Browser-first journey (L)** — the public release's front door. Requires first
-  **revising** `MASS_ADOPTION_STRATEGY.md`: it is a year old and its architecture
-  assumes Verida throughout, which is now dropped. The WASM thesis (via
-  `core/crates/kwaai-wasm`) survives that revision; the data-sovereignty layer needs a
-  replacement answer.
-- Thick client stays in `KwaaiNetGUI` (Darren), consuming `kwaai-api`.
-
-## Block 4 — Agentic harness · `kwaai-agent` · **M** adopting, **L** building
-
-Define a narrow `Harness` trait — tool registry, act loop, memory, channels — then
-spike three adapters against **one** real task: the Twin vetting and scoring an inbound
-message.
-
-| Candidate | Shape | Fit |
-|---|---|---|
-| **Claude** (Agent SDK / MCP) | Mature, hosted models, strong tool-calling | Lowest risk; weakest on local-first sovereignty |
-| **OpenClaw** | MIT, local-first, model-agnostic (Ollama), **gateway already aggregates WhatsApp/Discord/Slack** | Closest fit — its gateway *is* much of the Feed's connector problem |
-| **OmegaClaw** (SingularityNET/ASI) | Hyperon neural-symbolic, NAL + PLN, goal-autonomous, three-tier memory | Most ambitious, most research-grade, highest risk |
-
-Deliver the trait plus a written recommendation with evidence. Also expose KwaaiNet
-capabilities (RAG, graph, shard inference, storage) over **MCP** so external agents can
-drive the network — there is no MCP implementation in the tree today, only two doc
-mentions.
-
----
 
 ## Build order
 
 Dependencies, not the numbering above:
 
 ```
+RUNG 1 — COMMITTED, 2026
 0. Foundation      land PR #107, fix issue #108 -> completes the v0.6 cutover,
                    which is what takes P2P to MVP
-1. kwaai-ledger    rebase + merge; delete summit-server; purge Verida
-2. kwaai-trust     ToIP DTGWG alignment; fix did:key/did:peer + canonicalisation
-   kwaai-agent     Harness trait + 3 spikes -> pick one
+1. authorization   signed DHT writes, storage tenant ownership, per-peer quota
+2. kwaai-ledger    rebase + merge; delete summit-server; purge Verida
 3. kwaai-api       API surface; absorb map-server as a Rust, node-served map
-4. kwaai-feed      VA, store, prioritisation, email+calendar connectors
-   kwaai-twin      vetting, provenance, twin-to-twin p2p  (needs step 2 trust)
-5. browser journey revise adoption doc, then build the front door
-6. kwaai-economy   miles + issuer -> then CC in the Feed
+                   -- SHIPPABLE HERE --
+
+RUNG 2 — one engaged volunteer month
+4. browser journey revise the adoption doc, then build the front door
+
+RUNG 3 — two volunteers sustained through Q4
+5. kwaai-trust     ToIP DTGWG alignment; fix did:key/did:peer + canonicalisation
+   kwaai-agent     Harness trait + 3 spikes -> pick one
+6. kwaai-feed      VA, store, prioritisation, email connector
+
+AFTER 2026
+7. kwaai-twin      vetting, provenance, twin-to-twin over trust-tasks (needs 5)
+8. kwaai-economy   miles + issuer -> then CC in the Feed
 
 deliberately off the release path:
    VPK integration      -> the sovereignty story; decide if the launch claims it
    sharded on Metal     -> blocked on drivers; a scale feature, not a gate
 ```
 
-Steps 2 and 3 can run in parallel. Step 0 is small and already in flight; #108 matters
-here because it can latch a circuit breaker against a healthy peer until restart, which
-would be indefensible in a consumer product.
+Steps 1, 2 and 3 are independent of each other and are the natural volunteer
+briefs — authorization especially, being spec-able before anyone is available.
+Step 0 is small and already in flight; #108 matters here because it can latch a
+circuit breaker against a healthy peer until restart, which would be
+indefensible in anything public.
+
+**Rungs 2 and 3 must attach without rework.** That is the constraint rung 1's
+design has to satisfy: `kwaai-api` carries the surface the browser front door and
+the Feed both consume, so its shape is decided once, in rung 1, for all three.
 
 ## Verification
 
