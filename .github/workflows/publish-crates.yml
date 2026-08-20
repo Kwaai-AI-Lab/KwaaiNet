@@ -36,12 +36,15 @@ jobs:
             DRY_RUN_FLAG="--dry-run"
             echo "=== DRY RUN MODE ==="
           fi
+          # Dependency order, leaves first. `kwaai-p2p` needs
+          # `kwaai-hivemind-dht` published before it; see the fuller note in
+          # release.yml. Keep the two lists in step.
           for crate in \
             kwaai-compression \
-            kwaai-trust \
-            kwaai-p2p \
-            kwaai-hivemind-dht \
             kwaai-inference \
+            kwaai-hivemind-dht \
+            kwaai-p2p \
+            kwaai-trust \
             kwaai-p2p-daemon \
             kwaai-distributed \
             kwaai-wasm \
