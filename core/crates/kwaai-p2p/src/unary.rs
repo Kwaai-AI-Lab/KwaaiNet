@@ -49,7 +49,7 @@ use futures::io::AsyncWriteExt as _;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, SinkExt, StreamExt};
 use libp2p::core::transport::PortUse;
-use libp2p::core::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
+use libp2p::core::upgrade::{InboundUpgrade, NegotiationError, OutboundUpgrade, UpgradeInfo};
 use libp2p::core::{Endpoint, Multiaddr};
 use libp2p::swarm::handler::{
     ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
@@ -464,15 +464,15 @@ impl Handler {
                             &message.data,
                         ))
                         .await
-                        .map_err(|e| UnaryError::Wire(e.to_string()))?;
+                        .map_err(|e| wire_or_refusal(e, &proto))?;
                     stream
                         .flush()
                         .await
-                        .map_err(|e| UnaryError::Wire(e.to_string()))?;
+                        .map_err(|e| wire_or_refusal(e, &proto))?;
 
                     let frame = wire::read_framed_futures(&mut stream)
                         .await
-                        .map_err(|e| UnaryError::Wire(e.to_string()))?;
+                        .map_err(|e| wire_or_refusal(e, &proto))?;
                     let (echoed_id, result) = wire::decode_unary_response(&frame)
                         .map_err(|e| UnaryError::Wire(e.to_string()))?;
                     if echoed_id != call_id {
@@ -515,10 +515,82 @@ impl Handler {
             StreamUpgradeError::NegotiationFailed => {
                 UnaryError::UnsupportedProtocol(message.proto.to_string())
             }
+            // No refusal arm here on purpose. Under `V1Lazy` the upgrade
+            // *succeeds* and the refusal surfaces during the exchange, so it is
+            // classified by `wire_or_refusal`. A guard on this arm would be dead
+            // code either way: `to_stream_upgrade_error`
+            // (libp2p-swarm `connection.rs`) maps `NegotiationError::Failed` to
+            // `NegotiationFailed` above, and only ever puts a bare io error or a
+            // `ProtocolError` inside `Io`.
             StreamUpgradeError::Io(e) => UnaryError::Wire(e.to_string()),
             StreamUpgradeError::Apply(infallible) => match infallible {},
         };
         let _ = message.reply.send(Err(error));
+    }
+}
+
+/// True when an error is really "the peer does not speak this protocol"
+/// wearing a different hat.
+///
+/// The swarm negotiates outbound substreams with `Version::V1Lazy` (see
+/// `service.rs`), which hands back the stream without waiting for the peer to
+/// confirm the protocol. The upgrade therefore *succeeds*, and a refusal is
+/// only discovered when the exchange below does its first real I/O — surfacing
+/// as an ordinary read/write failure rather than as
+/// [`StreamUpgradeError::NegotiationFailed`]. Nothing is lost in the process:
+/// `NegotiationError` converts into an `io::Error` that keeps the original
+/// enum as its inner error, so the cause is still there to be read.
+///
+/// Only [`NegotiationError::Failed`] counts. `NegotiationError::ProtocolError`
+/// means negotiation itself broke down — a truncated or malformed message —
+/// which is a real wire failure and keeps mapping to [`UnaryError::Wire`].
+///
+/// **A refusal and a hang-up are different, and that is correct.** Only a
+/// literal `na` reaches us as `NegotiationError::Failed`. A peer that resets or
+/// hangs up mid-negotiation takes a different path — `negotiated.rs`
+/// `State::Expecting` maps EOF to `ProtocolError::IoError(UnexpectedEof)`, and
+/// `From<NegotiationError> for io::Error` unwraps a `ProtocolError` rather than
+/// preserving the enum — so it classifies as [`UnaryError::Wire`].
+///
+/// This matches p2pd, which is the point: go-multistream returns its refusal
+/// error only for a literal `na`, and a reset surfaces as
+/// `failed to negotiate protocol: stream reset` — a wire error, never a
+/// refusal. The pre-V1Lazy native path was the outlier in conflating the two.
+/// Do not "fix" this toward treating a hang-up as a refusal; that breaks parity.
+///
+/// (The eager `dialer_select.rs::AwaitProtocol` path *does* fold EOF into
+/// `Failed`, which is where the old comment came from. V1Lazy does not reach it
+/// for a single-protocol offer.)
+fn is_negotiation_failure(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cause = Some(e);
+    while let Some(err) = cause {
+        if matches!(
+            err.downcast_ref::<NegotiationError>(),
+            Some(NegotiationError::Failed)
+        ) {
+            return true;
+        }
+        // `io::Error` hides its inner error from `source()`, which reports the
+        // inner error's *own* source instead. Step into it explicitly, or the
+        // walk jumps clean past the variant we are looking for.
+        cause = match err
+            .downcast_ref::<std::io::Error>()
+            .and_then(|io| io.get_ref())
+        {
+            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
+            None => err.source(),
+        };
+    }
+    false
+}
+
+/// Classify a failed exchange: a deferred protocol refusal reads as
+/// [`UnaryError::UnsupportedProtocol`], anything else as [`UnaryError::Wire`].
+fn wire_or_refusal<E: std::error::Error + 'static>(e: E, proto: &UnaryProtocol) -> UnaryError {
+    if is_negotiation_failure(&e) {
+        UnaryError::UnsupportedProtocol(proto.to_string())
+    } else {
+        UnaryError::Wire(e.to_string())
     }
 }
 
@@ -858,5 +930,98 @@ impl NetworkBehaviour for Behaviour {
             return Poll::Ready(event);
         }
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p::core::upgrade::ProtocolError;
+
+    /// How multistream-select actually surfaces a refusal: the enum is moved
+    /// into an `io::Error` as its inner error (`From<NegotiationError>`).
+    fn refusal() -> std::io::Error {
+        NegotiationError::Failed.into()
+    }
+
+    // -- the case that costs a round trip if it regresses -----------------
+
+    #[test]
+    fn a_wrapped_negotiation_refusal_is_recognised() {
+        assert!(is_negotiation_failure(&refusal()));
+    }
+
+    #[test]
+    fn a_refusal_nested_behind_another_error_is_recognised() {
+        // `wire::WireError::Io` and friends wrap the io error rather than
+        // replacing it, so the cause has to be walked, not just read.
+        #[derive(Debug, thiserror::Error)]
+        #[error("framing: {0}")]
+        struct Wrapper(#[from] std::io::Error);
+
+        assert!(is_negotiation_failure(&Wrapper(refusal())));
+    }
+
+    #[test]
+    fn the_walk_steps_through_io_errors_own_inner_error() {
+        // Guards the reason this is not a plain `source()` loop: `io::Error`
+        // reports the *inner error's* source, never the inner error itself, so
+        // a naive walk skips straight past `NegotiationError`.
+        let e = refusal();
+        assert!(
+            std::error::Error::source(&e).is_none(),
+            "io::Error still hides its inner error from source(); \
+             if this ever changes the walk can be simplified"
+        );
+        assert!(is_negotiation_failure(&e));
+    }
+
+    // -- what must keep reading as a wire failure -------------------------
+
+    #[test]
+    fn a_broken_negotiation_is_not_a_refusal() {
+        // A malfunctioning negotiation must not read as "unsupported" — that
+        // would report a corrupt stream as a peer that does not serve the
+        // handler.
+        //
+        // Construct the wrapper explicitly rather than via
+        // `NegotiationError::ProtocolError(..).into()`: that conversion unwraps
+        // to a plain `ProtocolError`-derived io error, so the assertion would
+        // hold no matter what `is_negotiation_failure` did.
+        #[derive(Debug, thiserror::Error)]
+        #[error("negotiation: {0}")]
+        struct Wrapped(#[source] NegotiationError);
+
+        let e = Wrapped(NegotiationError::ProtocolError(
+            ProtocolError::InvalidMessage,
+        ));
+        assert!(
+            !is_negotiation_failure(&e),
+            "only NegotiationError::Failed is a refusal; ProtocolError is a wire failure"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_io_error_is_not_a_refusal() {
+        let e = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset by peer");
+        assert!(!is_negotiation_failure(&e));
+    }
+
+    // -- the classifier the exchange path uses ----------------------------
+
+    #[test]
+    fn wire_or_refusal_names_the_protocol_it_could_not_negotiate() {
+        let proto = UnaryProtocol::new("DHTProtocol.rpc_store");
+        match wire_or_refusal(refusal(), &proto) {
+            UnaryError::UnsupportedProtocol(p) => assert_eq!(p, "DHTProtocol.rpc_store"),
+            other => panic!("a refusal must not read as a wire failure: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wire_or_refusal_leaves_real_failures_alone() {
+        let proto = UnaryProtocol::new("hello");
+        let e = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated frame");
+        assert!(matches!(wire_or_refusal(e, &proto), UnaryError::Wire(_)));
     }
 }

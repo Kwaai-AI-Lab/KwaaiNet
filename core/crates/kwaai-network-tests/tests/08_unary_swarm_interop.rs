@@ -58,7 +58,15 @@ impl SwarmNode {
             .expect("tcp transport")
             .with_behaviour(|_| unary::Behaviour::new(unary::Config::default()))
             .expect("behaviour")
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .with_swarm_config(|c| {
+                c.with_idle_connection_timeout(Duration::from_secs(60))
+                    // Must mirror `service.rs`, or these tests exercise the eager
+                    // V1 path and their refusal assertions prove nothing about
+                    // what production actually runs.
+                    .with_substream_upgrade_protocol_override(
+                        libp2p::core::upgrade::Version::V1Lazy,
+                    )
+            })
             .build();
 
         swarm

@@ -215,6 +215,85 @@ async fn an_unserved_protocol_is_refused_not_hung() {
     );
 }
 
+/// A whole candidate list can be refused, and the refusal still arrives before
+/// the caller is handed anything.
+///
+/// This is the path the negotiation sentinel exists for. Outbound negotiation
+/// offers the real protocols and then one entry nobody serves, because
+/// multistream-select only takes its lazy shortcut on the *last* protocol it
+/// has to offer. Every real name here is therefore refused eagerly, one after
+/// another, and only the sentinel is reached lazily — where the handler turns
+/// it back into a refusal rather than surfacing it. A regression drops the
+/// caller into a stream for a protocol the remote never agreed to, and the
+/// error stops naming what was actually asked for.
+#[tokio::test]
+async fn a_candidate_list_that_is_entirely_unserved_is_refused() {
+    let (caller, _responder, responder_id, _tasks) = connected_pair().await;
+
+    let error = within(
+        "refusal of a full list",
+        caller.open_raw_stream(
+            responder_id,
+            vec![
+                "nobody.serves.this".to_string(),
+                "nor.this.one".to_string(),
+                "nor.this.either".to_string(),
+            ],
+        ),
+    )
+    .await
+    .expect_err("a list with nothing served must not yield a stream");
+
+    assert!(
+        matches!(error, P2PError::Protocol(_)),
+        "a clean negotiation refusal is a protocol-level answer, got: {error:?}"
+    );
+    for name in ["nobody.serves.this", "nor.this.one", "nor.this.either"] {
+        assert!(
+            error.to_string().contains(name),
+            "the error must name every protocol that was refused, missing {name}: {error}"
+        );
+    }
+    assert!(
+        !error.to_string().contains("__negotiation_probe__"),
+        "the sentinel is an implementation detail and must never reach a caller: {error}"
+    );
+}
+
+/// The negotiation sentinel is reserved and a caller cannot reach it.
+///
+/// Without this guard, a caller asking for `kwaai.__negotiation_probe__`
+/// produced an offered list of `[sentinel, sentinel]`: the first entry
+/// negotiates *eagerly and successfully* against a remote that registered the
+/// name, the handler's guard then fires on the name, and a live stream is reset
+/// under the remote while the caller is told it was unsupported — leaking the
+/// sentinel that `a_candidate_list_that_is_entirely_unserved_is_refused`
+/// asserts can never reach a caller. Found in review of #107.
+#[tokio::test]
+async fn the_negotiation_sentinel_is_reserved() {
+    let (caller, responder, responder_id, _tasks) = connected_pair().await;
+
+    // Even with the remote advertising it, the name must not be openable.
+    let _ = responder
+        .accept_streams(vec!["kwaai.__negotiation_probe__".to_string()])
+        .await;
+
+    let error = within(
+        "reserved sentinel",
+        caller.open_raw_stream(
+            responder_id,
+            vec!["kwaai.__negotiation_probe__".to_string()],
+        ),
+    )
+    .await
+    .expect_err("the sentinel must never be openable by a caller");
+
+    assert!(
+        error.to_string().contains("reserved"),
+        "the caller should be told the name is reserved, got: {error}"
+    );
+}
+
 /// Removing a handler stops negotiation, observable to the remote as the same
 /// clean refusal an unregistered protocol produces.
 #[tokio::test]
