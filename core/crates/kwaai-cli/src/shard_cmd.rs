@@ -283,16 +283,22 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         .await?;
         print_success(&format!("Auto-assigned blocks [{}, {})", s, e));
 
-        // Only update config + signal daemon when the range actually changed.
-        // If pick_gap returns the same range already in config the daemon is
-        // already announcing the correct blocks — nothing to do.
-        if Some(s as u32) != cfg.start_block {
+        // Persist the *whole* assigned range, not just its start. Writing
+        // `start_block` alone left `blocks` at whatever it happened to be, so a
+        // node assigned [8, 16) with `blocks: 32` already in config ended up
+        // storing [8, 32) — a range nothing chose, disagreeing with both the
+        // assignment and what the running process announces.
+        let assigned_blocks = (e - s) as u32;
+        if Some(s as u32) != cfg.start_block || assigned_blocks != cfg.blocks {
             let mut updated = cfg.clone();
             // Records a pin, so the next start keeps this range instead of
             // re-querying the DHT and possibly moving again.
             updated.start_block = Some(s as u32);
+            updated.blocks = assigned_blocks;
             updated.save().context("Failed to save config.yaml")?;
-            print_info("Updated config.yaml — signalling daemon to re-announce…");
+            print_info(&format!(
+                "Updated config.yaml — pinned [{s}, {e}), signalling daemon to re-announce…"
+            ));
             crate::daemon::DaemonManager::new().signal_reannounce();
         }
 
@@ -3473,6 +3479,60 @@ fn rand_session_id() -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
+}
+
+#[cfg(test)]
+mod assigned_range_is_persisted_whole {
+    use crate::config::KwaaiNetConfig;
+
+    // The auto-assign write-back used to persist only `start_block`, leaving
+    // `blocks` at whatever it already was. A node assigned [8, 16) with
+    // `blocks: 32` already in config therefore stored [8, 32) — a range nothing
+    // chose, disagreeing with both the assignment and what the running process
+    // announced. Observed on rezas-mini-2: config said [8, 32), `shard status`
+    // said [8, 32), the DHT said [8, 16).
+    //
+    // These pin the invariant the fix restores: whatever range is assigned, the
+    // pair written to config must describe exactly that range.
+
+    fn cfg_with(start: u32, blocks: u32) -> KwaaiNetConfig {
+        KwaaiNetConfig {
+            model: "unsloth/Llama-3.1-8B-Instruct".to_string(),
+            start_block: Some(start),
+            blocks,
+            ..KwaaiNetConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_partial_write_is_what_the_bug_looked_like() {
+        // start from an assignment of [8, 16) but keep a stale blocks: 32
+        let broken = cfg_with(8, 32);
+        assert_eq!(
+            broken.effective_end_block(),
+            32,
+            "the stale block count silently widened the range to [8, 32)"
+        );
+    }
+
+    #[test]
+    fn writing_the_whole_range_keeps_config_self_consistent() {
+        // what the fix writes for the same assignment
+        let fixed = cfg_with(8, 8);
+        assert_eq!(fixed.start_block(), 8);
+        assert_eq!(
+            fixed.effective_end_block(),
+            16,
+            "config now describes [8, 16)"
+        );
+    }
+
+    #[test]
+    fn a_full_model_assignment_round_trips() {
+        let full = cfg_with(0, 32);
+        assert_eq!(full.start_block(), 0);
+        assert_eq!(full.effective_end_block(), 32);
+    }
 }
 
 #[cfg(test)]
