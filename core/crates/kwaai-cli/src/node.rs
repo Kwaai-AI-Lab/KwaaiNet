@@ -141,7 +141,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
 
     // The native stack has its own whole lifecycle — no child process to spawn,
     // watch, restart or shut down — so it lives in `node_native`.
-    if config.native_p2p {
+    if config.native_p2p() {
         info!("native_p2p enabled — running without the Go p2p daemon");
         let pending_update_version = crate::node_native::run_native_node(
             config,
@@ -156,6 +156,13 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
         respawn_after_update(pending_update_version);
         info!("KwaaiNet node stopped");
         return Ok(());
+    }
+
+    // Say *why* this node is on p2pd. During the cutover the two reasons are
+    // operationally different: an explicit opt-out is a decision to respect,
+    // while an unset flag simply means the default has not moved yet.
+    if config.opted_out_of_native_p2p() {
+        info!("native_p2p is explicitly disabled in the config — using the Go p2p daemon");
     }
 
     // -----------------------------------------------------------------------
