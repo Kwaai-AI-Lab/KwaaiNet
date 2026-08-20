@@ -48,11 +48,14 @@ jobs:
             kwaai-p2p-daemon \
             kwaai-distributed \
             kwaai-wasm \
+            kwaai-rpc \
+            kwaai-storage \
+            kwaai-rag \
             kwaainet; do
             echo "=== publishing ${crate} ==="
             out=$(cargo publish -p "${crate}" ${DRY_RUN_FLAG} 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 30; } || {
-              if echo "$out" | grep -qE "already uploaded|already exists on crates"; then
-                echo "=== ${crate} already uploaded, skipping ==="
+              if echo "$out" | grep -qE "already uploaded|already exists on crates|cannot be published"; then
+                echo "=== ${crate} already uploaded or not publishable, skipping ==="
               else
                 echo "$out" >&2; exit 1
               fi
