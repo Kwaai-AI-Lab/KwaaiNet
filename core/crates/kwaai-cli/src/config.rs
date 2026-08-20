@@ -52,11 +52,21 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_blocks")]
     pub blocks: u32,
 
-    /// First transformer block this node serves (0-indexed).
-    /// The node serves blocks [start_block .. start_block + blocks).
-    /// Defaults to 0 (start of model); set this on non-first nodes.
-    #[serde(default)]
-    pub start_block: u32,
+    /// First transformer block this node serves (0-indexed). The node serves
+    /// blocks `[start_block .. start_block + blocks)`.
+    ///
+    /// **Three states.** `Some(n)` pins the range — set by the operator or
+    /// written back after an auto-assignment — and `None` means the node has
+    /// never been given one, so `shard serve` may pick a gap to fill.
+    ///
+    /// It is an `Option` because `0` is a legitimate pinned value and was
+    /// previously indistinguishable from "unset": the auto-assign condition
+    /// consulted only the CLI flag, so a node with `start_block: 0` in its
+    /// config was reassigned anyway and had its config overwritten. See #116.
+    ///
+    /// Read it through [`KwaaiNetConfig::start_block`], never directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_block: Option<u32>,
 
     #[serde(default = "default_port")]
     pub port: u16,
@@ -660,7 +670,7 @@ impl Default for KwaaiNetConfig {
         Self {
             model: default_model(),
             blocks: default_blocks(),
-            start_block: 0,
+            start_block: None,
             port: default_port(),
             use_gpu: true,
             log_level: default_log_level(),
@@ -745,6 +755,19 @@ impl Default for ReconnectionConfig {
 pub const DEFAULT_NATIVE_P2P: bool = true;
 
 impl KwaaiNetConfig {
+    /// The block this node starts serving at — the pinned value if there is
+    /// one, otherwise 0.
+    pub fn start_block(&self) -> u32 {
+        self.start_block.unwrap_or(0)
+    }
+
+    /// True when a range has been pinned, by the operator or by a previous
+    /// auto-assignment. `shard serve` must not reassign a pinned node: doing so
+    /// was #116, which silently overwrote an operator's configured range.
+    pub fn start_block_pinned(&self) -> bool {
+        self.start_block.is_some()
+    }
+
     /// Whether to run the native stack: the explicit choice if there is one,
     /// otherwise [`DEFAULT_NATIVE_P2P`].
     ///
@@ -909,7 +932,7 @@ impl KwaaiNetConfig {
     /// size when the operator sets a large `blocks` value.
     pub fn effective_end_block(&self) -> u32 {
         let total = self.model_total_blocks() as u32;
-        (self.start_block + self.blocks).min(total)
+        (self.start_block() + self.blocks).min(total)
     }
 
     /// Resolve the effective contribution policy, honouring the CLI override.
@@ -941,9 +964,10 @@ impl KwaaiNetConfig {
             "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "start_block" => {
-                self.start_block = value
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("start_block must be a non-negative integer"))?
+                self.start_block =
+                    Some(value.parse().map_err(|_| {
+                        anyhow::anyhow!("start_block must be a non-negative integer")
+                    })?)
             }
             "auto_rebalance" => self.auto_rebalance = parse_bool(value)?,
             "rebalance_interval_secs" => {
@@ -991,6 +1015,93 @@ mod dirs_sys {
     use std::path::PathBuf;
     pub fn home_dir() -> Option<PathBuf> {
         dirs::home_dir()
+    }
+}
+
+#[cfg(test)]
+mod start_block_pinning {
+    use super::*;
+
+    // #116: a node with a configured range was reassigned anyway, and its
+    // config overwritten, because the auto-assign condition consulted only the
+    // CLI flag. `0` is a legitimate pinned value, so the field has to be
+    // three-state for "configured 0" to differ from "never set".
+
+    #[test]
+    fn a_fresh_config_pins_nothing() {
+        let cfg = KwaaiNetConfig::default();
+        assert_eq!(cfg.start_block, None);
+        assert!(!cfg.start_block_pinned(), "a fresh node may auto-assign");
+        assert_eq!(cfg.start_block(), 0, "but still reads as 0");
+    }
+
+    #[test]
+    fn zero_is_a_real_pin_not_an_absence() {
+        // The heart of #116. Serving from block 0 is the most common explicit
+        // choice — a full-model node — and it must not read as "unset".
+        let cfg = KwaaiNetConfig {
+            start_block: Some(0),
+            ..Default::default()
+        };
+        assert!(
+            cfg.start_block_pinned(),
+            "start_block: 0 is a choice, not a default"
+        );
+        assert_eq!(cfg.start_block(), 0);
+    }
+
+    #[test]
+    fn set_records_a_pin() {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("start_block", "0").expect("set");
+        assert_eq!(
+            cfg.start_block,
+            Some(0),
+            "`config set start_block 0` must pin"
+        );
+        cfg.set_key("start_block", "8").expect("set");
+        assert_eq!(cfg.start_block, Some(8));
+    }
+
+    #[test]
+    fn an_unpinned_node_is_not_serialised() {
+        // Otherwise merely starting once would pin a range nobody chose.
+        let cfg = KwaaiNetConfig::default();
+        let y = serde_yaml::to_string(&cfg).expect("serialise");
+        assert!(
+            !y.contains("start_block"),
+            "an unmade choice must not be written:\n{y}"
+        );
+    }
+
+    #[test]
+    fn a_pin_round_trips_through_yaml() {
+        let cfg = KwaaiNetConfig {
+            start_block: Some(0),
+            blocks: 32,
+            ..Default::default()
+        };
+        let y = serde_yaml::to_string(&cfg).expect("serialise");
+        assert!(y.contains("start_block: 0"), "a pin must persist:\n{y}");
+        let back: KwaaiNetConfig = serde_yaml::from_str(&y).expect("round trip");
+        assert_eq!(back.start_block, Some(0));
+        assert!(back.start_block_pinned());
+    }
+
+    #[test]
+    fn end_block_is_computed_from_the_effective_start() {
+        let cfg = KwaaiNetConfig {
+            start_block: Some(8),
+            blocks: 8,
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_end_block(), 16);
+        let unpinned = KwaaiNetConfig {
+            start_block: None,
+            blocks: 8,
+            ..Default::default()
+        };
+        assert_eq!(unpinned.effective_end_block(), 8, "unset starts at 0");
     }
 }
 
@@ -1099,7 +1210,7 @@ mod tests {
     fn cfg(start: u32, blocks: u32, total_hint: &str) -> KwaaiNetConfig {
         KwaaiNetConfig {
             model: total_hint.to_string(), // name heuristic drives model_total_blocks()
-            start_block: start,
+            start_block: Some(start),
             blocks,
             ..KwaaiNetConfig::default()
         }

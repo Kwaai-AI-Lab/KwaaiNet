@@ -382,7 +382,7 @@ pub async fn run_native_node(
 
     let mut config = config.clone();
     let mut server_info = DHTServerInfo::new(
-        config.start_block as i32,
+        config.start_block() as i32,
         config.effective_end_block() as i32,
         public_name,
         using_relay,
@@ -404,7 +404,7 @@ pub async fn run_native_node(
     info!("   Model   : {}", config.model);
     info!(
         "   Blocks  : {}–{}",
-        config.start_block,
+        config.start_block(),
         config.effective_end_block()
     );
     info!("   Map     : https://map.kwaai.ai");
@@ -593,10 +593,10 @@ fn reload_block_range(config: &mut KwaaiNetConfig) {
     }
     info!(
         "Block range updated: [{}–{}) → [{}–{})",
-        config.start_block,
+        config.start_block(),
         config.effective_end_block(),
-        fresh.start_block,
-        fresh.start_block + fresh.blocks,
+        fresh.start_block(),
+        fresh.start_block() + fresh.blocks,
     );
     config.start_block = fresh.start_block;
     config.blocks = fresh.blocks;
@@ -604,7 +604,7 @@ fn reload_block_range(config: &mut KwaaiNetConfig) {
 
 /// Sync the announced block range and readiness state from the live config.
 fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
-    server_info.start_block = config.start_block as i32;
+    server_info.start_block = config.start_block() as i32;
     server_info.end_block = config.effective_end_block() as i32;
     server_info.state = KwaaiNetConfig::announce_state();
 }
