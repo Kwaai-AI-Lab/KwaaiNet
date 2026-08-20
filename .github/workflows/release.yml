@@ -742,9 +742,10 @@ jobs:
           persist-credentials: true
           repository: "Kwaai-AI-Lab/homebrew-tap"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
-        working-directory: ${{ github.workspace }}
+      # No `fetch patched deps` step here, deliberately: this is the one job
+      # that checks out a *different* repository. `core/patches/` does not exist
+      # in homebrew-tap, so the script exits 127 before anything else runs — and
+      # this job only commits a formula file, so it never builds Rust at all.
       # So we have access to the formula
       - name: Fetch homebrew formulae
         uses: actions/download-artifact@v7
@@ -801,15 +802,23 @@ jobs:
       - name: Publish crates to crates.io
         working-directory: core
         run: |
-          # Ordered by dependency: leaves first, dependents last.
-          # kwaai-inference and kwaai-p2p-daemon have no internal deps and must
-          # precede kwaai-distributed (which depends on kwaai-inference).
+          # Ordered by dependency: leaves first, dependents last. The full
+          # internal graph is small — everything else is a leaf:
+          #   kwaai-p2p          -> kwaai-hivemind-dht
+          #   kwaai-p2p-daemon   -> kwaai-p2p
+          #   kwaai-distributed  -> kwaai-compression, kwaai-inference, kwaai-p2p
+          #   kwaainet           -> all of the above
+          # Order matters strictly now. It did not before v0.6.0, because the
+          # internal version constraints said `0.5.0` while crates.io already
+          # had 0.5.x published, so each dependency resolved against an
+          # *already-published* older version whatever the order. At 0.6.0
+          # nothing is published yet, so a dependency must go up first.
           for crate in \
             kwaai-compression \
-            kwaai-trust \
-            kwaai-p2p \
-            kwaai-hivemind-dht \
             kwaai-inference \
+            kwaai-hivemind-dht \
+            kwaai-p2p \
+            kwaai-trust \
             kwaai-p2p-daemon \
             kwaai-distributed \
             kwaai-wasm \
