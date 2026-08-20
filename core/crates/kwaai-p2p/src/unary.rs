@@ -729,6 +729,8 @@ pub struct Behaviour {
     /// most dial addresses; this cache covers hints injected via
     /// `Swarm::add_peer_address`.
     addresses: PeerAddresses,
+    /// Our own addresses, so we never dial ourselves — see issue #108.
+    own_addrs: crate::addresses::OwnAddresses,
 }
 
 impl Behaviour {
@@ -740,6 +742,7 @@ impl Behaviour {
             pending_outbound_requests: HashMap::new(),
             pending_events: VecDeque::new(),
             addresses: PeerAddresses::default(),
+            own_addrs: crate::addresses::OwnAddresses::default(),
         }
     }
 
@@ -859,14 +862,18 @@ impl NetworkBehaviour for Behaviour {
         _addresses: &[Multiaddr],
         _effective_role: Endpoint,
     ) -> Result<Vec<Multiaddr>, ConnectionDenied> {
+        // Never hand back one of our own addresses: a peer that advertises
+        // our loopback listener would otherwise have us dial ourselves, fail
+        // the peer-ID check, and feed the circuit breaker. Issue #108.
         Ok(match maybe_peer {
-            Some(peer) => self.addresses.get(&peer).collect(),
+            Some(peer) => self.own_addrs.reject_self(self.addresses.get(&peer)),
             None => Vec::new(),
         })
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
         self.addresses.on_swarm_event(&event);
+        self.own_addrs.on_swarm_event(&event);
         match event {
             FromSwarm::ConnectionClosed(closed) => {
                 if let Some(connections) = self.connected.get_mut(&closed.peer_id) {
