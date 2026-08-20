@@ -486,7 +486,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     let vpk_info = initial_vpk_info(config, &public_name).await;
 
     // Always announce the configured block range so the node appears on the map.
-    let announce_start = config.start_block as i32;
+    let announce_start = config.start_block() as i32;
     let announce_end = config.effective_end_block() as i32;
 
     let mut server_info = DHTServerInfo::new(
@@ -567,7 +567,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     info!("   Model   : {}", config.model);
     info!(
         "   Blocks  : {}–{}",
-        config.start_block,
+        config.start_block(),
         config.effective_end_block()
     );
     info!("   Map     : https://map.kwaai.ai");
@@ -668,14 +668,14 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     if fresh.start_block != config.start_block || fresh.blocks != config.blocks {
                         info!(
                             "Block range updated: [{}–{}) → [{}–{})",
-                            config.start_block, config.effective_end_block(),
-                            fresh.start_block, fresh.start_block + fresh.blocks,
+                            config.start_block(), config.effective_end_block(),
+                            fresh.start_block(), fresh.start_block() + fresh.blocks,
                         );
                         config.start_block = fresh.start_block;
                         config.blocks = fresh.blocks;
                     }
                 }
-                let sb = config.start_block as i32;
+                let sb = config.start_block() as i32;
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
                 server_info.end_block = eb;
@@ -763,8 +763,8 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     if fresh.start_block != config.start_block || fresh.blocks != config.blocks {
                         info!(
                             "Block range updated: [{}–{}) → [{}–{})",
-                            config.start_block, config.effective_end_block(),
-                            fresh.start_block, fresh.start_block + fresh.blocks,
+                            config.start_block(), config.effective_end_block(),
+                            fresh.start_block(), fresh.start_block() + fresh.blocks,
                         );
                         config.start_block = fresh.start_block;
                         config.blocks = fresh.blocks;
@@ -801,7 +801,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
                     }
                 }
 
-                let sb = config.start_block as i32;
+                let sb = config.start_block() as i32;
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
                 server_info.end_block = eb;
@@ -897,7 +897,7 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
             // waiting for the next 300 s tick.
             Some(()) = ollama_recovery_rx.recv() => {
                 info!("Ollama recovered — triggering immediate re-announce");
-                let sb = config.start_block as i32;
+                let sb = config.start_block() as i32;
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
                 server_info.end_block = eb;

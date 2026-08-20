@@ -233,9 +233,13 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
     // ── Gap detection — also yields a P2PClient we reuse for handler registration
     // to avoid a drop/reconnect race that causes "early eof" from p2pd.
-    let (start_block, end_block, initial_client) = if !args.no_auto
-        && (args.auto || args.start_block.is_none())
-    {
+    // Auto-assign only when nothing has pinned a range — neither `--start-block`
+    // on the command line nor `start_block` in config. Consulting only the CLI
+    // flag was #116: a node with `start_block` configured was reassigned anyway
+    // and had its config overwritten, so config-based pinning did not work at
+    // all. `--auto` still forces a fresh gap query.
+    let pinned = args.start_block.is_some() || cfg.start_block_pinned();
+    let (start_block, end_block, initial_client) = if !args.no_auto && (args.auto || !pinned) {
         let daemon_addr = daemon_socket();
         let mut qc = P2PClient::connect(&daemon_addr)
             .await
@@ -282,9 +286,11 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         // Only update config + signal daemon when the range actually changed.
         // If pick_gap returns the same range already in config the daemon is
         // already announcing the correct blocks — nothing to do.
-        if s as u32 != cfg.start_block {
+        if Some(s as u32) != cfg.start_block {
             let mut updated = cfg.clone();
-            updated.start_block = s as u32;
+            // Records a pin, so the next start keeps this range instead of
+            // re-querying the DHT and possibly moving again.
+            updated.start_block = Some(s as u32);
             updated.save().context("Failed to save config.yaml")?;
             print_info("Updated config.yaml — signalling daemon to re-announce…");
             crate::daemon::DaemonManager::new().signal_reannounce();
@@ -296,11 +302,11 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     } else {
         // Explicit range: --start-block N was given, or --no-auto was passed.
         // Falls back to config.start_block when neither --start-block nor --no-auto gave a value.
-        let s = args.start_block.unwrap_or(cfg.start_block) as usize;
+        let s = args.start_block.unwrap_or_else(|| cfg.start_block()) as usize;
         let total = cfg.model_total_blocks() as usize;
         let e = (s + target_blocks).min(total);
         let mut updated = cfg.clone();
-        updated.start_block = s as u32;
+        updated.start_block = Some(s as u32);
         updated.blocks = (e - s) as u32;
         if updated.start_block != cfg.start_block || updated.blocks != cfg.blocks {
             updated.save().context("Failed to save config.yaml")?;
@@ -1833,11 +1839,11 @@ pub async fn cmd_shard_status() -> Result<()> {
 
     print_box_header("🧩 KwaaiNet Shard Status");
     println!("  Model:        {}", cfg.model);
-    println!("  Start block:  {}", cfg.start_block);
+    println!("  Start block:  {}", cfg.start_block());
     println!("  Blocks:       {}", cfg.blocks);
     println!(
         "  Range:        [{}, {})",
-        cfg.start_block,
+        cfg.start_block(),
         cfg.effective_end_block()
     );
     println!("  GPU:          {}", cfg.use_gpu);
