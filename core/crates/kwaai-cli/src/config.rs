@@ -738,11 +738,11 @@ impl Default for ReconnectionConfig {
 
 /// What `native_p2p` means when the user has never chosen.
 ///
-/// **This constant is the 0.6 cutover.** Flipping it to `true` moves every node
-/// that has not explicitly opted out onto the native stack; nodes with
-/// `native_p2p: false` written in their config keep the p2pd path regardless.
-/// Nothing else needs to change, and no config file is rewritten.
-pub const DEFAULT_NATIVE_P2P: bool = false;
+/// **This is the 0.6 cutover, flipped in v0.6.0.** Every node that has not
+/// explicitly opted out runs the native stack; nodes with `native_p2p: false`
+/// written in their config keep the p2pd path regardless. No config file is
+/// rewritten, and rolling back is the same one-line change.
+pub const DEFAULT_NATIVE_P2P: bool = true;
 
 impl KwaaiNetConfig {
     /// Whether to run the native stack: the explicit choice if there is one,
