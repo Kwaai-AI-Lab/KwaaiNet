@@ -29,8 +29,10 @@
 //! the swarm itself do no address-class filtering whatsoever, so AutoNAT's knob
 //! is the only lever, and it has to be off for the test bed to work.
 
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 
+use libp2p::swarm::FromSwarm;
 use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
 
 /// Whether `addr` is worth advertising to other peers.
@@ -649,6 +651,170 @@ mod tests {
         assert!(
             !is_announceable_with(&nat_test, true),
             "and must not pass once the operator declares a real-internet node"
+        );
+    }
+}
+
+/// This node's own addresses, so a behaviour never dials itself.
+///
+/// A peer may advertise an address that happens to be *ours* — most obviously
+/// `127.0.0.1` on our own listen port, which peers do publish and which nothing
+/// in libp2p filters. Dialing it connects us to ourselves, the handshake
+/// reports the wrong peer ID, and the dial fails. That is not merely wasteful:
+/// the failures feed the circuit breaker, and three in a row latch it against a
+/// peer that is perfectly healthy, until the process restarts. See issue #108.
+///
+/// Filtering by *routability* would be wrong here — `is_routable_v4` rejects
+/// loopback and RFC1918 alike, which would break both the local two-node test
+/// topology and any two peers on the same LAN. The precise invariant is
+/// narrower and exact: **do not dial an address that is one of ours.** A second
+/// local node on a different port is still reachable, because its address is
+/// not ours.
+///
+/// Addresses arrive concrete: listening on `0.0.0.0` makes the transport emit
+/// one `NewListenAddr` per interface, including the loopback one, so exact
+/// comparison is enough. `/p2p/…` is stripped from both sides before comparing,
+/// since dial candidates often carry it and listen addresses do not.
+#[derive(Debug, Default)]
+pub struct OwnAddresses {
+    addrs: HashSet<Multiaddr>,
+}
+
+impl OwnAddresses {
+    /// Track our own listen and confirmed-external addresses. Call from every
+    /// behaviour's `on_swarm_event`, before using [`Self::is_ours`].
+    pub fn on_swarm_event(&mut self, event: &FromSwarm) {
+        match event {
+            FromSwarm::NewListenAddr(e) => {
+                self.addrs.insert(strip_p2p(e.addr));
+            }
+            FromSwarm::ExpiredListenAddr(e) => {
+                self.addrs.remove(&strip_p2p(e.addr));
+            }
+            FromSwarm::ExternalAddrConfirmed(e) => {
+                self.addrs.insert(strip_p2p(e.addr));
+            }
+            FromSwarm::ExternalAddrExpired(e) => {
+                self.addrs.remove(&strip_p2p(e.addr));
+            }
+            _ => {}
+        }
+    }
+
+    /// True when `addr` is one of ours and must not be dialed.
+    pub fn is_ours(&self, addr: &Multiaddr) -> bool {
+        self.addrs.contains(&strip_p2p(addr))
+    }
+
+    /// Drop our own addresses from a set of dial candidates.
+    pub fn reject_self<I>(&self, candidates: I) -> Vec<Multiaddr>
+    where
+        I: IntoIterator<Item = Multiaddr>,
+    {
+        candidates
+            .into_iter()
+            .filter(|a| !self.is_ours(a))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod own_addresses {
+    use super::*;
+
+    fn ma(s: &str) -> Multiaddr {
+        s.parse().expect("test multiaddr")
+    }
+
+    fn with(addrs: &[&str]) -> OwnAddresses {
+        let mut own = OwnAddresses::default();
+        for a in addrs {
+            own.addrs.insert(strip_p2p(&ma(a)));
+        }
+        own
+    }
+
+    // -- the bug in issue #108 -------------------------------------------
+
+    #[test]
+    fn our_own_loopback_listener_is_not_a_dial_candidate() {
+        let own = with(&["/ip4/127.0.0.1/tcp/8080"]);
+        assert!(own.is_ours(&ma("/ip4/127.0.0.1/tcp/8080")));
+        assert!(own
+            .reject_self(vec![ma("/ip4/127.0.0.1/tcp/8080")])
+            .is_empty());
+    }
+
+    #[test]
+    fn a_p2p_suffix_does_not_hide_our_own_address() {
+        // Dial candidates learned from identify/DHT usually carry `/p2p/…`;
+        // listen addresses do not. Both sides are stripped before comparing.
+        let own = with(&["/ip4/127.0.0.1/tcp/8080"]);
+        let candidate =
+            ma("/ip4/127.0.0.1/tcp/8080/p2p/12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE");
+        assert!(
+            own.is_ours(&candidate),
+            "the /p2p/ suffix must not defeat the check"
+        );
+    }
+
+    // -- what a routability filter would have broken ----------------------
+
+    #[test]
+    fn another_local_node_on_a_different_port_is_still_dialable() {
+        // The two-node local test topology. Rejecting loopback wholesale would
+        // have broken this; rejecting only *our own* address does not.
+        let own = with(&["/ip4/127.0.0.1/tcp/8080"]);
+        let peer = ma("/ip4/127.0.0.1/tcp/8081");
+        assert!(!own.is_ours(&peer));
+        assert_eq!(own.reject_self(vec![peer.clone()]), vec![peer]);
+    }
+
+    #[test]
+    fn a_lan_peer_is_still_dialable() {
+        // `is_routable_v4` rejects RFC1918, so filtering by routability would
+        // have stopped two peers on the same LAN from reaching each other.
+        let own = with(&["/ip4/192.168.1.10/tcp/8080"]);
+        let peer = ma("/ip4/192.168.1.11/tcp/8080");
+        assert!(!own.is_ours(&peer));
+        assert!(!is_routable_v4("192.168.1.11".parse().unwrap()));
+    }
+
+    #[test]
+    fn only_the_exact_address_is_rejected() {
+        let own = with(&["/ip4/127.0.0.1/tcp/8080"]);
+        for other in [
+            "/ip4/127.0.0.2/tcp/8080",
+            "/ip4/127.0.0.1/udp/8080/quic-v1",
+            "/ip4/10.0.0.5/tcp/8080",
+        ] {
+            assert!(!own.is_ours(&ma(other)), "{other} is not ours");
+        }
+    }
+
+    // -- lifecycle --------------------------------------------------------
+
+    #[test]
+    fn an_expired_listener_stops_being_ours() {
+        let mut own = with(&["/ip4/127.0.0.1/tcp/8080"]);
+        let a = ma("/ip4/127.0.0.1/tcp/8080");
+        assert!(own.is_ours(&a));
+        own.addrs.remove(&strip_p2p(&a));
+        assert!(
+            !own.is_ours(&a),
+            "a released port may legitimately belong to someone else later"
+        );
+    }
+
+    #[test]
+    fn nothing_is_ours_before_we_listen() {
+        let own = OwnAddresses::default();
+        assert!(!own.is_ours(&ma("/ip4/127.0.0.1/tcp/8080")));
+        let c = vec![ma("/ip4/1.2.3.4/tcp/8080")];
+        assert_eq!(
+            own.reject_self(c.clone()),
+            c,
+            "an empty set filters nothing"
         );
     }
 }
