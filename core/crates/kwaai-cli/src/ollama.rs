@@ -295,3 +295,96 @@ mod tests {
         );
     }
 }
+
+/// Why a node cannot serve inference through the local Ollama.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OllamaNotReady {
+    /// Nothing is listening on the Ollama port.
+    Unreachable { port: u16 },
+    /// Ollama is up but has no models pulled, so it can serve nothing.
+    NoModels,
+}
+
+impl std::fmt::Display for OllamaNotReady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable { port } => write!(
+                f,
+                "no Ollama on localhost:{port} — install it from https://ollama.com, \
+                 start it, and pull a model"
+            ),
+            Self::NoModels => write!(
+                f,
+                "Ollama is running but has no models — run `ollama pull llama3.1:8b`"
+            ),
+        }
+    }
+}
+
+/// Whether this machine can serve inference through its local Ollama, and which
+/// models it has.
+///
+/// Deliberately **not** checked against `config.model`. That is a HuggingFace
+/// reference used by the block-sharding path (`unsloth/Llama-3.1-8B-Instruct`),
+/// while Ollama has its own namespace (`llama3.1:8b`) — the same model under a
+/// different name, so comparing them fails on a correctly configured node. More
+/// to the point, `/kwaai/ollama-proxy/1.0.0` forwards HTTP verbatim: the
+/// *caller* names the model, and this node cannot know in advance which will be
+/// asked for. So the only questions worth answering are whether Ollama is up and
+/// whether it has anything at all to serve.
+///
+/// Used on macOS, where block sharding is not viable and Ollama is the whole
+/// serving story (`projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`).
+pub async fn readiness(port: u16) -> Result<Vec<String>, OllamaNotReady> {
+    let url = format!("http://localhost:{port}/api/tags");
+    let up = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => matches!(c.get(&url).send().await, Ok(r) if r.status().is_success()),
+        Err(_) => false,
+    };
+    if !up {
+        return Err(OllamaNotReady::Unreachable { port });
+    }
+
+    let models = list_local_models();
+    if models.is_empty() {
+        Err(OllamaNotReady::NoModels)
+    } else {
+        Ok(models)
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[test]
+    fn unreachable_names_the_port_and_what_to_do() {
+        let msg = OllamaNotReady::Unreachable { port: 11434 }.to_string();
+        assert!(msg.contains("11434"), "the operator needs the port: {msg}");
+        assert!(msg.contains("ollama.com"), "and where to get it: {msg}");
+    }
+
+    #[test]
+    fn no_models_says_how_to_pull_one() {
+        let msg = OllamaNotReady::NoModels.to_string();
+        assert!(msg.contains("ollama pull"), "must be actionable: {msg}");
+    }
+
+    #[tokio::test]
+    async fn a_dead_port_is_unreachable_not_a_hang() {
+        // Port 1 is reserved and never listening. Guards the timeout: without
+        // one, `shard serve` on a Mac would stall at startup instead of
+        // refusing, which is the failure mode this whole path exists to avoid.
+        let started = std::time::Instant::now();
+        let r = readiness(1).await;
+        assert_eq!(r, Err(OllamaNotReady::Unreachable { port: 1 }));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "readiness must fail fast, took {:?}",
+            started.elapsed()
+        );
+    }
+}
