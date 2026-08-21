@@ -629,7 +629,9 @@ async fn main() -> Result<()> {
                     }
                 }
                 Some(ConfigAction::Set { key, value }) => {
+                    // set_key mutates; persisting is the caller's job.
                     cfg.set_key(&key, &value)?;
+                    cfg.save()?;
                     print_box_header("⚙️  Configuration Updated");
                     print_success(&format!("Set {} = {}", key, value));
                     print_separator();

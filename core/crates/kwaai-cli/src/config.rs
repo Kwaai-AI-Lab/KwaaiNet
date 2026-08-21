@@ -1057,6 +1057,18 @@ impl KwaaiNetConfig {
     }
 
     /// Set a top-level key by name (string value coerced to the right type).
+    ///
+    /// **Mutates only — the caller persists.** This used to end in `save()`,
+    /// which made a setter perform disk I/O: every caller wrote the whole
+    /// config to `~/.kwaainet/config.yaml` as a side effect of assigning one
+    /// field. Unit tests calling `set_key` on a `KwaaiNetConfig::default()`
+    /// therefore serialised an empty config over the developer's real one,
+    /// destroying every key a default does not carry — on one machine, 23
+    /// registered knowledge bases, `inference_url`, the storage block and the
+    /// vpk settings.
+    ///
+    /// Separating the two also lets a caller validate several keys before
+    /// committing any of them, which the implicit save made impossible.
     pub fn set_key(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "model" => self.model = value.to_string(),
@@ -1113,7 +1125,7 @@ impl KwaaiNetConfig {
                 key
             ),
         }
-        self.save()
+        Ok(())
     }
 }
 
@@ -1477,24 +1489,33 @@ mod test_isolation {
     }
 
     #[test]
-    fn set_key_saves_into_the_sandbox_only() {
-        // set_key() ends in save(). Prove the write lands in the sandbox.
+    fn set_key_does_not_touch_the_disk() {
+        // The hazard at its source: a setter must not perform I/O.
         if std::env::var("KWAAINET_HOME").is_ok() {
             return;
         }
+        let path = config_file();
+        let before = std::fs::read(&path).ok();
         let mut cfg = KwaaiNetConfig::default();
         cfg.set_key("start_block", "16").expect("set");
-        let written = config_file();
-        assert!(
-            written.starts_with(std::env::temp_dir()),
-            "config write escaped the sandbox: {}",
-            written.display()
+        assert_eq!(
+            std::fs::read(&path).ok(),
+            before,
+            "set_key wrote to disk; it must only mutate the struct"
         );
-        assert!(
-            written.exists(),
-            "save() should have written the sandbox copy"
-        );
+        assert_eq!(cfg.start_block, Some(16), "but it must still mutate");
     }
+
+    // There is deliberately no test here that calls `save()` and then asserts
+    // the file landed in the sandbox. `grpc_server`'s tests set `KWAAINET_HOME`
+    // process-wide (guarded by a mutex private to that module, so it does not
+    // serialise against this one), which means a concurrent `save()` can be
+    // redirected into their temp dir between the write and the assertion. Such
+    // a test passes alone and fails in the suite.
+    //
+    // `config_path_is_sandboxed_under_test` covers the guard without touching
+    // the filesystem, and `set_key_does_not_touch_the_disk` above covers the
+    // behaviour this module actually protects.
 }
 
 /// Block-shard serving is opt-in. Regression for the default flip.
