@@ -17,7 +17,40 @@ pub fn kwaainet_dir() -> PathBuf {
     if let Ok(home) = std::env::var("KWAAINET_HOME") {
         return PathBuf::from(home);
     }
-    dirs_home().join(".kwaainet")
+    // Unit tests must never resolve to the developer's real ~/.kwaainet.
+    //
+    // `set_key` ends in `save()`, and several tests call it. With the real path
+    // that serialises a `Default`-derived config straight over the live one,
+    // silently deleting every key a default does not carry. On this machine
+    // `cargo test` destroyed 23 registered knowledge bases, `inference_url`,
+    // the storage block and the vpk settings — the KB data survived on disk,
+    // but nothing referenced it any more.
+    //
+    // The sandbox is deliberately here rather than in the tests: a guard each
+    // test has to remember is a guard that eventually gets forgotten, and the
+    // failure is silent and off-target. `KWAAINET_HOME` still wins, so
+    // integration tests that want a specific directory keep working.
+    #[cfg(test)]
+    {
+        test_sandbox_dir()
+    }
+    #[cfg(not(test))]
+    {
+        dirs_home().join(".kwaainet")
+    }
+}
+
+/// Per-process temp directory standing in for `~/.kwaainet` under `cargo test`.
+#[cfg(test)]
+fn test_sandbox_dir() -> PathBuf {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("kwaainet-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+    .clone()
 }
 
 pub fn config_file() -> PathBuf {
@@ -1367,5 +1400,46 @@ mod start_block_provenance {
             serde_yaml::from_str("start_block: 8\nblocks: 8\n").expect("deserialize");
         assert!(!cfg.start_block_auto);
         assert!(cfg.start_block_user_pinned());
+    }
+}
+
+/// `cargo test` must not be able to touch the developer's real config.
+#[cfg(test)]
+mod test_isolation {
+    use super::*;
+
+    #[test]
+    fn config_path_is_sandboxed_under_test() {
+        // No KWAAINET_HOME is set in this process, so this is the path a test
+        // that calls save() would write to.
+        if std::env::var("KWAAINET_HOME").is_ok() {
+            return; // explicitly directed elsewhere; nothing to prove
+        }
+        let real = dirs_home().join(".kwaainet");
+        assert_ne!(
+            kwaainet_dir(),
+            real,
+            "a test that calls save() would overwrite the real config"
+        );
+    }
+
+    #[test]
+    fn set_key_saves_into_the_sandbox_only() {
+        // set_key() ends in save(). Prove the write lands in the sandbox.
+        if std::env::var("KWAAINET_HOME").is_ok() {
+            return;
+        }
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("start_block", "16").expect("set");
+        let written = config_file();
+        assert!(
+            written.starts_with(std::env::temp_dir()),
+            "config write escaped the sandbox: {}",
+            written.display()
+        );
+        assert!(
+            written.exists(),
+            "save() should have written the sandbox copy"
+        );
     }
 }
