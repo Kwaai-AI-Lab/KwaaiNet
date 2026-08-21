@@ -342,27 +342,64 @@ pub struct ContributeConfig {
     #[serde(default = "default_true")]
     pub storage: bool,
 
-    /// Automatically start shard serving on daemon start (when a model is available).
-    #[serde(default = "default_true")]
-    pub shards: bool,
+    /// Automatically start **experimental** block-shard serving on daemon start.
+    ///
+    /// **Opt-in, and deliberately three-state.** `Some(true)` serves blocks,
+    /// `Some(false)` is an explicit refusal, and `None` means the operator has
+    /// never chosen — which now resolves to [`DEFAULT_CONTRIBUTE_SHARDS`],
+    /// i.e. off.
+    ///
+    /// This used to default to on. Block sharding is experimental: it does not
+    /// work on Apple Silicon at all (#117), where a node serving blocks runs
+    /// ~20x slower than the same machine serving whole models through Ollama —
+    /// so the opt-out default enrolled every Mac into the one path that makes
+    /// the network worse. Turning contribution *off* by default would be the
+    /// wrong reading of this change: whole-model serving over
+    /// `/kwaai/ollama-proxy/1.0.0` is registered by the node itself and is
+    /// unaffected, so a node with `shards: None` still contributes inference.
+    ///
+    /// It is an `Option` for the same reason `native_p2p` is: flipping a plain
+    /// `bool` default cannot distinguish "never chosen" from "explicitly set",
+    /// so it would silently override operators who deliberately asked for
+    /// sharding. Read it through [`ContributeConfig::shards`], never directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shards: Option<bool>,
 
     /// Automatically install updates when a new version is available (pre-v1.0 default: true).
     #[serde(default = "default_true")]
     pub auto_update: bool,
 }
 
+/// Block-shard serving is opt-in: experimental, and actively harmful on Metal.
+pub const DEFAULT_CONTRIBUTE_SHARDS: bool = false;
+
+impl ContributeConfig {
+    /// Whether to serve block shards — the explicit choice if there is one,
+    /// otherwise [`DEFAULT_CONTRIBUTE_SHARDS`].
+    pub fn shards(&self) -> bool {
+        self.shards.unwrap_or(DEFAULT_CONTRIBUTE_SHARDS)
+    }
+
+    /// True when the operator has said nothing about shard serving, so the
+    /// opt-in default applies. Used to explain the change once at startup
+    /// rather than silently dropping a node's block contribution.
+    pub fn shards_unset(&self) -> bool {
+        self.shards.is_none()
+    }
+}
+
 impl Default for ContributeConfig {
     fn default() -> Self {
         Self {
             storage: true,
-            shards: true,
+            shards: None,
             auto_update: true,
         }
     }
 }
 
 fn contribute_config_is_default(c: &ContributeConfig) -> bool {
-    c.storage && c.shards && c.auto_update
+    c.storage && c.shards.is_none() && c.auto_update
 }
 
 /// Resolved contribution policy after applying CLI overrides.
@@ -998,7 +1035,7 @@ impl KwaaiNetConfig {
     pub fn contribute_policy(&self, cli_no_contribute: bool) -> ContributePolicy {
         ContributePolicy {
             storage: self.contribute.storage && !cli_no_contribute,
-            shards: self.contribute.shards && !cli_no_contribute,
+            shards: self.contribute.shards() && !cli_no_contribute,
             auto_update: self.contribute.auto_update && is_pre_release(),
         }
     }
@@ -1043,7 +1080,7 @@ impl KwaaiNetConfig {
             }
             "inference_url" => self.inference_url = value.to_string(),
             "contribute.storage" => self.contribute.storage = parse_bool(value)?,
-            "contribute.shards" => self.contribute.shards = parse_bool(value)?,
+            "contribute.shards" => self.contribute.shards = Some(parse_bool(value)?),
             "contribute.auto_update" => self.contribute.auto_update = parse_bool(value)?,
             "identify_min_confirmations" => {
                 self.identify_min_confirmations = value.parse().map_err(|_| {
@@ -1440,6 +1477,90 @@ mod test_isolation {
         assert!(
             written.exists(),
             "save() should have written the sandbox copy"
+        );
+    }
+}
+
+/// Block-shard serving is opt-in. Regression for the default flip.
+#[cfg(test)]
+mod contribute_shards_is_opt_in {
+    use super::*;
+
+    #[test]
+    fn a_fresh_node_does_not_serve_blocks() {
+        let cfg = KwaaiNetConfig::default();
+        assert!(cfg.contribute.shards_unset(), "nothing chosen");
+        assert!(
+            !cfg.contribute.shards(),
+            "sharding is experimental — a node must opt in"
+        );
+    }
+
+    #[test]
+    fn an_explicit_opt_in_is_honoured() {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("contribute.shards", "true").expect("set");
+        assert_eq!(cfg.contribute.shards, Some(true));
+        assert!(cfg.contribute.shards());
+        assert!(!cfg.contribute.shards_unset(), "the operator chose");
+    }
+
+    #[test]
+    fn an_explicit_opt_out_is_distinguishable_from_unset() {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("contribute.shards", "false").expect("set");
+        assert_eq!(
+            cfg.contribute.shards,
+            Some(false),
+            "an explicit no must not read as 'never chosen'"
+        );
+        assert!(!cfg.contribute.shards_unset());
+    }
+
+    #[test]
+    fn a_config_written_before_the_flip_still_opts_in() {
+        // Upgrade path: `contribute.shards: true` was written by an older
+        // version. That is an explicit value and must keep serving blocks.
+        let cfg: KwaaiNetConfig =
+            serde_yaml::from_str("contribute:\n  shards: true\n").expect("deserialize");
+        assert!(
+            cfg.contribute.shards(),
+            "an operator who asked for sharding keeps it across the flip"
+        );
+    }
+
+    #[test]
+    fn a_config_with_no_contribute_block_reads_as_opt_in_off() {
+        let cfg: KwaaiNetConfig = serde_yaml::from_str("model: foo/bar\n").expect("deserialize");
+        assert!(!cfg.contribute.shards());
+        assert!(cfg.contribute.shards_unset());
+    }
+
+    #[test]
+    fn storage_contribution_is_untouched_by_the_flip() {
+        let cfg = KwaaiNetConfig::default();
+        assert!(
+            cfg.contribute.storage,
+            "only shard serving became opt-in; storage stays opt-out"
+        );
+    }
+
+    #[test]
+    fn no_contribute_still_overrides_an_explicit_opt_in() {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("contribute.shards", "true").expect("set");
+        let policy = cfg.contribute_policy(true);
+        assert!(!policy.shards, "--no-contribute wins over config");
+        assert!(!policy.storage);
+    }
+
+    #[test]
+    fn unset_shards_is_omitted_from_yaml() {
+        let cfg = KwaaiNetConfig::default();
+        let yaml = serde_yaml::to_string(&cfg).expect("serialize");
+        assert!(
+            !yaml.contains("shards:"),
+            "an unchosen value should not be written as though it were a decision"
         );
     }
 }
