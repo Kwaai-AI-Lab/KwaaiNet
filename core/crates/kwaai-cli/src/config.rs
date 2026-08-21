@@ -409,6 +409,22 @@ pub struct ContributePolicy {
     pub auto_update: bool,
 }
 
+impl ContributePolicy {
+    /// Whether to start block-shard serving, given an explicit `--shard` flag.
+    ///
+    /// `--shard` is itself an opt-in and must win over an unset config. While
+    /// `contribute.shards` defaulted to true this distinction did not matter,
+    /// because `self.shards` was already true whenever the flag was plausible.
+    /// With shard serving opt-in it matters a great deal: without it,
+    /// `kwaainet start --daemon --shard` refuses and advises the operator to
+    /// set the config key for the thing they just asked for.
+    ///
+    /// `--no-contribute` still outranks both — it is the bigger hammer.
+    pub fn serve_shards(&self, shard_flag: bool, no_contribute: bool) -> bool {
+        self.shards || (shard_flag && !no_contribute)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthConfig {
     #[serde(default = "default_true")]
@@ -1556,11 +1572,75 @@ mod contribute_shards_is_opt_in {
 
     #[test]
     fn unset_shards_is_omitted_from_yaml() {
-        let cfg = KwaaiNetConfig::default();
+        // `storage: false` forces the `contribute:` block to serialize at all —
+        // a wholly default config is skipped by `contribute_config_is_default`,
+        // so without this the assertion would hold even if the
+        // `skip_serializing_if` on `shards` were missing, and prove nothing.
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.contribute.storage = false;
         let yaml = serde_yaml::to_string(&cfg).expect("serialize");
+        assert!(
+            yaml.contains("contribute:"),
+            "precondition: the contribute block must actually be serialized"
+        );
         assert!(
             !yaml.contains("shards:"),
             "an unchosen value should not be written as though it were a decision"
         );
+    }
+}
+
+/// `--shard` must win over an unset config. Regression for the opt-in flip.
+#[cfg(test)]
+mod shard_flag_is_an_opt_in {
+    use super::*;
+
+    fn policy(cfg_shards: Option<bool>, no_contribute: bool) -> ContributePolicy {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.contribute.shards = cfg_shards;
+        cfg.contribute_policy(no_contribute)
+    }
+
+    #[test]
+    fn the_flag_starts_shard_serving_on_an_unset_config() {
+        let p = policy(None, false);
+        assert!(!p.shards, "config alone would not serve");
+        assert!(
+            p.serve_shards(true, false),
+            "`--daemon --shard` must serve; telling the user to set a config \
+             key for what they just typed is not an acceptable answer"
+        );
+    }
+
+    #[test]
+    fn without_the_flag_an_unset_config_does_not_serve() {
+        assert!(!policy(None, false).serve_shards(false, false));
+    }
+
+    #[test]
+    fn config_opt_in_serves_without_the_flag() {
+        assert!(policy(Some(true), false).serve_shards(false, false));
+    }
+
+    #[test]
+    fn no_contribute_outranks_the_flag() {
+        let p = policy(None, true);
+        assert!(
+            !p.serve_shards(true, true),
+            "--no-contribute is the bigger hammer"
+        );
+    }
+
+    #[test]
+    fn no_contribute_outranks_a_config_opt_in_too() {
+        assert!(!policy(Some(true), true).serve_shards(false, true));
+    }
+
+    #[test]
+    fn the_flag_overrides_an_explicit_config_opt_out() {
+        // Deliberate: a flag typed now is a later decision than a config file.
+        let p = policy(Some(false), false);
+        assert!(!p.shards);
+        assert!(p.serve_shards(true, false));
     }
 }
