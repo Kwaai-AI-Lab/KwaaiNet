@@ -6,7 +6,7 @@ KwaaiNet is a decentralized AI node architecture for **Layer 8** — the trust a
 Each KwaaiNet node combines:
 
 - A **decentralized trust graph** (cryptographic identity, verifiable credentials, local trust scores).
-- **Shared, sharded LLM compute** over heterogeneous CPUs/GPUs using Petals-style distributed inference. Linux/CUDA nodes serve transformer blocks; Apple Silicon Macs serve **whole models through Ollama** — block sharding on Metal is not yet viable (see [Current status](#current-status)).
+- **Shared LLM compute** over heterogeneous CPUs/GPUs. Nodes contribute **whole models through Ollama** — the recommended default on every platform — and Linux/CUDA machines can additionally pool a single oversized model across several boxes with Petals-style block sharding (see [Current status](#current-status)).
 - **Secure multi-tenant knowledge storage** via Virtual Private Knowledge (VPK) with encrypted vector search.
 - **Local-first RAG and knowledge graphs** — retrieval-augmented generation over your own documents, with an optional link to VPK for network-outsourced storage.
 - **Intent-based, peer-to-peer networking** that routes based on "what I need" (model, trust tier, latency), not just IP addresses.
@@ -23,9 +23,13 @@ From an app's point of view, KwaaiNet looks like a familiar chat-completion styl
 rust-libp2p stack by default; the Go `p2pd` child process is no longer required. Existing
 nodes keep working — set `native_p2p: false` in `~/.kwaainet/config.yaml` to opt out.
 
-**On Apple Silicon, serve whole models through Ollama — not block shards.** Block-sharded
-inference on Metal is not viable today, so a Mac contributing block shards makes the network
-*slower*, not faster. Measured on an Apple Silicon Mac mini, same model, same prompt:
+**Prefer Ollama whole-model serving over block sharding.** Block sharding remains the more
+ambitious mechanism — pooling a model too large for one GPU across several machines — but today
+it is only worth running on Linux/CUDA hardware. Everywhere else, whole-model serving through
+Ollama contributes more, and needs no special mode: every node registers the
+`/kwaai/ollama-proxy/1.0.0` protocol, so installing Ollama and pulling a model is enough.
+
+On Apple Silicon the difference is stark. Measured on a Mac mini, same model, same prompt:
 
 | Path | Decode |
 |---|---|
@@ -246,21 +250,58 @@ This sends a chat-completion request to your local node, which may route it thro
 
 For a full walkthrough including platform specifics, model discovery, and Python/JS examples see **[docs/getting-started-node.md](docs/getting-started-node.md)** and **[docs/api-quickstart.md](docs/api-quickstart.md)**.
 
-### 4. Distributed inference across the network
+### 4. Contribute inference to the network
 
-Download the model (or just the blocks you need):
+There are two ways a node can contribute compute. **Whole-model serving through Ollama is the
+recommended default on every platform today.** Block sharding is the more ambitious mechanism —
+it pools a model too large for any single GPU across several machines — but it is only worth
+running on Linux/CUDA hardware right now.
+
+| Your machine | Recommended | Why |
+|---|---|---|
+| Apple Silicon Mac | **Ollama, whole model** | Metal block sharding is ~20× slower than Ollama on the same box ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)) |
+| Linux + CUDA | Either | Blocks pool VRAM across machines; Ollama is simpler and faster per node |
+| CPU-only or small GPU | **Ollama, small model** | A slow block server stalls every chain it joins |
+
+#### Serving whole models through Ollama (recommended)
+
+Every node registers the `/kwaai/ollama-proxy/1.0.0` protocol on every platform, so this needs
+no special mode — install Ollama, pull a model, and your running node already serves it:
+
+```bash
+ollama pull llama3.1:8b
+kwaainet start --daemon
+```
+
+Two things worth knowing:
+
+- **A node serves every model Ollama has locally, not just one.** The target model comes from
+  each request, so pulling `llama3.2:3b` alongside `llama3.1:8b` makes both available.
+- **The node is discoverable under a single model prefix.** Peers that know your PeerId can
+  request any local model; peers relying on DHT discovery find you under the one model in your
+  config. Advertising the full served list is planned.
+
+On macOS, `kwaainet shard serve` also refuses to serve blocks and takes this path automatically
+from the next release — see [Current status](#current-status) for the measurements and the
+manual equivalent on v0.6.2 and earlier.
+
+#### Block sharding across machines (Linux + CUDA)
+
+Download the model, or just the blocks you intend to serve:
 
 ```bash
 kwaainet shard download
+kwaainet shard serve            # advertises your block range on the DHT
 ```
 
-Run inference across the live KwaaiNet peer network:
+Then run inference across the live peer network:
 
 ```bash
 kwaainet shard run "What is the capital of France?"
 ```
 
-The coordinator discovers block servers via DHT, pins a stable peer path for the session, and forwards activations through the chain:
+The coordinator discovers block servers via DHT, pins a stable peer path for the session, and
+forwards activations through the chain:
 
 ```
 Pinned path:
@@ -270,31 +311,11 @@ Pinned path:
   Assistant: The capital of France is Paris.
 ```
 
-Add `--stats` to see per-token timing breakdown (prefill, decode, throughput). For local-only inference without networking: `kwaainet shard run "prompt" --local`.
+Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). For local-only
+inference without networking: `kwaainet shard run "prompt" --local`.
 
-**On Apple Silicon, contribute whole models rather than blocks.** From the next release,
-`kwaainet shard serve` detects macOS and serves the whole model over Ollama automatically,
-rather than advertising a block range it would fill slowly (on v0.6.2 and earlier see
-[Current status](#current-status) for the manual equivalent):
-
-```bash
-# Prerequisite: Ollama installed with at least one model pulled
-ollama pull llama3.1:8b
-
-kwaainet shard serve
-# 🍎 KwaaiNet Whole-Model Server (macOS)
-#   Backend: Ollama on localhost:11434
-#   ✅ Serving whole-model inference over /kwaai/ollama-proxy/1.0.0
-#   💡 This node does not advertise a block range — by design on macOS.
-```
-
-The node serves every model Ollama has locally, not just one — the target model is taken from
-each request. If Ollama is not running the command refuses to start rather than serving
-slowly, so a node is never silently useless. To force the old block-serving path anyway, pass
-`--force-blocks`.
-
-See [Current status](#current-status) for the measurements behind this, and
-[#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117) for the real fix.
+On Apple Silicon, pass `--force-blocks` if you want the block path anyway for testing or
+benchmarking — it is not a useful way to contribute.
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
 
@@ -313,7 +334,8 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 
 ### Compute & inference
 
-- **Block-sharded LLM inference** (CandleEngine) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls.
+- **Whole-model serving over Ollama** — the recommended way to contribute today. Every node registers `/kwaai/ollama-proxy/1.0.0` on every platform, serves every model held locally (the target comes from the request), and needs no special mode.
+- **Block-sharded LLM inference** (CandleEngine) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls. Best suited to Linux/CUDA today.
 - **Distributed inference across multiple machines** with session-pinned peer paths, automatic gap-filling, and graceful failover when peers go offline.
 - **Per-platform backends**: candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000) serves block shards; Apple Silicon serves whole models through Ollama (47.3 tok/s measured on a Mac mini). Candle's Metal backend is compiled but skipped at runtime — its decode is ~10× slower than CPU — so Metal block sharding is not offered. See [Current status](#current-status).
 - Selective block download (`shard download --start-block N --blocks M`), reusable inference circuits (`shard circuit create`), and `shard run --local` model reuse for near-zero cold start.
