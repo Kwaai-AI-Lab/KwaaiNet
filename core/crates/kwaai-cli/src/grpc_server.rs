@@ -4238,9 +4238,14 @@ mod tests {
         /// port it landed on. Every RAG test uses this rather than
         /// `spawn`, so the suite never contends with (or accidentally
         /// talks to) a real daemon on the fixed port.
-        fn spawn_test_server() -> (GrpcServerHandle, u16) {
+        async fn spawn_test_server() -> (GrpcServerHandle, u16) {
             let port = ephemeral_port();
             let handle = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
+            // The TCP bind happens on a spawned task, so the listener is not
+            // up yet when `spawn_on_tcp_port` returns. `round_trip` connects
+            // immediately, and would see ConnectionRefused without this.
+            let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
+            assert!(up, "test gRPC server never came up on 127.0.0.1:{port}");
             (handle, port)
         }
 
@@ -4270,7 +4275,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let _env = EnvGuard::set(tmp.path());
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(port, client_frame::Body::RagStatus(RagStatusRequest {})).await;
 
             assert!(
@@ -4297,7 +4302,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let _env = EnvGuard::set(tmp.path());
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagQuery(RagQueryRequest {
@@ -4341,7 +4346,7 @@ mod tests {
             );
             cfg.save().expect("save config");
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let missing = tmp.path().join("definitely-not-here.txt");
             let bodies = round_trip(
                 port,
@@ -4383,7 +4388,7 @@ mod tests {
             );
             cfg.save().expect("save config");
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagQuery(RagQueryRequest {
@@ -4412,7 +4417,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let _env = EnvGuard::set(tmp.path());
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagQuery(RagQueryRequest {
@@ -4449,7 +4454,7 @@ mod tests {
             let prev_ollama = std::env::var_os("OLLAMA_BASE_URL");
             std::env::set_var("OLLAMA_BASE_URL", "http://127.0.0.1:1");
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagInit(RagInitRequest {
@@ -4477,7 +4482,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let _env = EnvGuard::set(tmp.path());
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagDelete(RagDeleteRequest {
@@ -4519,7 +4524,7 @@ mod tests {
             );
             cfg.save().expect("save config");
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagDelete(RagDeleteRequest {
@@ -4545,7 +4550,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let _env = EnvGuard::set(tmp.path());
 
-            let (handle, port) = spawn_test_server();
+            let (handle, port) = spawn_test_server().await;
             let bodies = round_trip(
                 port,
                 client_frame::Body::RagDelete(RagDeleteRequest {
