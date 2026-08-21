@@ -802,6 +802,13 @@ pub struct ShardServeArgs {
     #[arg(long)]
     pub auto_rebalance: bool,
 
+    /// macOS only: serve transformer blocks anyway, despite Metal being slower
+    /// than CPU for decode. A Mac normally serves whole models through its
+    /// local Ollama instead — this forces the block path for testing or
+    /// benchmarking. Ignored on other platforms, which always serve blocks.
+    #[arg(long)]
+    pub force_blocks: bool,
+
     /// HuggingFace access token for downloading private or gated models.
     /// Can also be set via the HF_TOKEN environment variable.
     #[arg(long, value_name = "TOKEN")]

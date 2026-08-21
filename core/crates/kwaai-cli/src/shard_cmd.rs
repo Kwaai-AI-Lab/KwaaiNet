@@ -221,12 +221,116 @@ async fn cmd_shard_gap() -> Result<()> {
 
 // ── serve ─────────────────────────────────────────────────────────────────────
 
+/// Serve the whole model through the local Ollama instead of serving blocks.
+///
+/// The macOS path — see the rationale at the call site in `cmd_shard_serve`.
+///
+/// Registers only the proxy protocols, so this node is reachable for
+/// whole-model inference at `p2p://<peer-id>` but never advertises a block
+/// range. Refuses outright when Ollama cannot serve, rather than idling: a node
+/// that looks available and answers slowly (or not at all) is worse than one
+/// that is plainly absent, which is the same reasoning as not advertising slow
+/// blocks in the first place.
+async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServeExit> {
+    print_box_header("🍎 KwaaiNet Whole-Model Server (macOS)");
+    println!("  Backend: Ollama on localhost:{}", cfg.ollama_port);
+    println!("  Mode:    whole model — block sharding is not viable on Metal (#117)");
+    println!();
+
+    let models = match crate::ollama::readiness(cfg.ollama_port).await {
+        Ok(models) => models,
+        Err(why) => {
+            print_error(&format!("Cannot serve: {why}"));
+            print_info("macOS nodes serve whole models through Ollama until a native");
+            print_info("Apple fast path lands — candle's Metal decode is slower than CPU.");
+            print_info("To serve blocks anyway: kwaainet shard serve --force-blocks");
+            print_separator();
+            bail!("Ollama is not ready — refusing to advertise a path we cannot serve");
+        }
+    };
+    print_success(&format!("Ollama ready — serving: {}", models.join(", ")));
+
+    let daemon_addr = daemon_socket();
+    let client = match P2PClient::connect(&daemon_addr).await {
+        Ok(c) => c,
+        Err(_) => {
+            print_error("Cannot connect to the KwaaiNet node — is it running?");
+            print_info("Start it:     kwaainet start --daemon");
+            print_separator();
+            bail!("KwaaiNet node is not running");
+        }
+    };
+
+    // One lease table per process, matching the block path — it gates concurrent
+    // dispatch to this node's Ollama regardless of which transport asked.
+    let lease_max_concurrent = std::env::var("OLLAMA_NUM_PARALLEL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(crate::capacity_lease::DEFAULT_MAX_CONCURRENT);
+    let lease_table =
+        crate::capacity_lease::LeaseTable::new(cfg.model.clone(), lease_max_concurrent);
+    let _sweep = lease_table.spawn_periodic_sweep(std::time::Duration::from_secs(5));
+
+    // `run-node` registers this same protocol at startup (`node.rs`,
+    // `node_native.rs`), so on a Mac the node is *already* serving whole-model
+    // inference before `shard serve` is ever run. Registering again is a
+    // conflict, not a failure — report it plainly rather than erroring, and
+    // rather than swallowing it with `let _` as the block path does.
+    let proxy_handler = crate::ollama_proxy::make_ollama_proxy_handler(lease_table.clone());
+    match client
+        .add_unary_handler(
+            crate::ollama_proxy::OLLAMA_PROXY_PROTO,
+            proxy_handler,
+            false,
+        )
+        .await
+    {
+        Ok(_) => print_success("Serving whole-model inference over /kwaai/ollama-proxy/1.0.0"),
+        Err(e) if e.to_string().contains("already set") => {
+            print_success("The node is already serving whole-model inference");
+            print_info("/kwaai/ollama-proxy/1.0.0 was registered by `kwaainet run-node`.");
+            print_info("On macOS `shard serve` is not required — the node serves without it.");
+        }
+        Err(e) => return Err(e).context("Failed to register the Ollama proxy handler"),
+    }
+    print_info("This node does not advertise a block range — by design on macOS.");
+    print_separator();
+
+    tokio::signal::ctrl_c().await.ok();
+    println!();
+    print_info("Stopping whole-model server…");
+    Ok(ShardServeExit::UserStop)
+}
+
 async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     let cfg = KwaaiNetConfig::load_or_create()?;
 
     if crate::daemon::ShardManager::new().is_running() {
         print_warning("A shard server is already running (started via `kwaainet start --shard`).");
         print_info("If intentional, proceed — DHT announcements will overlap.");
+    }
+
+    // ── macOS: serve the whole model through Ollama, never blocks ───────────
+    //
+    // Block sharding is not viable on Apple hardware. candle's Metal backend is
+    // *slower than CPU* for single-token decode, so `DeviceType::detect_best()`
+    // skips it and a Mac lands on CPU at 2-4 tok/s — while the same machine runs
+    // the same model through Ollama at ~47 tok/s. Gap-filling can also hand a
+    // Mac a partial range it cannot serve on GPU at all (#117), which still
+    // reads as healthy coverage in `shard chain`.
+    //
+    // So a Mac does not register as a block server. It serves whole-model
+    // inference over `/kwaai/ollama-proxy/1.0.0`, which every node already
+    // registers, and stays at announce state 0 ("online, no shard") because no
+    // shard ever loads — no announce change needed.
+    //
+    // Stopgap. Delete this branch when an Apple fast path lands: MLX
+    // (`mlx_shard.rs`) already implements sharding and failed only on graph
+    // recompilation, and `llama_local.rs` wraps the same llama.cpp engine Ollama
+    // uses. See `projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`.
+    if cfg!(target_os = "macos") && !args.force_blocks {
+        return serve_whole_model_via_ollama(&cfg).await;
     }
 
     let target_blocks = snap_to_valid_blocks(args.blocks.unwrap_or(cfg.blocks) as usize);
@@ -1852,7 +1956,20 @@ pub async fn cmd_shard_status() -> Result<()> {
         cfg.start_block(),
         cfg.effective_end_block()
     );
-    println!("  GPU:          {}", cfg.use_gpu);
+    // `use_gpu` is what the *config asks for*, which is not what the process
+    // ends up doing — on macOS `DeviceType::detect_best()` skips Metal because
+    // candle's decode is slower than CPU, so `GPU: true` was printed while
+    // inference ran on CPU (#118). Label it as configuration and state the
+    // serving mode separately.
+    println!("  GPU (config): {}", cfg.use_gpu);
+    if cfg!(target_os = "macos") {
+        println!(
+            "  Mode:         whole model via Ollama (localhost:{})",
+            cfg.ollama_port
+        );
+        println!("                block sharding is not viable on Metal — see #117");
+        println!("                the range above is unused on this platform");
+    }
     println!("  DHT prefix:   {}", cfg.effective_dht_prefix());
     println!();
     print_info("To serve this shard: kwaainet shard serve");
