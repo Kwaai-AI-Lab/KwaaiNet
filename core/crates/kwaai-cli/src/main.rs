@@ -322,6 +322,19 @@ async fn main() -> Result<()> {
                         cfg.model
                     ));
                     print_info("Download: kwaainet shard download");
+                } else if !policy.shards
+                    && !args.no_contribute
+                    && cfg.contribute.shards_unset()
+                    && shard_available
+                {
+                    // This node has a model and would have served blocks under
+                    // the old opt-out default. Say so once, rather than letting
+                    // its block contribution vanish silently on upgrade.
+                    print_info(
+                        "Block-shard serving is now opt-in (experimental) — not starting it.",
+                    );
+                    print_info("This node still contributes whole-model inference via Ollama.");
+                    print_info("Serve blocks anyway: kwaainet config set contribute.shards true");
                 }
 
                 // --- Storage serving ---
