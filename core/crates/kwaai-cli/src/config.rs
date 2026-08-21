@@ -68,6 +68,19 @@ pub struct KwaaiNetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_block: Option<u32>,
 
+    /// Whether the `start_block` above was chosen by auto-assignment rather
+    /// than by the operator.
+    ///
+    /// Both sources write the same field, so without this the two are
+    /// indistinguishable — and they must not be treated alike. A recorded
+    /// auto-assignment exists to keep the range stable across restarts (#124);
+    /// an operator's pin is a statement that this node serves *that* range and
+    /// the rebalancer must leave it alone. Collapsing the two would either
+    /// disable rebalancing for every node that ever auto-assigned, or let the
+    /// rebalancer move a node the operator placed deliberately.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub start_block_auto: bool,
+
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -671,6 +684,7 @@ impl Default for KwaaiNetConfig {
             model: default_model(),
             blocks: default_blocks(),
             start_block: None,
+            start_block_auto: false,
             port: default_port(),
             use_gpu: true,
             log_level: default_log_level(),
@@ -766,6 +780,18 @@ impl KwaaiNetConfig {
     /// was #116, which silently overwrote an operator's configured range.
     pub fn start_block_pinned(&self) -> bool {
         self.start_block.is_some()
+    }
+
+    /// True only when the *operator* pinned the range — not when it was
+    /// recorded by auto-assignment.
+    ///
+    /// This is the rebalancer's gate. [`Self::start_block_pinned`] answers a
+    /// different question ("is there a range to reuse at startup?") and
+    /// deliberately treats both sources alike; using it here would stop
+    /// rebalancing any node that had ever auto-assigned, since #124 records
+    /// every assignment.
+    pub fn start_block_user_pinned(&self) -> bool {
+        self.start_block.is_some() && !self.start_block_auto
     }
 
     /// Whether to run the native stack: the explicit choice if there is one,
@@ -967,7 +993,9 @@ impl KwaaiNetConfig {
                 self.start_block =
                     Some(value.parse().map_err(|_| {
                         anyhow::anyhow!("start_block must be a non-negative integer")
-                    })?)
+                    })?);
+                // Set by hand, so the rebalancer must not move this node.
+                self.start_block_auto = false;
             }
             "auto_rebalance" => self.auto_rebalance = parse_bool(value)?,
             "rebalance_interval_secs" => {
@@ -1242,5 +1270,102 @@ mod tests {
         // 70B has 80 blocks; 72 + 32 = 104 → clamped to 80
         let c = cfg(72, 32, "meta/Llama-2-70B");
         assert_eq!(c.effective_end_block(), 80);
+    }
+}
+
+/// Provenance of `start_block`: an auto-assigned range must not read as an
+/// operator pin. Regression for the rebalance gate — see `should_rebalance`.
+#[cfg(test)]
+mod start_block_provenance {
+    use super::*;
+
+    #[test]
+    fn auto_assigned_range_is_not_an_operator_pin() {
+        let cfg = KwaaiNetConfig {
+            start_block: Some(8),
+            start_block_auto: true,
+            ..Default::default()
+        };
+        assert!(
+            cfg.start_block_pinned(),
+            "a recorded range is still reused at startup (#124)"
+        );
+        assert!(
+            !cfg.start_block_user_pinned(),
+            "but the rebalancer may still move an auto-assigned node"
+        );
+    }
+
+    #[test]
+    fn operator_pin_blocks_the_rebalancer() {
+        let cfg = KwaaiNetConfig {
+            start_block: Some(8),
+            start_block_auto: false,
+            ..Default::default()
+        };
+        assert!(
+            cfg.start_block_user_pinned(),
+            "set by hand — do not move it"
+        );
+    }
+
+    #[test]
+    fn setting_start_block_by_hand_clears_the_auto_flag() {
+        let mut cfg = KwaaiNetConfig {
+            start_block: Some(8),
+            start_block_auto: true,
+            ..Default::default()
+        };
+        cfg.set_key("start_block", "16").expect("set");
+        assert!(
+            !cfg.start_block_auto,
+            "`config set start_block` is an operator decision and outranks a \
+             previously recorded auto-assignment"
+        );
+        assert!(cfg.start_block_user_pinned());
+    }
+
+    #[test]
+    fn unset_start_block_is_neither() {
+        let cfg = KwaaiNetConfig::default();
+        assert!(!cfg.start_block_pinned());
+        assert!(!cfg.start_block_user_pinned());
+    }
+
+    #[test]
+    fn auto_flag_is_omitted_from_yaml_when_false() {
+        let cfg = KwaaiNetConfig::default();
+        let yaml = serde_yaml::to_string(&cfg).expect("serialize");
+        assert!(
+            !yaml.contains("start_block_auto"),
+            "an internal provenance marker should not clutter a hand-edited \
+             config until it is actually true"
+        );
+    }
+
+    #[test]
+    fn auto_flag_survives_a_round_trip() {
+        let cfg = KwaaiNetConfig {
+            start_block: Some(8),
+            start_block_auto: true,
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&cfg).expect("serialize");
+        let back: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert!(
+            back.start_block_auto,
+            "provenance must persist, or every restart re-pins the node"
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_this_field_existed_reads_as_an_operator_pin() {
+        // Upgrade path: 0.6.1/0.6.2 wrote `start_block` with no provenance.
+        // Defaulting to "operator pin" is the safe reading — it declines to
+        // move a node rather than moving one that was placed deliberately.
+        let cfg: KwaaiNetConfig =
+            serde_yaml::from_str("start_block: 8\nblocks: 8\n").expect("deserialize");
+        assert!(!cfg.start_block_auto);
+        assert!(cfg.start_block_user_pinned());
     }
 }

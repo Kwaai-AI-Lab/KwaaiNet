@@ -55,7 +55,7 @@ enum ShardServeExit {
 
 pub async fn run(args: ShardArgs) -> Result<()> {
     match args.action {
-        ShardAction::Serve(a) => {
+        ShardAction::Serve(mut a) => {
             // When --auto-rebalance is active we loop: after each rebalance
             // signal we re-run cmd_shard_serve so pick_gap_blocks() re-queries
             // the DHT and loads a fresh shard at the new block range.
@@ -64,7 +64,14 @@ pub async fn run(args: ShardArgs) -> Result<()> {
                     ShardServeExit::UserStop => break,
                     ShardServeExit::Rebalance => {
                         print_info("Rebalancing — re-discovering gap and reloading shard…");
-                        // Next iteration calls pick_gap_blocks() fresh (default auto path).
+                        // Force the gap re-query. Re-entering with the original
+                        // args would not do it: #124 writes the assigned range
+                        // back to config, so the next pass sees a recorded
+                        // range, skips auto-assign and reloads the *same*
+                        // blocks — a rebalance that reloads the model and moves
+                        // nothing, repeating every interval. `--auto` is the
+                        // documented override for exactly this.
+                        a.auto = true;
                     }
                 }
             }
@@ -399,6 +406,9 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             // re-querying the DHT and possibly moving again.
             updated.start_block = Some(s as u32);
             updated.blocks = assigned_blocks;
+            // Auto-assigned, not operator-chosen: keeps the range stable across
+            // restarts without telling the rebalancer this node is placed.
+            updated.start_block_auto = true;
             updated.save().context("Failed to save config.yaml")?;
             print_info(&format!(
                 "Updated config.yaml — pinned [{s}, {e}), signalling daemon to re-announce…"
@@ -418,6 +428,9 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         let mut updated = cfg.clone();
         updated.start_block = Some(s as u32);
         updated.blocks = (e - s) as u32;
+        // --start-block / --no-auto is a deliberate placement; the rebalancer
+        // must not move this node.
+        updated.start_block_auto = false;
         if updated.start_block != cfg.start_block || updated.blocks != cfg.blocks {
             updated.save().context("Failed to save config.yaml")?;
             print_info("Updated config.yaml — signalling daemon to re-announce…");
@@ -680,7 +693,31 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // tokio::select! compiles with the same shape in both branches.
 
     let cfg_rb = KwaaiNetConfig::load_or_create()?;
-    let do_rebalance = args.auto_rebalance;
+
+    // Rebalance only when asked *and* when this node has not pinned a range.
+    //
+    // Two bugs lived in the single line this replaces, `= args.auto_rebalance`:
+    //
+    // 1. `auto_rebalance` in config was never read, so `config set
+    //    auto_rebalance false` did nothing — only the CLI flag counted. Same
+    //    shape as #116, where the configured `start_block` was ignored.
+    // 2. Pinning did not survive. A rebalance signal re-runs `cmd_shard_serve`
+    //    from the top (see the loop in `run`), which re-enters the auto-assign
+    //    path and rewrites `start_block`/`blocks`. So a node with a configured
+    //    range had its config rewritten on every rebalance cycle — the #116 fix
+    //    stopped this at startup but not periodically.
+    //
+    // Pinning a range is a statement that this node serves *that* range, so the
+    // rebalancer must leave it alone. An operator who wants automatic movement
+    // should leave `start_block` unset.
+    let rebalance_requested = args.auto_rebalance || cfg_rb.auto_rebalance;
+    let do_rebalance = should_rebalance(args.auto_rebalance, &cfg_rb);
+    if rebalance_requested && !do_rebalance {
+        print_info(&format!(
+            "Rebalancing disabled — this node pins blocks [{}, {}). Unset start_block to allow moves.",
+            start_block, end_block
+        ));
+    }
     let interval_secs = cfg_rb.rebalance_interval_secs;
     let min_redundancy = cfg_rb.rebalance_min_redundancy;
     let total_blocks_rb = cfg_rb.model_total_blocks() as usize;
@@ -2582,6 +2619,22 @@ fn version_meets_minimum(version_str: &str) -> bool {
 const VALID_BLOCK_COUNTS: [usize; 4] = [4, 8, 16, 32];
 
 /// Round `n` to the nearest value in `VALID_BLOCK_COUNTS`.
+/// Whether the rebalancer should run for this node.
+///
+/// Two conditions, both of which were bugs when missing:
+///
+/// * The CLI flag is not the only way to ask. `auto_rebalance` in config was
+///   never read, so `kwaainet config set auto_rebalance false` did nothing and
+///   only `--auto-rebalance` counted — the same shape as #116, where a
+///   configured `start_block` was ignored in favour of the flag.
+/// * An operator's pin wins over either. Pinning a range says this node serves
+///   *that* range; a node the operator placed must not be moved. A range merely
+///   recorded by auto-assignment is not such a statement — see
+///   [`KwaaiNetConfig::start_block_user_pinned`].
+pub fn should_rebalance(flag: bool, cfg: &KwaaiNetConfig) -> bool {
+    (flag || cfg.auto_rebalance) && !cfg.start_block_user_pinned()
+}
+
 pub fn snap_to_valid_blocks(n: usize) -> usize {
     *VALID_BLOCK_COUNTS
         .iter()
@@ -3742,5 +3795,61 @@ mod tests {
         assert_eq!(snap_to_valid_blocks(25), 32);
         assert_eq!(snap_to_valid_blocks(32), 32);
         assert_eq!(snap_to_valid_blocks(64), 32);
+    }
+}
+
+/// The rebalance gate. Regression for two bugs: `auto_rebalance` in config
+/// being ignored, and an operator's pinned range being movable.
+#[cfg(test)]
+mod rebalance_gate {
+    use super::*;
+
+    fn cfg_with(start_block: Option<u32>, auto: bool, rebalance: bool) -> KwaaiNetConfig {
+        KwaaiNetConfig {
+            start_block,
+            start_block_auto: auto,
+            auto_rebalance: rebalance,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn config_auto_rebalance_is_honoured_without_the_flag() {
+        let cfg = cfg_with(None, false, true);
+        assert!(
+            should_rebalance(false, &cfg),
+            "`config set auto_rebalance true` must work on its own"
+        );
+    }
+
+    #[test]
+    fn config_false_stops_rebalancing_when_no_flag_is_passed() {
+        let cfg = cfg_with(None, false, false);
+        assert!(!should_rebalance(false, &cfg));
+    }
+
+    #[test]
+    fn the_flag_still_works_when_config_says_nothing() {
+        let cfg = cfg_with(None, false, false);
+        assert!(should_rebalance(true, &cfg), "--auto-rebalance is explicit");
+    }
+
+    #[test]
+    fn an_operator_pin_outranks_both() {
+        let cfg = cfg_with(Some(8), false, true);
+        assert!(
+            !should_rebalance(true, &cfg),
+            "a hand-pinned node must not be moved, even with --auto-rebalance"
+        );
+    }
+
+    #[test]
+    fn an_auto_assigned_node_may_still_rebalance() {
+        let cfg = cfg_with(Some(8), true, true);
+        assert!(
+            should_rebalance(false, &cfg),
+            "#124 records every assignment; treating that as a pin would \
+             disable rebalancing fleet-wide after the first start"
+        );
     }
 }
