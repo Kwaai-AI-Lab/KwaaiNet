@@ -301,10 +301,18 @@ async fn main() -> Result<()> {
                 let policy = cfg.contribute_policy(args.no_contribute);
 
                 // --- Shard serving ---
+                // `--shard` is itself an explicit opt-in. `args.shard` already
+                // overrode the model-present and RAM checks below, but not the
+                // policy — which was harmless while `contribute.shards`
+                // defaulted to true, and is not now: without this, someone who
+                // typed `--shard` would be told to go and set a config key for
+                // the thing they just asked for on the command line.
+                let serve_shards = policy.serve_shards(args.shard, args.no_contribute);
+
                 let shard_explicit = args.shard;
                 let shard_available = shard_explicit || model_is_locally_available(&cfg.model);
                 let enough_ram = shard_explicit || system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES;
-                if policy.shards && shard_available && enough_ram {
+                if serve_shards && shard_available && enough_ram {
                     match ShardManager::spawn_shard_child() {
                         Ok(shard_pid) => {
                             ShardManager::new().write_pid(shard_pid);
@@ -313,16 +321,16 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => print_warning(&format!("Could not start shard serving: {e}")),
                     }
-                } else if policy.shards && shard_available && !enough_ram {
+                } else if serve_shards && shard_available && !enough_ram {
                     print_warning("Low memory (< 10 GB) — skipping shard serving to prevent OOM.");
                     print_info("Override: kwaainet start --daemon --shard");
-                } else if policy.shards && !shard_available {
+                } else if serve_shards && !shard_available {
                     print_info(&format!(
                         "No local model found for '{}' — skipping shard serving.",
                         cfg.model
                     ));
                     print_info("Download: kwaainet shard download");
-                } else if !policy.shards
+                } else if !serve_shards
                     && !args.no_contribute
                     && cfg.contribute.shards_unset()
                     && shard_available
@@ -333,7 +341,7 @@ async fn main() -> Result<()> {
                     print_info(
                         "Block-shard serving is now opt-in (experimental) — not starting it.",
                     );
-                    print_info("This node still contributes whole-model inference via Ollama.");
+                    print_info("This node can still contribute whole-model inference via Ollama.");
                     print_info("Serve blocks anyway: kwaainet config set contribute.shards true");
                 }
 
