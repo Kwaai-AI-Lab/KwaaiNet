@@ -17,7 +17,7 @@ From an app's point of view, KwaaiNet looks like a familiar chat-completion styl
 
 ## Current status
 
-**Latest release: v0.6.2** (August 2026). Two things are worth knowing before you set up a node.
+**As of v0.6.2.** Two things are worth knowing before you set up a node.
 
 **The networking stack is now native.** As of **v0.6.0** every node runs the in-process
 rust-libp2p stack by default; the Go `p2pd` child process is no longer required. Existing
@@ -198,7 +198,7 @@ curl -s http://localhost:11434/api/chat -d '{
   "model": "llama3.1:8b", "stream": false,
   "options": {"num_ctx": 8192, "num_predict": 80},
   "messages": [{"role": "user", "content": "Explain knowledge graphs in one paragraph."}]
-}' | python3 -c 'import json,sys; d=json.load(sys.stdin); print(f"{d["eval_count"]/(d["eval_duration"]/1e9):.1f} tok/s")'
+}' | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%.1f tok/s" % (d["eval_count"]/(d["eval_duration"]/1e9)))'
 ```
 
 > Pin `num_ctx` explicitly. Ollama defaults to a very large context, which pushes part of the
@@ -235,15 +235,18 @@ The node will connect to bootstrap peers, announce itself on the DHT, auto-detec
 
 > **Pre-release note (< v1.0):** `kwaainet start --daemon` automatically starts shard serving (if a local model is present) and storage serving (if storage has been initialised). This opt-out default keeps the network dense during the insider phase. Run with `--no-contribute` to start the node without contributing, or permanently disable with `kwaainet config set contribute.shards false`.
 >
-> On macOS this contributes **whole-model inference via Ollama** rather than block shards — see [Current status](#current-status).
+> From the next release, on macOS this contributes **whole-model inference via Ollama** rather than block shards — on v0.6.2 see [Current status](#current-status) for the manual equivalent.
 >
-> Note that block sharding is **experimental** but currently opt-out. On Linux/CUDA, if you would
-> rather contribute only whole models through Ollama, turn shard serving off — the node keeps
-> serving over `/kwaai/ollama-proxy/1.0.0` either way:
+> Block sharding is **experimental**. On v0.6.2 it is opt-out — a node with a local model serves
+> blocks unless told otherwise — and it becomes opt-in from the next release. Whole-model serving
+> over `/kwaai/ollama-proxy/1.0.0` is unaffected either way. To be sure a node contributes only
+> whole models, whichever release it is on:
 >
 > ```bash
 > kwaainet config set contribute.shards false
 > ```
+>
+> To serve blocks once it is opt-in, set that to `true` or pass `--shard`.
 
 ### 3. Call the OpenAI-compatible API
 
@@ -353,7 +356,7 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 - **Whole-model serving over Ollama** — the recommended way to contribute today. Every node registers `/kwaai/ollama-proxy/1.0.0` on every platform, serves every model held locally (the target comes from the request), and needs no special mode.
 - **Block-sharded LLM inference** (CandleEngine, **experimental**) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls. Linux/CUDA only in practice; not yet dependable enough to recommend over whole-model serving.
 - **Distributed inference across multiple machines** (experimental) with session-pinned peer paths, automatic gap-filling, and graceful failover when peers go offline.
-- **Per-platform backends**: candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000) serves block shards; Apple Silicon serves whole models through Ollama (47.3 tok/s measured on a Mac mini). Candle's Metal backend is compiled but skipped at runtime — its decode is ~10× slower than CPU — so Metal block sharding is not offered. See [Current status](#current-status).
+- **Per-platform backends**: candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000) serves block shards; Apple Silicon contributes whole models through Ollama instead (47.3 tok/s measured on a Mac mini; automatic from the next release, manual on v0.6.2). Candle's Metal backend is compiled but skipped at runtime — its decode is ~10× slower than CPU — so Metal block sharding is not offered. See [Current status](#current-status).
 - Selective block download (`shard download --start-block N --blocks M`), reusable inference circuits (`shard circuit create`), and `shard run --local` model reuse for near-zero cold start.
 - Auto-detects local models and network state, and appears on the public map when configured at [map.kwaai.ai](https://map.kwaai.ai).
 
