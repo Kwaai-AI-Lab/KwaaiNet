@@ -6,7 +6,7 @@ KwaaiNet is a decentralized AI node architecture for **Layer 8** — the trust a
 Each KwaaiNet node combines:
 
 - A **decentralized trust graph** (cryptographic identity, verifiable credentials, local trust scores).
-- **Shared, sharded LLM compute** over heterogeneous CPUs/GPUs using Petals-style distributed inference. Apple Silicon Macs use llama.cpp with Metal for 30+ tok/s local inference; Linux nodes use CUDA-accelerated block sharding.
+- **Shared LLM compute** over heterogeneous CPUs/GPUs. Nodes contribute **whole models through Ollama** — the supported path on every platform. Petals-style **block sharding**, which pools a single oversized model across several machines, is **experimental** and currently limited to Linux/CUDA (see [Current status](#current-status)).
 - **Secure multi-tenant knowledge storage** via Virtual Private Knowledge (VPK) with encrypted vector search.
 - **Local-first RAG and knowledge graphs** — retrieval-augmented generation over your own documents, with an optional link to VPK for network-outsourced storage.
 - **Intent-based, peer-to-peer networking** that routes based on "what I need" (model, trust tier, latency), not just IP addresses.
@@ -15,8 +15,53 @@ From an app's point of view, KwaaiNet looks like a familiar chat-completion styl
 
 ---
 
+## Current status
+
+**As of v0.6.2.** Two things are worth knowing before you set up a node.
+
+**The networking stack is now native.** As of **v0.6.0** every node runs the in-process
+rust-libp2p stack by default; the Go `p2pd` child process is no longer required. Existing
+nodes keep working — set `native_p2p: false` in `~/.kwaainet/config.yaml` to opt out.
+
+**Serve whole models through Ollama. Block sharding is experimental.** Sharding is the more
+ambitious mechanism — pooling a model too large for any single GPU across several machines — and
+it remains a core goal, but it is not yet dependable enough to recommend: it does not work on
+Apple Silicon at all ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)), and elsewhere
+it should be treated as something to experiment with rather than rely on.
+
+Whole-model serving is the supported path, and needs no special mode: every node registers the
+`/kwaai/ollama-proxy/1.0.0` protocol on every platform, so installing Ollama and pulling a model
+is enough to contribute.
+
+On Apple Silicon the difference is stark. Measured on a Mac mini, same model, same prompt:
+
+| Path | Decode |
+|---|---|
+| candle, Metal GPU | 2.3 tok/s |
+| candle, CPU (`--no-gpu`) | 4.2 tok/s |
+| **Ollama (llama.cpp + Metal)** | **47.3 tok/s** |
+
+Metal is *slower than CPU* on the candle path, so the runtime deliberately skips it — which is
+why a Mac serving blocks lands at single-digit tok/s.
+
+**From the next release**, `kwaainet shard serve` detects macOS automatically and serves whole
+models over Ollama instead of advertising a block range — nothing to pass, but Ollama must be
+installed with a model pulled. **On v0.6.2 and earlier**, a Mac still serves blocks, so stop it
+contributing shards and let Ollama do the work:
+
+```bash
+kwaainet config set contribute.shards false
+ollama pull llama3.1:8b
+```
+
+This is a **stopgap, not the fix** — see [#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)
+for native Metal shard support. Linux/CUDA nodes are unaffected and continue to serve blocks.
+
+---
+
 ## Table of Contents
 
+- [Current status](#current-status)
 - [Why KwaaiNet?](#why-kwaainet)
 - [Quickstart: run a node and make a request](#quickstart-run-a-node-and-make-a-request)
 - [Project status: where we are now](#project-status-where-we-are-now)
@@ -138,12 +183,27 @@ kwaainet benchmark --gpu
 
 **Apple Silicon (Metal):**
 
-On macOS with a GGUF model available (via Ollama or `~/.kwaainet/models/`), the benchmark and API server automatically use llama.cpp with Metal GPU acceleration:
+`kwaainet benchmark` measures the built-in candle engine. Published binaries are compiled
+without the `llama-cpp` feature, so the benchmark falls back to candle — and candle's Metal
+backend is skipped at runtime because its decode is ~10× slower than CPU. Expect single-digit
+tok/s from this number on a Mac; it is not what your node contributes.
+
+For the throughput a Mac actually serves, measure Ollama directly — that is the path
+`kwaainet shard serve` uses on macOS:
 
 ```bash
-ollama pull llama3.1:8b    # download a GGUF model
-kwaainet benchmark         # auto-detects GGUF → 36+ tok/s via Metal
+ollama pull llama3.1:8b
+
+curl -s http://localhost:11434/api/chat -d '{
+  "model": "llama3.1:8b", "stream": false,
+  "options": {"num_ctx": 8192, "num_predict": 80},
+  "messages": [{"role": "user", "content": "Explain knowledge graphs in one paragraph."}]
+}' | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%.1f tok/s" % (d["eval_count"]/(d["eval_duration"]/1e9)))'
 ```
+
+> Pin `num_ctx` explicitly. Ollama defaults to a very large context, which pushes part of the
+> model onto CPU and depresses throughput; `/v1/chat/completions` ignores `options`, so use
+> `/api/chat` when you want the setting to take effect.
 
 To check how many model blocks your hardware can serve:
 
@@ -174,6 +234,19 @@ kwaainet start --daemon
 The node will connect to bootstrap peers, announce itself on the DHT, auto-detect available hardware, and appear on [map.kwaai.ai](https://map.kwaai.ai). No Python, no build tools, no manual configuration required.
 
 > **Pre-release note (< v1.0):** `kwaainet start --daemon` automatically starts shard serving (if a local model is present) and storage serving (if storage has been initialised). This opt-out default keeps the network dense during the insider phase. Run with `--no-contribute` to start the node without contributing, or permanently disable with `kwaainet config set contribute.shards false`.
+>
+> From the next release, on macOS this contributes **whole-model inference via Ollama** rather than block shards — on v0.6.2 see [Current status](#current-status) for the manual equivalent.
+>
+> Block sharding is **experimental**. On v0.6.2 it is opt-out — a node with a local model serves
+> blocks unless told otherwise — and it becomes opt-in from the next release. Whole-model serving
+> over `/kwaai/ollama-proxy/1.0.0` is unaffected either way. To be sure a node contributes only
+> whole models, whichever release it is on:
+>
+> ```bash
+> kwaainet config set contribute.shards false
+> ```
+>
+> To serve blocks once it is opt-in, set that to `true` or pass `--shard`.
 
 ### 3. Call the OpenAI-compatible API
 
@@ -192,21 +265,62 @@ This sends a chat-completion request to your local node, which may route it thro
 
 For a full walkthrough including platform specifics, model discovery, and Python/JS examples see **[docs/getting-started-node.md](docs/getting-started-node.md)** and **[docs/api-quickstart.md](docs/api-quickstart.md)**.
 
-### 4. Distributed inference across the network
+### 4. Contribute inference to the network
 
-Download the model (or just the blocks you need):
+There are two ways a node can contribute compute. **Whole-model serving through Ollama is the
+supported path on every platform.** **Block sharding is experimental** — it pools a model too
+large for any single GPU across several machines, which remains a core goal, but it is not yet
+dependable enough to run unattended.
+
+| Your machine | Contribute with | Why |
+|---|---|---|
+| Apple Silicon Mac | **Ollama, whole model** | Block sharding does not work on Metal — ~20× slower than Ollama on the same box ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)) |
+| Linux + CUDA | **Ollama, whole model** — sharding if you are experimenting | Sharding works here, but expect rough edges |
+| CPU-only or small GPU | **Ollama, small model** | A slow block server stalls every chain it joins |
+
+#### Serving whole models through Ollama (recommended)
+
+Every node registers the `/kwaai/ollama-proxy/1.0.0` protocol on every platform, so this needs
+no special mode — install Ollama, pull a model, and your running node already serves it:
+
+```bash
+ollama pull llama3.1:8b
+kwaainet start --daemon
+```
+
+Two things worth knowing:
+
+- **A node serves every model Ollama has locally, not just one.** The target model comes from
+  each request, so pulling `llama3.2:3b` alongside `llama3.1:8b` makes both available.
+- **The node is discoverable under a single model prefix.** Peers that know your PeerId can
+  request any local model; peers relying on DHT discovery find you under the one model in your
+  config. Advertising the full served list is planned.
+
+On macOS, `kwaainet shard serve` also refuses to serve blocks and takes this path automatically
+from the next release — see [Current status](#current-status) for the measurements and the
+manual equivalent on v0.6.2 and earlier.
+
+#### Block sharding across machines (experimental, Linux + CUDA)
+
+> **Experimental.** Sharding is under active development and its behaviour changes between
+> releases. Run it if you want to help find the rough edges; do not depend on it for anything
+> that matters.
+
+Download the model, or just the blocks you intend to serve:
 
 ```bash
 kwaainet shard download
+kwaainet shard serve            # advertises your block range on the DHT
 ```
 
-Run inference across the live KwaaiNet peer network:
+Then run inference across the live peer network:
 
 ```bash
 kwaainet shard run "What is the capital of France?"
 ```
 
-The coordinator discovers block servers via DHT, pins a stable peer path for the session, and forwards activations through the chain:
+The coordinator discovers block servers via DHT, pins a stable peer path for the session, and
+forwards activations through the chain:
 
 ```
 Pinned path:
@@ -216,13 +330,11 @@ Pinned path:
   Assistant: The capital of France is Paris.
 ```
 
-Add `--stats` to see per-token timing breakdown (prefill, decode, throughput). For local-only inference without networking: `kwaainet shard run "prompt" --local`.
+Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). For local-only
+inference without networking: `kwaainet shard run "prompt" --local`.
 
-On Apple Silicon Macs with a GGUF model (Ollama or `~/.kwaainet/models/`), inference automatically uses llama.cpp with Metal GPU acceleration (36+ tok/s). The shard API also supports this fast path:
-
-```bash
-kwaainet shard api --port 8080 --ollama-model llama3.1:8b
-```
+On Apple Silicon, pass `--force-blocks` if you want the block path anyway for testing or
+benchmarking — it is not a useful way to contribute.
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
 
@@ -241,9 +353,10 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 
 ### Compute & inference
 
-- **Block-sharded LLM inference** (CandleEngine) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls.
-- **Distributed inference across multiple machines** with session-pinned peer paths, automatic gap-filling, and graceful failover when peers go offline.
-- **Dual backends**: llama.cpp + Metal on Apple Silicon (36+ tok/s auto fast-path for GGUF models); candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000).
+- **Whole-model serving over Ollama** — the recommended way to contribute today. Every node registers `/kwaai/ollama-proxy/1.0.0` on every platform, serves every model held locally (the target comes from the request), and needs no special mode.
+- **Block-sharded LLM inference** (CandleEngine, **experimental**) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls. Linux/CUDA only in practice; not yet dependable enough to recommend over whole-model serving.
+- **Distributed inference across multiple machines** (experimental) with session-pinned peer paths, automatic gap-filling, and graceful failover when peers go offline.
+- **Per-platform backends**: candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000) serves block shards; Apple Silicon contributes whole models through Ollama instead (47.3 tok/s measured on a Mac mini; automatic from the next release, manual on v0.6.2). Candle's Metal backend is compiled but skipped at runtime — its decode is ~10× slower than CPU — so Metal block sharding is not offered. See [Current status](#current-status).
 - Selective block download (`shard download --start-block N --blocks M`), reusable inference circuits (`shard circuit create`), and `shard run --local` model reuse for near-zero cold start.
 - Auto-detects local models and network state, and appears on the public map when configured at [map.kwaai.ai](https://map.kwaai.ai).
 
@@ -262,6 +375,7 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 
 ### Networking
 
+- **Native rust-libp2p stack, default since v0.6.0** — the Go `p2pd` child process is no longer required. Same PeerId, same control socket, same NAT traversal (AutoNAT, circuit relay, DCUtR, UPnP) in-process. Opt out with `native_p2p: false`.
 - libp2p + Kademlia DHT swarm, Petals/Hivemind-compatible, with live diagnostics (`p2p info`, `p2p peers list/find`) and direct peer messaging (`p2p peers send`).
 - **IDENTIFY-based public-IP detection** — auto-confirms and announces a node's public address with no manual config.
 - **Trusted relays** and **stable bootstrap identities** (`start --identity-key`) so NATed and bootstrap nodes keep consistent routing and `PeerId` across restarts.
@@ -651,7 +765,7 @@ KwaaiNet's roadmap is defined as the **gap** between the aspirational Layer 8 ar
 | Area    | Aspirational (whitepapers)                                                                 | Current implementation (Rust node)                                       |
 |---------|--------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
 | Trust   | 5-layer trust pipeline including Testable Credentials (PVP-1) and EigenTrust propagation. | Identity + VC wallet + local time-decayed trust scores shipped; ToIP work in progress. |
-| Compute | Sharded inference, decentralized training, safe tool-calling with trust-gated policies.   | Dual backend: llama.cpp for 30+ tok/s local on Apple Silicon, candle for distributed block sharding on Linux/CUDA. Auto-detected GPU with bundled CUDA runtime (no toolkit install needed). Inference circuits, session-pinned paths, selective download, OpenAI-compatible API shipped. |
+| Compute | Sharded inference, decentralized training, safe tool-calling with trust-gated policies.   | **Whole-model serving over Ollama is the supported path** on every platform. **Block sharding is experimental**: it runs on Linux/CUDA with auto-detected GPU and a bundled CUDA runtime, with inference circuits, session-pinned paths, selective download and an OpenAI-compatible API — but it does not work on Apple Silicon ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)) and is not yet dependable enough to rely on. |
 | Storage | Fully distributed personal AI memory via cross-node VPK sharding and DHT-backed resolution. | **VPK Phase 1 complete**: Eve nodes serve multi-tenant vector storage over `/kwaai/storage/1.0.0` libp2p RPC; Bob nodes discover Eves by PeerId via DHT; `kwaainet vpk bench` benchmarks sharded vs local vs Qdrant performance. **RAG Phase 2 complete**: local-first embedded knowledge base, hybrid BM25 (tantivy) + dense retrieval, brute-force exact search for small corpora (< 2K vectors), lost-in-the-middle context reordering, `rag destroy`, configurable chunking. HNSW tuned to m=16, ef_construction=200 (benchmarked: 97–99% recall on text embeddings at all corpus sizes up to 50K). PHE encryption (Phase 3) is next. See [VPK Shard Benchmark](docs/vpk-shard-bench/README.md) and [HNSW Parameter Study](docs/hnsw_vs_brute_force.md). |
 | Network | Intent-casting as a Layer 8 business protocol with economic settlement and neutrality guarantees. | libp2p + Kademlia DHT, trust-gated routing by model/trust/latency shipped. |
 
