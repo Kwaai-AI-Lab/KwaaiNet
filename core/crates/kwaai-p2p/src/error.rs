@@ -19,6 +19,16 @@ pub enum P2PError {
     #[error("Dial failed: {0}")]
     DialFailed(String),
 
+    /// A dial was skipped because a connection to the peer already exists (or
+    /// one is already being established).
+    ///
+    /// Not a failure — the caller's goal is already met. Distinct from
+    /// [`P2PError::DialFailed`] so a caller that only wants *a* connection can
+    /// treat it as success, while one that wanted a *new* connection can see
+    /// that it did not get one.
+    #[error("Already connected")]
+    AlreadyConnected,
+
     /// DHT operation failed
     #[error("DHT operation failed: {0}")]
     DhtError(String),

@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -62,6 +63,15 @@ pub type UnaryHandler = Box<
 >;
 
 /// A connected peer, as reported by [`NetworkHandle::list_peers`].
+///
+/// One entry per **connection**, not per peer: a peer reachable both directly
+/// and over a relay appears twice, which is what makes a hole-punch upgrade
+/// visible as it happens.
+///
+/// The three descriptive fields below are populated from identify and ping, so
+/// they fill in shortly *after* a connection establishes rather than with it.
+/// A freshly connected peer legitimately reports `None`/empty for all three —
+/// treat that as "not yet known", never as "the peer lacks this".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerInfo {
     /// The remote peer's ID.
@@ -71,6 +81,79 @@ pub struct PeerInfo {
     pub addr: Multiaddr,
     /// Which side opened the connection.
     pub direction: Direction,
+    /// The relay an inbound connection arrived through, when it was relayed.
+    ///
+    /// An inbound relayed connection's `addr` is a bare `/p2p/<peer>` — it says
+    /// who reached us and nothing about how. This is the local end of that
+    /// connection (our circuit listener), which is the only place the relay's
+    /// address and identity appear. `None` for outbound, where `addr` already
+    /// carries the relay, and for plain inbound.
+    pub via: Option<Multiaddr>,
+    /// Whether DCUtR upgraded this connection from relayed to direct.
+    ///
+    /// Distinct from simply being direct: it means the path was established
+    /// *through* a NAT by coordinated simultaneous dial, rather than there
+    /// being no NAT to traverse.
+    pub dcutr: bool,
+    /// Most recent ping round-trip time. `None` until the first ping completes.
+    pub rtt: Option<Duration>,
+    /// The peer's advertised software version, from identify.
+    pub agent_version: Option<String>,
+    /// The protocols the peer advertised over identify. Empty until identify
+    /// completes.
+    pub protocols: Vec<String>,
+}
+
+/// One Kademlia routing-table entry: a peer, and how we would reach it.
+///
+/// The addresses matter on their own. A routing entry with none is a peer we
+/// know of but cannot dial, which is a different state from one we simply are
+/// not connected to — and only the addresses distinguish them. Surfacing them
+/// is also what makes a bad entry visible: a peer whose only address is its own
+/// loopback looks identical to a healthy one until you can see the address.
+#[derive(Debug, Clone)]
+pub struct RoutingEntry {
+    pub peer_id: PeerId,
+    /// What kad holds for this peer, already filtered to addresses a third
+    /// party could dial. Empty when kad knows the peer but no usable address.
+    pub addrs: Vec<Multiaddr>,
+}
+
+/// Everything the Network view needs, captured in one pass over the service's
+/// state.
+///
+/// Exists as a single command rather than five accessor calls because the
+/// parts are read *together* and rendered as one picture: composing it from
+/// separate `await`s would let the peer table, the routing table and the
+/// reachability verdict come from three different moments and disagree with
+/// each other on screen.
+#[derive(Debug, Clone)]
+pub struct NetworkSnapshot {
+    /// This node's own peer ID.
+    pub local_peer_id: PeerId,
+    /// One entry per live connection.
+    pub peers: Vec<PeerInfo>,
+    /// Every peer in the Kademlia routing table. Overlaps `peers` but neither
+    /// set contains the other — see [`NetworkHandle::routing_peers`].
+    pub routing: Vec<RoutingEntry>,
+    /// What we currently believe about our own reachability.
+    pub reachability: crate::reachability::Reachability,
+    /// Addresses of confirmed circuit-relay reservations. Empty when not
+    /// relaying.
+    pub relay_addrs: Vec<Multiaddr>,
+    /// Addresses peers have reported observing us at, with the number of
+    /// distinct peers that said so.
+    pub observed_addrs: Vec<(Multiaddr, usize)>,
+    /// The swarm's listen addresses.
+    pub listen_addrs: Vec<Multiaddr>,
+    /// Protocols this node serves to peers, sorted.
+    ///
+    /// The handlers actually registered — the unary and raw-stream namespaces
+    /// plus kad's own names — rather than everything the swarm might negotiate.
+    /// libp2p keeps its full advertised set private to `Swarm`, and this is the
+    /// more useful answer anyway: it is what this node will *do* for a peer,
+    /// which is what a reader comparing it against a peer's list wants.
+    pub local_protocols: Vec<String>,
 }
 
 /// Which end dialed.
@@ -113,6 +196,11 @@ pub enum Command {
     /// Snapshot of currently connected peers.
     ListPeers {
         reply: oneshot::Sender<Vec<PeerInfo>>,
+    },
+    /// Connected peers, routing table, reachability and address state, read in
+    /// one pass so the parts cannot disagree with each other.
+    NetworkSnapshot {
+        reply: oneshot::Sender<crate::handle::NetworkSnapshot>,
     },
     /// Addresses other peers reported observing us at, with a count of how many
     /// distinct peers reported each.
@@ -306,6 +394,17 @@ impl NetworkHandle {
     /// Currently connected peers.
     pub async fn list_peers(&self) -> P2PResult<Vec<PeerInfo>> {
         self.call(|reply| Command::ListPeers { reply }).await
+    }
+
+    /// The whole network picture in one consistent read — connections, routing
+    /// table, reachability and addresses.
+    ///
+    /// Prefer this over calling [`Self::list_peers`], [`Self::routing_peers`],
+    /// [`Self::reachability`] and the address accessors in sequence: this is
+    /// one trip through the event loop, so every part describes the same
+    /// instant.
+    pub async fn network_snapshot(&self) -> P2PResult<NetworkSnapshot> {
+        self.call(|reply| Command::NetworkSnapshot { reply }).await
     }
 
     /// Addresses peers have observed us at, paired with the number of distinct

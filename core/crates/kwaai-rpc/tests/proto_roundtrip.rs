@@ -14,7 +14,11 @@
 //!   * a `None` produces a body that omits the tag entirely and decodes back
 //!     to `None` (we are NOT silently widening absent-vs-empty).
 
-use kwaai_rpc::v1::{ChatMessage, ChatToken};
+use kwaai_rpc::v1::{
+    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtRole,
+    NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
+    UpdateReason,
+};
 use prost::Message;
 
 /// `ChatMessage` with every field set, including `conversation_id`.
@@ -153,5 +157,249 @@ fn chat_token_finish_reason_wire_tag_is_stable() {
         bytes.as_slice(),
         &[0x1a, 0x01, b'y'],
         "finish_reason must serialise at proto tag 3 (key byte 0x1a)"
+    );
+}
+
+/// `ConnectedPeer` round-trip with every field populated.
+///
+/// The three enrichment fields (`protocols`, `rtt_ms`, `agent_version`) fill
+/// in from identify and ping *after* a connection establishes, so the empty
+/// state is meaningful and is covered separately below.
+#[test]
+fn connected_peer_roundtrip_all_fields_set() {
+    let original = ConnectedPeer {
+        peer_id: "12D3KooWExampleBootstrapPeerIdBase58".to_string(),
+        addr: "/ip4/198.18.0.10/tcp/8000".to_string(),
+        kind: PeerConnKind::Direct as i32,
+        direction: "outbound".to_string(),
+        is_bootstrap: true,
+        is_trusted_relay: false,
+        protocols: vec![
+            "/ipfs/kad/1.0.0".to_string(),
+            "/libp2p/circuit/relay/0.2.0/hop".to_string(),
+        ],
+        rtt_ms: 42,
+        agent_version: "kwaainet/0.5.4".to_string(),
+        via: String::new(),
+        dcutr: false,
+        // Consistent with the kad protocol advertised above: a peer that
+        // speaks kad is a DHT server.
+        dht_role: DhtRole::Server as i32,
+    };
+
+    let decoded = ConnectedPeer::decode(original.encode_to_vec().as_slice())
+        .expect("ConnectedPeer must decode from its own encoding");
+    assert_eq!(decoded, original);
+}
+
+/// A freshly established connection: identify and ping have not completed, so
+/// the enrichment fields are empty/zero.
+///
+/// This pins the "not yet known" encoding. `rtt_ms == 0` must mean "no ping has
+/// completed", never "zero latency", and an empty `protocols` must not be
+/// confused with "speaks nothing" — a client rendering these needs the
+/// distinction to survive the wire.
+#[test]
+fn connected_peer_roundtrip_before_identify() {
+    let original = ConnectedPeer {
+        peer_id: "12D3KooWExampleFreshlyConnectedPeer".to_string(),
+        addr: "/ip4/192.168.1.10/tcp/4001".to_string(),
+        kind: PeerConnKind::Relay as i32,
+        direction: "inbound".to_string(),
+        is_bootstrap: false,
+        is_trusted_relay: false,
+        protocols: vec![],
+        rtt_ms: 0,
+        agent_version: String::new(),
+        via: String::new(),
+        dcutr: false,
+        // Identify has not run, so the role is genuinely not known yet —
+        // the same "not yet known" state this test exists to pin.
+        dht_role: DhtRole::Unknown as i32,
+    };
+
+    let decoded = ConnectedPeer::decode(original.encode_to_vec().as_slice())
+        .expect("ConnectedPeer must decode from its own encoding");
+    assert_eq!(decoded, original);
+    assert!(decoded.protocols.is_empty());
+    assert_eq!(decoded.rtt_ms, 0);
+}
+
+/// `NetworkUpdate` carrying all three sections.
+///
+/// Guards the section tags against renumbering: `self_status` (3),
+/// `connected` (4) and `routing` (5) are what the GUI's Network page binds to.
+#[test]
+fn network_update_roundtrip_all_sections() {
+    let original = NetworkUpdate {
+        server_time: "2026-08-01T12:00:00Z".to_string(),
+        reason: UpdateReason::Reachability as i32,
+        self_status: Some(SelfStatus {
+            peer_id: "12D3KooWExampleSelfPeerId".to_string(),
+            reachability: "private".to_string(),
+            reachability_source: "autonat".to_string(),
+            using_relay: true,
+            announceable: true,
+            listen_addrs: vec!["/ip4/0.0.0.0/tcp/4001".to_string()],
+            observed_addrs: vec!["/ip4/203.0.113.7/tcp/4001".to_string()],
+            relay_addrs: vec!["/ip4/198.18.0.50/tcp/4001/p2p-circuit".to_string()],
+            local_protocols: vec![
+                "/ipfs/kad/1.0.0".to_string(),
+                "/kwaai/inference/1.0.0".to_string(),
+            ],
+        }),
+        connected: vec![ConnectedPeer {
+            peer_id: "12D3KooWExamplePeerA".to_string(),
+            addr: "/ip4/198.18.0.10/tcp/8000".to_string(),
+            kind: PeerConnKind::Direct as i32,
+            direction: "outbound".to_string(),
+            is_bootstrap: true,
+            is_trusted_relay: false,
+            protocols: vec!["/ipfs/kad/1.0.0".to_string()],
+            rtt_ms: 7,
+            agent_version: "kwaainet/0.5.4".to_string(),
+            via: String::new(),
+            dcutr: false,
+            dht_role: DhtRole::Server as i32,
+        }],
+        routing: vec![
+            RoutingPeer {
+                peer_id: "12D3KooWExamplePeerA".to_string(),
+                connected: true,
+                is_bootstrap: false,
+                addrs: vec!["/ip4/198.18.0.10/tcp/8000".to_string()],
+            },
+            RoutingPeer {
+                peer_id: "12D3KooWExampleKnownButOffline".to_string(),
+                connected: false,
+                is_bootstrap: false,
+                // A routing entry keeps its addresses after the connection
+                // drops — that is what makes it dialable again later.
+                addrs: vec!["/ip4/198.18.0.99/tcp/8000".to_string()],
+            },
+        ],
+    };
+
+    let decoded = NetworkUpdate::decode(original.encode_to_vec().as_slice())
+        .expect("NetworkUpdate must decode from its own encoding");
+    assert_eq!(decoded, original);
+}
+
+/// The routing table legitimately holds peers we are not connected to, and a
+/// young node has connections but an empty table. Neither set contains the
+/// other, so both edges must survive the wire.
+#[test]
+fn network_update_roundtrip_disjoint_peer_sets() {
+    // Connections established, kad still in client mode: empty routing table.
+    let young = NetworkUpdate {
+        server_time: "2026-08-01T12:00:00Z".to_string(),
+        reason: UpdateReason::Tick as i32,
+        self_status: Some(SelfStatus {
+            reachability: "unknown".to_string(),
+            announceable: false,
+            ..Default::default()
+        }),
+        connected: vec![ConnectedPeer {
+            peer_id: "12D3KooWExamplePeerA".to_string(),
+            ..Default::default()
+        }],
+        routing: vec![],
+    };
+    let decoded = NetworkUpdate::decode(young.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, young);
+    assert!(decoded.routing.is_empty());
+    assert_eq!(decoded.connected.len(), 1);
+
+    // The converse: a routing entry for a peer we hold no connection to.
+    let known_not_connected = NetworkUpdate {
+        server_time: "2026-08-01T12:00:00Z".to_string(),
+        reason: UpdateReason::Peers as i32,
+        self_status: None,
+        connected: vec![],
+        routing: vec![RoutingPeer {
+            peer_id: "12D3KooWExampleKnownButOffline".to_string(),
+            connected: false,
+            is_bootstrap: false,
+            // Deliberately empty: a routing entry carrying no address is
+            // the degenerate case a client has to be able to distinguish,
+            // and an empty list must survive the wire as one.
+            addrs: vec![],
+        }],
+    };
+    let decoded =
+        NetworkUpdate::decode(known_not_connected.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, known_not_connected);
+}
+
+/// `UpdateReason::Tick` is the proto3 zero value, so it occupies no bytes on
+/// the wire. That is deliberate — but it means a client cannot distinguish
+/// "reason was TICK" from "sender predates the field". Pin the two facts that
+/// matter: TICK is the default, and every other reason survives the round trip.
+#[test]
+fn update_reason_tick_is_the_zero_value() {
+    let tick = NetworkUpdate {
+        reason: UpdateReason::Tick as i32,
+        ..Default::default()
+    };
+    assert!(
+        tick.encode_to_vec().is_empty(),
+        "an otherwise-empty NetworkUpdate with reason=TICK must encode to zero bytes"
+    );
+
+    for reason in [
+        UpdateReason::Reachability,
+        UpdateReason::Peers,
+        UpdateReason::Heartbeat,
+    ] {
+        let msg = NetworkUpdate {
+            reason: reason as i32,
+            ..Default::default()
+        };
+        let decoded = NetworkUpdate::decode(msg.encode_to_vec().as_slice()).expect("must decode");
+        assert_eq!(
+            decoded.reason, reason as i32,
+            "{reason:?} must survive the round trip"
+        );
+    }
+}
+
+/// The Session envelope slot. `NetworkRequest` rides at oneof tag 17 on
+/// ClientFrame and `NetworkUpdate` at tag 17 on ServerFrame; the GUI dispatches
+/// on exactly those, and tags 10-16 are already spoken for by other operations.
+#[test]
+fn network_frames_occupy_oneof_tag_17() {
+    let req = ClientFrame {
+        id: 1,
+        body: Some(client_frame::Body::Network(NetworkRequest {
+            subscribe: true,
+            interval_secs: 5,
+        })),
+    };
+    let decoded =
+        ClientFrame::decode(req.encode_to_vec().as_slice()).expect("ClientFrame must decode");
+    assert!(
+        matches!(decoded.body, Some(client_frame::Body::Network(_))),
+        "NetworkRequest must ride in the ClientFrame.network oneof arm"
+    );
+
+    // Tag 17, wire type 2 (LEN) => (17 << 3) | 2 = 138 => varint [0x8a, 0x01].
+    let body_only = ClientFrame {
+        id: 0,
+        body: Some(client_frame::Body::Network(NetworkRequest::default())),
+    };
+    assert_eq!(
+        body_only.encode_to_vec().as_slice(),
+        &[0x8a, 0x01, 0x00],
+        "ClientFrame.network must serialise at proto tag 17"
+    );
+
+    let update = ServerFrame {
+        id: 1,
+        body: Some(server_frame::Body::Network(NetworkUpdate::default())),
+    };
+    assert_eq!(
+        update.encode_to_vec().as_slice(),
+        &[0x08, 0x01, 0x8a, 0x01, 0x00],
+        "ServerFrame.network must serialise at proto tag 17"
     );
 }

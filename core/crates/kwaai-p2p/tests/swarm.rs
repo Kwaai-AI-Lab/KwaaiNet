@@ -490,3 +490,56 @@ async fn an_address_that_answers_with_the_wrong_peer_id_is_evicted() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// Redundant dials
+// ---------------------------------------------------------------------------
+
+/// Re-dialing a peer we are already connected to must not open a second
+/// connection.
+///
+/// `DialOpts::from(Multiaddr)` builds the unknown-peer-id variant, which
+/// hardcodes `PeerCondition::Always`. Against a live network that produced a
+/// duplicate connection to every bootstrap on each re-dial — same peer,
+/// byte-identical `/dns/` address, indistinguishable in `list_peers` — held
+/// until libp2p reaped it on keepalive ~45s later.
+#[tokio::test]
+async fn re_dialing_a_connected_peer_does_not_open_a_second_connection() {
+    let (alice, _alice_task, _alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    alice
+        .connect_peer(&bob_addr.to_string())
+        .await
+        .expect("first dial");
+
+    let count = || async {
+        alice
+            .list_peers()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.peer_id == bob_id)
+            .count()
+    };
+    assert_eq!(count().await, 1, "one connection after the first dial");
+
+    // Dial the same address again, several times. Each is a no-op.
+    for _ in 0..3 {
+        let again = alice.connect_peer(&bob_addr.to_string()).await;
+        assert_eq!(
+            again.expect("a redundant dial reports the peer, not an error"),
+            bob_id,
+            "the caller asked to be connected and is — that is success",
+        );
+    }
+
+    // Give any dial that did slip through time to establish before counting.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        count().await,
+        1,
+        "re-dialing an already-connected peer must not add connections",
+    );
+}
