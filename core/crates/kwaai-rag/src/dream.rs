@@ -93,6 +93,14 @@ pub struct DreamReport {
 #[derive(Debug)]
 pub struct EntityCompletion {
     pub entity_id: i64,
+    /// Why this completion produced nothing, when the cause was a failure
+    /// rather than the model having nothing to add.
+    ///
+    /// Those two cases were previously indistinguishable: every error path
+    /// returned an all-`None` completion, so a cycle against a dead endpoint
+    /// reported "no work needed" and went on to dedup and prune. The caller
+    /// counts these to decide whether the destructive phase is safe to run.
+    pub failure: Option<String>,
     pub schema_type: Option<String>,
     pub description: Option<String>, // None = no improvement (legacy / General task)
     pub relations: Vec<(String, String)>, // (relation_type, target_name)
@@ -215,15 +223,17 @@ pub async fn complete_entity(
         .build()
     {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
+            tracing::warn!(entity = %eid, error = %e, "dream: building http client");
             return EntityCompletion {
                 entity_id: eid,
+                failure: Some("http client build".to_string()),
                 schema_type: None,
                 description: None,
                 relations: vec![],
                 force_description: false,
                 fields: HashMap::new(),
-            }
+            };
         }
     };
 
@@ -234,39 +244,51 @@ pub async fn complete_entity(
         "max_tokens": 700,
     });
 
+    // 30s was well under what a 700-token completion takes on a remote or busy
+    // endpoint, so cycles silently produced nothing. Every failure below still
+    // returns an empty completion — indistinguishable from "the model had
+    // nothing to add" — so the timeout being too short looked exactly like a
+    // graph that needed no work. Overridable for slow peers.
+    let request_timeout_secs: u64 = std::env::var("KWAAI_DREAM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+
+    let empty = |reason: &str| {
+        tracing::warn!(entity = %eid, reason, "dream completion failed");
+        EntityCompletion {
+            entity_id: eid,
+            failure: Some(reason.to_string()),
+            schema_type: None,
+            description: None,
+            relations: vec![],
+            force_description: false,
+            fields: HashMap::new(),
+        }
+    };
+
     let resp = match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(request_timeout_secs),
         client.post(&url).json(&body).send(),
     )
     .await
     {
         Ok(Ok(r)) if r.status().is_success() => r,
-        _ => {
-            return EntityCompletion {
-                entity_id: eid,
-                schema_type: None,
-                description: None,
-                relations: vec![],
-                force_description: false,
-                fields: HashMap::new(),
-            }
-        }
+        Ok(Ok(r)) => return empty(&format!("http {}", r.status())),
+        Ok(Err(e)) => return empty(&format!("request: {e}")),
+        Err(_) => return empty(&format!("timeout after {request_timeout_secs}s")),
     };
 
-    let v: serde_json::Value =
-        match tokio::time::timeout(std::time::Duration::from_secs(120), resp.json()).await {
-            Ok(Ok(v)) => v,
-            _ => {
-                return EntityCompletion {
-                    entity_id: eid,
-                    schema_type: None,
-                    description: None,
-                    relations: vec![],
-                    force_description: false,
-                    fields: HashMap::new(),
-                }
-            }
-        };
+    let v: serde_json::Value = match tokio::time::timeout(
+        std::time::Duration::from_secs(request_timeout_secs),
+        resp.json(),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return empty(&format!("decode: {e}")),
+        Err(_) => return empty("timeout reading body"),
+    };
 
     let content = v["choices"][0]["message"]["content"]
         .as_str()
@@ -280,16 +302,7 @@ pub async fn complete_entity(
 
     let payload: CompletionPayload = match serde_json::from_str(cleaned) {
         Ok(p) => p,
-        Err(_) => {
-            return EntityCompletion {
-                entity_id: eid,
-                schema_type: None,
-                description: None,
-                relations: vec![],
-                force_description: false,
-                fields: HashMap::new(),
-            }
-        }
+        Err(e) => return empty(&format!("parse: {e}")),
     };
 
     // Validate schema_type against known list.
@@ -325,6 +338,7 @@ pub async fn complete_entity(
 
     EntityCompletion {
         entity_id: eid,
+        failure: None,
         schema_type,
         description,
         relations,
@@ -879,6 +893,47 @@ pub async fn run_dream_cycle(
                     report.entities_relations_added += 1;
                 }
             }
+        }
+
+        // ── Guard: a cycle that completed nothing must not still mutate ──────
+        //
+        // Every failure path in `complete_entity` returns an empty completion,
+        // so a cycle whose LLM calls all failed looks identical to one where
+        // the graph needed no work — and then proceeds to dedup, prune and
+        // sanitize anyway. Observed on D6: a cycle that made zero completions
+        // (unreachable endpoint) still merged 5 entities and destroyed 14 of
+        // 237 relations, 6% of the graph, in 0.4 seconds. Left looping
+        // unattended that erases a seeded family tree.
+        //
+        // Destructive steps are only safe when the cycle actually did
+        // something. If nothing completed *and* something failed, stop here
+        // and report rather than eroding the graph on a dead endpoint.
+        let completed_anything = report.entities_type_completed > 0
+            || report.entities_summary_completed > 0
+            || report.entities_relations_added > 0;
+        // Count completions that failed rather than legitimately had nothing to
+        // add. `cycle_errors` alone is not enough: a completion that times out
+        // is caught inside `complete_entity` and never reaches it, which is
+        // exactly the case this guard exists for.
+        let failed: Vec<&str> = completions
+            .iter()
+            .filter_map(|c| c.failure.as_deref())
+            .collect();
+        if !completed_anything && (!failed.is_empty() || !cycle_errors.is_empty()) {
+            for reason in failed.iter().take(3) {
+                tracing::warn!(reason, "dream: completion failure");
+            }
+            tracing::warn!(
+                failed = failed.len(),
+                errors = cycle_errors.len(),
+                "dream: no completions succeeded — skipping dedup/prune/sanitize \
+                 so a dead endpoint cannot erode the graph"
+            );
+            cycle_errors.extend(failed.iter().map(|r| format!("completion: {r}")));
+            report.score_after = report.score_before;
+            report.duration_secs = started.elapsed().as_secs_f64();
+            report.cycle_errors = cycle_errors;
+            return Ok(report);
         }
 
         // ── Step 6: Auto-merge near-duplicates ────────────────────────────────
