@@ -60,11 +60,14 @@ dur = float(d.get("update_duration") or 0)
 boots = d.get("bootstrap_states") or []
 servers = sum(len(m.get("server_rows") or m.get("servers") or []) for m in reports)
 
-# The signature: no models AND a crawl too fast to have run. Either alone is
-# survivable (a genuinely empty network, or a warm cache), together they mean
-# the crawl died.
-if not reports and dur < fast:
-    state = "crawl-failed"
+# A crawl too fast to have queried anything is broken regardless of what it
+# still reports. Observed 2026-08-22: duration collapsed to 0.0656 s four
+# minutes before the map emptied, while it still claimed 9 servers — the count
+# then bled 9 -> 7 -> 6 -> 4 -> 0 as each failed cycle expired more entries.
+# Keying only on "no models" missed that entire window, so `degraded` exists to
+# catch the leading edge rather than the aftermath.
+if dur < fast:
+    state = "crawl-failed" if not reports else "degraded"
 elif not reports:
     state = "empty"
 else:
@@ -86,6 +89,9 @@ print("%s models=%d servers=%d dur=%.4f boots=%s"
                 ;;
             crawl-failed)
                 echo "$now MAP CRAWL FAILED — $detail (network may be fine; check 'kwaainet shard chain')"
+                ;;
+            degraded)
+                echo "$now MAP CRAWL DEGRADED — $detail (crawl too fast to be real; node count will likely bleed to zero)"
                 ;;
             empty)
                 echo "$now MAP EMPTY but crawl ran — $detail (could be a real outage)"
