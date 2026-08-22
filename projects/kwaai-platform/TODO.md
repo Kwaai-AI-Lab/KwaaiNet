@@ -59,6 +59,8 @@ KwaaiNet node is. Evidence below is from the live payload on 2026-08-21.
       `show_public_name: false` while `public_name` was served in the payload
       regardless — the privacy flag is not honoured. Treat this as the priority
       item; it is the only one on this list with a disclosure consequence.
+      Tracked separately as [#135](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/135)
+      so it is not blocked behind the rewrite.
 
 - [ ] **Split `public_name` into columns.** It is currently one crammed string —
       `rezarassool-macos-aarch64/v0.6.2` — mixing operator name, platform, arch
