@@ -159,7 +159,8 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let mut scale_results: Vec<ScaleResult> = Vec::new();
 
     for (si, &n) in scales.iter().enumerate() {
-        let n = n.max(1000); // floor
+        // Floor at 1000, but never past the end of the generated corpus.
+        let n = n.max(1000).min(n_max);
         println!(
             "  [{}/5] Scale {}/{}: {} vectors ({} per shard)",
             si + 2,
@@ -209,7 +210,8 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             .iter()
             .enumerate()
             .map(|(i, shard)| {
-                let start = i * shard_size;
+                // A trailing shard can start past `n`, which would invert the range.
+                let start = (i * shard_size).min(n);
                 let end = ((i + 1) * shard_size).min(n);
                 let client = Arc::clone(&shard.client);
                 let peer_id = shard.peer_id;

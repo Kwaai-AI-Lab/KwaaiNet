@@ -171,14 +171,22 @@ impl KwaaiBehaviour {
             },
         );
 
-        // Hop server. `relay::Config::default()`'s rate limits (30 reservations
-        // per peer per 2min, 60 circuits per IP per min) are left as-is: they
-        // are what stops an open relay from being a free amplifier.
-        let relay_server = Toggle::from(
-            config
-                .relay_server
-                .then(|| relay::Behaviour::new(local_peer_id, relay::Config::default())),
-        );
+        // Hop server: libp2p's rate limiters and concurrency caps stay; only the
+        // per-circuit volume and duration are raised, to match the p2pd relay.
+        let max_circuit_duration = config
+            .relay_max_circuit_duration
+            // libp2p converts this to u32 seconds and panics otherwise.
+            .min(Duration::from_secs(u64::from(u32::MAX)));
+        let relay_server = Toggle::from(config.relay_server.then(|| {
+            relay::Behaviour::new(
+                local_peer_id,
+                relay::Config {
+                    max_circuit_bytes: config.relay_max_circuit_bytes,
+                    max_circuit_duration,
+                    ..relay::Config::default()
+                },
+            )
+        }));
 
         // dcutr has no Config in 0.11 — it acts on relayed connections by
         // itself, so there is nothing to tune and nothing to drive.
