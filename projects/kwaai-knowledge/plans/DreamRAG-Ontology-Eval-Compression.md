@@ -628,3 +628,203 @@ should be built incrementally alongside:
 Observe-only first is the important one. An agent that can explain its intended
 actions before it has permission to take them is both the safest starting point
 and the fastest way to find out whether the decision policy is any good.
+
+---
+
+# Literature scan, 2026-08-23
+
+**Status: a scan, not a review.** These are search-result summaries plus one
+fetched source. Before any of it is load-bearing, the primary papers need
+reading. Recorded now so the design is not argued in a vacuum.
+
+Encouragingly, most of what we derived from first principles has established
+names and formalisms. Discouragingly, the parts we thought were hard are
+confirmed hard. One thing appears genuinely open, and one thing appears to be
+ours.
+
+## Ontology
+
+Our proposal — per-KB vocabularies with domain/range constraints — is the
+standard formalisation. An ontology is defined as a *triplet constraint space*:
+permissible entity types, allowable relation types, and a type-constraint
+function giving valid domain and range per relation. That is exactly the
+`measured_by(Phenomenon, Instrument)` shape, and it is what would let the
+sanitiser reject nonsense structurally instead of via the gender heuristic that
+deleted valid D6 relations.
+
+- [OMD-GraphRAG](https://arxiv.org/pdf/2603.25152) — ontology-guided extraction
+  with expert-defined schema templates steering SPO triple extraction.
+- [Ontology Learning and KG Construction: comparison of approaches and impact on
+  RAG performance](https://arxiv.org/pdf/2511.05991) — directly measures what we
+  want to know: does ontology quality change RAG outcomes.
+- [LLM-empowered KG construction: a survey](https://arxiv.org/pdf/2510.20345) —
+  notes schema is being reconceived as *dynamic and evolving*, with
+  **AutoSchemaKG** inducing schemas from corpora by unsupervised clustering and
+  relation discovery. That is our "induced" path, already named.
+
+**Read first:** the ontology-learning comparison, because it tests our core
+premise, and AutoSchemaKG, because induction is the only route that scales to
+fifteen heterogeneous KBs.
+
+## Dynamic evaluation
+
+The static-to-dynamic shift is a recognised movement, driven by contamination
+rather than saturation — but the mechanisms transfer.
+
+- [Benchmarks against data contamination: static to dynamic](https://arxiv.org/pdf/2502.17521)
+  — the survey. **LiveBench** (temporal freshness, monthly regeneration) and
+  **DyVal** (procedural generation over DAGs with *controllable complexity*) are
+  the two patterns. DyVal's controllable complexity is our curriculum tiers.
+- [OKBench](https://arxiv.org/pdf/2511.08598) — fully automated on-demand
+  benchmark generation.
+- [FAB-Bench](https://arxiv.org/html/2605.26476) — adaptive RAG benchmarking with
+  six diagnostic metrics separating retriever from generator failures. We
+  currently have one number and cannot make that separation.
+
+Saturation is explicitly discussed: once models pass ~90% a benchmark stops
+discriminating. D6 sits at ~90%. The proposed remedy — measure discrimination
+within a rolling window and suppress saturated benchmarks — is directly
+applicable.
+
+## Compression and forgetting
+
+This is the richest area, and the most directly on point.
+
+- [What to Keep, What to Forget: A Rate–Distortion View of Memory Compaction in
+  LLMs and Agents](https://arxiv.org/html/2607.08032v1) — our exact formulation,
+  already published.
+- [Remember the Decision, Not the Description](https://arxiv.org/html/2605.10870v1)
+  — *decision-centric* rate-distortion: measure distortion as loss in downstream
+  decision quality, not reconstruction error. This is a better objective than
+  ours. We said "comprehension"; they operationalise it as task utility.
+- [The Price of Meaning: Why Every Semantic Memory System Forgets](https://arxiv.org/html/2603.27116v1)
+  — argues forgetting is intrinsic to semantic representation, not a budget
+  artefact.
+- [MemRefine](https://arxiv.org/pdf/2606.13177) — LLM-guided compression for
+  long-term agent memory.
+- [SCM: Sleep-Consolidated Memory with Algorithmic Forgetting](https://arxiv.org/html/2604.20943v1)
+  — NREM/REM consolidation phases, importance tagging, value-based forgetting.
+  The closest published system to DreamRAG's stated thesis.
+- [Rate-distortion theory of neural coding and working memory](https://pmc.ncbi.nlm.nih.gov/articles/PMC10353860/)
+  — the biological grounding is itself rate-distortion, which is a satisfying
+  convergence rather than a borrowed metaphor.
+
+**The gap worth noting.** A 2026 memory survey observes that existing work
+"predominantly focus[es] on growing memory, leaving the inverse problem of
+shrinking an already constructed store under a storage budget largely
+unaddressed." That is precisely our situation — fifteen KBs already built, now
+needing to fit a budget. Our problem is the under-served one.
+
+## Streaming and temporal
+
+- [Online Continual Graph Learning](https://arxiv.org/html/2508.03283) —
+  formalises node-level continual learning on evolving graphs under strict
+  memory and compute budgets with anytime inference. The formal frame for
+  dynamic ingest.
+- [From Static to Dynamic: Streaming RAG for real-time knowledge bases](https://arxiv.org/pdf/2508.05662).
+- [TOKI: A Bitemporal Operator Algebra for Contradiction Resolution in LLM-Agent
+  Persistent Memory](https://arxiv.org/pdf/2606.06240) — answers our open
+  question directly. *Bitemporal* (valid-time vs transaction-time) is the
+  discipline that distinguishes succession from contradiction. We should adopt
+  the vocabulary rather than reinvent it.
+
+## Memory architecture surveys
+
+- [Rethinking Memory in LLM-based Agents](https://arxiv.org/pdf/2505.00675) and
+  the [Agent-Memory paper list](https://github.com/Shichun-Liu/Agent-Memory-Paper-List).
+- [Security of long-term memory in LLM agents](https://arxiv.org/html/2604.16548v1)
+  — a six-phase memory lifecycle: Write, Store, Retrieve, Execute, Share,
+  Forget/Rollback. Useful scaffolding, and *Share* is the phase our distributed
+  angle lives in.
+- [Multi-layered memory architectures](https://arxiv.org/html/2603.29194v1) —
+  working / episodic / semantic layers with adaptive gating and retention
+  regularisation.
+
+The surveys converge on formation / retrieval / **management**, and state that
+the hard, unsolved problems are all in management: conflict resolution, temporal
+reasoning, selective forgetting, knowledge updating. Every one of those is in
+our plan. We are not behind the frontier; we are standing on it.
+
+## Karpathy's llm-wiki
+
+Reza flags Karpathy as useful, and the [llm-wiki gist](https://gamgee.ai/blogs/karpathy-llm-wiki-memory-pattern/)
+(April 2026) is the closest external statement of this thesis. Three layers:
+
+1. **Raw sources** — immutable ground truth.
+2. **The wiki** — LLM-maintained markdown, summaries and entity pages,
+   incrementally updated on ingest.
+3. **The schema** — a configuration document telling the LLM how the wiki is
+   structured, making it "a disciplined wiki maintainer rather than a generic
+   chatbot."
+
+That third layer is Reza's ontology argument, arrived at independently. His
+framing of the difference from RAG is *compilation versus retrieval*: knowledge
+is synthesised once on ingest rather than re-derived per query.
+
+His three operations are Ingest, Query, and **Lint** — periodic contradiction
+checking and stale-claim detection. Lint is the agentic harness.
+
+Most useful of all is his list of six unsolved problems, which is almost exactly
+our plan:
+
+| Karpathy's open problem | where it sits here |
+|---|---|
+| temporal tracking | validity windows; adopt TOKI's bitemporal algebra |
+| principled decay | compression / rate-distortion |
+| abstention | knowing what has been forgotten — a gap in our plan |
+| verification / provenance | the consolidation gate's corroboration requirement |
+| relationship handling | ontology |
+| contradiction resolution | succession vs contradiction |
+
+**Abstention is the one we missed.** A system that forgets must know it has
+forgotten, and say so, rather than confabulating from residual gist. That is a
+first-class requirement for a compressing memory and it is absent from
+everything above. It also needs its own metric: on questions about deliberately
+discarded content, correct behaviour is "I no longer hold that" — scored as a
+success, not a recall failure. Our current token-overlap scoring would punish
+exactly the right answer.
+
+His CPU/RAM/ROM/disk analogy also maps cleanly: weights are ROM, context is RAM,
+vector store and graph are disk. It makes the case that consolidation is a
+*scheduling* problem — what to page in, what to evict — which supports the
+deterministic-control-loop half of the harness split.
+
+## What to take, and what may be ours
+
+**Adopt rather than reinvent:** the triplet-constraint-space ontology
+formalisation; AutoSchemaKG-style grounded induction; DyVal's controllable
+complexity for curriculum tiers; decision-centric rate–distortion as the
+compression objective; TOKI's bitemporal vocabulary; the six-phase memory
+lifecycle as scaffolding.
+
+**Sharpen from the literature:** our compression objective should be
+decision-centric, not "comprehension" loosely defined. FAB-Bench's separation of
+retriever from generator diagnostics is something our single recall number
+cannot do and should.
+
+**Add to our plan:** abstention, from Karpathy's list.
+
+**Possibly a contribution rather than catch-up:**
+
+1. **Shrinking an existing store under budget** — explicitly named as
+   under-addressed, and exactly our position with fifteen built KBs.
+2. **Compressibility as an extraction-quality metric.** The literature uses
+   rate-distortion to *choose* what to forget. Using the achievable compression
+   ratio as a *diagnostic of whether extraction captured anything* is a
+   different move, and it is a far better metric than the relation count that
+   measured r=+0.081 against outcomes.
+3. **Distributed memory across a trust-gated peer network** — forget locally
+   what the network retains. Nothing in this scan addresses federated
+   forgetting; the lifecycle surveys have a *Share* phase but treat it as an
+   access-control concern, not a capacity one. Given VPK and the trust graph
+   already exist, this is the most defensible novel claim available to KwaaiNet.
+
+## Reading order
+
+1. Rate-distortion memory compaction + decision-centric rate-distortion — they
+   define the compression objective.
+2. AutoSchemaKG + the ontology-learning/RAG-performance comparison — they test
+   the ontology premise.
+3. TOKI — settles the temporal model before we design a schema without one.
+4. SCM — closest published system; worth knowing what they got wrong.
+5. The dynamic-benchmark survey — DyVal and LiveBench mechanisms.
