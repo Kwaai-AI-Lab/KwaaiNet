@@ -300,3 +300,199 @@ ontology worth compressing against.
 - **Does compression help retrieval, or only cost?** Removing redundant chunks
   may *improve* precision by reducing near-duplicate competition in the vector
   search. Worth measuring, not assuming.
+
+---
+
+# Refinement: dynamic ingest
+
+Reza, 2026-08-23. The framing above assumed a static corpus. It is not one. The
+real case is continuous streams — email, messages, social media, news,
+financial, health telemetry — arriving indefinitely into a store of finite size.
+
+This is not an extra requirement bolted onto the three themes. It is the
+constraint that makes them one problem, and it changes each of them.
+
+## What changes
+
+With a static corpus, compression is an optimisation you may decline. With an
+unbounded stream and finite memory, **forgetting is mandatory** — the only
+question is whether it is principled or accidental. Today it is neither: nothing
+is discarded, so the system simply fills up and the question of what to lose is
+answered by whatever breaks first.
+
+Three consequences:
+
+**The problem becomes steady-state, not batch.** The question stops being "how
+good is this KB" and becomes "what comprehension can be *sustained* at ingest
+rate λ within memory M". That is a capacity question, and it has an answer we
+can measure and optimise.
+
+**Facts acquire validity windows.** "Where does Reza work?" has a
+time-dependent answer. A static corpus lets you ignore this; a stream does not.
+`entity_timeline_v1` and `sequence.rs` already extract temporal events, so the
+substrate exists — but the graph stores assertions without validity intervals,
+so a new fact contradicting an old one is a conflict rather than a succession.
+
+**Evaluation must distinguish two kinds of forgetting.** *Intended* forgetting
+compresses detail away but leaves the gist answerable. *Unintended* forgetting
+loses the fact entirely. A single recall score cannot tell them apart, and they
+demand opposite responses — the first is the system working, the second is data
+loss.
+
+## The biological correspondence, precisely
+
+Reza's framing invokes biological memory. The analogy is load-bearing in places
+and decorative in others; worth separating them.
+
+**Genuinely structural:**
+
+- *Hippocampal → neocortical consolidation.* Recent episodic memory is replayed
+  offline and integrated into semantic memory. This is exactly what a dream
+  cycle does: read recent chunks, extract durable facts into the graph. The
+  correspondence is close enough to borrow from — including that consolidation
+  happens *offline*, on a schedule, not in the ingest path.
+- *Gist versus verbatim* (fuzzy-trace theory). Humans retain gist and lose
+  surface form. Chunk → summary → fact is the same gradient, and it tells us
+  compression should be *tiered*, not binary keep/discard.
+- *Retrieval as reinforcement.* Recalling a memory strengthens it. A fact
+  retrieved often should resist eviction; one never retrieved is a candidate.
+- *Interference.* Similar memories corrupt each other. We have already seen
+  this concretely — the Joseph/Samuel Rassool mis-merge came from two similar
+  entities colliding during dedup.
+
+**Decorative, and we should not over-fit to it:** sleep stages, synaptic
+mechanisms, dream content as narrative. The metaphor earns its keep as
+consolidation-plus-forgetting; pushing it further will produce architecture
+chosen for poetic fit rather than function.
+
+## Streams are not interchangeable
+
+The six named streams differ along axes that determine policy:
+
+| stream | velocity | value density | structure | forget aggressively? |
+|---|---|---|---|---|
+| health telemetry | very high | very low per sample | numeric | yes — keep aggregates + anomalies |
+| messages | high | high | semi-structured | selectively |
+| email | medium | high | semi-structured | selectively, thread-aware |
+| social media | high | low | unstructured | mostly |
+| news | medium | low, decays fast | unstructured | aggressively, keep what proved relevant |
+| financial | low | high, legally retained | structured | rarely — retention obligations |
+
+Two things follow. **Compression is polymorphic**: summarising text and
+downsampling a heart-rate series are different operations, and telemetry should
+never enter the text pipeline at all — you keep hourly aggregates plus flagged
+anomalies, which is compression by construction. And **retention policy is
+per-stream**, not global: financial records may carry legal retention
+requirements while social media is disposable, in the same KB.
+
+This also means the ontology question compounds. A single personal KB ingesting
+all six streams needs either several ontologies or one that spans them — and the
+earlier open question ("does a KB have one ontology or several?") stops being
+theoretical.
+
+## Consolidation and eviction
+
+The memory hierarchy the system claims to have needs an actual transfer rule.
+The natural one:
+
+> **A chunk becomes evictable only once its claims are represented in the graph,
+> corroborated by at least one independent chunk or explicitly marked
+> irreducible.**
+
+That gate does real work. It ties eviction to extraction quality — a KB whose
+extraction is poor cannot evict, so its storage grows and the pressure is
+*visible* rather than silent. It also makes the earlier compressibility metric
+operational: a system that cannot evict is telling you its graph is not
+capturing anything.
+
+Irreducible content needs an explicit escape hatch: exact quotations, numbers,
+identifiers, legal text. Some things must be kept verbatim or not at all, and
+the ontology should mark which entity types carry irreducible detail.
+
+Long-term memory needs compaction too. Semantic memory generalises — you recall
+"I have been to Paris several times", not each trip. The graph equivalent is
+merging repeated episodic assertions into a single generalised one with a count
+and a time span, which is both compression and a better representation.
+
+## Distributed memory: the KwaaiNet-specific part
+
+Finite memory per node is the constraint. But KwaaiNet is a *network* of nodes
+with heterogeneous budgets, and VPK already provides encrypted multi-tenant
+storage across peers. That admits something a single machine cannot do:
+
+> **A node may forget locally what the network retains.**
+
+Hot memory local, cold memory distributed, retrieval fanning out only when local
+gist proves insufficient. Memory becomes a property of the network rather than
+of the node — which is a genuinely different position from every single-machine
+RAG system, and it uses the storage fabric and trust layers rather than treating
+them as unrelated projects.
+
+It also gives a concrete answer to a question the compression work would
+otherwise face: what do you do with content that is low-value locally but not
+worthless? You demote it to a peer rather than destroying it, and the
+irreversibility problem that makes compression dangerous largely dissolves.
+
+The trust layer decides which peers may hold which privacy class — health and
+financial streams have different rules from news.
+
+## Metrics for a steady state
+
+The static metrics do not survive the reframe. What replaces them:
+
+- **Sustained comprehension** — score at equilibrium under continuous ingest,
+  not after a one-off build.
+- **Capacity** — maximum λ sustainable at memory M holding comprehension ≥ C.
+  The headline number for a constrained node.
+- **Retention curve** — comprehension as a function of content age. Separates
+  "recent things work" from "old things survive".
+- **Forgetting errors**, as a first-class pair:
+  - *Type I* — discarded something later needed. Data loss.
+  - *Type II* — retained something never needed. Wasted budget.
+  Optimising one alone is trivial and useless; the trade-off is the point.
+- **Consolidation lag** — time from ingest to fact-in-graph. Determines how long
+  the system is holding unconsolidated bulk.
+- **Eviction eligibility** — fraction of chunks that pass the consolidation
+  gate. A direct, cheap proxy for extraction quality that needs no eval run.
+
+## What this does to the path forward
+
+The earlier order — evaluation, then ontology, then compression — still holds,
+because we still cannot measure. But the target changes: build the instrument
+for a *stream*, not a corpus, or it will need rebuilding.
+
+Concretely, revising the four first steps:
+
+1. **Ontology as a per-KB artifact** — unchanged, still the mechanical unblocker,
+   but the schema should carry per-stream sections and an `irreducible` flag on
+   entity types from the start.
+2. **Question generator** — generate against a *time-windowed* corpus, so the
+   same machinery produces both recency and retention questions, and keep the
+   bank so regression and forgetting errors are detectable.
+3. **Two contrasting ontologies** (legal, scientific) — unchanged.
+4. **Compression probe** — unchanged as a cheap early test of the framing, but
+   add the consolidation gate as the eviction rule rather than picking chunks by
+   redundancy alone.
+
+And one new step, which the streaming frame makes the obvious next experiment:
+
+5. **A synthetic stream harness.** Replay an existing corpus as a timed stream
+   into a memory-capped KB, and measure the steady state: capacity, retention
+   curve, forgetting errors. `rag sync --watch --interval` is already an
+   incremental ingest loop, so this is closer than it looks. Without a harness
+   that can actually run the system to equilibrium, every claim in this section
+   stays theoretical.
+
+## Open questions this adds
+
+- **What is the unit of forgetting?** A chunk, a document, a thread, a time
+  window? Threads and conversations argue against chunk-level eviction.
+- **Does consolidation need contradiction handling?** A stream will assert
+  things that conflict with earlier facts. Succession (with validity intervals)
+  and contradiction (one of them is wrong) look identical without a temporal
+  model.
+- **Who sets the memory budget?** A per-node constant, or negotiated against
+  what the network will hold on the node's behalf?
+- **Can the eval bank itself be forgotten?** It grows without bound too, and an
+  exam that only ever accretes will eventually cost more to run than the system
+  it measures.
