@@ -4,14 +4,33 @@ Adapts the existing Kwaai intern curriculum (`Kwaai Intern Program.pdf`, the
 8-week undergraduate Master Class) toward extended DreamRAG, targeting a
 publishable paper plus merged code.
 
-**Assumed parameters** — flag if wrong, they drive everything below:
+**Parameters** (graduate track, confirmed 2026-08-23):
 
-- Graduate track: **16 weeks, 4 hrs/week, standups Mon/Tue/Thu**. Two weeks
-  complete, so **14 remain ≈ 56 hrs per intern**.
+- **16 weeks, 4 hrs/week, standups Mon/Tue/Thu.** Two weeks complete, so
+  **14 remain ≈ 56 hrs per intern**.
 - Undergraduates on the 8-week / 8 hrs-a-week track can be folded in; see
   *Running both cohorts*.
 - Unpaid volunteers. Attrition and uneven skill are design constraints, not
   surprises.
+
+**Weekly rhythm.** Four hours is tight, so it is budgeted explicitly rather than
+left to drift:
+
+| | |
+|---|---|
+| Mon | 15 min standup + 45 min paired working session |
+| Tue | 15 min standup + 45 min paired working session |
+| Thu | 15 min standup + 45 min **writing** — the paper advances every week, not at the end |
+| async | ~1 hr independent (reading, runs, review) |
+
+Protecting a writing slot from week 3 is deliberate. Papers written in the last
+fortnight are worse, and a section that cannot be drafted is a section whose
+method is not yet clear.
+
+**Graduate-track expectations**, above the undergraduate deck: read primary
+literature rather than summaries; own the statistical treatment (n=15 is small —
+report intervals, resist over-claiming); lead the writing of your own section;
+and review another workstream's code before it merges.
 
 ## Why pivot, and what we are pivoting from
 
