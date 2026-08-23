@@ -675,6 +675,11 @@ mod tests {
 /// one `NewListenAddr` per interface, including the loopback one, so exact
 /// comparison is enough. `/p2p/…` is stripped from both sides before comparing,
 /// since dial candidates often carry it and listen addresses do not.
+///
+/// Circuit addresses are out of scope on both sides: stripped of `/p2p` hops,
+/// our own relay reservation and another peer's circuit through the same relay
+/// are the same string, and a circuit can only ever reach the destination the
+/// swarm appends to it.
 #[derive(Debug, Default)]
 pub struct OwnAddresses {
     addrs: HashSet<Multiaddr>,
@@ -685,15 +690,11 @@ impl OwnAddresses {
     /// behaviour's `on_swarm_event`, before using [`Self::is_ours`].
     pub fn on_swarm_event(&mut self, event: &FromSwarm) {
         match event {
-            FromSwarm::NewListenAddr(e) => {
-                self.addrs.insert(strip_p2p(e.addr));
-            }
+            FromSwarm::NewListenAddr(e) => self.insert(e.addr.clone()),
             FromSwarm::ExpiredListenAddr(e) => {
                 self.addrs.remove(&strip_p2p(e.addr));
             }
-            FromSwarm::ExternalAddrConfirmed(e) => {
-                self.addrs.insert(strip_p2p(e.addr));
-            }
+            FromSwarm::ExternalAddrConfirmed(e) => self.insert(e.addr.clone()),
             FromSwarm::ExternalAddrExpired(e) => {
                 self.addrs.remove(&strip_p2p(e.addr));
             }
@@ -701,9 +702,18 @@ impl OwnAddresses {
         }
     }
 
+    /// Record one of our own addresses directly, for callers reading
+    /// `listeners()` and `external_addresses()` off a swarm they already hold.
+    pub fn insert(&mut self, addr: Multiaddr) {
+        if is_circuit(&addr) {
+            return;
+        }
+        self.addrs.insert(strip_p2p(&addr));
+    }
+
     /// True when `addr` is one of ours and must not be dialed.
     pub fn is_ours(&self, addr: &Multiaddr) -> bool {
-        self.addrs.contains(&strip_p2p(addr))
+        !is_circuit(addr) && self.addrs.contains(&strip_p2p(addr))
     }
 
     /// Drop our own addresses from a set of dial candidates.
@@ -756,6 +766,29 @@ mod own_addresses {
             own.is_ours(&candidate),
             "the /p2p/ suffix must not defeat the check"
         );
+    }
+
+    // -- circuits: shared relays must not look like us ---------------------
+
+    #[test]
+    fn another_peers_circuit_through_our_relay_is_not_ours() {
+        // Stripped of `/p2p` hops these two are the same string.
+        let mut own = OwnAddresses::default();
+        own.insert(ma(
+            "/ip4/198.18.0.10/tcp/8000/p2p/12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE/p2p-circuit",
+        ));
+        let x_via_same_relay = ma(
+            "/ip4/198.18.0.10/tcp/8000/p2p/12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE/p2p-circuit/p2p/12D3KooWSPadT7aj7Ff3Z9ZuY4qW3zjyj6BnWuq3Cz4nbbNxHi3h",
+        );
+        assert!(
+            !own.is_ours(&x_via_same_relay),
+            "a circuit names its destination; it cannot reach us under X's id"
+        );
+        assert_eq!(
+            own.reject_self(vec![x_via_same_relay.clone()]),
+            vec![x_via_same_relay]
+        );
+        assert!(own.addrs.is_empty(), "a reservation is not recorded at all");
     }
 
     // -- what a routability filter would have broken ----------------------

@@ -61,6 +61,11 @@ pub enum P2PError {
     #[error("Network not initialized")]
     NotInitialized,
 
+    /// The service took the command but dropped its reply channel — unlike
+    /// [`Self::NotInitialized`], which means it was gone before the send.
+    #[error("request abandoned before a reply — the connection carrying it closed, or the service stopped")]
+    Abandoned,
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),

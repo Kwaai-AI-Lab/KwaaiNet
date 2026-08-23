@@ -34,7 +34,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
     dest_peer_id, is_announceable_with, is_circuit, peer_id_from_multiaddr, strip_dest_p2p,
-    strip_p2p,
+    strip_p2p, OwnAddresses,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
@@ -116,6 +116,8 @@ pub struct NetworkService {
     /// Stream requests parked behind a `RoutedDial` lookup, flushed when the
     /// lookup completes or a connection to the peer establishes first.
     pending_routed: HashMap<PeerId, Vec<RoutedRequest>>,
+    /// What each peer's parked routed requests are waiting on.
+    routed_attempts: HashMap<PeerId, RoutedAttempt>,
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
@@ -207,6 +209,27 @@ enum RoutedRequest {
     Connect {
         reply: oneshot::Sender<P2PResult<PeerId>>,
     },
+}
+
+/// How far one burst of parked routed requests has got: dial, then at most one
+/// DHT lookup, then dial again.
+#[derive(Default)]
+struct RoutedAttempt {
+    /// The dial in flight, if any.
+    dial: Option<RoutedDial>,
+    /// Whether the attempt's one lookup has been used.
+    lookup_spent: bool,
+    /// Routing-table entries [`NetworkService::forget_exhausted_entry`] took
+    /// out, put back if the lookup finds nothing better.
+    evicted: Vec<Multiaddr>,
+}
+
+enum RoutedDial {
+    /// A dial we started; only this connection's outcome ends the attempt.
+    Ours(ConnectionId),
+    /// Ours was refused because a dial to the peer was already in flight, so
+    /// any outcome for that peer is the one we are waiting on.
+    Shared,
 }
 
 impl NetworkService {
@@ -356,6 +379,7 @@ impl NetworkService {
             pending_dials: HashMap::new(),
             pending_kad: HashMap::new(),
             pending_routed: HashMap::new(),
+            routed_attempts: HashMap::new(),
             connections: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
@@ -915,10 +939,26 @@ impl NetworkService {
         }
     }
 
-    /// Addresses we already know for `peer`: routing table entries first, then
-    /// any live connection's address.
+    /// Announceable addresses we know for `peer`: routing-table entries first,
+    /// then any live connection's address.
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
         let strict = self.require_global_ips;
+        self.candidate_addresses(peer, |a| is_announceable_with(a, strict))
+    }
+
+    /// Every address we could try for `peer`; unlike [`Self::known_addresses`]
+    /// it keeps loopback and LAN, which is how two nodes on one host reach each other.
+    fn dial_candidates(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
+        self.candidate_addresses(peer, |_| true)
+    }
+
+    /// `table_filter` decides which routing-table entries qualify; a live
+    /// connection's address always does, since we are on it.
+    fn candidate_addresses(
+        &mut self,
+        peer: &PeerId,
+        table_filter: impl Fn(&Multiaddr) -> bool,
+    ) -> Vec<Multiaddr> {
         let mut addrs: Vec<Multiaddr> = Vec::new();
 
         if let Some(bucket) = self.swarm.behaviour_mut().kad.kbucket(*peer) {
@@ -926,23 +966,12 @@ impl NetworkService {
                 if entry.node.key.preimage() == peer {
                     // Skip empty entries: an address with no transport cannot
                     // be dialed, only mistaken for reachability.
-                    //
-                    // Filter here, on the way *out*, because kad has more ways
-                    // in than we control. Identify is filtered at the handler,
-                    // but `kad::Behaviour::discovered` also inserts whatever
-                    // `multiaddrs` a remote peer reports during a query walk,
-                    // verbatim and inside libp2p — so a peer's loopback and LAN
-                    // addresses arrive without passing anything of ours. This
-                    // is the one place every consumer (connect, routed dial,
-                    // the GUI's peer table) reads them back, so one check here
-                    // covers paths that would otherwise need finding one at a
-                    // time.
                     addrs.extend(
                         entry
                             .node
                             .value
                             .iter()
-                            .filter(|a| !a.is_empty() && is_announceable_with(a, strict))
+                            .filter(|a| !a.is_empty() && table_filter(a))
                             .cloned(),
                     );
                 }
@@ -972,30 +1001,178 @@ impl NetworkService {
             *addr = strip_dest_p2p(addr);
         }
         addrs.retain(|a| !a.is_empty());
+
+        // An address of ours filed under someone else's id reaches our own
+        // listener and fails `WrongPeerId` (issue #108, at the other supplier).
+        let own = self.own_addrs();
+        addrs.retain(|a| !own.is_ours(a));
+
         addrs.dedup();
 
         addrs
     }
 
+    /// Our own listen and confirmed-external addresses, snapshotted from the
+    /// swarm so they cannot drift out of step with the listener set.
+    fn own_addrs(&self) -> OwnAddresses {
+        let mut own = OwnAddresses::default();
+        for addr in self.swarm.listeners() {
+            own.insert(addr.clone());
+        }
+        for addr in self.swarm.external_addresses() {
+            own.insert(addr.clone());
+        }
+        own
+    }
+
     /// Route a stream request to `peer`, looking its addresses up in the DHT
     /// first when we have none — Go's routed-host semantics (see
-    /// [`RoutedRequest`]). With a connection or known addresses, dispatch is
-    /// immediate.
+    /// [`RoutedRequest`]). With a live connection, dispatch is immediate.
     fn dispatch_routed(&mut self, peer: PeerId, request: RoutedRequest) {
-        if self.swarm.is_connected(&peer) || !self.known_addresses(&peer).is_empty() {
+        if self.swarm.is_connected(&peer) {
             self.forward_routed(peer, request);
             return;
         }
+
         let parked = self.pending_routed.entry(peer).or_default();
-        // One lookup per burst: requests parked while a lookup is in flight
-        // ride along on its completion.
-        if parked.is_empty() {
-            let query_id = self.swarm.behaviour_mut().kad.get_closest_peers(peer);
-            self.pending_kad
-                .insert(query_id, PendingKad::RoutedDial { target: peer });
-            debug!(%peer, "no addresses for stream request — running find_peer first");
-        }
+        // One attempt per burst: requests parked while a dial or lookup is in
+        // flight ride along on its outcome.
+        let first = parked.is_empty();
         parked.push(request);
+        if !first {
+            return;
+        }
+
+        if !self.dial_routed(peer) {
+            self.start_routed_lookup(peer);
+        }
+    }
+
+    /// Dial `peer` for its parked routed requests; `false` means nothing is in
+    /// flight and the caller should fall back to a lookup. The address list is
+    /// explicit so the behaviours cannot add our own address filed under `peer`.
+    fn dial_routed(&mut self, peer: PeerId) -> bool {
+        use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
+
+        // The relay transport needs the destination `/p2p/<peer>` that
+        // `dial_candidates` strips, to know which end of the circuit to open.
+        let addrs: Vec<Multiaddr> = self
+            .dial_candidates(&peer)
+            .into_iter()
+            .map(|a| a.with(libp2p::multiaddr::Protocol::P2p(peer)))
+            .collect();
+        debug!(%peer, seeded = addrs.len(), "routed request — dialing");
+
+        let opts = DialOpts::peer_id(peer)
+            .addresses(addrs)
+            .condition(PeerCondition::DisconnectedAndNotDialing)
+            // As in `dial()`: reuse asks the transport to bind our listen
+            // port, which `EADDRINUSE`s against our own listener.
+            .allocate_new_port()
+            .build();
+        let connection_id = opts.connection_id();
+
+        let dial = match self.swarm.dial(opts) {
+            Ok(()) => RoutedDial::Ours(connection_id),
+            Err(DialError::DialPeerConditionFalse(_)) => RoutedDial::Shared,
+            Err(e) => {
+                debug!(%peer, error = %e, "routed dial could not be started");
+                return false;
+            }
+        };
+        self.routed_attempts.entry(peer).or_default().dial = Some(dial);
+        true
+    }
+
+    /// Whether `connection_id` is the dial `peer`'s parked requests were
+    /// waiting on, clearing it when it is.
+    fn routed_dial_ended(&mut self, peer: &PeerId, connection_id: ConnectionId) -> bool {
+        let Some(attempt) = self.routed_attempts.get_mut(peer) else {
+            return false;
+        };
+        match attempt.dial {
+            Some(RoutedDial::Ours(id)) if id != connection_id => false,
+            Some(_) => {
+                attempt.dial = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop `peer` from the routing table once every address it holds has failed:
+    /// kad never re-dials a tabled peer, so a walk can only re-route one it treats
+    /// as new. The entry is stashed in [`RoutedAttempt::evicted`] for `fail_routed`.
+    fn forget_exhausted_entry(&mut self, peer: &PeerId, error: &DialError) {
+        let failed: Vec<Multiaddr> = match error {
+            DialError::Transport(attempts) => attempts.iter().map(|(a, _)| strip_p2p(a)).collect(),
+            DialError::WrongPeerId { address, .. } => vec![strip_p2p(address)],
+            _ => return,
+        };
+        let remaining: Vec<Multiaddr> = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .kbucket(*peer)
+            .into_iter()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .filter(|entry| entry.node.key.preimage() == peer)
+                    .flat_map(|entry| entry.node.value.iter().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if remaining.is_empty() || !remaining.iter().all(|a| failed.contains(&strip_p2p(a))) {
+            return;
+        }
+        debug!(
+            %peer,
+            tried = failed.len(),
+            "every routing-table address for the peer failed — evicting so a lookup can replace it"
+        );
+        self.swarm.behaviour_mut().kad.remove_peer(peer);
+        self.routed_attempts.entry(*peer).or_default().evicted = remaining;
+    }
+
+    /// Walk the DHT for `peer`'s addresses on behalf of parked requests.
+    fn start_routed_lookup(&mut self, peer: PeerId) {
+        self.routed_attempts.entry(peer).or_default().lookup_spent = true;
+        let query_id = self.swarm.behaviour_mut().kad.get_closest_peers(peer);
+        self.pending_kad
+            .insert(query_id, PendingKad::RoutedDial { target: peer });
+        debug!(%peer, "routed request — running find_peer");
+    }
+
+    /// Fail every request parked for `peer`, restoring any evicted table entry.
+    fn fail_routed(&mut self, peer: PeerId, text: String) {
+        let evicted = self
+            .routed_attempts
+            .remove(&peer)
+            .map(|attempt| attempt.evicted)
+            .unwrap_or_default();
+        if !evicted.is_empty() {
+            debug!(%peer, count = evicted.len(), "lookup found nothing better — restoring the evicted entry");
+            for addr in evicted {
+                self.swarm.behaviour_mut().kad.add_address(&peer, addr);
+            }
+        }
+        let Some(parked) = self.pending_routed.remove(&peer) else {
+            return;
+        };
+        for request in parked {
+            match request {
+                RoutedRequest::Unary { reply, .. } => {
+                    let _ = reply.send(Err(unary::UnaryError::DialFailure(text.clone())));
+                }
+                RoutedRequest::RawStream { reply, .. } => {
+                    let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(text.clone())));
+                }
+                RoutedRequest::Connect { reply } => {
+                    let _ = reply.send(Err(P2PError::DialFailed(text.clone())));
+                }
+            }
+        }
     }
 
     /// Hand a routed request to its behaviour, which owns `reply` from here on.
@@ -1043,30 +1220,29 @@ impl NetworkService {
     /// an incidental connection) produced a way to reach the peer, fail them
     /// with a clear error when it did not.
     fn flush_routed(&mut self, peer: PeerId) {
-        let Some(parked) = self.pending_routed.remove(&peer) else {
+        if !self.pending_routed.contains_key(&peer) {
             return;
-        };
-        if self.swarm.is_connected(&peer) || !self.known_addresses(&peer).is_empty() {
+        }
+
+        if self.swarm.is_connected(&peer) {
+            self.routed_attempts.remove(&peer);
+            let parked = self.pending_routed.remove(&peer).unwrap_or_default();
             for request in parked {
                 self.forward_routed(peer, request);
             }
             return;
         }
-        let text = format!("{peer}: peer not found in DHT (no addresses)");
-        debug!(%peer, "find_peer produced no addresses — failing parked requests");
-        for request in parked {
-            match request {
-                RoutedRequest::Unary { reply, .. } => {
-                    let _ = reply.send(Err(unary::UnaryError::DialFailure(text.clone())));
-                }
-                RoutedRequest::RawStream { reply, .. } => {
-                    let _ = reply.send(Err(raw_stream::RawStreamError::DialFailure(text.clone())));
-                }
-                RoutedRequest::Connect { reply } => {
-                    let _ = reply.send(Err(P2PError::DialFailed(text.clone())));
-                }
-            }
+
+        // Not connected after the walk: dial once more from whatever it learned.
+        if self.dial_routed(peer) {
+            return;
         }
+
+        debug!(%peer, "find_peer produced no usable addresses — failing parked requests");
+        self.fail_routed(
+            peer,
+            format!("{peer}: peer not found in DHT (no addresses)"),
+        );
     }
 
     /// Seed one routing-table address for `peer`, holding the per-peer list at
@@ -1239,6 +1415,7 @@ impl NetworkService {
                 let _ = reply.send(Err(error.clone()));
             }
         }
+        self.routed_attempts.clear();
         for (_, parked) in self.pending_routed.drain() {
             for request in parked {
                 match request {
@@ -1358,6 +1535,9 @@ impl NetworkService {
                 // us, or another dial landed): flush now rather than making
                 // the parked requests wait out the DHT walk. The lookup's
                 // completion then finds nothing parked and is a no-op.
+                if let Some(attempt) = self.routed_attempts.get_mut(&peer_id) {
+                    attempt.dial = None;
+                }
                 if self.pending_routed.contains_key(&peer_id) {
                     self.flush_routed(peer_id);
                 }
@@ -1449,6 +1629,26 @@ impl NetworkService {
                     );
                     let addr = address.clone();
                     self.swarm.behaviour_mut().kad.remove_address(&peer, &addr);
+                }
+
+                // A routed dial's first failure buys one DHT walk. Must follow the
+                // WrongPeerId eviction above so that address is never stashed and restored.
+                if let Some(peer) = peer_id {
+                    if self.routed_dial_ended(&peer, connection_id)
+                        && self.pending_routed.contains_key(&peer)
+                    {
+                        let spent = self
+                            .routed_attempts
+                            .get(&peer)
+                            .is_some_and(|attempt| attempt.lookup_spent);
+                        if spent {
+                            self.fail_routed(peer, dial_error(&error, Some(peer)).to_string());
+                        } else {
+                            debug!(%peer, error = %error, "routed dial failed — falling back to a DHT lookup");
+                            self.forget_exhausted_entry(&peer, &error);
+                            self.start_routed_lookup(peer);
+                        }
+                    }
                 }
 
                 // A relay we cannot reach will never give us a reservation.
