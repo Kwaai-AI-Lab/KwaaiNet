@@ -496,3 +496,135 @@ And one new step, which the streaming frame makes the obvious next experiment:
 - **Can the eval bank itself be forgotten?** It grows without bound too, and an
   exam that only ever accretes will eventually cost more to run than the system
   it measures.
+
+---
+
+# Refinement: the agentic harness
+
+Reza, 2026-08-23. A steady-state memory system cannot be operated by a human
+typing CLI commands. It needs an agent running the loop. This is the same
+"agentic harness" block in `PublicRelease-plan.md`, and DreamRAG maintenance is
+its first real customer.
+
+## Why, concretely
+
+The evidence is this session. Running the loop by hand for twelve hours produced:
+
+- a flag bug (`--model default`) that silently voided every completion, unnoticed
+  for hours because failures were indistinguishable from no-ops;
+- cycles optimised for *throughput* — cycles run, completions made, relations
+  added — when the goal was comprehension, which did not move at all;
+- destructive dedup and prune running on cycles that had accomplished nothing,
+  costing 14 of D6's 237 relations before a guard was added;
+- a conclusion ("relations do not help") that survived until a human pointed at
+  the ontology.
+
+Those are the failure modes the harness has to be designed against, not
+incidental mistakes. Each maps to a requirement.
+
+## What the loop actually is
+
+Sense → decide → act → verify, with escalation:
+
+**Sense.** The steady-state metrics: capacity, retention curve, forgetting
+errors (Type I/II), consolidation lag, eviction eligibility, ontology coverage.
+Note these must exist before the harness can be built — which is the third
+independent argument for doing evaluation first.
+
+**Decide.** Identify the binding constraint. Storage near budget → consolidate
+and evict. Retention curve sagging at 30 days → consolidation is lossy, not
+storage. Ontology coverage falling as a stream drifts → propose predicates.
+Comprehension flat while storage climbs → extraction is failing, stop ingesting
+until it is fixed.
+
+**Act.** Invoke primitives, nearly all of which already exist as CLI commands:
+`rag sync`, `graph build`, `extract-relations`, `dream run`, `summarize`, `eval`.
+Missing: `evict`, `ontology propose/apply`, `questions generate`.
+
+**Verify.** Every action carries a predicted metric movement, and the harness
+checks it. An action that does not move its metric is reverted or escalated —
+not repeated. Tonight's guard (do not mutate when nothing completed) is a
+primitive instance of exactly this.
+
+## The split that keeps it honest
+
+The word "agent" invites building an LLM that does everything. That would be
+worse, and tonight shows why: every bug I hit was in *orchestration* — shell
+quoting, awk column indices, a global counter that should have been per-KB,
+`pkill` patterns matching their own process. An LLM is not better at those than
+a control loop; it is worse, because it is nondeterministic about them.
+
+So:
+
+**Deterministic control loop** owns scheduling, thresholds, budgets, retries,
+snapshots, invariants. Boring, testable, and where the reliability lives.
+
+**LLM agent** is called only for judgements that are genuinely semantic:
+
+- proposing ontology extensions from drifting content;
+- deciding whether a new fact *succeeds* an old one or *contradicts* it;
+- judging whether a compression lost meaning, when the metric is ambiguous;
+- generating and grading curriculum questions;
+- diagnosing *why* a metric moved, as opposed to detecting that it did.
+
+If a decision can be expressed as a threshold, it should be. The agent is for
+the residue.
+
+## Safety properties, derived from the failure modes above
+
+1. **Goal is comprehension per unit storage.** Never throughput. A harness that
+   reports "2,000 completions" while recall is flat has learned the wrong
+   objective — as I did.
+2. **No destructive action without a verified hypothesis.** Predict the metric
+   movement, snapshot, act, verify, roll back on failure. Eviction demotes to a
+   peer rather than deleting, so most actions are reversible by construction.
+3. **Halt on regression, do not continue.** A retention-curve drop is a stop
+   condition, not a data point to average away.
+4. **Bounded budget.** Compute, storage delta, and wall-clock per cycle. Tonight
+   consumed ~2,000 remote completions on work of no measured value; an agent must
+   not be able to do that unsupervised.
+5. **Report the metric, not the activity.** The status a human sees is
+   comprehension, capacity and forgetting errors — never cycle counts.
+
+## Where a human stays in the loop
+
+- **Ontology ratification.** Induced predicates are proposals. A grounded
+  proposal with example instances is cheap for a human to accept or reject, and
+  wrong ontologies are expensive to unwind.
+- **Contradiction resolution** when succession versus error cannot be settled
+  from timestamps.
+- **Eviction beyond a threshold**, or of anything marked irreducible.
+- **Budget increases.** The agent may ask; it may not grant.
+
+## The network dimension
+
+Each node runs its own harness over its own memory, but they are not
+independent: a node forgetting locally depends on a peer retaining. That implies
+a protocol — retention commitments between peers, and a way to discover that a
+commitment has lapsed before relying on it. Trust tier decides which peers may
+hold which privacy class.
+
+This is the point where the RAG work, the storage fabric and the trust graph
+stop being three projects. The harness is what makes a personal knowledge system
+self-maintaining, and self-maintenance across a constrained network is the thing
+KwaaiNet is actually for.
+
+## Path forward, revised again
+
+The order is unchanged — instrument, then ontology, then compression — but the
+harness is not a fifth phase after them. It is the thing that runs them, and it
+should be built incrementally alongside:
+
+1. **Metrics first** (already the plan). The harness cannot sense without them.
+2. **Harness v0: observe only.** Run the loop with acting disabled. It reports
+   what it *would* do and why. This is cheap, it validates the decision policy
+   against a human's judgement, and it would have caught tonight's "optimising
+   the wrong objective" on day one.
+3. **Harness v1: act on reversible operations** — consolidate, summarise,
+   re-eval, propose. Destructive operations stay manual.
+4. **Harness v2: eviction with demote-to-peer**, once retention commitments
+   exist and the rate–distortion curve for a KB is known.
+
+Observe-only first is the important one. An agent that can explain its intended
+actions before it has permission to take them is both the safest starting point
+and the fastest way to find out whether the decision policy is any good.
