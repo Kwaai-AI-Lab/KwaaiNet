@@ -1,42 +1,32 @@
 # DreamRAG course deck
 
-`DreamRAG-Course-Weeks-3-16.md` is the source of truth. Everything else is a
-build output in gitignored `rendered/`.
+`DreamRAG-Course-Weeks-3-16.md` holds the course content. The live teaching copy
+is in **Google Slides**.
 
-## Two render targets, pick by workflow
-
-**Google Slides (recommended for teaching).** The existing intern deck lives
-there, so the house theme is already defined; a cohort can co-edit and comment;
-and template inheritance is real rather than stamped per slide.
+## Build and import
 
 ```bash
 pandoc DreamRAG-Course-Weeks-3-16.md -o /tmp/course.pptx --slide-level=2
 ```
 
-Then: upload to Drive → *Open with Google Slides* → **Theme → Import theme** →
-pick the existing intern deck. Content flows into the house master.
+Upload to Drive → *Open with Google Slides* → **Theme → Import theme** → select
+the existing Kwaai intern deck. The logo and styling then come from the master.
 
-Do **not** import the branded build for this — it stamps a logo onto every
-slide, which would double up against a themed master across all 83 slides.
+## Which copy is authoritative
 
-**PowerPoint / Keynote (offline, no account needed).**
+**After the first import, the Google Slides copy is the live artifact.** Edit
+there week to week; do not re-render on top of it.
 
-```bash
-pandoc DreamRAG-Course-Weeks-3-16.md -o /tmp/base.pptx --slide-level=2
-python3 brand/brand_deck.py /tmp/base.pptx brand/kwaai-logo.png \
-  ../../../rendered/projects/kwaai-knowledge/teaching/DreamRAG-Course-Weeks-3-16.pptx
-```
+Re-render only for a *structural* rewrite — if the week-7 cut review reshapes the
+back half of the course, revising fourteen weeks of markdown and re-importing
+beats restructuring 83 slides by hand. In that case, import as a new deck and
+re-apply the theme rather than merging.
 
-## What survives the Slides import
+## Notes
 
-Headings, bullets, tables, bold/italic, code blocks, and slide breaks all carry
-over. Speaker notes do not exist in the markdown yet. Long code lines may need
-manual wrapping — Slides does not reflow them the way pandoc's placeholder does.
-
-## Editing after import
-
-Once it is in Slides, that copy becomes the live artifact for the cohort and
-this markdown becomes a record of the original structure. That is a reasonable
-trade for a teaching deck — but if slides are going to be revised heavily each
-week, edit in Slides and stop re-rendering, rather than keeping two drifting
-copies.
+- 83 slides, weeks 3–16, four workstreams.
+- Headings, bullets, tables, emphasis and code blocks survive import. Long code
+  lines may need hand-wrapping — Slides does not reflow them.
+- No speaker notes yet. Worth adding for whoever presents, as markdown under each
+  slide or directly in Slides.
+- Curriculum rationale: `../plans/DreamRAG-Intern-Curriculum.md`.

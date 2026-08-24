@@ -1,28 +1,18 @@
-# Deck branding
+# Brand assets
 
-Renders the course markdown to a Kwaai-branded pptx.
+`kwaai-logo.png` — extracted from the title slide of `Kwaai Intern Program.pdf`
+and composited with its alpha mask, so it has a transparent background. Useful
+for figures and posters; the deck itself gets its logo from the Google Slides
+master, not from here.
 
-```bash
-pandoc ../DreamRAG-Course-Weeks-3-16.md -o /tmp/base.pptx --slide-level=2
-python3 brand_deck.py /tmp/base.pptx kwaai-logo.png \
-  ../../../../rendered/projects/kwaai-knowledge/teaching/DreamRAG-Course-Weeks-3-16.pptx
-```
+Palette sampled from the logo's own pixels:
 
-`kwaai-logo.png` was extracted from the title slide of `Kwaai Intern Program.pdf`
-and composited with its alpha mask, so it has a transparent background.
+| | hex |
+|---|---|
+| Kwaai blue | `#0A63DC` |
+| deep blue | `#0A3FB4` |
+| brown | `#4A3520` |
 
-Palette sampled from the logo itself:
-
-| | hex | used for |
-|---|---|---|
-| Kwaai blue | `#0A63DC` | content slide titles |
-| deep blue | `#0A3FB4` | title slide, section headings |
-| brown | `#4A3520` | subtitle, section rules |
-
-The script places the logo bottom-right on content slides — top-right collides
-with pandoc's content placeholders and tables, which start at y≈0.22in — and
-positions each section rule from its own title's geometry rather than a fixed
-offset, so it stays put if a heading wraps to two lines.
-
-Requires `python-pptx`. Verify after any change: no shape may extend past the
-canvas, and no logo may overlap content.
+> A script that stamped this logo onto each slide was removed once the deck moved
+> to Google Slides — per-slide images collide with a themed master. See git
+> history if an offline PowerPoint build is ever needed again.
