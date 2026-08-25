@@ -29,7 +29,7 @@ routes requests over the p2p relay to the remote Ollama instance. `mux://` is pr
 
 | Machine | Peer ID | GPU |
 |---------|---------|-----|
-| metro-linux | `12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs` | A6000 48GB |
+| metro-linux | `12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs` | A5000 24GB |
 | metro-win   | `12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE` | A5000 |
 | jerome      | `12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd` | |
 

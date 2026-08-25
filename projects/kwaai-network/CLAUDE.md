@@ -28,7 +28,7 @@ The p2p daemon runs as a Unix domain socket server:
 - Circuit relay enables residential NAT traversal without port forwarding
 
 **Metro machines** (used for inference routing):
-- `metro-linux` — A6000 GPU, Ubuntu — **DNS broken**: resolves to 192.168.1.1 (router)
+- `metro-linux` — A5000 GPU (24GB; swapped from A6000 2026-08), Ubuntu — **DNS broken**: resolves to 192.168.1.1 (router)
 - `metro-win` — A5000 GPU, Windows — **DNS broken**: resolves to 192.168.1.1 (router)
 - Fix needed: p2p relay routing for inference requests (user intent: "use p2p relay")
 - Ollama on both machines bound to `127.0.0.1:11434` — needs `OLLAMA_HOST=0.0.0.0` to accept remote connections

@@ -15,7 +15,7 @@
 ## In progress
 
 - **Dedicated inference thread with session pool** — `LlamaContext` reuse, LRU eviction, prefix-matching for session continuation. Plan: `~/.claude/plans/cached-jingling-creek.md`. Files: `llama_local.rs`, `shard_api.rs`.
-- **Metro machine connectivity** — both `metro-linux` (A6000) and `metro-win` (A5000) have DNS/routing issues; Ollama bound to localhost. Fix via p2p relay (kwaai-network dependency).
+- **Metro machine connectivity** — both `metro-linux` (A5000) and `metro-win` (A5000) have DNS/routing issues; Ollama bound to localhost. Fix via p2p relay (kwaai-network dependency).
 
 ## Planned
 

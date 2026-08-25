@@ -90,7 +90,7 @@ concurrent requests (saturates OLLAMA_NUM_PARALLEL); `p2p://` works for sequenti
 
 | Machine | Scheme | Peer ID | GPU |
 |---------|--------|---------|-----|
-| metro-linux | `p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs` | A6000 48GB |
+| metro-linux | `p2p://12D3KooWCzuhpXrZXD8aezgm4JCkCZSTgj48uDywYYdTzUhF8SHs` | A5000 24GB |
 | metro-win   | `p2p://12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE` | A5000 |
 | jerome      | `p2p://12D3KooWDyPJBavUudh6dWitszGL2FSrEgy32SJY5qiSrATapGgd` | |
 

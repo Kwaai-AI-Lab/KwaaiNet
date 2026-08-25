@@ -1,6 +1,6 @@
 # Building KwaaiNet from source on metro-win
 
-For validating `main` on the RTX A5000 box before a release tag exists. Run
+For validating `main` on the A5000 box before a release tag exists. Run
 directly on the machine — there is no SSH to metro (Tailscale trial ended
 2026-07-25).
 
@@ -56,7 +56,20 @@ Then, matching CI's recipe for this target (`.github/workflows/release.yml`,
 ```powershell
 cd core
 $env:CUDA_COMPUTE_CAP = "80"
-cargo build --release -p kwaainet --features cuda-windows
+cargo build --release -p kwaainet --features cuda-windows -j 4
+```
+
+**Cap the parallelism — `-j 4`.** `cicc`, nvcc's device-code compiler, holds
+around 3 GB per translation unit, and cargo defaults to one codegen job per
+core. On 2026-08-25 an uncapped CUDA build exhausted metro-linux's RAM and
+wedged the machine for roughly six hours (details in the metro-linux runbook).
+Windows will page rather than invoke an OOM killer, so the failure mode here is
+a build that crawls and a desktop that stops responding — less destructive, but
+not worth risking. Check the headroom first and lower `-j` if it is tight:
+
+```powershell
+Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
+(Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
 ```
 
 **`cuda-windows`, not `cuda`.** They are different features:
@@ -69,12 +82,19 @@ cargo build --release -p kwaainet --features cuda-windows
 Flash-attention is not built on Windows. Using `--features cuda` here will
 either fail to build or produce something CI never ships.
 
-Without a working CUDA toolchain, a CPU build still exercises everything
-network-related, which is what this pass is for:
+### Prefer the CPU build for this pass
+
+None of what is being validated here — routed dials, relay circuits, config
+handling — touches the GPU. A CPU build is faster, needs neither the CUDA
+toolkit nor the MSVC environment above, and cannot run the machine out of
+memory. Treat it as the default, not a fallback:
 
 ```powershell
+cd core
 cargo build --release -p kwaainet
 ```
+
+Build CUDA only when the thing under test is inference itself.
 
 ## Install
 

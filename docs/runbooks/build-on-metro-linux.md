@@ -1,6 +1,6 @@
 # Building KwaaiNet from source on metro-linux
 
-For validating `main` on the A6000 box before a release tag exists. Run
+For validating `main` on the A5000 box before a release tag exists. Run
 directly on the machine — there is no SSH to metro (Tailscale trial ended
 2026-07-25).
 
@@ -20,13 +20,13 @@ Almost certainly already present from the last build; check rather than assume.
 
 ```bash
 rustc --version          # 1.75+
-nvcc --version           # CUDA toolkit, for the GPU feature
 go version               # kwaai-p2p-daemon's build.rs builds p2pd
 protoc --version         # optional: build.rs downloads it if absent
+nvcc --version           # only if you want the CUDA feature — see below
 ```
 
-`nvcc` missing means the `cuda` feature will not build. Everything else has a
-fallback.
+`nvcc` missing means the `cuda` feature will not build; nothing in a network
+regression pass needs it. Everything else has a fallback.
 
 ## Build
 
@@ -39,24 +39,54 @@ git pull
 git log --oneline -1          # expect 7acebeaf or later
 ```
 
-Then, matching what CI does for this target
-(`.github/workflows/release.yml`, *Build kwaainet with CUDA (Linux)*):
+Then:
 
 ```bash
 cd core
-export CUDA_COMPUTE_CAP=80    # A6000 is compute capability 8.6; CI pins 80
-cargo build --release -p kwaainet --features cuda
+cargo build --release -p kwaainet
+```
+
+**A CPU build is the right choice for a network regression pass**, and this is
+not a fallback. Everything validated here — routed dials, relay circuits, config
+handling — is network behaviour and never touches the GPU. Building CUDA buys
+nothing for these tests and carries a real risk, below.
+
+### If you do need the CUDA build
+
+Matching what CI does for this target (`.github/workflows/release.yml`,
+*Build kwaainet with CUDA (Linux)*).
+
+**Cap the parallelism.** On 2026-08-25 an uncapped CUDA build took this machine
+down for roughly six hours:
+
+```
+oom-kill:constraint=CONSTRAINT_NONE,...,global_oom,task=cicc,pid=1796144
+Out of memory: Killed process 1796144 (cicc) total-vm:3690824kB anon-rss:2989432kB
+```
+
+`cicc` is nvcc's device-code compiler, and it holds ~3 GB per translation unit.
+Cargo defaults to one codegen job per core, so each core can add another 3 GB.
+The machine did not crash — it wedged: the kernel and NIC stayed healthy and
+the listening sockets stayed open, so TCP connects still completed, while every
+surviving process sat starved of memory and serviced nothing. `sshd` accepted
+connections and never wrote its banner. It looked from outside like a dead host
+and needed console access to recover.
+
+```bash
+cd core
+export CUDA_COMPUTE_CAP=80    # A5000 is compute capability 8.6; CI pins 80
+cargo build --release -p kwaainet --features cuda -j 4
+```
+
+Check the headroom first, and lower `-j` if RAM is tight — budget roughly 3 GB
+per job:
+
+```bash
+free -h; nproc; swapon --show
 ```
 
 `CUDA_COMPUTE_CAP=80` is what CI uses and what the published CUDA artifact is
 built with, so this reproduces the shipped binary rather than a local variant.
-
-Without a working CUDA toolchain, a CPU build still exercises everything
-network-related — which is the point of this exercise:
-
-```bash
-cargo build --release -p kwaainet
-```
 
 ## Install
 
@@ -124,6 +154,21 @@ kwaainet rag list          # same count
 kwaainet stop
 cp ~/.cargo/bin/kwaainet-0.6.2.bak ~/.cargo/bin/kwaainet
 kwaainet start --daemon
+```
+
+## Enable a persistent journal
+
+Worth doing once, before anything else goes wrong. `journalctl -b -1` on this
+machine reports *"no persistent journal was found"* — the journal is volatile,
+so every boot discards the previous one and a post-mortem has nothing to read.
+The 2026-08-25 OOM was only diagnosable because the machine never actually
+rebooted.
+
+```bash
+sudo mkdir -p /var/log/journal
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo systemctl restart systemd-journald
+journalctl --list-boots        # should start accumulating entries
 ```
 
 ## Do not enable `decentralized_dht` yet
