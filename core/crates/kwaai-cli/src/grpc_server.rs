@@ -1970,6 +1970,7 @@ pub(crate) fn spawn_on_tcp_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcSe
         drop(service); // suppress unused warning on non-unix
         GrpcServerHandle {
             shutdown_tcp: Some(shutdown_tcp_tx),
+            net: net_slot,
         }
     }
 }
