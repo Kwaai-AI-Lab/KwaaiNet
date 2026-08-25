@@ -541,13 +541,26 @@ async fn nvidia_smi_windows() -> bool {
 
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
-    let parse = |s: &str| -> (u32, u32, u32) {
-        let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
-        (
-            parts.first().copied().unwrap_or(0),
-            parts.get(1).copied().unwrap_or(0),
-            parts.get(2).copied().unwrap_or(0),
-        )
+    // `(major, minor, patch, is_release)`. The fourth field orders a release
+    // above its own pre-release, per semver: 0.6.3 > 0.6.3-dev > 0.6.2.
+    //
+    // Each component is parsed by its leading digits rather than whole-string,
+    // because `"3-dev".parse::<u32>()` fails. The previous version used
+    // `filter_map(parse.ok())`, which *silently dropped* the failing component:
+    // `0.6.3-dev` collapsed to `(0, 6, 0)` — older than the released 0.6.2 — so
+    // a node running a dev build would see the release as an upgrade and
+    // quietly downgrade itself onto it.
+    let parse = |s: &str| -> (u32, u32, u32, bool) {
+        let mut parts = [0u32; 3];
+        let mut prerelease = false;
+        for (i, raw) in s.split('.').take(3).enumerate() {
+            let digits: String = raw.chars().take_while(|c| c.is_ascii_digit()).collect();
+            parts[i] = digits.parse().unwrap_or(0);
+            if digits.len() != raw.len() {
+                prerelease = true;
+            }
+        }
+        (parts[0], parts[1], parts[2], !prerelease)
     };
     parse(latest) > parse(current)
 }
@@ -563,6 +576,35 @@ mod tests {
         assert!(is_newer("1.0.0", "0.9.9"));
         assert!(!is_newer("0.4.1", "0.4.1"));
         assert!(!is_newer("0.4.0", "0.4.1"));
+    }
+
+    /// A dev build must not be talked into downgrading onto the last release.
+    ///
+    /// `0.6.3-dev` used to parse as `(0, 6, 0)` because the failing `"3-dev"`
+    /// component was silently dropped, so every node carrying a pre-release
+    /// version saw the previous release as an upgrade.
+    #[test]
+    fn a_prerelease_is_newer_than_the_release_before_it() {
+        assert!(
+            !is_newer("0.6.2", "0.6.3-dev"),
+            "a 0.6.3-dev build must not downgrade to 0.6.2"
+        );
+        assert!(is_newer("0.6.3-dev", "0.6.2"));
+    }
+
+    /// …and older than its own release, so it upgrades when that ships.
+    #[test]
+    fn a_release_supersedes_its_own_prerelease() {
+        assert!(is_newer("0.6.3", "0.6.3-dev"));
+        assert!(!is_newer("0.6.3-dev", "0.6.3"));
+    }
+
+    #[test]
+    fn prerelease_suffix_forms_all_parse() {
+        for v in ["0.6.3-dev", "0.6.3-rc.1", "0.6.3-alpha"] {
+            assert!(is_newer(v, "0.6.2"), "{v} should outrank 0.6.2");
+            assert!(!is_newer(v, "0.7.0"), "{v} should not outrank 0.7.0");
+        }
     }
 
     /// On a Windows machine with an NVIDIA GPU, nvidia_smi_windows() must return

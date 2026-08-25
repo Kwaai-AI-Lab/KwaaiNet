@@ -1,6 +1,6 @@
 [package]
 name = "kwaai-storage"
-version = "0.6.2"
+version = "0.6.3-dev"
 edition = "2021"
 license = "MIT"
 description = "Multi-tenant vector storage fabric for KwaaiNet (Eve role) — embedded, zero deps"
