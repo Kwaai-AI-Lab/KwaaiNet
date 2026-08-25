@@ -107,6 +107,16 @@ pub struct NetworkConfig {
     #[serde(default = "default_true")]
     pub relay_server: bool,
 
+    /// Bytes one relayed circuit may carry before this node tears it down; `0` is uncapped.
+    /// Defaults to the p2pd relay's `-relayDataLimit`, not libp2p's 128 KiB.
+    #[serde(default = "default_relay_max_circuit_bytes")]
+    pub relay_max_circuit_bytes: u64,
+
+    /// How long one relayed circuit may stay open.
+    /// Defaults to the p2pd relay's `-relayTimeLimit`, not libp2p's 2 minutes.
+    #[serde(default = "default_relay_max_circuit_duration")]
+    pub relay_max_circuit_duration: Duration,
+
     /// Ask the local gateway to map our listen port via UPnP/IGD.
     ///
     /// On by default (parity with p2pd's `-natPortMap`), off in
@@ -176,6 +186,16 @@ fn default_identify_min_confirmations() -> usize {
     2
 }
 
+/// 4 GiB, the p2pd relay's `-relayDataLimit`.
+fn default_relay_max_circuit_bytes() -> u64 {
+    1 << 32
+}
+
+/// 30 minutes, the p2pd relay's `-relayTimeLimit`.
+fn default_relay_max_circuit_duration() -> Duration {
+    Duration::from_secs(30 * 60)
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -195,6 +215,8 @@ impl Default for NetworkConfig {
             dht_server: false,
             trusted_relays: Vec::new(),
             relay_server: true,
+            relay_max_circuit_bytes: default_relay_max_circuit_bytes(),
+            relay_max_circuit_duration: default_relay_max_circuit_duration(),
             enable_upnp: true,
             force_private: false,
             external_addr: None,
@@ -346,5 +368,67 @@ impl NetworkConfigBuilder {
     /// Build the configuration
     pub fn build(self) -> NetworkConfig {
         self.config
+    }
+}
+
+#[cfg(test)]
+mod relay_circuit_limits {
+    use super::*;
+
+    /// p2pd's `-relayDataLimit` / `-relayTimeLimit`, pinned against libp2p's
+    /// 128 KiB / 2 min.
+    #[test]
+    fn the_defaults_match_the_p2pd_relay() {
+        let cfg = NetworkConfig::default();
+        assert_eq!(cfg.relay_max_circuit_bytes, 1 << 32);
+        assert_eq!(cfg.relay_max_circuit_duration, Duration::from_secs(30 * 60));
+        assert!(
+            cfg.relay_max_circuit_bytes > 1 << 17
+                && cfg.relay_max_circuit_duration > Duration::from_secs(120),
+            "the point of the override is to exceed libp2p's 128 KiB / 2 min",
+        );
+    }
+
+    /// `behaviour.rs` clamps an operator's value; the default must already fit.
+    #[test]
+    fn the_default_circuit_duration_fits_the_wire_format() {
+        let secs = NetworkConfig::default()
+            .relay_max_circuit_duration
+            .as_secs();
+        assert!(
+            secs <= u32::MAX as u64,
+            "{secs}s exceeds the u32 wire field"
+        );
+    }
+
+    #[test]
+    fn the_limits_round_trip_and_default_when_absent() {
+        let cfg = NetworkConfig {
+            relay_max_circuit_bytes: 4096,
+            relay_max_circuit_duration: Duration::from_secs(30),
+            ..NetworkConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: NetworkConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.relay_max_circuit_bytes, 4096);
+        assert_eq!(back.relay_max_circuit_duration, Duration::from_secs(30));
+
+        // A config written before these fields existed.
+        let legacy = r#"{
+            "listen_addrs": [], "bootstrap_peers": [], "enable_dht": true,
+            "dht_replication": 20,
+            "connection_timeout": {"secs": 30, "nanos": 0},
+            "request_timeout": {"secs": 60, "nanos": 0},
+            "max_connections": 100, "enable_nat_traversal": true,
+            "enable_relay_client": true, "protocol_version": "x",
+            "agent_version": "y"
+        }"#;
+        let old: NetworkConfig = serde_json::from_str(legacy).expect("legacy config");
+        assert_eq!(old.relay_max_circuit_bytes, 1 << 32);
+        assert_eq!(
+            old.relay_max_circuit_duration,
+            Duration::from_secs(30 * 60),
+            "an old config must pick up the new default, not libp2p's",
+        );
     }
 }
