@@ -313,15 +313,17 @@ fn parse_result(
 
     let payload: TaskPayload = match serde_json::from_str(cleaned) {
         Ok(p) => p,
-        Err(_) => {
+        Err(e) => {
+            tracing::warn!(entity = %eid, error = %e, "dream task: parsing completion");
             return EntityCompletion {
                 entity_id: eid,
+                failure: Some(format!("parse: {e}")),
                 schema_type: None,
                 description: None,
                 relations: vec![],
                 force_description: false,
                 fields: HashMap::new(),
-            }
+            };
         }
     };
 
@@ -367,6 +369,7 @@ fn parse_result(
 
     EntityCompletion {
         entity_id: eid,
+        failure: None,
         schema_type: None,
         description,
         relations,
@@ -375,9 +378,28 @@ fn parse_result(
     }
 }
 
+/// A completion that carries nothing *because the LLM call failed*.
+///
+/// `call_llm` collapses every error — connect, timeout, non-2xx, decode — into
+/// `None` via `.ok()?`, and the call sites turned that into a plain no-op. The
+/// destructive phase then ran as though the graph needed no work. Flagging the
+/// failure lets the guard in `dream.rs` tell a dead endpoint from a finished
+/// graph.
+fn empty_failed(eid: i64) -> EntityCompletion {
+    tracing::warn!(entity = %eid, "dream task: llm call returned nothing");
+    EntityCompletion {
+        failure: Some("llm call returned nothing".to_string()),
+        ..empty(eid)
+    }
+}
+
+/// A completion that carries nothing. Used where the task legitimately has no
+/// improvement to offer, so `failure` stays `None` — a genuine no-op must not
+/// be counted as an endpoint failure by the destructive-phase guard.
 fn empty(eid: i64) -> EntityCompletion {
     EntityCompletion {
         entity_id: eid,
+        failure: None,
         schema_type: None,
         description: None,
         relations: vec![],
@@ -567,6 +589,7 @@ pub async fn run_full_summary_task(
     {
         EntityCompletion {
             entity_id: eid,
+            failure: None,
             schema_type: None,
             description: Some(candidate),
             relations: vec![],
@@ -653,7 +676,7 @@ pub async fn run_biography_task(
 
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
-        None => empty(eid),
+        None => empty_failed(eid),
     }
 }
 
@@ -714,7 +737,7 @@ pub async fn run_geography_task(
 
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
-        None => empty(eid),
+        None => empty_failed(eid),
     }
 }
 
@@ -785,7 +808,7 @@ pub async fn run_org_task(
 
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
-        None => empty(eid),
+        None => empty_failed(eid),
     }
 }
 
@@ -841,7 +864,7 @@ pub async fn run_event_task(
 
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
-        None => empty(eid),
+        None => empty_failed(eid),
     }
 }
 
@@ -896,7 +919,7 @@ pub async fn run_concept_task(
 
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
-        None => empty(eid),
+        None => empty_failed(eid),
     }
 }
 
@@ -944,7 +967,7 @@ pub async fn run_work_task(
 
     match call_llm(&prompt, url, model).await {
         Some(raw) => parse_result(&raw, eid, current_description, evidence_chunks),
-        None => empty(eid),
+        None => empty_failed(eid),
     }
 }
 
