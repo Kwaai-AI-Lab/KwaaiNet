@@ -8,7 +8,8 @@ Roughly **60–90 minutes** for a clean release build.
 
 **The box:** HP Z8 G4, dual Xeon Gold 6154 (36 cores / 72 threads), 96 GB RAM,
 RTX A5000 (24 GB), 850 GB root with ~450 GB free. The core-count-to-RAM ratio
-matters for build parallelism — see the CUDA section below.
+matters for build parallelism — see the CUDA section below. Full inventory:
+[`metro-linux-hardware.md`](metro-linux-hardware.md).
 
 ## Why build rather than wait for a release
 
