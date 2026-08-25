@@ -70,6 +70,7 @@ for native Metal shard support. Linux/CUDA nodes are unaffected and continue to 
 - [Decentralized Trust Graph (DTG)](#decentralized-trust-graph-dtg)
 - [VPK Storage Fabric](#vpk-storage-fabric)
 - [RAG Knowledge Base](#rag-knowledge-base)
+- [Research: DreamRAG](#research-dreamrag)
 - [Roadmap: destination vs current implementation](#roadmap-destination-vs-current-implementation)
 - [Who is building KwaaiNet?](#who-is-building-kwaainet)
 - [Documentation](#documentation)
@@ -755,6 +756,51 @@ The Eve vector store path is set separately at init time:
 ```bash
 kwaainet storage init --capacity-gb 500 --data-dir /Volumes/WD2/kwaainet-storage
 ```
+
+---
+
+## Research: DreamRAG
+
+DreamRAG is our open line of research into machine memory — how a knowledge base
+reads, consolidates what it has read, and forgets what it no longer needs. The
+work is public, including the parts that did not go our way.
+
+**Current finding: a negative result.** We built a retrieval baseline across 15
+knowledge bases spanning memoir, climate science, astrophysics, law, RFCs,
+Python documentation, poetry and two novels — then measured whether the
+knowledge graph was helping.
+
+It was not. Relation count has essentially no association with retrieval
+quality: **Pearson +0.081 across 15 corpora**. One knowledge base carrying 742
+relations retrieves *below* the median; another with two relations tops the
+table at 87.5%; a third with zero relations beats one with 6,437 entities.
+
+The cause turned out to be an ontology problem rather than a graph problem. Our
+entire relation vocabulary was thirteen kinship predicates — `parent_of`,
+`spouse_of`, `sibling_of` — built for a family memoir and then applied
+unchanged to permafrost papers and network standards. We were asking a climate
+paper who its aunt was. So the null bounds what we measured, not what is true.
+
+**Where the work is going:** per-domain ontologies; evaluation that grows with a
+knowledge base the way a curriculum grows with a student, rather than one fixed
+exam; and compression — deciding what can be forgotten while still passing the
+comprehension test, which for a network of storage-constrained nodes is not an
+optimisation but a requirement.
+
+| | |
+|---|---|
+| Design and literature review | [`projects/kwaai-knowledge/plans/DreamRAG-Ontology-Eval-Compression.md`](projects/kwaai-knowledge/plans/DreamRAG-Ontology-Eval-Compression.md) |
+| Cross-KB baseline and analysis | [`tests/kwaai-knowledge/results/`](tests/kwaai-knowledge/results/) |
+| Intern research curriculum | [`projects/kwaai-knowledge/plans/DreamRAG-Intern-Curriculum.md`](projects/kwaai-knowledge/plans/DreamRAG-Intern-Curriculum.md) |
+
+**Contributing to it.** The open problems are real ones — domain ontology
+induction, curriculum-based evaluation, rate–distortion memory compaction, and
+federated forgetting across a trust-gated peer network. Issues tagged
+`dreamrag` are the way in, and the design document ends with the questions we
+have not settled.
+
+Kwaai also runs a [research internship](https://www.kwaai.ai/membership/internship)
+whose current cohort is working this line toward a paper.
 
 ---
 
