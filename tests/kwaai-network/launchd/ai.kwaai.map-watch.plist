@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+    Keeps map_watch.sh alive across reboots and login sessions.
+
+    Install:
+      sed -i '' "s|/Users/YOUR_USERNAME|$HOME|g" ai.kwaai.map-watch.plist
+      cp ai.kwaai.map-watch.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/ai.kwaai.map-watch.plist
+
+    Check:   launchctl list | grep map-watch
+    Stop:    launchctl unload ~/Library/LaunchAgents/ai.kwaai.map-watch.plist
+    History: ~/.kwaainet/logs/map-watch.jsonl   (every poll)
+    Alerts:  ~/.kwaainet/logs/map-watch.out     (state changes only)
+-->
+<dict>
+    <key>Label</key>
+    <string>ai.kwaai.map-watch</string>
+
+    <!-- The script loops internally on its own 60s interval, so launchd only
+         needs to keep one copy alive rather than schedule repeated runs. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOUR_USERNAME/Source/KwaaiNet/tests/kwaai-network/map_watch.sh</string>
+        <string>60</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Do not hammer the map if the script dies immediately (bad path,
+         missing python3): back off instead of respawning in a tight loop. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- stdout carries only state transitions; the JSONL log holds every poll. -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.kwaainet/logs/map-watch.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.kwaainet/logs/map-watch.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/Source/KwaaiNet</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <key>MAP_WATCH_LOG</key>
+        <string>/Users/YOUR_USERNAME/.kwaainet/logs/map-watch.jsonl</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
