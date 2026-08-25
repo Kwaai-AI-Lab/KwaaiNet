@@ -597,6 +597,221 @@ pub async fn send_records_via_handle(
     (succeeded > 0, timings)
 }
 
+// ---------------------------------------------------------------------------
+// Decentralized delivery
+// ---------------------------------------------------------------------------
+
+/// Every peer this node could place a record on, nearest-ranking aside.
+///
+/// Three sources, merged in preference order:
+///
+/// 1. **Known peers** — [`NetworkHandle::known_peers`], i.e. the kad routing
+///    table merged with live connections, address-filtered. This is the bulk of
+///    the set on an established node and the reason the configured list stops
+///    mattering.
+/// 2. **Configured peers** — `initial_peers` / `bootstrap_peers`, now ordinary
+///    candidates with no privileged role. They still matter on a cold start,
+///    when the routing table is empty.
+/// 3. **Cached peers** — the peer cache, so a node whose configured peers are
+///    all gone still has somewhere to publish.
+///
+/// Earlier sources win per peer, so a live address beats a stale configured
+/// one for the same peer ID. Our own peer ID is never a candidate.
+pub async fn gather_candidates(
+    handle: &NetworkHandle,
+    configured: &[String],
+    cached: &[String],
+) -> Vec<crate::placement::Candidate> {
+    use crate::placement::{candidates_from_addrs, candidates_from_known, merge_candidates};
+
+    let us = handle.peer_id();
+    let known = match handle.known_peers().await {
+        Ok(k) => candidates_from_known(&k, &us),
+        Err(e) => {
+            warn!("Could not enumerate known peers ({e}) — falling back to configured peers");
+            vec![]
+        }
+    };
+
+    merge_candidates(&[
+        known,
+        candidates_from_addrs(configured, &us),
+        candidates_from_addrs(cached, &us),
+    ])
+}
+
+/// Split a [`StoreRequest`] into one request per key.
+///
+/// The block record packs every served block into a single request with
+/// index-aligned parallel arrays. That is exactly right for the bootstrap
+/// fan-out — one RPC carries the lot — but wrong for placement, where each key
+/// has its own position in the keyspace and therefore its own set of holders.
+/// This is the seam between the two: one request in, N single-key requests out,
+/// each still carrying its own subkey, value, expiration and `in_cache` flag.
+///
+/// A malformed request whose arrays are not index-aligned yields only the
+/// entries present in all of them, rather than panicking on the short one.
+fn split_by_key(request: &StoreRequest) -> Vec<StoreRequest> {
+    (0..request.keys.len())
+        .filter_map(|i| {
+            Some(StoreRequest {
+                auth: Some(RequestAuthInfo::new()),
+                keys: vec![request.keys.get(i)?.clone()],
+                subkeys: vec![request.subkeys.get(i)?.clone()],
+                values: vec![request.values.get(i)?.clone()],
+                expiration_time: vec![*request.expiration_time.get(i)?],
+                in_cache: vec![*request.in_cache.get(i)?],
+                peer: request.peer.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Push `records` to the peers nearest each record's own key.
+///
+/// The decentralized counterpart to [`send_records_via_handle`]. Where that
+/// stores every record on every configured bootstrap, this asks — per key —
+/// *"who in the network should hold this"*, and stores on the `k` nearest
+/// candidates that accept it.
+///
+/// # Per-key, not per-round
+///
+/// Records are split by key first ([`split_by_key`]), so a node serving blocks
+/// 0–8 runs eight independent placements plus one each for `_petals.models`
+/// and `_kwaai.inference.nodes`. Those land on **different peer sets**, which
+/// is the entire point: no single peer is required to hold everything, and a
+/// reader looking for one block walks to the peers holding that block rather
+/// than to a bootstrap that happened to be told about all of them.
+///
+/// # Timings
+///
+/// [`StoreTiming`] is still reported per peer, aggregated across every key that
+/// peer was asked to hold: one observation per peer per round, so the
+/// reputation store sees the same shape it does on the bootstrap path rather
+/// than one sample per block. A peer counts as successful if any of its stores
+/// in the round succeeded.
+///
+/// Returns `(any_success, timings)` on the same rule as the bootstrap path:
+/// success means at least one record reached at least one peer.
+pub async fn send_records_decentralized(
+    handle: &NetworkHandle,
+    candidates: &[crate::placement::Candidate],
+    records: &[StoreRequest],
+    replication: usize,
+) -> (bool, Vec<StoreTiming>) {
+    use crate::placement::{place_with, rank_candidates};
+
+    if records.is_empty() {
+        return (false, vec![]);
+    }
+    if candidates.is_empty() {
+        warn!("Decentralized announce: no candidate peers with a dialable address — nothing published");
+        return (false, vec![]);
+    }
+
+    // Per-peer aggregation across every key this round places.
+    //
+    // A `RefCell` rather than a plain `&mut`: `place_with` takes an `FnMut`
+    // whose futures may not hold a borrow across calls, but the walk is
+    // strictly sequential (each store is awaited before the next begins), so
+    // the borrow is only ever held inside one future at a time and cannot
+    // conflict.
+    let latency_by_peer: std::cell::RefCell<HashMap<PeerId, (String, f64, bool)>> =
+        std::cell::RefCell::new(HashMap::new());
+    let mut any_success = false;
+    let mut total_shortfall = 0usize;
+    let mut placed_keys = 0usize;
+
+    let single_key_records: Vec<StoreRequest> = records.iter().flat_map(split_by_key).collect();
+
+    for record in &single_key_records {
+        let Some(record_id) = record.keys.first() else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        if let Err(e) = record.encode(&mut bytes) {
+            warn!("Encode STORE request failed: {}", e);
+            continue;
+        }
+
+        let ranked = rank_candidates(candidates, record_id);
+        let outcome = place_with(&ranked, replication, |candidate| {
+            let bytes = bytes.clone();
+            let acc = &latency_by_peer;
+            async move {
+                let t0 = std::time::Instant::now();
+                let ok = match handle
+                    .call_unary_handler(
+                        candidate.peer_id,
+                        kwaai_hivemind_dht::PROTOCOL_STORE,
+                        &bytes,
+                    )
+                    .await
+                {
+                    Ok(resp) => match StoreResponse::decode(&resp[..]) {
+                        Ok(resp) => resp.store_ok.iter().any(|&s| s),
+                        Err(e) => {
+                            warn!(
+                                "STORE response from {} was undecodable: {}",
+                                candidate.peer_id, e
+                            );
+                            false
+                        }
+                    },
+                    Err(e) => {
+                        warn!("STORE RPC to {} failed: {}", candidate.peer_id, e);
+                        false
+                    }
+                };
+
+                // One observation per peer per round: latencies across the keys
+                // this peer held are summed and successes OR-ed, so a peer
+                // serving eight blocks is not weighted eight times.
+                let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                {
+                    let mut acc = acc.borrow_mut();
+                    let entry = acc
+                        .entry(candidate.peer_id)
+                        .or_insert_with(|| (candidate.addr.clone(), 0.0, false));
+                    entry.1 += latency_ms;
+                    entry.2 |= ok;
+                }
+
+                ok
+            }
+        })
+        .await;
+
+        placed_keys += 1;
+        total_shortfall += outcome.shortfall;
+        any_success |= outcome.any_success();
+    }
+
+    let timings: Vec<StoreTiming> = latency_by_peer
+        .into_inner()
+        .into_iter()
+        .map(|(peer, (addr, latency_ms, ok))| (peer.to_base58(), addr, latency_ms, ok))
+        .collect();
+
+    if total_shortfall > 0 {
+        warn!(
+            "Decentralized announce: {} replica slot(s) short of {} across {} key(s) — \
+             the known-peer set may be too small or partly unreachable",
+            total_shortfall, replication, placed_keys
+        );
+    }
+    if any_success {
+        info!(
+            "✅ Announced {} key(s) to their nearest peers (k={})",
+            placed_keys, replication
+        );
+    } else {
+        warn!("❌ Decentralized announcement reached no peer — see warnings above");
+    }
+
+    (any_success, timings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,6 +1166,136 @@ mod tests {
         .await;
         assert!(!ok);
         assert!(timings.is_empty());
+
+        let _ = handle.shutdown().await;
+        let _ = task.await;
+    }
+
+    // ── Decentralized delivery ──────────────────────────────────────────────
+
+    /// The block record's packed parallel arrays split into one request per
+    /// key, each still index-aligned — this is what lets eight blocks land on
+    /// eight independently-chosen peer sets rather than all on one.
+    #[test]
+    fn splitting_a_packed_record_preserves_every_field() {
+        let p = peer();
+        let records = build_announce_records(&ctx(p), &server_info(None)).unwrap();
+        let blocks = &records[0];
+        assert_eq!(blocks.keys.len(), 3, "the fixture serves blocks 0..3");
+
+        let split = split_by_key(blocks);
+        assert_eq!(split.len(), 3, "one request per key");
+
+        for (i, single) in split.iter().enumerate() {
+            assert_eq!(single.keys, vec![blocks.keys[i].clone()]);
+            assert_eq!(single.subkeys, vec![blocks.subkeys[i].clone()]);
+            assert_eq!(single.values, vec![blocks.values[i].clone()]);
+            assert_eq!(single.expiration_time, vec![blocks.expiration_time[i]]);
+            assert_eq!(single.in_cache, vec![blocks.in_cache[i]]);
+            assert_eq!(
+                single.peer, blocks.peer,
+                "every split keeps our own DHTID as the requester"
+            );
+        }
+    }
+
+    /// A single-key record splits to itself, and an empty one to nothing.
+    #[test]
+    fn splitting_degenerate_records_is_safe() {
+        let p = peer();
+        let records = build_announce_records(&ctx(p), &server_info(None)).unwrap();
+
+        // `_petals.models` is already one key.
+        assert_eq!(split_by_key(&records[1]).len(), 1);
+
+        let empty = StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys: vec![],
+            subkeys: vec![],
+            values: vec![],
+            expiration_time: vec![],
+            in_cache: vec![],
+            peer: None,
+        };
+        assert!(split_by_key(&empty).is_empty());
+    }
+
+    /// A request whose arrays disagree in length yields only the fully-formed
+    /// prefix rather than panicking on the short array.
+    #[test]
+    fn splitting_a_misaligned_record_drops_the_incomplete_tail() {
+        let misaligned = StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys: vec![dht_id("a"), dht_id("b")],
+            subkeys: vec![b"sub".to_vec()], // one short
+            values: vec![b"v1".to_vec(), b"v2".to_vec()],
+            expiration_time: vec![1.0, 2.0],
+            in_cache: vec![false, false],
+            peer: None,
+        };
+        assert_eq!(split_by_key(&misaligned).len(), 1);
+    }
+
+    /// With no candidates, decentralized delivery reports failure rather than
+    /// silently claiming success — the same contract the bootstrap path has for
+    /// an empty peer list.
+    #[tokio::test]
+    async fn decentralized_delivery_with_no_candidates_reports_failure() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let (handle, task) =
+            kwaai_p2p::NetworkService::spawn(kwaai_p2p::NetworkConfig::for_tests(), keypair)
+                .expect("service should start");
+
+        let records = build_announce_records(&ctx(peer()), &server_info(None)).unwrap();
+
+        let (ok, timings) = send_records_decentralized(&handle, &[], &records, 3).await;
+        assert!(!ok, "a node that knows no peers has not announced");
+        assert!(timings.is_empty());
+
+        // And no records is equally a non-announcement, even with candidates.
+        let candidate = crate::placement::Candidate::new(PeerId::random(), "/addr".to_string());
+        let (ok, timings) = send_records_decentralized(&handle, &[candidate], &[], 3).await;
+        assert!(!ok);
+        assert!(timings.is_empty());
+
+        let _ = handle.shutdown().await;
+        let _ = task.await;
+    }
+
+    /// Unreachable candidates produce a per-peer timing marked failed — the
+    /// reputation store must learn about peers that did not answer, and each
+    /// peer must appear once however many keys it was asked to hold.
+    #[tokio::test]
+    async fn decentralized_delivery_reports_one_failed_timing_per_peer() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let (handle, task) =
+            kwaai_p2p::NetworkService::spawn(kwaai_p2p::NetworkConfig::for_tests(), keypair)
+                .expect("service should start");
+
+        // Two peers we have no route to: every store fails.
+        let candidates: Vec<crate::placement::Candidate> = (0..2)
+            .map(|i| {
+                crate::placement::Candidate::new(
+                    PeerId::random(),
+                    format!("/ip4/127.0.0.1/tcp/{}", 9000 + i),
+                )
+            })
+            .collect();
+
+        // Three block keys, so each peer is tried repeatedly across the round.
+        let records = build_announce_records(&ctx(peer()), &server_info(None)).unwrap();
+        let (ok, timings) = send_records_decentralized(&handle, &candidates, &records, 3).await;
+
+        assert!(!ok, "no peer accepted anything");
+        assert_eq!(
+            timings.len(),
+            2,
+            "one aggregated observation per peer, not one per key"
+        );
+        assert!(
+            timings.iter().all(|(_, _, _, success)| !success),
+            "unreachable peers must be recorded as failures"
+        );
 
         let _ = handle.shutdown().await;
         let _ = task.await;

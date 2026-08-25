@@ -99,6 +99,13 @@ pub struct NativeNode {
     pub storage: DHTStorage,
     /// Background tasks: swarm loop, DHT maintenance, control socket, mux.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Place records on the peers nearest each key rather than on the
+    /// configured bootstrap list. Mirrors `KwaaiNetConfig::decentralized_dht`,
+    /// copied here so the announce methods need no config reference.
+    decentralized: bool,
+    /// Replica target for decentralized placement; meaningless when
+    /// `decentralized` is false.
+    replication: usize,
 }
 
 impl NativeNode {
@@ -188,16 +195,34 @@ impl NativeNode {
         // Dials the configured peers and seeds Kademlia. Non-fatal: a node with
         // no reachable bootstrap still serves its own DHT and control socket,
         // and the announce loop retries every 300 s.
-        // An empty list is a misconfiguration for an ordinary node and normal
-        // for a bootstrap, which dials nobody. Either way it is not an error and
-        // there is no retry loop: nothing is dialled and `handle.bootstrap` is
-        // never called.
-        if bootstrap_peers.is_empty() {
+        //
+        // With `decentralized_dht` on, remembered peers join the dial set. That
+        // is the point of the cache: an established node whose configured peers
+        // have all been retired still rejoins through peers it met itself.
+        let mut dial_set: Vec<String> = bootstrap_peers.to_vec();
+        if config.decentralized_dht {
+            let cache = crate::peer_cache::PeerCache::load_default();
+            let have: std::collections::HashSet<String> = bootstrap_peers.iter().cloned().collect();
+            let cached = cache.dial_addrs(&have);
+            if !cached.is_empty() {
+                info!(
+                    "Peer cache: {} remembered peer(s) added to the dial set",
+                    cache.len()
+                );
+                dial_set.extend(cached);
+            }
+        }
+
+        // An empty dial set is a misconfiguration for an ordinary node and
+        // normal for a bootstrap, which dials nobody. Either way it is not an
+        // error and there is no retry loop: nothing is dialled and
+        // `handle.bootstrap` is never called.
+        if dial_set.is_empty() {
             if config.announce_self {
                 warn!("No bootstrap peers configured — this node will not join the network");
             }
         } else {
-            let addrs = bootstrap_peers
+            let addrs = dial_set
                 .iter()
                 .filter_map(|a| match a.parse() {
                     Ok(ma) => Some(ma),
@@ -208,7 +233,7 @@ impl NativeNode {
                 })
                 .collect::<Vec<_>>();
             match handle.bootstrap(addrs).await {
-                Ok(()) => info!("Bootstrapped to {} peer(s)", bootstrap_peers.len()),
+                Ok(()) => info!("Bootstrapped to {} peer(s)", dial_set.len()),
                 Err(e) => warn!("Bootstrap failed: {e} — will retry via the announce loop"),
             }
         }
@@ -253,7 +278,38 @@ impl NativeNode {
             peer_id,
             storage,
             tasks,
+            decentralized: config.decentralized_dht,
+            replication: config.dht_replication,
         })
+    }
+
+    /// Deliver one set of records, by whichever placement this node is
+    /// configured for.
+    ///
+    /// The single branch point between the two modes. With the flag off this
+    /// is byte-for-byte the previous behaviour — the same fan-out over the same
+    /// configured list — so a node that never sets the flag cannot be affected
+    /// by any of this.
+    async fn deliver(
+        &self,
+        records: &[kwaai_hivemind_dht::protocol::StoreRequest],
+        bootstrap_peers: &[String],
+    ) -> (bool, Vec<StoreTiming>) {
+        if !self.decentralized {
+            return send_records_via_handle(&self.handle, bootstrap_peers, records).await;
+        }
+
+        let cached = crate::peer_cache::PeerCache::load_default()
+            .dial_addrs(&bootstrap_peers.iter().cloned().collect());
+        let candidates =
+            crate::announce::gather_candidates(&self.handle, bootstrap_peers, &cached).await;
+        crate::announce::send_records_decentralized(
+            &self.handle,
+            &candidates,
+            records,
+            self.replication,
+        )
+        .await
     }
 
     /// Push one announcement round to every bootstrap peer, and into our own
@@ -272,7 +328,7 @@ impl NativeNode {
         for record in &records {
             self.storage.handle_store(record.clone());
         }
-        let (ok, timings) = send_records_via_handle(&self.handle, bootstrap_peers, &records).await;
+        let (ok, timings) = self.deliver(&records, bootstrap_peers).await;
         if ok {
             info!(
                 "✅ Announced {} blocks",
@@ -302,7 +358,7 @@ impl NativeNode {
         for record in &records {
             self.storage.handle_store(record.clone());
         }
-        send_records_via_handle(&self.handle, bootstrap_peers, &records).await;
+        self.deliver(&records, bootstrap_peers).await;
         info!("Unannounced from DHT — node removed from map");
     }
 
@@ -463,6 +519,14 @@ pub async fn run_native_node(
     let mut pending_update_version: Option<String> = None;
     // Deadline for the reachability-change settle window; None = no change pending.
     let mut announce_settle: Option<tokio::time::Instant> = None;
+    // Peer-cache writer, flag-gated. An interval rather than a spawned task so
+    // it shares the loop's shutdown and needs no separate cancellation.
+    let mut peer_cache_tick = tokio::time::interval(Duration::from_secs(
+        crate::peer_cache::CACHE_WRITE_INTERVAL_SECS,
+    ));
+    // The first tick of a tokio interval fires immediately; skip it so startup
+    // does not write a cache before the node has met anyone.
+    peer_cache_tick.tick().await;
 
     loop {
         tokio::select! {
@@ -600,11 +664,23 @@ pub async fn run_native_node(
                 }
             }
 
+            // Remember the peers we can see, so a restart can rejoin through
+            // them even if every configured peer has since gone away.
+            _ = peer_cache_tick.tick(), if config.decentralized_dht => {
+                write_peer_cache(&node.handle).await;
+            }
+
             _ = crate::node::shutdown_signal() => {
                 info!("Shutdown signal received");
                 break;
             }
         }
+    }
+
+    // A final write, so the peers this run met survive even if the last timer
+    // tick was up to 60 s ago.
+    if config.decentralized_dht {
+        write_peer_cache(&node.handle).await;
     }
 
     // Tombstone before tearing down the swarm, so the map drops us immediately
@@ -617,6 +693,46 @@ pub async fn run_native_node(
     node.shutdown().await;
 
     Ok(pending_update_version)
+}
+
+/// Fold the peers we can currently see into the on-disk peer cache and write
+/// it out.
+///
+/// Called on a 60 s timer and once more at shutdown. Peers not visible right
+/// now are *kept* — a peer we are not connected to this minute is not evidence
+/// it is gone — so the file only ever grows toward its recency bound rather
+/// than churning with the connection set.
+///
+/// Failures are logged and swallowed: the cache is an optimization, and a node
+/// that cannot write it is still a working node.
+async fn write_peer_cache(handle: &NetworkHandle) {
+    let known = match handle.known_peers().await {
+        Ok(k) => k,
+        Err(e) => {
+            warn!("Peer cache: could not enumerate known peers: {e}");
+            return;
+        }
+    };
+
+    let observed: Vec<(String, Vec<String>)> = known
+        .iter()
+        .map(|k| {
+            let addrs = k
+                .addrs
+                .iter()
+                .map(|a| format!("{a}/p2p/{}", k.peer_id))
+                .collect();
+            (k.peer_id.to_base58(), addrs)
+        })
+        .collect();
+
+    if observed.is_empty() {
+        return;
+    }
+
+    let mut cache = crate::peer_cache::PeerCache::load_default();
+    cache.observe_all(&observed);
+    cache.save_default_quietly();
 }
 
 /// The address this node advertises, or `None` when it has none configured.
