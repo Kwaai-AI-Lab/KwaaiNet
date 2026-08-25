@@ -364,15 +364,15 @@ impl NetworkHandle {
         self.local_peer_id.to_base58()
     }
 
-    /// Send a command and await its reply, mapping a dead event loop onto
-    /// [`P2PError::NotInitialized`].
+    /// Send a command and await its reply: a rejected send means the event
+    /// loop is gone, a dropped reply that it lost the responder.
     async fn call<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Command) -> P2PResult<T> {
         let (tx, rx) = oneshot::channel();
         self.commands
             .send(make(tx))
             .await
             .map_err(|_| P2PError::NotInitialized)?;
-        rx.await.map_err(|_| P2PError::NotInitialized)
+        rx.await.map_err(|_| P2PError::Abandoned)
     }
 
     /// Dial `multiaddr_str`, which must include a `/p2p/<peer-id>` component.

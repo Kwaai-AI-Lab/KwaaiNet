@@ -626,3 +626,212 @@ async fn connect_by_bare_peer_id_resolves_through_the_dht() {
     .expect("the routed connection must carry calls");
     assert_eq!(response, b"ping");
 }
+
+// ---------------------------------------------------------------------------
+// Routed dial: bad addresses must not end the attempt
+// ---------------------------------------------------------------------------
+
+/// Strip `/p2p/<id>` so the address is shaped the way kad stores it.
+fn stripped(addr: &str) -> libp2p::Multiaddr {
+    addr.parse::<libp2p::Multiaddr>()
+        .expect("valid multiaddr")
+        .iter()
+        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        .collect()
+}
+
+/// A dead table entry is the normal case for a NATed peer: kad holds its
+/// listen addresses, and only its DHT record has the relay circuit that works.
+#[tokio::test]
+async fn a_routed_call_falls_back_to_the_dht_when_the_known_address_is_dead() {
+    let (bootstrap, bootstrap_task, bootstrap_id) = spawn_service();
+    let (responder, responder_task, responder_id) = spawn_service();
+    let (caller, caller_task, _caller_id) = spawn_service();
+    let _tasks = [bootstrap_task, responder_task, caller_task];
+
+    responder
+        .add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("register handler");
+
+    let bootstrap_addr = dialable_addr(&bootstrap, bootstrap_id).await;
+    responder
+        .connect_peer(&bootstrap_addr)
+        .await
+        .expect("responder dials bootstrap");
+    caller
+        .connect_peer(&bootstrap_addr)
+        .await
+        .expect("caller dials bootstrap");
+
+    within(
+        "the bootstrap to learn the responder",
+        wait_in_routing_table(&bootstrap, responder_id),
+    )
+    .await;
+    within(
+        "the caller to learn the bootstrap",
+        wait_in_routing_table(&caller, bootstrap_id),
+    )
+    .await;
+
+    // Seeded last so the bootstrap handshake above cannot overwrite it.
+    let dead = format!("/ip4/127.0.0.1/tcp/{}", free_port());
+    caller
+        .add_kad_address(responder_id, stripped(&dead))
+        .await
+        .expect("seed the dead address");
+    assert!(
+        caller
+            .list_peers()
+            .await
+            .expect("list_peers")
+            .iter()
+            .all(|p| p.peer_id != responder_id),
+        "precondition: the caller must not already be connected to the responder",
+    );
+
+    let response = within(
+        "a routed call that must survive a dead address",
+        caller.call_unary_handler(responder_id, PROTO, b"fallback"),
+    )
+    .await
+    .expect("the dead address must not end the attempt");
+    assert_eq!(response, b"fallback");
+}
+
+/// One of *our own* addresses, filed in kad under someone else's peer id, must
+/// never be offered as a way to reach them: dialing it fails `WrongPeerId`.
+#[tokio::test]
+async fn our_own_address_filed_under_another_peer_is_not_a_route_to_them() {
+    let (caller, _caller_task, caller_id) = spawn_service();
+    let ghost_id = Keypair::generate_ed25519().public().to_peer_id();
+
+    let own = dialable_addr(&caller, caller_id).await;
+    caller
+        .add_kad_address(ghost_id, stripped(&own))
+        .await
+        .expect("seed our own address under the ghost's id");
+
+    let routes = caller
+        .dht_find_peer(ghost_id)
+        .await
+        .expect("dht_find_peer should answer");
+    assert!(
+        routes.is_empty(),
+        "our own address is not a route to anyone else, but was offered: {routes:?}",
+    );
+}
+
+/// The same invariant on the dial path: a peer filed under both our address
+/// and its own must be dialled only at its own. No bootstrap here, so a
+/// self-dial has no DHT walk to recover with and the call fails.
+#[tokio::test]
+async fn a_routed_call_never_dials_our_own_address_even_when_kad_holds_it() {
+    let (caller, _caller_task, caller_id) = spawn_service();
+    let (responder, _responder_task, responder_id) = spawn_service();
+
+    responder
+        .add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("register handler");
+
+    let own = dialable_addr(&caller, caller_id).await;
+    let real = dialable_addr(&responder, responder_id).await;
+    // Ours first, so anything dialling the table in order tries it first.
+    caller
+        .add_kad_address(responder_id, stripped(&own))
+        .await
+        .expect("seed our own address under the responder's id");
+    caller
+        .add_kad_address(responder_id, stripped(&real))
+        .await
+        .expect("seed the responder's real address");
+
+    let response = within(
+        "a routed call with our own address filed under the callee",
+        caller.call_unary_handler(responder_id, PROTO, b"not-us"),
+    )
+    .await
+    .expect("the call must reach the responder without a self-dial");
+    assert_eq!(response, b"not-us");
+}
+
+/// The complement: the filter is `is_ours`, not "is it loopback", so a sibling
+/// node on the same interface stays reachable.
+#[tokio::test]
+async fn a_second_local_node_on_another_port_is_still_reachable() {
+    let (caller, _caller_task, _caller_id) = spawn_service();
+    let (responder, _responder_task, responder_id) = spawn_service();
+
+    responder
+        .add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("register handler");
+
+    let responder_addr = dialable_addr(&responder, responder_id).await;
+    caller
+        .add_kad_address(responder_id, stripped(&responder_addr))
+        .await
+        .expect("seed the sibling's loopback address");
+
+    let response = within(
+        "a call to a second node on the same machine",
+        caller.call_unary_handler(responder_id, PROTO, b"sibling"),
+    )
+    .await
+    .expect("a sibling node's loopback address is a real route");
+    assert_eq!(response, b"sibling");
+}
+
+/// A port nothing is listening on: bound and released, so a small race window.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("binding an ephemeral port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
+/// A peer whose lookup finds nothing better keeps its routing-table entry: the
+/// eviction that lets the walk re-dial it is provisional, not a forgetting.
+#[tokio::test]
+async fn an_evicted_entry_is_restored_when_the_lookup_finds_nothing_better() {
+    let (caller, _caller_task, _caller_id) = spawn_service();
+    let (bootstrap, _bootstrap_task, bootstrap_id) = spawn_service();
+    let absent_id = Keypair::generate_ed25519().public().to_peer_id();
+
+    // Somebody to ask, who has never heard of the target.
+    caller
+        .connect_peer(&dialable_addr(&bootstrap, bootstrap_id).await)
+        .await
+        .expect("caller dials bootstrap");
+    within(
+        "the caller to learn the bootstrap",
+        wait_in_routing_table(&caller, bootstrap_id),
+    )
+    .await;
+
+    let dead = format!("/ip4/127.0.0.1/tcp/{}", free_port());
+    caller
+        .add_kad_address(absent_id, stripped(&dead))
+        .await
+        .expect("seed the dead address");
+
+    let err = within(
+        "a routed call to an unreachable peer",
+        caller.call_unary_handler(absent_id, PROTO, b"nobody"),
+    )
+    .await
+    .expect_err("nothing answers at the dead address and nobody knows the peer");
+    assert!(matches!(err, P2PError::DialFailed(_)), "{err:?}");
+
+    assert!(
+        caller
+            .routing_peers()
+            .await
+            .expect("routing_peers")
+            .contains(&absent_id),
+        "the failed lookup must hand the old entry back, not leave the peer forgotten",
+    );
+}
