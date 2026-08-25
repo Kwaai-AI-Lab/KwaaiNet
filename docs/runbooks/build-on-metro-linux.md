@@ -6,6 +6,10 @@ directly on the machine — there is no SSH to metro (Tailscale trial ended
 
 Roughly **60–90 minutes** for a clean release build.
 
+**The box:** HP Z8 G4, dual Xeon Gold 6154 (36 cores / 72 threads), 96 GB RAM,
+RTX A5000 (24 GB), 850 GB root with ~450 GB free. The core-count-to-RAM ratio
+matters for build parallelism — see the CUDA section below.
+
 ## Why build rather than wait for a release
 
 Tagging a release *is* the fleet rollout: `updater.rs` fetches
@@ -64,26 +68,37 @@ oom-kill:constraint=CONSTRAINT_NONE,...,global_oom,task=cicc,pid=1796144
 Out of memory: Killed process 1796144 (cicc) total-vm:3690824kB anon-rss:2989432kB
 ```
 
-`cicc` is nvcc's device-code compiler, and it holds ~3 GB per translation unit.
-Cargo defaults to one codegen job per core, so each core can add another 3 GB.
-The machine did not crash — it wedged: the kernel and NIC stayed healthy and
-the listening sockets stayed open, so TCP connects still completed, while every
+`cicc` is nvcc's device-code compiler, and it holds **~3 GB** per translation
+unit. Cargo defaults to one job per *logical* CPU, and this box is a dual Xeon
+Gold 6154 — **36 cores / 72 threads against 96 GB of RAM**. That ratio is the
+whole problem: an uncapped build asks for up to 72 × 3 GB ≈ 216 GB on a machine
+with 96. It is not a question of whether it OOMs, only how far in.
+
+The machine did not crash — it wedged: the kernel and NIC stayed healthy and the
+listening sockets stayed open, so TCP connects still completed, while every
 surviving process sat starved of memory and serviced nothing. `sshd` accepted
 connections and never wrote its banner. It looked from outside like a dead host
 and needed console access to recover.
 
+**Use `-j 8`** — roughly 24 GB of `cicc` at peak, leaving ample headroom for
+rustc's own codegen and for the node itself if it is still running. Going wider
+buys little: the CUDA kernels are a small part of the build and the Rust link
+step is serial regardless.
+
 ```bash
 cd core
 export CUDA_COMPUTE_CAP=80    # A5000 is compute capability 8.6; CI pins 80
-cargo build --release -p kwaainet --features cuda -j 4
+cargo build --release -p kwaainet --features cuda -j 8
 ```
 
-Check the headroom first, and lower `-j` if RAM is tight — budget roughly 3 GB
-per job:
+Confirm the headroom before starting, and note whether there is swap — without
+it the OOM killer fires with no warning shot:
 
 ```bash
 free -h; nproc; swapon --show
 ```
+
+Budget ~3 GB per job against *available* memory, not total.
 
 `CUDA_COMPUTE_CAP=80` is what CI uses and what the published CUDA artifact is
 built with, so this reproduces the shipped binary rather than a local variant.

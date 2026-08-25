@@ -56,21 +56,26 @@ Then, matching CI's recipe for this target (`.github/workflows/release.yml`,
 ```powershell
 cd core
 $env:CUDA_COMPUTE_CAP = "80"
-cargo build --release -p kwaainet --features cuda-windows -j 4
+cargo build --release -p kwaainet --features cuda-windows -j 8
 ```
 
-**Cap the parallelism — `-j 4`.** `cicc`, nvcc's device-code compiler, holds
-around 3 GB per translation unit, and cargo defaults to one codegen job per
-core. On 2026-08-25 an uncapped CUDA build exhausted metro-linux's RAM and
-wedged the machine for roughly six hours (details in the metro-linux runbook).
-Windows will page rather than invoke an OOM killer, so the failure mode here is
-a build that crawls and a desktop that stops responding — less destructive, but
-not worth risking. Check the headroom first and lower `-j` if it is tight:
+**Cap the parallelism.** `cicc`, nvcc's device-code compiler, holds around 3 GB
+per translation unit, and cargo defaults to one job per *logical* CPU. On
+2026-08-25 an uncapped CUDA build exhausted metro-linux — 72 threads against
+96 GB of RAM, so it asked for ~216 GB — and wedged the machine for roughly six
+hours (details in the metro-linux runbook). Windows pages rather than invoking
+an OOM killer, so the failure mode here is a build that crawls and a desktop
+that stops responding: less destructive, not worth risking.
+
+Size `-j` from *this* machine rather than copying a number. Divide available RAM
+by 3 GB, then take the smaller of that and the thread count:
 
 ```powershell
-Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
-(Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
+(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+(Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
 ```
+
+`-j 8` is a safe starting point on anything with 32 GB or more.
 
 **`cuda-windows`, not `cuda`.** They are different features:
 
