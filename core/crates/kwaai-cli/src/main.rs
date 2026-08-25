@@ -247,7 +247,11 @@ async fn main() -> Result<()> {
                                         cfg.model_repository = None;
                                     }
                                     // Persist so the daemon child picks it up.
-                                    let _ = cfg.save();
+                                    let mut persisted = cfg.reloaded();
+                                    persisted.model = cfg.model.clone();
+                                    persisted.model_dht_prefix = cfg.model_dht_prefix.clone();
+                                    persisted.model_repository = cfg.model_repository.clone();
+                                    let _ = persisted.save();
                                 }
                                 None => {
                                     print_info(&format!(

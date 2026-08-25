@@ -401,7 +401,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         // assignment and what the running process announces.
         let assigned_blocks = (e - s) as u32;
         if Some(s as u32) != cfg.start_block || assigned_blocks != cfg.blocks {
-            let mut updated = cfg.clone();
+            let mut updated = cfg.reloaded();
             // Records a pin, so the next start keeps this range instead of
             // re-querying the DHT and possibly moving again.
             updated.start_block = Some(s as u32);
@@ -425,7 +425,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         let s = args.start_block.unwrap_or_else(|| cfg.start_block()) as usize;
         let total = cfg.model_total_blocks() as usize;
         let e = (s + target_blocks).min(total);
-        let mut updated = cfg.clone();
+        let mut updated = cfg.reloaded();
         updated.start_block = Some(s as u32);
         updated.blocks = (e - s) as u32;
         // --start-block / --no-auto is a deliberate placement; the rebalancer
