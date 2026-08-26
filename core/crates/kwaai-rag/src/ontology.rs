@@ -172,9 +172,107 @@ pub struct Ontology {
     pub narrator_gender: Option<String>,
 }
 
+/// Built-in `genealogy` module: the 14 kinship predicates with their inverses,
+/// symmetry, Person domain/range and contradiction table.
+///
+/// Exists because `extends: genealogy` was parsed and then ignored. A memoir
+/// declaring it got an extraction prompt containing zero kinship predicates,
+/// and kinship edges fell from 98 to 36 in an A/B — the ontology arm was worse
+/// than the control at the one thing that corpus is densest in.
+fn genealogy_module() -> Vec<RelationTypeDef> {
+    let p = |name: &str, inverse: Option<&str>, symmetric: bool| RelationTypeDef {
+        name: name.to_string(),
+        domain: vec!["Person".into()],
+        range: vec!["Person".into()],
+        inverse: inverse.map(String::from),
+        symmetric,
+        confidence: 0.9,
+        triggers: Vec::new(),
+        ..Default::default()
+    };
+    vec![
+        p("parent_of", Some("child_of"), false),
+        p("child_of", Some("parent_of"), false),
+        p("grandparent_of", Some("grandchild_of"), false),
+        p("grandchild_of", Some("grandparent_of"), false),
+        p("uncle_of", Some("nephew_of"), false),
+        p("aunt_of", Some("niece_of"), false),
+        p("nephew_of", Some("uncle_of"), false),
+        p("niece_of", Some("aunt_of"), false),
+        p("foster_parent_of", Some("foster_child_of"), false),
+        p("foster_child_of", Some("foster_parent_of"), false),
+        p("spouse_of", None, true),
+        p("sibling_of", None, true),
+        p("half_sibling_of", None, true),
+        p("cousin_of", None, true),
+    ]
+}
+
+/// Trigger phrases for the genealogy module, mirroring the compiled
+/// FAMILY_RELATION_TRIGGERS so an inheriting ontology gets them too.
+fn genealogy_triggers() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("son of", "child_of"), ("daughter of", "child_of"), ("born to", "child_of"),
+        ("wife of", "spouse_of"), ("husband of", "spouse_of"), ("married to", "spouse_of"),
+        ("widow of", "spouse_of"), ("widower of", "spouse_of"),
+        ("father of", "parent_of"), ("mother of", "parent_of"),
+        ("brother of", "sibling_of"), ("sister of", "sibling_of"),
+        ("half-brother of", "half_sibling_of"), ("half-sister of", "half_sibling_of"),
+        ("grandfather of", "grandparent_of"), ("grandmother of", "grandparent_of"),
+        ("grandson of", "grandchild_of"), ("granddaughter of", "grandchild_of"),
+        ("foster son of", "foster_child_of"), ("foster daughter of", "foster_child_of"),
+        ("nephew of", "nephew_of"), ("niece of", "niece_of"),
+        ("uncle of", "uncle_of"), ("aunt of", "aunt_of"), ("cousin of", "cousin_of"),
+    ]
+}
+
 impl Ontology {
     pub fn from_yaml(src: &str) -> anyhow::Result<Self> {
-        Ok(serde_yaml::from_str(src)?)
+        let mut o: Self = serde_yaml::from_str(src)?;
+        o.resolve_extends();
+        Ok(o)
+    }
+
+    /// Splice in a built-in module named by `extends`.
+    ///
+    /// The KB's own declarations win: a predicate declared locally is left
+    /// alone, so an ontology can override an inherited one rather than being
+    /// stuck with it. Inherited predicates are appended, and their triggers
+    /// added only for predicates that gained no triggers of their own.
+    pub fn resolve_extends(&mut self) {
+        let module = match self.ontology.extends.as_deref() {
+            Some("genealogy") => genealogy_module(),
+            _ => return,
+        };
+        let declared: std::collections::HashSet<String> = self
+            .relation_types
+            .iter()
+            .map(|r| r.name.to_lowercase())
+            .collect();
+
+        let mut trig: HashMap<&str, Vec<String>> = HashMap::new();
+        for (phrase, rel) in genealogy_triggers() {
+            trig.entry(rel).or_default().push(phrase.to_string());
+        }
+        for mut r in module {
+            if declared.contains(&r.name.to_lowercase()) {
+                continue; // local declaration wins
+            }
+            if let Some(ts) = trig.get(r.name.as_str()) {
+                r.triggers = ts.clone();
+            }
+            self.relation_types.push(r);
+        }
+        // Person must exist as a type for the inherited domain/range to admit
+        // anything; an ontology inheriting genealogy without it would reject
+        // every kinship edge it just gained.
+        if self.entity_type("Person").is_none() && !self.entity_types.is_empty() {
+            self.entity_types.push(EntityTypeDef {
+                name: "Person".into(),
+                description: "A named individual (inherited with the genealogy module).".into(),
+                ..Default::default()
+            });
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -294,6 +392,38 @@ impl Ontology {
             return false;
         }
         self.relation_type(relation).is_some_and(|r| r.functional)
+    }
+
+    /// Coerce an extracted predicate into the declared vocabulary.
+    ///
+    /// Returns the canonical predicate to store, or `None` to drop the edge.
+    ///
+    /// An ontology that merely *suggests* predicates is not an ontology. The
+    /// first D6 A/B produced 88 distinct relation types from 27 declared —
+    /// `was_defenestrated_at`, `gazed_at`, `staying behind` — because the
+    /// vocabulary reached the prompt but nothing checked the output against it.
+    /// A one-off predicate with a single instance carries no more information
+    /// than `associated_with` and costs a schema its meaning.
+    ///
+    /// Unknown predicates map to `fallback_predicate` when the corpus admits
+    /// one (narrative genuinely contains untyped association) and are dropped
+    /// when it does not (a vague edge in case law or a standard is a bug).
+    pub fn coerce_relation(&self, relation: &str) -> Option<String> {
+        if self.is_empty() {
+            return Some(relation.to_string()); // no ontology: unchanged
+        }
+        if let Some(r) = self.relation_type(relation) {
+            return Some(r.name.clone()); // canonical casing
+        }
+        // An inverse name is a legitimate way to say a declared predicate.
+        if let Some(r) = self
+            .relation_types
+            .iter()
+            .find(|r| r.inverse.as_deref().is_some_and(|i| i.eq_ignore_ascii_case(relation)))
+        {
+            return r.inverse.clone().or_else(|| Some(r.name.clone()));
+        }
+        self.fallback_predicate.clone()
     }
 
     /// Streams marked `ingest: skip` — their chunks never reach extraction.
@@ -956,5 +1086,100 @@ mod clear_preserves_schema_tests {
             assert!(g.ontology().is_none());
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod extends_and_vocabulary_tests {
+    use super::*;
+
+    fn d6() -> Ontology {
+        Ontology::from_yaml(
+            "ontology: { name: d6, extends: genealogy }\n\
+             entity_types:\n  - name: Address\n\
+             relation_types:\n  - name: lived_at\n\
+             fallback_predicate: associated_with\n",
+        )
+        .unwrap()
+    }
+
+    /// The A/B failure this fixes: `extends: genealogy` was parsed and ignored,
+    /// so a memoir's extraction prompt offered zero kinship predicates and
+    /// kinship edges fell from 98 to 36 against the control.
+    #[test]
+    fn extends_genealogy_supplies_the_kinship_vocabulary() {
+        let o = d6();
+        let names = o.relation_type_names();
+        for k in ["parent_of", "child_of", "spouse_of", "sibling_of", "cousin_of"] {
+            assert!(names.contains(&k), "{k} must be inherited");
+        }
+        assert!(names.contains(&"lived_at"), "local predicates survive");
+        // inverses and symmetry come with it
+        assert_eq!(o.inverse_of("parent_of"), Some("child_of"));
+        assert!(o.is_symmetric("spouse_of"));
+        // and the trigger phrases, so the lexical path works too
+        assert!(o.triggers().iter().any(|t| t.phrase == "son of"));
+    }
+
+    /// Inheriting kinship is useless if Person is not a declared type — the
+    /// Person domain/range would reject every edge just gained.
+    #[test]
+    fn inheriting_genealogy_guarantees_a_person_type() {
+        let o = d6();
+        assert!(o.entity_type("Person").is_some());
+        assert!(o.relation_endpoints_valid("parent_of", Some("Person"), Some("Person")));
+        assert!(!o.relation_endpoints_valid("parent_of", Some("Address"), Some("Person")));
+    }
+
+    /// A locally declared predicate must override the inherited one rather than
+    /// being silently duplicated or shadowed.
+    #[test]
+    fn a_local_declaration_beats_the_inherited_one() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: x, extends: genealogy }\n\
+             relation_types:\n  - name: spouse_of\n    symmetric: false\n",
+        )
+        .unwrap();
+        assert_eq!(
+            o.relation_type_names().iter().filter(|n| **n == "spouse_of").count(),
+            1,
+            "no duplicate"
+        );
+        assert!(!o.is_symmetric("spouse_of"), "local definition wins");
+    }
+
+    /// The vocabulary must be closed, or the ontology only suggests.
+    #[test]
+    fn undeclared_predicates_are_coerced_or_dropped() {
+        let o = d6();
+        assert_eq!(o.coerce_relation("lived_at").as_deref(), Some("lived_at"));
+        assert_eq!(o.coerce_relation("parent_of").as_deref(), Some("parent_of"));
+        // the real invented predicates from the first A/B run
+        for junk in ["was_defenestrated_at", "gazed_at", "staying behind"] {
+            assert_eq!(
+                o.coerce_relation(junk).as_deref(),
+                Some("associated_with"),
+                "{junk} must fall back, not persist as its own type"
+            );
+        }
+    }
+
+    /// A corpus that admits no fallback drops the edge instead — a vague
+    /// relation in case law or a standard is a bug, not a hedge.
+    #[test]
+    fn without_a_fallback_an_unknown_predicate_is_dropped() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: legal }\nrelation_types:\n  - name: overrules\n",
+        )
+        .unwrap();
+        assert_eq!(o.coerce_relation("overrules").as_deref(), Some("overrules"));
+        assert_eq!(o.coerce_relation("gazed_at"), None);
+    }
+
+    /// A KB with no ontology must pass everything through untouched.
+    #[test]
+    fn no_ontology_coerces_nothing() {
+        let o = Ontology::default();
+        assert_eq!(o.coerce_relation("anything_at_all").as_deref(), Some("anything_at_all"));
     }
 }

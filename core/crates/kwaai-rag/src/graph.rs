@@ -1178,6 +1178,22 @@ impl GraphStore {
         method: &str,
         source: &str,
     ) -> Result<()> {
+        // ── Vocabulary: coerce into the declared predicate set ───────────────
+        // Without this the ontology only suggests: a first A/B produced 88
+        // distinct predicates from 27 declared. Unknown ones become the
+        // corpus's fallback, or are dropped where it admits none.
+        let coerced;
+        let relation_type = match self.ontology.as_ref() {
+            Some(ont) => match ont.coerce_relation(relation_type) {
+                Some(r) => {
+                    coerced = r;
+                    coerced.as_str()
+                }
+                None => return Ok(()),
+            },
+            None => relation_type,
+        };
+
         // ── Constraint: ontology domain/range ────────────────────────────────
         // The general form of the two hardcoded rules that follow. When the KB
         // declares an ontology, a predicate whose endpoints violate its declared
