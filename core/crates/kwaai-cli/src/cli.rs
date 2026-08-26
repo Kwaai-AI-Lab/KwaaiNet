@@ -1717,8 +1717,13 @@ pub enum GraphAction {
         name: String,
     },
 
-    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards
+    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards.
+    /// The KB's ontology, entity schemas and document metadata are preserved; use --all to drop those too.
     Clear {
+        /// Also drop the ontology, entity schemas and document metadata
+        #[arg(long)]
+        all: bool,
+
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,

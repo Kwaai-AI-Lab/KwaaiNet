@@ -4509,6 +4509,44 @@ impl GraphStore {
             .filter(|g| !g.is_empty());
     }
 
+    /// Wipe entities and relations, preserving the KB's schema.
+    ///
+    /// `graph clear` previously deleted the whole database file, which also
+    /// discarded `kb_ontology`, `kb_entity_schemas`, `doc_metadata` and
+    /// `document_titles`. The graph is derived data; the schema that describes
+    /// it and the document metadata are configuration, and a clear-then-rebuild
+    /// silently produced a different graph because the vocabulary had vanished
+    /// with the entities. Caught when an A/B's ontology arm ran as a second
+    /// control after its ontology was cleared out from under it.
+    ///
+    /// Use `clear_all` when a full reset including schema really is wanted.
+    pub fn clear_graph_data(&mut self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM entities;
+             DELETE FROM relations;
+             DELETE FROM chunk_entity;
+             DELETE FROM entity_chunk;
+             DELETE FROM chunk_mentions;
+             DELETE FROM entity_timeline_v1;
+             DELETE FROM interactions;",
+        )?;
+        self.nodes.clear();
+        self.adj.clear();
+        self.chunk_to_entities.clear();
+        self.entity_to_chunks.clear();
+        self.alias_token_index.clear();
+        Ok(())
+    }
+
+    /// Wipe everything, schema included.
+    pub fn clear_all(&mut self) -> Result<()> {
+        self.clear_graph_data()?;
+        self.conn.execute_batch("DELETE FROM metadata;")?;
+        self.ontology = None;
+        self.narrator_gender = None;
+        Ok(())
+    }
+
     /// This KB's ontology, if one is stored.
     pub fn ontology(&self) -> Option<&crate::ontology::Ontology> {
         self.ontology.as_ref()

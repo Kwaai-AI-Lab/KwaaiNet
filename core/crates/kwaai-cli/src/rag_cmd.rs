@@ -2859,7 +2859,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 }
             }
 
-            GraphAction::Clear { yes } => {
+            GraphAction::Clear { yes, all } => {
                 if !yes {
                     print!("  Wipe the knowledge graph for '{kb}'? [y/N] ");
                     io::stdout().flush().ok();
@@ -2870,16 +2870,27 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         return Ok(());
                     }
                 }
-                // Delete the graph DB file so it is recreated fresh on next open.
-                let graph_path = rag_cfg.data_dir().join(format!("graph-{}.db", tenant_id));
-                if graph_path.exists() {
-                    std::fs::remove_file(&graph_path)
-                        .with_context(|| format!("deleting {}", graph_path.display()))?;
+                // Wipe entities and relations but keep the KB's schema. Deleting
+                // the file also discarded the ontology, entity schemas and doc
+                // metadata, so a clear-then-rebuild silently produced a graph
+                // built from a different vocabulary. `--all` is the full reset.
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                let had_ontology = store.ontology().is_some();
+                if all {
+                    store.clear_all().context("clearing graph and schema")?;
+                    print_success(&format!(
+                        "Knowledge graph and schema for '{kb}' cleared."
+                    ));
+                } else {
+                    store.clear_graph_data().context("clearing graph")?;
+                    print_success(&format!(
+                        "Knowledge graph for '{kb}' cleared. Run `kwaainet rag graph build --kb {kb}` to rebuild."
+                    ));
+                    if had_ontology {
+                        print_info("  Ontology and entity schemas preserved (use --all to drop them).");
+                    }
                 }
-                print_success(&format!(
-                    "Knowledge graph for '{}' cleared. Run `kwaainet rag graph build --kb {}` to rebuild.",
-                    kb, kb
-                ));
             }
 
             GraphAction::Build {

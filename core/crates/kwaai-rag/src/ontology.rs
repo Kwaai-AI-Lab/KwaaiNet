@@ -895,3 +895,66 @@ relation_types:
         );
     }
 }
+
+#[cfg(test)]
+mod clear_preserves_schema_tests {
+    use super::*;
+    use crate::graph::GraphStore;
+    use uuid::Uuid;
+
+    /// Clearing a graph must not discard the schema that describes it.
+    ///
+    /// The old `graph clear` deleted the database file, so an ontology loaded
+    /// minutes earlier vanished with the entities and the next build silently
+    /// used the global vocabulary instead. That turned an A/B's ontology arm
+    /// into a second control without any error.
+    #[test]
+    fn clearing_the_graph_keeps_the_ontology() {
+        let dir = std::env::temp_dir().join(format!("ont-clear-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tenant = Uuid::new_v4();
+        let ont = Ontology::from_yaml(
+            "ontology: { name: keepme }\nentity_types:\n  - name: Address\n",
+        )
+        .unwrap();
+
+        {
+            let mut g = GraphStore::open(&dir, tenant).unwrap();
+            g.set_ontology(&ont).unwrap();
+            g.upsert_entity(crate::graph::EntityNode {
+                id: crate::graph::entity_id("Chapel Street", "Address"),
+                name: "Chapel Street".into(),
+                entity_type: "Address".into(),
+                description: "a street".into(),
+                embedding: vec![],
+                mention_count: 1,
+                first_chunk_id: 1,
+                aliases: vec![],
+                schema_type: None,
+                gender: None,
+                evidence: vec![],
+                fields: Default::default(),
+                confidence: 1.0,
+                extraction_confidence: 1.0,
+            })
+            .unwrap();
+            assert!(g.ontology().is_some());
+            g.clear_graph_data().unwrap();
+            assert_eq!(g.node_count(), 0, "entities must be gone");
+            assert!(g.ontology().is_some(), "ontology must survive the clear");
+        }
+        // ...and survive a reopen, i.e. it was preserved on disk, not just in memory.
+        {
+            let g = GraphStore::open(&dir, tenant).unwrap();
+            assert_eq!(g.node_count(), 0);
+            assert_eq!(g.ontology().map(|o| o.ontology.name.clone()).as_deref(), Some("keepme"));
+        }
+        // --all is the escape hatch when a full reset really is wanted.
+        {
+            let mut g = GraphStore::open(&dir, tenant).unwrap();
+            g.clear_all().unwrap();
+            assert!(g.ontology().is_none());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
