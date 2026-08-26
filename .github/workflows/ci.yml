@@ -128,9 +128,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Skipped on Windows: sccache cannot spawn rustc for web-sys there, because
+      # it rebuilds a command line longer than CreateProcess accepts. See the
+      # note in windows-check above.
       - name: Install sccache
+        if: runner.os != 'Windows'
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Configure sccache
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
@@ -213,13 +218,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Configure sccache
-        shell: bash
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+      # Deliberately no sccache here. Windows caps a command line at 32,767
+      # characters (CreateProcess), and web-sys — reached through kwaai-wasm —
+      # emits a --check-cfg list naming every DOM feature it knows, which blows
+      # straight past that. Cargo works around it by handing rustc an @argfile;
+      # sccache rebuilds the command line itself and does not, so it dies before
+      # rustc ever runs:
+      #
+      #   sccache: error: failed to spawn Command { std: "…rustc.exe"
+      #     "--crate-name" "web_sys" … "--check-cfg" "cfg(feature, values(…"
+      #
+      # The actions/cache step below still carries target/ between runs, so the
+      # cost is a slower cold run, not an uncached one.
 
       - name: Install Go
         uses: actions/setup-go@v5
