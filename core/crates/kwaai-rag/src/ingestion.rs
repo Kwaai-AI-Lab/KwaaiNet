@@ -328,6 +328,13 @@ pub async fn extract_and_store_entities_pub(
     // through to the compiled tables. Building here rather than per chunk is
     // not a micro-optimisation: the naive path rebuilds every trigger string
     // for each sentence examined (measured 5x slower; classification 14x).
+    // Stamp the window onto every relation written by this run, so the text the
+    // extractor could see stays recoverable from the graph.
+    {
+        let mut g = store.lock().unwrap_or_else(|e| e.into_inner());
+        g.set_evidence_window(context_window.min(u8::MAX as usize) as u8);
+    }
+
     let ontology: Arc<Option<crate::ontology::OntologyIndex>> = Arc::new({
         let g = store.lock().unwrap_or_else(|e| e.into_inner());
         g.ontology()

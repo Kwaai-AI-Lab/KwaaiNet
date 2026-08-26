@@ -1604,3 +1604,91 @@ mod original_predicate_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod evidence_window_tests {
+    use super::*;
+    use crate::graph::{entity_id, EntityNode, FieldValue, GraphStore};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn person(n: &str) -> EntityNode {
+        EntityNode {
+            id: entity_id(n, "Person"),
+            name: n.into(),
+            entity_type: "Person".into(),
+            description: String::new(),
+            embedding: vec![],
+            mention_count: 1,
+            first_chunk_id: 1,
+            aliases: vec![],
+            schema_type: None,
+            gender: None,
+            evidence: vec![],
+            fields: HashMap::<String, FieldValue>::new(),
+            confidence: 1.0,
+            extraction_confidence: 1.0,
+        }
+    }
+
+    /// Extraction reads centre ± window but recorded only the centre, so half
+    /// the supporting text was unrecoverable. Measured on D6: the centre chunk
+    /// contains both endpoints for 42.6% of extracted relations, the ±1 window
+    /// for 50.0%.
+    #[test]
+    fn a_relation_records_the_window_it_was_extracted_under() {
+        let dir = std::env::temp_dir().join(format!("evwin-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tenant = Uuid::new_v4();
+        {
+            let mut g = GraphStore::open(&dir, tenant).unwrap();
+            g.set_evidence_window(1);
+            g.upsert_entity(person("Joe")).unwrap();
+            g.upsert_entity(person("Mike")).unwrap();
+            g.upsert_relation(
+                entity_id("Joe", "Person"),
+                entity_id("Mike", "Person"),
+                "member_of",
+                42,
+            )
+            .unwrap();
+            let r = &g.all_relation_records()[0];
+            assert_eq!(r.evidence_window, 1);
+            assert_eq!(r.evidence_chunk_ids, vec![42]);
+
+            // The span widens the centre by the recorded window.
+            let neighbours = |c: i64, w: u8| (c - w as i64..=c + w as i64).collect::<Vec<_>>();
+            assert_eq!(g.evidence_span(r, &neighbours), vec![41, 42, 43]);
+        }
+        // and it survives a reopen — persisted, not just in memory
+        let g = GraphStore::open(&dir, tenant).unwrap();
+        assert_eq!(g.all_relation_records()[0].evidence_window, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A seeded relation has no text, so its span is empty rather than a window
+    /// around chunk 0 — which would point at real, unrelated text.
+    #[test]
+    fn seeded_relations_resolve_to_no_evidence() {
+        let dir = std::env::temp_dir().join(format!("evwin2-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut g = GraphStore::open(&dir, Uuid::new_v4()).unwrap();
+        g.set_evidence_window(1);
+        g.upsert_entity(person("Joe")).unwrap();
+        g.upsert_entity(person("Mike")).unwrap();
+        g.upsert_relation(
+            entity_id("Joe", "Person"),
+            entity_id("Mike", "Person"),
+            "member_of",
+            0,
+        )
+        .unwrap();
+        let r = &g.all_relation_records()[0];
+        let neighbours = |c: i64, w: u8| (c - w as i64..=c + w as i64).collect::<Vec<_>>();
+        assert!(
+            g.evidence_span(r, &neighbours).is_empty(),
+            "chunk 0 means seeded; widening it would cite unrelated text"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

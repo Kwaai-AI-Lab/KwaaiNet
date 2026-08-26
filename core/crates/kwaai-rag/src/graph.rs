@@ -308,6 +308,19 @@ pub struct RelationRecord {
     /// `None` when the extractor's predicate was already the stored one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_predicate: Option<String>,
+    /// Context window in effect when this relation was extracted.
+    ///
+    /// `evidence_chunk_ids` records the *centre* chunk, but extraction reads
+    /// centre ± `context_window`, so half the supporting text was not
+    /// recoverable from the graph. Measured on D6: checking only the centre
+    /// chunk finds both endpoints in 42.6% of extracted relations; checking the
+    /// ±1 window the extractor actually saw finds them in 50.0%. Without this
+    /// field neither an audit nor an embedding experiment can locate the text a
+    /// relation was read out of.
+    ///
+    /// 0 for seeded relations and for graphs built before this was recorded.
+    #[serde(default)]
+    pub evidence_window: u8,
 }
 
 fn default_relation_confidence() -> f32 {
@@ -845,6 +858,9 @@ pub struct GraphStore {
     chunk_to_entities: HashMap<i64, Vec<i64>>,
     /// entity_id → [chunk_id]
     entity_to_chunks: HashMap<i64, Vec<i64>>,
+    /// Context window of the current extraction run, stamped onto relations as
+    /// they are written. A property of the run, not of each call.
+    evidence_window: u8,
     /// This KB's ontology, when one is stored. `None` for the fifteen KBs
     /// without one, in which case every compiled fallback applies unchanged.
     ontology: Option<crate::ontology::Ontology>,
@@ -894,6 +910,7 @@ impl GraphStore {
         )?;
 
         let mut store = Self {
+            evidence_window: 0,
             ontology: None,
             narrator_gender: None,
             conn,
@@ -1405,6 +1422,7 @@ impl GraphStore {
                 })
                 .unwrap_or_else(|| RelationRecord {
                     original_predicate: original_predicate.map(str::to_string),
+                    evidence_window: self.evidence_window,
                     src_id,
                     dst_id,
                     relation_type: relation_type.to_string(),
@@ -2118,6 +2136,7 @@ impl GraphStore {
                         e
                     })
                     .unwrap_or_else(|| RelationRecord {
+                        evidence_window: self.evidence_window,
                         original_predicate: None,
                         src_id: new_src,
                         dst_id: new_dst,
@@ -4633,6 +4652,12 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Declare the context window extraction is using, so relations written
+    /// from here on record what text the extractor could see.
+    pub fn set_evidence_window(&mut self, window: u8) {
+        self.evidence_window = window;
+    }
+
     /// This KB's ontology, if one is stored.
     pub fn ontology(&self) -> Option<&crate::ontology::Ontology> {
         self.ontology.as_ref()
@@ -4754,6 +4779,36 @@ impl GraphStore {
                     if let Ok(rec) = serde_json::from_slice::<RelationRecord>(&v) {
                         out.push(rec);
                     }
+                }
+            }
+        }
+        out
+    }
+
+    /// The chunk ids a relation's evidence actually spans — the centre chunks
+    /// widened by the window that was in effect when it was extracted.
+    ///
+    /// `evidence_chunk_ids` alone under-reports: on D6, the centre chunk
+    /// contains both endpoints for 42.6% of extracted relations, the ±1 window
+    /// the extractor really read for 50.0%. Callers auditing provenance or
+    /// embedding evidence want this, not the raw field.
+    ///
+    /// `neighbours` maps a chunk id to its adjacent ids in document order;
+    /// pass one built from the chunk store, since the graph does not hold
+    /// document positions.
+    pub fn evidence_span(
+        &self,
+        rel: &RelationRecord,
+        neighbours: &dyn Fn(i64, u8) -> Vec<i64>,
+    ) -> Vec<i64> {
+        let mut out: Vec<i64> = Vec::new();
+        for &cid in &rel.evidence_chunk_ids {
+            if cid == 0 {
+                continue; // seeded: no text
+            }
+            for n in neighbours(cid, rel.evidence_window) {
+                if !out.contains(&n) {
+                    out.push(n);
                 }
             }
         }
@@ -5068,7 +5123,10 @@ impl GraphStore {
                 };
                 let new_key = relation_key(new_src, new_dst, &rel.relation_type);
                 let updated = RelationRecord {
-                    original_predicate: None,
+                    // Provenance survives a re-key: this is the same assertion
+                    // pointed at a merged entity, not a new observation.
+                    evidence_window: rel.evidence_window,
+                    original_predicate: rel.original_predicate.clone(),
                     src_id: new_src,
                     dst_id: new_dst,
                     relation_type: rel.relation_type.clone(),
