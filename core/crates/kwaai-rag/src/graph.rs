@@ -5544,7 +5544,18 @@ pub async fn extract_from_text(
                 } else {
                     format!(" (e.g. {})", s.examples.join(", "))
                 };
-                format!("  {} — {}{}", s.name, s.description, ex)
+                // An anti-example says "this is not a `T`" — it does NOT say the
+                // thing is not an entity. Flattening them into one global
+                // do-not-extract list told the model to discard "District Six",
+                // "Muslim" and "Non-European Unity Movement", every one of them
+                // a real entity of some other type, and the central Place of the
+                // corpus among them.
+                let anti = if s.anti_examples.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — NOT {}: {}", s.name, s.anti_examples.join(", "))
+                };
+                format!("  {} — {}{}{}", s.name, s.description, ex, anti)
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -5559,20 +5570,10 @@ pub async fn extract_from_text(
     let stop_words = effective_stop_words(kb_schemas, &[]);
     let stop_word_list = stop_words.join(", ");
 
-    // Anti-examples are already per-KB in the ontology; surface them as a
-    // negative instruction instead of a compiled-in roster.
-    let anti: Vec<&str> = kb_schemas
-        .iter()
-        .flat_map(|s| s.anti_examples.iter().map(|a| a.as_str()))
-        .collect();
-    let anti_example_line = if anti.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "- Do NOT extract these, which look like entities in this corpus but are not: {}.\n",
-            anti.join(", ")
-        )
-    };
+    // Anti-examples are attached to their own type in `kb_type_context` above.
+    // They must never become a global do-not-extract list: "not a Venue" is not
+    // "not an entity".
+    let anti_example_line = String::new();
 
     let prompt = if effective_no_relations {
         format!(

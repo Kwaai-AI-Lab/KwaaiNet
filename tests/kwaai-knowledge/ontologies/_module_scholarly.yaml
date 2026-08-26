@@ -60,6 +60,11 @@ entity_types:
   - name: Organism
     description: A named taxon or biological subject. Needed by DeepSea.
     irreducible: false
+  - name: Publication
+    description: >-
+      A named paper, report or article. Declared because `reports.domain`
+      referenced it; it is also the bibliography stream's principal type.
+    irreducible: false
   - name: Finding
     description: >-
       A stated empirical result with its magnitude and uncertainty. The unit a

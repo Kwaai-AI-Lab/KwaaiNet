@@ -40,6 +40,12 @@ entity_types:
   - name: Type
     description: A named data type.
     irreducible: false
+  - name: Constant
+    description: A named module-level constant.
+    irreducible: false
+  - name: Exception
+    description: A named exception or error type.
+    irreducible: false
   - name: Concept
     description: A named idea explained in prose rather than declared in an API.
     irreducible: false

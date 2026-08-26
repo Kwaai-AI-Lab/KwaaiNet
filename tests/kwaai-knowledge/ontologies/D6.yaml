@@ -19,7 +19,7 @@
 
 ontology:
   name: district-six-memoir
-  version: 7
+  version: 8
   extends: genealogy
 
 # The narrator is Yousuf (Joe) Rassool, a man. This used to be hardcoded in
@@ -80,9 +80,15 @@ entity_types:
     # questions ("Tell me about Buitencingle", "Tell me about Kloof Nek") ask
     # about named streets directly. Flattening these into Place loses the book.
     description: >-
-      A named street, dwelling, or premises. In an account of a neighbourhood
-      later demolished, the individual address is the unit of memory.
-    examples: ["Buitencingle", "Kloof Nek", "Church Street", "Chapel Street", "no. 22"]
+      A named street, or a dwelling identified by a number on one. In an account
+      of a neighbourhood later demolished the individual address is the unit of
+      memory. The name must be the place itself. A person's surname is never an
+      address, however the text describes where that person lived.
+    examples: ["Buitencingle", "Kloof Nek", "Church Street", "Chapel Street", "no. 22 Chapel Street"]
+    anti_examples:
+      - "Allie"          # a surname — Mike Allie, Mr. Allie. Extract as Person
+      - "Gool"           # likewise
+      - "District Six"   # a Place, larger than an address
     irreducible: false
     fields:
       - { key: occupant, desc: "who lived or traded there, as stated" }
@@ -230,6 +236,30 @@ entity_types:
       - "no. 22 Chapel Street"    # an Address
     irreducible: false
 
+  - name: Organization
+    evidence: 1.2
+    # Declared because `worked_at.range` already pointed here and nothing did.
+    # Also the correct home for regiments: "The Duke's Own Rifles, called 'The
+    # Dukes' for short" was typed SportsClub in one run and
+    # PoliticalOrganization in another, both wrong. Military language is 1.2%
+    # of chunks — well under the bar every other type cleared — so it earns a
+    # slot in the generic collective body rather than a type of its own.
+    description: >-
+      A named collective body that is neither a political movement nor a
+      school — an employer, a congregation, a board, a shop, or a uniformed
+      unit such as a regiment.
+    examples:
+      - "Group Areas Board"
+      - "The Duke's Own Rifles"
+      - "Cape Corps"
+      - "Hindu association"
+    anti_examples:
+      - "Teachers League of South Africa"   # PoliticalOrganization
+      - "Trafalgar High School"             # EducationalInstitution
+    markers:
+      last: [board, association, company, firm, store, rifles, corps, regiment]
+    irreducible: false
+
   - name: SportsClub
     # 'union' is deliberately absent — it collides with trade unions; 'Cricket Union' is caught by the `any` marker
     markers:
@@ -238,8 +268,14 @@ entity_types:
     evidence: 7.0
     # 7.0% of chunks, and one eval question asks directly about the author's
     # cricket. The book carries ball-by-ball match narration.
-    description: A named cricket, rugby, or football club, team, or side.
-    examples: ["Heathrow Cricket Club", "the Transvaal side"]
+    description: >-
+      A named club, team or side that plays a sport, where the text associates
+      it with playing — a match, a season, a selection. A uniformed body that
+      someone joins is not a sports club unless the sport is stated.
+    examples: ["Heathrow Cricket Club", "the Transvaal side", "Kismets"]
+    anti_examples:
+      - "The Dukes"              # The Duke's Own Rifles, a regiment — Organization
+      - "The Duke's Own Rifles"
     irreducible: false
 
   - name: Publication

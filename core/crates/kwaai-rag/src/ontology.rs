@@ -303,6 +303,35 @@ impl Ontology {
         self.entity_types.is_empty() && self.relation_types.is_empty()
     }
 
+    /// Domain/range entries naming a type the ontology does not declare.
+    ///
+    /// A dangling reference silently disables the constraint it was written to
+    /// express: `relation_endpoints_valid` compares against a type that can
+    /// never match, so either every edge is rejected or the rule is inert. Seven
+    /// of these were sitting in the authored ontologies, including
+    /// `worked_at.range -> Organization` in D6, whose Organization type was
+    /// dropped in a rewrite while the predicate kept pointing at it.
+    ///
+    /// Returns `(relation, side, missing_type)` triples; empty means consistent.
+    pub fn dangling_type_refs(&self) -> Vec<(String, &'static str, String)> {
+        let declared: std::collections::HashSet<String> = self
+            .entity_types
+            .iter()
+            .map(|e| e.name.to_lowercase())
+            .collect();
+        let mut out = Vec::new();
+        for r in &self.relation_types {
+            for (side, list) in [("domain", &r.domain), ("range", &r.range)] {
+                for t in list {
+                    if !declared.contains(&t.to_lowercase()) {
+                        out.push((r.name.clone(), side, t.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Entity type names, for the extraction prompt.
     pub fn entity_type_names(&self) -> Vec<&str> {
         self.entity_types.iter().map(|e| e.name.as_str()).collect()
@@ -1328,5 +1357,151 @@ mod alias_tests {
                 "{emitted} ({edges} edges) must resolve to a typed predicate, got {got:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod anti_example_scope_tests {
+    use super::*;
+
+    /// An anti-example says "this is not a `T`". It does not say the thing is
+    /// not an entity.
+    ///
+    /// Flattening every type's anti-examples into one do-not-extract list told
+    /// the model to discard `District Six` (the corpus's central Place, listed
+    /// only as "not a Person"), `Muslim` and `Hindu` (listed as "not a
+    /// RacialClassification"), `Coloured` ("not a Community") and the
+    /// `Non-European Unity Movement` ("not a Doctrine"). Every one is a real
+    /// entity of some other declared type.
+    #[test]
+    fn an_anti_example_of_one_type_is_still_an_entity_of_another() {
+        let o = Ontology::from_yaml(
+            r#"
+ontology: { name: d6 }
+entity_types:
+  - name: Person
+    description: A named individual.
+    anti_examples: ["District Six"]
+  - name: Place
+    description: A district, suburb or city.
+    examples: ["District Six"]
+"#,
+        )
+        .unwrap();
+        let schemas = o.to_kb_schemas();
+
+        // The same string is an anti-example of one type and an example of another.
+        let person = schemas.iter().find(|s| s.name == "Person").unwrap();
+        let place = schemas.iter().find(|s| s.name == "Place").unwrap();
+        assert!(person.anti_examples.contains(&"District Six".to_string()));
+        assert!(place.examples.contains(&"District Six".to_string()));
+
+        // Anti-examples must stay attached to their own type. A caller that
+        // flattens them across types is reconstructing the bug.
+        let flattened: Vec<&String> = schemas
+            .iter()
+            .flat_map(|s| s.anti_examples.iter())
+            .collect();
+        let is_an_example_elsewhere = schemas
+            .iter()
+            .any(|s| s.examples.iter().any(|e| flattened.contains(&e)));
+        assert!(
+            is_an_example_elsewhere,
+            "this fixture exists precisely because the two sets overlap; if they \
+             ever stop overlapping the test is no longer guarding anything"
+        );
+    }
+}
+
+#[cfg(test)]
+mod consistency_tests {
+    use super::*;
+
+    /// A predicate pointing at a type the ontology does not declare silently
+    /// disables the constraint it was written to express.
+    #[test]
+    fn dangling_domain_or_range_is_reported() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: x }\n\
+             entity_types:\n  - name: Person\n\
+             relation_types:\n  - name: worked_at\n    domain: [Person]\n    range: [Organization]\n",
+        )
+        .unwrap();
+        let d = o.dangling_type_refs();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0], ("worked_at".into(), "range", "Organization".into()));
+        // Why it matters: extraction can only ever produce a declared type, so
+        // no real entity is ever typed `Organization` here. The range admits a
+        // type that cannot occur, which makes the constraint unsatisfiable —
+        // every genuine `worked_at` edge is rejected at commit.
+        assert!(
+            !o.relation_endpoints_valid("worked_at", Some("Person"), Some("Person")),
+            "a Person object is rejected because the range only admits a type \
+             the ontology never produces"
+        );
+    }
+
+    /// Types inherited via `extends` count as declared.
+    #[test]
+    fn inherited_types_are_not_dangling() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: x, extends: genealogy }\n\
+             entity_types:\n  - name: Address\n\
+             relation_types:\n  - name: parent_of\n    domain: [Person]\n    range: [Person]\n",
+        )
+        .unwrap();
+        assert!(
+            o.dangling_type_refs().is_empty(),
+            "genealogy supplies Person"
+        );
+    }
+
+    /// Every authored ontology in the repo must be internally consistent.
+    #[test]
+    fn shipped_ontologies_have_no_dangling_references() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/kwaai-knowledge/ontologies"
+        );
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let modules: Vec<Ontology> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("_module_"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|s| Ontology::from_yaml(&s).ok())
+            .collect();
+        let mut failures = Vec::new();
+        for e in entries.filter_map(|e| e.ok()) {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("yaml") {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(mut o) = Ontology::from_yaml(&src) else {
+                continue;
+            };
+            // Splice in the parent module's types the way a load would.
+            if let Some(parent) = o.ontology.extends.clone() {
+                if let Some(m) = modules.iter().find(|m| m.ontology.name == parent) {
+                    o.entity_types.extend(m.entity_types.iter().cloned());
+                }
+            }
+            for (rel, side, ty) in o.dangling_type_refs() {
+                failures.push(format!(
+                    "{}: {rel}.{side} -> {ty}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "dangling type references:\n  {}",
+            failures.join("\n  ")
+        );
     }
 }

@@ -53,6 +53,12 @@ entity_types:
   - name: Person
     description: A named individual — astronaut, engineer, administrator.
     irreducible: false
+  - name: Organization
+    description: >-
+      A named agency, board, review panel or institution. Declared because
+      `investigated_by.range` referenced it and nothing defined it.
+    examples: ["NASA", "the Apollo 204 Review Board"]
+    irreducible: false
   - name: Milestone
     description: >-
       A dated programme event: a launch, a report submission, a team stand-down.
