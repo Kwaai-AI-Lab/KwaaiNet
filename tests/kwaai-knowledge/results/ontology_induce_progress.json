@@ -1,8 +1,0 @@
-{
-  "done": 16,
-  "total": 16,
-  "last_kb": "WarPeace",
-  "last_result": "WarPeace: domain='War and Peace' entities 7/8 grounded, relations 10/12 grounded -> /Users/rezarassool/Source/KwaaiNet/tests/kwaai-knowledge/ontology_drafts/WarPeace_induced.yaml",
-  "elapsed_s": 764.7,
-  "eta_s": 0.0
-}
