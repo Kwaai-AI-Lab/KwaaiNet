@@ -8,6 +8,7 @@
 //! The overall score is the unweighted average of the three pillars (0.0–1.0).
 
 use crate::graph::{expected_fields, EntityNode, GraphStore};
+use crate::ontology::Ontology;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -15,6 +16,33 @@ use std::collections::HashMap;
 
 /// Maps our 15 extraction types to canonical schema.org types.
 /// "Unknown" maps to None — entity must be reclassified by the dream loop.
+/// Ontology-aware schema type: a KB that declares `schema_type` on a type wins,
+/// otherwise the compiled map below applies.
+///
+/// The compiled map is corpus-blind and its own comment admitted as much —
+/// `Group`, `Language` and `Family` are in it because they "appeared in D6".
+pub fn schema_type_for_ontology<'a>(
+    entity_type: &str,
+    ont: Option<&'a Ontology>,
+) -> Option<&'a str>
+where
+    'static: 'a,
+{
+    if let Some(o) = ont {
+        if let Some(def) = o.entity_type(entity_type) {
+            if let Some(st) = def.schema_type.as_deref() {
+                return Some(st);
+            }
+            // A type the ontology declares but does not map is still a real,
+            // specific type — it must not score as "Unknown".
+            if schema_type_for(entity_type).is_none() {
+                return Some("schema:Thing");
+            }
+        }
+    }
+    schema_type_for(entity_type)
+}
+
 pub fn schema_type_for(entity_type: &str) -> Option<&'static str> {
     match entity_type {
         "Person" => Some("schema:Person"),
@@ -45,6 +73,38 @@ pub fn schema_type_for(entity_type: &str) -> Option<&'static str> {
 /// Expected relation categories for each schema.org type.
 /// At least one relation from each inner slice should be present for full score.
 /// Returns empty slice for types with no defined expectations (neutral — not penalised).
+/// Relation expectations for the scorer.
+///
+/// When a KB declares an ontology, the expected set is every predicate whose
+/// domain admits this entity type — i.e. what the corpus itself says should be
+/// assertable. Without one, the compiled groups below apply.
+///
+/// This is the fix for `graph score` being a *memoir-conformance* metric: the
+/// compiled table expects `schema:Person` to carry kinship, so a climate KB
+/// re-extracted under a climate ontology would score worse for being correct.
+pub fn expected_relation_groups_for(
+    entity_type: &str,
+    schema_type: &str,
+    ont: Option<&Ontology>,
+) -> Vec<Vec<String>> {
+    if let Some(o) = ont {
+        if !o.is_empty() {
+            let expected = o.expected_relations_for(entity_type);
+            if !expected.is_empty() {
+                // One group: any declared predicate on this type counts. The
+                // compiled version's multi-group structure encodes a kinship
+                // /agency/spatial split that only makes sense for a memoir.
+                return vec![expected];
+            }
+            return Vec::new(); // declared type with no predicates — neutral
+        }
+    }
+    expected_relation_groups(schema_type)
+        .iter()
+        .map(|g| g.iter().map(|s| s.to_string()).collect())
+        .collect()
+}
+
 pub fn expected_relation_groups(schema_type: &str) -> &'static [&'static [&'static str]] {
     match schema_type {
         "schema:Person" => &[

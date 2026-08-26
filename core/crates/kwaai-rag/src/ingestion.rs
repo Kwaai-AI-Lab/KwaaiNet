@@ -33,6 +33,10 @@ pub struct GraphIngestConfig {
     pub workers: usize,
     /// When non-empty, only these entity types are extracted (overrides ENTITY_TYPES).
     pub entity_types: Vec<String>,
+    /// When non-empty, only these relation types are offered to the extractor
+    /// (overrides RELATION_TYPES). The relation half of a per-KB ontology —
+    /// see projects/kwaai-knowledge/plans/PerKBOntology-plan.md.
+    pub relation_types: Vec<String>,
     /// When true, no relations are extracted or stored.
     pub no_relations: bool,
     /// Number of adjacent chunks to include as surrounding context when extracting
@@ -301,6 +305,7 @@ pub async fn extract_and_store_entities_pub(
     let workers = graph_cfg.workers.max(1);
     let model = Arc::new(graph_cfg.model.clone());
     let entity_types_cfg = Arc::new(graph_cfg.entity_types.clone());
+    let relation_types_cfg = Arc::new(graph_cfg.relation_types.clone());
     // When the Phase 4 lexical relation classifier is enabled, it fully replaces the
     // legacy per-chunk boolean `lexical_relation_trigger()` gate inside
     // `extract_from_text()` — force relations off there unconditionally; the real
@@ -537,6 +542,7 @@ pub async fn extract_and_store_entities_pub(
         let model = model.clone();
         let embed = embed.clone();
         let entity_types_cfg = entity_types_cfg.clone();
+        let relation_types_cfg = relation_types_cfg.clone();
         let gender_context = gender_context.clone();
         let gliner = gliner.clone();
         let kb_schemas = kb_schemas.clone();
@@ -547,6 +553,7 @@ pub async fn extract_and_store_entities_pub(
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len();
             let url = &urls[idx];
             let et: Vec<&str> = entity_types_cfg.iter().map(|s| s.as_str()).collect();
+            let rt: Vec<&str> = relation_types_cfg.iter().map(|s| s.as_str()).collect();
 
             // GLiNER runs first when available — higher recall for Person names than
             // the regex pre-screener (catches mid-sentence names, OCR artifacts, etc.).
@@ -694,6 +701,7 @@ pub async fn extract_and_store_entities_pub(
                     url,
                     &model,
                     &et,
+                    &rt,
                     no_relations,
                     hints_opt,
                     &kb_schemas,
@@ -909,6 +917,7 @@ async fn extract_and_store_entities(
             chunk.text.clone()
         };
         let et: Vec<&str> = graph_cfg.entity_types.iter().map(|s| s.as_str()).collect();
+        let rt: Vec<&str> = graph_cfg.relation_types.iter().map(|s| s.as_str()).collect();
         let candidates = ner::extract_proper_noun_candidates(&text);
         let gliner_hints: Vec<String> = match &graph_cfg.gliner_client {
             Some(client) => client.person_spans(&text).await,
@@ -927,6 +936,7 @@ async fn extract_and_store_entities(
             &graph_cfg.inference_url,
             &graph_cfg.model,
             &et,
+            &rt,
             graph_cfg.no_relations,
             hints_opt,
             &[],
@@ -1726,6 +1736,7 @@ async fn extract_entity_centric(
                 url,
                 &model,
                 &et_refs,
+                &[],
                 no_relations,
                 Some(&hints),
                 &[],
@@ -1929,6 +1940,7 @@ async fn refine_low_confidence_entities(
             url,
             &model,
             &et_refs,
+            &[],
             true, // no_relations — refinement is field-enrichment only
             Some(&hints),
             &[],

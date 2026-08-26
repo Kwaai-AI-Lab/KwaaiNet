@@ -177,6 +177,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             doc_meta,
             doc_schema,
             entity_types,
+            relation_types,
             no_relations,
             timeline,
             graph_window,
@@ -198,6 +199,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 doc_meta,
                 doc_schema,
                 entity_types,
+                relation_types,
                 no_relations,
                 timeline,
                 graph_window,
@@ -660,6 +662,7 @@ async fn cmd_ingest(
                 model: extraction_model.clone(),
                 workers: 1,
                 entity_types: vec![],
+                relation_types: vec![],
                 no_relations: false,
                 context_window: 1,
                 gliner_client: None,
@@ -2006,6 +2009,7 @@ async fn cmd_rebuild(
     doc_meta: Option<std::path::PathBuf>,
     doc_schema: Option<std::path::PathBuf>,
     entity_types: Option<String>,
+    relation_types: Option<String>,
     no_relations: bool,
     timeline: bool,
     graph_window: usize,
@@ -2102,6 +2106,7 @@ async fn cmd_rebuild(
                 workers,
                 inference_urls: Some(inference_urls),
                 entity_types,
+                relation_types,
                 // When Phase 4 is requested (relation_threshold_high > 0), force
                 // no_relations here too: ALL relation extraction (legacy
                 // boolean-gate AND Phase 4 axiomatic) must defer to step 5.5b/5.5,
@@ -2670,6 +2675,7 @@ async fn run_sync_pass(
                     model: extraction_model.clone(),
                     workers: 1,
                     entity_types: vec![],
+                    relation_types: vec![],
                     no_relations: false,
                     context_window: 1,
                     gliner_client: None,
@@ -2884,6 +2890,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 workers,
                 inference_urls,
                 entity_types,
+                relation_types,
                 no_relations,
                 graph_window,
                 reset_graph,
@@ -2909,6 +2916,17 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         s.split(',')
                             .map(|u| u.trim().to_string())
                             .filter(|u| !u.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Parse --relation-types into a Vec<String>
+                let parsed_relation_types: Vec<String> = relation_types
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty())
                             .collect()
                     })
                     .unwrap_or_default();
@@ -3019,6 +3037,13 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if !parsed_entity_types.is_empty() {
                     println!("  Entity types:      {}", parsed_entity_types.join(", "));
                 }
+                if !parsed_relation_types.is_empty() {
+                    println!(
+                        "  Relation types:    {} ({})",
+                        parsed_relation_types.len(),
+                        parsed_relation_types.join(", ")
+                    );
+                }
                 if no_relations {
                     println!("  Relations:         disabled");
                 }
@@ -3059,6 +3084,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     model,
                     workers: effective_workers,
                     entity_types: parsed_entity_types,
+                    relation_types: parsed_relation_types,
                     no_relations,
                     context_window: graph_window,
                     gliner_client,
@@ -10022,6 +10048,35 @@ async fn cmd_graph_schema(action: SchemaAction, kb: &str) -> Result<()> {
                         s.examples.len(),
                         s.anti_examples.len()
                     );
+                }
+            }
+
+            SchemaAction::Load { file, kb: _ } => {
+                let contents = std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading ontology {}", file.display()))?;
+                let ont = kwaai_rag::ontology::Ontology::from_yaml(&contents)
+                    .with_context(|| format!("parsing ontology {}", file.display()))?;
+                let mut store = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                store.set_ontology(&ont).context("storing ontology")?;
+                print_success(&format!(
+                    "Loaded ontology '{}' v{} into KB '{kb}'",
+                    ont.ontology.name, ont.ontology.version
+                ));
+                println!("  Entity types:    {}", ont.entity_types.len());
+                println!("  Relation types:  {}", ont.relation_types.len());
+                println!("  Trigger phrases: {}", ont.triggers().len());
+                println!("  Axioms:          {}", ont.axioms.len());
+                if !ont.streams.is_empty() {
+                    println!(
+                        "  Streams:         {} ({} skipped)",
+                        ont.streams.len(),
+                        ont.skipped_streams().len()
+                    );
+                }
+                match ont.fallback_predicate.as_deref() {
+                    Some(p) => println!("  Fallback:        {p}"),
+                    None => println!("  Fallback:        none — a vague edge is a bug here"),
                 }
             }
 

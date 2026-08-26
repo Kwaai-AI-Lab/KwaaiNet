@@ -25,6 +25,8 @@ pub enum RelationClassificationMethod {
     FamilyTrigger,
     AgentTrigger,
     SpatialTrigger,
+    /// Matched a trigger phrase declared in the KB's own ontology.
+    OntologyTrigger,
     LlmVerified,
     Unknown,
 }
@@ -35,6 +37,7 @@ impl RelationClassificationMethod {
             Self::FamilyTrigger => "FamilyTrigger",
             Self::AgentTrigger => "AgentTrigger",
             Self::SpatialTrigger => "SpatialTrigger",
+            Self::OntologyTrigger => "OntologyTrigger",
             Self::LlmVerified => "LlmVerified",
             Self::Unknown => "Unknown",
         }
@@ -73,6 +76,21 @@ pub struct TypedRelationCandidate {
 /// Avuncular relations (uncle_of/aunt_of/nephew_of/niece_of/cousin_of) are
 /// deliberately excluded — the existing manual `graph extract-relations` command
 /// already tried and backed away from them for precision reasons.
+/// Predicates the Phase-4 verify prompt will accept. A KB's ontology replaces
+/// this wholesale; otherwise the compiled list applies.
+///
+/// Note the compiled list disagrees with `graph::RELATION_TYPES`: it contains
+/// `affiliated_with`, which is absent there, so the axiomatic path can commit an
+/// edge that dream validation then treats as invalid.
+pub fn in_scope_relation_types(ont: Option<&crate::ontology::Ontology>) -> Vec<String> {
+    match ont {
+        Some(o) if !o.is_empty() => {
+            o.relation_type_names().into_iter().map(String::from).collect()
+        }
+        _ => IN_SCOPE_RELATION_TYPES.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
 pub const IN_SCOPE_RELATION_TYPES: &[&str] = &[
     "spouse_of",
     "parent_of",
@@ -155,6 +173,34 @@ const SPATIAL_RELATION_TRIGGERS: &[(&str, &str)] = &[
 /// Trigger phrases where the object precedes the subject in the sentence structure
 /// (e.g. "X founded by Y" → Y founded X), generalizing `sequence::kinship_is_reversed`.
 const REVERSED_TRIGGERS: &[&str] = &["founded by", "born to"];
+
+/// Ontology-aware trigger lookup: a KB's own trigger table wins, and the
+/// compiled FAMILY/AGENT/SPATIAL tables are the fallback.
+///
+/// Longest phrase wins within the ontology's set, so "half-brother of" beats
+/// "brother of" — the same rule the compiled matcher relies on.
+pub fn find_trigger_with_ontology<'a>(
+    s_lower: &str,
+    ont: Option<&'a crate::ontology::Ontology>,
+) -> Option<(usize, usize, String, String, RelationClassificationMethod, f32)> {
+    if let Some(o) = ont {
+        let triggers = o.triggers();
+        if let Some(t) = crate::graph::best_ontology_trigger(s_lower, &triggers) {
+            if let Some(pos) = s_lower.find(t.phrase.as_str()) {
+                return Some((
+                    pos,
+                    pos + t.phrase.len(),
+                    t.phrase.clone(),
+                    t.relation_type.clone(),
+                    RelationClassificationMethod::OntologyTrigger,
+                    t.confidence,
+                ));
+            }
+        }
+    }
+    find_best_trigger(s_lower)
+        .map(|(a, b, p, r, m, c)| (a, b, p.to_string(), r.to_string(), m, c))
+}
 
 fn find_best_trigger(
     s_lower: &str,
@@ -354,6 +400,44 @@ pub struct RelationAxiomSnapshot {
 /// ones to zero confidence (never dropping the candidate itself — a demoted entry
 /// still shows up in metrics as axiom-demoted rather than silently vanishing),
 /// mirroring `axiom_extract::validate_with_axioms`'s demotion-based design.
+/// Ontology-aware axiom validation. Domain/range from the ontology replaces the
+/// hardcoded "familial relations require two Persons" rule, and the ontology's
+/// contradiction pairs replace the compiled family-role table.
+pub fn validate_relation_axioms_with_ontology(
+    candidates: Vec<TypedRelationCandidate>,
+    snapshot: &RelationAxiomSnapshot,
+    ont: Option<&crate::ontology::Ontology>,
+) -> Vec<TypedRelationCandidate> {
+    let Some(o) = ont.filter(|o| !o.is_empty()) else {
+        return validate_relation_axioms(candidates, snapshot);
+    };
+    candidates
+        .into_iter()
+        .map(|mut c| {
+            let st = snapshot.entity_types.get(&c.subject_id).map(|s| s.as_str());
+            let ot = snapshot.entity_types.get(&c.object_id).map(|s| s.as_str());
+            if !o.relation_endpoints_valid(&c.relation_type, st, ot) {
+                c.composite_confidence = 0.0;
+                c.method = RelationClassificationMethod::Unknown;
+            }
+            if c.ambiguity_count >= 2 {
+                c.composite_confidence = 0.0;
+                c.method = RelationClassificationMethod::Unknown;
+            }
+            if let Some(existing) = snapshot
+                .trusted_relations
+                .get(&ord_pair(c.subject_id, c.object_id))
+            {
+                if existing.iter().any(|e| o.contradicts(&c.relation_type, e)) {
+                    c.composite_confidence = 0.0;
+                    c.method = RelationClassificationMethod::Unknown;
+                }
+            }
+            c
+        })
+        .collect()
+}
+
 pub fn validate_relation_axioms(
     candidates: Vec<TypedRelationCandidate>,
     snapshot: &RelationAxiomSnapshot,
