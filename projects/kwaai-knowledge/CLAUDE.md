@@ -142,6 +142,14 @@ kwaainet rag dream --kb D6 --query "Tell me about Walied Rassool"
 - Do not use `cargo build -p kwaai-core` to test CLI changes — the binary is `-p kwaainet`
 - Do not skip `codesign -s - --force ~/.cargo/bin/kwaainet` after installing on macOS 26+
 
+## Vocabulary
+
+`projects/kwaai-knowledge/GLOSSARY.md` — the DreamRAG lexicon. 63 terms grouped
+by pipeline stage (storage → ingestion → graph → extraction → ontology → dream →
+retrieval → evaluation). Read it before the plans; it carries the traps too —
+entity type is part of the entity ID hash, ghost entities must not be pruned,
+`graph score` is not comparable across KBs with different ontologies.
+
 ## Full project context
 
 `projects/kwaai-knowledge/` — requirements, design docs, roadmap, TODO
