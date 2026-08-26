@@ -583,7 +583,8 @@ relation_types:
             "ontology: { name: l }\nrelation_types:\n  - name: overrules\n  - name: cites\n",
         )
         .unwrap();
-        let scoped = in_scope_relation_types(Some(&o));
+        let idx = OntologyIndex::build(o);
+        let scoped = in_scope_relation_types(Some(&idx));
         assert_eq!(scoped, vec!["overrules", "cites"]);
         assert!(!scoped.iter().any(|r| r == "spouse_of"));
         assert!(in_scope_relation_types(None).iter().any(|r| r == "spouse_of"));
@@ -607,5 +608,290 @@ relation_types:
         assert!(pats.iter().any(|(p, r, _)| p.contains("founder of") && r == "founded"));
         // kinship patterns survive
         assert!(pats.iter().any(|(p, _, _)| p.starts_with("children of")));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compiled index
+// ---------------------------------------------------------------------------
+
+/// An ontology prepared for the extraction hot path.
+///
+/// `Ontology` is the on-disk shape; this is the form the per-chunk loop wants.
+/// Building it once per run and sharing it via `Arc` matters: the naive path
+/// rebuilds 187 trigger `String`s for every sentence examined, which measured
+/// 3× slower than hoisting, and hoisting alone still leaves a full linear scan
+/// per sentence.
+///
+/// Two structural wins over a plain `Vec`:
+///   * triggers are sorted by phrase length descending, so the **first** match
+///     is the longest match and the scan can stop there — no `max_by_key` over
+///     the whole table. This preserves the "half-brother of beats brother of"
+///     rule the compiled matcher relies on.
+///   * exact, last-word and prefix markers become hash lookups instead of
+///     linear scans over every type's vector.
+#[derive(Debug, Clone, Default)]
+pub struct OntologyIndex {
+    /// Sorted by `phrase.len()` descending. First hit wins.
+    triggers: Vec<RelationTrigger>,
+    /// Closed-vocabulary term → (entity type, confidence).
+    exact: HashMap<String, (String, f32)>,
+    /// Last word → (entity type, confidence).
+    last: HashMap<String, (String, f32)>,
+    /// First word → (entity type, confidence).
+    prefix: HashMap<String, (String, f32)>,
+    /// Substring markers, the only rule that still needs a scan.
+    any: Vec<(String, String, f32)>,
+    /// The ontology this was built from.
+    ontology: Ontology,
+}
+
+impl OntologyIndex {
+    pub fn build(ont: Ontology) -> Self {
+        use crate::graph::MarkerMatch;
+        let mut triggers = ont.triggers();
+        // Longest first, so a scan can stop at its first hit.
+        triggers.sort_by(|a, b| b.phrase.len().cmp(&a.phrase.len()));
+
+        let mut exact = HashMap::new();
+        let mut last = HashMap::new();
+        let mut prefix = HashMap::new();
+        let mut any: Vec<(String, String, f32)> = Vec::new();
+        for e in &ont.entity_types {
+            let ty = e.name.clone();
+            // First declaration wins on collision, so ontology order is
+            // meaningful and a later type cannot silently steal a marker.
+            for m in &e.markers.exact {
+                exact
+                    .entry(m.to_lowercase())
+                    .or_insert_with(|| (ty.clone(), MarkerMatch::Exact.confidence()));
+            }
+            for m in &e.markers.last {
+                last.entry(m.to_lowercase())
+                    .or_insert_with(|| (ty.clone(), MarkerMatch::Last.confidence()));
+            }
+            for m in &e.markers.prefix {
+                prefix
+                    .entry(m.to_lowercase())
+                    .or_insert_with(|| (ty.clone(), MarkerMatch::Prefix.confidence()));
+            }
+            for m in &e.markers.any {
+                any.push((m.to_lowercase(), ty.clone(), MarkerMatch::Any.confidence()));
+            }
+        }
+        Self { triggers, exact, last, prefix, any, ontology: ont }
+    }
+
+    pub fn ontology(&self) -> &Ontology {
+        &self.ontology
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ontology.is_empty()
+    }
+
+    /// Longest trigger phrase occurring in `sentence_lower`, or `None`.
+    /// Stops at the first hit because the table is length-sorted.
+    pub fn find_trigger(&self, sentence_lower: &str) -> Option<&RelationTrigger> {
+        self.triggers
+            .iter()
+            .find(|t| sentence_lower.contains(t.phrase.as_str()))
+    }
+
+    /// Type a candidate by marker, most specific rule first.
+    pub fn classify(&self, candidate: &str) -> Option<(&str, f32)> {
+        let c = candidate.trim().to_lowercase();
+        if c.is_empty() {
+            return None;
+        }
+        if let Some((t, conf)) = self.exact.get(&c) {
+            return Some((t.as_str(), *conf));
+        }
+        let words: Vec<&str> = c.split_whitespace().collect();
+        let strip = |w: &str| w.trim_matches(|ch: char| !ch.is_alphanumeric()).to_string();
+        if let Some(w) = words.last() {
+            if let Some((t, conf)) = self.last.get(&strip(w)) {
+                return Some((t.as_str(), *conf));
+            }
+        }
+        if let Some(w) = words.first() {
+            if let Some((t, conf)) = self.prefix.get(&strip(w)) {
+                return Some((t.as_str(), *conf));
+            }
+        }
+        self.any
+            .iter()
+            .find(|(m, _, _)| c.contains(m.as_str()))
+            .map(|(_, t, conf)| (t.as_str(), *conf))
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    fn idx(y: &str) -> OntologyIndex {
+        OntologyIndex::build(Ontology::from_yaml(y).unwrap())
+    }
+
+    /// Length-descending order must preserve longest-match-wins, which is what
+    /// keeps "half-brother of" from being swallowed by "brother of".
+    #[test]
+    fn first_hit_is_the_longest_match() {
+        let i = idx(r#"
+ontology: { name: t }
+relation_types:
+  - name: sibling_of
+    triggers: ["brother of"]
+  - name: half_sibling_of
+    triggers: ["half-brother of"]
+"#);
+        let got = i.find_trigger("he was the half-brother of ahmed").unwrap();
+        assert_eq!(got.relation_type, "half_sibling_of");
+        let got = i.find_trigger("he was the brother of ahmed").unwrap();
+        assert_eq!(got.relation_type, "sibling_of");
+        assert!(i.find_trigger("nothing relevant here").is_none());
+    }
+
+    /// Marker specificity must survive the hash-map rewrite.
+    #[test]
+    fn marker_precedence_is_preserved() {
+        let i = idx(r#"
+ontology: { name: t }
+entity_types:
+  - name: RacialClassification
+    markers: { exact: [malay] }
+  - name: Address
+    markers: { last: [street], any: [chapel] }
+  - name: Person
+    markers: { prefix: [haji] }
+"#);
+        assert_eq!(i.classify("Malay").unwrap().0, "RacialClassification");
+        assert_eq!(i.classify("Chapel Street").unwrap().0, "Address");
+        assert_eq!(i.classify("Haji Joosub").unwrap().0, "Person");
+        assert!(i.classify("ordinary words").is_none());
+        // exact must outrank any
+        assert!(i.classify("Malay").unwrap().1 > i.classify("chapel lane").map_or(0.0, |x| x.1));
+    }
+
+    /// Declaration order decides marker collisions, so an ontology author can
+    /// reason about precedence instead of discovering it.
+    #[test]
+    fn first_declaration_wins_a_marker_collision() {
+        let i = idx(r#"
+ontology: { name: t }
+entity_types:
+  - name: Address
+    markers: { last: [hall] }
+  - name: Venue
+    markers: { last: [hall] }
+"#);
+        assert_eq!(i.classify("Memorial Hall").unwrap().0, "Address");
+    }
+
+    #[test]
+    fn an_empty_ontology_indexes_to_nothing() {
+        let i = OntologyIndex::default();
+        assert!(i.is_empty());
+        assert!(i.find_trigger("anything at all").is_none());
+        assert!(i.classify("anything").is_none());
+    }
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+    use crate::axiom_extract::{classify_candidates_with_ontology, ClassificationMethod};
+    use std::collections::HashMap;
+
+    fn d6_like() -> OntologyIndex {
+        OntologyIndex::build(
+            Ontology::from_yaml(
+                r#"
+ontology: { name: d6 }
+entity_types:
+  - name: Address
+    markers: { last: [street, cingle] }
+  - name: Doctrine
+    markers: { exact: [boycott] }
+relation_types:
+  - name: lived_at
+    domain: [Person]
+    range: [Address]
+    confidence: 0.85
+    triggers: ["lived at"]
+"#,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The end the whole exercise is for: "Chapel Street" is typed `Address` by
+    /// the corpus's own marker, with no LLM call. Under the compiled tables it
+    /// would be `Location` at best — GEO_MARKERS_ANY does not distinguish a
+    /// street from a settlement, which is why the corpus's strongest signal
+    /// (24.2% of chunks) had nowhere to land.
+    #[test]
+    fn ontology_markers_type_a_candidate_without_an_llm() {
+        let idx = d6_like();
+        let snap: HashMap<String, String> = HashMap::new();
+        let got = classify_candidates_with_ontology(
+            &["Chapel Street".to_string(), "boycott".to_string()],
+            &snap,
+            &[],
+            Some(&idx),
+        );
+        let addr = got.iter().find(|c| c.name == "Chapel Street").unwrap();
+        assert_eq!(addr.entity_type.as_deref(), Some("Address"));
+        assert_eq!(addr.method, ClassificationMethod::OntologyMarker);
+        let doc = got.iter().find(|c| c.name == "boycott").unwrap();
+        assert_eq!(doc.entity_type.as_deref(), Some("Doctrine"));
+        // exact marker is the most specific rule, so it must score highest
+        assert!(doc.type_confidence > addr.type_confidence);
+    }
+
+    /// Passing `None` must reproduce the pre-ontology path exactly — this is the
+    /// guarantee that the other fifteen KBs are untouched.
+    #[test]
+    fn without_an_ontology_classification_is_byte_for_byte_unchanged() {
+        let snap: HashMap<String, String> = HashMap::new();
+        let cands = vec!["Chapel Street".to_string(), "Haji Joosub".to_string()];
+        let with_none = classify_candidates_with_ontology(&cands, &snap, &[], None);
+        let legacy = crate::axiom_extract::classify_candidates_axiomatic(&cands, &snap, &[]);
+        assert_eq!(with_none.len(), legacy.len());
+        for (a, b) in with_none.iter().zip(legacy.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.entity_type, b.entity_type);
+            assert_eq!(a.method, b.method);
+            assert_eq!(a.composite_confidence, b.composite_confidence);
+        }
+    }
+
+    /// A known graph entity must still beat a lexical marker: the graph is
+    /// evidence, the marker is a guess.
+    #[test]
+    fn a_known_entity_outranks_an_ontology_marker() {
+        let idx = d6_like();
+        let mut snap = HashMap::new();
+        snap.insert("chapel street".to_string(), "Place".to_string());
+        let got =
+            classify_candidates_with_ontology(&["Chapel Street".to_string()], &snap, &[], Some(&idx));
+        assert_eq!(got[0].entity_type.as_deref(), Some("Place"));
+        assert_eq!(got[0].method, ClassificationMethod::KnownEntity);
+    }
+
+    #[test]
+    fn triggers_reach_the_relation_matcher() {
+        use crate::relation_extract::find_trigger_with_ontology;
+        let idx = d6_like();
+        let (_, _, phrase, rel, method, conf) =
+            find_trigger_with_ontology("he lived at chapel street", Some(&idx)).unwrap();
+        assert_eq!(phrase, "lived at");
+        assert_eq!(rel, "lived_at");
+        assert_eq!(conf, 0.85);
+        assert_eq!(
+            method,
+            crate::relation_extract::RelationClassificationMethod::OntologyTrigger
+        );
     }
 }

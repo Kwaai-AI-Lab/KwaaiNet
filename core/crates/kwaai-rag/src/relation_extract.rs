@@ -82,11 +82,14 @@ pub struct TypedRelationCandidate {
 /// Note the compiled list disagrees with `graph::RELATION_TYPES`: it contains
 /// `affiliated_with`, which is absent there, so the axiomatic path can commit an
 /// edge that dream validation then treats as invalid.
-pub fn in_scope_relation_types(ont: Option<&crate::ontology::Ontology>) -> Vec<String> {
+pub fn in_scope_relation_types(ont: Option<&crate::ontology::OntologyIndex>) -> Vec<String> {
     match ont {
-        Some(o) if !o.is_empty() => {
-            o.relation_type_names().into_iter().map(String::from).collect()
-        }
+        Some(o) if !o.is_empty() => o
+            .ontology()
+            .relation_type_names()
+            .into_iter()
+            .map(String::from)
+            .collect(),
         _ => IN_SCOPE_RELATION_TYPES.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -181,11 +184,10 @@ const REVERSED_TRIGGERS: &[&str] = &["founded by", "born to"];
 /// "brother of" — the same rule the compiled matcher relies on.
 pub fn find_trigger_with_ontology<'a>(
     s_lower: &str,
-    ont: Option<&'a crate::ontology::Ontology>,
+    ont: Option<&'a crate::ontology::OntologyIndex>,
 ) -> Option<(usize, usize, String, String, RelationClassificationMethod, f32)> {
     if let Some(o) = ont {
-        let triggers = o.triggers();
-        if let Some(t) = crate::graph::best_ontology_trigger(s_lower, &triggers) {
+        if let Some(t) = o.find_trigger(s_lower) {
             if let Some(pos) = s_lower.find(t.phrase.as_str()) {
                 return Some((
                     pos,
@@ -406,11 +408,12 @@ pub struct RelationAxiomSnapshot {
 pub fn validate_relation_axioms_with_ontology(
     candidates: Vec<TypedRelationCandidate>,
     snapshot: &RelationAxiomSnapshot,
-    ont: Option<&crate::ontology::Ontology>,
+    ont: Option<&crate::ontology::OntologyIndex>,
 ) -> Vec<TypedRelationCandidate> {
-    let Some(o) = ont.filter(|o| !o.is_empty()) else {
+    let Some(idx) = ont.filter(|o| !o.is_empty()) else {
         return validate_relation_axioms(candidates, snapshot);
     };
+    let o = idx.ontology();
     candidates
         .into_iter()
         .map(|mut c| {

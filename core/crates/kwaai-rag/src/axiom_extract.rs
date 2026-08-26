@@ -155,7 +155,7 @@ pub fn classify_candidates_with_ontology(
     candidates: &[String],
     entity_snapshot: &HashMap<String, String>,
     gliner_hints: &[String],
-    ont: Option<&crate::ontology::Ontology>,
+    ont: Option<&crate::ontology::OntologyIndex>,
 ) -> Vec<TypedCandidate> {
     let mut out = classify_candidates_axiomatic(candidates, entity_snapshot, gliner_hints);
     let Some(o) = ont else { return out };
@@ -168,7 +168,7 @@ pub fn classify_candidates_with_ontology(
         if c.method == ClassificationMethod::KnownEntity {
             continue;
         }
-        if let Some((ty, conf)) = o.classify_candidate(&c.name) {
+        if let Some((ty, conf)) = o.classify(&c.name) {
             if c.entity_type.is_none() || conf > c.type_confidence {
                 c.entity_type = Some(ty.to_string());
                 c.type_confidence = conf;

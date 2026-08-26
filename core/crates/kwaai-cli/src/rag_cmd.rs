@@ -7152,8 +7152,11 @@ pub(crate) enum RelationVerifyOutcome {
 /// lexical classifier for these candidates.
 fn build_relation_verify_prompt(
     candidates: &[kwaai_rag::relation_extract::TypedRelationCandidate],
+    ont: Option<&kwaai_rag::ontology::OntologyIndex>,
 ) -> String {
-    let allowed = kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES.join(", ");
+    // The retype menu must be this corpus's predicates, or the LLM is invited to
+    // "correct" a climate relation into a kinship one.
+    let allowed = kwaai_rag::relation_extract::in_scope_relation_types(ont).join(", ");
     let items = candidates
         .iter()
         .enumerate()
@@ -7203,9 +7206,10 @@ fn build_relation_verify_prompt(
 ///   or names a `retype_as` outside `IN_SCOPE_RELATION_TYPES` → `Rejected`, same
 ///   conservative default as before (the LLM did respond, just didn't clearly
 ///   confirm this one).
-fn parse_relation_verify_response(
+fn parse_relation_verify_response_scoped(
     raw: &str,
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
+    in_scope: &[String],
 ) -> Vec<(
     kwaai_rag::relation_extract::TypedRelationCandidate,
     RelationVerifyOutcome,
@@ -7248,10 +7252,7 @@ fn parse_relation_verify_response(
             let outcome = match verdicts.get(&idx) {
                 Some(v) if v.verdict == "confirm" => RelationVerifyOutcome::Confirmed,
                 Some(v) if v.verdict == "retype" => match v.retype_as.as_deref() {
-                    Some(new_type)
-                        if kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES
-                            .contains(&new_type) =>
-                    {
+                    Some(new_type) if in_scope.iter().any(|t| t == new_type) => {
                         c.relation_type = new_type.to_string();
                         RelationVerifyOutcome::Retyped
                     }
@@ -7273,14 +7274,16 @@ pub(crate) async fn verify_relation_candidates_llm(
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
     inference_url: &str,
     model: &str,
+    ont: Option<&kwaai_rag::ontology::OntologyIndex>,
 ) -> Vec<(
     kwaai_rag::relation_extract::TypedRelationCandidate,
     RelationVerifyOutcome,
 )> {
     const BATCH_SIZE: usize = 20;
+    let in_scope = kwaai_rag::relation_extract::in_scope_relation_types(ont);
     let mut results = Vec::with_capacity(candidates.len());
     for batch in candidates.chunks(BATCH_SIZE) {
-        let prompt = build_relation_verify_prompt(batch);
+        let prompt = build_relation_verify_prompt(batch, ont);
         let raw = match call_llm_for_relations(inference_url, model, &prompt).await {
             Ok(r) => r,
             Err(e) => {
@@ -7292,7 +7295,8 @@ pub(crate) async fn verify_relation_candidates_llm(
                 String::new()
             }
         };
-        let batch_results = parse_relation_verify_response(&raw, batch.to_vec());
+        let batch_results =
+            parse_relation_verify_response_scoped(&raw, batch.to_vec(), &in_scope);
         for (c, outcome) in &batch_results {
             tracing::info!(
                 "Phase 4 verify: \"{}\" [{}] \"{}\" (conf={:.2}) — {:?} — from: \"{}\"",
@@ -9353,7 +9357,7 @@ async fn extract_relations_axiomatic(
     threshold_low: f32,
 ) -> kwaai_rag::relation_extract::RelationAxiomaticRunMetrics {
     use kwaai_rag::relation_extract::{
-        classify_relation_candidates, split_relations_by_confidence, validate_relation_axioms,
+        classify_relation_candidates, split_relations_by_confidence,
         RelationAxiomSnapshot, RelationAxiomaticMetricsAccum,
     };
 
@@ -9394,6 +9398,25 @@ async fn extract_relations_axiomatic(
     // Snapshot entity types + existing trusted relations once, before the spawn loop,
     // so worker tasks never hold the graph lock for the axiom pass — same precedent as
     // `ingestion.rs`'s `entity_snapshot`.
+    // Compile the KB's ontology once; workers share it. Without one, every
+    // ontology-aware call below falls through to the compiled tables.
+    let ontology: Arc<Option<kwaai_rag::ontology::OntologyIndex>> = Arc::new({
+        let g = graph.lock().unwrap();
+        g.ontology()
+            .cloned()
+            .filter(|o| !o.is_empty())
+            .map(kwaai_rag::ontology::OntologyIndex::build)
+    });
+    if let Some(o) = ontology.as_ref() {
+        print_info(&format!(
+            "  Ontology:          {} v{} ({} predicates, {} triggers)",
+            o.ontology().ontology.name,
+            o.ontology().ontology.version,
+            o.ontology().relation_types.len(),
+            o.ontology().triggers().len()
+        ));
+    }
+
     let snapshot = Arc::new({
         let g = graph.lock().unwrap();
         let mut entity_types = std::collections::HashMap::new();
@@ -9446,6 +9469,7 @@ async fn extract_relations_axiomatic(
         let graph = graph.clone();
         let meta = meta.clone();
         let snapshot = snapshot.clone();
+        let ontology = ontology.clone();
         let metrics = metrics.clone();
         let infer_urls = infer_urls.clone();
         let url_counter = url_counter.clone();
@@ -9518,7 +9542,11 @@ async fn extract_relations_axiomatic(
                 return Some(());
             }
             let generated = candidates.len();
-            let validated = validate_relation_axioms(candidates, &snapshot);
+            let validated = kwaai_rag::relation_extract::validate_relation_axioms_with_ontology(
+                candidates,
+                &snapshot,
+                ontology.as_ref().as_ref(),
+            );
             let demoted = validated
                 .iter()
                 .filter(|c| c.composite_confidence == 0.0)
@@ -9585,7 +9613,13 @@ async fn extract_relations_axiomatic(
                     infer_urls[idx].clone()
                 };
                 let llm_start = std::time::Instant::now();
-                let outcomes = verify_relation_candidates_llm(verify, &infer_url, &model).await;
+                let outcomes = verify_relation_candidates_llm(
+                    verify,
+                    &infer_url,
+                    &model,
+                    ontology.as_ref().as_ref(),
+                )
+                .await;
                 let llm_elapsed_ms = llm_start.elapsed().as_secs_f64() * 1000.0;
                 let (mut n_confirmed, mut n_rejected, mut n_retyped, mut n_call_failed) =
                     (0usize, 0usize, 0usize, 0usize);
