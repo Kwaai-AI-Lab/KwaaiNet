@@ -147,6 +147,55 @@ reported "escape-hatch down 12 points, four of five predictions met" and stopped
 Recording a kinship prediction that the ontology could fail is what surfaced the
 unimplemented `extends`. The value came from the prediction that failed.
 
+## 4d. Runs 2 and 3 — and why none of the three answers the question
+
+Three ontology-arm builds against one control, all on the same 120 chunks.
+
+| arm | ents | rels | density | uninformative |
+|---|---|---|---|---|
+| **control** (no ontology) | 332 | 277 | 0.834 | 34.3% |
+| run 1 — no `extends`, vocabulary unenforced | 252 | 194 | 0.770 | — |
+| run 2 — `extends` + enforcement | 278 | 208 | 0.748 | 41.8% |
+| run 3 — v7, + aliases and two missing predicates | 226 | 166 | 0.735 | **27.7%** |
+
+Run 3 finally passes prediction 3 on the corrected metric (34.3% → 27.7%
+uninformative) and holds density, `Address`, and `Doctrine`. Undeclared
+predicates fell 17.0% → 2.4%, so vocabulary enforcement demonstrably works.
+
+**But the runs also disagree with each other in a way that invalidates the
+comparison.** Run 3 added only aliases and two predicates — changes that can
+only *increase* edge retention — and produced 42 *fewer* relations than run 2.
+Across three runs on identical input:
+
+```
+relations  166–208   mean 189, sd 21   range = 22% of mean
+entities   226–278   mean 252, sd 26   range = 21% of mean
+
+control-vs-ontology difference in relations:  32%
+within-arm run-to-run range:                  22%
+```
+
+**Signal is roughly 1.5× noise at n = 1 per arm.** The relation-count gap is
+marginally outside the band; density (−12%) and uninformative rate (−6.6pp) sit
+well inside it. Each ontology run also changed *code* as well as randomness, so
+the three are not even replicates of one another.
+
+**Honest conclusion: this A/B cannot say whether the ontology improves D6's
+graph.** What survives is only what is deterministic:
+
+- the code defects it exposed, all fixed and unit-tested;
+- the entity types only the ontology can produce — `Address` (12), `Doctrine`
+  (4), `Venue`, `PoliticalOrganization` (24), `EducationalInstitution` — a type
+  is in the vocabulary or it is not, and no sampling changes that;
+- undeclared predicates 17.0% → 2.4%, which is enforcement, not chance.
+
+**What would make it decidable.** Extraction runs at `temperature: 0.1`
+(`graph.rs:5672`) with 2 concurrent workers, so request interleaving and
+sampling both vary the output. Either pin `temperature: 0.0` with
+`--workers 1` for measurement runs, or run n ≥ 3 per arm and compare means.
+The first is cheaper and probably correct anyway — extraction is not a creative
+task. Neither should be changed for production without its own measurement.
+
 ## 4c. A near-miss worth recording
 
 Between the two runs, `graph clear` silently deleted the ontology — it removed
@@ -161,7 +210,9 @@ clearing one must not discard the other. `--all` is the full reset.
 
 ## 5. Open, in priority order
 
-0. **D6 marker precision** — `Language`, `Legislation` and `Venue` are catching
+0. **Make the A/B decidable** (§4d) — pin temperature and workers, or n ≥ 3
+   per arm. Every other measurement here inherits this limit.
+0b. **D6 marker precision** — `Language`, `Legislation` and `Venue` are catching
    the wrong things (§4b). Cheapest fix with a measurable effect, and it is
    ontology authoring rather than code.
 1. **Ingestion hygiene for the nine data-bound KBs.** Highest value in the
