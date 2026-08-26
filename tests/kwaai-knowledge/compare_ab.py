@@ -11,6 +11,30 @@ from collections import Counter
 
 CFG = yaml.safe_load(open(os.path.expanduser("~/.kwaainet/config.yaml")))["rag_kbs"]
 ESCAPE = {"associated_with", "related_to"}
+
+# An edge is UNINFORMATIVE if it either names an escape-hatch predicate or sits
+# on a predicate no ontology declares. The second half matters: run 1 scored a
+# 5.2% escape-hatch rate while carrying 98 edges on invented one-off predicates
+# (`was_defenestrated_at`, `gazed_at`). Counting only the literal string
+# "associated_with" rewarded a model for inventing a name instead of admitting
+# it had nothing to say — measured honestly, that arm was WORSE than its control
+# (55.7% vs 52.7%). Any escape-hatch metric applied to an unenforced vocabulary
+# is measuring naming, not meaning.
+def declared_predicates():
+    import yaml, glob
+    names = set()
+    for f in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "ontologies", "*.yaml")):
+        d = yaml.safe_load(open(f)) or {}
+        for r in (d.get("relation_types") or []):
+            names.add(r["name"])
+    # genealogy module, inherited via `extends`
+    names |= KIN_MODULE
+    return names
+
+KIN_MODULE = {"parent_of","child_of","spouse_of","sibling_of","half_sibling_of",
+              "grandparent_of","grandchild_of","uncle_of","aunt_of","niece_of",
+              "nephew_of","cousin_of","foster_parent_of","foster_child_of"}
 KIN = {"parent_of","child_of","spouse_of","sibling_of","half_sibling_of","grandparent_of",
        "grandchild_of","uncle_of","aunt_of","niece_of","nephew_of","cousin_of",
        "foster_parent_of","foster_child_of"}
@@ -31,9 +55,13 @@ def summarise(ents, rels):
     ne, nr = sum(ents.values()), sum(rels.values())
     hatch = sum(n for t, n in rels.items() if t in ESCAPE)
     kin = sum(n for t, n in rels.items() if t in KIN)
+    decl = declared_predicates()
+    undeclared = sum(n for t, n in rels.items() if t not in decl and t not in ESCAPE)
     return dict(entities=ne, relations=nr,
                 density=nr/ne if ne else 0.0,
                 escape=hatch/nr if nr else None,
+                undeclared=undeclared/nr if nr else None,
+                uninformative=(hatch+undeclared)/nr if nr else None,
                 kinship=kin/nr if nr else None,
                 kin_n=kin, ent_types=len(ents), rel_types=len(rels))
 
@@ -50,7 +78,7 @@ def main():
         d = o[k]-c[k]
         print(f"{k:22}{c[k]:>16}{o[k]:>16}   {d:+d}")
     print(f"{'density (rel/ent)':22}{c['density']:>16.4f}{o['density']:>16.4f}   {o['density']-c['density']:+.4f}")
-    for k in ("escape","kinship"):
+    for k in ("escape","undeclared","uninformative","kinship"):
         d = "—" if (c[k] is None or o[k] is None) else f"{(o[k]-c[k])*100:+.1f}pp"
         print(f"{k+' rate':22}{pct(c[k]):>16}{pct(o[k]):>16}   {d}")
 
@@ -62,9 +90,11 @@ def main():
     P2 = oe.get("Doctrine", 0) > 0
     print(f"  2 Doctrine populates                     : "
           f"{'PASS' if P2 else 'FAIL'}  ({oe.get('Doctrine',0)})")
-    P3 = (o["escape"] is not None and c["escape"] is not None and o["escape"] < c["escape"])
-    print(f"  3 escape-hatch falls                     : "
-          f"{'PASS' if P3 else 'FAIL'}  {pct(c['escape'])} -> {pct(o['escape'])}")
+    P3 = (o["uninformative"] is not None and c["uninformative"] is not None
+          and o["uninformative"] < c["uninformative"])
+    print(f"  3 uninformative edges fall               : "
+          f"{'PASS' if P3 else 'FAIL'}  {pct(c['uninformative'])} -> {pct(o['uninformative'])}"
+          f"   (naive escape-hatch: {pct(c['escape'])} -> {pct(o['escape'])})")
     P4 = o["density"] >= c["density"] * 0.7
     print(f"  4 density does not collapse (>=70% ctl)  : "
           f"{'PASS' if P4 else 'FAIL'}  {c['density']:.4f} -> {o['density']:.4f}")

@@ -19,7 +19,7 @@
 
 ontology:
   name: district-six-memoir
-  version: 6
+  version: 7
   extends: genealogy
 
 # The narrator is Yousuf (Joe) Rassool, a man. This used to be hardcoded in
@@ -309,6 +309,7 @@ relation_types:
 
   # ── neighbourhood ─────────────────────────────────────────────────────────
   - name: lived_at
+    aliases: [lived_in, lives_in, resided_in, resided_at]
     confidence: 0.85
     triggers:
       - 'lived at'
@@ -324,6 +325,7 @@ relation_types:
     domain: [Person]
     range:  [Address]
   - name: situated_in
+    aliases: [located_in, located_at, in_location, part_of]
     confidence: 0.75
     triggers:
       - 'situated in'
@@ -429,7 +431,40 @@ relation_types:
     range:  [ReligiousObservance]
 
   # ── politics ──────────────────────────────────────────────────────────────
+  - name: worked_at
+    # Gap found by the A/B: the control produced 14 employment edges and this
+    # ontology had nowhere to put them. A memoir of a community of teachers,
+    # shopkeepers and doctors plainly needs the predicate; the v3 rewrite
+    # mentioned it in a comment and never declared it.
+    confidence: 0.8
+    aliases: [works_at, employed_by, worked_for, employed_at]
+    triggers:
+      - 'worked at'
+      - 'worked for'
+      - 'employed at'
+      - 'employed by'
+      - 'a teacher at'
+      - 'clerk at'
+      - 'in the employ of'
+    domain: [Person]
+    range:  [Organization, PoliticalOrganization, EducationalInstitution, Address, Venue]
+
+  - name: visited
+    # Also found by the A/B — 10 control edges. Distinct from attended_event:
+    # visiting a place is not attending an occasion, and collapsing them loses
+    # the movement through the neighbourhood the memoir is largely made of.
+    confidence: 0.75
+    aliases: [went_to, called_on, travelled_to]
+    triggers:
+      - 'visited'
+      - 'went to'
+      - 'called on'
+      - 'came to'
+    domain: [Person]
+    range:  [Place, Address, Venue, EducationalInstitution]
+
   - name: member_of
+    aliases: [belongs_to, belonged_to, joined]
     confidence: 0.85
     triggers:
       - 'member of'
@@ -441,6 +476,7 @@ relation_types:
     domain: [Person]
     range:  [PoliticalOrganization, SportsClub]
   - name: led
+    aliases: [manages, managed, headed, chairman_of, president_of]
     confidence: 0.85
     triggers:
       - 'led the'
@@ -477,6 +513,7 @@ relation_types:
     domain: [PoliticalOrganization]
     range:  [PoliticalOrganization]
   - name: opposed
+    aliases: [opposes, protested_against, denounced]
     confidence: 0.85
     triggers:
       - 'opposed'
@@ -546,6 +583,7 @@ relation_types:
 
   # ── schooling ─────────────────────────────────────────────────────────────
   - name: attended
+    aliases: [studied_at, educated_at, pupil_at]
     confidence: 0.85
     triggers:
       - 'attended'
@@ -599,6 +637,7 @@ relation_types:
 
   # ── voice and record ──────────────────────────────────────────────────────
   - name: said
+    aliases: [stated, wrote, remarked, commented_on]
     # low confidence deliberately: `said` is the highest-frequency trigger in the corpus and over-fires
     confidence: 0.7
     triggers:
@@ -615,6 +654,7 @@ relation_types:
     range:  [Quotation]
     inverse: attributed_to
   - name: reported_in
+    aliases: [published_in, cited_in, cites, described_in]
     confidence: 0.8
     triggers:
       - 'reported in'
@@ -647,6 +687,7 @@ relation_types:
     domain: [Event]
     range:  [Address, Place, Venue]
   - name: attended_event
+    aliases: [was_present_at]
     confidence: 0.8
     triggers:
       - 'attended the'

@@ -94,6 +94,16 @@ pub struct RelationTypeDef {
     /// Lexical trigger phrases; the relation half of the corpus's lexicon.
     #[serde(default)]
     pub triggers: Vec<String>,
+    /// Other names for this predicate that an extractor may emit.
+    ///
+    /// Needed because a model writes the conventional name, not the one an
+    /// ontology happens to choose. D6 declares `lived_at`, `worked_at` and
+    /// `situated_in`; the LLM emitted `lived_in` (28), `works_at` (13) and
+    /// `located_in` (7), and every one was coerced to the fallback. That single
+    /// naming mismatch accounted for most of the ontology arm's escape-hatch
+    /// edges and made a correct schema look worse than no schema at all.
+    #[serde(default)]
+    pub aliases: Vec<String>,
     /// Confidence assigned to an axiomatic match on any of `triggers`.
     #[serde(default = "default_trigger_conf")]
     pub confidence: f32,
@@ -414,6 +424,13 @@ impl Ontology {
         }
         if let Some(r) = self.relation_type(relation) {
             return Some(r.name.clone()); // canonical casing
+        }
+        // A declared alias is the corpus saying "this is my predicate under
+        // another name" — resolve it rather than discarding the edge.
+        if let Some(r) = self.relation_types.iter().find(|r| {
+            r.aliases.iter().any(|a| a.eq_ignore_ascii_case(relation))
+        }) {
+            return Some(r.name.clone());
         }
         // An inverse name is a legitimate way to say a declared predicate.
         if let Some(r) = self
@@ -1181,5 +1198,71 @@ mod extends_and_vocabulary_tests {
     fn no_ontology_coerces_nothing() {
         let o = Ontology::default();
         assert_eq!(o.coerce_relation("anything_at_all").as_deref(), Some("anything_at_all"));
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    /// The naming mismatch that made a correct schema look worse than none.
+    ///
+    /// D6 declares `lived_at`; the model emits `lived_in` because that is the
+    /// conventional name. Without aliases every one of those 28 edges became
+    /// `associated_with`, and the arm's escape-hatch rate more than doubled
+    /// against its control while the extraction was in fact fine.
+    #[test]
+    fn a_declared_alias_resolves_to_its_predicate() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: d6 }\n\
+             relation_types:\n\
+             \x20 - name: lived_at\n\
+             \x20   aliases: [lived_in, resided_in]\n\
+             fallback_predicate: associated_with\n",
+        )
+        .unwrap();
+        assert_eq!(o.coerce_relation("lived_in").as_deref(), Some("lived_at"));
+        assert_eq!(o.coerce_relation("resided_in").as_deref(), Some("lived_at"));
+        assert_eq!(o.coerce_relation("LIVED_IN").as_deref(), Some("lived_at"));
+        // the canonical name still works, and genuine junk still falls back
+        assert_eq!(o.coerce_relation("lived_at").as_deref(), Some("lived_at"));
+        assert_eq!(o.coerce_relation("gazed_at").as_deref(), Some("associated_with"));
+    }
+
+    /// A canonical name must win over another predicate's alias claiming it.
+    #[test]
+    fn canonical_names_outrank_aliases() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: x }\n\
+             relation_types:\n\
+             \x20 - name: visited\n\
+             \x20 - name: attended_event\n\
+             \x20   aliases: [visited]\n",
+        )
+        .unwrap();
+        assert_eq!(o.coerce_relation("visited").as_deref(), Some("visited"));
+    }
+
+    /// The real D6 ontology must resolve the predicates its control arm emitted.
+    #[test]
+    fn d6_resolves_the_names_its_control_arm_produced() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/kwaai-knowledge/ontologies/D6.yaml"
+        );
+        let Ok(src) = std::fs::read_to_string(path) else {
+            return; // ontology lives outside the crate; skip when absent
+        };
+        let o = Ontology::from_yaml(&src).unwrap();
+        // counts are the measured control-arm output over 120 chunks
+        for (emitted, edges) in [
+            ("lived_in", 28), ("works_at", 13), ("visited", 10), ("located_in", 7),
+        ] {
+            let got = o.coerce_relation(emitted);
+            assert!(
+                got.as_deref() != Some("associated_with") && got.is_some(),
+                "{emitted} ({edges} edges) must resolve to a typed predicate, got {got:?}"
+            );
+        }
     }
 }
