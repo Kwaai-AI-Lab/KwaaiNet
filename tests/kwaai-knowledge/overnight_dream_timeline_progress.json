@@ -1,0 +1,51 @@
+{
+  "kbs": {
+    "Manhattan": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "MobyDick": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "Legal": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "Meetings": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "PythonDocs": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "NIST": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "Climate": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "RFCs": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "DeepSea": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "DreamMem": {
+      "phase": "complete",
+      "status": "done"
+    },
+    "Astrophysics": {
+      "phase": "complete",
+      "status": "done"
+    }
+  },
+  "current_kb": "ALL",
+  "current_phase": "complete",
+  "status": "complete"
+}

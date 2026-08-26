@@ -118,6 +118,25 @@ pub const PERSON_RELATION_TYPES: &[&str] = &[
     "supported",
 ];
 
+/// Sampling temperature for extraction calls.
+///
+/// Defaults to the historical 0.1. `KWAAI_EXTRACTION_TEMPERATURE=0` pins it for
+/// measurement runs.
+///
+/// Why this exists: three A/B builds over identical chunks produced 166, 194 and
+/// 208 relations — a 22% spread, against a 32% difference between the arms being
+/// compared. Signal was barely above noise, so the comparison could not decide
+/// anything. Sampling is one of the two sources (concurrent worker interleaving
+/// is the other); this makes the controllable one controllable without changing
+/// what production does.
+pub fn extraction_temperature() -> f64 {
+    std::env::var("KWAAI_EXTRACTION_TEMPERATURE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|t| (0.0..=2.0).contains(t))
+        .unwrap_or(0.1)
+}
+
 /// Choose the relation vocabulary offered to the extractor.
 ///
 /// Precedence: an explicit per-KB list (the relation half of an ontology) wins;
@@ -5669,7 +5688,7 @@ entities or omit the fictional one entirely.\n\n\
         // until the full generation completes, eliminating 90s send timeouts.
         "stream": true,
         "options": {
-            "temperature": 0.1,
+            "temperature": extraction_temperature(),
             "num_predict": 1024,
             "num_ctx": 8192,
         },
@@ -6727,5 +6746,28 @@ mod entity_cap_tests {
             cap(&[]),
             "listing every type explicitly must equal passing none"
         );
+    }
+}
+
+#[cfg(test)]
+mod extraction_temperature_tests {
+    use super::*;
+
+    /// Serialised because these mutate process-wide environment.
+    #[test]
+    fn temperature_defaults_to_the_historical_value_and_can_be_pinned() {
+        // SAFETY: single-threaded within this test; no other test reads the var.
+        unsafe { std::env::remove_var("KWAAI_EXTRACTION_TEMPERATURE") };
+        assert_eq!(extraction_temperature(), 0.1, "production behaviour unchanged");
+
+        unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "0") };
+        assert_eq!(extraction_temperature(), 0.0, "measurement runs can pin it");
+
+        // Nonsense and out-of-range values fall back rather than breaking a build.
+        unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "banana") };
+        assert_eq!(extraction_temperature(), 0.1);
+        unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "99") };
+        assert_eq!(extraction_temperature(), 0.1);
+        unsafe { std::env::remove_var("KWAAI_EXTRACTION_TEMPERATURE") };
     }
 }
