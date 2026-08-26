@@ -50,10 +50,35 @@ def described_source(md):
                 "platform":  "core/crates/kwaai-cli/src"}.get(m.group(1))
     return "core/crates"
 
+FOREIGN_HEADING = re.compile(
+    r"(?im)^#{1,6}[^\n]*\b(separate repo|different repo|other repo|external repo|"
+    r"not this one|PHE repo|upstream repo)\b[^\n]*$")
+
+def strip_foreign_sections(txt):
+    """Drop sections whose heading says they describe another repository."""
+    out, skipping, skip_level = [], False, 0
+    for line in txt.splitlines(keepends=True):
+        h = re.match(r"^(#{1,6})\s", line)
+        if h:
+            level = len(h.group(1))
+            if skipping and level <= skip_level:
+                skipping = False
+            if FOREIGN_HEADING.match(line):
+                skipping, skip_level = True, level
+                continue
+        if not skipping:
+            out.append(line)
+    return "".join(out)
+
 def check(md):
     """Return (errors, warnings) for one memory file."""
     errs, warns = [], []
     txt = open(os.path.join(ROOT, md)).read()
+
+    # Sections about a *different* repository are not claims about this one.
+    # kwaai-storage documents changes needed in the PHE repo under its own
+    # heading; flagging those as broken would train people to ignore the check.
+    txt = strip_foreign_sections(txt)
 
     # 1. Every `path/to/file.rs` in backticks must exist somewhere in the tree.
     for ref in sorted(set(re.findall(r"`([\w./-]+\.(?:rs|py|sh|md|yaml|toml))`", txt))):

@@ -136,8 +136,36 @@ The full tree taxonomy. Our `projects/` directories already *are* boughs and
 renaming them buys nothing — which is itself the Bonsai Principle applied to
 pai-seed itself. Take the growth cycle and the restraint; leave the vocabulary.
 
-## 5. Immediate follow-up
+## 5. Outcome of the first run
 
-The checker currently fails. Ten broken references are real and should be fixed
-before the `memory` job is allowed to gate merges — most urgently the root
-`CLAUDE.md`'s `trust.rs`, since that file is loaded into every session.
+All ten broken references fixed; the check now passes.
+
+| file | was | now |
+|---|---|---|
+| root `CLAUDE.md` | `trust.rs` in the project map | `identity.rs`, `reputation.rs`, `reputation_cmd.rs` |
+| `kwaai-p2p/CLAUDE.md` | `network.rs`, `dht.rs`, `hivemind.rs`, `protocol.rs` | the ten modules the crate actually has |
+| `kwaai-network/CLAUDE.md` | same four, prefixed | same correction; hivemind wire format is its own crate |
+| `kwaai-trust/CLAUDE.md` | `kwaainet trust` (score, issue, verify) | the command no longer exists — now `identity` (VCs) and `reputation` |
+| `kwaai-storage/CLAUDE.md` | flagged `src/api/mod.rs`, `src/mcp/server.rs` | **checker bug, not a doc bug** — see below |
+
+Two things the exercise taught, both of which changed the tool rather than the docs:
+
+**Not every unresolved path is a broken claim.** kwaai-storage documents changes
+needed in the *PHE repo*, under a heading that says so. Flagging those trains
+people to ignore the check, which is worse than not having it. The checker now
+drops sections whose heading names another repository.
+
+**Drift is not error.** `projects/kwaai-platform/CLAUDE.md` carries 94 days of
+drift and every claim in it — six display functions, `KwaaiNetConfig`, five
+source files, two crates — verifies. It needed no change. Had drift been a
+failure the correct response would have been to touch the file and learn nothing.
+`kwaai-rag/CLAUDE.md`, same 94 days, was accurate but listed 8 of 34 modules and
+none of the ones this branch added; it got a real update. The warning surfaces
+both, and a human decides which is which. That division of labour is the point:
+**the checker knows what is false, only a reader knows what is missing.**
+
+## 6. Remaining
+
+Three drift warnings stand (kwaai-p2p, kwaai-rag, kwaai-platform), all now
+reviewed. The proposed reflection habits in §4b are not implemented and are the
+open half of this.
