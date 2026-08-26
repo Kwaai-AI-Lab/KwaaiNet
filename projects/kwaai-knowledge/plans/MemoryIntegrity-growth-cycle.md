@@ -164,8 +164,44 @@ none of the ones this branch added; it got a real update. The warning surfaces
 both, and a human decides which is which. That division of labour is the point:
 **the checker knows what is false, only a reader knows what is missing.**
 
-## 6. Remaining
+## 6. The reflection half — implemented
 
-Three drift warnings stand (kwaai-p2p, kwaai-rag, kwaai-platform), all now
-reviewed. The proposed reflection habits in §4b are not implemented and are the
-open half of this.
+`Nightly memory reflection — KwaaiNet`, routine `trig_01TuA53doMcSPCTNNNyqJEuc`,
+`0 10 * * *` UTC = **03:00 America/Los_Angeles**, chosen because it is reliably
+idle. A cloud session, so it works on a fresh GitHub checkout and never touches
+a local machine.
+
+Four steps, mirroring the split this document argues for:
+
+1. **Mechanical** — run `check_memory_integrity.py`, record output verbatim.
+2. **Semantic** — read `git log --since="36 hours ago" --stat` and ask the
+   question the checker cannot: did any commit make a well-formed claim untrue?
+   The prompt names the four shapes we actually hit — a removed CLI subcommand
+   still documented, a changed default, a "do not do X" superseded by new
+   machinery, an inverted behaviour — and requires the file, the line, and the
+   commit responsible. Suspicions unverified against the code are not to be
+   reported.
+3. **Accretion** — pai-seed's contribution. Name what has outlived its use;
+   removal is a legitimate outcome.
+4. **Report only.** Writes `reports/memory-reflection-YYYY-MM-DD.md`, commits
+   only that file to a dated branch, pushes. It may not edit a memory file,
+   commit anything else, or open a PR.
+
+Two deliberate constraints:
+
+**Report-only, per pai-seed's "trust is earned gradually — begin cautiously with
+all outputs reviewed."** A nightly agent editing memory files is the loop that
+produced the stale claims in the first place. Autonomy can widen once the
+reports prove accurate; it cannot be un-widened after a wrong "correction"
+propagates into every future session.
+
+**Brevity is instructed, not hoped for.** The prompt says a three-line "nothing
+to review" is a good report and that padding trains the reader to skim — because
+skimming is how ten broken references survived. An agent rewarded for looking
+busy will manufacture findings, and this one is told not to.
+
+36-hour lookback against a 24-hour cadence, so a missed night does not lose a day.
+
+**Still open:** the human half of §4b — pruning in the same commit, and letting
+the glossary be the anchor for new vocabulary. Those are habits, not automation,
+and the nightly report is meant to prompt them rather than replace them.
