@@ -14,6 +14,8 @@ name: CI
 #   - wasm-pack binary cached so `cargo install wasm-pack` only runs once
 #   - dropped `build --release` job (slow, redundant with release.yml)
 #   - dropped `docs` job (nice-to-have, not a merge gate)
+#   - added a Windows `cargo check` job (#146) — every other job is Linux, so
+#     Windows-only breakage used to reach main and sit there until a release
 
 on:
   push:
@@ -163,6 +165,90 @@ jobs:
       - name: Run tests
         working-directory: core
         run: cargo test --all
+
+  # ── 3b. Windows type check (#146) ──────────────────────────────────────────
+  # `main` did not compile on Windows for five days between #130 and #142: a
+  # field added to a struct was populated only in the `#[cfg(unix)]` arm, and
+  # every CI job here runs on Linux. Windows was built only by release.yml, so
+  # the first Windows compile of any change happened when a release was cut —
+  # or when someone happened to build there, which is how it was actually found.
+  #
+  # `check`, not `build`: type checking catches that whole class — cfg-gated
+  # fields, platform-specific imports, missing cfg arms — without CUDA or a
+  # full link toolchain. Minutes rather than the better part of an hour.
+  #
+  # Cross-checking from macOS is not an option; `cargo check --target
+  # x86_64-pc-windows-msvc` dies in ring's build script, which wants a Windows
+  # C toolchain. It has to be a real Windows runner.
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      # Some dependency paths exceed the 260-char default and fail to check out.
+      - name: Enable long paths
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+
+      # Also the first PR-time exercise of this script under Git Bash. It was
+      # previously reached on Windows only from release.yml, i.e. only on a tag
+      # push, so a hashing problem there surfaced during a release.
+      - name: fetch patched deps
+        shell: bash
+        run: bash core/patches/fetch-multistream-select.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Configure sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      # kwaai-p2p-daemon's build.rs writes p2pd to target/release/ unconditionally
+      # and does not create the directory. Same step exists in release.yml.
+      - name: Create target/release for the p2p-daemon build script
+        shell: bash
+        run: mkdir -p core/target/release
+
+      # openssl-sys arrives transitively via reqwest/libp2p and needs pointing
+      # at the runner's pre-installed OpenSSL.
+      - name: Set OpenSSL paths
+        shell: pwsh
+        run: |
+          $dir = Get-ChildItem "C:\Program Files" -Filter "OpenSSL*" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if ($dir) {
+            echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
+          }
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-check-
+
+      # --all-targets so tests and benches are checked too; cfg breakage lives
+      # there as readily as in library code.
+      - name: Check
+        working-directory: core
+        run: cargo check --workspace --all-targets
 
   # ── 4. WASM build (wasm-pack cached to avoid reinstall every run) ──────────
   wasm:
