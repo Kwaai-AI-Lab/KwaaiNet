@@ -5392,7 +5392,14 @@ pub async fn extract_from_text(
 
     // Cap prevents JSON overflow failures on entity-dense passages (+7pp reliability,
     // experiments show no recall loss at this cap with window=1 chunking).
-    let entity_cap = if entity_types.len() <= 3 { 25 } else { 20 };
+    //
+    // Keyed on `effective_types`, not on the argument. An empty argument means
+    // "offer all of ENTITY_TYPES" — the broadest case — but its `len()` is 0, so
+    // keying on the argument handed the widest vocabulary the generous cap meant
+    // for focused 2-3 type runs, while a caller that listed the same 17 types
+    // explicitly got the tight one. That also confounds any A/B between a KB
+    // with an ontology and one without.
+    let entity_cap = if effective_types.len() <= 3 { 25 } else { 20 };
 
     // Normalise OCR artifacts before presenting candidates to the LLM.
     // In this corpus underscores replace periods in initials (J_ M_ H_ → J. M. H.).
@@ -6641,5 +6648,30 @@ mod generalisation_tests {
         // ...but not at the cost of its own declared examples
         let s = vec![schema("Publication", &["Beano"], &[])];
         assert!(!effective_stop_words(&s, &extra).contains(&"Beano"));
+    }
+}
+
+#[cfg(test)]
+mod entity_cap_tests {
+    use super::*;
+
+    /// The cap must reflect how many types are actually offered to the LLM.
+    /// Empty means "all of ENTITY_TYPES", which is the widest case, not the
+    /// narrowest — the original keying gave it the focused-run cap and so
+    /// biased any comparison against a caller that listed its types.
+    #[test]
+    fn cap_keys_on_the_effective_vocabulary() {
+        fn cap(passed: &[&str]) -> usize {
+            let effective = if passed.is_empty() { ENTITY_TYPES } else { passed };
+            if effective.len() <= 3 { 25 } else { 20 }
+        }
+        assert_eq!(cap(&["Person", "Place"]), 25, "a focused run keeps the wide cap");
+        assert_eq!(cap(&[]), 20, "empty means all 17 types — the broad cap");
+        let seventeen: Vec<&str> = ENTITY_TYPES.to_vec();
+        assert_eq!(
+            cap(&seventeen),
+            cap(&[]),
+            "listing every type explicitly must equal passing none"
+        );
     }
 }
