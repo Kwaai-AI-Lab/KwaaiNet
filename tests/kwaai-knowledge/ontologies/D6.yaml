@@ -19,7 +19,7 @@
 
 ontology:
   name: district-six-memoir
-  version: 5
+  version: 6
   extends: genealogy
 
 # The narrator is Yousuf (Joe) Rassool, a man. This used to be hardcoded in
@@ -209,6 +209,25 @@ entity_types:
     description: >-
       A named religious practice, festival, or rite.
     examples: ["Eid", "Hajj", "Ramadan", "the fast"]
+    irreducible: false
+
+  - name: Venue
+    evidence: 11.9
+    # Added after the full 40-question eval set showed Q31 asks "What was the
+    # Hanaffi Quwatul Islam Mosque?" and the schema had nowhere to put it.
+    # A building where communal life happens: mosque 1.4%, church 3.0%,
+    # hall/institute/cinema 8.9%. Distinct from Address (a dwelling) and from
+    # Organization (the body that meets there).
+    markers:
+      last: [mosque, masjid, church, hall, institute, library, cinema, bioscope, madressa]
+      any: [quwatul, moravian church]
+    description: >-
+      A named building or premises where communal, religious or civic life takes
+      place — mosque, church, hall, cinema, library.
+    examples: ["Hanaffi Quwatul Islam Mosque", "the Banqueting Hall"]
+    anti_examples:
+      - "Trafalgar High School"   # an EducationalInstitution
+      - "no. 22 Chapel Street"    # an Address
     irreducible: false
 
   - name: SportsClub
@@ -608,6 +627,15 @@ relation_types:
     range:  [Publication]
 
   # ── time ──────────────────────────────────────────────────────────────────
+  - name: worships_at
+    confidence: 0.8
+    triggers:
+      - 'attended prayers at'
+      - 'worshipped at'
+      - 'prayed at'
+      - 'the congregation of'
+    domain: [Person, Community]
+    range:  [Venue]
   - name: occurred_at
     confidence: 0.85
     triggers:
@@ -617,7 +645,7 @@ relation_types:
       - 'convened at'
       - 'set for'
     domain: [Event]
-    range:  [Address, Place]
+    range:  [Address, Place, Venue]
   - name: attended_event
     confidence: 0.8
     triggers:
