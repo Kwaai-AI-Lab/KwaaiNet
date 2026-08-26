@@ -2879,16 +2879,16 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 let had_ontology = store.ontology().is_some();
                 if all {
                     store.clear_all().context("clearing graph and schema")?;
-                    print_success(&format!(
-                        "Knowledge graph and schema for '{kb}' cleared."
-                    ));
+                    print_success(&format!("Knowledge graph and schema for '{kb}' cleared."));
                 } else {
                     store.clear_graph_data().context("clearing graph")?;
                     print_success(&format!(
                         "Knowledge graph for '{kb}' cleared. Run `kwaainet rag graph build --kb {kb}` to rebuild."
                     ));
                     if had_ontology {
-                        print_info("  Ontology and entity schemas preserved (use --all to drop them).");
+                        print_info(
+                            "  Ontology and entity schemas preserved (use --all to drop them).",
+                        );
                     }
                 }
             }
@@ -7306,8 +7306,7 @@ pub(crate) async fn verify_relation_candidates_llm(
                 String::new()
             }
         };
-        let batch_results =
-            parse_relation_verify_response_scoped(&raw, batch.to_vec(), &in_scope);
+        let batch_results = parse_relation_verify_response_scoped(&raw, batch.to_vec(), &in_scope);
         for (c, outcome) in &batch_results {
             tracing::info!(
                 "Phase 4 verify: \"{}\" [{}] \"{}\" (conf={:.2}) — {:?} — from: \"{}\"",
@@ -9368,8 +9367,8 @@ async fn extract_relations_axiomatic(
     threshold_low: f32,
 ) -> kwaai_rag::relation_extract::RelationAxiomaticRunMetrics {
     use kwaai_rag::relation_extract::{
-        classify_relation_candidates, split_relations_by_confidence,
-        RelationAxiomSnapshot, RelationAxiomaticMetricsAccum,
+        classify_relation_candidates, split_relations_by_confidence, RelationAxiomSnapshot,
+        RelationAxiomaticMetricsAccum,
     };
 
     let build_start = std::time::Instant::now();

@@ -150,8 +150,7 @@ pub fn effective_relation_types<'a>(
     if !relation_types.is_empty() {
         return relation_types.to_vec();
     }
-    let person_only =
-        entity_types.len() == 1 && entity_types[0].eq_ignore_ascii_case("Person");
+    let person_only = entity_types.len() == 1 && entity_types[0].eq_ignore_ascii_case("Person");
     if person_only {
         PERSON_RELATION_TYPES.to_vec()
     } else {
@@ -379,8 +378,10 @@ pub struct EntityMarkers {
 
 impl EntityMarkers {
     pub fn is_empty(&self) -> bool {
-        self.prefix.is_empty() && self.last.is_empty()
-            && self.any.is_empty() && self.exact.is_empty()
+        self.prefix.is_empty()
+            && self.last.is_empty()
+            && self.any.is_empty()
+            && self.exact.is_empty()
     }
 
     /// Match a candidate phrase, most specific rule first.
@@ -456,9 +457,24 @@ pub struct RelationTrigger {
 /// the book itself. A word that is noise in one corpus is a person in another,
 /// so a KB's ontology gets the final say — see `effective_stop_words`.
 pub const DEFAULT_STOP_WORDS: &[&str] = &[
-    "Apart", "Being", "Figure", "History", "Just", "Later", "Little", "Much",
-    "Now", "Perhaps", "Regrettably", "Science", "Several", "Soon", "Still",
-    "Tell", "Whether", "Worse",
+    "Apart",
+    "Being",
+    "Figure",
+    "History",
+    "Just",
+    "Later",
+    "Little",
+    "Much",
+    "Now",
+    "Perhaps",
+    "Regrettably",
+    "Science",
+    "Several",
+    "Soon",
+    "Still",
+    "Tell",
+    "Whether",
+    "Worse",
 ];
 
 /// Resolve the stop-list for a KB.
@@ -1276,7 +1292,13 @@ impl GraphStore {
             .map(|s| s.to_string())
         {
             self.upsert_relation_unchecked(
-                dst_id, src_id, &inv, evidence_chunk_id, confidence, method, source,
+                dst_id,
+                src_id,
+                &inv,
+                evidence_chunk_id,
+                confidence,
+                method,
+                source,
             )?;
         } else if let Some(&inverse) = FAMILIAL_INVERSE
             .iter()
@@ -6633,7 +6655,10 @@ mod ontology_lexicon_tests {
 
     #[test]
     fn honorific_prefix_marks_a_person() {
-        let m = EntityMarkers { prefix: vec!["haji".into(), "aboeta".into()], ..Default::default() };
+        let m = EntityMarkers {
+            prefix: vec!["haji".into(), "aboeta".into()],
+            ..Default::default()
+        };
         assert_eq!(m.match_kind("Haji Joosub"), Some(MarkerMatch::Prefix));
         assert_eq!(m.match_kind("Aboeta Manie"), Some(MarkerMatch::Prefix));
     }
@@ -6650,10 +6675,18 @@ mod ontology_lexicon_tests {
     #[test]
     fn longest_trigger_phrase_wins() {
         let t = vec![
-            RelationTrigger { phrase: "attended".into(), relation_type: "attended".into(),
-                              confidence: 0.85, reversed: false },
-            RelationTrigger { phrase: "attended the".into(), relation_type: "attended_event".into(),
-                              confidence: 0.80, reversed: false },
+            RelationTrigger {
+                phrase: "attended".into(),
+                relation_type: "attended".into(),
+                confidence: 0.85,
+                reversed: false,
+            },
+            RelationTrigger {
+                phrase: "attended the".into(),
+                relation_type: "attended_event".into(),
+                confidence: 0.80,
+                reversed: false,
+            },
         ];
         let got = best_ontology_trigger("he attended the conference", &t).unwrap();
         assert_eq!(got.relation_type, "attended_event");
@@ -6663,10 +6696,17 @@ mod ontology_lexicon_tests {
 
     #[test]
     fn reversed_flag_survives_the_round_trip() {
-        let t = vec![RelationTrigger { phrase: "denounced as".into(),
-                                       relation_type: "denounced_as".into(),
-                                       confidence: 0.8, reversed: true }];
-        assert!(best_ontology_trigger("was denounced as a quisling", &t).unwrap().reversed);
+        let t = vec![RelationTrigger {
+            phrase: "denounced as".into(),
+            relation_type: "denounced_as".into(),
+            confidence: 0.8,
+            reversed: true,
+        }];
+        assert!(
+            best_ontology_trigger("was denounced as a quisling", &t)
+                .unwrap()
+                .reversed
+        );
         assert!(best_ontology_trigger("nothing here", &t).is_none());
     }
 }
@@ -6693,7 +6733,10 @@ mod generalisation_tests {
         assert!(DEFAULT_STOP_WORDS.contains(&"History"));
         let s = vec![schema("Person", &["Hatless", "History"], &[])];
         let stops = effective_stop_words(&s, &[]);
-        assert!(!stops.contains(&"History"), "declared example must not be stopped");
+        assert!(
+            !stops.contains(&"History"),
+            "declared example must not be stopped"
+        );
         // and a word no ontology claims is still suppressed
         assert!(stops.contains(&"Perhaps"));
     }
@@ -6735,10 +6778,22 @@ mod entity_cap_tests {
     #[test]
     fn cap_keys_on_the_effective_vocabulary() {
         fn cap(passed: &[&str]) -> usize {
-            let effective = if passed.is_empty() { ENTITY_TYPES } else { passed };
-            if effective.len() <= 3 { 25 } else { 20 }
+            let effective = if passed.is_empty() {
+                ENTITY_TYPES
+            } else {
+                passed
+            };
+            if effective.len() <= 3 {
+                25
+            } else {
+                20
+            }
         }
-        assert_eq!(cap(&["Person", "Place"]), 25, "a focused run keeps the wide cap");
+        assert_eq!(
+            cap(&["Person", "Place"]),
+            25,
+            "a focused run keeps the wide cap"
+        );
         assert_eq!(cap(&[]), 20, "empty means all 17 types — the broad cap");
         let seventeen: Vec<&str> = ENTITY_TYPES.to_vec();
         assert_eq!(
@@ -6758,7 +6813,11 @@ mod extraction_temperature_tests {
     fn temperature_defaults_to_the_historical_value_and_can_be_pinned() {
         // SAFETY: single-threaded within this test; no other test reads the var.
         unsafe { std::env::remove_var("KWAAI_EXTRACTION_TEMPERATURE") };
-        assert_eq!(extraction_temperature(), 0.1, "production behaviour unchanged");
+        assert_eq!(
+            extraction_temperature(),
+            0.1,
+            "production behaviour unchanged"
+        );
 
         unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "0") };
         assert_eq!(extraction_temperature(), 0.0, "measurement runs can pin it");

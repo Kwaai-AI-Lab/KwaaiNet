@@ -222,17 +222,31 @@ fn genealogy_module() -> Vec<RelationTypeDef> {
 /// FAMILY_RELATION_TRIGGERS so an inheriting ontology gets them too.
 fn genealogy_triggers() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("son of", "child_of"), ("daughter of", "child_of"), ("born to", "child_of"),
-        ("wife of", "spouse_of"), ("husband of", "spouse_of"), ("married to", "spouse_of"),
-        ("widow of", "spouse_of"), ("widower of", "spouse_of"),
-        ("father of", "parent_of"), ("mother of", "parent_of"),
-        ("brother of", "sibling_of"), ("sister of", "sibling_of"),
-        ("half-brother of", "half_sibling_of"), ("half-sister of", "half_sibling_of"),
-        ("grandfather of", "grandparent_of"), ("grandmother of", "grandparent_of"),
-        ("grandson of", "grandchild_of"), ("granddaughter of", "grandchild_of"),
-        ("foster son of", "foster_child_of"), ("foster daughter of", "foster_child_of"),
-        ("nephew of", "nephew_of"), ("niece of", "niece_of"),
-        ("uncle of", "uncle_of"), ("aunt of", "aunt_of"), ("cousin of", "cousin_of"),
+        ("son of", "child_of"),
+        ("daughter of", "child_of"),
+        ("born to", "child_of"),
+        ("wife of", "spouse_of"),
+        ("husband of", "spouse_of"),
+        ("married to", "spouse_of"),
+        ("widow of", "spouse_of"),
+        ("widower of", "spouse_of"),
+        ("father of", "parent_of"),
+        ("mother of", "parent_of"),
+        ("brother of", "sibling_of"),
+        ("sister of", "sibling_of"),
+        ("half-brother of", "half_sibling_of"),
+        ("half-sister of", "half_sibling_of"),
+        ("grandfather of", "grandparent_of"),
+        ("grandmother of", "grandparent_of"),
+        ("grandson of", "grandchild_of"),
+        ("granddaughter of", "grandchild_of"),
+        ("foster son of", "foster_child_of"),
+        ("foster daughter of", "foster_child_of"),
+        ("nephew of", "nephew_of"),
+        ("niece of", "niece_of"),
+        ("uncle of", "uncle_of"),
+        ("aunt of", "aunt_of"),
+        ("cousin of", "cousin_of"),
     ]
 }
 
@@ -296,7 +310,10 @@ impl Ontology {
 
     /// Predicate names, for the extraction prompt and dream validation.
     pub fn relation_type_names(&self) -> Vec<&str> {
-        self.relation_types.iter().map(|r| r.name.as_str()).collect()
+        self.relation_types
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect()
     }
 
     pub fn entity_type(&self, name: &str) -> Option<&EntityTypeDef> {
@@ -359,9 +376,7 @@ impl Ontology {
         };
         let ok = |allowed: &[String], actual: Option<&str>| match actual {
             None => true,
-            Some(t) => {
-                allowed.is_empty() || allowed.iter().any(|a| a.eq_ignore_ascii_case(t))
-            }
+            Some(t) => allowed.is_empty() || allowed.iter().any(|a| a.eq_ignore_ascii_case(t)),
         };
         ok(&def.domain, subject_type) && ok(&def.range, object_type)
     }
@@ -397,7 +412,11 @@ impl Ontology {
             .axioms
             .iter()
             .filter(|ax| ax.kind == "non_functional")
-            .any(|ax| ax.relations.iter().any(|r| r.eq_ignore_ascii_case(relation)))
+            .any(|ax| {
+                ax.relations
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case(relation))
+            })
         {
             return false;
         }
@@ -427,17 +446,19 @@ impl Ontology {
         }
         // A declared alias is the corpus saying "this is my predicate under
         // another name" — resolve it rather than discarding the edge.
-        if let Some(r) = self.relation_types.iter().find(|r| {
-            r.aliases.iter().any(|a| a.eq_ignore_ascii_case(relation))
-        }) {
-            return Some(r.name.clone());
-        }
-        // An inverse name is a legitimate way to say a declared predicate.
         if let Some(r) = self
             .relation_types
             .iter()
-            .find(|r| r.inverse.as_deref().is_some_and(|i| i.eq_ignore_ascii_case(relation)))
+            .find(|r| r.aliases.iter().any(|a| a.eq_ignore_ascii_case(relation)))
         {
+            return Some(r.name.clone());
+        }
+        // An inverse name is a legitimate way to say a declared predicate.
+        if let Some(r) = self.relation_types.iter().find(|r| {
+            r.inverse
+                .as_deref()
+                .is_some_and(|i| i.eq_ignore_ascii_case(relation))
+        }) {
             return r.inverse.clone().or_else(|| Some(r.name.clone()));
         }
         self.fallback_predicate.clone()
@@ -460,8 +481,7 @@ impl Ontology {
         self.relation_types
             .iter()
             .filter(|r| {
-                r.domain.is_empty()
-                    || r.domain.iter().any(|d| d.eq_ignore_ascii_case(entity_type))
+                r.domain.is_empty() || r.domain.iter().any(|d| d.eq_ignore_ascii_case(entity_type))
             })
             .map(|r| r.name.clone())
             .collect()
@@ -499,10 +519,7 @@ impl Ontology {
 /// hand-maintained list, so an ontology author gets this for free.
 fn is_reversed_phrase(phrase: &str) -> bool {
     let p = phrase.trim().to_lowercase();
-    p.ends_with(" by")
-        || p.ends_with(" as")
-        || p.ends_with(" a")
-        || p.starts_with("born to")
+    p.ends_with(" by") || p.ends_with(" as") || p.ends_with(" a") || p.starts_with("born to")
 }
 
 #[cfg(test)]
@@ -626,12 +643,17 @@ text_rules:
         let p = o.expected_relations_for("Person");
         assert!(p.contains(&"lived_at".to_string()));
         // Address is not in lived_at's domain, so it must not be expected there
-        assert!(!o.expected_relations_for("Address").contains(&"lived_at".to_string()));
+        assert!(!o
+            .expected_relations_for("Address")
+            .contains(&"lived_at".to_string()));
     }
 
     #[test]
     fn fields_come_from_the_ontology() {
-        assert_eq!(ont().fields_for("Address"), vec![("occupant", "who lived there")]);
+        assert_eq!(
+            ont().fields_for("Address"),
+            vec![("occupant", "who lived there")]
+        );
         assert!(ont().fields_for("Nonexistent").is_empty());
     }
 
@@ -678,7 +700,9 @@ relation_types:
         let flat: Vec<&String> = groups.iter().flatten().collect();
         assert!(flat.iter().any(|r| *r == "measured_by"));
         assert!(
-            !flat.iter().any(|r| r.contains("spouse") || r.contains("parent")),
+            !flat
+                .iter()
+                .any(|r| r.contains("spouse") || r.contains("parent")),
             "a climate ontology must never expect kinship"
         );
 
@@ -691,10 +715,9 @@ relation_types:
     /// the compiled map only knows types that happened to appear in one corpus.
     #[test]
     fn declared_types_are_never_scored_as_unknown() {
-        let o = Ontology::from_yaml(
-            "ontology: { name: t }\nentity_types:\n  - name: TippingElement\n",
-        )
-        .unwrap();
+        let o =
+            Ontology::from_yaml("ontology: { name: t }\nentity_types:\n  - name: TippingElement\n")
+                .unwrap();
         assert_eq!(schema_type_for_ontology("TippingElement", None), None);
         assert_eq!(
             schema_type_for_ontology("TippingElement", Some(&o)),
@@ -713,13 +736,19 @@ relation_types:
         .unwrap();
         let docs = Ontology::from_yaml("ontology: { name: d }\n").unwrap();
 
-        assert_eq!(clean_pdf_text_with_rules("J_ M_ H_ Gool", Some(&memoir)), "J. M. H. Gool");
+        assert_eq!(
+            clean_pdf_text_with_rules("J_ M_ H_ Gool", Some(&memoir)),
+            "J. M. H. Gool"
+        );
         assert!(
             clean_pdf_text_with_rules("call max_workers now", Some(&docs)).contains('_'),
             "a KB that does not opt in must keep its underscores"
         );
         // no ontology at all → historical behaviour preserved
-        assert_eq!(clean_pdf_text_with_rules("J_ M_ H_ Gool", None), "J. M. H. Gool");
+        assert_eq!(
+            clean_pdf_text_with_rules("J_ M_ H_ Gool", None),
+            "J. M. H. Gool"
+        );
     }
 
     /// The Phase-4 verify prompt must offer the corpus's own predicates.
@@ -734,7 +763,9 @@ relation_types:
         let scoped = in_scope_relation_types(Some(&idx));
         assert_eq!(scoped, vec!["overrules", "cites"]);
         assert!(!scoped.iter().any(|r| r == "spouse_of"));
-        assert!(in_scope_relation_types(None).iter().any(|r| r == "spouse_of"));
+        assert!(in_scope_relation_types(None)
+            .iter()
+            .any(|r| r == "spouse_of"));
     }
 
     /// Query patterns must reach beyond kinship, or "the founders of X" and
@@ -752,7 +783,9 @@ relation_types:
         )
         .unwrap();
         let pats = query_patterns_from_ontology(Some(&o));
-        assert!(pats.iter().any(|(p, r, _)| p.contains("founder of") && r == "founded"));
+        assert!(pats
+            .iter()
+            .any(|(p, r, _)| p.contains("founder of") && r == "founded"));
         // kinship patterns survive
         assert!(pats.iter().any(|(p, _, _)| p.starts_with("children of")));
     }
@@ -826,7 +859,14 @@ impl OntologyIndex {
                 any.push((m.to_lowercase(), ty.clone(), MarkerMatch::Any.confidence()));
             }
         }
-        Self { triggers, exact, last, prefix, any, ontology: ont }
+        Self {
+            triggers,
+            exact,
+            last,
+            prefix,
+            any,
+            ontology: ont,
+        }
     }
 
     pub fn ontology(&self) -> &Ontology {
@@ -1021,8 +1061,12 @@ relation_types:
         let idx = d6_like();
         let mut snap = HashMap::new();
         snap.insert("chapel street".to_string(), "Place".to_string());
-        let got =
-            classify_candidates_with_ontology(&["Chapel Street".to_string()], &snap, &[], Some(&idx));
+        let got = classify_candidates_with_ontology(
+            &["Chapel Street".to_string()],
+            &snap,
+            &[],
+            Some(&idx),
+        );
         assert_eq!(got[0].entity_type.as_deref(), Some("Place"));
         assert_eq!(got[0].method, ClassificationMethod::KnownEntity);
     }
@@ -1060,10 +1104,9 @@ mod clear_preserves_schema_tests {
         let dir = std::env::temp_dir().join(format!("ont-clear-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let tenant = Uuid::new_v4();
-        let ont = Ontology::from_yaml(
-            "ontology: { name: keepme }\nentity_types:\n  - name: Address\n",
-        )
-        .unwrap();
+        let ont =
+            Ontology::from_yaml("ontology: { name: keepme }\nentity_types:\n  - name: Address\n")
+                .unwrap();
 
         {
             let mut g = GraphStore::open(&dir, tenant).unwrap();
@@ -1094,7 +1137,10 @@ mod clear_preserves_schema_tests {
         {
             let g = GraphStore::open(&dir, tenant).unwrap();
             assert_eq!(g.node_count(), 0);
-            assert_eq!(g.ontology().map(|o| o.ontology.name.clone()).as_deref(), Some("keepme"));
+            assert_eq!(
+                g.ontology().map(|o| o.ontology.name.clone()).as_deref(),
+                Some("keepme")
+            );
         }
         // --all is the escape hatch when a full reset really is wanted.
         {
@@ -1127,7 +1173,13 @@ mod extends_and_vocabulary_tests {
     fn extends_genealogy_supplies_the_kinship_vocabulary() {
         let o = d6();
         let names = o.relation_type_names();
-        for k in ["parent_of", "child_of", "spouse_of", "sibling_of", "cousin_of"] {
+        for k in [
+            "parent_of",
+            "child_of",
+            "spouse_of",
+            "sibling_of",
+            "cousin_of",
+        ] {
             assert!(names.contains(&k), "{k} must be inherited");
         }
         assert!(names.contains(&"lived_at"), "local predicates survive");
@@ -1158,7 +1210,10 @@ mod extends_and_vocabulary_tests {
         )
         .unwrap();
         assert_eq!(
-            o.relation_type_names().iter().filter(|n| **n == "spouse_of").count(),
+            o.relation_type_names()
+                .iter()
+                .filter(|n| **n == "spouse_of")
+                .count(),
             1,
             "no duplicate"
         );
@@ -1197,7 +1252,10 @@ mod extends_and_vocabulary_tests {
     #[test]
     fn no_ontology_coerces_nothing() {
         let o = Ontology::default();
-        assert_eq!(o.coerce_relation("anything_at_all").as_deref(), Some("anything_at_all"));
+        assert_eq!(
+            o.coerce_relation("anything_at_all").as_deref(),
+            Some("anything_at_all")
+        );
     }
 }
 
@@ -1226,7 +1284,10 @@ mod alias_tests {
         assert_eq!(o.coerce_relation("LIVED_IN").as_deref(), Some("lived_at"));
         // the canonical name still works, and genuine junk still falls back
         assert_eq!(o.coerce_relation("lived_at").as_deref(), Some("lived_at"));
-        assert_eq!(o.coerce_relation("gazed_at").as_deref(), Some("associated_with"));
+        assert_eq!(
+            o.coerce_relation("gazed_at").as_deref(),
+            Some("associated_with")
+        );
     }
 
     /// A canonical name must win over another predicate's alias claiming it.
@@ -1256,7 +1317,10 @@ mod alias_tests {
         let o = Ontology::from_yaml(&src).unwrap();
         // counts are the measured control-arm output over 120 chunks
         for (emitted, edges) in [
-            ("lived_in", 28), ("works_at", 13), ("visited", 10), ("located_in", 7),
+            ("lived_in", 28),
+            ("works_at", 13),
+            ("visited", 10),
+            ("located_in", 7),
         ] {
             let got = o.coerce_relation(emitted);
             assert!(

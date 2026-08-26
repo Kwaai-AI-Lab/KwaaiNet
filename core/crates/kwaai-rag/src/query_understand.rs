@@ -106,7 +106,11 @@ pub fn query_patterns_from_ontology(
                 out.push((format!("{t} "), r.name.clone(), dir));
             }
         }
-        out.push((format!("{} of ", r.name.replace('_', " ")), r.name.clone(), dir));
+        out.push((
+            format!("{} of ", r.name.replace('_', " ")),
+            r.name.clone(),
+            dir,
+        ));
     }
     out
 }
@@ -161,7 +165,13 @@ const POSS_PATTERNS: &[(&str, &str, RelDirection)] = &[
 pub fn author_anchors(ont: Option<&crate::ontology::Ontology>) -> Vec<String> {
     let mut v: Vec<String> = AUTHOR_ANCHORS.iter().map(|s| s.to_string()).collect();
     if let Some(o) = ont {
-        for d in o.text_rules.definite_descriptions.get("Narrator").into_iter().flatten() {
+        for d in o
+            .text_rules
+            .definite_descriptions
+            .get("Narrator")
+            .into_iter()
+            .flatten()
+        {
             v.push(d.to_lowercase());
         }
     }
@@ -228,7 +238,7 @@ pub fn understand_query_rule(query: &str) -> QueryStructure {
             return QueryStructure {
                 intent: QueryIntent::FamilyRelation {
                     relation: relation.to_string(),
-                    direction: direction.clone(),
+                    direction: *direction,
                 },
                 target_entities: if anchor_is_author {
                     vec![]
@@ -252,7 +262,7 @@ pub fn understand_query_rule(query: &str) -> QueryStructure {
             return QueryStructure {
                 intent: QueryIntent::FamilyRelation {
                     relation: relation.to_string(),
-                    direction: direction.clone(),
+                    direction: *direction,
                 },
                 target_entities: if anchor_is_author {
                     vec![]

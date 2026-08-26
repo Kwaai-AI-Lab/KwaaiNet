@@ -90,7 +90,10 @@ pub fn in_scope_relation_types(ont: Option<&crate::ontology::OntologyIndex>) -> 
             .into_iter()
             .map(String::from)
             .collect(),
-        _ => IN_SCOPE_RELATION_TYPES.iter().map(|s| s.to_string()).collect(),
+        _ => IN_SCOPE_RELATION_TYPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
     }
 }
 
@@ -182,10 +185,17 @@ const REVERSED_TRIGGERS: &[&str] = &["founded by", "born to"];
 ///
 /// Longest phrase wins within the ontology's set, so "half-brother of" beats
 /// "brother of" — the same rule the compiled matcher relies on.
-pub fn find_trigger_with_ontology<'a>(
+pub fn find_trigger_with_ontology(
     s_lower: &str,
-    ont: Option<&'a crate::ontology::OntologyIndex>,
-) -> Option<(usize, usize, String, String, RelationClassificationMethod, f32)> {
+    ont: Option<&crate::ontology::OntologyIndex>,
+) -> Option<(
+    usize,
+    usize,
+    String,
+    String,
+    RelationClassificationMethod,
+    f32,
+)> {
     if let Some(o) = ont {
         if let Some(t) = o.find_trigger(s_lower) {
             if let Some(pos) = s_lower.find(t.phrase.as_str()) {
@@ -200,8 +210,7 @@ pub fn find_trigger_with_ontology<'a>(
             }
         }
     }
-    find_best_trigger(s_lower)
-        .map(|(a, b, p, r, m, c)| (a, b, p.to_string(), r.to_string(), m, c))
+    find_best_trigger(s_lower).map(|(a, b, p, r, m, c)| (a, b, p.to_string(), r.to_string(), m, c))
 }
 
 fn find_best_trigger(

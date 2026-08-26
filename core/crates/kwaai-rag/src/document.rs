@@ -277,17 +277,17 @@ fn lexical_score(text: &str) -> LexicalScore {
 pub fn clean_pdf_text_no_underscore_rule(text: &str) -> String {
     // Protect underscores through the shared cleaner, then restore them.
     const SENTINEL: char = '\u{E000}'; // private-use area: cannot occur in source text
-    let guarded: String = text.chars().map(|c| if c == '_' { SENTINEL } else { c }).collect();
+    let guarded: String = text
+        .chars()
+        .map(|c| if c == '_' { SENTINEL } else { c })
+        .collect();
     clean_pdf_text(&guarded)
         .chars()
         .map(|c| if c == SENTINEL { '_' } else { c })
         .collect()
 }
 
-pub fn clean_pdf_text_with_rules(
-    s: &str,
-    ont: Option<&crate::ontology::Ontology>,
-) -> String {
+pub fn clean_pdf_text_with_rules(s: &str, ont: Option<&crate::ontology::Ontology>) -> String {
     match ont {
         // Absent an ontology, keep the historical behaviour so no existing KB
         // changes; a KB that declares rules gets exactly what it asks for.

@@ -21,10 +21,7 @@ use std::collections::HashMap;
 ///
 /// The compiled map is corpus-blind and its own comment admitted as much —
 /// `Group`, `Language` and `Family` are in it because they "appeared in D6".
-pub fn schema_type_for_ontology<'a>(
-    entity_type: &str,
-    ont: Option<&'a Ontology>,
-) -> Option<&'a str>
+pub fn schema_type_for_ontology<'a>(entity_type: &str, ont: Option<&'a Ontology>) -> Option<&'a str>
 where
     'static: 'a,
 {
