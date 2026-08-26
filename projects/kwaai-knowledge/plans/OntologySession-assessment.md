@@ -106,8 +106,64 @@ hygiene pass is higher-value than this entire plan for those nine, and
 This also corrected the bakeoff design: Climate was dropped as a subject (31% of
 its chunks unusable) in favour of Legal, Astrophysics and NIST.
 
+## 4b. The A/B, run 1 — it found bugs in the code, not virtues in the ontology
+
+120 chunks per arm, same chunks, same model, local Ollama, entity cap confound
+already fixed. Archived under `tests/kwaai-knowledge/results/run1/`.
+
+| metric | control | ontology | |
+|---|---|---|---|
+| escape-hatch rate | 17.3% | **5.2%** | −12.2pp |
+| entities | 332 | 252 | −80 |
+| relations | 277 | 194 | −83 |
+| density (rel/ent) | 0.834 | 0.770 | held |
+| kinship edges | 98 | **36** | −62 |
+
+Four of five predictions passed. `Address` populated and separated from `Place`
+(Cannon Street, Kloof Street, Caledon Street — the 24.2% signal that previously
+had nowhere to go). `Doctrine` populated. Escape-hatch fell by more than two
+thirds. Density held.
+
+**Prediction 5 failed, and the cause was in the crate.** `extends: genealogy`
+was parsed and ignored, so the extraction prompt offered a kinship-dense memoir
+zero kinship predicates — the ontology arm was *worse than no ontology* at the
+one thing D6 is densest in. Fixed: built-in modules resolve at load, with
+inverses, symmetry, Person domain/range and trigger phrases.
+
+**A second defect the numbers exposed.** The arm produced 88 distinct relation
+types from 27 declared — `was_defenestrated_at`, `gazed_at`, `staying behind`.
+The vocabulary reached the prompt and nothing checked the output against it, so
+the ontology only *suggested*. `coerce_relation` now maps unknowns to the
+corpus's fallback, or drops them where a corpus admits none.
+
+**Still open after both fixes: type precision.** `Language` caught "Integral
+Calculus, Latin, Mathematics, Trigonometry" — school subjects. `Legislation`
+caught "Senior Certificate", "Health Department". `Venue` caught "Nash". Those
+are authoring faults in my markers, not code faults, and they need a separate
+pass over `D6.yaml`.
+
+**The methodological point.** A test designed to flatter the ontology would have
+reported "escape-hatch down 12 points, four of five predictions met" and stopped.
+Recording a kinship prediction that the ontology could fail is what surfaced the
+unimplemented `extends`. The value came from the prediction that failed.
+
+## 4c. A near-miss worth recording
+
+Between the two runs, `graph clear` silently deleted the ontology — it removed
+the whole database file, and the metadata table lives in it. The ontology arm
+ran eleven chunks as a **second control**, and the comparison would have
+reported two near-identical arms and a clean null. It was caught only by
+checking for the `extraction driven by KB ontology` log line rather than
+trusting the run.
+
+Fixed as a bug: the graph is derived data, the ontology is configuration, and
+clearing one must not discard the other. `--all` is the full reset.
+
 ## 5. Open, in priority order
 
+0. **D6 marker precision** — `Language`, `Legislation` and `Venue` are catching
+   the wrong things (§4b). Cheapest fix with a measurable effect, and it is
+   ontology authoring rather than code.
 1. **Ingestion hygiene for the nine data-bound KBs.** Highest value in the
    backlog and independent of everything else here.
 2. **Re-derive the seven `unverified` ontologies** from their own corpora.
