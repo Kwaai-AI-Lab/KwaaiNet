@@ -1505,3 +1505,102 @@ mod consistency_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod original_predicate_tests {
+    use super::*;
+    use crate::graph::{entity_id, EntityNode, FieldValue, GraphStore};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn person(name: &str) -> EntityNode {
+        EntityNode {
+            id: entity_id(name, "Person"),
+            name: name.into(),
+            entity_type: "Person".into(),
+            description: String::new(),
+            embedding: vec![],
+            mention_count: 1,
+            first_chunk_id: 1,
+            aliases: vec![],
+            schema_type: None,
+            gender: None,
+            evidence: vec![],
+            fields: HashMap::<String, FieldValue>::new(),
+            confidence: 1.0,
+            extraction_confidence: 1.0,
+        }
+    }
+
+    /// Coercion must not destroy what the extractor said.
+    ///
+    /// On D6, 59 of the 70 predicates the ontology rejected carried meaning a
+    /// memoir depends on — `nursed_by`, `disagreed_with`, `resigned_under` —
+    /// and every one became an undifferentiated `associated_with`. The closed
+    /// vocabulary still governs traversal; the original survives beside it.
+    #[test]
+    fn a_coerced_edge_keeps_the_predicate_the_extractor_emitted() {
+        let dir = std::env::temp_dir().join(format!("orig-pred-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut g = GraphStore::open(&dir, Uuid::new_v4()).unwrap();
+        g.set_ontology(
+            &Ontology::from_yaml(
+                "ontology: { name: d6 }\n\
+                 entity_types:\n  - name: Person\n\
+                 relation_types:\n\
+                 \x20 - name: lived_at\n    aliases: [lived_in]\n\
+                 fallback_predicate: associated_with\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        g.upsert_entity(person("Joe")).unwrap();
+        g.upsert_entity(person("Mike")).unwrap();
+        let (a, b) = (entity_id("Joe", "Person"), entity_id("Mike", "Person"));
+
+        // Undeclared and unaliased -> fallback, original retained.
+        g.upsert_relation(a, b, "nursed_by", 1).unwrap();
+        let rels = g.all_relation_records();
+        let r = rels
+            .iter()
+            .find(|r| r.src_id == a && r.dst_id == b)
+            .expect("edge stored");
+        assert_eq!(
+            r.relation_type, "associated_with",
+            "vocabulary still closed"
+        );
+        assert_eq!(
+            r.original_predicate.as_deref(),
+            Some("nursed_by"),
+            "the nuance must survive the coercion"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An edge whose predicate was already declared carries no original — the
+    /// field marks a rewrite, not every edge.
+    #[test]
+    fn an_uncoerced_edge_records_no_original() {
+        let dir = std::env::temp_dir().join(format!("orig-pred2-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut g = GraphStore::open(&dir, Uuid::new_v4()).unwrap();
+        g.set_ontology(
+            &Ontology::from_yaml(
+                "ontology: { name: d6 }\n\
+                 entity_types:\n  - name: Person\n\
+                 relation_types:\n  - name: lived_at\n    aliases: [lived_in]\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        g.upsert_entity(person("Joe")).unwrap();
+        g.upsert_entity(person("Mike")).unwrap();
+        let (a, b) = (entity_id("Joe", "Person"), entity_id("Mike", "Person"));
+        g.upsert_relation(a, b, "lived_at", 1).unwrap();
+        let rels = g.all_relation_records();
+        let r = rels.iter().find(|r| r.src_id == a).unwrap();
+        assert_eq!(r.relation_type, "lived_at");
+        assert!(r.original_predicate.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

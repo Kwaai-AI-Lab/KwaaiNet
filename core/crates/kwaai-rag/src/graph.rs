@@ -293,6 +293,21 @@ pub struct RelationRecord {
     /// "llm_open" (default, legacy behavior), "seeded", "manual".
     #[serde(default = "default_relation_source")]
     pub source: String,
+    /// The predicate the extractor actually emitted, when it differed from
+    /// `relation_type` — i.e. when the ontology coerced it to an alias target or
+    /// to the fallback.
+    ///
+    /// Kept because coercion was destroying meaning irreversibly. On D6, 59 of
+    /// the 70 predicates the ontology rejected carried sense a memoir depends on
+    /// — `nursed_by`, `disagreed_with`, `resigned_under`, `segregated lives` —
+    /// and every one became an undifferentiated `associated_with`. The closed
+    /// vocabulary still governs traversal and axioms; this field means the
+    /// nuance survives alongside it, queryable, and available as the residue
+    /// that ontology induction reads.
+    ///
+    /// `None` when the extractor's predicate was already the stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_predicate: Option<String>,
 }
 
 fn default_relation_confidence() -> f32 {
@@ -1218,6 +1233,7 @@ impl GraphStore {
         // distinct predicates from 27 declared. Unknown ones become the
         // corpus's fallback, or are dropped where it admits none.
         let coerced;
+        let emitted = relation_type;
         let relation_type = match self.ontology.as_ref() {
             Some(ont) => match ont.coerce_relation(relation_type) {
                 Some(r) => {
@@ -1228,6 +1244,9 @@ impl GraphStore {
             },
             None => relation_type,
         };
+        // Preserve what the extractor said when we rewrote it.
+        let original_predicate =
+            (!relation_type.eq_ignore_ascii_case(emitted)).then(|| emitted.to_string());
 
         // ── Constraint: ontology domain/range ────────────────────────────────
         // The general form of the two hardcoded rules that follow. When the KB
@@ -1280,6 +1299,7 @@ impl GraphStore {
             confidence,
             method,
             source,
+            original_predicate.as_deref(),
         )?;
 
         // ── Auto-add logical inverse ──
@@ -1299,6 +1319,7 @@ impl GraphStore {
                 confidence,
                 method,
                 source,
+                original_predicate.as_deref(),
             )?;
         } else if let Some(&inverse) = FAMILIAL_INVERSE
             .iter()
@@ -1313,6 +1334,7 @@ impl GraphStore {
                 confidence,
                 method,
                 source,
+                original_predicate.as_deref(),
             )?;
         }
 
@@ -1335,12 +1357,14 @@ impl GraphStore {
                 confidence,
                 method,
                 source,
+                original_predicate.as_deref(),
             )?;
         }
 
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn upsert_relation_unchecked(
         &mut self,
@@ -1351,6 +1375,7 @@ impl GraphStore {
         confidence: f32,
         method: &str,
         source: &str,
+        original_predicate: Option<&str>,
     ) -> Result<()> {
         let key = relation_key(src_id, dst_id, relation_type);
 
@@ -1379,6 +1404,7 @@ impl GraphStore {
                     r
                 })
                 .unwrap_or_else(|| RelationRecord {
+                    original_predicate: original_predicate.map(str::to_string),
                     src_id,
                     dst_id,
                     relation_type: relation_type.to_string(),
@@ -2092,6 +2118,7 @@ impl GraphStore {
                         e
                     })
                     .unwrap_or_else(|| RelationRecord {
+                        original_predicate: None,
                         src_id: new_src,
                         dst_id: new_dst,
                         relation_type: rel.relation_type.clone(),
@@ -2351,6 +2378,7 @@ impl GraphStore {
                             rel.confidence,
                             &rel.method,
                             &rel.source,
+                            rel.original_predicate.as_deref(),
                         )?;
                     }
                     added += 1;
@@ -2371,6 +2399,7 @@ impl GraphStore {
                         rel.confidence,
                         &rel.method,
                         &rel.source,
+                        rel.original_predicate.as_deref(),
                     )?;
                 }
                 added += 1;
@@ -4711,6 +4740,40 @@ impl GraphStore {
     }
 
     /// Expose chunk→entity mapping for cross-link discovery in the dream loop.
+    /// Every stored relation, with provenance.
+    ///
+    /// Exists so the coercion residue is reachable: an edge coerced to the
+    /// fallback keeps `original_predicate`, and reading those back is what makes
+    /// ontology induction possible — the predicates a corpus emitted and its
+    /// schema rejected are the schema's own to-do list, ranked by frequency.
+    pub fn all_relation_records(&self) -> Vec<RelationRecord> {
+        let mut out = Vec::new();
+        if let Ok(mut st) = self.conn.prepare("SELECT value FROM relations") {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, Vec<u8>>(0)) {
+                for v in rows.flatten() {
+                    if let Ok(rec) = serde_json::from_slice::<RelationRecord>(&v) {
+                        out.push(rec);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Predicates the extractor emitted that the ontology rewrote, with counts,
+    /// most frequent first. The induction signal.
+    pub fn coercion_residue(&self) -> Vec<(String, usize)> {
+        let mut c: HashMap<String, usize> = HashMap::new();
+        for r in self.all_relation_records() {
+            if let Some(o) = r.original_predicate {
+                *c.entry(o).or_default() += 1;
+            }
+        }
+        let mut v: Vec<_> = c.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
     pub fn all_chunk_entity_pairs(&self) -> impl Iterator<Item = (i64, &Vec<i64>)> {
         self.chunk_to_entities.iter().map(|(&k, v)| (k, v))
     }
@@ -5005,6 +5068,7 @@ impl GraphStore {
                 };
                 let new_key = relation_key(new_src, new_dst, &rel.relation_type);
                 let updated = RelationRecord {
+                    original_predicate: None,
                     src_id: new_src,
                     dst_id: new_dst,
                     relation_type: rel.relation_type.clone(),
