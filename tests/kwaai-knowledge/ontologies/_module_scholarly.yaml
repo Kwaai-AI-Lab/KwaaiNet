@@ -1,0 +1,120 @@
+# Shared built-in module: scholarly.
+# Arm B, foundation-model authored 2026-08-25. Covers Climate, DeepSea, DreamMem
+# and the cosmology half of Astrophysics — empirical research literature.
+#
+# The framing doc's prediction, confirmed by arm A: a physics paper "has to
+# become people and places to be represented at all". Climate's graph is
+# Publication 1163 / Organization 655 / Legislation 161 — it modelled the
+# bibliography, not the science.
+
+ontology:
+  name: scholarly
+  version: 1
+  extends: none
+
+provenance:
+  derivation: module
+  note: >-
+    genre module; body/bibliography split from Climate sampling
+
+# A research corpus is at least two document kinds and they must not share a
+# vocabulary: the body text asserts findings, the reference list asserts
+# citations. Conflating them is how Climate's graph became a citation index.
+streams:
+  - name: body
+    entity_types: [Phenomenon, Quantity, Method, Dataset, Instrument, Finding,
+                   Organism, Model]
+  - name: bibliography
+    entity_types: [Publication, Author, Organization]
+    ingest: citations_only      # never extract domain entities from a reference list
+  - name: front-matter
+    ingest: skip                # acknowledgements, funding, affiliations, watermarks
+
+entity_types:
+  - name: Phenomenon
+    description: A named natural process or effect under study.
+    examples: ["ocean acidification", "permafrost thaw", "memory consolidation"]
+    irreducible: false
+  - name: Quantity
+    description: >-
+      A measurable variable. Declared in the global vocabulary and never once
+      produced across 16 graphs.
+    irreducible: false
+    fields:
+      - { key: units,     desc: "SI or stated units" }
+      - { key: timescale, desc: "characteristic timescale, if stated" }
+  - name: Method
+    description: A named experimental or analytical technique.
+    irreducible: false
+  - name: Dataset
+    description: A named data product, model run, or experiment ensemble.
+    examples: ["CMIP6", "1pctCO2 experiment"]
+    irreducible: false
+  - name: Instrument
+    description: A named measuring device or observing platform.
+    irreducible: false
+  - name: Model
+    description: A named simulation or theoretical model.
+    examples: ["Community Climate Model version 3"]
+    irreducible: false
+  - name: Organism
+    description: A named taxon or biological subject. Needed by DeepSea.
+    irreducible: false
+  - name: Finding
+    description: >-
+      A stated empirical result with its magnitude and uncertainty. The unit a
+      research corpus is actually made of, and the one the current vocabulary
+      has no type for at all.
+    # Numbers, ranges and confidence intervals must survive verbatim.
+    irreducible: true
+    fields:
+      - { key: magnitude,   desc: "the stated value or range" }
+      - { key: uncertainty, desc: "confidence interval, sigma, or hedge as stated" }
+
+relation_types:
+  - name: causes
+    domain: [Phenomenon, Quantity]
+    range:  [Phenomenon, Quantity]
+    acyclic: true
+    inverse: caused_by
+  - name: contributes_to
+    description: >-
+      Weaker than `causes` — partial attribution. Kept separate because
+      attribution science turns on the difference.
+    domain: [Phenomenon, Quantity]
+    range:  [Phenomenon, Quantity]
+  - name: measured_by
+    domain: [Quantity, Phenomenon]
+    range:  [Instrument, Method, Dataset]
+  - name: reports
+    domain: [Publication]
+    range:  [Finding]
+  - name: supports
+    domain: [Finding, Dataset]
+    range:  [Finding]
+  - name: contradicts
+    domain: [Finding]
+    range:  [Finding]
+    symmetric: true
+  - name: simulated_by
+    domain: [Phenomenon]
+    range:  [Model]
+  - name: affects
+    domain: [Phenomenon]
+    range:  [Organism, Phenomenon]
+  - name: threshold_for
+    description: A quantity beyond which a phenomenon changes state.
+    domain: [Quantity]
+    range:  [Phenomenon]
+
+axioms:
+  - kind: contradiction
+    pairs:
+      - [supports, contradicts]
+      - [causes, contributes_to]      # attribution is one or the other
+  - kind: acyclic
+    relations: [causes]
+
+# A research corpus admitting a vague predicate reproduces exactly the failure
+# arm A measured — 9 usable predicates available to Climate, 4 relations built.
+fallback_predicate: null

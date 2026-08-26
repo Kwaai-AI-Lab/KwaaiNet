@@ -1,0 +1,109 @@
+# Ontology for the Meetings KB — WebVTT transcripts of standup calls.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md.
+#
+# Corpus hygiene: 2.0% clean. 1875 of 1914 chunks are WebVTT scaffolding — cue
+# numbers and "00:42:57.390 --> 00:43:13.319" timestamps inline with the words,
+# often with the passage duplicated. This is the dirtiest corpus in the set and
+# the fix is a VTT-aware ingester, not a vocabulary.
+#
+# Note the induction run inferred this corpus's domain as "Neural Knowledge
+# Representation" — it read the subject matter of the conversation rather than
+# recognising it as conversation. Which is the right ontology question: a
+# standup about RAG needs a *meeting* ontology, not a RAG one.
+
+ontology:
+  name: conversation
+  version: 1
+  extends: none
+
+provenance:
+  derivation: derived
+  note: >-
+    4 sampled chunks (Intern Standup VTT transcripts)
+
+streams:
+  - name: utterance
+    entity_types: [Speaker, Utterance, Topic, Decision, ActionItem, Question]
+  - name: cue-metadata
+    ingest: skip     # timestamps and cue numbers are structure, not content
+
+entity_types:
+  - name: Speaker
+    description: A named participant in the call.
+    examples: ["Reza Rassool", "Maira Khwaja", "Jourdane Hamilton"]
+    irreducible: false
+  - name: Utterance
+    description: A single speaker turn, with its timestamp.
+    irreducible: false
+    fields:
+      - { key: startTime, desc: "cue start timestamp" }
+  - name: Topic
+    description: A subject under discussion.
+    irreducible: false
+  - name: Decision
+    description: >-
+      A resolution reached on the call. The thing anyone actually queries a
+      meeting archive for, and one the global vocabulary has no type for.
+    irreducible: true
+  - name: ActionItem
+    description: A commitment by a named person to do something.
+    irreducible: true
+    fields:
+      - { key: owner, desc: "who committed" }
+      - { key: due,   desc: "when, if stated" }
+  - name: Question
+    description: An open question raised and possibly unanswered.
+    irreducible: false
+  - name: Meeting
+    description: A single dated call.
+    irreducible: false
+    fields:
+      - { key: date, desc: "date of the meeting" }
+
+relation_types:
+  - name: spoke
+    domain: [Speaker]
+    range:  [Utterance]
+    inverse: spoken_by
+  - name: attended
+    domain: [Speaker]
+    range:  [Meeting]
+  - name: discussed_in
+    domain: [Topic, Decision, ActionItem, Question]
+    range:  [Meeting]
+  - name: owns_action
+    domain: [Speaker]
+    range:  [ActionItem]
+    inverse: owned_by
+  - name: decided
+    domain: [Meeting, Speaker]
+    range:  [Decision]
+  - name: raised
+    domain: [Speaker]
+    range:  [Question]
+  - name: answers
+    domain: [Utterance, Decision]
+    range:  [Question]
+  - name: supersedes
+    description: A later decision reverses or replaces an earlier one.
+    domain: [Decision]
+    range:  [Decision]
+    acyclic: true
+  - name: blocks
+    domain: [ActionItem, Question]
+    range:  [ActionItem, Decision]
+    acyclic: true
+
+axioms:
+  - kind: acyclic
+    relations: [supersedes, blocks]
+  - kind: functional
+    relations: [spoken_by]
+
+# Meetings are the clearest case for validity intervals: a decision superseded
+# next week was still true last week. Deferred to TOKI's bitemporal model per
+# PerKBOntology-plan.md §2.1 — recorded here as a known hole.
+fallback_predicate: null

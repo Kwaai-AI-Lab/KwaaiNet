@@ -1,0 +1,253 @@
+<title>Corpus Ontology Atlas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+  /* Light palette is the complete set; dark blocks redefine tokens only. */
+  :root{
+    --paper:#f6f7f6; --surface:#fdfdfc; --plate:#ffffff;
+    --ink:#161d24; --ink-2:#3a4650; --muted:#66727a;
+    --rule:#dfe3e2; --rule-2:#eceeed;
+    --accent:#1f6f6a; --accent-soft:#e2efed;
+    --amber:#a2622b; --amber-soft:#f6ece2;
+    --green:#3f6d4a; --green-soft:#e6efe7;
+    --slate:#4a5763; --slate-soft:#e8ebee;
+    --shadow:0 1px 2px rgba(22,29,36,.06),0 8px 24px -16px rgba(22,29,36,.28);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#12171b; --surface:#181f24; --plate:#eef1f2;
+      --ink:#e8ecec; --ink-2:#b9c3c5; --muted:#8b979c;
+      --rule:#2a343a; --rule-2:#212a2f;
+      --accent:#5fb3aa; --accent-soft:#1c3330;
+      --amber:#d0904f; --amber-soft:#332619;
+      --green:#77ab84; --green-soft:#1d2a21;
+      --slate:#9aa8b4; --slate-soft:#232c33;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#12171b; --surface:#181f24; --plate:#eef1f2;
+    --ink:#e8ecec; --ink-2:#b9c3c5; --muted:#8b979c;
+    --rule:#2a343a; --rule-2:#212a2f;
+    --accent:#5fb3aa; --accent-soft:#1c3330;
+    --amber:#d0904f; --amber-soft:#332619;
+    --green:#77ab84; --green-soft:#1d2a21;
+    --slate:#9aa8b4; --slate-soft:#232c33;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Source Serif 4",Georgia,serif; font-size:17px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.ui{font-family:"IBM Plex Sans",system-ui,sans-serif}
+  code,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+
+  .wrap{max-width:1180px; margin:0 auto; padding:0 24px}
+  .layout{display:grid; grid-template-columns:236px minmax(0,1fr); gap:48px; align-items:start}
+  @media (max-width:900px){ .layout{grid-template-columns:1fr; gap:24px} }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  header.top{border-bottom:1px solid var(--rule); background:var(--surface)}
+  .top-inner{display:flex; flex-direction:column; gap:16px; padding:44px 0 32px}
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent);
+  }
+  h1{margin:0; font-size:clamp(30px,4.4vw,44px); line-height:1.08; font-weight:600;
+     letter-spacing:-.02em; text-wrap:balance}
+  .standfirst{margin:0; max-width:64ch; color:var(--ink-2); font-size:19px}
+  .totals{display:flex; flex-wrap:wrap; gap:28px; margin-top:6px}
+  .totals div{display:flex; flex-direction:column}
+  .totals dt,.totals .l{font-family:"IBM Plex Mono",monospace; font-size:11px;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+  .totals .v{font-family:"IBM Plex Sans",sans-serif; font-size:26px; font-weight:600;
+    font-variant-numeric:tabular-nums; line-height:1.2}
+
+  /* ── index rail ───────────────────────────────────────────── */
+  nav.rail{position:sticky; top:24px; padding:32px 0}
+  @media (max-width:900px){ nav.rail{position:static; padding:16px 0} }
+  nav.rail h3{font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 12px; font-weight:500; font-family:"IBM Plex Mono",monospace}
+  nav.rail ul{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px}
+  nav.rail .navhead{font-family:"IBM Plex Mono",monospace; font-size:10px;
+    letter-spacing:.11em; text-transform:uppercase; color:var(--muted);
+    margin:14px 0 4px; padding:0 6px}
+  nav.rail .navhead:first-child{margin-top:0}
+  nav.rail ul ul{margin:2px 0 6px 14px; padding-left:10px; border-left:1px solid var(--rule)}
+  nav.rail a{display:flex; align-items:center; gap:8px; text-decoration:none;
+    color:var(--ink-2); font-family:"IBM Plex Sans",sans-serif; font-size:13.5px;
+    padding:3px 6px; border-radius:4px}
+  nav.rail a:hover{background:var(--rule-2); color:var(--ink)}
+  nav.rail a:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .dot{width:7px; height:7px; border-radius:50%; flex:0 0 auto}
+  .dot-apply{background:var(--accent)} .dot-blocked{background:var(--amber)}
+  .dot-productive{background:var(--green)} .dot-module{background:var(--slate)}
+
+  /* ── ontology cards ───────────────────────────────────────── */
+  main{padding:32px 0 80px; display:flex; flex-direction:column; gap:28px}
+  .ont{background:var(--surface); border:1px solid var(--rule); border-radius:8px;
+    padding:24px 26px 26px; box-shadow:var(--shadow); scroll-margin-top:20px}
+  .ont-head{display:flex; align-items:flex-start; justify-content:space-between;
+    gap:16px; flex-wrap:wrap}
+  .ont-id{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap}
+  .ont h2{margin:0; font-size:22px; font-weight:600; letter-spacing:-.01em}
+  .ont-name{font-size:13px; color:var(--muted)}
+  .chip{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.06em;
+    text-transform:uppercase; padding:4px 9px; border-radius:3px; white-space:nowrap}
+  .chip-apply{background:var(--accent-soft); color:var(--accent)}
+  .chip-blocked{background:var(--amber-soft); color:var(--amber)}
+  .chip-productive{background:var(--green-soft); color:var(--green)}
+  .chip-module{background:var(--slate-soft); color:var(--slate)}
+  .ont-detail{margin:10px 0 0; color:var(--ink-2); font-size:15.5px}
+  .chips{display:flex; gap:8px; flex-wrap:wrap}
+  .chip-derived{background:var(--slate-soft); color:var(--slate)}
+  .chip-unverified{background:var(--amber-soft); color:var(--amber);
+    box-shadow:inset 0 0 0 1px currentColor}
+  .prov{margin:8px 0 0; font-family:"IBM Plex Mono",monospace; font-size:12px;
+    color:var(--muted); line-height:1.5}
+  .unv{display:inline-block; margin-left:5px; width:13px; height:13px; flex:0 0 auto;
+    border-radius:2px; background:var(--amber-soft); color:var(--amber);
+    font-family:"IBM Plex Mono",monospace; font-size:10px; font-weight:600;
+    line-height:13px; text-align:center}
+
+  /* Evidence bars: the measured share of chunks carrying each type's
+     vocabulary. Data, not decoration — this is why each type is here. */
+  .evidence,.rejected{margin:18px 0 0}
+  .evidence h3,.rejected h3{margin:0 0 10px; font-family:"IBM Plex Mono",monospace;
+    font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); font-weight:500}
+  .evidence h3 span{text-transform:none; letter-spacing:0; font-size:11px;
+    font-family:"Source Serif 4",serif; font-style:italic}
+  .evidence ul,.rejected ul{list-style:none; margin:0; padding:0;
+    display:flex; flex-direction:column; gap:4px}
+  .evidence li{display:grid; grid-template-columns:minmax(96px,168px) 1fr 52px;
+    align-items:center; gap:12px}
+  .rejected li{display:grid; grid-template-columns:minmax(96px,168px) 52px 1fr;
+    align-items:baseline; gap:12px}
+  .en{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink)}
+  .ev{font-family:"IBM Plex Sans",sans-serif; font-size:12.5px; text-align:right;
+    font-variant-numeric:tabular-nums; color:var(--muted)}
+  .bar{display:block; height:7px; background:var(--rule-2); border-radius:2px;
+    overflow:hidden}
+  .bar i{display:block; height:100%; background:var(--accent); border-radius:2px}
+  .rejected{padding-top:14px; border-top:1px solid var(--rule-2)}
+  .rejected .en{color:var(--muted); text-decoration:line-through}
+  .rejected .why{font-size:13.5px; color:var(--ink-2); line-height:1.45}
+
+  /* The correction is part of the record, not a footnote to it. */
+  .correction{background:var(--amber-soft); border:1px solid var(--amber);
+    border-radius:8px; padding:22px 24px; margin:32px 0 0}
+  .correction h2{margin:0 0 10px; font-size:18px; font-weight:600; color:var(--amber)}
+  .correction p{margin:0 0 10px; font-size:15.5px; color:var(--ink-2); max-width:70ch}
+  .correction p:last-child{margin-bottom:0}
+  .correction table{border-collapse:collapse; margin:4px 0 14px;
+    font-family:"IBM Plex Sans",sans-serif; font-size:14px}
+  .correction th,.correction td{padding:5px 14px 5px 0; text-align:left;
+    font-variant-numeric:tabular-nums}
+  .correction th{font-family:"IBM Plex Mono",monospace; font-size:10.5px;
+    letter-spacing:.09em; text-transform:uppercase; color:var(--muted); font-weight:500}
+  .correction .hit{font-weight:600; color:var(--amber)}
+
+  .stats{display:flex; flex-wrap:wrap; gap:26px; margin:18px 0 0; padding:14px 0;
+    border-top:1px solid var(--rule-2); border-bottom:1px solid var(--rule-2)}
+  .stats div{display:flex; flex-direction:column-reverse; gap:1px}
+  .stats dt{font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted)}
+  .stats dd{margin:0; font-family:"IBM Plex Sans",sans-serif; font-size:21px;
+    font-weight:600; font-variant-numeric:tabular-nums}
+
+  ul.meta{list-style:none; margin:16px 0 0; padding:0; display:flex;
+    flex-direction:column; gap:5px; font-size:14.5px; color:var(--ink-2)}
+  ul.meta code{font-size:12.5px; background:var(--rule-2); padding:1px 5px;
+    border-radius:3px; color:var(--ink)}
+  .skip{font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--amber)}
+  .none{color:var(--muted); font-style:italic}
+
+  /* Diagrams sit on a light plate in both themes — mermaid renders its own
+     light theme, so a dark card would put dark strokes on a dark ground. */
+  .plate{margin:20px 0 0; padding:18px; background:var(--plate);
+    border:1px solid var(--rule); border-radius:6px; overflow-x:auto}
+  .plate pre.mermaid{margin:0; background:transparent}
+
+  footer{border-top:1px solid var(--rule); padding:28px 0 56px; color:var(--muted);
+    font-size:14px}
+  footer code{font-size:12.5px}
+  @media (prefers-reduced-motion:reduce){ *{animation:none!important; transition:none!important} }
+</style>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <span class="eyebrow">kwaai-knowledge · arm B · 2026-08-25</span>
+    <h1>Corpus Ontology Atlas</h1>
+    <p class="standfirst">Sixteen per-corpus knowledge schemas for KwaaiNet's RAG
+    knowledge bases, drawn as class diagrams. Entity types are classes, their
+    fields are attributes, predicates are associations carrying their domain and
+    range, and <code>extends</code> is inheritance. Each schema also records
+    whether it was <strong>derived</strong> from its corpus or is still
+    <strong>unverified</strong>.</p>
+    <div class="totals">
+      <div><span class="v">{{NONT}}</span><span class="l">ontologies</span></div>
+      <div><span class="v">{{NENT}}</span><span class="l">entity types</span></div>
+      <div><span class="v">{{NREL}}</span><span class="l">predicates</span></div>
+      <div><span class="v">3</span><span class="l">shared modules</span></div>
+      <div><span class="v">{{NUNV}}</span><span class="l">unverified</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="correction">
+    <h2>Two withdrawn drafts, and what replaced them</h2>
+    <p>Asked whether vessels are prominent in the District Six memoir, they are
+    not. Share of chunks carrying vessel language:</p>
+    <table>
+      <tr><th>MobyDick</th><th>D6</th><th>WarPeace</th><th>Manhattan</th><th>CountryHistory</th></tr>
+      <tr><td class="hit">31%</td><td>1%</td><td>0%</td><td>0%</td><td>0%</td></tr>
+    </table>
+    <p><code>Vessel</code> was a MobyDick type placed in the shared
+    narrative-history module on genre reasoning, and four corpora inherited it
+    for nothing. The larger fault: the modules were written top-down from genre
+    priors, and D6's schema was a four-line extension of one rather than
+    something read out of the book.</p>
+    <p>The rewrite that followed was also wrong, in the same way but smaller. It
+    made <code>dispossessed</code> a central predicate on the strength of one
+    vivid Group Areas Board passage. Dispossession language turns out to be
+    <strong>1.5%</strong> of the corpus: the memoir covers 1897&ndash;1956 and
+    the demolitions began in the 1960s. Removal is the shadow the title casts,
+    not the events the book narrates.</p>
+    <p><strong>D6 v3 is built from scratch</strong> &mdash; from the doc schema,
+    the 25-question eval set, a systematic 14-point sample across all 1152
+    chunks, and full-corpus probes. Every type carries its measured evidence
+    share, and the types that failed are listed with their numbers so the next
+    revision cannot re-propose them. 23 of the 25 eval questions are answerable
+    from it.</p>
+    <p>The <span class="chip chip-unverified">unverified</span> schemas below
+    have not had this treatment and carry the original fault. Treat their
+    diagrams as proposals, not descriptions.</p>
+  </section>
+</div>
+
+<div class="wrap layout">
+  <nav class="rail">
+    <h3>Index</h3>
+    <ul><!--NAV--></ul>
+  </nav>
+  <main><!--BODY--></main>
+</div>
+
+<footer class="wrap">
+  <p>Generated from <code>tests/kwaai-knowledge/ontologies/*.yaml</code> by
+  <code>build_ontology_artifact.py</code>. Status is derived by crossing corpus
+  clean-rate with relation density: <strong>apply first</strong> means clean text
+  and near-zero relations, so vocabulary is the binding constraint;
+  <strong>blocked</strong> means under 80% of chunks are usable prose, where an
+  ontology would measure the dirt rather than the corpus. Predicate labels carry
+  their axioms — <code>trans</code>, <code>acyclic</code>, <code>sym</code>,
+  <code>1</code> for functional, <code>+</code> where the domain or range admits
+  more types than the edge shows.</p>
+</footer>

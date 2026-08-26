@@ -1,0 +1,110 @@
+# Ontology for the RFCs KB — IETF network protocol standards.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md.
+#
+# Corpus hygiene: 30.6% clean. 4454 of 6544 chunks are character-spaced PDF
+# extraction failures ("L I S T  t y p i c a l l y  c o n t a i n s"). This is
+# the worst corpus in the set and NOTHING about the ontology can help it.
+# Re-ingest from rfc-editor .txt sources before applying this.
+#
+# The framing doc noted RFCs carry a ready-made normative vocabulary — RFC 2119
+# MUST/SHOULD/MAY — so the ontology here is *given* by the corpus, not inferred.
+
+ontology:
+  name: ietf-standards
+  version: 1
+  extends: none
+
+provenance:
+  derivation: derived
+  note: >-
+    6 sampled chunks (RFC 1034, 8446, 8200, 9293)
+
+streams:
+  - name: normative
+    entity_types: [Requirement, Protocol, Message, Field, Parameter, Role, State]
+  - name: rationale
+    entity_types: [Protocol, Concept, Consideration]
+  - name: diagram
+    ingest: skip     # ASCII packet diagrams are not prose and poison extraction
+
+entity_types:
+  - name: Requirement
+    description: >-
+      A normative statement carrying RFC 2119 force. "A client MUST provide a
+      non-empty session ID."
+    # The exact wording IS the requirement.
+    irreducible: true
+    fields:
+      - { key: force, desc: "MUST | MUST NOT | SHOULD | SHOULD NOT | MAY | REQUIRED" }
+  - name: Protocol
+    description: A named protocol or protocol version.
+    examples: ["TLS 1.3", "TCP", "IPv6", "DNS"]
+    irreducible: false
+  - name: Message
+    description: A named protocol message or PDU.
+    examples: ["ClientHello", "SYN"]
+    irreducible: false
+  - name: Field
+    description: A named field within a message or header.
+    examples: ["session ID", "ID field", "supported versions"]
+    irreducible: false
+  - name: Role
+    description: A named protocol participant.
+    examples: ["client", "server", "resolver", "middlebox"]
+    irreducible: false
+  - name: State
+    description: A named connection or machine state.
+    irreducible: false
+  - name: Document
+    description: A named RFC or standard.
+    examples: ["RFC 8446", "STD 13"]
+    irreducible: false
+
+relation_types:
+  - name: specifies
+    domain: [Document]
+    range:  [Protocol, Requirement, Message]
+  - name: imposes
+    description: A requirement binds a role.
+    domain: [Requirement]
+    range:  [Role]
+  - name: constrains
+    domain: [Requirement]
+    range:  [Field, Message, Protocol, State]
+  - name: contains_field
+    domain: [Message]
+    range:  [Field]
+  - name: sent_by
+    domain: [Message]
+    range:  [Role]
+  - name: transitions_to
+    domain: [State]
+    range:  [State]
+  - name: obsoletes
+    domain: [Document]
+    range:  [Document]
+    acyclic: true
+    inverse: obsoleted_by
+  - name: updates
+    domain: [Document]
+    range:  [Document]
+    acyclic: true
+  - name: depends_on
+    domain: [Protocol]
+    range:  [Protocol]
+    acyclic: true
+  - name: conforms_to
+    domain: [Protocol, Role]
+    range:  [Document, Requirement]
+
+axioms:
+  - kind: contradiction
+    pairs:
+      - [obsoletes, updates]      # a document does one or the other
+  - kind: acyclic
+    relations: [obsoletes, updates, depends_on]
+
+fallback_predicate: null

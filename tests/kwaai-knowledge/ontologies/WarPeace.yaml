@@ -1,0 +1,30 @@
+# Ontology for the WarPeace KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# Thin: the shared `narrative-history` module carries almost everything. That is
+# the point of modules — five corpora, one vocabulary, per-corpus deltas only.
+
+ontology:
+  name: warpeace
+  version: 1
+  extends: narrative-history
+
+provenance:
+  derivation: unverified
+  note: >-
+    thin extension of narrative-history; corpus not sampled
+
+# Already the second-densest graph (0.205 rel/ent) but 54% of its edges are
+# `located_in` and 32% `associated_with`. The module's `participated_in`,
+# `commanded` and `witnessed` are the predicates a Napoleonic-war narrative
+# actually needs and the global vocabulary cannot express.
+entity_types:
+  - name: Battle
+    description: A named military engagement. A specialisation of Event.
+    examples: ["Borodino", "Austerlitz"]
+    irreducible: false
+
+relation_types:
+  - name: fought_at
+    domain: [Person, Organization]
+    range:  [Battle]

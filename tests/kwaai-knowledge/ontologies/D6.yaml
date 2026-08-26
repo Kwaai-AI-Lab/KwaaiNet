@@ -1,0 +1,698 @@
+# Ontology for the D6 KB — "District Six: Lest We Forget", Yousuf (Joe) Rassool.
+# Subtitle: "Recapturing Subjugated Cultural Histories of Cape Town (1897–1956)".
+#
+# Version 3, 2026-08-25 — built from scratch by reading the book, after two
+# earlier attempts were written from genre priors and had to be withdrawn.
+#
+# METHOD. Every type below carries the measured share of the corpus's 1152
+# chunks that contains its lexical evidence. Types that failed that test were
+# dropped and are listed at the foot of this file with their numbers, so the
+# reasoning is auditable rather than asserted. Sources: the doc schema, the
+# 25-question eval set (what readers actually ask of this book), a 14-point
+# systematic sample across the whole arc, and full-corpus lexical probes.
+#
+# WHAT THE BOOK IS. A memoir of a Cape Town family and neighbourhood between
+# 1897 and 1956, interleaving domestic life with the political history of the
+# Non-European Unity Movement. Year mentions peak in the 1900s and 1940s and
+# stop in the 1950s — the District Six demolitions of the 1960s are the shadow
+# the title casts, not the events the book narrates.
+
+ontology:
+  name: district-six-memoir
+  version: 5
+  extends: genealogy
+
+# The narrator is Yousuf (Joe) Rassool, a man. This used to be hardcoded in
+# graph.rs as `Some("Male")` for every KB in the workspace; it is a fact about
+# this corpus and belongs here.
+narrator_gender: Male
+
+# Corpus-specific noise words and text-format quirks. `underscores_are_initials`
+# covers this PDF's glyph-mapping artifact (J_ M_ H_ → J. M. H.), which was
+# previously applied to every document in every KB.
+text_rules:
+  underscores_are_initials: true
+  stop_words: [Beano]
+
+provenance:
+  derivation: derived
+  note: >-
+    v3 built from the doc schema, the 25-question eval set, a systematic
+    14-point sample across all 1152 chunks, and full-corpus lexical probes.
+    Every type carries its measured evidence share.
+
+entity_types:
+
+  - name: Person
+    # prefix markers are honorifics; the Cape Muslim ones (Haji, Maulvi, Boetie, Aboeta, Sis) are absent from the global HONORIFIC_PREFIXES table
+    markers:
+      prefix: ['haji', 'hajee', 'sheikh', 'imam', 'maulvi', 'moulana', 'boetie', 'aboeta', 'dr', 'adv', 'cllr', 'sis', 'auntie', 'uncle']
+    evidence: 37.3
+    # Kinship vocabulary appears in 37.3% of chunks; 8 of 25 eval questions ask
+    # about family. This is the spine of the book.
+    description: >-
+      A named individual — family, political figures, teachers, classmates,
+      and the neighbourhood characters the book names in its own index.
+    examples:
+      - "Yousuf (Joe) Rassool"        # the narrator
+      - "J.M.H. Gool"
+      - "Cissie Gool"
+      - "I.B. Tabata"
+      - "Hatless"                     # see the note on nicknamed characters
+    anti_examples:
+      - "Uncle"                       # a kinship role, not a name
+      - "District Six"                # a Place
+      - "Lest We Forget"              # the document title
+    irreducible: false
+    fields:
+      - { key: birthDate,  desc: "year or date of birth" }
+      - { key: deathDate,  desc: "year or date of death" }
+      - { key: occupation, desc: "profession, as stated" }
+      - { key: nickname,   desc: "the name the neighbourhood used" }
+
+  - name: Address
+    # Address vs Place is the split GEO_MARKERS_ANY currently collapses — a house number or a street suffix means Address, not Place
+    markers:
+      last: ['street', 'road', 'avenue', 'lane', 'cingle', 'crescent', 'terrace', 'way', 'steps']
+      any: ['buitencingle', 'caledon', 'chapel', 'hanover', 'reform', 'queens']
+    evidence: 24.2
+    # 24.2% of chunks — the single strongest signal in the corpus, and two eval
+    # questions ("Tell me about Buitencingle", "Tell me about Kloof Nek") ask
+    # about named streets directly. Flattening these into Place loses the book.
+    description: >-
+      A named street, dwelling, or premises. In an account of a neighbourhood
+      later demolished, the individual address is the unit of memory.
+    examples: ["Buitencingle", "Kloof Nek", "Church Street", "Chapel Street", "no. 22"]
+    irreducible: false
+    fields:
+      - { key: occupant, desc: "who lived or traded there, as stated" }
+
+  - name: Place
+    markers:
+      last: ['district', 'town', 'city', 'suburb', 'bay', 'mountain', 'flats', 'valley', 'island', 'location', 'heights', 'estate', 'peninsula', 'province']
+      any: ['district six', 'cape town', 'bo-kaap', 'woodstock', 'salt river']
+    description: A district, suburb, city, or country. Larger than an Address.
+    examples: ["District Six", "Cape Town", "Bombay", "Jeddah", "East London"]
+    irreducible: false
+
+  - name: Quotation
+    # no lexical marker — Quotation is delimited by quote characters, not named
+    evidence: 11.8
+    # 11.8% of chunks carry a quoted passage — the narrator quotes newspapers,
+    # Gandhi, Shakespeare, and his own family verbatim.
+    description: >-
+      A verbatim passage attributed to a person or publication.
+    irreducible: true
+    fields:
+      - { key: speaker, desc: "who said or wrote it" }
+
+  - name: PoliticalOrganization
+    # takes priority over the generic Organization markers — league/movement/party are political first in this corpus
+    markers:
+      last: ['league', 'movement', 'party', 'convention', 'fellowship', 'front', 'council', 'association', 'congress', 'federation', 'committee']
+      any: ['tlsa', 'neum', 'anti-cad', 'tepa', 'cad']
+    evidence: 11.5
+    # 11.5% of chunks; 4 of 25 eval questions. Separated from Organization
+    # because the political strand is half the book and its bodies have
+    # members, conferences, resolutions and splits that a shop does not.
+    description: >-
+      A named movement, league, party, convention, or fellowship.
+    examples:
+      - "Teachers League of South Africa"
+      - "Non-European Unity Movement"
+      - "All African Convention"
+      - "New Era Fellowship"
+      - "Nationalist Party"
+    irreducible: false
+
+  - name: RacialClassification
+    # closed vocabulary. Overlaps Community by design — 'Malay' and 'Indian' are both state categories and self-descriptions; the disambiguation is contextual and left to the LLM tier
+    markers:
+      exact: ['coloured', 'colored', 'white', 'native', 'bantu', 'malay', 'european', 'non-european', 'non-white', 'asiatic', 'indian', 'cape coloured', 'so-called coloured']
+    evidence: 11.4
+    # 11.4% of chunks. The state's categories, imposed from outside — distinct
+    # from Community, which is self-ascribed. A book about apartheid needs both
+    # and must not conflate them.
+    description: >-
+      A racial category assigned by the state or its officials.
+    examples: ["Coloured", "White", "Non-European", "Native", "Malay"]
+    anti_examples: ["Muslim", "Hindu"]     # those are Community
+    irreducible: false
+
+  - name: HistoricalEvent
+    markers:
+      any: ['war', 'revolution', 'festival', 'carnival', 'election', 'campaign', 'treaty', 'depression', 'kristalnacht', 'd-day', 'boer war']
+    evidence: 9.7
+    # 9.7% of chunks. The memoir constantly cuts between a Cape Town street and
+    # the wider world — Kristalnacht against a mother forbidding a friendship.
+    description: >-
+      A world- or nation-scale event forming the backdrop to the narrative.
+    examples: ["Kristalnacht", "D-day", "the fall of Singapore", "Quit India"]
+    irreducible: false
+    fields:
+      - { key: date, desc: "year or date as stated" }
+
+  - name: Language
+    markers:
+      exact: ['urdu', 'afrikaans', 'english', 'gujarati', 'arabic', 'xhosa', 'zulu', 'tamil', 'hindi', 'dutch', 'malay', 'kombuis taal']
+    evidence: 8.6
+    # 8.6% of chunks. Language works as a social instrument here, not as an
+    # attribute: the grandfather's two wives abused each other in Urdu and
+    # Afrikaans precisely because neither understood the other.
+    description: A named language.
+    examples: ["Urdu", "Afrikaans", "English", "Gujarati", "Arabic"]
+    irreducible: false
+
+  - name: Community
+    markers:
+      any: ['community', 'congregation']
+      exact: ['muslim', 'moslem', 'mohammedan', 'hindu', 'christian', 'jewish', 'jew', 'moravian', 'anglican', 'catholic', 'jaht', 'caste']
+    evidence: 7.2
+    # 7.2% of chunks. Self-ascribed religious, caste or cultural belonging —
+    # and, explicitly in this text, the thing that governs who may marry whom.
+    description: >-
+      A religious, caste, or cultural community conferring identity and
+      marriage constraints.
+    examples: ["Muslim", "Hindu", "Jaht 47", "Moravian"]
+    anti_examples: ["Coloured"]            # that is a RacialClassification
+    irreducible: false
+
+  - name: Doctrine
+    markers:
+      any: ['policy of', 'principle of', 'the weapon']
+      exact: ['non-collaboration', 'collaboration', 'boycott', 'herrenvolk', 'quisling', 'apartheid', 'segregation', 'assimilation', 'trusteeship', 'baasskap', 'dummy body', 'sell-out', 'non-européen']
+    evidence: 6.6
+    # Added 2026-08-25 after NotebookLM's independent pass surfaced an
+    # "Ideological Concepts" category I had no type for. It out-scores Community
+    # (7.2%) and SportsClub (7.0%) on the same probe — `boycott` alone occurs 42
+    # times. The NEUM was a movement defined by a doctrine (non-collaboration);
+    # a schema with organisations but no doctrines cannot say what they were for.
+    description: >-
+      A named political principle, tactic, or epithet that people and movements
+      advocate, reject, or denounce each other with.
+    examples:
+      - "non-collaboration"
+      - "the boycott weapon"
+      - "Herrenvolk"          # used as an accusation, not a description
+      - "Quisling"
+      - "dummy body"
+    anti_examples:
+      - "Non-European Unity Movement"   # the organisation, not its doctrine
+    irreducible: false
+
+  - name: ReligiousObservance
+    markers:
+      exact: ['eid', 'labarang', 'hajj', 'haj', 'ramadan', 'ramadaan', 'moulood', 'khatam', 'nikah', 'janazah', 'fast', 'pilgrimage']
+    evidence: 5.5
+    # Also from NotebookLM's "Social Milestones". Community covers who a person
+    # is; it cannot express what they do. Eid alone occurs 21 times.
+    description: >-
+      A named religious practice, festival, or rite.
+    examples: ["Eid", "Hajj", "Ramadan", "the fast"]
+    irreducible: false
+
+  - name: SportsClub
+    # 'union' is deliberately absent — it collides with trade unions; 'Cricket Union' is caught by the `any` marker
+    markers:
+      last: ['club', 'eleven', 'xi', 'side', 'team']
+      any: ['cricket', 'rugby', 'soccer', 'football', 'kismets']
+    evidence: 7.0
+    # 7.0% of chunks, and one eval question asks directly about the author's
+    # cricket. The book carries ball-by-ball match narration.
+    description: A named cricket, rugby, or football club, team, or side.
+    examples: ["Heathrow Cricket Club", "the Transvaal side"]
+    irreducible: false
+
+  - name: Publication
+    markers:
+      any: ['newspaper', 'gazette', 'times', 'argus', 'herald', 'journal', 'review', 'magazine', 'opinion', 'chronicle', 'press', 'daily', 'weekly', 'torch', 'guardian']
+    evidence: 6.9
+    # 6.9% of chunks. Quoted with citations ("Indian Opinion Dec 29, 1906 p986").
+    description: >-
+      A named newspaper, journal, pamphlet, or book. The `kind` field carries
+      the distinction NotebookLM drew between periodicals and the movement's
+      own political pamphlets — the latter are arguments in circulation, not
+      reportage, and are cited as authorities.
+    examples:
+      - "Indian Opinion"                # newspaper, 38 mentions
+      - "The Torch"                     # newspaper, 14
+      - "300 Years"                     # pamphlet, 6
+      - "The Awakening of a People"     # pamphlet, 2
+    irreducible: false
+    fields:
+      - { key: kind, desc: "newspaper | journal | pamphlet | book" }
+
+  - name: EducationalInstitution
+    markers:
+      last: ['school', 'college', 'university', 'academy', 'madressa', 'seminary', 'institute', 'gymnasium']
+    evidence: 4.9
+    # 4.9% of chunks; one eval question (Hewat Training College). Separated from
+    # PoliticalOrganization because attending and teaching are distinct
+    # relations that `worked_at` cannot express.
+    description: A named school, college, or university.
+    examples:
+      - "Trafalgar High School"
+      - "Hewat Training College"
+      - "University of Cape Town"
+      - "Chapel Street School"
+    irreducible: false
+
+  - name: Legislation
+    markers:
+      last: ['act', 'ordinance', 'regulation', 'bill', 'amendment', 'proclamation', 'law']
+      any: ['group areas', 'population registration', 'law 3 of']
+    evidence: 4.4
+    # 4.4% of chunks.
+    description: A named act, ordinance, proclamation, or commission of inquiry.
+    examples: ["Group Areas Act", "Eiselen Commission"]
+    # The wording of an apartheid statute is the historical record.
+    irreducible: true
+
+  - name: Event
+    markers:
+      any: ['conference', 'meeting', 'rally', 'funeral', 'wedding', 'match', 'procession', 'strike', 'walkout', 'protest', 'banquet', 'reunion']
+    evidence: 3.7
+    # Personal and local happenings, including the political conferences that
+    # appear in 3.7% of chunks.
+    description: >-
+      A datable happening in the narrator's world — a conference, a walkout, a
+      wedding, a funeral, a match, a departure.
+    examples: ["the TLSA conference at East London", "the walkout"]
+    irreducible: false
+    fields:
+      - { key: date,  desc: "year or date as stated" }
+      - { key: place, desc: "where it happened" }
+
+relation_types:
+  # ── kinship: 37.3% of chunks, arriving via `extends: genealogy` ───────────
+  # See the polygamy axiom below — the default genealogy assumption is wrong
+  # for this book.
+
+  # ── neighbourhood ─────────────────────────────────────────────────────────
+  - name: lived_at
+    confidence: 0.85
+    triggers:
+      - 'lived at'
+      - 'lived in no'
+      - 'resided at'
+      - 'our house at'
+      - 'his home at'
+      - 'moved into'
+      - 'the house at'
+      - 'premises at'
+      - 'rooms at'
+      - 'stayed at'
+    domain: [Person]
+    range:  [Address]
+  - name: situated_in
+    confidence: 0.75
+    triggers:
+      - 'situated in'
+      - 'which ran off'
+      - 'runs off'
+      - 'off '
+      - 'in the heart of'
+      - 'on the corner of'
+      - 'at the top of'
+      - 'in the shadow of'
+    domain: [Address, EducationalInstitution, PoliticalOrganization, SportsClub]
+    range:  [Place]
+    transitive: true
+    acyclic: true
+  - name: traded_at
+    confidence: 0.8
+    triggers:
+      - 'shop at'
+      - 'his shop in'
+      - 'the shop in'
+      - 'traded at'
+      - 'business at'
+      - 'barber at'
+      - 'stall at'
+      - 'kept a shop'
+    description: Shops and trades are how the book populates its streets.
+    domain: [Person]
+    range:  [Address]
+
+  # ── identity, imposed and chosen ──────────────────────────────────────────
+  - name: classified_as
+    # the state's act of assignment — deliberately not the same as self-description
+    confidence: 0.85
+    triggers:
+      - 'classified as'  # reversed: object precedes subject
+      - 'reclassified as'
+      - 'declared a'
+      - 'designated as'  # reversed: object precedes subject
+      - 'registered as'  # reversed: object precedes subject
+      - 'deemed to be'
+      - 'carried a pass as'
+      - 'was listed as'
+    description: >-
+      The state assigned a person a racial category. Directional and imposed —
+      deliberately not the same predicate as belongs_to_community.
+    domain: [Person]
+    range:  [RacialClassification]
+    functional: true
+  - name: belongs_to_community
+    confidence: 0.7
+    triggers:
+      - 'being a'
+      - 'a devout'
+      - 'of the ... community'
+      - 'belonged to the'
+      - 'brought up as a'
+      - 'born into a'
+      - 'of the faith'
+    domain: [Person]
+    range:  [Community]
+  - name: may_not_marry
+    confidence: 0.85
+    triggers:
+      - 'could never marry'
+      - 'forbidden to marry'
+      - 'not permitted to marry'
+      - 'out of the question'
+      - 'would not allow the marriage'
+      - 'marriage across'
+    description: >-
+      A community prohibition on marriage across its boundary, stated outright
+      in the text as the reason a friendship was ended ("Jaht 47 … from a
+      particular community and could never marry").
+    domain: [Community]
+    range:  [Community]
+    symmetric: true
+  - name: speaks
+    confidence: 0.8
+    triggers:
+      - 'spoke in'
+      - 'spoke to'
+      - 'in urdu'
+      - 'in afrikaans'
+      - 'conversed in'
+      - 'fluent in'
+      - 'addressed them in'
+      - 'replied in'
+      - 'which he did not understand'
+    domain: [Person, Community]
+    range:  [Language]
+  - name: observes
+    confidence: 0.8
+    triggers:
+      - 'celebrated'
+      - 'observed the'
+      - 'kept the fast'
+      - 'performed the'
+      - 'went on hajj'
+      - 'performing their pilgrimage'
+      - 'broke the fast'
+      - 'attended prayers'
+    domain: [Person, Community]
+    range:  [ReligiousObservance]
+
+  # ── politics ──────────────────────────────────────────────────────────────
+  - name: member_of
+    confidence: 0.85
+    triggers:
+      - 'member of'
+      - 'belonged to'
+      - 'joined the'
+      - 'a card-carrying'
+      - 'on the executive of'
+      - 'in the ranks of'
+    domain: [Person]
+    range:  [PoliticalOrganization, SportsClub]
+  - name: led
+    confidence: 0.85
+    triggers:
+      - 'led the'
+      - 'chairman of'
+      - 'president of'
+      - 'secretary of'
+      - 'headed the'
+      - 'convener of'
+      - 'at the helm of'
+      - 'spearheaded'
+    domain: [Person]
+    range:  [PoliticalOrganization, Event]
+  - name: founded
+    confidence: 0.85
+    triggers:
+      - 'founded'
+      - 'established'
+      - 'started the'
+      - 'launched'
+      - 'brought into being'
+      - 'founded by'  # reversed: object precedes subject
+    domain: [Person]
+    range:  [PoliticalOrganization, EducationalInstitution, Publication, SportsClub]
+  - name: affiliated_with
+    confidence: 0.8
+    triggers:
+      - 'affiliated to'
+      - 'affiliate of'
+      - 'aligned with'
+      - 'broke away from'
+      - 'split from'
+      - 'under the banner of'
+    description: Organisation-to-organisation alignment, split, or membership.
+    domain: [PoliticalOrganization]
+    range:  [PoliticalOrganization]
+  - name: opposed
+    confidence: 0.85
+    triggers:
+      - 'opposed'
+      - 'campaigned against'
+      - 'protested against'
+      - 'denounced'
+      - 'boycotted'
+      - 'walked out of'
+      - 'refused to serve on'
+      - 'came out against'
+    domain: [Person, PoliticalOrganization]
+    range:  [Legislation, PoliticalOrganization, RacialClassification]
+  - name: enacted_by
+    confidence: 0.8
+    triggers:
+      - 'promulgated'
+      - 'passed by'  # reversed: object precedes subject
+      - 'enacted by'  # reversed: object precedes subject
+      - 'introduced by'  # reversed: object precedes subject
+      - 'placed on the statute book'
+    domain: [Legislation]
+    range:  [PoliticalOrganization]
+  - name: advocates
+    confidence: 0.85
+    triggers:
+      - 'advocated'
+      - 'called for'
+      - 'argued for'
+      - 'championed'
+      - 'stood for'
+      - 'adopted the policy of'
+      - 'preached'
+      - 'urged the'
+    description: A person or movement argues for a doctrine.
+    domain: [Person, PoliticalOrganization, Publication]
+    range:  [Doctrine]
+    inverse: advocated_by
+  - name: rejects
+    confidence: 0.85
+    triggers:
+      - 'rejected'
+      - 'repudiated'
+      - 'would have none of'
+      - 'dismissed the'
+      - 'refused to accept'
+      - 'turned its back on'
+    domain: [Person, PoliticalOrganization]
+    range:  [Doctrine, Legislation]
+  - name: denounced_as
+    # the polemical predicate — one faction labelling another. Collapsing this into associated_with loses the argument, which is half the book
+    confidence: 0.8
+    triggers:
+      - 'branded a'  # reversed: object precedes subject
+      - 'denounced as'  # reversed: object precedes subject
+      - 'labelled a'  # reversed: object precedes subject
+      - 'dubbed'
+      - 'dismissed as'  # reversed: object precedes subject
+      - 'called him a'
+      - 'stigmatised as'
+      - 'written off as'
+    description: >-
+      One party labels another with a hostile doctrine-term ("Quisling",
+      "Herrenvolk"). Directional and polemical — the book is full of it, and
+      collapsing it into `associated_with` loses the argument entirely.
+    domain: [Person, PoliticalOrganization]
+    range:  [Doctrine]
+
+  # ── schooling ─────────────────────────────────────────────────────────────
+  - name: attended
+    confidence: 0.85
+    triggers:
+      - 'attended'
+      - 'was a pupil at'
+      - 'enrolled at'
+      - 'went to school at'
+      - 'matriculated at'
+      - 'studied at'
+      - 'a scholar at'
+      - 'entered the'
+    domain: [Person]
+    range:  [EducationalInstitution]
+    inverse: had_pupil
+  - name: taught_at
+    confidence: 0.85
+    triggers:
+      - 'taught at'
+      - 'teacher at'
+      - 'on the staff of'
+      - 'lectured at'
+      - 'principal of'
+      - 'headmaster of'
+      - 'appointed to the staff'
+    domain: [Person]
+    range:  [EducationalInstitution]
+
+  # ── sport ─────────────────────────────────────────────────────────────────
+  - name: played_for
+    confidence: 0.85
+    triggers:
+      - 'played for'
+      - 'turned out for'
+      - 'capped for'
+      - 'selected for'
+      - 'in the ... eleven'
+      - 'opened the batting for'
+    domain: [Person]
+    range:  [SportsClub]
+  - name: played_against
+    confidence: 0.8
+    triggers:
+      - 'played against'
+      - 'match against'
+      - 'took on'
+      - 'versus'
+      - 'fixture against'
+      - 'toured against'
+    domain: [SportsClub]
+    range:  [SportsClub]
+    symmetric: true
+
+  # ── voice and record ──────────────────────────────────────────────────────
+  - name: said
+    # low confidence deliberately: `said` is the highest-frequency trigger in the corpus and over-fires
+    confidence: 0.7
+    triggers:
+      - 'said'
+      - 'declared'
+      - 'remarked'
+      - 'commented'
+      - 'observed that'
+      - 'told me'
+      - 'wrote'
+      - 'put it'
+      - 'in his words'
+    domain: [Person]
+    range:  [Quotation]
+    inverse: attributed_to
+  - name: reported_in
+    confidence: 0.8
+    triggers:
+      - 'reported in'
+      - 'according to the'
+      - 'carried a report'
+      - 'wrote in the'
+      - 'had this to say'
+      - 'commented the'
+    domain: [Person, Event, PoliticalOrganization]
+    range:  [Publication]
+
+  # ── time ──────────────────────────────────────────────────────────────────
+  - name: occurred_at
+    confidence: 0.85
+    triggers:
+      - 'held at'
+      - 'took place at'
+      - 'staged at'
+      - 'convened at'
+      - 'set for'
+    domain: [Event]
+    range:  [Address, Place]
+  - name: attended_event
+    confidence: 0.8
+    triggers:
+      - 'attended the'
+      - 'was present at'
+      - 'went to the'
+      - 'took part in'
+      - 'was among the delegates'
+    domain: [Person]
+    range:  [Event]
+  - name: coincided_with
+    # weakest of the set — juxtaposition is a rhetorical move, not a stated relation, so it should stay in the LLM-verify band rather than committing directly
+    confidence: 0.6
+    triggers:
+      - 'meanwhile'
+      - 'at the same time'
+      - 'that same year'
+      - 'against this background'
+      - 'while in europe'
+      - 'it was against this'
+    description: >-
+      A personal or local event set against a world event. The book's
+      characteristic move — Kristalnacht in Europe against a friendship
+      forbidden around the corner — and unexpressible without it.
+    domain: [Event]
+    range:  [HistoricalEvent]
+
+axioms:
+  # THE IMPORTANT ONE. The narrator's grandfather had two wives, Bibi and
+  # Hajima, simultaneously and by name. A default genealogy ontology makes
+  # spouse_of functional; here that would silently discard half the household
+  # the book spends a chapter on.
+  - kind: non_functional
+    relations: [spouse_of]
+    note: polygamy is explicit in this text
+
+  - kind: functional
+    relations: [classified_as]      # the state assigned exactly one
+  - kind: contradiction
+    pairs:
+      - [advocates, rejects]
+      - [attended, taught_at]
+      - [belongs_to_community, classified_as]   # chosen vs imposed, never merge
+  - kind: acyclic
+    relations: [situated_in]
+
+# Retained for D6 alone: a memoir contains association that genuinely resists
+# typing, and D6's existing graph carries only 8.5% escape-hatch edges, so the
+# fallback is not being abused here.
+fallback_predicate: associated_with
+
+rejected_types:
+  - { name: Vessel,           evidence: 1.0, reason: "a MobyDick type — 31% there, 1% here" }
+  - { name: ForcedRemoval,    evidence: 1.5, reason: "the book ends in 1956; the demolitions began in the 1960s. Removal is the book's shadow, not its content — v2 wrongly made `dispossessed` central" }
+  - { name: Artefact,         evidence: 4.0, reason: "present but never load-bearing" }
+  - { name: Commission,       evidence: 0.6, reason: "folded into Legislation" }
+
+# ── Types considered and REJECTED, with the evidence ─────────────────────────
+# Recorded so the next revision does not re-propose them.
+#
+#   Vessel               1.0%  — a MobyDick type; 31% there, 1% here
+#   Commission/Board     0.6%  — folded into Legislation
+#   ForcedRemoval        1.5%  — the v2 ontology made `dispossessed` a central
+#                                predicate on the strength of one vivid Group
+#                                Areas Board passage. Wrong: the book ends in
+#                                1956 and the demolitions began in the 1960s.
+#                                Removal is the book's shadow, not its content.
+#   Artefact             4.0%  — present but never load-bearing
+#   Vehicle, Recipe, Song      — considered from the sample, no measurable support
+#
+# ── Known extractor defect this reading surfaced ─────────────────────────────
+# `graph.rs:5237` hardcodes a stop-list of "common English words" that must not
+# become entities, and it contains **Hatless**. Hatless is a named District Six
+# character introduced in Chapter Five, "Characters of District Six", and listed
+# in the book's own index ("Hatless, 72"). He is absent from the current graph
+# as a direct result. The book's index is ground truth for who is a person in
+# it, and a global stop-list cannot know that. Filed as a corpus-specific
+# anti-anti-example above.
