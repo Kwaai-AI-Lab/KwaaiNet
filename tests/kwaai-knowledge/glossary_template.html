@@ -103,7 +103,11 @@
   .caveat::before{content:"Caveat "; font-family:"IBM Plex Mono",monospace;
     font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--warn)}
   ol.reading{margin:16px 0 0; padding-left:22px; color:var(--ink-2); max-width:74ch}
-  ol.reading li{margin-bottom:7px}
+  ol.reading li{margin-bottom:9px}
+  /* The "not CLAUDE.md" note is a redirection, not an aside — give it weight. */
+  p.note{margin:16px 0 0; padding:11px 14px; background:var(--accent-soft);
+    border-left:2px solid var(--accent); border-radius:0 4px 4px 0;
+    color:var(--ink-2); font-size:15px; max-width:74ch}
 
   .hidden{display:none}
   .empty{color:var(--muted); font-style:italic; padding:20px 0}

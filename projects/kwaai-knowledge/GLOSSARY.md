@@ -280,9 +280,24 @@ set. Not built.
 
 ## 9. Reading order for a newcomer
 
-1. `projects/kwaai-knowledge/CLAUDE.md` — scope and crate ownership.
-2. `graph.rs` module docs — entities, relations, extraction.
-3. `plans/PerKBOntology-plan.md` §1 — why the vocabulary was a problem.
-4. `plans/DreamRAG-Ontology-Eval-Compression.md` — where the project is going.
-5. `plans/OntologySession-assessment.md` — what has been measured, and what the
-   measurements cannot yet support.
+You are already in step 1 — this page is the vocabulary the rest assumes.
+
+1. **This glossary**, skimmed. You do not need to retain it; you need to know
+   which words are load-bearing.
+2. **README → "RAG Knowledge Base"** — what the pipeline is and how to run it
+   locally, no network required. The fastest way to see the thing work.
+3. **`core/crates/kwaai-rag/src/graph.rs`**, module docs and the type
+   definitions at the top — entities, relations, and the extraction prompt.
+   The centre of gravity of the crate.
+4. **`plans/PerKBOntology-plan.md` §1** — an audit of what governs extraction
+   today. The clearest picture of the system's current seams.
+5. **`plans/DreamRAG-Ontology-Eval-Compression.md`** — where the project is
+   going: ontology, curriculum evaluation, compression.
+6. **`plans/OntologySession-assessment.md`** — what has actually been measured,
+   and what the measurements cannot yet support. Read it for the failures; they
+   are more instructive than the results.
+
+**Not** `CLAUDE.md`. Those files are configuration for Claude Code — build
+commands, current operational settings, and per-crate do-not lists. They are
+useful once you are working *in* the crate, and they assume the vocabulary this
+page defines, so they read as circular if you start there.

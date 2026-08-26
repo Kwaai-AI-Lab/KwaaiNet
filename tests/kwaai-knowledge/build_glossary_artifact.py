@@ -24,10 +24,24 @@ for sec in sections:
             title = "Reading order"
             sid = "reading-order"
             nav.append((sid, "9", title, 0))
-            items = re.findall(r"^\d+\.\s+(.+)$", sec, re.M)
+            rest9 = sec.split("\n", 1)[1] if "\n" in sec else ""
+            # List items wrap across lines; capture until the next number or a
+            # blank line, or the trailing prose gets truncated mid-sentence.
+            items = [" ".join(m.group(1).split())
+                     for m in re.finditer(r"^\d+\.\s+(.+?)(?=\n\d+\.\s|\n\n|\Z)",
+                                          rest9, re.M | re.S)]
+            # Prose after the list is guidance, not an item — keep it.
+            tail = re.split(r"(?m)^\d+\.\s.*?(?=\n\n(?!\s))", rest9, flags=re.S)[-1]
+            tailp = [" ".join(t.split()) for t in tail.strip().split("\n\n")
+                     if t.strip() and not re.match(r"^\d+\.", t.strip())]
+            lead = [" ".join(t.split()) for t in rest9.split("\n\n")
+                    if t.strip() and not re.match(r"^\d+\.", t.strip())][:1]
             out.append(f'<section id="{sid}"><h2><span class="num">9</span>{title}</h2>'
+                       + "".join(f'<p class="pre">{inline(l)}</p>' for l in lead)
                        + "<ol class='reading'>"
-                       + "".join(f"<li>{inline(i)}</li>" for i in items) + "</ol></section>")
+                       + "".join(f"<li>{inline(i)}</li>" for i in items) + "</ol>"
+                       + "".join(f'<p class="note">{inline(t)}</p>'
+                                 for t in tailp if t not in lead) + "</section>")
         continue
     m = re.match(r"^(\d+)\.\s+(.+)", sec)
     if not m:
