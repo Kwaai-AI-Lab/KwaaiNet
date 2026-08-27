@@ -190,31 +190,86 @@ pub struct Ontology {
 /// and kinship edges fell from 98 to 36 in an A/B — the ontology arm was worse
 /// than the control at the one thing that corpus is densest in.
 fn genealogy_module() -> Vec<RelationTypeDef> {
-    let p = |name: &str, inverse: Option<&str>, symmetric: bool| RelationTypeDef {
-        name: name.to_string(),
-        domain: vec!["Person".into()],
-        range: vec!["Person".into()],
-        inverse: inverse.map(String::from),
-        symmetric,
-        confidence: 0.9,
-        triggers: Vec::new(),
-        ..Default::default()
+    // Aliases belong here rather than in any one corpus: `father_of` means
+    // `parent_of` in every corpus that has parents. Measured on D6 — without
+    // them 23 kinship edges were coerced to the fallback, a direct cause of the
+    // kinship regression in the full A/B.
+    let al = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let p = |name: &str, inverse: Option<&str>, symmetric: bool, aliases: Vec<String>| {
+        RelationTypeDef {
+            name: name.to_string(),
+            domain: vec!["Person".into()],
+            range: vec!["Person".into()],
+            inverse: inverse.map(String::from),
+            symmetric,
+            confidence: 0.9,
+            triggers: Vec::new(),
+            aliases,
+            ..Default::default()
+        }
     };
     vec![
-        p("parent_of", Some("child_of"), false),
-        p("child_of", Some("parent_of"), false),
-        p("grandparent_of", Some("grandchild_of"), false),
-        p("grandchild_of", Some("grandparent_of"), false),
-        p("uncle_of", Some("nephew_of"), false),
-        p("aunt_of", Some("niece_of"), false),
-        p("nephew_of", Some("uncle_of"), false),
-        p("niece_of", Some("aunt_of"), false),
-        p("foster_parent_of", Some("foster_child_of"), false),
-        p("foster_child_of", Some("foster_parent_of"), false),
-        p("spouse_of", None, true),
-        p("sibling_of", None, true),
-        p("half_sibling_of", None, true),
-        p("cousin_of", None, true),
+        p(
+            "parent_of",
+            Some("child_of"),
+            false,
+            al(&["father_of", "mother_of"]),
+        ),
+        p(
+            "child_of",
+            Some("parent_of"),
+            false,
+            al(&["son_of", "daughter_of", "born_to"]),
+        ),
+        p(
+            "grandparent_of",
+            Some("grandchild_of"),
+            false,
+            al(&["grandfather_of", "grandmother_of"]),
+        ),
+        p(
+            "grandchild_of",
+            Some("grandparent_of"),
+            false,
+            al(&["grandson_of", "granddaughter_of"]),
+        ),
+        p("uncle_of", Some("nephew_of"), false, vec![]),
+        p("aunt_of", Some("niece_of"), false, vec![]),
+        p("nephew_of", Some("uncle_of"), false, vec![]),
+        p("niece_of", Some("aunt_of"), false, vec![]),
+        p(
+            "foster_parent_of",
+            Some("foster_child_of"),
+            false,
+            al(&["fostered"]),
+        ),
+        p(
+            "foster_child_of",
+            Some("foster_parent_of"),
+            false,
+            al(&["fostered_by"]),
+        ),
+        p(
+            "spouse_of",
+            None,
+            true,
+            al(&[
+                "married_to",
+                "married",
+                "wife_of",
+                "husband_of",
+                "widow_of",
+                "widower_of",
+            ]),
+        ),
+        p("sibling_of", None, true, al(&["brother_of", "sister_of"])),
+        p(
+            "half_sibling_of",
+            None,
+            true,
+            al(&["half_brother_of", "half_sister_of"]),
+        ),
+        p("cousin_of", None, true, vec![]),
     ]
 }
 
@@ -1690,5 +1745,51 @@ mod evidence_window_tests {
             "chunk 0 means seeded; widening it would cite unrelated text"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod kinship_alias_tests {
+    use super::*;
+
+    /// The full D6 A/B lost 23 kinship edges to the fallback because the
+    /// extractor writes `father_of` and the ontology declares `parent_of`.
+    /// Those are the same relation in any corpus that has parents, so the
+    /// aliases belong to the genealogy module rather than to one KB.
+    #[test]
+    fn genealogy_resolves_the_conventional_kinship_wording() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: d6, extends: genealogy }\n\
+             entity_types:\n  - name: Person\n\
+             fallback_predicate: associated_with\n",
+        )
+        .unwrap();
+        // counts are the measured residue from the 1152-chunk run
+        for (emitted, want, edges) in [
+            ("father_of", "parent_of", 7),
+            ("mother_of", "parent_of", 6),
+            ("married_to", "spouse_of", 5),
+            ("brother_of", "sibling_of", 5),
+        ] {
+            assert_eq!(
+                o.coerce_relation(emitted).as_deref(),
+                Some(want),
+                "{emitted} ({edges} edges in the A/B) must resolve, not fall back"
+            );
+        }
+        // and a genuinely unknown predicate still falls back
+        assert_eq!(
+            o.coerce_relation("gazed_at").as_deref(),
+            Some("associated_with")
+        );
+    }
+
+    /// Aliasing must not blur direction: `son_of` is `child_of`, never `parent_of`.
+    #[test]
+    fn kinship_aliases_keep_their_direction() {
+        let o = Ontology::from_yaml("ontology: { name: x, extends: genealogy }\n").unwrap();
+        assert_eq!(o.coerce_relation("son_of").as_deref(), Some("child_of"));
+        assert_eq!(o.coerce_relation("father_of").as_deref(), Some("parent_of"));
+        assert_eq!(o.inverse_of("parent_of"), Some("child_of"));
     }
 }

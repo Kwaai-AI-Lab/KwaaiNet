@@ -19,7 +19,7 @@
 
 ontology:
   name: district-six-memoir
-  version: 8
+  version: 9
   extends: genealogy
 
 # The narrator is Yousuf (Joe) Rassool, a man. This used to be hardcoded in
@@ -345,7 +345,7 @@ relation_types:
 
   # ── neighbourhood ─────────────────────────────────────────────────────────
   - name: lived_at
-    aliases: [lived_in, lives_in, resided_in, resided_at]
+    aliases: [lived_in, lives_in, resided_in, resided_at, moved_to]
     confidence: 0.85
     triggers:
       - 'lived at'
@@ -411,6 +411,7 @@ relation_types:
     range:  [RacialClassification]
     functional: true
   - name: belongs_to_community
+    aliases: [converted_to]
     confidence: 0.7
     triggers:
       - 'being a'
@@ -490,7 +491,7 @@ relation_types:
     # visiting a place is not attending an occasion, and collapsing them loses
     # the movement through the neighbourhood the memoir is largely made of.
     confidence: 0.75
-    aliases: [went_to, called_on, travelled_to]
+    aliases: [went_to, called_on, travelled_to, visited_by]
     triggers:
       - 'visited'
       - 'went to'
@@ -500,7 +501,8 @@ relation_types:
     range:  [Place, Address, Venue, EducationalInstitution]
 
   - name: member_of
-    aliases: [belongs_to, belonged_to, joined]
+    inverse: includes_member
+    aliases: [belongs_to, belonged_to, joined, elected_to]
     confidence: 0.85
     triggers:
       - 'member of'
@@ -512,7 +514,7 @@ relation_types:
     domain: [Person]
     range:  [PoliticalOrganization, SportsClub]
   - name: led
-    aliases: [manages, managed, headed, chairman_of, president_of]
+    aliases: [manages, managed, headed, chairman_of, president_of, leader_of, chaired]
     confidence: 0.85
     triggers:
       - 'led the'
@@ -526,6 +528,7 @@ relation_types:
     domain: [Person]
     range:  [PoliticalOrganization, Event]
   - name: founded
+    aliases: [co-founded, co_founded]
     confidence: 0.85
     triggers:
       - 'founded'
@@ -549,6 +552,7 @@ relation_types:
     domain: [PoliticalOrganization]
     range:  [PoliticalOrganization]
   - name: opposed
+    inverse: opposed_by
     aliases: [opposes, protested_against, denounced]
     confidence: 0.85
     triggers:
@@ -573,6 +577,7 @@ relation_types:
     domain: [Legislation]
     range:  [PoliticalOrganization]
   - name: advocates
+    aliases: [supported, supports]
     confidence: 0.85
     triggers:
       - 'advocated'
@@ -588,6 +593,7 @@ relation_types:
     range:  [Doctrine]
     inverse: advocated_by
   - name: rejects
+    aliases: [rejected]
     confidence: 0.85
     triggers:
       - 'rejected'
@@ -619,7 +625,7 @@ relation_types:
 
   # ── schooling ─────────────────────────────────────────────────────────────
   - name: attended
-    aliases: [studied_at, educated_at, pupil_at]
+    aliases: [studied_at, educated_at, pupil_at, studied]
     confidence: 0.85
     triggers:
       - 'attended'
@@ -634,6 +640,8 @@ relation_types:
     range:  [EducationalInstitution]
     inverse: had_pupil
   - name: taught_at
+    inverse: taught_by
+    aliases: [taught, teacher_at]
     confidence: 0.85
     triggers:
       - 'taught at'
@@ -648,6 +656,7 @@ relation_types:
 
   # ── sport ─────────────────────────────────────────────────────────────────
   - name: played_for
+    aliases: [played_at, played_in]
     confidence: 0.85
     triggers:
       - 'played for'
@@ -690,7 +699,7 @@ relation_types:
     range:  [Quotation]
     inverse: attributed_to
   - name: reported_in
-    aliases: [published_in, cited_in, cites, described_in]
+    aliases: [published_in, cited_in, cites, described_in, mentioned_in, reported]
     confidence: 0.8
     triggers:
       - 'reported in'
@@ -712,6 +721,44 @@ relation_types:
       - 'the congregation of'
     domain: [Person, Community]
     range:  [Venue]
+  - name: lived_with
+    # 13 coerced edges — the largest single gap. A memoir of an extended
+    # household in one house needs to say who shared it; `lived_at` only says
+    # where someone was.
+    confidence: 0.8
+    aliases: [shared_a_home_with, boarded_with]
+    triggers: ['lived with', 'shared a house with', 'we all lived', 'under one roof']
+    domain: [Person]
+    range:  [Person]
+    symmetric: true
+
+  - name: friend_of
+    # 15 edges once colleague_of and became_close_to fold in. Distinct from
+    # member_of: a friendship is not an institution.
+    confidence: 0.75
+    aliases: [colleague_of, became_close_to, acquaintance_of, close_to]
+    triggers: ['my friend', 'friendship with', 'became friends', 'a friend of']
+    domain: [Person]
+    range:  [Person]
+    symmetric: true
+
+  - name: corresponded_with
+    # 8 edges. Letters carry much of the political narrative here.
+    confidence: 0.8
+    aliases: [wrote_to, sent_letter_to, exchanged_letters_with]
+    triggers: ['wrote to', 'letter to', 'corresponded with', 'received a letter from']
+    domain: [Person]
+    range:  [Person, Organization, PoliticalOrganization]
+
+  - name: originated_from
+    # 13 edges with born_at. Origin is not residence — `lived_at` cannot carry
+    # where someone came from, which in this corpus is usually the point.
+    confidence: 0.8
+    aliases: [born_at, born_in, came_from, hails_from, from]
+    triggers: ['born in', 'born at', 'came from', 'originally from', 'hailed from']
+    domain: [Person, Community]
+    range:  [Place, Address]
+
   - name: occurred_at
     confidence: 0.85
     triggers:
@@ -723,7 +770,7 @@ relation_types:
     domain: [Event]
     range:  [Address, Place, Venue]
   - name: attended_event
-    aliases: [was_present_at]
+    aliases: [was_present_at, spoke_at]
     confidence: 0.8
     triggers:
       - 'attended the'
