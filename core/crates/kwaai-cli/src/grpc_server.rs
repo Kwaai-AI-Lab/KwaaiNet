@@ -2129,8 +2129,16 @@ impl GrpcServerHandle {
     /// Trigger a graceful shutdown of both transports. Safe to call multiple
     /// times; subsequent calls are no-ops.
     pub fn shutdown(&mut self) {
+        // Both files mean "the listener is up", so both have to go. The serve
+        // tasks clean up after themselves too, but a SIGTERM'd process exits
+        // before they observe the signal — and a stale socket file makes a
+        // client's exists() check say yes to a daemon that has gone.
         if let Some(path) = self.port_file.take() {
             let _ = std::fs::remove_file(path);
+        }
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(unix_socket_path());
         }
         if let Some(tx) = self.shutdown_tcp.take() {
             let _ = tx.send(());
