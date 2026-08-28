@@ -881,21 +881,16 @@ impl NetworkService {
         let peer = peer_id_from_multiaddr(&addr);
         let condition_safe = peer.is_some() && !is_circuit(&addr);
 
-        // Both arms call `allocate_new_port()`, overriding the `DialOpts`
-        // default of best-effort port reuse.
+        // Nothing here touches the port policy. `DialOpts` defaults to
+        // `PortUse::Reuse` — `#[default]` on the enum itself — and that default
+        // exists for one reason: reusing the listen port as a dial's source
+        // port is what makes NAT traversal work. It puts our listen port's NAT
+        // binding into the address peers observe for us, and that observed
+        // address is the only thing DCUtR has to punch at.
         //
-        // Reuse asks the transport to bind our listen port as the dial's source
-        // port. That is right for a DCUtR hole punch — `libp2p-dcutr` requests
-        // it on its own dials and still gets it — but wrong for an ordinary
-        // dial, because the bind fails outright: `SO_REUSEPORT` lets several
-        // *listeners* share a port, not a listener plus an outbound connect.
-        // Measured on macOS (errno 48) and Linux (errno 98) alike, with no
-        // prior connection to the target.
-        //
-        // libp2p-tcp 0.44 does retry on a fresh port, but only for
-        // `AddrNotAvailable` raised by `connect`. Our failure is `EADDRINUSE`
-        // from `bind`, one step earlier, where the `?` propagates before the
-        // fallback can run — so the dial simply fails.
+        // Overriding it with `allocate_new_port()` is what silently disabled
+        // hole punching for a release. The upstream dcutr example sets no port
+        // policy at all; neither do we.
         let opts = match peer {
             // DisconnectedAndNotDialing rather than Disconnected: the latter
             // still permits a second dial while the first is in flight, which
@@ -903,15 +898,10 @@ impl NetworkService {
             Some(peer) if condition_safe => DialOpts::peer_id(peer)
                 .addresses(vec![addr.clone()])
                 .condition(PeerCondition::DisconnectedAndNotDialing)
-                .allocate_new_port()
                 .build(),
-            // `unknown_peer_id().address(..)` rather than
-            // `DialOpts::from(addr)`, because only the builder exposes
-            // `allocate_new_port()`; the two are otherwise the same dial.
-            _ => DialOpts::unknown_peer_id()
-                .address(addr.clone())
-                .allocate_new_port()
-                .build(),
+            // `unknown_peer_id().address(..)` and `DialOpts::from(addr)` are
+            // the same dial; the builder form just reads consistently above.
+            _ => DialOpts::unknown_peer_id().address(addr.clone()).build(),
         };
         let connection_id = opts.connection_id();
         match self.swarm.dial(opts) {
@@ -1112,9 +1102,6 @@ impl NetworkService {
         let opts = DialOpts::peer_id(peer)
             .addresses(addrs)
             .condition(PeerCondition::DisconnectedAndNotDialing)
-            // As in `dial()`: reuse asks the transport to bind our listen
-            // port, which `EADDRINUSE`s against our own listener.
-            .allocate_new_port()
             .build();
         let connection_id = opts.connection_id();
 
@@ -1245,10 +1232,7 @@ impl NetworkService {
                     let _ = reply.send(Ok(peer));
                     return;
                 }
-                // A new port for the same reason as `dial()`: reuse
-                // asks the transport to bind our listen port, which
-                // `EADDRINUSE`s against our own listener.
-                let opts = DialOpts::peer_id(peer).allocate_new_port().build();
+                let opts = DialOpts::peer_id(peer).build();
                 let connection_id = opts.connection_id();
                 match self.swarm.dial(opts) {
                     Ok(()) => {
@@ -1714,6 +1698,17 @@ impl NetworkService {
 
             SwarmEvent::Behaviour(event) => self.handle_behaviour_event(event),
 
+            // The candidate feed *is* DCUtR's punch-target list: `dcutr` builds
+            // its address candidates from this event and nothing else — notably
+            // not from `ExternalAddrConfirmed`, so what the reachability machine
+            // confirms never reaches it. Logged because a punch aimed at the
+            // wrong port is otherwise invisible: on a NATed node these should
+            // carry the port the NAT mapped, which is only true while dials
+            // leave from our listen port.
+            SwarmEvent::NewExternalAddrCandidate { address } => {
+                info!(%address, "external address candidate (DCUtR punch target)");
+            }
+
             other => trace!(?other, "unhandled swarm event"),
         }
     }
@@ -1779,7 +1774,11 @@ impl NetworkService {
                         }
                     }
                 }
-                Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
+                // Info, not debug: "no hole punch has ever happened" and "every
+                // hole punch fails" look identical from the outside, and the
+                // difference is the whole diagnosis. This was debug for the
+                // release in which hole punching did not work at all.
+                Err(e) => info!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
             },
 
             KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
