@@ -55,6 +55,11 @@ pub struct NetworkConfig {
     /// Maximum concurrent connections
     pub max_connections: usize,
 
+    /// Listen on and dial QUIC as well as TCP. Off for networks that block or
+    /// throttle UDP. Defaulted so a config predating the field still loads.
+    #[serde(default = "default_true")]
+    pub enable_quic: bool,
+
     /// Enable NAT traversal
     pub enable_nat_traversal: bool,
 
@@ -206,6 +211,7 @@ impl Default for NetworkConfig {
             connection_timeout: Duration::from_secs(30),
             request_timeout: Duration::from_secs(60),
             max_connections: 100,
+            enable_quic: true,
             enable_nat_traversal: true,
             enable_relay_client: true,
             protocol_version: crate::behaviour::DEFAULT_PROTOCOL_VERSION.to_string(),
@@ -273,10 +279,16 @@ impl NetworkConfig {
         if !self.listen_addrs.is_empty() {
             return self.listen_addrs.clone();
         }
-        vec![
+        let mut addrs = vec![
             format!("/ip4/0.0.0.0/tcp/{}", self.port),
             format!("/ip6/::/tcp/{}", self.port),
-        ]
+        ];
+        if self.enable_quic {
+            // Same port number: a different protocol, so it does not collide.
+            addrs.push(format!("/ip4/0.0.0.0/udp/{}/quic-v1", self.port));
+            addrs.push(format!("/ip6/::/udp/{}/quic-v1", self.port));
+        }
+        addrs
     }
 
     /// The peers to dial at startup: `initial_peers` if set, else

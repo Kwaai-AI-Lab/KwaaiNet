@@ -136,9 +136,10 @@ impl NativeNode {
         };
         let peer_id = keypair.public().to_peer_id();
 
-        // The same listen address the p2pd path passes as `-hostAddrs`.
+        // Empty so `swarm_listen_addrs()` builds the set; hardcoding the TCP
+        // wildcard here bypassed it, leaving `enable_quic` with no effect.
         let net_config = NetworkConfig {
-            listen_addrs: vec![format!("/ip4/0.0.0.0/tcp/{}", config.port)],
+            listen_addrs: Vec::new(),
             bootstrap_peers: bootstrap_peers.to_vec(),
             request_timeout: REQUEST_TIMEOUT,
             port: config.port,
@@ -161,6 +162,7 @@ impl NativeNode {
             // `-natPortMap`. On by default; off for a node deployed at a known
             // address (a bootstrap node), which has no gateway to ask.
             enable_upnp: config.enable_upnp,
+            enable_quic: config.enable_quic,
             // `-forceReachabilityPrivate`. Defaults true, so relay reservations
             // start immediately rather than after an AutoNAT round.
             force_private: config.force_private,

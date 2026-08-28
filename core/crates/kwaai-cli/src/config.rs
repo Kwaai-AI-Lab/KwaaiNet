@@ -228,6 +228,12 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
+    /// Listen on and dial QUIC as well as TCP. Turn it off for a network that
+    /// blocks or throttles UDP. Bound at startup, so changing it needs a
+    /// restart.
+    #[serde(default = "default_true")]
+    pub enable_quic: bool,
+
     /// Whether this node publishes DHT records *of its own* — its block range,
     /// `_petals.models`, `_kwaai.inference.nodes` and the VPK registry entry —
     /// and, symmetrically, the `state = -1` tombstone on shutdown.
@@ -848,6 +854,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
+            enable_quic: true,
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
@@ -1154,6 +1161,7 @@ impl KwaaiNetConfig {
             "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
+            "enable_quic" => self.enable_quic = parse_bool(value)?,
             "decentralized_dht" => self.decentralized_dht = parse_bool(value)?,
             "dht_replication" => {
                 let k: usize = value
