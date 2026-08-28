@@ -141,8 +141,13 @@ pub async fn run(args: RagArgs) -> Result<()> {
             rerank,
             mode,
             local,
+            no_narrate,
+            pace,
+            no_cache,
+            no_judge,
+            no_interactive,
         } => {
-            cmd_chat(
+            cmd_chat(ChatOpts {
                 top_k,
                 inference_url,
                 kb,
@@ -153,7 +158,12 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 rerank,
                 mode,
                 local,
-            )
+                no_narrate,
+                pace,
+                no_cache,
+                no_judge,
+                no_interactive,
+            })
             .await
         }
 
@@ -1410,19 +1420,90 @@ fn render_query_results(query: &str, results: &[serde_json::Value], json_out: bo
 
 // ── chat ──────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-async fn cmd_chat(
-    top_k: usize,
-    inference_url: Option<String>,
-    kb: String,
-    understand: bool,
-    model: String,
-    hyde: bool,
-    hyde_alpha: Option<f32>,
-    rerank: bool,
-    mode: String,
-    local: bool,
-) -> Result<()> {
+/// One chat completion, with the original two-attempt retry.
+///
+/// Split out so it can be `tokio::spawn`ed: it captures only a cheap-clone client and
+/// owned data, so the task is `'static + Send` without borrowing session state.
+async fn run_completion(
+    http: reqwest::Client,
+    inference_url: String,
+    payload: serde_json::Value,
+    // Set while the second attempt is in flight, so the caller's spinner can say so.
+    // This task must not write to stderr itself: the caller owns a redrawing status
+    // line there, and a second writer lands mid-repaint and garbles it.
+    retrying: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> String {
+    for attempt in 0u8..2 {
+        if attempt > 0 {
+            // Relay reservations drop briefly during renewal.
+            retrying.store(true, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        let Ok(resp) = http
+            .post(format!("{inference_url}/v1/chat/completions"))
+            .json(&payload)
+            .send()
+            .await
+        else {
+            continue;
+        };
+        match resp.json::<serde_json::Value>().await {
+            Ok(body) => {
+                if let Some(s) = body["choices"][0]["message"]["content"].as_str() {
+                    return s.to_string();
+                } else if let Some(err) = body["error"]["message"].as_str() {
+                    return format!("(inference error: {err})");
+                } else if !body["error"].is_null() {
+                    return format!("(inference error: {})", body["error"]);
+                } else {
+                    let t = body.to_string();
+                    return format!("(no response — body: {})", &t[..t.len().min(200)]);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    "(inference error: peer unreachable — check daemon on remote machine)".to_string()
+}
+
+/// Options for `rag chat`, gathered into a struct so the handler does not carry a
+/// fifteen-argument signature.
+pub struct ChatOpts {
+    pub top_k: usize,
+    pub inference_url: Option<String>,
+    pub kb: String,
+    pub understand: bool,
+    pub model: String,
+    pub hyde: bool,
+    pub hyde_alpha: Option<f32>,
+    pub rerank: bool,
+    pub mode: String,
+    pub local: bool,
+    pub no_narrate: bool,
+    pub pace: u64,
+    pub no_cache: bool,
+    pub no_judge: bool,
+    pub no_interactive: bool,
+}
+
+async fn cmd_chat(opts: ChatOpts) -> Result<()> {
+    let ChatOpts {
+        top_k,
+        inference_url,
+        kb,
+        understand,
+        model,
+        hyde,
+        hyde_alpha,
+        rerank,
+        mode,
+        local,
+        no_narrate,
+        pace,
+        no_cache,
+        no_judge,
+        no_interactive,
+    } = opts;
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
 
@@ -1546,7 +1627,14 @@ async fn cmd_chat(
             bm25: open_bm25(&rag_cfg, &meta, &kb),
         };
 
-        let http = reqwest::Client::new();
+        // `Client::new()` has no timeout at all: a hung inference call would hang the
+        // REPL forever. Generations over a slow p2p relay are legitimately long, so
+        // the ceiling is generous rather than tight.
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let mut history: Vec<ChatMessage> = vec![];
 
         // Prepare storage backend once.
@@ -1571,79 +1659,162 @@ async fn cmd_chat(
             None
         };
 
-        print_box_header("RAG Chat  (type 'exit' to quit)");
+        print_box_header("RAG Chat  (type 'exit' to quit, /help for commands)");
+
+        // ── session-lifetime state ────────────────────────────────────────────
+        // GraphStore was being opened three times per turn (document context,
+        // auto-mode resolution, and iterative retrieval). Open it once. A concurrent
+        // ingest during a session will not be picked up, which is an acceptable trade.
+        let session_graph: Option<GraphStore> =
+            GraphStore::open(&rag_cfg.data_dir(), tenant_id).ok();
+
+        let doc_context_line: Option<String> = session_graph.as_ref().and_then(|g| {
+            let dm = g.get_doc_metadata();
+            if dm.is_empty() {
+                return None;
+            }
+            let schema = kwaai_rag::doc_schema::DocSchema {
+                metadata: dm,
+                document_title: g.get_document_titles().into_iter().next(),
+                ..Default::default()
+            };
+            schema.context_line()
+        });
+
+        // `smart` is accepted by the CLI but has never had a chat implementation; it
+        // used to fall through to plain hybrid retrieval, silently contradicting its
+        // own help text. Map it to the nearest mode that exists, and say so.
+        let effective_mode_chat: String = if mode == "auto" {
+            match session_graph.as_ref().map(|g| g.node_count() > 0) {
+                Some(true) => "graph".to_string(),
+                _ => "vector".to_string(),
+            }
+        } else if mode == "smart" {
+            eprintln!("  ⚠  mode=smart is not implemented for chat — using iterative");
+            "iterative".to_string()
+        } else {
+            mode.clone()
+        };
+
+        if local_vs.is_none() && effective_mode_chat != "vector" {
+            eprintln!(
+                "  ⚠  mode={effective_mode_chat} needs a local KB — remote storage uses hybrid retrieval"
+            );
+        }
+
+        // A graph mode with no graph store used to fall through to hybrid without a
+        // word — the retrieval the user asked for silently not happening. The warning
+        // above covers remote storage; this covers a local open that failed.
+        if local_vs.is_some()
+            && session_graph.is_none()
+            && matches!(effective_mode_chat.as_str(), "graph" | "iterative")
+        {
+            eprintln!(
+                "  ⚠  mode={effective_mode_chat} needs the knowledge graph, which could not be \
+                 opened — falling back to hybrid retrieval"
+            );
+        }
+
+        let feedback = kwaai_rag::feedback::FeedbackStore::open(&rag_cfg.data_dir()).ok();
+        let interactive = crate::progress::is_stdin_tty() && !no_interactive;
+        let per_char = std::time::Duration::from_millis(pace);
+        let width = term_width();
+        // Keep evidence generous here and let the table decide the final width: it is
+        // the only place that knows the whole row budget. Pre-truncating to a guessed
+        // column width leaves the table nothing to redistribute.
+        let evidence_cols = 240usize;
 
         let stdin = io::stdin();
-        loop {
-            print!("\n  You: ");
-            io::stdout().flush().ok();
+        let mut marks: kwaai_rag::reranker::Marks = Default::default();
+        // The turn awaiting commit. Deferring the history push means /retry has
+        // nothing to unwind, so there is no rewind path and no off-by-one against the
+        // 20-message cap below.
+        let mut pending: Option<(String, String)> = None;
+        let mut next_query: Option<String> = None;
 
-            let mut line = String::new();
-            if stdin.lock().read_line(&mut line).is_err() {
-                break;
-            }
-            let query = line.trim().to_string();
-            if query.is_empty() {
-                continue;
-            }
-            if query == "exit" || query == "quit" {
-                break;
-            }
-
-            // Semantic cache check (local KB only).
-            if let Some(ref mut cache) = query_cache {
-                if let Ok(query_emb) = embed.embed_one(&query).await {
-                    if let Some(hit) = cache.get(&query_emb) {
-                        println!("\n  Assistant: {}  \x1b[2m(cached)\x1b[0m", hit.answer);
-                        history.push(ChatMessage {
-                            role: "user".to_string(),
-                            content: query.clone(),
-                        });
-                        history.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: hit.answer,
-                        });
-                        if history.len() > 20 {
-                            history.drain(0..2);
-                        }
-                        continue;
-                    }
-                }
-            }
-
-            // Load document context preamble from persisted schema metadata (if any).
-            let doc_context_line: Option<String> = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
-                .ok()
-                .and_then(|g| {
-                    let meta = g.get_doc_metadata();
-                    if meta.is_empty() {
-                        return None;
-                    }
-                    let schema = kwaai_rag::doc_schema::DocSchema {
-                        metadata: meta,
-                        document_title: g.get_document_titles().into_iter().next(),
-                        ..Default::default()
-                    };
-                    schema.context_line()
+        'session: loop {
+            if let Some((u, a)) = pending.take() {
+                history.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: u,
                 });
-
-            // Resolve effective mode for this turn (auto → graph if KB has entities).
-            let effective_mode_chat: &str = if mode == "auto" {
-                if let Ok(g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                    if g.node_count() > 0 {
-                        "graph"
-                    } else {
-                        "vector"
-                    }
-                } else {
-                    "vector"
+                history.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: a,
+                });
+                if history.len() > 20 {
+                    history.drain(0..2);
                 }
-            } else {
-                mode.as_str()
+            }
+
+            let query = match next_query.take() {
+                Some(q) => q,
+                None => {
+                    print!("\n  You: ");
+                    io::stdout().flush().ok();
+                    let mut line = String::new();
+                    // read_line reports EOF as Ok(0), not Err. Treating only Err as the
+                    // end left a piped session with no trailing `exit` — and an
+                    // interactive Ctrl-D — spinning on an empty line at full CPU.
+                    match stdin.lock().read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    // Route through parse_cmd so the slash forms the banner advertises
+                    // work here too; anything that is not a command is the question.
+                    match crate::chat_ui::parse_cmd(&line) {
+                        crate::chat_ui::ChatCmd::Exit => break,
+                        crate::chat_ui::ChatCmd::Continue => continue,
+                        crate::chat_ui::ChatCmd::Help => {
+                            for l in crate::chat_ui::help_lines() {
+                                eprintln!("{l}");
+                            }
+                            continue;
+                        }
+                        _ => line.trim().to_string(),
+                    }
+                }
             };
 
-            // Retrieve context.
-            let chunks = if let Some(ref vs) = local_vs {
+            // Marks are per-question, not per-session: item numbers are recomputed from
+            // each turn's plan, so `-2` on this question means a different chunk than
+            // `-2` on the last one. Carrying them over silently suppressed a chunk for
+            // the rest of the session. `/retry` re-enters the inner attempt loop rather
+            // than arriving here, so marks still apply to a retry of the same question,
+            // which is the whole point of applying them out of band.
+            if !marks.is_empty() {
+                marks.clear();
+            }
+
+            // ── cache: prefetch the answer, do not short-circuit the turn ─────
+            // Skipping retrieval on a hit would leave nothing to show the user.
+            // Retrieval costs milliseconds against tens of seconds of generation, so
+            // the cache now saves only the inference call and the turn still narrates.
+            // Only the cache reads this, so only pay for it when a cache is in play.
+            // Computing it unconditionally cost a full embedding round trip per turn on
+            // remote-storage KBs (no query_cache) and under --no-cache, and because it
+            // runs before the narrator starts it showed up as unnarrated dead time —
+            // the exact silence this feature exists to remove.
+            let query_emb = if query_cache.is_some() && !no_cache {
+                embed.embed_one(&query).await.ok()
+            } else {
+                None
+            };
+            let mut cached: Option<String> = None;
+            if !no_cache {
+                if let (Some(cache), Some(e)) = (query_cache.as_mut(), query_emb.as_ref()) {
+                    if let Some(hit) = cache.get(e) {
+                        cached = Some(hit.answer);
+                    }
+                }
+            }
+
+            // ── retrieval ─────────────────────────────────────────────────────
+            let t_ret = std::time::Instant::now();
+            let trace: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let narrator = crate::progress::LiveNarrator::start("searching");
+
+            let pool_res = if let Some(ref vs) = local_vs {
                 let vs2 = vs.clone();
                 let search_fn = move |emb: Vec<f32>, k: usize| {
                     let vs = vs2.clone();
@@ -1655,39 +1826,59 @@ async fn cmd_chat(
                             Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
                         >
                 };
-                if effective_mode_chat == "iterative" {
-                    let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
-                        .context("opening graph store for iterative retrieval")?;
-                    retrieve_iterative(
-                        &query,
-                        &retrieve_cfg,
-                        &embed,
-                        &meta,
-                        &graph,
-                        search_fn,
-                        &inference_url,
-                        &model,
-                        |msg| eprintln!("{msg}"),
-                    )
-                    .await?
-                } else if effective_mode_chat == "graph" {
-                    let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
-                        .context("opening graph store for graph-anchored retrieval")?;
-                    retrieve_graph_anchored(&query, &retrieve_cfg, &embed, &meta, &graph, search_fn)
-                        .await?
-                } else if understand {
-                    kwaai_rag::query_understanding::retrieve_with_understanding(
-                        &query,
-                        &retrieve_cfg,
-                        &embed,
-                        &meta,
-                        &inference_url,
-                        &model,
-                        search_fn,
-                    )
-                    .await?
-                } else {
-                    retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, search_fn).await?
+                match (effective_mode_chat.as_str(), session_graph.as_ref()) {
+                    ("iterative", Some(graph)) => {
+                        let tx = narrator.sender();
+                        let keep = trace.clone();
+                        retrieve_iterative(
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            graph,
+                            search_fn,
+                            &inference_url,
+                            &model,
+                            // `on_status` is `Fn`, not `FnMut`, so it cannot mutate
+                            // captured state. A channel sidesteps that: `send` takes
+                            // `&self`, and the receiving task is the sole writer.
+                            move |msg: &str| {
+                                let line = msg.trim_end().to_string();
+                                if line.trim().is_empty() {
+                                    return;
+                                }
+                                if let Ok(mut g) = keep.lock() {
+                                    g.push(line.clone());
+                                }
+                                let _ = tx.send(line);
+                            },
+                        )
+                        .await
+                    }
+                    ("graph", Some(graph)) => {
+                        retrieve_graph_anchored(
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            graph,
+                            search_fn,
+                        )
+                        .await
+                    }
+                    _ if understand => {
+                        kwaai_rag::query_understanding::retrieve_with_understanding(
+                            &query,
+                            &retrieve_cfg,
+                            &embed,
+                            &meta,
+                            &inference_url,
+                            &model,
+                            search_fn,
+                        )
+                        .await
+                    }
+                    _ => retrieve_hybrid(&query, &retrieve_cfg, &embed, &meta, search_fn).await,
                 }
             } else if let Some(ref url) = storage_mode {
                 let http2 = http.clone();
@@ -1703,7 +1894,7 @@ async fn cmd_chat(
                             Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
                         >
                 })
-                .await?
+                .await
             } else {
                 let (client2, eve) = p2p_client.as_ref().unwrap();
                 let client2 = client2.clone();
@@ -1720,90 +1911,359 @@ async fn cmd_chat(
                             Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>,
                         >
                 })
-                .await?
+                .await
             };
 
-            // LLM listwise reranker (optional).
-            let chunks = if rerank {
-                kwaai_rag::reranker::rerank_chunks(&query, chunks, &inference_url, &model, top_k)
-                    .await
+            let retrieval_secs = t_ret.elapsed().as_secs_f64();
+            let pool = match pool_res {
+                Ok(p) => {
+                    // Count real corpus documents; graph facts ride in as synthetic
+                    // chunks whose doc_name is an entity, not a document.
+                    let docs = p
+                        .iter()
+                        .filter(|c| !kwaai_rag::retriever::origin_of(c).is_graph())
+                        .map(|c| c.chunk_meta.doc_name.as_str())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len();
+                    let n_graph = p
+                        .iter()
+                        .filter(|c| kwaai_rag::retriever::origin_of(c).is_graph())
+                        .count();
+                    let n_corpus = p.len() - n_graph;
+                    narrator
+                        .finish(format!(
+                            "  ✓ retrieved {n_corpus} passage{} from {docs} document{}{} in {retrieval_secs:.1}s",
+                            if n_corpus == 1 { "" } else { "s" },
+                            if docs == 1 { "" } else { "s" },
+                            match n_graph {
+                                0 => String::new(),
+                                1 => " + 1 graph fact".to_string(),
+                                n => format!(" + {n} graph facts"),
+                            }
+                        ))
+                        .await;
+                    p
+                }
+                Err(e) => {
+                    narrator.finish(format!("  ✗ retrieval failed: {e}")).await;
+                    continue;
+                }
+            };
+
+            let cov_terms = kwaai_rag::iterative::coverage_terms(&query);
+            let coverage = if cov_terms.is_empty() {
+                None
             } else {
-                chunks
+                Some(kwaai_rag::iterative::compute_coverage(&cov_terms, &pool))
             };
 
-            let messages = build_chat_messages(
-                &query,
-                &chunks,
-                &history,
-                24000,
-                doc_context_line.as_deref(),
-            );
-            let payload = serde_json::json!({
-                "model": model,
-                "messages": messages,
-                "stream": false,
-            });
+            // ── answer attempts (initial, then any /retry) ────────────────────
+            let mut attempt = 0usize;
+            'attempt: loop {
+                // Marks alone must not pull in the reranker. Routing them through it
+                // added an unrequested LLM round trip to every later turn and reordered
+                // the whole pool, so the user could not see what their one mark did —
+                // the opposite of what `apply_marks` promises. It also truncated to
+                // top_k, dropping the tail of an already-sized pool.
+                let chunks = if rerank {
+                    kwaai_rag::reranker::rerank_chunks_with_marks(
+                        &query,
+                        pool.clone(),
+                        &inference_url,
+                        &model,
+                        top_k,
+                        &marks,
+                    )
+                    .await
+                } else if !marks.is_empty() {
+                    kwaai_rag::reranker::apply_marks(pool.clone(), &marks)
+                } else {
+                    pool.clone()
+                };
 
-            // Retry once on empty body — relay reservations drop briefly during renewal.
-            let answer = 'inference: {
-                for attempt in 0u8..2 {
-                    if attempt > 0 {
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    }
-                    let Ok(resp) = http
-                        .post(format!("{inference_url}/v1/chat/completions"))
-                        .json(&payload)
-                        .send()
-                        .await
-                    else {
-                        continue;
-                    };
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(body) => {
-                            if let Some(s) = body["choices"][0]["message"]["content"].as_str() {
-                                break 'inference s.to_string();
-                            } else if let Some(err) = body["error"]["message"].as_str() {
-                                break 'inference format!("(inference error: {err})");
-                            } else if !body["error"].is_null() {
-                                break 'inference format!("(inference error: {})", body["error"]);
+                let plan = kwaai_rag::prompt::context_plan(&chunks, 24000);
+                let messages = build_chat_messages(
+                    &query,
+                    &chunks,
+                    &history,
+                    24000,
+                    doc_context_line.as_deref(),
+                );
+                let payload = serde_json::json!({
+                    "model": model,
+                    "messages": messages,
+                    "stream": false,
+                });
+
+                // Use the cached answer only for the first attempt: a /retry that
+                // returned the same cached text would be pointless.
+                let from_cache = cached.is_some() && attempt == 0;
+                let retrying = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let gen: Option<tokio::task::JoinHandle<String>> = if from_cache {
+                    None
+                } else {
+                    // Spawning is clean here: the task captures a cheap-clone Client
+                    // and owned Strings, so nothing borrows. Neither the query cache
+                    // nor the feedback store may be captured — their rusqlite handles
+                    // are !Send and belong to this task.
+                    Some(tokio::spawn(run_completion(
+                        http.clone(),
+                        inference_url.clone(),
+                        payload,
+                        retrying.clone(),
+                    )))
+                };
+
+                if !no_narrate {
+                    let rows =
+                        crate::chat_ui::build_rows(&chunks, &plan, &marks, &query, evidence_cols);
+                    let script = crate::chat_ui::narration_script(
+                        &rows,
+                        coverage.clone(),
+                        retrieval_secs,
+                        8,
+                        width,
+                    );
+                    let mut st = crate::progress::StatusLine::stderr();
+                    let done = || gen.as_ref().map(|h| h.is_finished()).unwrap_or(true);
+                    crate::chat_ui::play(script, &mut st, per_char, &done).await;
+                }
+
+                let answer = match gen {
+                    Some(h) => {
+                        let mut st = crate::progress::StatusLine::stderr();
+                        while !h.is_finished() {
+                            st.tick_label(if retrying.load(std::sync::atomic::Ordering::Relaxed) {
+                                "retrying inference"
                             } else {
-                                break 'inference format!(
-                                    "(no response — body: {})",
-                                    &body.to_string()[..body.to_string().len().min(200)]
+                                "generating"
+                            });
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                        }
+                        st.clear_status();
+                        h.await
+                            .unwrap_or_else(|_| "(inference error: task panicked)".to_string())
+                    }
+                    None => cached.clone().unwrap_or_default(),
+                };
+
+                if from_cache {
+                    // Only decorate on a terminal; piped stdout is a protocol.
+                    if crate::progress::is_tty() {
+                        println!("\n  Assistant: {answer}  \x1b[2m(cached)\x1b[0m");
+                    } else {
+                        println!("\n  Assistant: {answer}  (cached)");
+                    }
+                } else {
+                    println!("\n  Assistant: {answer}");
+                }
+                io::stdout().flush().ok();
+
+                let is_error =
+                    answer.starts_with("(inference error:") || answer.starts_with("(no response");
+
+                // Free, deterministic check for the exact hallucination mode the RAG
+                // system prompt warns against — no LLM call involved.
+                let bad = crate::chat_ui::check_citations(&answer, plan.len());
+                if !bad.is_empty() {
+                    eprintln!(
+                        "  ⚠  answer cites {} source{} that were not supplied: {}",
+                        bad.len(),
+                        if bad.len() == 1 { "" } else { "s" },
+                        bad.iter()
+                            .map(|n| format!("[{n}]"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                }
+
+                // Cache and score only real answers — and honour --no-cache on the way
+                // in *and* out. Gating only the lookup meant a session told to skip the
+                // cache still mutated it, which defeats using the flag to reproduce a
+                // turn without disturbing cache state.
+                if !is_error && !from_cache && !no_cache {
+                    if let (Some(cache), Some(e)) = (query_cache.as_mut(), query_emb.as_ref()) {
+                        let chunk_ids: Vec<i64> = chunks.iter().map(|_| 0i64).collect();
+                        let _ = cache.put(query.clone(), e.clone(), answer.clone(), chunk_ids);
+                    }
+                }
+
+                let mut judged: Option<kwaai_rag::judge::AnswerScore> = None;
+                if interactive && !no_judge && !is_error {
+                    let mut st = crate::progress::StatusLine::stderr();
+                    st.tick_label("scoring");
+                    match kwaai_rag::judge::judge_answer(
+                        &query,
+                        &answer,
+                        &chunks,
+                        &inference_url,
+                        &model,
+                    )
+                    .await
+                    {
+                        Ok(s) => {
+                            st.clear_status();
+                            eprintln!(
+                                "  ⭑ {:.1}/5  {}{}",
+                                s.score,
+                                if s.grounded {
+                                    "grounded"
+                                } else {
+                                    "NOT grounded"
+                                },
+                                if s.rationale.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" — {}", s.rationale)
+                                }
+                            );
+                            if let Some(ref f) = feedback {
+                                let _ = f.record_score(
+                                    &kb,
+                                    &query,
+                                    &answer,
+                                    Some(s.score),
+                                    None,
+                                    Some(s.grounded),
+                                    Some(&s.rationale),
                                 );
                             }
+                            judged = Some(s);
                         }
-                        Err(_) => continue,
+                        Err(_) => st.clear_status(),
                     }
                 }
-                "(inference error: peer unreachable — check daemon on remote machine)".to_string()
-            };
+                let _ = &judged;
 
-            println!("\n  Assistant: {answer}");
+                if !interactive {
+                    pending = Some((query.clone(), answer));
+                    break 'attempt;
+                }
 
-            // Store in cache only on successful responses (local KB only, fire-and-forget).
-            let is_error =
-                answer.starts_with("(inference error:") || answer.starts_with("(no response");
-            if !is_error {
-                if let Some(ref mut cache) = query_cache {
-                    if let Ok(query_emb) = embed.embed_one(&query).await {
-                        let chunk_ids: Vec<i64> = chunks.iter().map(|_| 0i64).collect();
-                        let _ = cache.put(query.clone(), query_emb, answer.clone(), chunk_ids);
+                // ── human in the loop ─────────────────────────────────────────
+                loop {
+                    let marking = if plan.is_empty() {
+                        String::new()
+                    } else {
+                        "+1 3 · -2 · ?N · ".to_string()
+                    };
+                    eprint!(
+                        "  ⟩ {marking}/retry · /score N · /help · or ask your next question\n  ⟩ "
+                    );
+                    io::stderr().flush().ok();
+                    let mut line = String::new();
+                    if stdin.lock().read_line(&mut line).is_err() {
+                        break 'session;
+                    }
+                    match crate::chat_ui::parse_cmd(&line) {
+                        crate::chat_ui::ChatCmd::Continue => {
+                            pending = Some((query.clone(), answer));
+                            break 'attempt;
+                        }
+                        crate::chat_ui::ChatCmd::Exit => break 'session,
+                        crate::chat_ui::ChatCmd::Ask(q) => {
+                            pending = Some((query.clone(), answer));
+                            next_query = Some(q);
+                            break 'attempt;
+                        }
+                        crate::chat_ui::ChatCmd::Retry => {
+                            attempt += 1;
+                            cached = None;
+                            eprintln!("  ↻ re-answering with {} mark(s) applied", marks.len());
+                            continue 'attempt;
+                        }
+                        crate::chat_ui::ChatCmd::Mark(ns, m) => {
+                            let mut recorded = Vec::new();
+                            for n in ns {
+                                match plan.get(n.wrapping_sub(1)) {
+                                    Some(&idx) => {
+                                        let c = &chunks[idx];
+                                        marks.insert(kwaai_rag::iterative::chunk_key(c), m);
+                                        recorded.push(kwaai_rag::feedback::ChunkMark {
+                                            doc_name: c.chunk_meta.doc_name.clone(),
+                                            chunk_index: c.chunk_meta.chunk_index,
+                                            mark: m,
+                                        });
+                                    }
+                                    None => eprintln!("  ⚠  no item {n}"),
+                                }
+                            }
+                            if !recorded.is_empty() {
+                                eprintln!(
+                                    "  ✓ marked {} item(s) {}",
+                                    recorded.len(),
+                                    if m > 0 { "relevant" } else { "irrelevant" }
+                                );
+                                if let Some(ref f) = feedback {
+                                    let _ = f.record_marks(&kb, &query, &recorded);
+                                }
+                            }
+                        }
+                        crate::chat_ui::ChatCmd::Score(n) => {
+                            if let Some(ref f) = feedback {
+                                let _ = f.record_score(
+                                    &kb,
+                                    &query,
+                                    &answer,
+                                    None,
+                                    Some(n as f32),
+                                    None,
+                                    None,
+                                );
+                            }
+                            eprintln!("  ✓ scored {n}/5");
+                        }
+                        crate::chat_ui::ChatCmd::Show(n) => match plan.get(n.wrapping_sub(1)) {
+                            Some(&idx) => {
+                                let m = &chunks[idx].chunk_meta;
+                                eprintln!("\n  [{n}] {}  ({})", m.doc_name, {
+                                    match m.page_num {
+                                        Some(p) => format!("p. {p}"),
+                                        None => format!("chunk {}", m.chunk_index),
+                                    }
+                                });
+                                // Show what the model was actually given, which is the
+                                // wider `surrounding` window when there is more of it.
+                                // Printing `text` showed the reader *less* than the
+                                // citation refers to — the opposite of an audit.
+                                for l in kwaai_rag::prompt::context_text(&chunks[idx]).lines() {
+                                    eprintln!("      {l}");
+                                }
+                                eprintln!();
+                            }
+                            None => eprintln!("  ⚠  no item {n}"),
+                        },
+                        crate::chat_ui::ChatCmd::Why => {
+                            let t = trace.lock().ok();
+                            match t.as_ref().filter(|v| !v.is_empty()) {
+                                Some(v) => {
+                                    for l in v.iter() {
+                                        eprintln!("{l}");
+                                    }
+                                }
+                                None => eprintln!("  (no retrieval trace for this turn)"),
+                            }
+                        }
+                        crate::chat_ui::ChatCmd::Marks => {
+                            if marks.is_empty() {
+                                eprintln!("  (no marks this session)");
+                            } else {
+                                for ((doc, idx), m) in marks.iter() {
+                                    eprintln!("  {}  {doc} #{idx}", if *m > 0 { "+" } else { "−" });
+                                }
+                            }
+                        }
+                        crate::chat_ui::ChatCmd::ClearMarks => {
+                            marks.clear();
+                            eprintln!("  ✓ marks cleared");
+                        }
+                        crate::chat_ui::ChatCmd::Help => {
+                            for l in crate::chat_ui::help_lines() {
+                                eprintln!("{l}");
+                            }
+                        }
                     }
                 }
-            }
-
-            history.push(ChatMessage {
-                role: "user".to_string(),
-                content: query,
-            });
-            history.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: answer,
-            });
-            // Keep last 10 turns.
-            if history.len() > 20 {
-                history.drain(0..2);
             }
         }
         Ok(())

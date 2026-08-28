@@ -1259,6 +1259,26 @@ pub enum RagAction {
         /// Use local Ollama for chat (http://localhost:11434) instead of a remote inference node
         #[arg(long)]
         local: bool,
+
+        /// Suppress the retrieval narration and findings table
+        #[arg(long)]
+        no_narrate: bool,
+
+        /// Milliseconds per character when typing out narration (0 = instant)
+        #[arg(long, value_name = "MS", default_value = "12")]
+        pace: u64,
+
+        /// Skip the semantic query cache for this session
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Do not score answers with the LLM judge
+        #[arg(long)]
+        no_judge: bool,
+
+        /// Never prompt for relevance marks, even on a terminal
+        #[arg(long)]
+        no_interactive: bool,
     },
 
     /// List ingested documents
