@@ -388,3 +388,140 @@ mod readiness_tests {
         );
     }
 }
+
+// ── residency and preloading ──────────────────────────────────────────────────
+
+/// A model Ollama currently holds in memory, from `/api/ps`.
+#[derive(Debug, Clone)]
+pub struct ResidentModel {
+    pub name: String,
+    /// Total size of the loaded model in bytes.
+    pub size: u64,
+    /// How much of it sits in VRAM. Equal to `size` when fully on the GPU.
+    pub size_vram: u64,
+    /// Context length it was loaded with.
+    pub context_length: Option<u64>,
+}
+
+impl ResidentModel {
+    /// Fraction of the model resident on the GPU, 0.0–1.0.
+    pub fn gpu_fraction(&self) -> f64 {
+        if self.size == 0 {
+            return 0.0;
+        }
+        (self.size_vram as f64 / self.size as f64).clamp(0.0, 1.0)
+    }
+
+    /// Whether `model_ref` names this model, tolerating a missing `:latest`.
+    pub fn matches(&self, model_ref: &str) -> bool {
+        let a = self.name.trim_end_matches(":latest");
+        let b = model_ref.trim_end_matches(":latest");
+        a == b
+    }
+}
+
+/// Models `base_url` currently holds in memory.
+///
+/// `None` when the endpoint does not answer `/api/ps` — it is not Ollama, or it is
+/// unreachable. Probing rather than pattern-matching the URL is deliberate: `--local`
+/// and a `p2p://` relay both resolve to a `http://localhost:PORT` address, because the
+/// relay runs a local forwarding proxy, so the host name says nothing about what is
+/// behind it. A proxied remote Ollama answers this too, and warming it is just as
+/// useful as warming a local one.
+pub async fn resident_models(base_url: &str) -> Option<Vec<ResidentModel>> {
+    // Kept short on purpose: this sits on the startup path, and an endpoint that is
+    // not Ollama (a remote peer behind the relay proxy) simply will not answer. A
+    // generous timeout here would be a visible startup regression for every p2p user.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let url = format!("{}/api/ps", base_url.trim_end_matches('/'));
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let arr = v.get("models")?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|m| {
+                Some(ResidentModel {
+                    name: m.get("name")?.as_str()?.to_string(),
+                    size: m.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+                    size_vram: m.get("size_vram").and_then(|x| x.as_u64()).unwrap_or(0),
+                    context_length: m.get("context_length").and_then(|x| x.as_u64()),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Ask Ollama to load `model` into memory and hold it for `keep_alive`.
+///
+/// A `/api/generate` call carrying no prompt loads the model and returns without
+/// generating. Measured on an M-series Mac: 25.4s for llama3.1:8b from cold, 0.15s
+/// when already resident — so this is cheap to call speculatively and expensive to
+/// skip. It also refreshes the eviction timer, which otherwise defaults to five
+/// minutes and will drop the model out from under a session spent reading an answer.
+///
+/// Best-effort: a non-Ollama endpoint simply fails and the caller carries on.
+pub async fn warm_model(base_url: &str, model: &str, keep_alive: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let base = base_url.trim_end_matches('/');
+
+    // Generation models load through /api/generate with no prompt. Embedding models
+    // reject it outright ("does not support generate"), so fall back to a one-character
+    // embed — which is also what the embedder itself will call, and carries keep_alive
+    // just the same. Probing beats asking the caller to classify the model.
+    let gen = client
+        .post(format!("{base}/api/generate"))
+        .json(&serde_json::json!({ "model": model, "keep_alive": keep_alive }))
+        .send()
+        .await?;
+    if gen.status().is_success() {
+        return Ok(());
+    }
+
+    let embed = client
+        .post(format!("{base}/api/embed"))
+        .json(&serde_json::json!({ "model": model, "input": "w", "keep_alive": keep_alive }))
+        .send()
+        .await?;
+    if embed.status().is_success() {
+        return Ok(());
+    }
+    anyhow::bail!("warming {model}: {}", embed.status());
+}
+
+#[cfg(test)]
+mod residency_tests {
+    use super::*;
+
+    fn rm(name: &str, size: u64, vram: u64) -> ResidentModel {
+        ResidentModel {
+            name: name.into(),
+            size,
+            size_vram: vram,
+            context_length: None,
+        }
+    }
+
+    #[test]
+    fn matches_tolerates_the_latest_suffix() {
+        assert!(rm("nomic-embed-text:latest", 1, 1).matches("nomic-embed-text"));
+        assert!(rm("nomic-embed-text", 1, 1).matches("nomic-embed-text:latest"));
+        assert!(rm("llama3.1:8b", 1, 1).matches("llama3.1:8b"));
+        assert!(!rm("llama3.1:8b", 1, 1).matches("llama3.1:70b"));
+    }
+
+    #[test]
+    fn gpu_fraction_reports_the_split() {
+        assert_eq!(rm("m", 100, 100).gpu_fraction(), 1.0);
+        assert_eq!(rm("m", 100, 35).gpu_fraction(), 0.35);
+        // A model reporting no size must not divide by zero.
+        assert_eq!(rm("m", 0, 0).gpu_fraction(), 0.0);
+    }
+}

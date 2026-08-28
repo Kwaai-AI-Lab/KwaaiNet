@@ -1661,6 +1661,60 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
 
         print_box_header("RAG Chat  (type 'exit' to quit, /help for commands)");
 
+        // ── model residency ───────────────────────────────────────────────────
+        // A cold model load is the single largest source of dead time in a session:
+        // measured on this hardware, llama3.1:8b takes 25.4s to load and 0.15s once
+        // resident, and Ollama evicts after five minutes idle — so the first question
+        // almost always paid for it, and so did the first question after a long read.
+        //
+        // Warming starts now and does not block: the load overlaps the banner, the
+        // graph open, and the time the user spends typing, which is usually enough to
+        // hide it completely.
+        const WARM_KEEP_ALIVE: &str = "30m";
+        // Which (endpoint, model) pairs actually answered as Ollama. A single bool
+        // could not tell them apart: with an Ollama embed host behind a non-Ollama
+        // inference host, it warmed the inference URL every turn — a doomed task with a
+        // 300s timeout per question — while the embed model it *could* have kept
+        // resident was left for Ollama to evict after the five-minute default.
+        let mut ollama_targets: Vec<(String, String)> = Vec::new();
+        {
+            // The embed model is a separate load on the critical path — retrieval
+            // cannot start without it — and may live on a different host.
+            let mut targets: Vec<(String, String)> = vec![(inference_url.clone(), model.clone())];
+            if !(embed.base_url == inference_url && embed.model == model) {
+                targets.push((embed.base_url.clone(), embed.model.clone()));
+            }
+            // Probe concurrently so startup costs one timeout, not one per model.
+            let probes = futures::future::join_all(
+                targets
+                    .iter()
+                    .map(|(base, _)| crate::ollama::resident_models(base)),
+            )
+            .await;
+            for ((base, m), resident) in targets.into_iter().zip(probes) {
+                let Some(resident) = resident else {
+                    continue; // not an Ollama endpoint; nothing to preload
+                };
+                ollama_targets.push((base.clone(), m.clone()));
+                match resident.iter().find(|r| r.matches(&m)) {
+                    Some(r) => eprintln!(
+                        "  ✓ {m} already loaded ({:.0}% GPU{})",
+                        r.gpu_fraction() * 100.0,
+                        match r.context_length {
+                            Some(c) => format!(", {c} ctx"),
+                            None => String::new(),
+                        }
+                    ),
+                    None => {
+                        eprintln!("  ⟳ loading {m} in the background…");
+                        tokio::spawn(async move {
+                            let _ = crate::ollama::warm_model(&base, &m, WARM_KEEP_ALIVE).await;
+                        });
+                    }
+                }
+            }
+        }
+
         // ── session-lifetime state ────────────────────────────────────────────
         // GraphStore was being opened three times per turn (document context,
         // auto-mode resolution, and iterative retrieval). Open it once. A concurrent
@@ -1811,6 +1865,16 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                         cached = Some(hit.answer);
                     }
                 }
+            }
+
+            // Refresh the eviction timer alongside retrieval — and reload the model
+            // if it already lapsed, so the cost overlaps retrieval and narration
+            // instead of landing squarely on the completion. A no-op when resident.
+            for (b, m) in &ollama_targets {
+                let (b, m) = (b.clone(), m.clone());
+                tokio::spawn(async move {
+                    let _ = crate::ollama::warm_model(&b, &m, WARM_KEEP_ALIVE).await;
+                });
             }
 
             // ── retrieval ─────────────────────────────────────────────────────

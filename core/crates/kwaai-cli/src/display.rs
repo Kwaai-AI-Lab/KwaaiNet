@@ -337,6 +337,7 @@ impl Table {
         out
     }
 }
+
 #[cfg(test)]
 mod truncate_around_tests {
     use super::*;
@@ -377,6 +378,7 @@ mod truncate_around_tests {
         assert!(out.contains("NEEDLE"), "trigger dropped: {out}");
     }
 }
+
 #[cfg(test)]
 mod width_tests {
     use super::*;
