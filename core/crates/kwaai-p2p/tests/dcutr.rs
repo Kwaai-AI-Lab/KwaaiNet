@@ -145,6 +145,36 @@ async fn a_relayed_connection_is_upgraded_to_a_direct_one() {
         direct.addr
     );
 
+    // And it must be *reported* as punched, not merely be direct. This flag is
+    // the only thing distinguishing "there was no NAT in the way" from "a NAT
+    // was traversed", and it is what the GUI renders as `p2p` rather than
+    // `direct`. The service sets it from the dcutr event, which arrives after
+    // the `ConnectionEstablished` that registers the connection — assert it
+    // rather than trusting that ordering to hold across a libp2p upgrade.
+    let punched = eventually("the upgraded connection to be flagged dcutr", || async {
+        let peers = bob.list_peers().await.ok()?;
+        peers.into_iter().find(|p| p.peer_id == alice_id && p.dcutr)
+    })
+    .await;
+    assert!(
+        !kwaai_p2p::is_circuit(&punched.addr),
+        "the dcutr-flagged connection should be the direct one: {}",
+        punched.addr
+    );
+
+    // The circuit it replaced is retired. Leaving it up is what made hole
+    // punching pointless in practice: new substreams keep landing on whichever
+    // connection libp2p picks, so kad and identify carry on over the relay, the
+    // punched path sits idle, and the idle timeout reaps it inside a minute.
+    eventually("the relayed path to be closed", || async {
+        let peers = alice.list_peers().await.ok()?;
+        peers
+            .iter()
+            .all(|p| p.peer_id != bob_id || !kwaai_p2p::is_circuit(&p.addr))
+            .then_some(())
+    })
+    .await;
+
     // Alice sees Bob too, and by a peer id she was never given out of band.
     eventually("alice to see bob", || async {
         let peers = alice.list_peers().await.ok()?;

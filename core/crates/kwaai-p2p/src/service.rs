@@ -1773,6 +1773,47 @@ impl NetworkService {
                             conn.dcutr = true;
                         }
                     }
+
+                    // Retire the circuit the punch just replaced.
+                    //
+                    // Nothing migrates traffic onto a newly punched connection:
+                    // libp2p opens each new substream on whichever connection
+                    // it picks, and kad, identify and ping keep flowing over
+                    // the relay that was already carrying them. The direct path
+                    // therefore sits idle and `idle_connection_timeout` reaps
+                    // it — measured in the nat-test bed at ~50s from punch to
+                    // `cause=KeepAlive`, after which the peer reads as relayed
+                    // again. Hole punching worked and left nothing behind.
+                    //
+                    // Closing the circuit leaves one path, which then carries
+                    // the traffic that keeps it alive. That is what a relay is
+                    // for: introduction, not carriage — the same reason
+                    // `relay::Config` defaults a circuit to 128 KiB / 2 min.
+                    let circuits: Vec<ConnectionId> = self
+                        .connections
+                        .get(&remote_peer_id)
+                        .map(|conns| {
+                            conns
+                                .iter()
+                                .filter(|(id, c)| {
+                                    // `via` is what identifies an *inbound*
+                                    // relayed connection: its `addr` is a bare
+                                    // `/p2p/<peer>` with no circuit component.
+                                    **id != connection_id
+                                        && (is_circuit(&c.addr) || c.via.is_some())
+                                })
+                                .map(|(id, _)| *id)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for id in circuits {
+                        if self.swarm.close_connection(id) {
+                            debug!(
+                                peer = %remote_peer_id, ?id,
+                                "closing the relayed path the punch replaced"
+                            );
+                        }
+                    }
                 }
                 // Info, not debug: "no hole punch has ever happened" and "every
                 // hole punch fails" look identical from the outside, and the
