@@ -68,11 +68,13 @@ cargo test -p kwaai-p2p
 
 | File | Description |
 |------|-------------|
-| `kwaai-p2p/src/network.rs` | libp2p swarm, behaviour, event loop |
-| `kwaai-p2p/src/dht.rs` | Kademlia DHT operations, find/put record |
-| `kwaai-p2p/src/hivemind.rs` | Hivemind DHT wire format compatibility |
+| `kwaai-p2p/src/service.rs` | `NetworkService` — owns the swarm and its event loop |
+| `kwaai-p2p/src/behaviour.rs` | The composed libp2p `NetworkBehaviour` |
+| `kwaai-p2p/src/handle.rs` | `NetworkHandle` — clonable facade over the swarm task |
+| `kwaai-p2p/src/dht_service.rs` | Native hivemind DHT serving: `rpc_ping` / `rpc_store` / `rpc_find` |
+| `kwaai-p2p/src/unary.rs` | Hivemind unary RPC as a `NetworkBehaviour` |
 | `kwaai-p2p/src/transport.rs` | Transport stack, relay, Yamux |
-| `kwaai-p2p/src/protocol.rs` | RPC protocol definitions |
+| `kwaai-hivemind-dht/src/protocol.rs` | Hivemind wire format (Ext64 msgpack) and RPC definitions |
 | `kwaai-cli/src/node.rs` | DHT announcement, `DHTServerInfo::to_msgpack()` |
 | `kwaai-cli/src/p2p_cmd.rs` | `kwaainet p2p` command handlers |
 

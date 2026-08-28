@@ -1,0 +1,146 @@
+[
+  {
+    "kb": "RFCs",
+    "chunks": 6544,
+    "char_spaced": 4454,
+    "reference_like": 87,
+    "boilerplate": 0,
+    "clean": 2003,
+    "clean_rate": 0.306
+  },
+  {
+    "kb": "Climate",
+    "chunks": 2747,
+    "char_spaced": 225,
+    "reference_like": 335,
+    "boilerplate": 291,
+    "clean": 1896,
+    "clean_rate": 0.69
+  },
+  {
+    "kb": "DreamMem",
+    "chunks": 2254,
+    "char_spaced": 0,
+    "reference_like": 569,
+    "boilerplate": 12,
+    "clean": 1673,
+    "clean_rate": 0.742
+  },
+  {
+    "kb": "DeepSea",
+    "chunks": 1886,
+    "char_spaced": 0,
+    "reference_like": 385,
+    "boilerplate": 78,
+    "clean": 1423,
+    "clean_rate": 0.755
+  },
+  {
+    "kb": "CountryHistory",
+    "chunks": 18754,
+    "char_spaced": 0,
+    "reference_like": 1234,
+    "boilerplate": 1754,
+    "clean": 15766,
+    "clean_rate": 0.841
+  },
+  {
+    "kb": "NIST",
+    "chunks": 3934,
+    "char_spaced": 21,
+    "reference_like": 306,
+    "boilerplate": 4,
+    "clean": 3603,
+    "clean_rate": 0.916
+  },
+  {
+    "kb": "PythonDocs",
+    "chunks": 3783,
+    "char_spaced": 284,
+    "reference_like": 1,
+    "boilerplate": 0,
+    "clean": 3498,
+    "clean_rate": 0.925
+  },
+  {
+    "kb": "OSMDocs",
+    "chunks": 672,
+    "char_spaced": 24,
+    "reference_like": 15,
+    "boilerplate": 0,
+    "clean": 633,
+    "clean_rate": 0.942
+  },
+  {
+    "kb": "Astrophysics",
+    "chunks": 5638,
+    "char_spaced": 29,
+    "reference_like": 252,
+    "boilerplate": 9,
+    "clean": 5348,
+    "clean_rate": 0.949
+  },
+  {
+    "kb": "Manhattan",
+    "chunks": 773,
+    "char_spaced": 0,
+    "reference_like": 19,
+    "boilerplate": 5,
+    "clean": 749,
+    "clean_rate": 0.969
+  },
+  {
+    "kb": "Legal",
+    "chunks": 3723,
+    "char_spaced": 0,
+    "reference_like": 73,
+    "boilerplate": 0,
+    "clean": 3650,
+    "clean_rate": 0.98
+  },
+  {
+    "kb": "Poems",
+    "chunks": 28742,
+    "char_spaced": 0,
+    "reference_like": 322,
+    "boilerplate": 2,
+    "clean": 28418,
+    "clean_rate": 0.989
+  },
+  {
+    "kb": "D6",
+    "chunks": 1152,
+    "char_spaced": 0,
+    "reference_like": 0,
+    "boilerplate": 3,
+    "clean": 1149,
+    "clean_rate": 0.997
+  },
+  {
+    "kb": "MobyDick",
+    "chunks": 15018,
+    "char_spaced": 9,
+    "reference_like": 1,
+    "boilerplate": 1,
+    "clean": 15007,
+    "clean_rate": 0.999
+  },
+  {
+    "kb": "Meetings",
+    "chunks": 1914,
+    "char_spaced": 0,
+    "reference_like": 0,
+    "boilerplate": 0,
+    "clean": 1914,
+    "clean_rate": 1.0
+  },
+  {
+    "kb": "WarPeace",
+    "chunks": 6451,
+    "char_spaced": 0,
+    "reference_like": 0,
+    "boilerplate": 0,
+    "clean": 6451,
+    "clean_rate": 1.0
+  }
+]

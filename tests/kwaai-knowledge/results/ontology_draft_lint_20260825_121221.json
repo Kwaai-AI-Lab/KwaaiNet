@@ -1,0 +1,73 @@
+[
+  {
+    "kb": "Legal",
+    "domain": "US Supreme Court Law",
+    "entity_types": 9,
+    "relation_types": 12,
+    "grounding_kept_rate": 1.0,
+    "dupes": [],
+    "vague": [
+      "has_effect"
+    ],
+    "reused_evidence_count": 3,
+    "range_collapse": 0.25,
+    "usable_score": 0.917,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 1,
+      "reused_evidence": 3,
+      "range_collapse": 0.25
+    }
+  },
+  {
+    "kb": "Astrophysics",
+    "domain": "Space Exploration and Astronomy",
+    "entity_types": 7,
+    "relation_types": 10,
+    "grounding_kept_rate": 0.944,
+    "dupes": [],
+    "vague": [
+      "has_effect",
+      "is_related_to"
+    ],
+    "reused_evidence_count": 4,
+    "range_collapse": 0.3,
+    "usable_score": 0.85,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 2,
+      "reused_evidence": 4,
+      "range_collapse": 0.3
+    }
+  },
+  {
+    "kb": "Climate",
+    "domain": "Climate Science",
+    "entity_types": 9,
+    "relation_types": 15,
+    "grounding_kept_rate": 1.0,
+    "dupes": [
+      "contributes_to",
+      "affects",
+      "influences",
+      "exceeds",
+      "triggers",
+      "reduces"
+    ],
+    "vague": [
+      "affects",
+      "influences",
+      "affects",
+      "influences"
+    ],
+    "reused_evidence_count": 3,
+    "range_collapse": 0.467,
+    "usable_score": 0.735,
+    "penalties": {
+      "duplicate_predicates": 6,
+      "vague_predicates": 4,
+      "reused_evidence": 3,
+      "range_collapse": 0.47
+    }
+  }
+]

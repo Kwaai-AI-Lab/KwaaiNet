@@ -1,0 +1,139 @@
+
+metric                          D6_ctl         D6_narr   delta
+------------------------------------------------------------------------
+entities                           332             252   -80
+relations                          277             194   -83
+ent_types                           10              16   +6
+rel_types                           47              88   +41
+density (rel/ent)               0.8343          0.7698   -0.0645
+escape rate                      17.3%            5.2%   -12.2pp
+kinship rate                     35.4%           18.6%   -16.8pp
+
+── predictions (testplan §4)
+  1 Address populates & splits from Place  : PASS  (Address=11, Place=28)
+  2 Doctrine populates                     : PASS  (3)
+  3 escape-hatch falls                     : PASS  17.3% -> 5.2%
+  4 density does not collapse (>=70% ctl)  : PASS  0.8343 -> 0.7698
+  5 kinship unharmed (>=80% of control)    : FAIL  98 -> 36 edges
+
+── entity types only the ontology arm produced
+    Place                      28   e.g. District Six, Windermere, Empire, Genadendal
+    PoliticalOrganization      24   e.g. ANC, Chinese Nationalists, Kuomintang Party, Non-European Un
+    Venue                      14   e.g. British Newspaper Library, Nash, National Gandhi Museum, Cit
+    Address                    11   e.g. Cannon Street, Kloof Street, Darling St, Caledon Street
+    Language                    8   e.g. Integral Calculus, Latin, Mathematics, Trigonometry
+    EducationalInstitution      5   e.g. Trafalgar Junior School, Chapel Street Primary, Habibia Inst
+    RacialClassification        4   e.g. Kaffir, American, Non Europeans, West Indian
+    Community                   3   e.g. Gool family, Port Elizabeth Indians, German Working Class
+    Quotation                   3   e.g. Preface, Lest We Forget, Eve's nightingale
+    Doctrine                    3   e.g. Marxist Trotskyists, Train Apartheid, Kiesian
+    Legislation                 3   e.g. Majesty's Penal Service, Senior Certificate, Health Departme
+    HistoricalEvent             2   e.g. Great War, Flu
+    SportsClub                  1   e.g. Dukes
+
+── predicates only the ontology arm produced
+    lived_at                   15
+    fostered_by                 6
+    taught_by                   5
+    opposed                     3
+    segregated lives            2
+    coped_with                  2
+    migrated_to                 2
+    addressed                   2
+    saw                         2
+    affiliated_with             2
+    honoured                    2
+    friend_of                   2
+    founded_by                  2
+    believes_in                 1
+    spoke_to                    1
+    disagreed_with              1
+    located_at                  1
+    aimed_to_change             1
+    was_defenestrated_at        1
+    supported                   1
+    location                    1
+    nursed_by                   1
+    travelled_in                1
+    hosted                      1
+    headmaster_of               1
+    forced_to_obey              1
+    authored                    1
+    hoped_to_form_coalition_with    1
+    title                       1
+    belongs_to_community        1
+    applied_to                  1
+    staying behind              1
+    published_by                1
+    had_prior_knowledge_of      1
+    departed_from               1
+    delivered_at                1
+    worked_in                   1
+    switched_off                1
+    distributed                 1
+    taught_at                   1
+    sent_letter_to              1
+    transported_by              1
+    liberal atmosphere          1
+    follower_of                 1
+    wrote                       1
+    read                        1
+    handed_over_to              1
+    will be joining             1
+    photographed_by             1
+    wrote_preface_for           1
+    invaded                     1
+    visited_with                1
+    gazed_at                    1
+    dropped_off                 1
+    was_seated_with             1
+    resigned_under              1
+    acquaintance_of             1
+    worked_for                  1
+    passed_ball_to              1
+    promised_to_join            1
+    headed                      1
+    reported_in                 1
+    advocated_by                1
+    father_of                   1
+    spoke_with                  1
+    love_of                     1
+    advocates                   1
+    honored_by                  1
+    recommended                 1
+    immigrated_to               1
+    classified_as               1
+    transported_to              1
+
+── predicates the ontology arm stopped producing
+    works_at                   13
+    related_to                 12
+    sibling_of                 10
+    located_in                  7
+    described_in                3
+    cites                       3
+    lives_in                    3
+    attended                    3
+    created                     2
+    managed_by                  2
+    commented_on                1
+    part_of                     1
+    manages                     1
+    colleague_of                1
+    was_defenestrated_from      1
+    belongs_to                  1
+    opposes                     1
+    worked_at                   1
+    supports                    1
+    managed                     1
+    similar_to                  1
+    left_behind                 1
+    foster_sibling_of           1
+    nickname_of                 1
+    excluded                    1
+    target_of                   1
+    honoured_by                 1
+    cited_by                    1
+    was_with                    1
+    used                        1
+    cited                       1

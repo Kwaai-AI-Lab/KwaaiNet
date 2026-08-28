@@ -1345,6 +1345,11 @@ pub enum RagAction {
         #[arg(long, value_name = "TYPES")]
         entity_types: Option<String>,
 
+        /// Restrict extraction to these relation types (comma-separated).
+        /// See `graph build --relation-types`.
+        #[arg(long, value_name = "TYPES")]
+        relation_types: Option<String>,
+
         /// Skip relation extraction entirely (recommended for 8B models — precision too low).
         #[arg(long)]
         no_relations: bool,
@@ -1712,8 +1717,13 @@ pub enum GraphAction {
         name: String,
     },
 
-    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards
+    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards.
+    /// The KB's ontology, entity schemas and document metadata are preserved; use --all to drop those too.
     Clear {
+        /// Also drop the ontology, entity schemas and document metadata
+        #[arg(long)]
+        all: bool,
+
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
@@ -1755,6 +1765,14 @@ pub enum GraphAction {
         /// Default: all 15 types.
         #[arg(long, value_name = "TYPES")]
         entity_types: Option<String>,
+
+        /// Restrict extraction to these relation types (comma-separated).
+        /// The relation half of a per-KB ontology; without it every KB is
+        /// offered the same 35 predicates, 14 of which are kinship.
+        /// Example: --relation-types "participated_in,commanded,occurred_at"
+        /// Default: all 35 types.
+        #[arg(long, value_name = "TYPES")]
+        relation_types: Option<String>,
 
         /// Skip relation extraction entirely (entities only).
         #[arg(long)]
@@ -2279,6 +2297,21 @@ pub enum GraphAction {
 
 #[derive(Subcommand)]
 pub enum SchemaAction {
+    /// Load a full ontology (entity types, relation types with domain/range,
+    /// axioms, lexical markers and triggers) from a YAML file.
+    ///
+    /// This is the whole knowledge schema for a corpus, replacing compiled-in
+    /// defaults for that KB only. KBs without one are unaffected.
+    Load {
+        /// Path to the ontology YAML file
+        #[arg(long, value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Knowledge base name
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+
     /// Load entity type schemas from a YAML file into the KB.
     ///
     /// The YAML file must have a top-level `entity_type_schemas:` list. Each entry has:

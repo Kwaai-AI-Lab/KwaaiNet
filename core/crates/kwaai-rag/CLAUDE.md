@@ -17,6 +17,16 @@ hybrid BM25+vector retrieval, dream (iterative self-RAG), and eval harness.
 | `src/embedder.rs` | `EmbedClient` |
 | `src/eval_retrieve.rs` | Eval harness |
 | `src/family.rs` | Family tree YAML seed injection |
+| `src/ontology.rs` | Per-KB knowledge schema: entity/relation types, axioms, markers, triggers |
+| `src/axiom_extract.rs` | Phases 1–3 of extraction: deterministic candidate typing, no LLM |
+| `src/relation_extract.rs` | Relation candidate classification, trigger tables, axiom validation |
+| `src/mentions.rs` | Per-chunk mention resolution (pronouns, aliases, definite descriptions) |
+| `src/scorer.rs` | Graph completeness scoring — the three pillars |
+| `src/bm25.rs` | Tantivy BM25 index for the keyword half of hybrid retrieval |
+| `src/sequence.rs` | Timeline events and cross-entity interactions |
+
+Thirty-odd modules in total; these are the ones worth reading first. Vocabulary
+is defined once in [`projects/kwaai-knowledge/GLOSSARY.md`](../../../projects/kwaai-knowledge/GLOSSARY.md).
 
 ## Build
 

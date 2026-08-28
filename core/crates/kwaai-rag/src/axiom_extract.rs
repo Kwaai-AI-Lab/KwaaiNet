@@ -24,6 +24,8 @@ pub enum ClassificationMethod {
     PublicationMarker,
     GeoMarker,
     GliNERHint,
+    /// Typed by a marker declared in the KB's own ontology.
+    OntologyMarker,
     Unknown,
 }
 
@@ -38,6 +40,7 @@ impl ClassificationMethod {
             Self::PublicationMarker => "PublicationMarker",
             Self::GeoMarker => "GeoMarker",
             Self::GliNERHint => "GliNERHint",
+            Self::OntologyMarker => "OntologyMarker",
             Self::Unknown => "Unknown",
         }
     }
@@ -139,6 +142,44 @@ const GEO_MARKERS_ANY: &[&str] = &[
 /// once from the GraphStore before the spawn loop so tasks never hold the graph lock.
 ///
 /// Rules are applied in priority order; first match wins.
+/// Ontology-aware classification. A KB whose ontology declares markers for a
+/// type gets those first; anything unmatched falls through to the compiled
+/// tables below, so KBs without an ontology are unaffected.
+///
+/// The compiled tables are Cape Town's: GEO_MARKERS_ANY contains "cape", "nek"
+/// and "flats", PUBLICATION_MARKERS_ANY contains "argus" and "opinion" (from
+/// Cape Argus and Indian Opinion). They also conflate street with settlement,
+/// which is why a corpus whose strongest signal is street addresses has no type
+/// to put them in.
+pub fn classify_candidates_with_ontology(
+    candidates: &[String],
+    entity_snapshot: &HashMap<String, String>,
+    gliner_hints: &[String],
+    ont: Option<&crate::ontology::OntologyIndex>,
+) -> Vec<TypedCandidate> {
+    let mut out = classify_candidates_axiomatic(candidates, entity_snapshot, gliner_hints);
+    let Some(o) = ont else { return out };
+    if o.is_empty() {
+        return out;
+    }
+    for c in out.iter_mut() {
+        // Only improve on an unknown or lower-confidence compiled guess; a
+        // known-entity graph hit still outranks a lexical marker.
+        if c.method == ClassificationMethod::KnownEntity {
+            continue;
+        }
+        if let Some((ty, conf)) = o.classify(&c.name) {
+            if c.entity_type.is_none() || conf > c.type_confidence {
+                c.entity_type = Some(ty.to_string());
+                c.type_confidence = conf;
+                c.composite_confidence = conf * c.mention_confidence;
+                c.method = ClassificationMethod::OntologyMarker;
+            }
+        }
+    }
+    out
+}
+
 pub fn classify_candidates_axiomatic(
     candidates: &[String],
     entity_snapshot: &HashMap<String, String>,

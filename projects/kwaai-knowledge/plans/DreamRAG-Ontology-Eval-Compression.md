@@ -276,6 +276,10 @@ ontology worth compressing against.
    `graph.rs` constants into `ontology.yaml`, with D6's existing schemas as the
    first instance and the current kinship set as the `memoir` default. Mechanical,
    unblocks everything else.
+   → Planned in detail in [`PerKBOntology-plan.md`](./PerKBOntology-plan.md)
+   (2026-08-25), which also corrects the vocabulary description in "The
+   correction that starts this" above: the 14-kinship list is
+   `PERSON_RELATION_TYPES`/`FAMILIAL_RELS`; the general `RELATION_TYPES` set is 35.
 2. **Build the question generator** — corpus-grounded, tiered, with a grounding
    check. Validate it by regenerating D6's set and confirming it reproduces
    comparable scores to the hand-written one.
@@ -665,6 +669,14 @@ deleted valid D6 relations.
 **Read first:** the ontology-learning comparison, because it tests our core
 premise, and AutoSchemaKG, because induction is the only route that scales to
 fifteen heterogeneous KBs.
+
+**Extended 2026-08-25** — a scan of open-source *systems* (not just papers) that
+determine which ontology fits a document is in
+[`PerKBOntology-plan.md` §8](./PerKBOntology-plan.md#8-prior-art). Headline: no
+mature domain-agnostic detector exists; the only production-grade one (NCBO
+Ontology Recommender) is biomedical. The field's answer is induce-then-ratify,
+and Microsoft GraphRAG's auto prompt tuning is the cleanest reference
+implementation.
 
 ## Dynamic evaluation
 

@@ -1,0 +1,172 @@
+<title>DreamRAG Lexicon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+  :root{
+    --paper:#f7f7f8; --surface:#ffffff; --sunk:#f0f0f3;
+    --ink:#171820; --ink-2:#3c3e4d; --muted:#6b6d7c;
+    --rule:#e0e0e6; --rule-2:#eeeef2;
+    --accent:#3b4a8c; --accent-soft:#e8eaf5;
+    --warn:#8a5a2b; --warn-soft:#f7efe5;
+    --shadow:0 1px 2px rgba(23,24,32,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14151b; --surface:#1b1c24; --sunk:#212230;
+      --ink:#e9e9ef; --ink-2:#bcbdc9; --muted:#8b8d9c;
+      --rule:#2d2e3a; --rule-2:#24252f;
+      --accent:#96a4e8; --accent-soft:#232741;
+      --warn:#d59a5e; --warn-soft:#2e2418;
+      --shadow:0 1px 2px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14151b; --surface:#1b1c24; --sunk:#212230;
+    --ink:#e9e9ef; --ink-2:#bcbdc9; --muted:#8b8d9c;
+    --rule:#2d2e3a; --rule-2:#24252f;
+    --accent:#96a4e8; --accent-soft:#232741;
+    --warn:#d59a5e; --warn-soft:#2e2418;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Source Serif 4",Georgia,serif; font-size:16.5px; line-height:1.62;
+    -webkit-font-smoothing:antialiased}
+  h1,h2,dt,.ui,input,nav{font-family:"IBM Plex Sans",system-ui,sans-serif}
+  code{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace; font-size:.86em;
+    background:var(--sunk); padding:1px 5px; border-radius:3px; color:var(--ink)}
+  a{color:var(--accent)}
+
+  .wrap{max-width:1140px; margin:0 auto; padding:0 24px}
+  .layout{display:grid; grid-template-columns:224px minmax(0,1fr); gap:52px; align-items:start}
+  @media (max-width:880px){ .layout{grid-template-columns:1fr; gap:20px} }
+
+  header.top{background:var(--surface); border-bottom:1px solid var(--rule)}
+  .top-in{display:flex; flex-direction:column; gap:14px; padding:40px 0 28px}
+  .eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.15em;
+    text-transform:uppercase; color:var(--accent)}
+  h1{margin:0; font-size:clamp(29px,4.2vw,42px); font-weight:600; letter-spacing:-.02em;
+    line-height:1.08; text-wrap:balance}
+  .lede{margin:0; max-width:62ch; color:var(--ink-2); font-size:18px}
+
+  /* The pipeline is a sequence; drawing it as one is information, not decoration. */
+  .flow{display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin-top:4px;
+    font-family:"IBM Plex Mono",monospace; font-size:12px}
+  .flow span{background:var(--accent-soft); color:var(--accent); padding:5px 11px;
+    border-radius:3px; white-space:nowrap}
+  .flow i{color:var(--muted); font-style:normal}
+
+  .search{position:relative; margin-top:6px; max-width:400px}
+  .search input{width:100%; padding:9px 12px 9px 32px; font-size:14px;
+    border:1px solid var(--rule); border-radius:5px; background:var(--paper);
+    color:var(--ink)}
+  .search input:focus{outline:2px solid var(--accent); outline-offset:-1px; border-color:transparent}
+  .search svg{position:absolute; left:10px; top:11px; width:14px; height:14px;
+    stroke:var(--muted); fill:none; stroke-width:2}
+  .count{margin-left:10px; font-size:13px; color:var(--muted);
+    font-family:"IBM Plex Sans",sans-serif}
+
+  nav.rail{position:sticky; top:20px; padding:30px 0}
+  @media (max-width:880px){ nav.rail{position:static; padding:14px 0} }
+  nav.rail ul{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px}
+  nav.rail a{display:flex; align-items:baseline; gap:9px; text-decoration:none;
+    color:var(--ink-2); font-size:13.5px; padding:5px 8px; border-radius:4px}
+  nav.rail a:hover{background:var(--sunk); color:var(--ink)}
+  nav.rail a:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  nav.rail .n{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--muted);
+    min-width:12px}
+  nav.rail .ct{margin-left:auto; font-family:"IBM Plex Mono",monospace; font-size:10.5px;
+    color:var(--muted)}
+
+  main{padding:30px 0 90px}
+  section{margin-bottom:46px; scroll-margin-top:18px}
+  h2{margin:0 0 6px; font-size:21px; font-weight:600; letter-spacing:-.01em;
+    display:flex; align-items:baseline; gap:11px; padding-bottom:9px;
+    border-bottom:1px solid var(--rule)}
+  h2 .num{font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--accent);
+    font-weight:500}
+  p.pre{margin:12px 0 0; color:var(--muted); font-size:15px; max-width:70ch}
+
+  dl{margin:18px 0 0}
+  .term{padding:13px 0; border-bottom:1px solid var(--rule-2)}
+  .term:last-child{border-bottom:none}
+  dt{font-size:15px; font-weight:600; color:var(--ink); display:flex;
+    align-items:baseline; gap:10px; flex-wrap:wrap}
+  dd{margin:5px 0 0; color:var(--ink-2); max-width:74ch}
+  .src{font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:400;
+    color:var(--muted)}
+  .src code{background:none; padding:0; font-size:inherit; color:inherit}
+  .caveat{margin:8px 0 0; padding:8px 12px; background:var(--warn-soft);
+    border-left:2px solid var(--warn); border-radius:0 4px 4px 0;
+    font-size:14.5px; color:var(--ink-2)}
+  .caveat::before{content:"Caveat "; font-family:"IBM Plex Mono",monospace;
+    font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--warn)}
+  ol.reading{margin:16px 0 0; padding-left:22px; color:var(--ink-2); max-width:74ch}
+  ol.reading li{margin-bottom:9px}
+  /* The "not CLAUDE.md" note is a redirection, not an aside — give it weight. */
+  p.note{margin:16px 0 0; padding:11px 14px; background:var(--accent-soft);
+    border-left:2px solid var(--accent); border-radius:0 4px 4px 0;
+    color:var(--ink-2); font-size:15px; max-width:74ch}
+
+  .hidden{display:none}
+  .empty{color:var(--muted); font-style:italic; padding:20px 0}
+  footer{border-top:1px solid var(--rule); padding:24px 0 60px; color:var(--muted);
+    font-size:14px}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="top">
+  <div class="wrap top-in">
+    <span class="eyebrow">kwaai-rag · reference</span>
+    <h1>DreamRAG Lexicon</h1>
+    <p class="lede">The vocabulary of KwaaiNet's retrieval and knowledge-graph
+    system, for newcomers and contributors. Grouped by where each term appears in
+    the pipeline rather than alphabetically, so it can be read straight through as
+    the shape of the system.</p>
+    <div class="flow">
+      <span>ingest</span><i>→</i><span>chunk</span><i>→</i><span>embed</span><i>→</i>
+      <span>extract</span><i>→</i><span>dream</span><i>→</i><span>retrieve</span><i>→</i>
+      <span>answer</span><i>→</i><span>evaluate</span>
+    </div>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+      <input id="q" type="search" placeholder="Filter {{TOTAL}} terms…"
+             aria-label="Filter terms" autocomplete="off">
+    </div>
+  </div>
+</header>
+
+<div class="wrap layout">
+  <nav class="rail"><ul><!--NAV--></ul></nav>
+  <main><!--BODY--><p class="empty hidden" id="none">No term matches that.</p></main>
+</div>
+
+<footer class="wrap">
+  Source of truth is <code>projects/kwaai-knowledge/GLOSSARY.md</code>; this page is
+  generated from it by <code>build_glossary_artifact.py</code>. Every code-level
+  claim was checked against the crate before publishing.
+</footer>
+
+<script>
+  // A glossary is searched, not read start to finish. Filtering hides
+  // non-matching terms and any section left empty.
+  const q = document.getElementById('q');
+  const terms = [...document.querySelectorAll('.term')];
+  const secs = [...document.querySelectorAll('section')];
+  const none = document.getElementById('none');
+  q.addEventListener('input', () => {
+    const v = q.value.trim().toLowerCase();
+    let shown = 0;
+    terms.forEach(t => {
+      const hit = !v || t.dataset.t.includes(v);
+      t.classList.toggle('hidden', !hit);
+      if (hit) shown++;
+    });
+    secs.forEach(s => {
+      const any = [...s.querySelectorAll('.term')].some(t => !t.classList.contains('hidden'));
+      s.classList.toggle('hidden', Boolean(v) && !any);
+    });
+    none.classList.toggle('hidden', shown > 0);
+  });
+</script>

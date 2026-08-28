@@ -177,6 +177,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
             doc_meta,
             doc_schema,
             entity_types,
+            relation_types,
             no_relations,
             timeline,
             graph_window,
@@ -198,6 +199,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 doc_meta,
                 doc_schema,
                 entity_types,
+                relation_types,
                 no_relations,
                 timeline,
                 graph_window,
@@ -660,6 +662,7 @@ async fn cmd_ingest(
                 model: extraction_model.clone(),
                 workers: 1,
                 entity_types: vec![],
+                relation_types: vec![],
                 no_relations: false,
                 context_window: 1,
                 gliner_client: None,
@@ -2006,6 +2009,7 @@ async fn cmd_rebuild(
     doc_meta: Option<std::path::PathBuf>,
     doc_schema: Option<std::path::PathBuf>,
     entity_types: Option<String>,
+    relation_types: Option<String>,
     no_relations: bool,
     timeline: bool,
     graph_window: usize,
@@ -2102,6 +2106,7 @@ async fn cmd_rebuild(
                 workers,
                 inference_urls: Some(inference_urls),
                 entity_types,
+                relation_types,
                 // When Phase 4 is requested (relation_threshold_high > 0), force
                 // no_relations here too: ALL relation extraction (legacy
                 // boolean-gate AND Phase 4 axiomatic) must defer to step 5.5b/5.5,
@@ -2670,6 +2675,7 @@ async fn run_sync_pass(
                     model: extraction_model.clone(),
                     workers: 1,
                     entity_types: vec![],
+                    relation_types: vec![],
                     no_relations: false,
                     context_window: 1,
                     gliner_client: None,
@@ -2853,7 +2859,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 }
             }
 
-            GraphAction::Clear { yes } => {
+            GraphAction::Clear { yes, all } => {
                 if !yes {
                     print!("  Wipe the knowledge graph for '{kb}'? [y/N] ");
                     io::stdout().flush().ok();
@@ -2864,16 +2870,27 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         return Ok(());
                     }
                 }
-                // Delete the graph DB file so it is recreated fresh on next open.
-                let graph_path = rag_cfg.data_dir().join(format!("graph-{}.db", tenant_id));
-                if graph_path.exists() {
-                    std::fs::remove_file(&graph_path)
-                        .with_context(|| format!("deleting {}", graph_path.display()))?;
+                // Wipe entities and relations but keep the KB's schema. Deleting
+                // the file also discarded the ontology, entity schemas and doc
+                // metadata, so a clear-then-rebuild silently produced a graph
+                // built from a different vocabulary. `--all` is the full reset.
+                let mut store = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                let had_ontology = store.ontology().is_some();
+                if all {
+                    store.clear_all().context("clearing graph and schema")?;
+                    print_success(&format!("Knowledge graph and schema for '{kb}' cleared."));
+                } else {
+                    store.clear_graph_data().context("clearing graph")?;
+                    print_success(&format!(
+                        "Knowledge graph for '{kb}' cleared. Run `kwaainet rag graph build --kb {kb}` to rebuild."
+                    ));
+                    if had_ontology {
+                        print_info(
+                            "  Ontology and entity schemas preserved (use --all to drop them).",
+                        );
+                    }
                 }
-                print_success(&format!(
-                    "Knowledge graph for '{}' cleared. Run `kwaainet rag graph build --kb {}` to rebuild.",
-                    kb, kb
-                ));
             }
 
             GraphAction::Build {
@@ -2884,6 +2901,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 workers,
                 inference_urls,
                 entity_types,
+                relation_types,
                 no_relations,
                 graph_window,
                 reset_graph,
@@ -2909,6 +2927,17 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         s.split(',')
                             .map(|u| u.trim().to_string())
                             .filter(|u| !u.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Parse --relation-types into a Vec<String>
+                let parsed_relation_types: Vec<String> = relation_types
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty())
                             .collect()
                     })
                     .unwrap_or_default();
@@ -3019,6 +3048,13 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if !parsed_entity_types.is_empty() {
                     println!("  Entity types:      {}", parsed_entity_types.join(", "));
                 }
+                if !parsed_relation_types.is_empty() {
+                    println!(
+                        "  Relation types:    {} ({})",
+                        parsed_relation_types.len(),
+                        parsed_relation_types.join(", ")
+                    );
+                }
                 if no_relations {
                     println!("  Relations:         disabled");
                 }
@@ -3059,6 +3095,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     model,
                     workers: effective_workers,
                     entity_types: parsed_entity_types,
+                    relation_types: parsed_relation_types,
                     no_relations,
                     context_window: graph_window,
                     gliner_client,
@@ -7126,8 +7163,11 @@ pub(crate) enum RelationVerifyOutcome {
 /// lexical classifier for these candidates.
 fn build_relation_verify_prompt(
     candidates: &[kwaai_rag::relation_extract::TypedRelationCandidate],
+    ont: Option<&kwaai_rag::ontology::OntologyIndex>,
 ) -> String {
-    let allowed = kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES.join(", ");
+    // The retype menu must be this corpus's predicates, or the LLM is invited to
+    // "correct" a climate relation into a kinship one.
+    let allowed = kwaai_rag::relation_extract::in_scope_relation_types(ont).join(", ");
     let items = candidates
         .iter()
         .enumerate()
@@ -7177,9 +7217,10 @@ fn build_relation_verify_prompt(
 ///   or names a `retype_as` outside `IN_SCOPE_RELATION_TYPES` → `Rejected`, same
 ///   conservative default as before (the LLM did respond, just didn't clearly
 ///   confirm this one).
-fn parse_relation_verify_response(
+fn parse_relation_verify_response_scoped(
     raw: &str,
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
+    in_scope: &[String],
 ) -> Vec<(
     kwaai_rag::relation_extract::TypedRelationCandidate,
     RelationVerifyOutcome,
@@ -7222,10 +7263,7 @@ fn parse_relation_verify_response(
             let outcome = match verdicts.get(&idx) {
                 Some(v) if v.verdict == "confirm" => RelationVerifyOutcome::Confirmed,
                 Some(v) if v.verdict == "retype" => match v.retype_as.as_deref() {
-                    Some(new_type)
-                        if kwaai_rag::relation_extract::IN_SCOPE_RELATION_TYPES
-                            .contains(&new_type) =>
-                    {
+                    Some(new_type) if in_scope.iter().any(|t| t == new_type) => {
                         c.relation_type = new_type.to_string();
                         RelationVerifyOutcome::Retyped
                     }
@@ -7247,14 +7285,16 @@ pub(crate) async fn verify_relation_candidates_llm(
     candidates: Vec<kwaai_rag::relation_extract::TypedRelationCandidate>,
     inference_url: &str,
     model: &str,
+    ont: Option<&kwaai_rag::ontology::OntologyIndex>,
 ) -> Vec<(
     kwaai_rag::relation_extract::TypedRelationCandidate,
     RelationVerifyOutcome,
 )> {
     const BATCH_SIZE: usize = 20;
+    let in_scope = kwaai_rag::relation_extract::in_scope_relation_types(ont);
     let mut results = Vec::with_capacity(candidates.len());
     for batch in candidates.chunks(BATCH_SIZE) {
-        let prompt = build_relation_verify_prompt(batch);
+        let prompt = build_relation_verify_prompt(batch, ont);
         let raw = match call_llm_for_relations(inference_url, model, &prompt).await {
             Ok(r) => r,
             Err(e) => {
@@ -7266,7 +7306,7 @@ pub(crate) async fn verify_relation_candidates_llm(
                 String::new()
             }
         };
-        let batch_results = parse_relation_verify_response(&raw, batch.to_vec());
+        let batch_results = parse_relation_verify_response_scoped(&raw, batch.to_vec(), &in_scope);
         for (c, outcome) in &batch_results {
             tracing::info!(
                 "Phase 4 verify: \"{}\" [{}] \"{}\" (conf={:.2}) — {:?} — from: \"{}\"",
@@ -9327,8 +9367,8 @@ async fn extract_relations_axiomatic(
     threshold_low: f32,
 ) -> kwaai_rag::relation_extract::RelationAxiomaticRunMetrics {
     use kwaai_rag::relation_extract::{
-        classify_relation_candidates, split_relations_by_confidence, validate_relation_axioms,
-        RelationAxiomSnapshot, RelationAxiomaticMetricsAccum,
+        classify_relation_candidates, split_relations_by_confidence, RelationAxiomSnapshot,
+        RelationAxiomaticMetricsAccum,
     };
 
     let build_start = std::time::Instant::now();
@@ -9368,6 +9408,25 @@ async fn extract_relations_axiomatic(
     // Snapshot entity types + existing trusted relations once, before the spawn loop,
     // so worker tasks never hold the graph lock for the axiom pass — same precedent as
     // `ingestion.rs`'s `entity_snapshot`.
+    // Compile the KB's ontology once; workers share it. Without one, every
+    // ontology-aware call below falls through to the compiled tables.
+    let ontology: Arc<Option<kwaai_rag::ontology::OntologyIndex>> = Arc::new({
+        let g = graph.lock().unwrap();
+        g.ontology()
+            .cloned()
+            .filter(|o| !o.is_empty())
+            .map(kwaai_rag::ontology::OntologyIndex::build)
+    });
+    if let Some(o) = ontology.as_ref() {
+        print_info(&format!(
+            "  Ontology:          {} v{} ({} predicates, {} triggers)",
+            o.ontology().ontology.name,
+            o.ontology().ontology.version,
+            o.ontology().relation_types.len(),
+            o.ontology().triggers().len()
+        ));
+    }
+
     let snapshot = Arc::new({
         let g = graph.lock().unwrap();
         let mut entity_types = std::collections::HashMap::new();
@@ -9420,6 +9479,7 @@ async fn extract_relations_axiomatic(
         let graph = graph.clone();
         let meta = meta.clone();
         let snapshot = snapshot.clone();
+        let ontology = ontology.clone();
         let metrics = metrics.clone();
         let infer_urls = infer_urls.clone();
         let url_counter = url_counter.clone();
@@ -9492,7 +9552,11 @@ async fn extract_relations_axiomatic(
                 return Some(());
             }
             let generated = candidates.len();
-            let validated = validate_relation_axioms(candidates, &snapshot);
+            let validated = kwaai_rag::relation_extract::validate_relation_axioms_with_ontology(
+                candidates,
+                &snapshot,
+                ontology.as_ref().as_ref(),
+            );
             let demoted = validated
                 .iter()
                 .filter(|c| c.composite_confidence == 0.0)
@@ -9559,7 +9623,13 @@ async fn extract_relations_axiomatic(
                     infer_urls[idx].clone()
                 };
                 let llm_start = std::time::Instant::now();
-                let outcomes = verify_relation_candidates_llm(verify, &infer_url, &model).await;
+                let outcomes = verify_relation_candidates_llm(
+                    verify,
+                    &infer_url,
+                    &model,
+                    ontology.as_ref().as_ref(),
+                )
+                .await;
                 let llm_elapsed_ms = llm_start.elapsed().as_secs_f64() * 1000.0;
                 let (mut n_confirmed, mut n_rejected, mut n_retyped, mut n_call_failed) =
                     (0usize, 0usize, 0usize, 0usize);
@@ -10022,6 +10092,35 @@ async fn cmd_graph_schema(action: SchemaAction, kb: &str) -> Result<()> {
                         s.examples.len(),
                         s.anti_examples.len()
                     );
+                }
+            }
+
+            SchemaAction::Load { file, kb: _ } => {
+                let contents = std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading ontology {}", file.display()))?;
+                let ont = kwaai_rag::ontology::Ontology::from_yaml(&contents)
+                    .with_context(|| format!("parsing ontology {}", file.display()))?;
+                let mut store = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                store.set_ontology(&ont).context("storing ontology")?;
+                print_success(&format!(
+                    "Loaded ontology '{}' v{} into KB '{kb}'",
+                    ont.ontology.name, ont.ontology.version
+                ));
+                println!("  Entity types:    {}", ont.entity_types.len());
+                println!("  Relation types:  {}", ont.relation_types.len());
+                println!("  Trigger phrases: {}", ont.triggers().len());
+                println!("  Axioms:          {}", ont.axioms.len());
+                if !ont.streams.is_empty() {
+                    println!(
+                        "  Streams:         {} ({} skipped)",
+                        ont.streams.len(),
+                        ont.skipped_streams().len()
+                    );
+                }
+                match ont.fallback_predicate.as_deref() {
+                    Some(p) => println!("  Fallback:        {p}"),
+                    None => println!("  Fallback:        none — a vague edge is a bug here"),
                 }
             }
 

@@ -60,7 +60,7 @@ pub fn doc_exclusion_rule(document_titles: &[String]) -> String {
         "SOURCE DOCUMENT TITLES: {titles} — these are the titles of the works being analysed. \
          They are CreativeWork entities. Do NOT use them as the target of located_in, works_at, \
          part_of, or contains relations. When describing where events took place, use the actual \
-         place name (e.g. 'District Six', not 'District Six - Lest We Forget')."
+         place name, not the title of the work it appears in."
     )
 }
 

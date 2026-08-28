@@ -1,0 +1,176 @@
+# Ontology for the Legal KB — US Supreme Court jurisprudence.
+# Arm B, foundation-model authored 2026-08-25, grounded in sampled corpus text
+# (Dred Scott, Lochner, Miranda, Jacobson). Format: PerKBOntology-plan.md §2.1.
+#
+# Why this KB first: 96.9% clean text and 2 relations from 2955 entities. It is
+# the clearest genuinely vocabulary-bound corpus we have — nothing here is
+# blocked on ingestion, so a better vocabulary is the only variable.
+
+ontology:
+  name: us-case-law
+  version: 1
+  extends: none
+
+provenance:
+  derivation: derived
+  note: >-
+    4 sampled chunks (Dred Scott, Lochner, Miranda, Jacobson)
+
+entity_types:
+  - name: Case
+    description: >-
+      A named judicial decision, cited in the form "X v. Y, 198 U.S. 45 (1905)".
+      The unit of precedent.
+    examples: ["Lochner v. New York", "Dred Scott v. Sandford", "Miranda v. Arizona"]
+    anti_examples:
+      - "Fifth Amendment"      # a ConstitutionalProvision
+      - "police powers"        # a Doctrine
+    irreducible: false
+    fields:
+      - { key: citation,    desc: "reporter citation, e.g. 198 U.S. 45" }
+      - { key: dateDecided, desc: "year the case was decided" }
+
+  - name: Court
+    description: A judicial body that decides cases.
+    examples: ["Supreme Court of the United States", "Circuit Court"]
+    irreducible: false
+
+  - name: Justice
+    description: >-
+      A named judge authoring or joining an opinion. A Person in a specific
+      judicial role — kept distinct from Party so opinions attach correctly.
+    examples: ["Chief Justice Taney", "Justice Peckham"]
+    irreducible: false
+
+  - name: Party
+    description: A named litigant before the court — person, State, or entity.
+    examples: ["Dred Scott", "New York", "Sandford"]
+    irreducible: false
+
+  - name: Opinion
+    description: >-
+      A majority, concurring, or dissenting opinion within a case.
+    irreducible: false
+    fields:
+      - { key: opinionType, desc: "majority | concurrence | dissent | per curiam" }
+
+  - name: ConstitutionalProvision
+    description: >-
+      A named clause, article, or amendment of the Constitution.
+    examples: ["Fifth Amendment", "Fourteenth Amendment", "Commerce Clause"]
+    # Constitutional text must survive verbatim — paraphrase changes the law.
+    irreducible: true
+
+  - name: Statute
+    description: >-
+      An enacted law, act of Congress, ordinance, or state statute.
+    examples: ["Missouri Compromise", "Ordinance of 1787"]
+    irreducible: true
+
+  - name: Doctrine
+    description: >-
+      A named legal principle or test that cases establish, apply, or reject.
+    examples: ["police powers", "liberty of contract", "substantive due process"]
+    irreducible: false
+
+  - name: Holding
+    description: >-
+      The rule of law a case establishes — the operative proposition, as
+      distinct from dicta.
+    # The exact words of a holding are what later courts are bound by.
+    irreducible: true
+
+  - name: Jurisdiction
+    description: A geographic or political domain of legal authority.
+    examples: ["Missouri", "the several States", "federal territory"]
+    irreducible: false
+
+relation_types:
+  # ── Case structure ────────────────────────────────────────────────────────
+  - name: decided_by
+    description: A case was decided by a court.
+    domain: [Case]
+    range:  [Court]
+    functional: true          # a case has exactly one deciding court
+  - name: party_to
+    domain: [Party]
+    range:  [Case]
+  - name: authored_opinion
+    domain: [Justice]
+    range:  [Opinion]
+    inverse: opinion_authored_by
+  - name: opinion_in
+    domain: [Opinion]
+    range:  [Case]
+  - name: dissents_from
+    description: A justice's opinion dissenting from the majority in a case.
+    domain: [Justice]
+    range:  [Case]
+  - name: holds
+    domain: [Case]
+    range:  [Holding]
+
+  # ── Precedent — the predicates the memoir vocabulary has no analogue for ──
+  - name: cites
+    domain: [Case, Opinion]
+    range:  [Case, Statute, ConstitutionalProvision]
+    acyclic: true             # a case cannot cite a later case
+  - name: overrules
+    description: A later case abrogates an earlier one's holding.
+    domain: [Case]
+    range:  [Case]
+    acyclic: true
+    inverse: overruled_by
+  - name: distinguishes
+    description: >-
+      A case declines to apply an earlier one by finding material difference —
+      not the same as overruling, and the distinction matters.
+    domain: [Case]
+    range:  [Case]
+    acyclic: true
+  - name: affirms
+    domain: [Case]
+    range:  [Case]
+    acyclic: true
+  - name: reverses
+    domain: [Case]
+    range:  [Case]
+    acyclic: true
+
+  # ── Interpretation ────────────────────────────────────────────────────────
+  - name: interprets
+    domain: [Case, Opinion]
+    range:  [ConstitutionalProvision, Statute]
+  - name: strikes_down
+    description: A case holds a statute unconstitutional.
+    domain: [Case]
+    range:  [Statute]
+  - name: establishes
+    domain: [Case]
+    range:  [Doctrine]
+  - name: applies
+    domain: [Case]
+    range:  [Doctrine]
+  - name: enacted_in
+    domain: [Statute]
+    range:  [Jurisdiction]
+  - name: has_jurisdiction_over
+    domain: [Court]
+    range:  [Jurisdiction]
+
+axioms:
+  # A case cannot both affirm and reverse the same case, nor overrule what it
+  # affirms. These are the legal analogue of the kinship contradiction table.
+  - kind: contradiction
+    pairs:
+      - [affirms, reverses]
+      - [affirms, overrules]
+      - [overrules, distinguishes]
+  - kind: functional
+    relations: [decided_by]
+  - kind: acyclic
+    relations: [cites, overrules, affirms, reverses, distinguishes]
+
+# No fallback predicate. `associated_with` between two cases asserts nothing a
+# lawyer would accept, and admitting it is how the current graphs became noise.
+fallback_predicate: null
