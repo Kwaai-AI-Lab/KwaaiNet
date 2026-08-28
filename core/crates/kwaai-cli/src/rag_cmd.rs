@@ -1718,7 +1718,11 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
         let feedback = kwaai_rag::feedback::FeedbackStore::open(&rag_cfg.data_dir()).ok();
         let interactive = crate::progress::is_stdin_tty() && !no_interactive;
         let per_char = std::time::Duration::from_millis(pace);
-        let width = term_width();
+        // The findings table gets 80 columns, wider than the 69 used for box headers:
+        // the evidence quote is the column worth reading and 69 starved it. An explicit
+        // KWAAINET_WIDTH wins in *either* direction — `.max(80)` would discard a
+        // narrower one and wrap every row on an 80-column terminal.
+        let width = crate::display::width_override().unwrap_or(80);
         // Keep evidence generous here and let the table decide the final width: it is
         // the only place that knows the whole row budget. Pre-truncating to a guessed
         // column width leaves the table nothing to redistribute.
@@ -2015,8 +2019,18 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                 };
 
                 if !no_narrate {
-                    let rows =
-                        crate::chat_ui::build_rows(&chunks, &plan, &marks, &query, evidence_cols);
+                    let mentions_of = |cid: i64| match session_graph.as_ref() {
+                        Some(g) => g.get_chunk_mentions(cid),
+                        None => Vec::new(),
+                    };
+                    let rows = crate::chat_ui::build_rows(
+                        &chunks,
+                        &plan,
+                        &marks,
+                        &query,
+                        evidence_cols,
+                        &mentions_of,
+                    );
                     let script = crate::chat_ui::narration_script(
                         &rows,
                         coverage.clone(),
@@ -2083,7 +2097,10 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                 // turn without disturbing cache state.
                 if !is_error && !from_cache && !no_cache {
                     if let (Some(cache), Some(e)) = (query_cache.as_mut(), query_emb.as_ref()) {
-                        let chunk_ids: Vec<i64> = chunks.iter().map(|_| 0i64).collect();
+                        // Real ids now that retrieval carries them; this column used
+                        // to be filled with zeros because there was nothing to put in it.
+                        let chunk_ids: Vec<i64> =
+                            chunks.iter().filter_map(|c| c.chunk_id).collect();
                         let _ = cache.put(query.clone(), e.clone(), answer.clone(), chunk_ids);
                     }
                 }

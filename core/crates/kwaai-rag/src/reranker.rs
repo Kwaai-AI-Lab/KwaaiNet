@@ -235,6 +235,7 @@ mod marks_tests {
 
     fn chunk(doc: &str, idx: u32) -> RetrievedChunk {
         RetrievedChunk {
+            chunk_id: None,
             chunk_meta: ChunkMeta {
                 doc_name: doc.into(),
                 chunk_index: idx,

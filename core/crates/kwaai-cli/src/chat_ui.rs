@@ -14,11 +14,14 @@
 use std::time::Duration;
 
 use kwaai_rag::iterative::coverage_terms;
+use kwaai_rag::mentions::{pick_evidence_window, SentenceMentions};
 use kwaai_rag::meta_store::ChunkMeta;
 use kwaai_rag::reranker::Marks;
 use kwaai_rag::retriever::{origin_of, ChunkOrigin, RetrievedChunk};
 
-use crate::display::{display_width, sanitize_cell, truncate_to_width, Align, Table};
+use crate::display::{
+    display_width, sanitize_cell, truncate_around, truncate_to_width, Align, Table,
+};
 use crate::progress::StatusLine;
 
 // ── row model ─────────────────────────────────────────────────────────────────
@@ -62,6 +65,45 @@ fn locator_of(m: &ChunkMeta) -> String {
 /// Graph-derived chunks are synthesised fact cards, not source text, so their first
 /// structured line is shown instead of a quotation — quoting a synthesised card as if
 /// it were a passage from the corpus would be dishonest.
+/// Evidence text for a corpus chunk, preferring the ingest-time mention index.
+///
+/// `sentences` is the chunk's stored mention index. When it is present the quote is
+/// the window around the mention the extractor actually located; when it is empty —
+/// a KB ingested before the index existed, or a synthetic chunk — this falls back to
+/// scanning the passage for query terms.
+pub fn pick_evidence_windowed(
+    m: &ChunkMeta,
+    origin: ChunkOrigin,
+    sentences: &[SentenceMentions],
+    terms: &[String],
+    cols: usize,
+) -> String {
+    if !origin.is_graph() {
+        if let Some(w) = pick_evidence_window(sentences, terms, EVIDENCE_RADIUS) {
+            let clean = sanitize_cell(&w.text);
+            // sanitize_cell collapses whitespace, so the trigger offset has to be
+            // re-found rather than carried across.
+            let needle = sanitize_cell(&w.text[w.trigger_start..w.trigger_end]);
+            // The needle's own length, not the original span's: sanitize_cell collapses
+            // whitespace runs, so a trigger like "Hanover  Street" is one byte shorter
+            // here than in `w.text`, and carrying the old length puts `b` mid-character.
+            let (a, b) = match clean.find(&needle) {
+                Some(i) => (i, i + needle.len()),
+                None => (0, 0),
+            };
+            return format!(
+                "\u{201c}{}\u{201d}",
+                truncate_around(&clean, a, b, cols.saturating_sub(2))
+            );
+        }
+    }
+    pick_evidence(m, origin, terms, cols)
+}
+
+/// Sentences either side of the trigger to include. The sentence the extractor
+/// matched often names only the subject, with the claim in the next clause.
+const EVIDENCE_RADIUS: usize = 1;
+
 pub fn pick_evidence(m: &ChunkMeta, origin: ChunkOrigin, terms: &[String], cols: usize) -> String {
     let body = if m.surrounding.len() > m.text.len() {
         &m.surrounding
@@ -97,6 +139,7 @@ pub fn build_rows(
     marks: &Marks,
     query: &str,
     evidence_cols: usize,
+    mentions_of: &dyn Fn(i64) -> Vec<SentenceMentions>,
 ) -> Vec<ChunkView> {
     let terms = coverage_terms(query);
     let cite_of: std::collections::HashMap<usize, usize> = plan
@@ -129,7 +172,10 @@ pub fn build_rows(
                 } else {
                     locator_of(m)
                 },
-                evidence: pick_evidence(m, origin, &terms, evidence_cols),
+                evidence: {
+                    let sents = c.chunk_id.map(mentions_of).unwrap_or_default();
+                    pick_evidence_windowed(m, origin, &sents, &terms, evidence_cols)
+                },
                 mark: marks
                     .get(&kwaai_rag::iterative::chunk_key(c))
                     .copied()
@@ -467,6 +513,56 @@ pub async fn play(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a trigger span whose sanitized form is shorter than the raw span
+    /// must not panic.
+    ///
+    /// `sanitize_cell` collapses the double space in "Mike  Allie" to one, so the
+    /// needle is 10 bytes while `trigger_end - trigger_start` is 11. Carrying the raw
+    /// length across put the slice end inside the following em dash and panicked the
+    /// whole chat turn. Double spaces are routine in PDF-extracted text and em dashes
+    /// are everywhere in this corpus, so this pairing is not exotic.
+    #[test]
+    fn evidence_window_survives_a_collapsed_whitespace_trigger() {
+        use kwaai_rag::mentions::{MentionKind, MentionSpan, SentenceMentions};
+
+        let sentence =
+            "Mike  Allie\u{2014}the shopkeeper on Hanover Street\u{2014}ran the corner shop for many years."
+                .to_string();
+        let sentences = vec![SentenceMentions {
+            mentions: vec![MentionSpan {
+                entity_id: 1,
+                entity_name: "Mike Allie".into(),
+                start: 0,
+                end: 11, // the raw span, including the double space
+                kind: MentionKind::Literal,
+            }],
+            sentence,
+        }];
+
+        let m = ChunkMeta {
+            doc_name: "d".into(),
+            chunk_index: 0,
+            text: "unused".into(),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: kwaai_rag::doc_schema::SectionType::Main,
+        };
+
+        // A narrow column forces truncate_around to actually slice.
+        let out = pick_evidence_windowed(
+            &m,
+            ChunkOrigin::Corpus,
+            &sentences,
+            &["mike".to_string()],
+            40,
+        );
+        assert!(out.contains("Mike Allie"), "trigger lost: {out}");
+    }
 
     #[test]
     fn parses_marks() {

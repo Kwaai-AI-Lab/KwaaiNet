@@ -67,6 +67,12 @@ pub fn canonicalize_query(query: &str, graph: &GraphStore) -> String {
 
 #[derive(Debug, Clone)]
 pub struct RetrievedChunk {
+    /// Storage row id, when the chunk came from the chunk store.
+    ///
+    /// `None` for synthetic chunks (graph fact cards, summaries, timelines), which
+    /// have no row. Carrying this is what lets a caller reach back to per-chunk data
+    /// the retriever does not itself return — the ingest-time mention index, for one.
+    pub chunk_id: Option<i64>,
     pub chunk_meta: ChunkMeta,
     pub score: f64,
     pub source_kb: Option<String>,
@@ -763,6 +769,7 @@ pub fn origin_of(c: &RetrievedChunk) -> ChunkOrigin {
 /// Build a synthetic `RetrievedChunk` from a doc name, text body, and score.
 fn make_synthetic_chunk(doc_name: String, text: String, score: f64) -> RetrievedChunk {
     RetrievedChunk {
+        chunk_id: None,
         chunk_meta: ChunkMeta {
             doc_name,
             chunk_index: 0,
@@ -1004,12 +1011,12 @@ pub(crate) fn assemble_results(
         .into_iter()
         .zip(metas)
         .filter_map(|((id, score), meta_opt)| {
-            let _ = id;
             let chunk_meta = meta_opt?;
             if score < cfg.min_score {
                 return None;
             }
             Some(RetrievedChunk {
+                chunk_id: Some(id),
                 chunk_meta,
                 score,
                 source_kb: None,

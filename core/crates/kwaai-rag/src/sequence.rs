@@ -1084,6 +1084,7 @@ pub fn retrieve_sequence(
     // but above regular vector chunks (0.06–0.15) so timeline events are included.
     // The reorder_for_context pass places this chunk last due to odd-index reversal.
     Some(crate::retriever::RetrievedChunk {
+        chunk_id: None,
         chunk_meta,
         score: 1.9,
         source_kb: None,

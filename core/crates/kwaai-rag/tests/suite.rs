@@ -80,6 +80,7 @@ fn make_chunk_meta(text: &str) -> ChunkMeta {
 
 fn make_retrieved(text: &str, score: f64) -> RetrievedChunk {
     RetrievedChunk {
+        chunk_id: None,
         chunk_meta: make_chunk_meta(text),
         score,
         source_kb: None,
@@ -2223,6 +2224,7 @@ fn d6_check_cissie_aliases() {
 
 fn make_chat_chunk(text: &str) -> RetrievedChunk {
     RetrievedChunk {
+        chunk_id: None,
         chunk_meta: ChunkMeta {
             doc_name: "test.pdf".to_string(),
             chunk_index: 0,

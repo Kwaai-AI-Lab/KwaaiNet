@@ -315,3 +315,316 @@ mod tests {
         assert_eq!(cissie_mentions.len(), 3, "{:?}", sm[0].mentions);
     }
 }
+
+// ── evidence selection ────────────────────────────────────────────────────────
+
+/// The chosen evidence sentence and the window around it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceWindow {
+    /// The window text: the trigger sentence plus `radius` sentences either side.
+    pub text: String,
+    /// Byte offsets of the triggering mention *within `text`*.
+    pub trigger_start: usize,
+    pub trigger_end: usize,
+    /// The entity whose mention selected this sentence.
+    pub entity_name: String,
+}
+
+/// Pick the best evidence window from a chunk's stored mention index.
+///
+/// The mention index records where each entity was actually located at ingest, so
+/// this centres the quote on that position rather than re-deriving one by splitting
+/// on punctuation and hoping a query word appears. The window is the trigger sentence
+/// plus `radius` sentences either side, because the sentence the extractor matched
+/// frequently does not itself contain the fact — it names the subject and the next
+/// clause carries the claim.
+///
+/// A sentence scores on: mentions of an entity the query names (strongest), literal
+/// matches over inferred ones (a pronoun is weaker evidence than a name), and mention
+/// count. Returns `None` when the chunk has no stored mentions, which is the case for
+/// KBs ingested before the index existed — callers must keep a fallback.
+pub fn pick_evidence_window(
+    sentences: &[SentenceMentions],
+    query_terms: &[String],
+    radius: usize,
+) -> Option<EvidenceWindow> {
+    let score_of = |sm: &SentenceMentions| -> (u32, usize) {
+        let mut score = 0u32;
+        // Query terms in the sentence itself. Most questions name places, objects or
+        // events rather than graph entities ("the shop on Hanover Street"), so scoring
+        // entity names alone picks whichever sentence is densest in people and loses
+        // the topic entirely.
+        let body = sm.sentence.to_lowercase();
+        for t in query_terms {
+            if body.contains(t.as_str()) {
+                score += 8;
+            }
+        }
+        for m in &sm.mentions {
+            let name = m.entity_name.to_lowercase();
+            if query_terms.iter().any(|t| name.contains(t.as_str())) {
+                score += 10;
+            }
+            score += match m.kind {
+                MentionKind::Literal => 3,
+                MentionKind::SurnameDropped => 2,
+                MentionKind::DefiniteDescription => 1,
+                MentionKind::Pronoun | MentionKind::NarratorPronoun => 0,
+            };
+        }
+        (score, sm.mentions.len())
+    };
+
+    // Every non-empty sentence is a candidate, not only those with a resolved entity:
+    // a question about a place or an object ("the shop on Hanover Street") is often
+    // answered by a sentence carrying no person mention at all, and requiring one
+    // silently removed exactly those sentences from consideration.
+    let (best_i, best) = sentences
+        .iter()
+        .enumerate()
+        .filter(|(_, sm)| !sm.sentence.trim().is_empty())
+        .max_by_key(|(_, sm)| score_of(sm))?;
+    if score_of(best).0 == 0 {
+        // Nothing to go on — let the caller fall back rather than quote arbitrarily.
+        return None;
+    }
+
+    // Centre on the mention the query names; failing that, the one nearest a query
+    // term in the sentence, so the window brackets the topic rather than the first
+    // person who happens to appear.
+    let body_lc = best.sentence.to_lowercase();
+    let hit_at: Option<usize> = query_terms
+        .iter()
+        .filter_map(|t| body_lc.find(t.as_str()))
+        .min();
+    let best_mention = best.mentions.iter().max_by_key(|m| {
+        let name = m.entity_name.to_lowercase();
+        let named = query_terms.iter().any(|t| name.contains(t.as_str()));
+        let near = match hit_at {
+            Some(h) => usize::MAX - m.start.abs_diff(h),
+            None => 0,
+        };
+        (
+            named as u8,
+            !m.kind.is_approximate() as u8,
+            near,
+            m.end - m.start,
+        )
+    });
+
+    // Prefer the ingest-located mention. With none in this sentence, centre on the
+    // query term that selected it, so the window still brackets the topic.
+    let (trig_start, trig_len, trig_name) = match best_mention {
+        Some(m) => (m.start, m.end - m.start, m.entity_name.clone()),
+        None => {
+            let (i, len) = query_terms
+                .iter()
+                .filter_map(|t| body_lc.find(t.as_str()).map(|i| (i, t.len())))
+                .min_by_key(|(i, _)| *i)?;
+            (i, len, best.sentence[i..i + len].to_string())
+        }
+    };
+
+    let lo = best_i.saturating_sub(radius);
+    let hi = (best_i + radius + 1).min(sentences.len());
+
+    // Offset of the trigger once the neighbouring sentences are prepended.
+    let mut prefix = 0usize;
+    let mut text = String::new();
+    for (i, sm) in sentences[lo..hi].iter().enumerate() {
+        let s = sm.sentence.trim();
+        if s.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            // The sentence splitter *consumes* the terminator, so joining with a bare
+            // space runs two sentences together — and this window is rendered inside
+            // quotation marks as if lifted verbatim from the source. Restore a full
+            // stop unless the fragment already ends in punctuation of its own.
+            if text.ends_with(|c: char| c.is_alphanumeric() || c == ')' || c == '"') {
+                text.push('.');
+            }
+            text.push(' ');
+        }
+        if lo + i == best_i {
+            // `start` is an offset into the untrimmed sentence.
+            let lead = sm.sentence.len() - sm.sentence.trim_start().len();
+            prefix = text.len() + trig_start.saturating_sub(lead);
+        }
+        text.push_str(s);
+    }
+
+    Some(EvidenceWindow {
+        trigger_start: prefix.min(text.len()),
+        trigger_end: (prefix + trig_len).min(text.len()),
+        text,
+        entity_name: trig_name,
+    })
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+
+    fn sm(sentence: &str, spans: &[(&str, usize, usize, MentionKind)]) -> SentenceMentions {
+        SentenceMentions {
+            sentence: sentence.to_string(),
+            mentions: spans
+                .iter()
+                .map(|(n, s, e, k)| MentionSpan {
+                    entity_id: 1,
+                    entity_name: n.to_string(),
+                    start: *s,
+                    end: *e,
+                    kind: *k,
+                })
+                .collect(),
+        }
+    }
+
+    /// Regression: the window is rendered inside quotation marks, so joining the
+    /// sentences must not run them together.
+    ///
+    /// The splitter consumes the terminator, so a bare space produced
+    /// "Before Mike Allie He owned the shop" — presented as a verbatim quotation with
+    /// every full stop missing. Existing tests missed it because they hand-build
+    /// sentences that still carry their periods.
+    #[test]
+    fn window_restores_sentence_terminators() {
+        let s = vec![
+            sm("Before", &[]),
+            sm("Mike Allie", &[("Mike Allie", 0, 10, MentionKind::Literal)]),
+            sm("He owned the shop", &[]),
+        ];
+        let w = pick_evidence_window(&s, &["mike".into()], 1).unwrap();
+        assert_eq!(w.text, "Before. Mike Allie. He owned the shop");
+        // The trigger offset must survive the inserted punctuation.
+        assert_eq!(&w.text[w.trigger_start..w.trigger_end], "Mike Allie");
+    }
+
+    /// A fragment that already ends in punctuation is not given a second terminator.
+    #[test]
+    fn window_does_not_double_punctuate() {
+        let s = vec![
+            sm("Was it him?", &[]),
+            sm("Mike Allie", &[("Mike Allie", 0, 10, MentionKind::Literal)]),
+        ];
+        let w = pick_evidence_window(&s, &["mike".into()], 1).unwrap();
+        assert_eq!(w.text, "Was it him? Mike Allie");
+    }
+
+    #[test]
+    fn prefers_a_sentence_naming_a_query_entity() {
+        let s = vec![
+            sm(
+                "Someone walked past.",
+                &[("Unrelated", 0, 7, MentionKind::Pronoun)],
+            ),
+            sm(
+                "Mike Allie ran the shop.",
+                &[("Mike Allie", 0, 10, MentionKind::Literal)],
+            ),
+        ];
+        let w = pick_evidence_window(&s, &["mike".into()], 0).unwrap();
+        assert_eq!(w.entity_name, "Mike Allie");
+        assert_eq!(&w.text[w.trigger_start..w.trigger_end], "Mike Allie");
+    }
+
+    /// The window is the point: the matched sentence often names the subject while
+    /// the *next* sentence carries the claim.
+    #[test]
+    fn window_includes_neighbouring_sentences() {
+        let s = vec![
+            sm("Before.", &[]),
+            sm(
+                "Mike Allie.",
+                &[("Mike Allie", 0, 10, MentionKind::Literal)],
+            ),
+            sm("He owned the shop.", &[]),
+        ];
+        let w = pick_evidence_window(&s, &["mike".into()], 1).unwrap();
+        assert_eq!(w.text, "Before. Mike Allie. He owned the shop.");
+        assert_eq!(&w.text[w.trigger_start..w.trigger_end], "Mike Allie");
+    }
+
+    /// The trigger offset must survive the neighbours being prepended.
+    #[test]
+    fn trigger_offset_tracks_the_prepended_context() {
+        let s = vec![
+            sm("A long preceding sentence here.", &[]),
+            sm(
+                "Then Mike Allie appeared.",
+                &[("Mike Allie", 5, 15, MentionKind::Literal)],
+            ),
+        ];
+        let w = pick_evidence_window(&s, &[], 1).unwrap();
+        assert_eq!(&w.text[w.trigger_start..w.trigger_end], "Mike Allie");
+    }
+
+    #[test]
+    fn literal_beats_pronoun_at_equal_relevance() {
+        let s = vec![
+            sm(
+                "He went home.",
+                &[("Yousuf", 0, 2, MentionKind::NarratorPronoun)],
+            ),
+            sm(
+                "Yousuf went home.",
+                &[("Yousuf", 0, 6, MentionKind::Literal)],
+            ),
+        ];
+        let w = pick_evidence_window(&s, &[], 0).unwrap();
+        assert_eq!(w.text, "Yousuf went home.");
+    }
+
+    /// Regression: a question naming no graph entity ("the shop on Hanover Street")
+    /// used to select whichever sentence was densest in people, losing the topic.
+    #[test]
+    fn query_terms_in_the_sentence_outweigh_mention_density() {
+        let s = vec![
+            sm(
+                "Naz and I were always very close.",
+                &[
+                    ("Naz", 0, 3, MentionKind::Literal),
+                    ("Yousuf", 8, 9, MentionKind::NarratorPronoun),
+                ],
+            ),
+            sm(
+                "The shop on Hanover Street was owned by Prop Diamond.",
+                &[("Prop Diamond", 40, 52, MentionKind::Literal)],
+            ),
+        ];
+        let w = pick_evidence_window(&s, &["hanover".into(), "shop".into()], 0).unwrap();
+        assert!(
+            w.text.contains("Hanover"),
+            "picked the wrong sentence: {}",
+            w.text
+        );
+    }
+
+    /// A sentence with no resolved entity is still the right evidence when it is the
+    /// one that answers the question.
+    #[test]
+    fn a_sentence_without_mentions_can_win_on_query_terms() {
+        let s = vec![
+            sm(
+                "Naz and I were close.",
+                &[("Naz", 0, 3, MentionKind::Literal)],
+            ),
+            sm("The shop on Hanover Street sold spices.", &[]),
+        ];
+        let w = pick_evidence_window(&s, &["hanover".into(), "shop".into()], 0).unwrap();
+        assert!(w.text.contains("Hanover"), "got: {}", w.text);
+        assert_eq!(
+            w.text[w.trigger_start..w.trigger_end].to_lowercase(),
+            "shop"
+        );
+    }
+
+    #[test]
+    fn nothing_relevant_yields_none_so_the_caller_can_fall_back() {
+        assert!(pick_evidence_window(&[], &[], 1).is_none());
+        // No mentions and no query hits: refuse rather than quote arbitrarily.
+        assert!(pick_evidence_window(&[sm("Nothing here.", &[])], &["zebra".into()], 1).is_none());
+    }
+}

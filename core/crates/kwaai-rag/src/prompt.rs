@@ -169,6 +169,7 @@ mod context_plan_tests {
 
     fn chunk(text: &str, surrounding: &str) -> RetrievedChunk {
         RetrievedChunk {
+            chunk_id: None,
             chunk_meta: ChunkMeta {
                 doc_name: "d".into(),
                 chunk_index: 0,

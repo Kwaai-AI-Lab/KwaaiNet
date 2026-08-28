@@ -302,13 +302,14 @@ where
             let new_chunks: Vec<RetrievedChunk> = gap_chunk_ids
                 .into_iter()
                 .zip(new_metas)
-                .filter_map(|(_, meta_opt)| {
+                .filter_map(|(cid, meta_opt)| {
                     let cm = meta_opt?;
                     let key = (cm.doc_name.clone(), cm.chunk_index);
                     if existing_keys.contains(&key) {
                         return None;
                     }
                     Some(RetrievedChunk {
+                        chunk_id: Some(cid),
                         chunk_meta: cm,
                         score: 0.45,
                         source_kb: None,
@@ -352,6 +353,7 @@ where
                             // displacing high-confidence Round-1 source chunks (~0.6–1.0).
                             let synth_score = score.min(0.55);
                             pool.push(RetrievedChunk {
+                                chunk_id: None,
                                 chunk_meta: crate::meta_store::ChunkMeta {
                                     doc_name: format!("__summary__:{}", node.id),
                                     chunk_index: 0,
@@ -380,7 +382,7 @@ where
                         let source_limit: usize = if node.level == 2 { 10 } else { usize::MAX };
                         let child_metas = meta.get_chunks(&node.chunk_ids)?;
                         let mut src_count = 0usize;
-                        for cm_opt in child_metas {
+                        for (ccid, cm_opt) in node.chunk_ids.iter().copied().zip(child_metas) {
                             if src_count >= source_limit {
                                 break;
                             }
@@ -388,6 +390,7 @@ where
                                 let key = (cm.doc_name.clone(), cm.chunk_index);
                                 if !existing_keys.contains(&key) {
                                     pool.push(RetrievedChunk {
+                                        chunk_id: Some(ccid),
                                         chunk_meta: cm,
                                         score: 0.40,
                                         source_kb: None,
