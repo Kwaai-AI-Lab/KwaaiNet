@@ -2,7 +2,7 @@
 
 ## Project scope
 
-kwaai-platform owns the CLI binary (`kwaainet`), map-server, summit-server, release distribution
+kwaai-platform owns the CLI binary (`kwaainet`), summit-server, release distribution
 (cargo-dist), and auto-update infrastructure. It is the integration layer that dispatches all
 subcommands — it does not implement domain logic, only wires crates together.
 
@@ -11,7 +11,6 @@ subcommands — it does not implement domain logic, only wires crates together.
 | Crate | Path | Description |
 |-------|------|-------------|
 | `kwaai-cli` | `core/crates/kwaai-cli/` | Binary: all command dispatch |
-| `map-server` | `core/crates/map-server/` | Node map / topology server |
 | `summit-server` | `core/crates/summit-server/` | Summit coordination server |
 
 Primary CLI files in `core/crates/kwaai-cli/src/`:

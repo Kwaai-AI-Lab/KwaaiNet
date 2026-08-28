@@ -10,11 +10,9 @@
 # Inputs:
 #   pkgs             — nixpkgs package set
 #   kwaainet         — kwaainet binary derivation (includes bundled p2pd)
-#   map-server       — map-server binary derivation
 {
   pkgs,
   kwaainet,
-  map-server,
 }:
 
 let
@@ -66,12 +64,6 @@ in
     binary = kwaainet;
   };
 
-  map-server-container = mkContainer {
-    name = "map-server";
-    binary = map-server;
-    port = 3030;
-  };
-
   # All-in-one container with every KwaaiNet binary.
   kwaainet-all-container = pkgs.dockerTools.streamLayeredImage {
     name = "kwaainet-all";
@@ -79,14 +71,10 @@ in
 
     contents = baseContents ++ [
       kwaainet
-      map-server
     ];
 
     config = {
       Entrypoint = [ "${kwaainet}/bin/kwaainet" ];
-      ExposedPorts = {
-        "3030/tcp" = { };
-      };
       Env = [
         "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
         "TZDIR=${pkgs.tzdata}/share/zoneinfo"

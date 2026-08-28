@@ -710,7 +710,7 @@ async fn spawn_session_shard_run(
 }
 
 /// Refresh cadence for block-coverage subscriptions when the client
-/// doesn't ask for a specific interval. Mirrors the map-server crawler.
+/// doesn't ask for a specific interval. Mirrors the map's DHT crawler.
 const DEFAULT_COVERAGE_INTERVAL_SECS: u64 = 5;
 
 /// How long a subscription may stay silent while coverage is unchanged.

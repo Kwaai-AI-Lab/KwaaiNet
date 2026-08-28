@@ -3,7 +3,7 @@
 //! This is the mirror image of [`crate::client`]: the same protobuf control
 //! protocol, served by the node itself and translated into
 //! [`kwaai_p2p::NetworkHandle`] calls instead of into a Go process. External
-//! processes (`map-server` crawler, `shard serve`, `storage serve`, `rag`,
+//! processes (the map's DHT crawler, `shard serve`, `storage serve`, `rag`,
 //! `p2p`/`status`, inference-mux, …) attach to the socket and keep acting as
 //! the node's peer identity.
 //!

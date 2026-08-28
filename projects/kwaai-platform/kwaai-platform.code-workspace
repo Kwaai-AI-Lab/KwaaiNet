@@ -1,7 +1,6 @@
 {
   "folders": [
     { "path": "../../core/crates/kwaai-cli", "name": "kwaai-cli (crate)" },
-    { "path": "../../core/crates/map-server", "name": "map-server (crate)" },
     { "path": "../../core/crates/summit-server", "name": "summit-server (crate)" },
     { "path": "../../.github/workflows", "name": "CI workflows" },
     { "path": ".", "name": "project docs" },

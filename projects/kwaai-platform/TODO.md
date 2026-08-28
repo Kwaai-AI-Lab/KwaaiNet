@@ -7,12 +7,13 @@
 
 ## Map server rewrite
 
-The deployed map is the OpenPetals Python crawler, not `core/crates/map-server`
+The map now lives in its own repo (https://github.com/Kwaai-AI-Lab/KwaaiNetMap). The deployed one is the Python
+crawler on `main` there, not the Rust rewrite parked on `map-v2`
 (the live host serves `/api/v1/state`; the crate serves `/api/nodes`, which
 404s). Its schema is inherited from Petals and no longer describes what a
 KwaaiNet node is. Evidence below is from the live payload on 2026-08-21.
 
-- [ ] **Rewrite the map**, ideally as `map-server` in-repo so it moves with the
+- [ ] **Rewrite the map**, ideally node-served so it moves with the
       node. Ultimately each node should discover and serve its own map.
 
 - [ ] **Model is not a column, it is a set.** The schema is

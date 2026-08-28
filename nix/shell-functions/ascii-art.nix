@@ -12,8 +12,8 @@
 { }:
 
 ''
-  if command -v jp2a >/dev/null 2>&1 && [ -f "./apps/map/public/kwaai-logo.png" ]; then
-    echo "$(jp2a --colors ./apps/map/public/kwaai-logo.png)"
+  if command -v jp2a >/dev/null 2>&1 && [ -f "./docs/assets/kwaai-logo.png" ]; then
+    echo "$(jp2a --colors ./docs/assets/kwaai-logo.png)"
     echo ""
   else
     echo "=== KwaaiNet Development Shell ==="

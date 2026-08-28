@@ -14,7 +14,7 @@ a consistent user experience.
 4. **FR-P4** Shell and PowerShell installers (cargo-dist) must install both `kwaainet` and `p2pd` in a single invocation.
 5. **FR-P5** Homebrew tap formula (`Kwaai-AI-Lab/homebrew-tap`) must stay in sync with releases.
 6. **FR-P6** Print a clear warning when `p2pd` is not found at startup; direct user to `kwaainet setup --get-deps`.
-7. **FR-P7** map-server and summit-server must start, serve their endpoints, and respond to health checks.
+7. **FR-P7** summit-server must start, serve its endpoints, and respond to health checks.
 8. **FR-P8** Auto-start service (`kwaainet start --daemon`) must work on macOS (launchd), Linux (systemd), and Windows (service).
 9. **FR-P9** All terminal output uses the display module helpers; no raw `println!` in command handlers.
 

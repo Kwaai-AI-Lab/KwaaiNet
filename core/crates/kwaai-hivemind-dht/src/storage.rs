@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(parsed.entries, entries);
     }
 
-    /// The crawler (`map-server/src/crawler.rs:378-413`) decodes live bootstrap
+    /// The map's DHT crawler (https://github.com/Kwaai-AI-Lab/KwaaiNetMap) decodes live bootstrap
     /// traffic with this exact shape: Ext(80) → [_, _, entries] → per entry
     /// [subkey, Binary(value), _]. Our output must satisfy that reader.
     #[test]

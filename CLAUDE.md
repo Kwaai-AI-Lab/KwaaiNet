@@ -37,7 +37,7 @@ Run all tests: `cd core && cargo test`
 | **kwaai-compute** | kwaai-inference, kwaai-compression, kwaai-distributed | shard_cmd.rs, block_rpc.rs | `projects/kwaai-compute/` |
 | **kwaai-storage** | kwaai-storage | vpk.rs | `projects/kwaai-storage/` |
 | **kwaai-knowledge** | kwaai-rag | rag_cmd.rs, rag_api.rs | `projects/kwaai-knowledge/` |
-| **kwaai-platform** | kwaai-cli, map-server, summit-server | main.rs, config.rs, updater.rs | `projects/kwaai-platform/` |
+| **kwaai-platform** | kwaai-cli, summit-server | main.rs, config.rs, updater.rs | `projects/kwaai-platform/` |
 
 **For domain work, see `projects/{project}/CLAUDE.md`** — each contains: scope, crate ownership, infrastructure details, build commands, current state, key files, and do-not list.
 

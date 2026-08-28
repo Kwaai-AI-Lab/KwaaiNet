@@ -10,7 +10,6 @@ members = [
     "crates/kwaai-p2p-daemon",
     "crates/kwaai-cli",
     "crates/kwaai-trust",
-    "crates/map-server",
     "crates/kwaai-storage",
     "crates/kwaai-rag",
     "crates/kwaai-rpc",

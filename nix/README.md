@@ -90,16 +90,15 @@ development shell.
 By default, `nix build` writes every output to a single `./result` symlink —
 building a different package overwrites the previous one.  A root `Makefile`
 solves this by passing `-o result-<name>` to each build, giving every package
-its own symlink (`result-kwaainet`, `result-map-server`, etc.) so multiple
+its own symlink (`result-kwaainet`, `result-p2pd`, etc.) so multiple
 outputs coexist.  Use `make -j` for parallel builds.
 
 ### Binaries
 
 | Make target | Nix equivalent | Output |
 |-------------|---------------|--------|
-| `make` | build both binaries | `result-{kwaainet,map-server}` |
+| `make` | build the kwaainet binary | `result-kwaainet` |
 | `make kwaainet` | `nix build .#kwaainet` | `result-kwaainet` |
-| `make map-server` | `nix build .#map-server` | `result-map-server` |
 | `make p2pd` | `nix build .#p2pd` | `result-p2pd` |
 | `make proto` | `nix build .#protoRs` | `result-proto` |
 
@@ -109,7 +108,6 @@ outputs coexist.  Use `make -j` for parallel builds.
 |-------------|---------------|--------|
 | `make containers` | build all containers | `result-*-container` |
 | `make kwaainet-container` | `nix build .#kwaainet-container` | `result-kwaainet-container` |
-| `make map-server-container` | `nix build .#map-server-container` | `result-map-server-container` |
 | `make kwaainet-all-container` | `nix build .#kwaainet-all-container` | `result-kwaainet-all-container` |
 
 > **Note:** Container images use `dockerTools.streamLayeredImage` which is
@@ -139,12 +137,10 @@ These have no Makefile wrapper — call `nix` directly:
 ```
 packages.default                kwaainet CLI + bundled p2pd
 packages.kwaainet               (same as default)
-packages.map-server             map-server binary
 packages.cargoArtifacts         cached workspace dependency artifacts (crane)
 packages.p2pd                   go-libp2p-daemon (Hivemind fork)
 packages.protoRs                pre-generated prost Rust code from p2pd.proto
 packages.kwaainet-container     OCI image stream script — kwaainet + p2pd (Linux only)
-packages.map-server-container   OCI image stream script — port 3030 (Linux only)
 packages.kwaainet-all-container OCI image — all binaries in one image (Linux only)
 packages.test-two-node          two-node integration test script
 packages.test-containers        container image test suite (Linux only)
@@ -153,7 +149,6 @@ packages.test-containers        container image test suite (Linux only)
 packages.kwaainet-aarch64-linux-gnu         ARM64 dynamic binary
 packages.kwaainet-aarch64-linux-musl        ARM64 static binary
 packages.kwaainet-x86_64-linux-musl         x86_64 static binary
-packages.map-server-<target>                (same suffixes as above)
 packages.p2pd-<target>                      cross-compiled p2pd
 packages.*-container-<target>               cross-arch OCI images
 packages.test-cross-smoke-<target>          QEMU smoke tests
@@ -245,7 +240,7 @@ nix/
   (keyed on `Cargo.lock`) and cached.  Source-only changes skip dependency
   compilation entirely, cutting rebuild times from ~5-10 min to ~1-2 min.
   Crane reads `Cargo.lock` directly — no `cargoHash` to maintain.
-- **Per-binary packages** — the workspace binaries (kwaainet, map-server) are
+- **Per-binary packages** — the workspace binaries (kwaainet, p2pd) are
   separate derivations so changes to one don't rebuild the other.
 - **Minimal OCI containers** — each container includes only the binary, CA
   certificates (`cacert`), and timezone data (`tzdata`).  No shell, no
@@ -326,7 +321,7 @@ KwaaiNet's cross-compilation reuses the same build modules unchanged:
 ```
 flake.nix
   ├─ native build (existing)
-  │   └─ crane.nix → kwaainet, map-server
+  │   └─ crane.nix → kwaainet
   │
   └─ cross builds (x86_64-linux only)
       └─ nix/cross.nix (for each crossSystem)
@@ -363,7 +358,6 @@ host:
 | Binary | aarch64-gnu | aarch64-musl | x86_64-musl | riscv64-gnu |
 |--------|:-----------:|:------------:|:-----------:|:-----------:|
 | kwaainet | PASS | PASS | PASS | PASS |
-| map-server | PASS | PASS | PASS | PASS |
 | p2pd | PASS | PASS | PASS | PASS |
 
 **OCI container images** (3 per target, 12 total):
@@ -371,7 +365,6 @@ host:
 | Container | aarch64-gnu | aarch64-musl | x86_64-musl | riscv64-gnu |
 |-----------|:-----------:|:------------:|:-----------:|:-----------:|
 | kwaainet-container | PASS | PASS | PASS | PASS |
-| map-server-container | PASS | PASS | PASS | PASS |
 
 **QEMU user-mode smoke tests** (1 per target, 4 total):
 
@@ -479,8 +472,7 @@ Container images are tagged with the workspace version from `core/Cargo.toml`
 | Container | Exposed port | Contents |
 |-----------|-------------|----------|
 | `kwaainet` | — | kwaainet binary + bundled p2pd |
-| `map-server` | 3030/tcp | map-server binary |
-| `kwaainet-all` | 3030/tcp | all binaries (kwaainet + p2pd + map-server) |
+| `kwaainet-all` | — | all binaries (kwaainet + p2pd) |
 
 All containers include `SSL_CERT_FILE` and `TZDIR` environment variables
 pre-configured for TLS and log timestamps.
