@@ -688,12 +688,28 @@ const PROBE_PROTO: &str = "/kwaai/probe-unrouted/1.0.0";
 /// "succeeded" — a refusal is the expected result and a perfectly good sample.
 #[derive(Debug, PartialEq, Eq)]
 enum Sample {
-    /// Full round trip: either a handler replied, or the peer refused the
-    /// protocol. Both crossed the network and came back.
-    RoundTrip,
+    /// A handler replied. Full round trip, and the protocol is served.
+    Served,
+    /// The peer refused the protocol. Still a full round trip — it crossed the
+    /// network and came back — so it remains a valid latency sample and stays
+    /// in the statistics.
+    ///
+    /// It is a separate variant from `Served` only so the *report* can say so.
+    /// Folding the two together is what let the probe print a bare `✅ 23.9 ms`
+    /// against a peer that serves nothing at the named protocol (#145): correct
+    /// as latency, and read by every human as a reachability claim.
+    Refused(String),
     /// Never reached the peer, so the elapsed time measures a local failure
     /// (no route, dial failed, timeout) and must not enter the statistics.
     NoRoundTrip(String),
+}
+
+impl Sample {
+    /// Whether this call crossed the network and came back — the question the
+    /// latency statistics care about. A refusal did.
+    fn round_tripped(&self) -> bool {
+        matches!(self, Sample::Served | Sample::Refused(_))
+    }
 }
 
 /// Classify a call outcome. Refusal is success for our purposes; anything that
@@ -713,10 +729,10 @@ enum Sample {
 /// one of them rewords an error string.
 fn classify(result: Result<Vec<u8>, String>) -> Sample {
     match result {
-        Ok(_) => Sample::RoundTrip,
+        Ok(_) => Sample::Served,
         Err(e) => {
             if e.to_lowercase().contains("not support") {
-                Sample::RoundTrip
+                Sample::Refused(e)
             } else {
                 Sample::NoRoundTrip(e)
             }
@@ -823,16 +839,38 @@ async fn probe(args: ProbeArgs) -> Result<()> {
 
     let mut samples = Vec::with_capacity(args.count);
     let mut failures = Vec::new();
+    let mut refusals = Vec::new();
     for _ in 0..args.count {
         match timed_call(&client, &dest_bytes, &proto, &payload, timeout).await {
-            (Sample::RoundTrip, ms) => samples.push(ms),
+            (Sample::Served, ms) => samples.push(ms),
+            // A refusal is still a latency sample; it is also the answer to
+            // "does this peer serve this protocol", so it is counted twice over.
+            (Sample::Refused(e), ms) => {
+                samples.push(ms);
+                refusals.push(e);
+            }
             (Sample::NoRoundTrip(e), _) => failures.push(e),
         }
     }
 
+    // Refusal is the *expected* outcome for the default protocol, which is
+    // deliberately unimplemented — saying so there would be noise. It is only
+    // notable when the caller named a protocol and expected it to be served.
+    let proto_was_named = args.proto.is_some();
+    let all_refused = !refusals.is_empty() && refusals.len() == samples.len();
+
     match summarize(&samples) {
         Some((min, median, max, mean)) => {
-            print_success(&format!("Round-trip time: {median:.1} ms (median)"));
+            // When every call was refused and the caller named the protocol,
+            // the headline is that the protocol is not there. The latency is
+            // still true and still printed — it just is not the finding, and a
+            // ✅ against it is what made this probe misreport (#145).
+            let headline = format!("Round-trip time: {median:.1} ms (median)");
+            if all_refused && proto_was_named {
+                print_warning(&headline);
+            } else {
+                print_success(&headline);
+            }
             println!(
                 "  min {min:.1} ms   median {median:.1} ms   max {max:.1} ms   mean {mean:.1} ms   \
                  n={}",
@@ -857,6 +895,36 @@ async fn probe(args: ProbeArgs) -> Result<()> {
         ));
     }
 
+    // The refusal itself. Without this the output is a bare latency figure that
+    // reads as "the peer serves this", which is how the probe nearly produced a
+    // false PASS while validating #137.
+    if !refusals.is_empty() {
+        if proto_was_named {
+            print_warning(&format!(
+                "{} of {} calls were REFUSED — the peer does not serve {proto}",
+                refusals.len(),
+                samples.len()
+            ));
+            if let Some(e) = refusals.first() {
+                print_info(e);
+            }
+            if all_refused {
+                print_info(
+                    "The time above measures the round trip to the refusal, not this protocol.",
+                );
+            }
+        } else {
+            // Default protocol: the refusal is the measurement working as
+            // intended, and is positive evidence the peer answered.
+            print_info(&format!(
+                "{} of {} calls were refused, as expected for the probe protocol \
+                 — the peer answered every one",
+                refusals.len(),
+                samples.len()
+            ));
+        }
+    }
+
     if let Some(n) = args.concurrency {
         if n >= 2 {
             println!();
@@ -864,10 +932,7 @@ async fn probe(args: ProbeArgs) -> Result<()> {
             let calls = (0..n).map(|_| timed_call(&client, &dest_bytes, &proto, &payload, timeout));
             let results = futures::future::join_all(calls).await;
             let wall = t.elapsed().as_secs_f64() * 1000.0;
-            let ok = results
-                .iter()
-                .filter(|(s, _)| *s == Sample::RoundTrip)
-                .count();
+            let ok = results.iter().filter(|(s, _)| s.round_tripped()).count();
             let serial_estimate = summarize(&samples).map(|(_, m, _, _)| m * n as f64);
             print_info(&format!(
                 "{n} concurrent calls completed in {wall:.1} ms ({ok}/{n} round-tripped)"
@@ -897,7 +962,9 @@ mod tests {
         // that refusal is the measurement, not an error.
         let err = "Protocol error: Daemon error: failed to negotiate protocol: \
                    protocols not supported: [/kwaai/probe-unrouted/1.0.0]";
-        assert_eq!(classify(Err(err.to_string())), Sample::RoundTrip);
+        let s = classify(Err(err.to_string()));
+        assert!(matches!(s, Sample::Refused(_)));
+        assert!(s.round_tripped(), "a refusal is still a latency sample");
     }
 
     #[test]
@@ -908,12 +975,45 @@ mod tests {
         // probe under `native_p2p: true`, not by any test that existed then.
         let err = "Protocol error: Daemon error: Protocol error: remote does not \
                    support protocol /kwaai/probe-unrouted/1.0.0";
-        assert_eq!(classify(Err(err.to_string())), Sample::RoundTrip);
+        let s = classify(Err(err.to_string()));
+        assert!(matches!(s, Sample::Refused(_)));
+        assert!(s.round_tripped(), "a refusal is still a latency sample");
     }
 
     #[test]
     fn a_successful_reply_is_a_round_trip() {
-        assert_eq!(classify(Ok(b"ok".to_vec())), Sample::RoundTrip);
+        assert_eq!(classify(Ok(b"ok".to_vec())), Sample::Served);
+        assert!(classify(Ok(b"ok".to_vec())).round_tripped());
+    }
+
+    #[test]
+    fn a_refusal_is_distinguishable_from_a_reply() {
+        // #145: both are round trips and both belong in the latency figures,
+        // but collapsing them into one variant is exactly what let the probe
+        // print a bare ✅ against a peer serving nothing at the named protocol.
+        // Keep them separable, or the report cannot tell the operator apart
+        // from "reached and served" and "reached and refused".
+        let served = classify(Ok(b"ok".to_vec()));
+        let refused = classify(Err(
+            "Protocol error: remote does not support protocol /kwaai/nope/9.9.9".to_string(),
+        ));
+
+        assert!(served.round_tripped() && refused.round_tripped());
+        assert_ne!(served, refused);
+        assert!(matches!(refused, Sample::Refused(_)));
+    }
+
+    #[test]
+    fn a_refusal_carries_the_reason_it_was_refused() {
+        // The operator needs the protocol name in the report, not just a count.
+        // It was previously discarded — `RoundTrip` was a unit variant — which
+        // is why the only trace of a refusal was an incidental WARN from the
+        // logger, invisible under RUST_LOG=error.
+        let err = "Protocol error: remote does not support protocol /kwaai/storage/1.0.0";
+        match classify(Err(err.to_string())) {
+            Sample::Refused(e) => assert!(e.contains("/kwaai/storage/1.0.0")),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]
