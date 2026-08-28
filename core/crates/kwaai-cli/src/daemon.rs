@@ -307,16 +307,31 @@ impl DaemonManager {
 /// process was terminated by SIGTERM (which bypasses Rust destructors, so
 /// the kwaai-p2p-daemon Drop impl never fires to clean them up).
 /// Without this, a new daemon start fails because p2pd can't bind the port.
+///
+/// Scoped to this instance's control socket when `KWAAINET_SOCKET` names one:
+/// p2pd carries it in `-listen`, and without the filter a second node's stop
+/// SIGKILLs the first node's p2pd. With no override there is only one socket
+/// on the machine, so every p2pd is ours and the name alone is enough.
 pub fn kill_orphaned_p2pd() {
     use sysinfo::ProcessRefreshKind;
 
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessRefreshKind::new());
 
+    let socket = std::env::var("KWAAINET_SOCKET")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     let mut found = false;
     for (pid, process) in sys.processes() {
         let name = process.name();
         if name == "p2pd" || name == "p2pd.exe" {
+            if let Some(ref sock) = socket {
+                if !process.cmd().iter().any(|a| a.contains(sock.as_str())) {
+                    debug!("Leaving p2pd PID {} alone — not on {}", pid, sock);
+                    continue;
+                }
+            }
             info!("Killing orphaned p2pd process (PID {})", pid);
             found = true;
             #[cfg(unix)]
