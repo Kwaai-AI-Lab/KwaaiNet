@@ -22,7 +22,9 @@ static STOP_WORDS: &[&str] = &[
     "author", "kind", "more",
 ];
 
-fn coverage_terms(query: &str) -> Vec<String> {
+/// Content words of a query, lowercased and de-duplicated, used for coverage
+/// scoring and for picking the most on-topic evidence sentence from a chunk.
+pub fn coverage_terms(query: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     query
         .split_whitespace()
@@ -45,7 +47,8 @@ fn coverage_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn compute_coverage(terms: &[String], chunks: &[RetrievedChunk]) -> (f32, Vec<String>) {
+/// Fraction of `terms` present across `chunks`, plus the terms that are missing.
+pub fn compute_coverage(terms: &[String], chunks: &[RetrievedChunk]) -> (f32, Vec<String>) {
     if terms.is_empty() {
         return (1.0, vec![]);
     }
@@ -63,7 +66,10 @@ fn compute_coverage(terms: &[String], chunks: &[RetrievedChunk]) -> (f32, Vec<St
     (found as f32 / terms.len() as f32, missing)
 }
 
-fn chunk_key(c: &RetrievedChunk) -> (String, u32) {
+/// The only stable identity a retrieved chunk has: `assemble_results` discards the
+/// storage row id, so `(doc_name, chunk_index)` is what survives retrieval, reranking
+/// and reordering. Relevance marks key on this.
+pub fn chunk_key(c: &RetrievedChunk) -> (String, u32) {
     (c.chunk_meta.doc_name.clone(), c.chunk_meta.chunk_index)
 }
 
