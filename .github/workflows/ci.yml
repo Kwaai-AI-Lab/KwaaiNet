@@ -10,10 +10,13 @@ name: CI
 #   - Single unified cargo cache key shared by clippy + test (same artifacts)
 #   - clippy uses default features only (was --all-features; CUDA/Metal are
 #     only needed for the release build, not the lint gate)
-#   - test matrix: ubuntu only on PRs; ubuntu + macOS on pushes to main
+#   - test matrix: ubuntu only on PRs; ubuntu + macOS + Windows on pushes to
+#     main, with a Windows `cargo check` gate on every PR (see job 3b)
 #   - wasm-pack binary cached so `cargo install wasm-pack` only runs once
 #   - dropped `build --release` job (slow, redundant with release.yml)
 #   - dropped `docs` job (nice-to-have, not a merge gate)
+#   - added a Windows `cargo check` job (#146) — every other job is Linux, so
+#     Windows-only breakage used to reach main and sit there until a release
 
 on:
   push:
@@ -101,7 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'pull_request' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ github.event_name == 'pull_request' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: fetch patched deps
@@ -111,9 +114,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Skipped on Windows: sccache cannot spawn rustc for web-sys there, because
+      # it rebuilds a command line longer than CreateProcess accepts. See the
+      # note in windows-check above.
       - name: Install sccache
+        if: runner.os != 'Windows'
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Configure sccache
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
@@ -134,6 +142,18 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
+      # No Windows equivalent: build.rs fetches protoc itself when it is not on
+      # PATH, which is what the Windows release job already relies on.
+      - name: Set OpenSSL paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Get-ChildItem "C:\Program Files" -Filter "OpenSSL*" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if ($dir) {
+            echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
+          }
+
       - name: Cache cargo + target
         uses: actions/cache@v4
         with:
@@ -149,6 +169,92 @@ jobs:
       - name: Run tests
         working-directory: core
         run: cargo test --all
+
+  # ── 3b. Windows type check (#146) ──────────────────────────────────────────
+  # `main` did not compile on Windows for five days between #130 and #142: a
+  # field added to a struct was populated only in the `#[cfg(unix)]` arm, and
+  # every CI job here runs on Linux. Windows was built only by release.yml, so
+  # the first Windows compile of any change happened when a release was cut —
+  # or when someone happened to build there, which is how it was actually found.
+  #
+  # `check`, not `build`: type checking catches that whole class — cfg-gated
+  # fields, platform-specific imports, missing cfg arms — without CUDA or a
+  # full link toolchain. Minutes rather than the better part of an hour.
+  #
+  # Cross-checking from macOS is not an option; `cargo check --target
+  # x86_64-pc-windows-msvc` dies in ring's build script, which wants a Windows
+  # C toolchain. It has to be a real Windows runner.
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      # Some dependency paths exceed the 260-char default and fail to check out.
+      - name: Enable long paths
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+
+      # Also the first PR-time exercise of this script under Git Bash. It was
+      # previously reached on Windows only from release.yml, i.e. only on a tag
+      # push, so a hashing problem there surfaced during a release.
+      - name: fetch patched deps
+        shell: bash
+        run: bash core/patches/fetch-multistream-select.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Deliberately no sccache here. Windows caps a command line at 32,767
+      # characters (CreateProcess), and web-sys — reached through kwaai-wasm —
+      # emits a --check-cfg list naming every DOM feature it knows, which blows
+      # straight past that. Cargo works around it by handing rustc an @argfile;
+      # sccache rebuilds the command line itself and does not, so it dies before
+      # rustc ever runs:
+      #
+      #   sccache: error: failed to spawn Command { std: "…rustc.exe"
+      #     "--crate-name" "web_sys" … "--check-cfg" "cfg(feature, values(…"
+      #
+      # The actions/cache step below still carries target/ between runs, so the
+      # cost is a slower cold run, not an uncached one.
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      # openssl-sys arrives transitively via reqwest/libp2p and needs pointing
+      # at the runner's pre-installed OpenSSL.
+      - name: Set OpenSSL paths
+        shell: pwsh
+        run: |
+          $dir = Get-ChildItem "C:\Program Files" -Filter "OpenSSL*" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if ($dir) {
+            echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
+          }
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # --workspace: `default-members` is only kwaai-cli, so a bare check leaves
+      # every other crate's Windows build unguarded — the same blind spot that
+      # let this through. --all-targets so test-only code is compiled too:
+      # Windows-gated tests sit behind cfg(test) + cfg(windows) and would
+      # otherwise be built nowhere at all.
+      - name: Check
+        working-directory: core
+        run: cargo check --workspace --all-targets
 
   # ── 4. WASM build (wasm-pack cached to avoid reinstall every run) ──────────
   wasm:
