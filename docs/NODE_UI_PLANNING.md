@@ -2,7 +2,15 @@
 
 **Purpose:** A local UI so users can see what’s going on with their KwaaiNet node without using the terminal.
 
-**Status:** Planning  
+**Status:** Built and moved out — the dashboard now lives in its own repo,
+[KwaaiNetDashboard](https://github.com/Kwaai-AI-Lab/KwaaiNetDashboard). This
+document is kept as the design record; the checklists below were completed
+against `systems/node-dashboard/`, which is no longer here.
+
+Two items on it were never true: the main README documents neither the UI nor
+`start-ui.sh`, and the `kwaainet ui` subcommand it proposed has been removed —
+it searched up 20 parent directories for the dashboard, so it could only ever
+work inside a source checkout, never from an installed binary.  
 **Last updated:** 2025-03
 
 ---
