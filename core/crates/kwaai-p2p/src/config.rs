@@ -47,16 +47,6 @@ pub struct NetworkConfig {
     pub dht_replication: usize,
 
     /// How long a connection may sit idle before the swarm closes it.
-    ///
-    /// This is the *only* thing the value drives — it is not a dial timeout.
-    /// It was 30s, which is why hole punching appeared not to work: a punched
-    /// connection carries no traffic of its own, so it was reaped within a
-    /// minute and the peer went back to reading as relayed. The p2pd path had
-    /// no equivalent — go-libp2p's connection manager keeps peers until the
-    /// high-water mark (~96) is passed — so peers stayed visible there.
-    ///
-    /// Paired with `max_connections`: keeping idle connections is only safe
-    /// because their number is capped.
     #[serde(alias = "connection_timeout")]
     pub idle_connection_timeout: Duration,
 
@@ -64,9 +54,6 @@ pub struct NetworkConfig {
     pub request_timeout: Duration,
 
     /// Maximum concurrent connections, inbound and outbound.
-    ///
-    /// Mirrors go-libp2p's connection-manager high-water mark, and is what
-    /// bounds the cost of the long `idle_connection_timeout` above.
     pub max_connections: usize,
 
     /// Enable NAT traversal

@@ -1774,21 +1774,8 @@ impl NetworkService {
                         }
                     }
 
-                    // Retire the circuit the punch just replaced.
-                    //
-                    // Nothing migrates traffic onto a newly punched connection:
-                    // libp2p opens each new substream on whichever connection
-                    // it picks, and kad, identify and ping keep flowing over
-                    // the relay that was already carrying them. The direct path
-                    // therefore sits idle and `idle_connection_timeout` reaps
-                    // it — measured in the nat-test bed at ~50s from punch to
-                    // `cause=KeepAlive`, after which the peer reads as relayed
-                    // again. Hole punching worked and left nothing behind.
-                    //
-                    // Closing the circuit leaves one path, which then carries
-                    // the traffic that keeps it alive. That is what a relay is
-                    // for: introduction, not carriage — the same reason
-                    // `relay::Config` defaults a circuit to 128 KiB / 2 min.
+                    // Retire the circuit the punch just replaced, migrating
+                    // traffic onto the newly punched connection
                     let circuits: Vec<ConnectionId> = self
                         .connections
                         .get(&remote_peer_id)
@@ -1815,11 +1802,7 @@ impl NetworkService {
                         }
                     }
                 }
-                // Info, not debug: "no hole punch has ever happened" and "every
-                // hole punch fails" look identical from the outside, and the
-                // difference is the whole diagnosis. This was debug for the
-                // release in which hole punching did not work at all.
-                Err(e) => info!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
+                Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
             },
 
             KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
