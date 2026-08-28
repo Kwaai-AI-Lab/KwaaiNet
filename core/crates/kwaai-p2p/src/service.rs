@@ -292,7 +292,7 @@ impl NetworkService {
             })
             .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
             .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(config.connection_timeout)
+                c.with_idle_connection_timeout(config.idle_connection_timeout)
                     // 0-RTT protocol negotiation on outbound substreams.
                     //
                     // The default, `V1`, writes the multistream-select proposal,

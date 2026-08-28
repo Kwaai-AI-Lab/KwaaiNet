@@ -46,13 +46,27 @@ pub struct NetworkConfig {
     /// DHT replication factor
     pub dht_replication: usize,
 
-    /// Connection timeout
-    pub connection_timeout: Duration,
+    /// How long a connection may sit idle before the swarm closes it.
+    ///
+    /// This is the *only* thing the value drives — it is not a dial timeout.
+    /// It was 30s, which is why hole punching appeared not to work: a punched
+    /// connection carries no traffic of its own, so it was reaped within a
+    /// minute and the peer went back to reading as relayed. The p2pd path had
+    /// no equivalent — go-libp2p's connection manager keeps peers until the
+    /// high-water mark (~96) is passed — so peers stayed visible there.
+    ///
+    /// Paired with `max_connections`: keeping idle connections is only safe
+    /// because their number is capped.
+    #[serde(alias = "connection_timeout")]
+    pub idle_connection_timeout: Duration,
 
     /// Request timeout
     pub request_timeout: Duration,
 
-    /// Maximum concurrent connections
+    /// Maximum concurrent connections, inbound and outbound.
+    ///
+    /// Mirrors go-libp2p's connection-manager high-water mark, and is what
+    /// bounds the cost of the long `idle_connection_timeout` above.
     pub max_connections: usize,
 
     /// Enable NAT traversal
@@ -203,7 +217,9 @@ impl Default for NetworkConfig {
             bootstrap_peers: Vec::new(),
             enable_dht: true,
             dht_replication: 20,
-            connection_timeout: Duration::from_secs(30),
+            // Long enough that a punched connection survives to be seen and
+            // used. `max_connections` is what keeps this bounded.
+            idle_connection_timeout: Duration::from_secs(10 * 60),
             request_timeout: Duration::from_secs(60),
             max_connections: 100,
             enable_nat_traversal: true,
@@ -322,8 +338,8 @@ impl NetworkConfigBuilder {
     }
 
     /// Set connection timeout
-    pub fn connection_timeout(mut self, timeout: Duration) -> Self {
-        self.config.connection_timeout = timeout;
+    pub fn idle_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.config.idle_connection_timeout = timeout;
         self
     }
 
@@ -417,7 +433,7 @@ mod relay_circuit_limits {
         let legacy = r#"{
             "listen_addrs": [], "bootstrap_peers": [], "enable_dht": true,
             "dht_replication": 20,
-            "connection_timeout": {"secs": 30, "nanos": 0},
+            "idle_connection_timeout": {"secs": 600, "nanos": 0},
             "request_timeout": {"secs": 60, "nanos": 0},
             "max_connections": 100, "enable_nat_traversal": true,
             "enable_relay_client": true, "protocol_version": "x",
