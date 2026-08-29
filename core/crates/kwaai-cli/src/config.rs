@@ -228,6 +228,21 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
+    /// Ceiling on simultaneously established connections, inbound and
+    /// outbound, enforced by the swarm's connection-limits behaviour.
+    ///
+    /// Inbound is capped below this total so the node can always dial out;
+    /// see `kwaai_p2p::behaviour` for the split. It bounds memory growth
+    /// because idle connections are now held for ten minutes rather than
+    /// thirty seconds, so nothing else does.
+    ///
+    /// The default suits a participating node. A bootstrap, which mostly
+    /// receives connections rather than making them, wants several hundred to
+    /// low thousands — sized against the memory the host can spare, roughly
+    /// a megabyte per connection once buffers and per-peer state are counted.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+
     /// Whether this node publishes DHT records *of its own* — its block range,
     /// `_petals.models`, `_kwaai.inference.nodes` and the VPK registry entry —
     /// and, symmetrically, the `state = -1` tombstone on shutdown.
@@ -761,6 +776,12 @@ fn default_trusted_relays() -> Vec<String> {
 fn default_force_private() -> bool {
     true
 }
+/// Matches `kwaai_p2p::NetworkConfig::default()`, so making the knob
+/// settable changes no node that does not set it.
+fn default_max_connections() -> usize {
+    100
+}
+
 fn default_enable_upnp() -> bool {
     true
 }
@@ -848,6 +869,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
+            max_connections: default_max_connections(),
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
@@ -1154,6 +1176,17 @@ impl KwaaiNetConfig {
             "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
+            "max_connections" => {
+                let n: usize = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("max_connections must be a positive integer"))?;
+                // Below the bootstraps plus a relay reservation the node cannot
+                // hold the connections it needs to stay reachable.
+                if n < 8 {
+                    anyhow::bail!("max_connections must be at least 8");
+                }
+                self.max_connections = n;
+            }
             "decentralized_dht" => self.decentralized_dht = parse_bool(value)?,
             "dht_replication" => {
                 let k: usize = value
@@ -1479,6 +1512,10 @@ mod tests {
             "a config written before announce_self existed must keep announcing"
         );
         assert!(c.enable_upnp, "likewise for enable_upnp");
+        assert_eq!(
+            c.max_connections, 100,
+            "and max_connections must match the swarm default it mirrors"
+        );
     }
 
     /// `config set` round-trips each key through YAML, which is how an operator
@@ -1504,6 +1541,28 @@ mod tests {
         let yaml = serde_yaml::to_string(&c).expect("serialise");
         let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
         assert!(reloaded.announce_self);
+    }
+
+    /// An operator raising the ceiling on a bootstrap must survive the YAML
+    /// round-trip, and a value too small to hold the bootstraps plus a relay
+    /// reservation must be refused rather than silently stranding the node.
+    #[test]
+    fn max_connections_round_trips_and_rejects_a_crippling_value() {
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("max_connections", "1024")
+            .expect("max_connections is a valid key");
+
+        let yaml = serde_yaml::to_string(&c).expect("serialise");
+        let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
+        assert_eq!(reloaded.max_connections, 1024);
+
+        let mut c = reloaded;
+        assert!(c.set_key("max_connections", "0").is_err());
+        assert!(c.set_key("max_connections", "lots").is_err());
+        assert_eq!(
+            c.max_connections, 1024,
+            "a rejected set must not have changed the field"
+        );
     }
 
     /// A non-boolean value is rejected rather than coerced, so a typo'd

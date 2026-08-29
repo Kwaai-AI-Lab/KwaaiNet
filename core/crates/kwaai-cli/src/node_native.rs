@@ -171,6 +171,10 @@ impl NativeNode {
             // rust-libp2p 0.53, and turning it on would classify the docker
             // nat-test topology's `198.18/15` addresses unreachable.
             require_global_ips: false,
+
+            // The only bound on connection growth, and so on the memory the
+            // swarm holds: idle connections live for ten minutes.
+            max_connections: config.max_connections,
             ..NetworkConfig::default()
         };
 
