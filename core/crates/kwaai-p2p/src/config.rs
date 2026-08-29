@@ -22,13 +22,15 @@ pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
     //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
 ];
 
-/// KwaaiNet bootstrap servers addressed by DNS name rather than by a pinned IP.
+/// KwaaiNet bootstrap servers addressed by `/dnsaddr/`.
 ///
-/// Prefer these for the native swarm: the transport is built `.with_dns()`, and
-/// a DNS name survives the bootstrap hosts being re-addressed.
+/// TXT records at `_dnsaddr.bootstrap.kwaai.ai` name each bootstrap's current
+/// transport, so re-addressing a host is a DNS edit rather than a release. The
+/// `/p2p/<id>` suffix pins the identity and selects that peer's record; adding
+/// a port or transport here would filter out any record that later differs.
 pub const KWAAI_BOOTSTRAP_SERVERS_DNS: &[&str] = &[
-    "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
-    "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+    "/dnsaddr/bootstrap.kwaai.ai/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+    "/dnsaddr/bootstrap.kwaai.ai/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
 ];
 
 /// Configuration for the P2P network
