@@ -55,6 +55,11 @@ const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// serialize on the event loop, shallow enough to apply backpressure.
 const COMMAND_CHANNEL_SIZE: usize = 64;
 
+/// Upper bound on `last_connected` entries. Sized for its one consumer —
+/// bootstrap-health recency — with room for a busy node's whole active
+/// neighbourhood, not as a history of every peer ever seen.
+const LAST_CONNECTED_CAP: usize = 1024;
+
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -121,6 +126,15 @@ pub struct NetworkService {
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
+    /// When each peer last *established* a connection to us, in either
+    /// direction. Unlike `connections` this survives the close, which is what
+    /// makes bootstrap health readable: kad seeds its routing table with the
+    /// configured bootstrap addresses before any dial succeeds, so table
+    /// membership proves nothing, and bootstraps drop idle connections after
+    /// ~30 s, so the live set reads empty on a healthy node. "Connected
+    /// recently" is the signal that distinguishes the two. Recency cache, not
+    /// a ledger — capped at [`LAST_CONNECTED_CAP`], oldest evicted.
+    last_connected: HashMap<PeerId, Instant>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
@@ -381,6 +395,7 @@ impl NetworkService {
             pending_routed: HashMap::new(),
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
+            last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
             peer_protocols: HashMap::new(),
@@ -536,6 +551,11 @@ impl NetworkService {
                     observed_addrs: observed,
                     listen_addrs: self.swarm.listeners().cloned().collect(),
                     local_protocols: self.collect_local_protocols(),
+                    last_contact: self
+                        .last_connected
+                        .iter()
+                        .map(|(p, at)| (*p, at.elapsed()))
+                        .collect(),
                 });
             }
 
@@ -1561,6 +1581,20 @@ impl NetworkService {
                     ),
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
+
+                if self.last_connected.len() >= LAST_CONNECTED_CAP
+                    && !self.last_connected.contains_key(&peer_id)
+                {
+                    if let Some(oldest) = self
+                        .last_connected
+                        .iter()
+                        .min_by_key(|(_, at)| **at)
+                        .map(|(p, _)| *p)
+                    {
+                        self.last_connected.remove(&oldest);
+                    }
+                }
+                self.last_connected.insert(peer_id, Instant::now());
 
                 self.connections.entry(peer_id).or_default().insert(
                     connection_id,

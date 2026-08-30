@@ -154,6 +154,12 @@ pub struct NetworkSnapshot {
     /// more useful answer anyway: it is what this node will *do* for a peer,
     /// which is what a reader comparing it against a peer's list wants.
     pub local_protocols: Vec<String>,
+    /// How long ago each peer last *established* a connection, in either
+    /// direction. Peers that never connected are absent — which is the point:
+    /// a routing-table entry exists the moment a configured address is seeded
+    /// into kad, but an entry here proves a dial actually succeeded. Bounded
+    /// recency cache (see the service), not a full history.
+    pub last_contact: Vec<(PeerId, Duration)>,
 }
 
 /// A peer we know at least one dialable address for, as reported by

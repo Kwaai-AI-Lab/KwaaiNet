@@ -278,6 +278,8 @@ fn network_update_roundtrip_all_sections() {
                 addrs: vec!["/ip4/198.18.0.99/tcp/8000".to_string()],
             },
         ],
+        bootstrap_total: 2,
+        bootstrap_reachable: 1,
     };
 
     let decoded = NetworkUpdate::decode(original.encode_to_vec().as_slice())
@@ -304,6 +306,7 @@ fn network_update_roundtrip_disjoint_peer_sets() {
             ..Default::default()
         }],
         routing: vec![],
+        ..Default::default()
     };
     let decoded = NetworkUpdate::decode(young.encode_to_vec().as_slice()).expect("must decode");
     assert_eq!(decoded, young);
@@ -325,6 +328,7 @@ fn network_update_roundtrip_disjoint_peer_sets() {
             // and an empty list must survive the wire as one.
             addrs: vec![],
         }],
+        ..Default::default()
     };
     let decoded =
         NetworkUpdate::decode(known_not_connected.encode_to_vec().as_slice()).expect("must decode");

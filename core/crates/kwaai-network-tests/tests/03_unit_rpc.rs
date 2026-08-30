@@ -176,6 +176,8 @@ fn server_frame_status_roundtrip() {
         // daemon reports. Nothing here tracks CARGO_PKG_VERSION, so a version
         // bump never needs to touch this test.
         version: "9.9.9-test".to_string(),
+        bootstrap_total: 2,
+        bootstrap_reachable: 1,
     };
     let decoded = encode_decode_server_frame(server_frame::Body::Status(reply));
     if let Some(server_frame::Body::Status(s)) = decoded.body {
@@ -184,6 +186,8 @@ fn server_frame_status_roundtrip() {
         assert_eq!(s.peer_count, 12);
         assert_eq!(s.uptime_secs, 3600);
         assert_eq!(s.version, "9.9.9-test");
+        assert_eq!(s.bootstrap_total, 2);
+        assert_eq!(s.bootstrap_reachable, 1);
     } else {
         panic!("wrong variant");
     }
@@ -210,6 +214,10 @@ fn server_frame_status_version_defaults_empty_for_old_daemons() {
     let decoded = encode_decode_server_frame(server_frame::Body::Status(reply));
     if let Some(server_frame::Body::Status(s)) = decoded.body {
         assert_eq!(s.version, "");
+        // Bootstrap fields decode as 0 from old daemons — the "unknowable"
+        // value clients are told not to alarm on.
+        assert_eq!(s.bootstrap_total, 0);
+        assert_eq!(s.bootstrap_reachable, 0);
         // The pre-existing fields must still decode alongside the new one.
         assert_eq!(s.uptime_secs, 3600);
     } else {
