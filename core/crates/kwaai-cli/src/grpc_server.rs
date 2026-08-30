@@ -253,8 +253,7 @@ impl KwaaiNet for KwaaiNetService {
                             match net_slot.read().await.clone() {
                                 Some(handle) => match handle.network_snapshot().await {
                                     Ok(snapshot) => {
-                                        let bootstraps =
-                                            crate::peers_view::bootstrap_peer_ids();
+                                        let bootstraps = crate::peers_view::bootstrap_peer_ids();
                                         let (total, reachable) =
                                             bootstrap_health(&snapshot, &bootstraps);
                                         (snapshot.routing.len() as u32, total, reachable)
@@ -2600,6 +2599,7 @@ mod tests {
             }),
             connected: peers,
             routing: vec![],
+            ..Default::default()
         }
     }
 
