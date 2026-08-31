@@ -139,6 +139,37 @@ pub fn pick_evidence(m: &ChunkMeta, origin: ChunkOrigin, terms: &[String], cols:
     truncate_to_width(&quoted, cols)
 }
 
+/// Width of the "where"/"source" column, in the exact shape [`narration_script`] builds
+/// it — the quote's budget is whatever this leaves.
+///
+/// When every passage comes from one document the name is printed once above the table
+/// and the cell holds only the locator. Counting the document name anyway over-estimates
+/// this column by its full width, which silently starves the quote: on D6 that took the
+/// evidence column from ~47 columns to ~20 while leaving a quarter of the row unused.
+fn where_column_width(cells: &[(ChunkOrigin, &str, &str)], single_doc: bool) -> usize {
+    cells
+        .iter()
+        .map(|&(origin, source, locator)| {
+            let base = if single_doc {
+                display_width(locator)
+            } else {
+                display_width(source) + 2 + display_width(locator)
+            };
+            // Non-corpus origins are prefixed "{label} · ".
+            match origin {
+                ChunkOrigin::Corpus => base,
+                other => base + display_width(other.label()) + 3,
+            }
+        })
+        .chain(std::iter::once(if single_doc {
+            "where".len()
+        } else {
+            "source".len()
+        }))
+        .max()
+        .unwrap_or(0)
+}
+
 /// Columns the evidence quote will actually get, given the table's other two.
 ///
 /// The quote is centred on the trigger within this many columns, so it has to match
@@ -219,16 +250,23 @@ pub fn build_rows(
         })
         .collect();
 
-    // Widest "where" cell the table will hold, in the shape narration_script builds it.
-    // Graph rows are bullets, not table rows, so they must not inflate the column.
-    let where_w = partials
+    // Widest "where" cell the table will hold, in the exact shape narration_script
+    // builds it. Graph rows are bullets, not table rows, so they must not inflate it —
+    // and when every passage shares one document the name is printed once above the
+    // table and the cell holds only the locator. Counting the document name anyway
+    // over-estimated this column by its full width and starved the quote.
+    let corpus: Vec<&Partial> = partials.iter().filter(|p| !p.origin.is_graph()).collect();
+    let single_doc = corpus
         .iter()
-        .filter(|p| !p.origin.is_graph())
-        .map(|p| display_width(&p.source) + 2 + display_width(&p.locator))
-        .chain(std::iter::once("source".len()))
-        .max()
-        .unwrap_or(0);
-    let evidence_cols = evidence_budget(table_width, where_w);
+        .map(|p| p.source.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == 1;
+    let cells: Vec<(ChunkOrigin, &str, &str)> = corpus
+        .iter()
+        .map(|p| (p.origin, p.source.as_str(), p.locator.as_str()))
+        .collect();
+    let evidence_cols = evidence_budget(table_width, where_column_width(&cells, single_doc));
 
     let mut rows: Vec<ChunkView> = partials
         .into_iter()
@@ -808,6 +846,42 @@ mod tests {
     fn evidence_budget_has_a_floor_and_never_underflows() {
         assert!(evidence_budget(20, 40) >= 12);
         assert!(evidence_budget(0, 0) >= 12);
+    }
+
+    /// Regression: a single-document result must not reserve room for the document
+    /// name, which the table prints once above itself rather than in every row.
+    ///
+    /// Counting it anyway took D6's evidence column from ~47 columns to ~20 and left a
+    /// quarter of the row empty — the quote starved by a column that was never drawn.
+    #[test]
+    fn where_width_ignores_the_doc_name_when_there_is_only_one() {
+        let cells = [
+            (ChunkOrigin::Corpus, "LEST WE FORGET -rev25.pdf", "§ 137"),
+            (
+                ChunkOrigin::Corpus,
+                "LEST WE FORGET -rev25.pdf",
+                "§ Yousuf (Joe) Rass…",
+            ),
+        ];
+        let single = where_column_width(&cells, true);
+        let multi = where_column_width(&cells, false);
+        assert_eq!(single, "§ Yousuf (Joe) Rass…".chars().count());
+        assert!(
+            multi > single + 20,
+            "multi-doc should reserve the name: {multi} vs {single}"
+        );
+        // And the quote gets the rest of the row.
+        assert!(
+            evidence_budget(80, single) > evidence_budget(80, multi) + 20,
+            "single-doc must leave the quote far more room"
+        );
+    }
+
+    /// The header is a floor on the column: an empty result set still labels itself.
+    #[test]
+    fn where_width_covers_the_header() {
+        assert_eq!(where_column_width(&[], true), "where".len());
+        assert_eq!(where_column_width(&[], false), "source".len());
     }
 
     #[test]
