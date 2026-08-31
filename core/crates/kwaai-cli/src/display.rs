@@ -289,8 +289,13 @@ impl Table {
                     hi = mid - 1;
                 }
             }
+            // Raise columns to FLOOR for readability, but never past what the budget can
+            // actually pay for: `lo.max(FLOOR)` unconditionally discarded the level the
+            // search just found, so a narrow KWAAINET_WIDTH produced rows wider than the
+            // terminal — the wrapping the override exists to prevent.
+            let affordable_floor = FLOOR.min(budget / n.max(1));
             for x in w.iter_mut() {
-                *x = (*x).min(lo.max(FLOOR));
+                *x = (*x).min(lo.max(affordable_floor));
             }
             // Hand any rounding slack to the nominated column.
             let used: usize = w.iter().sum();
@@ -412,5 +417,42 @@ mod width_tests {
 
         std::env::remove_var("KWAAINET_WIDTH");
         assert_eq!(width_override(), None);
+    }
+}
+
+#[cfg(test)]
+mod table_width_tests {
+    use super::*;
+
+    /// Regression: no rendered row may exceed the requested width.
+    ///
+    /// After the water-fill search, every column was re-raised to FLOOR = 8
+    /// unconditionally, discarding the level the search had just computed. Since
+    /// `width_override()` admits values from 20, a narrow override produced rows wider
+    /// than the terminal — the wrapping the override exists to prevent.
+    #[test]
+    fn rows_never_exceed_the_requested_width() {
+        for width in [20usize, 24, 30, 40, 69, 80, 120] {
+            let mut t = Table::new(&["#", "where", "as evidenced by"])
+                .align(0, Align::Right)
+                .flex(2);
+            t.push(vec![
+                "1".into(),
+                "§ Yousuf (Joe) Rassool".into(),
+                "\u{201c}a long evidence quote that will certainly need truncating somewhere\u{201d}".into(),
+            ]);
+            t.push(vec![
+                "2".into(),
+                "p. 143".into(),
+                "another quote entirely".into(),
+            ]);
+            for line in t.render(width) {
+                assert!(
+                    display_width(&line) <= width,
+                    "width {width}: line is {} cols: {line}",
+                    display_width(&line)
+                );
+            }
+        }
     }
 }

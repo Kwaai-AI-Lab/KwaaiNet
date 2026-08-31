@@ -33,16 +33,24 @@ const MAX_PASSAGES: usize = 10;
 ///
 /// Returns `Err` if the model is unreachable or unparseable — the caller should treat
 /// scoring as best-effort and carry on.
+/// `plan` is [`crate::prompt::context_plan`]'s output — the indices into `chunks`, in
+/// the order and count the model actually saw. It is required, not optional: numbering
+/// the passages any other way grades the answer's `[n]` against a different passage
+/// than the one it cites, and the resulting verdict is persisted.
 pub async fn judge_answer(
     query: &str,
     answer: &str,
     chunks: &[RetrievedChunk],
+    plan: &[usize],
     inference_url: &str,
     model: &str,
 ) -> Result<AnswerScore> {
     let mut ctx = String::new();
-    for (i, c) in chunks.iter().take(MAX_PASSAGES).enumerate() {
-        let t = &c.chunk_meta.text;
+    for (i, &idx) in plan.iter().take(MAX_PASSAGES).enumerate() {
+        let Some(c) = chunks.get(idx) else { continue };
+        // The same text the prompt builder sent, not the bare chunk: the model was
+        // shown the wider `surrounding` window whenever there was more of it.
+        let t = crate::prompt::context_text(c);
         let t = if t.len() > MAX_PASSAGE_CHARS {
             &t[..t
                 .char_indices()
@@ -51,7 +59,7 @@ pub async fn judge_answer(
                 .map(|(i, ch)| i + ch.len_utf8())
                 .unwrap_or(0)]
         } else {
-            t.as_str()
+            t
         };
         ctx.push_str(&format!("[{}] {}\n", i + 1, t));
     }

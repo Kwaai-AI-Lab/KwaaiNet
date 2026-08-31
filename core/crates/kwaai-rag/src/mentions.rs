@@ -227,18 +227,32 @@ const FIRST_PERSON_PRONOUNS: &[&str] = &["i", "my", "me", "myself"];
 /// `narrator_id`. Byte offsets computed the same way as
 /// `ner::resolve_pronouns_from_candidates` (cumulative preceding-word lengths).
 fn find_narrator_pronoun_positions(text: &str, narrator_id: i64) -> Vec<(usize, usize, i64)> {
-    let words: Vec<&str> = text.split_whitespace().collect();
     let mut results = Vec::new();
-    let mut offset = 0usize;
-    for &w in &words {
+    // Take each word's real offset from the source rather than accumulating
+    // `w.len() + 1`. That arithmetic assumed exactly one space between words, so any
+    // whitespace run — routine in PDF-extracted text — shifted every subsequent span
+    // left by the extra bytes. The spans are persisted and later used to slice the
+    // chunk, so a drifted one lands mid-character and panics the reader.
+    for (word_start, w) in split_whitespace_indices(text) {
         let core = w.trim_matches(|c: char| !c.is_alphanumeric());
+        if core.is_empty() {
+            continue;
+        }
         if FIRST_PERSON_PRONOUNS.contains(&core.to_lowercase().as_str()) {
-            let start = offset + w.find(core).unwrap_or(0);
+            let start = word_start + w.find(core).unwrap_or(0);
             results.push((start, start + core.len(), narrator_id));
         }
-        offset += w.len() + 1; // +1 for the single space split_whitespace consumed
     }
     results
+}
+
+/// `split_whitespace`, but yielding each word's byte offset in `text`.
+///
+/// `str::split_whitespace` discards positions, and reconstructing them by summing word
+/// lengths is only correct when every separator is exactly one byte.
+fn split_whitespace_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.split_whitespace()
+        .map(move |w| (w.as_ptr() as usize - text.as_ptr() as usize, w))
 }
 
 #[cfg(test)]
@@ -330,6 +344,29 @@ pub struct EvidenceWindow {
     pub entity_name: String,
 }
 
+/// Round a byte index down to the nearest char boundary (`s.len()` if past the end).
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Round a byte index up to the nearest char boundary, so a span's end never cuts a
+/// character in half — widening the quote by a byte is always safer than panicking.
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Pick the best evidence window from a chunk's stored mention index.
 ///
 /// The mention index records where each entity was actually located at ingest, so
@@ -417,11 +454,17 @@ pub fn pick_evidence_window(
     let (trig_start, trig_len, trig_name) = match best_mention {
         Some(m) => (m.start, m.end - m.start, m.entity_name.clone()),
         None => {
+            // `body_lc` is a lowercased copy, and lowercasing is not byte-length
+            // preserving for every character (U+0130 grows to 3 bytes), so an index
+            // found in it can miss — or split — the matching span in the original.
+            // Clamp back onto real boundaries rather than trusting the offset.
             let (i, len) = query_terms
                 .iter()
                 .filter_map(|t| body_lc.find(t.as_str()).map(|i| (i, t.len())))
                 .min_by_key(|(i, _)| *i)?;
-            (i, len, best.sentence[i..i + len].to_string())
+            let s = floor_char_boundary(&best.sentence, i.min(best.sentence.len()));
+            let e = ceil_char_boundary(&best.sentence, (s + len).min(best.sentence.len()));
+            (s, e - s, best.sentence[s..e].to_string())
         }
     };
 
@@ -454,9 +497,16 @@ pub fn pick_evidence_window(
         text.push_str(s);
     }
 
+    // Snap to char boundaries before handing these out. Callers slice `text` with them
+    // directly, and a mention index written by an older build — or any future offset
+    // arithmetic that drifts — would otherwise panic the reader rather than merely
+    // quote the wrong span. Clamping to `len()` bounds the index but does not make it
+    // sliceable.
+    let start = floor_char_boundary(&text, prefix.min(text.len()));
+    let end = ceil_char_boundary(&text, (prefix + trig_len).min(text.len())).max(start);
     Some(EvidenceWindow {
-        trigger_start: prefix.min(text.len()),
-        trigger_end: (prefix + trig_len).min(text.len()),
+        trigger_start: start,
+        trigger_end: end,
         text,
         entity_name: trig_name,
     })
@@ -511,6 +561,68 @@ mod evidence_tests {
         ];
         let w = pick_evidence_window(&s, &["mike".into()], 1).unwrap();
         assert_eq!(w.text, "Was it him? Mike Allie");
+    }
+
+    /// Regression: whitespace runs must not shift mention offsets.
+    ///
+    /// The offset was accumulated as `w.len() + 1`, assuming exactly one space between
+    /// words, so every extra whitespace byte shifted subsequent spans left. These spans
+    /// are persisted and later used to slice the chunk, so a drifted one lands inside a
+    /// multi-byte character and panics the reader. Double spaces are routine in
+    /// PDF-extracted text and this corpus is full of em dashes, so the two meet often.
+    #[test]
+    fn pronoun_offsets_survive_whitespace_runs() {
+        // "man" then TWO spaces, then an em dash immediately before the pronoun.
+        let text = "He was a good man  \u{2014}I never forgot him";
+        for (start, end, _) in find_narrator_pronoun_positions(text, 7) {
+            assert!(
+                text.is_char_boundary(start) && text.is_char_boundary(end),
+                "span {start}..{end} is not on a char boundary in {text:?}"
+            );
+            // And it must actually point at a pronoun, not merely be sliceable.
+            let got = &text[start..end];
+            assert!(
+                FIRST_PERSON_PRONOUNS.contains(&got.to_lowercase().as_str()),
+                "span {start}..{end} yielded {got:?}, not a pronoun"
+            );
+        }
+    }
+
+    /// Tabs and newlines are whitespace too, and cost more than the one byte the old
+    /// arithmetic assumed.
+    #[test]
+    fn pronoun_offsets_survive_tabs_and_newlines() {
+        for text in [
+            "the shop closed\tI walked home",
+            "the shop closed\n\nI walked home",
+            "the shop closed   I walked home",
+        ] {
+            for (start, end, _) in find_narrator_pronoun_positions(text, 1) {
+                assert_eq!(&text[start..end], "I", "wrong span in {text:?}");
+            }
+        }
+    }
+
+    /// The window's trigger offsets are handed to callers that slice with them, so they
+    /// must be on char boundaries even if the stored index is from an older build.
+    #[test]
+    fn evidence_window_offsets_are_always_sliceable() {
+        let sm = SentenceMentions {
+            sentence: "Mike\u{2014}Allie ran the shop".to_string(),
+            mentions: vec![MentionSpan {
+                entity_id: 1,
+                entity_name: "Mike".into(),
+                // Deliberately mid-character: byte 5 is inside the em dash (4..7).
+                start: 5,
+                end: 6,
+                kind: MentionKind::Literal,
+            }],
+        };
+        let w = pick_evidence_window(&[sm], &["mike".into()], 0).unwrap();
+        assert!(w.text.is_char_boundary(w.trigger_start));
+        assert!(w.text.is_char_boundary(w.trigger_end));
+        // Must not panic.
+        let _ = &w.text[w.trigger_start..w.trigger_end];
     }
 
     #[test]

@@ -462,8 +462,13 @@ pub async fn resident_models(base_url: &str) -> Option<Vec<ResidentModel>> {
 /// A `/api/generate` call carrying no prompt loads the model and returns without
 /// generating. Measured on an M-series Mac: 25.4s for llama3.1:8b from cold, 0.15s
 /// when already resident — so this is cheap to call speculatively and expensive to
-/// skip. It also refreshes the eviction timer, which otherwise defaults to five
-/// minutes and will drop the model out from under a session spent reading an answer.
+/// skip. It also refreshes the eviction timer, which otherwise defaults to five minutes.
+///
+/// The refresh does not stick past the next generation: completions go to
+/// `/v1/chat/completions`, which ignores `keep_alive` exactly as it ignores `options`,
+/// so Ollama reverts to its five-minute default the moment an answer is produced.
+/// Callers that want the model resident while the user reads must call this *after* the
+/// answer, not only before it.
 ///
 /// Best-effort: a non-Ollama endpoint simply fails and the caller carries on.
 pub async fn warm_model(base_url: &str, model: &str, keep_alive: &str) -> Result<()> {

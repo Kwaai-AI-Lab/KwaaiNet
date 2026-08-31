@@ -83,7 +83,15 @@ pub fn pick_evidence_windowed(
             let clean = sanitize_cell(&w.text);
             // sanitize_cell collapses whitespace, so the trigger offset has to be
             // re-found rather than carried across.
-            let needle = sanitize_cell(&w.text[w.trigger_start..w.trigger_end]);
+            // `get` rather than `[..]`: these offsets come from the persisted mention
+            // index, so a KB written by a build with the old drifting offset arithmetic
+            // still holds spans that cut a character in half. Reading such a KB must
+            // degrade to an uncentred quote, not panic the turn.
+            let needle = w
+                .text
+                .get(w.trigger_start..w.trigger_end)
+                .map(sanitize_cell)
+                .unwrap_or_default();
             // The needle's own length, not the original span's: sanitize_cell collapses
             // whitespace runs, so a trigger like "Hanover  Street" is one byte shorter
             // here than in `w.text`, and carrying the old length puts `b` mid-character.
@@ -131,14 +139,40 @@ pub fn pick_evidence(m: &ChunkMeta, origin: ChunkOrigin, terms: &[String], cols:
     truncate_to_width(&quoted, cols)
 }
 
+/// Columns the evidence quote will actually get, given the table's other two.
+///
+/// The quote is centred on the trigger within this many columns, so it has to match
+/// what `Table` will allow — quote into 240 and the renderer head-truncates to ~40,
+/// discarding the centring and showing the head of the passage instead of the mention.
+///
+/// `Table` frames each cell with `"│ "` and closes the row with `" │"`, so three columns
+/// cost 10. The `#` column holds a number and a mark glyph. The flex column is by far
+/// the widest, so the water-fill never shrinks the other two below their natural width —
+/// which is what makes this predictable without rendering first.
+fn evidence_budget(table_width: usize, where_w: usize) -> usize {
+    const FRAME: usize = 3 * 3 + 1;
+    const NUM_COL: usize = 3;
+    /// Below this the quote is too short to be worth centring; let it head-truncate.
+    const MIN: usize = 12;
+    table_width
+        .saturating_sub(FRAME + NUM_COL + where_w)
+        .max(MIN)
+}
+
 /// Build the display rows. `plan` is [`kwaai_rag::prompt::context_plan`]'s output, so
 /// row numbering *is* the citation numbering rather than a parallel calculation.
+///
+/// `table_width` is the width the findings table will be rendered at. The evidence
+/// budget is derived from it rather than taken as a parameter: quoting into a 240-column
+/// window and letting `Table` head-truncate to ~40 threw the centring away, so the
+/// mention the window was built around was almost never on screen — which is exactly
+/// what centring on the ingest-located mention was added to fix.
 pub fn build_rows(
     chunks: &[RetrievedChunk],
     plan: &[usize],
     marks: &Marks,
     query: &str,
-    evidence_cols: usize,
+    table_width: usize,
     mentions_of: &dyn Fn(i64) -> Vec<SentenceMentions>,
 ) -> Vec<ChunkView> {
     let terms = coverage_terms(query);
@@ -148,39 +182,69 @@ pub fn build_rows(
         .map(|(slot, &idx)| (idx, slot + 1))
         .collect();
 
-    let mut rows: Vec<ChunkView> = chunks
+    // Pass 1: everything except the quote. The other two columns are what constrain the
+    // evidence column, and neither depends on it.
+    struct Partial<'a> {
+        i: usize,
+        c: &'a RetrievedChunk,
+        origin: ChunkOrigin,
+        source: String,
+        locator: String,
+    }
+    let partials: Vec<Partial> = chunks
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let origin = origin_of(c);
             let m = &c.chunk_meta;
-            let source = if origin.is_graph() {
-                m.doc_name
-                    .trim_start_matches("[Graph:")
-                    .trim_end_matches(']')
-                    .trim()
-                    .to_string()
-            } else {
-                m.doc_name.clone()
-            };
-            ChunkView {
-                cite: cite_of.get(&i).copied(),
+            Partial {
+                i,
+                c,
                 origin,
-                source,
+                source: if origin.is_graph() {
+                    m.doc_name
+                        .trim_start_matches("[Graph:")
+                        .trim_end_matches(']')
+                        .trim()
+                        .to_string()
+                } else {
+                    m.doc_name.clone()
+                },
                 locator: if origin.is_graph() {
                     String::from("knowledge graph")
                 } else {
                     locator_of(m)
                 },
-                evidence: {
-                    let sents = c.chunk_id.map(mentions_of).unwrap_or_default();
-                    pick_evidence_windowed(m, origin, &sents, &terms, evidence_cols)
-                },
-                mark: marks
-                    .get(&kwaai_rag::iterative::chunk_key(c))
-                    .copied()
-                    .unwrap_or(0),
             }
+        })
+        .collect();
+
+    // Widest "where" cell the table will hold, in the shape narration_script builds it.
+    // Graph rows are bullets, not table rows, so they must not inflate the column.
+    let where_w = partials
+        .iter()
+        .filter(|p| !p.origin.is_graph())
+        .map(|p| display_width(&p.source) + 2 + display_width(&p.locator))
+        .chain(std::iter::once("source".len()))
+        .max()
+        .unwrap_or(0);
+    let evidence_cols = evidence_budget(table_width, where_w);
+
+    let mut rows: Vec<ChunkView> = partials
+        .into_iter()
+        .map(|p| ChunkView {
+            cite: cite_of.get(&p.i).copied(),
+            origin: p.origin,
+            source: p.source,
+            locator: p.locator,
+            evidence: {
+                let sents = p.c.chunk_id.map(mentions_of).unwrap_or_default();
+                pick_evidence_windowed(&p.c.chunk_meta, p.origin, &sents, &terms, evidence_cols)
+            },
+            mark: marks
+                .get(&kwaai_rag::iterative::chunk_key(p.c))
+                .copied()
+                .unwrap_or(0),
         })
         .collect();
 
@@ -722,6 +786,28 @@ mod tests {
         let early = stretch_pace(ms(1), 800, Some(target), now);
         let late = stretch_pace(ms(1), 200, Some(target), now);
         assert!(late > early, "expected {late:?} > {early:?}");
+    }
+
+    /// The quote is centred within the columns the table will actually grant it.
+    ///
+    /// Centring inside 240 columns and letting `Table` head-truncate to ~40 discarded
+    /// the centring entirely, so the mention the window was built around was almost
+    /// never on screen — the very thing centring was added to fix.
+    #[test]
+    fn evidence_budget_matches_the_column_the_table_grants() {
+        // 80 wide, a 24-column "where" cell: 80 - (10 frame + 3 num + 24) = 43.
+        assert_eq!(evidence_budget(80, 24), 43);
+        // A wider "where" squeezes the quote.
+        assert!(evidence_budget(80, 40) < evidence_budget(80, 24));
+        // A wider table gives it back.
+        assert!(evidence_budget(120, 24) > evidence_budget(80, 24));
+    }
+
+    /// A narrow terminal must not produce a zero-width or underflowing budget.
+    #[test]
+    fn evidence_budget_has_a_floor_and_never_underflows() {
+        assert!(evidence_budget(20, 40) >= 12);
+        assert!(evidence_budget(0, 0) >= 12);
     }
 
     #[test]

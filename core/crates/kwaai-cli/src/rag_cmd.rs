@@ -1456,8 +1456,18 @@ async fn run_completion(
                 } else if !body["error"].is_null() {
                     return format!("(inference error: {})", body["error"]);
                 } else {
+                    // Cut on a character, not a byte: a localized or HTML error body
+                    // whose 200th byte falls mid-character would otherwise panic this
+                    // spawned task and be reported as "task panicked", hiding the very
+                    // body we are trying to show.
                     let t = body.to_string();
-                    return format!("(no response — body: {})", &t[..t.len().min(200)]);
+                    let cut = t
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 200)
+                        .last()
+                        .unwrap_or(0);
+                    return format!("(no response — body: {})", &t[..cut]);
                 }
             }
             Err(_) => continue,
@@ -1777,11 +1787,6 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
         // KWAAINET_WIDTH wins in *either* direction — `.max(80)` would discard a
         // narrower one and wrap every row on an 80-column terminal.
         let width = crate::display::width_override().unwrap_or(80);
-        // Keep evidence generous here and let the table decide the final width: it is
-        // the only place that knows the whole row budget. Pre-truncating to a guessed
-        // column width leaves the table nothing to redistribute.
-        let evidence_cols = 240usize;
-
         let stdin = io::stdin();
         // How long the answer is expected to take, used to stretch the retrieval
         // narration across it. Seeded high on purpose: running the narration long and
@@ -1826,18 +1831,47 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                         Ok(0) | Err(_) => break,
                         Ok(_) => {}
                     }
-                    // Route through parse_cmd so the slash forms the banner advertises
-                    // work here too; anything that is not a command is the question.
+                    // Route through parse_cmd so the commands the banner advertises work
+                    // here too. Every command is answered rather than falling through:
+                    // sending `/marks` to the retriever as a question is worse than
+                    // saying it does not apply yet, and `/help` is reachable from this
+                    // very prompt, so everything it lists must do something here.
+                    use crate::chat_ui::ChatCmd;
                     match crate::chat_ui::parse_cmd(&line) {
-                        crate::chat_ui::ChatCmd::Exit => break,
-                        crate::chat_ui::ChatCmd::Continue => continue,
-                        crate::chat_ui::ChatCmd::Help => {
+                        ChatCmd::Exit => break,
+                        ChatCmd::Continue => continue,
+                        ChatCmd::Help => {
                             for l in crate::chat_ui::help_lines() {
                                 eprintln!("{l}");
                             }
                             continue;
                         }
-                        _ => line.trim().to_string(),
+                        // Session-scoped: meaningful before a question is asked.
+                        ChatCmd::Marks => {
+                            if marks.is_empty() {
+                                eprintln!("  no marks");
+                            } else {
+                                eprintln!("  {} mark(s) carried into the next turn", marks.len());
+                            }
+                            continue;
+                        }
+                        ChatCmd::ClearMarks => {
+                            marks.clear();
+                            eprintln!("  marks cleared");
+                            continue;
+                        }
+                        // Turn-scoped: these need results that do not exist yet.
+                        ChatCmd::Mark(..)
+                        | ChatCmd::Show(_)
+                        | ChatCmd::Retry
+                        | ChatCmd::Score(_)
+                        | ChatCmd::Why => {
+                            eprintln!(
+                                "  ⚠  ask a question first — that command acts on a turn's results"
+                            );
+                            continue;
+                        }
+                        ChatCmd::Ask(q) => q,
                     }
                 }
             };
@@ -2101,7 +2135,7 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                         &plan,
                         &marks,
                         &query,
-                        evidence_cols,
+                        width,
                         &mentions_of,
                     );
                     let script = crate::chat_ui::narration_script(
@@ -2159,12 +2193,31 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                 }
                 io::stdout().flush().ok();
 
+                // Re-arm the eviction timer now the answer is out. Generating through
+                // /v1/chat/completions reset it to Ollama's five-minute default, so
+                // without this the model is evicted while the user reads a long answer
+                // and the next question pays the full reload the preloading exists to
+                // avoid. Detached: nothing waits on it.
+                for (b, m) in &ollama_targets {
+                    let (b, m) = (b.clone(), m.clone());
+                    tokio::spawn(async move {
+                        let _ = crate::ollama::warm_model(&b, &m, WARM_KEEP_ALIVE).await;
+                    });
+                }
+
                 let is_error =
                     answer.starts_with("(inference error:") || answer.starts_with("(no response");
 
                 // Free, deterministic check for the exact hallucination mode the RAG
                 // system prompt warns against — no LLM call involved.
-                let bad = crate::chat_ui::check_citations(&answer, plan.len());
+                // Not on a cache hit: the answer was produced against a *different*
+                // turn's retrieval, so its [n] refer to that plan, not this one.
+                // Checking it here reports fabrication that never happened.
+                let bad = if from_cache {
+                    Vec::new()
+                } else {
+                    crate::chat_ui::check_citations(&answer, plan.len())
+                };
                 if !bad.is_empty() {
                     eprintln!(
                         "  ⚠  answer cites {} source{} that were not supplied: {}",
@@ -2199,6 +2252,7 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                         &query,
                         &answer,
                         &chunks,
+                        &plan,
                         &inference_url,
                         &model,
                     )
