@@ -146,9 +146,6 @@ pub enum Command {
     /// Uninstall KwaaiNet — stop the node, remove all data, and delete binaries
     Uninstall(UninstallArgs),
 
-    /// Open the Node Dashboard (web UI). Run from repo root; requires Node.js.
-    Ui,
-
     /// Distributed transformer block sharding
     #[command(long_about = "Distributed transformer block sharding (Petals-style)
 
