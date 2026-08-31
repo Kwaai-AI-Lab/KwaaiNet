@@ -5,6 +5,8 @@ mod api;
 mod block_rpc;
 mod calibration;
 mod capacity_lease;
+#[cfg(feature = "rag")]
+mod chat_ui;
 mod circuit_breaker;
 mod cli;
 mod config;

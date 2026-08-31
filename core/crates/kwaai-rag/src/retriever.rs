@@ -67,6 +67,12 @@ pub fn canonicalize_query(query: &str, graph: &GraphStore) -> String {
 
 #[derive(Debug, Clone)]
 pub struct RetrievedChunk {
+    /// Storage row id, when the chunk came from the chunk store.
+    ///
+    /// `None` for synthetic chunks (graph fact cards, summaries, timelines), which
+    /// have no row. Carrying this is what lets a caller reach back to per-chunk data
+    /// the retriever does not itself return — the ingest-time mention index, for one.
+    pub chunk_id: Option<i64>,
     pub chunk_meta: ChunkMeta,
     pub score: f64,
     pub source_kb: Option<String>,
@@ -706,9 +712,64 @@ fn build_entity_fact_card(
     (lines.join("\n"), has_content)
 }
 
+/// Where a retrieved chunk actually came from.
+///
+/// Graph-derived results are smuggled through the same `RetrievedChunk` type as corpus
+/// passages and are distinguished only by the `doc_name` the minting site chose. This
+/// enum, and `origin_of` below, are deliberately placed next to `make_synthetic_chunk`
+/// so the classifier cannot drift away from the code that mints the names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkOrigin {
+    /// Entity fact card injected as a graph query result.
+    GraphFact,
+    /// Entity description injected alongside corpus results.
+    GraphEntity,
+    /// Timeline / sequence diagram.
+    Timeline,
+    /// HiRAG summary node.
+    Summary,
+    /// An ordinary passage retrieved from the corpus.
+    Corpus,
+}
+
+impl ChunkOrigin {
+    /// Short label for display.
+    pub fn label(self) -> &'static str {
+        match self {
+            ChunkOrigin::GraphFact | ChunkOrigin::GraphEntity => "graph",
+            ChunkOrigin::Timeline => "timeline",
+            ChunkOrigin::Summary => "summary",
+            ChunkOrigin::Corpus => "corpus",
+        }
+    }
+
+    pub fn is_graph(self) -> bool {
+        matches!(self, ChunkOrigin::GraphFact | ChunkOrigin::GraphEntity)
+    }
+}
+
+/// Classify a retrieved chunk by the convention its minting site used.
+pub fn origin_of(c: &RetrievedChunk) -> ChunkOrigin {
+    let doc = c.chunk_meta.doc_name.as_str();
+    if doc.starts_with("__summary__:") {
+        ChunkOrigin::Summary
+    } else if doc.starts_with("sequence_diagram:") {
+        ChunkOrigin::Timeline
+    } else if doc.starts_with("[Graph:") {
+        if c.chunk_meta.text.starts_with("[Graph Query Result]") {
+            ChunkOrigin::GraphFact
+        } else {
+            ChunkOrigin::GraphEntity
+        }
+    } else {
+        ChunkOrigin::Corpus
+    }
+}
+
 /// Build a synthetic `RetrievedChunk` from a doc name, text body, and score.
 fn make_synthetic_chunk(doc_name: String, text: String, score: f64) -> RetrievedChunk {
     RetrievedChunk {
+        chunk_id: None,
         chunk_meta: ChunkMeta {
             doc_name,
             chunk_index: 0,
@@ -950,12 +1011,12 @@ pub(crate) fn assemble_results(
         .into_iter()
         .zip(metas)
         .filter_map(|((id, score), meta_opt)| {
-            let _ = id;
             let chunk_meta = meta_opt?;
             if score < cfg.min_score {
                 return None;
             }
             Some(RetrievedChunk {
+                chunk_id: Some(id),
                 chunk_meta,
                 score,
                 source_kb: None,
@@ -1031,5 +1092,47 @@ mod tests {
         // "TGT" should not match inside "XTGTX"
         let result = canonicalize_query("Tell me about XTGTX.", &store);
         assert_eq!(result, "Tell me about XTGTX.");
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    fn synth(doc: &str, text: &str) -> RetrievedChunk {
+        make_synthetic_chunk(doc.to_string(), text.to_string(), 1.0)
+    }
+
+    #[test]
+    fn classifies_every_minting_convention() {
+        assert_eq!(
+            origin_of(&synth("[Graph: J.M.H. Gool]", "[Graph Query Result]\nfoo")),
+            ChunkOrigin::GraphFact
+        );
+        assert_eq!(
+            origin_of(&synth("[Graph: J.M.H. Gool]", "A person who lived in D6.")),
+            ChunkOrigin::GraphEntity
+        );
+        assert_eq!(
+            origin_of(&synth("__summary__:42", "summary")),
+            ChunkOrigin::Summary
+        );
+        assert_eq!(
+            origin_of(&synth("sequence_diagram:trial", "t")),
+            ChunkOrigin::Timeline
+        );
+        assert_eq!(
+            origin_of(&synth("memoir.pdf", "ordinary text")),
+            ChunkOrigin::Corpus
+        );
+    }
+
+    #[test]
+    fn graph_variants_report_as_graph() {
+        assert!(ChunkOrigin::GraphFact.is_graph());
+        assert!(ChunkOrigin::GraphEntity.is_graph());
+        assert!(!ChunkOrigin::Corpus.is_graph());
+        assert_eq!(ChunkOrigin::Corpus.label(), "corpus");
+        assert_eq!(ChunkOrigin::GraphFact.label(), "graph");
     }
 }

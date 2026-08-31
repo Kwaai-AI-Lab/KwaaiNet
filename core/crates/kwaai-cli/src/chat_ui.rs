@@ -1,0 +1,991 @@
+//! Presentation and interaction for `kwaainet rag chat`.
+//!
+//! # The stdout invariant
+//!
+//! `tests/kwaai-knowledge/test_chat_stdout_clean.sh` guards a real bug: chat once read
+//! its own stdout progress lines back as user input and looped forever. **stdout is
+//! reserved for the `You:` / `Assistant:` protocol; everything else goes to stderr.**
+//!
+//! That is enforced structurally here: every function in this module *returns* lines
+//! rather than printing them. Only [`play`] touches a terminal, and it writes solely
+//! through a [`StatusLine`], which is stderr-bound. Nothing in this module can reach
+//! stdout even by accident, and all of it is unit-testable without a terminal.
+
+use std::time::Duration;
+
+use kwaai_rag::iterative::coverage_terms;
+use kwaai_rag::mentions::{pick_evidence_window, SentenceMentions};
+use kwaai_rag::meta_store::ChunkMeta;
+use kwaai_rag::reranker::Marks;
+use kwaai_rag::retriever::{origin_of, ChunkOrigin, RetrievedChunk};
+
+use crate::display::{
+    display_width, sanitize_cell, truncate_around, truncate_to_width, Align, Table,
+};
+use crate::progress::StatusLine;
+
+// ── row model ─────────────────────────────────────────────────────────────────
+
+/// One retrieved item, as the user sees it.
+pub struct ChunkView {
+    /// 1-based citation number, i.e. the `[n]` the model was shown. `None` when the
+    /// chunk was cut by the context budget and never reached the model at all.
+    pub cite: Option<usize>,
+    pub origin: ChunkOrigin,
+    /// Document name, or the entity name for graph-derived chunks.
+    pub source: String,
+    /// "p. 42", "§ Shops", or "chunk 7".
+    pub locator: String,
+    /// The "as evidenced by" quote.
+    pub evidence: String,
+    pub mark: i8,
+}
+
+impl ChunkView {
+    pub fn sent(&self) -> bool {
+        self.cite.is_some()
+    }
+}
+
+/// Where a chunk sits in the document.
+fn locator_of(m: &ChunkMeta) -> String {
+    if let Some(p) = m.page_num {
+        return format!("p. {p}");
+    }
+    if let Some(ref s) = m.section_name {
+        if !s.is_empty() {
+            return format!("§ {}", truncate_to_width(s, 18));
+        }
+    }
+    format!("chunk {}", m.chunk_index)
+}
+
+/// The most on-topic sentence of a chunk, for the "as evidenced by" column.
+///
+/// Graph-derived chunks are synthesised fact cards, not source text, so their first
+/// structured line is shown instead of a quotation — quoting a synthesised card as if
+/// it were a passage from the corpus would be dishonest.
+/// Evidence text for a corpus chunk, preferring the ingest-time mention index.
+///
+/// `sentences` is the chunk's stored mention index. When it is present the quote is
+/// the window around the mention the extractor actually located; when it is empty —
+/// a KB ingested before the index existed, or a synthetic chunk — this falls back to
+/// scanning the passage for query terms.
+pub fn pick_evidence_windowed(
+    m: &ChunkMeta,
+    origin: ChunkOrigin,
+    sentences: &[SentenceMentions],
+    terms: &[String],
+    cols: usize,
+) -> String {
+    if !origin.is_graph() {
+        if let Some(w) = pick_evidence_window(sentences, terms, EVIDENCE_RADIUS) {
+            let clean = sanitize_cell(&w.text);
+            // sanitize_cell collapses whitespace, so the trigger offset has to be
+            // re-found rather than carried across.
+            // `get` rather than `[..]`: these offsets come from the persisted mention
+            // index, so a KB written by a build with the old drifting offset arithmetic
+            // still holds spans that cut a character in half. Reading such a KB must
+            // degrade to an uncentred quote, not panic the turn.
+            let needle = w
+                .text
+                .get(w.trigger_start..w.trigger_end)
+                .map(sanitize_cell)
+                .unwrap_or_default();
+            // The needle's own length, not the original span's: sanitize_cell collapses
+            // whitespace runs, so a trigger like "Hanover  Street" is one byte shorter
+            // here than in `w.text`, and carrying the old length puts `b` mid-character.
+            let (a, b) = match clean.find(&needle) {
+                Some(i) => (i, i + needle.len()),
+                None => (0, 0),
+            };
+            return format!(
+                "\u{201c}{}\u{201d}",
+                truncate_around(&clean, a, b, cols.saturating_sub(2))
+            );
+        }
+    }
+    pick_evidence(m, origin, terms, cols)
+}
+
+/// Sentences either side of the trigger to include. The sentence the extractor
+/// matched often names only the subject, with the claim in the next clause.
+const EVIDENCE_RADIUS: usize = 1;
+
+pub fn pick_evidence(m: &ChunkMeta, origin: ChunkOrigin, terms: &[String], cols: usize) -> String {
+    let body = if m.surrounding.len() > m.text.len() {
+        &m.surrounding
+    } else {
+        &m.text
+    };
+    if origin.is_graph() || origin == ChunkOrigin::Timeline {
+        let line = body
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with("[Graph Query Result]"))
+            .unwrap_or("");
+        return truncate_to_width(&sanitize_cell(line), cols);
+    }
+    let best = body
+        .split(['.', '\n'])
+        .map(str::trim)
+        .filter(|s| s.len() > 24)
+        .max_by_key(|s| {
+            let low = s.to_lowercase();
+            terms.iter().filter(|t| low.contains(t.as_str())).count()
+        })
+        .unwrap_or_else(|| body.trim());
+    let quoted = format!("\u{201c}{}\u{201d}", sanitize_cell(best));
+    truncate_to_width(&quoted, cols)
+}
+
+/// Width of the "where"/"source" column, in the exact shape [`narration_script`] builds
+/// it — the quote's budget is whatever this leaves.
+///
+/// When every passage comes from one document the name is printed once above the table
+/// and the cell holds only the locator. Counting the document name anyway over-estimates
+/// this column by its full width, which silently starves the quote: on D6 that took the
+/// evidence column from ~47 columns to ~20 while leaving a quarter of the row unused.
+fn where_column_width(cells: &[(ChunkOrigin, &str, &str)], single_doc: bool) -> usize {
+    cells
+        .iter()
+        .map(|&(origin, source, locator)| {
+            let base = if single_doc {
+                display_width(locator)
+            } else {
+                display_width(source) + 2 + display_width(locator)
+            };
+            // Non-corpus origins are prefixed "{label} · ".
+            match origin {
+                ChunkOrigin::Corpus => base,
+                other => base + display_width(other.label()) + 3,
+            }
+        })
+        .chain(std::iter::once(if single_doc {
+            "where".len()
+        } else {
+            "source".len()
+        }))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Columns the evidence quote will actually get, given the table's other two.
+///
+/// The quote is centred on the trigger within this many columns, so it has to match
+/// what `Table` will allow — quote into 240 and the renderer head-truncates to ~40,
+/// discarding the centring and showing the head of the passage instead of the mention.
+///
+/// `Table` frames each cell with `"│ "` and closes the row with `" │"`, so three columns
+/// cost 10. The `#` column holds a number and a mark glyph. The flex column is by far
+/// the widest, so the water-fill never shrinks the other two below their natural width —
+/// which is what makes this predictable without rendering first.
+fn evidence_budget(table_width: usize, where_w: usize) -> usize {
+    const FRAME: usize = 3 * 3 + 1;
+    const NUM_COL: usize = 3;
+    /// Below this the quote is too short to be worth centring; let it head-truncate.
+    const MIN: usize = 12;
+    table_width
+        .saturating_sub(FRAME + NUM_COL + where_w)
+        .max(MIN)
+}
+
+/// Build the display rows. `plan` is [`kwaai_rag::prompt::context_plan`]'s output, so
+/// row numbering *is* the citation numbering rather than a parallel calculation.
+///
+/// `table_width` is the width the findings table will be rendered at. The evidence
+/// budget is derived from it rather than taken as a parameter: quoting into a 240-column
+/// window and letting `Table` head-truncate to ~40 threw the centring away, so the
+/// mention the window was built around was almost never on screen — which is exactly
+/// what centring on the ingest-located mention was added to fix.
+pub fn build_rows(
+    chunks: &[RetrievedChunk],
+    plan: &[usize],
+    marks: &Marks,
+    query: &str,
+    table_width: usize,
+    mentions_of: &dyn Fn(i64) -> Vec<SentenceMentions>,
+) -> Vec<ChunkView> {
+    let terms = coverage_terms(query);
+    let cite_of: std::collections::HashMap<usize, usize> = plan
+        .iter()
+        .enumerate()
+        .map(|(slot, &idx)| (idx, slot + 1))
+        .collect();
+
+    // Pass 1: everything except the quote. The other two columns are what constrain the
+    // evidence column, and neither depends on it.
+    struct Partial<'a> {
+        i: usize,
+        c: &'a RetrievedChunk,
+        origin: ChunkOrigin,
+        source: String,
+        locator: String,
+    }
+    let partials: Vec<Partial> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let origin = origin_of(c);
+            let m = &c.chunk_meta;
+            Partial {
+                i,
+                c,
+                origin,
+                source: if origin.is_graph() {
+                    m.doc_name
+                        .trim_start_matches("[Graph:")
+                        .trim_end_matches(']')
+                        .trim()
+                        .to_string()
+                } else {
+                    m.doc_name.clone()
+                },
+                locator: if origin.is_graph() {
+                    String::from("knowledge graph")
+                } else {
+                    locator_of(m)
+                },
+            }
+        })
+        .collect();
+
+    // Widest "where" cell the table will hold, in the exact shape narration_script
+    // builds it. Graph rows are bullets, not table rows, so they must not inflate it —
+    // and when every passage shares one document the name is printed once above the
+    // table and the cell holds only the locator. Counting the document name anyway
+    // over-estimated this column by its full width and starved the quote.
+    let corpus: Vec<&Partial> = partials.iter().filter(|p| !p.origin.is_graph()).collect();
+    let single_doc = corpus
+        .iter()
+        .map(|p| p.source.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == 1;
+    let cells: Vec<(ChunkOrigin, &str, &str)> = corpus
+        .iter()
+        .map(|p| (p.origin, p.source.as_str(), p.locator.as_str()))
+        .collect();
+    let evidence_cols = evidence_budget(table_width, where_column_width(&cells, single_doc));
+
+    let mut rows: Vec<ChunkView> = partials
+        .into_iter()
+        .map(|p| ChunkView {
+            cite: cite_of.get(&p.i).copied(),
+            origin: p.origin,
+            source: p.source,
+            locator: p.locator,
+            evidence: {
+                let sents = p.c.chunk_id.map(mentions_of).unwrap_or_default();
+                pick_evidence_windowed(&p.c.chunk_meta, p.origin, &sents, &terms, evidence_cols)
+            },
+            mark: marks
+                .get(&kwaai_rag::iterative::chunk_key(p.c))
+                .copied()
+                .unwrap_or(0),
+        })
+        .collect();
+
+    // Cited rows first, in citation order; then whatever never reached the model.
+    rows.sort_by_key(|r| r.cite.unwrap_or(usize::MAX));
+    rows
+}
+
+// ── narration ─────────────────────────────────────────────────────────────────
+
+/// One step of the narration script.
+pub enum Unit {
+    /// Prose, typed out at a readable pace.
+    Prose(String),
+    /// A line emitted whole — table rows must never be typed character by character,
+    /// because a half-drawn column looks broken.
+    Line(String),
+}
+
+/// Compose "Here's what we know…" from the retrieval result.
+///
+/// Shows rank and origin, never the raw `score`: scores share one field across
+/// incomparable scales (a graph fact card is 3.0, an ordinary RRF-fused chunk is
+/// 0.015–0.03), so a displayed number would actively mislead.
+pub fn narration_script(
+    rows: &[ChunkView],
+    coverage: Option<(f32, Vec<String>)>,
+    retrieval_secs: f64,
+    max_rows: usize,
+    width: usize,
+) -> Vec<Unit> {
+    let mut out = Vec::new();
+    if rows.is_empty() {
+        out.push(Unit::Prose(
+            "  Here's what we know — nothing came back for that one.".into(),
+        ));
+        return out;
+    }
+
+    let docs: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|r| !r.origin.is_graph())
+        .map(|r| r.source.as_str())
+        .collect();
+    let n_graph = rows.iter().filter(|r| r.origin.is_graph()).count();
+    let n_corpus = rows.len() - n_graph;
+
+    out.push(Unit::Prose(format!(
+        "  Here's what we know — {} passage{} from {} document{}, {:.1}s.",
+        n_corpus,
+        if n_corpus == 1 { "" } else { "s" },
+        docs.len(),
+        if docs.len() == 1 { "" } else { "s" },
+        retrieval_secs,
+    )));
+
+    if n_graph > 0 {
+        out.push(Unit::Line(String::new()));
+        out.push(Unit::Prose("  From the knowledge graph:".into()));
+        for r in rows.iter().filter(|r| r.origin.is_graph()).take(3) {
+            let name = truncate_to_width(&r.source, 34);
+            // The first line of an entity card is often just the name and its type,
+            // which would render as "Grey Street — Grey Street [Place]".
+            let detail = strip_echo(&r.evidence, &r.source);
+            let room = width.saturating_sub(display_width(&name) + 10);
+            out.push(Unit::Line(if detail.is_empty() {
+                format!("    • {name}")
+            } else {
+                format!("    • {name} — {}", truncate_to_width(&detail, room))
+            }));
+        }
+    }
+
+    if n_corpus > 0 {
+        out.push(Unit::Line(String::new()));
+        // `assemble_results` RRF-fuses the dense and keyword rank lists before the
+        // caller sees them, so which of the two found a given passage is genuinely
+        // gone. Say "hybrid" rather than guess.
+        out.push(Unit::Prose(
+            "  From the corpus (hybrid dense + keyword search), as evidenced by:".into(),
+        ));
+        // When every passage comes from the same document, repeating its name down
+        // the whole column is noise that crowds out the evidence.
+        let single_doc = if docs.len() == 1 {
+            docs.iter().next().copied()
+        } else {
+            None
+        };
+        if let Some(d) = single_doc {
+            out.push(Unit::Line(format!("    {d}")));
+        }
+        out.push(Unit::Line(String::new()));
+
+        let mut t = Table::new(&[
+            "#",
+            if single_doc.is_some() {
+                "where"
+            } else {
+                "source"
+            },
+            "as evidenced by",
+        ])
+        .align(0, Align::Right)
+        .flex(2);
+        for r in rows.iter().filter(|r| !r.origin.is_graph()).take(max_rows) {
+            t.push(vec![
+                format!(
+                    "{}{}",
+                    match r.cite {
+                        Some(n) => n.to_string(),
+                        None => "\u{b7}".into(),
+                    },
+                    match r.mark {
+                        m if m > 0 => "+",
+                        m if m < 0 => "\u{2212}",
+                        _ => "",
+                    }
+                ),
+                // Every row in this table is non-graph, so an origin column would read
+                // "corpus" all the way down; only the exceptions are worth naming.
+                {
+                    let base = if single_doc.is_some() {
+                        r.locator.clone()
+                    } else {
+                        format!("{}  {}", r.source, r.locator)
+                    };
+                    match r.origin {
+                        ChunkOrigin::Corpus => base,
+                        other => format!("{} · {base}", other.label()),
+                    }
+                },
+                r.evidence.clone(),
+            ]);
+        }
+        for line in t.render(width) {
+            out.push(Unit::Line(line));
+        }
+
+        let hidden = n_corpus.saturating_sub(max_rows);
+        if hidden > 0 {
+            out.push(Unit::Line(format!("    … and {hidden} more")));
+        }
+        // Count only the rows this table actually drew a `·` against. Counting every
+        // un-cited row swept in graph rows (rendered as bullets, never marked) and rows
+        // folded into "… and N more", so the number pointed at markers not on screen.
+        let dropped = rows
+            .iter()
+            .filter(|r| !r.origin.is_graph())
+            .take(max_rows)
+            .filter(|r| !r.sent())
+            .count();
+        if dropped > 0 {
+            out.push(Unit::Line(format!(
+                "    · {dropped} marked \u{b7} did not fit the context budget and were not sent"
+            )));
+        }
+    }
+
+    if let Some((frac, missing)) = coverage {
+        out.push(Unit::Line(String::new()));
+        let mut line = format!("  Coverage: {:.0}% of query terms found", frac * 100.0);
+        if !missing.is_empty() {
+            line.push_str(&format!(" — nothing for: {}", missing.join(", ")));
+        }
+        out.push(Unit::Prose(line));
+    }
+
+    out
+}
+
+/// Drop a leading echo of `name` (optionally followed by a `[Type]` tag) from `line`.
+fn strip_echo(line: &str, name: &str) -> String {
+    let t = line.trim();
+    let rest = t.strip_prefix(name).unwrap_or(t).trim_start();
+    let rest = match (rest.find('['), rest.find(']')) {
+        (Some(0), Some(e)) => rest[e + 1..].trim_start(),
+        _ => rest,
+    };
+    let rest = rest.trim_start_matches([':', '\u{2014}', '-']).trim();
+    rest.to_string()
+}
+
+// ── answer checks ─────────────────────────────────────────────────────────────
+
+/// Citation numbers in `answer` that fall outside `1..=n_sources`.
+///
+/// A free, deterministic check for the exact hallucination mode the RAG system prompt
+/// warns against — no LLM call involved.
+pub fn check_citations(answer: &str, n_sources: usize) -> Vec<u32> {
+    let mut bad = Vec::new();
+    let bytes = answer.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 1 && j < bytes.len() && bytes[j] == b']' {
+                if let Ok(n) = answer[i + 1..j].parse::<u32>() {
+                    if (n == 0 || n as usize > n_sources) && !bad.contains(&n) {
+                        bad.push(n);
+                    }
+                }
+                i = j;
+            }
+        }
+        i += 1;
+    }
+    bad
+}
+
+// ── commands ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChatCmd {
+    /// `+1 3` / `-2` — mark items relevant or irrelevant.
+    Mark(Vec<usize>, i8),
+    /// `?4` — show one item in full.
+    Show(usize),
+    Retry,
+    Score(u8),
+    Why,
+    Marks,
+    ClearMarks,
+    Help,
+    Continue,
+    Exit,
+    /// Anything else: the next question.
+    Ask(String),
+}
+
+/// Parse one line of interactive input.
+///
+/// A line is a command only if it matches wholly; everything else is the next
+/// question, so an ordinary sentence can never be swallowed as a command.
+pub fn parse_cmd(line: &str) -> ChatCmd {
+    let t = line.trim();
+    if t.is_empty() {
+        return ChatCmd::Continue;
+    }
+    match t {
+        "exit" | "quit" | "/exit" | "/quit" => return ChatCmd::Exit,
+        "/retry" | "/r" => return ChatCmd::Retry,
+        "/why" => return ChatCmd::Why,
+        "/marks" => return ChatCmd::Marks,
+        "/clear" => return ChatCmd::ClearMarks,
+        "/help" | "/?" => return ChatCmd::Help,
+        _ => {}
+    }
+
+    if let Some(rest) = t.strip_prefix("/score") {
+        if let Ok(n) = rest.trim().parse::<u8>() {
+            if (1..=5).contains(&n) {
+                return ChatCmd::Score(n);
+            }
+        }
+        return ChatCmd::Help;
+    }
+
+    if let Some(rest) = t.strip_prefix('?') {
+        if let Ok(n) = rest.trim().parse::<usize>() {
+            if n > 0 {
+                return ChatCmd::Show(n);
+            }
+        }
+    }
+
+    if let Some(sign) = t.chars().next().filter(|c| *c == '+' || *c == '-') {
+        let rest = &t[1..];
+        let nums: Vec<&str> = rest.split_whitespace().collect();
+        if !nums.is_empty() {
+            let parsed: Option<Vec<usize>> = nums
+                .iter()
+                .map(|s| s.parse::<usize>().ok().filter(|n| *n > 0))
+                .collect();
+            if let Some(ns) = parsed {
+                return ChatCmd::Mark(ns, if sign == '+' { 1 } else { -1 });
+            }
+        }
+    }
+
+    ChatCmd::Ask(t.to_string())
+}
+
+pub fn help_lines() -> Vec<String> {
+    vec![
+        "  +1 3      mark items 1 and 3 relevant       -2       mark item 2 irrelevant".into(),
+        "  ?4        show item 4 in full               /retry   re-answer using your marks".into(),
+        "  /score N  rate this answer 1-5              /why     replay the retrieval trace".into(),
+        "  /marks    list current marks                /clear   forget them".into(),
+        "  Enter     continue                          exit     quit".into(),
+    ]
+}
+
+// ── playback ──────────────────────────────────────────────────────────────────
+
+/// Play a narration script, abandoning the pacing the moment `fast_fwd` goes true.
+///
+/// The pacing exists to fill the time the completion is generating; it must never
+/// *become* the wait. When the completion lands early the rest of the script is
+/// flushed instantly.
+pub async fn play(
+    script: Vec<Unit>,
+    st: &mut StatusLine,
+    per_char: Duration,
+    fast_fwd: &dyn Fn() -> bool,
+    fill_until: Option<std::time::Instant>,
+) {
+    // Nobody is watching a pipe type. `emit_paced` already short-circuits on a
+    // non-terminal, but the inter-line rest did not — so a redirected run slept through
+    // every table row for no one, and stretching would have multiplied that by eight.
+    if !crate::progress::is_stderr_tty() {
+        for unit in script {
+            match unit {
+                Unit::Prose(s) | Unit::Line(s) => st.emit(&s),
+            }
+        }
+        return;
+    }
+
+    // Cost of each remaining unit in "character times", so pacing can be spread over
+    // what is actually left rather than recomputed per line from nothing.
+    let costs: Vec<usize> = script.iter().map(unit_cost).collect();
+    let mut remaining: usize = costs.iter().sum();
+
+    for (i, unit) in script.into_iter().enumerate() {
+        let ff = fast_fwd();
+        // Re-derive the pace before every unit. Doing it here rather than once up front
+        // is what absorbs a bad estimate: if generation is slower than predicted the
+        // narration keeps stretching, and if it is faster `fast_fwd` cuts it short.
+        let pace = if ff {
+            per_char
+        } else {
+            stretch_pace(per_char, remaining, fill_until, std::time::Instant::now())
+        };
+        let line_gap = pace * 6;
+        remaining = remaining.saturating_sub(costs[i]);
+        match unit {
+            Unit::Prose(s) => {
+                if ff {
+                    st.emit(&s);
+                } else {
+                    st.emit_paced(&s, pace, fast_fwd).await;
+                }
+            }
+            Unit::Line(s) => {
+                st.emit(&s);
+                if !ff && !line_gap.is_zero() {
+                    // Sleep in slices so a stretched gap still fast-forwards promptly
+                    // when the answer lands mid-gap.
+                    let mut slept = Duration::ZERO;
+                    let slice = Duration::from_millis(40);
+                    while slept < line_gap {
+                        if fast_fwd() {
+                            break;
+                        }
+                        let step = slice.min(line_gap - slept);
+                        tokio::time::sleep(step).await;
+                        slept += step;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What one script unit costs, in units of `per_char`.
+///
+/// A rendered line is emitted whole and then rests for `pace * 6`, so it costs six
+/// character-times; prose costs one per character.
+fn unit_cost(u: &Unit) -> usize {
+    match u {
+        Unit::Prose(s) => s.chars().count(),
+        Unit::Line(_) => 6,
+    }
+}
+
+/// How long to dwell on each character so the narration lands with the answer.
+///
+/// The retrieval narration used to run at a fixed pace, finish well before the
+/// completion, and hand over to a bare "generating" spinner — the dead air this whole
+/// feature exists to remove, merely relocated. Spreading what is left of the script
+/// across the time still expected on the answer fills that gap with something worth
+/// reading.
+///
+/// `per_char` is the floor, never the target: this only ever slows narration down, so
+/// `--pace` still sets the fastest it will go. The stretch is capped at `MAX_STRETCH`
+/// because a wildly over-estimated deadline should not leave text crawling out one
+/// character per second.
+fn stretch_pace(
+    per_char: Duration,
+    remaining_cost: usize,
+    fill_until: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Duration {
+    /// Slowest the narration may be stretched, as a multiple of `--pace`.
+    const MAX_STRETCH: u32 = 8;
+
+    if per_char.is_zero() || remaining_cost == 0 {
+        return per_char;
+    }
+    let Some(target) = fill_until else {
+        return per_char;
+    };
+    let left = target.saturating_duration_since(now);
+    if left.is_zero() {
+        return per_char;
+    }
+    let want = left / remaining_cost as u32;
+    want.clamp(per_char, per_char * MAX_STRETCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a trigger span whose sanitized form is shorter than the raw span
+    /// must not panic.
+    ///
+    /// `sanitize_cell` collapses the double space in "Mike  Allie" to one, so the
+    /// needle is 10 bytes while `trigger_end - trigger_start` is 11. Carrying the raw
+    /// length across put the slice end inside the following em dash and panicked the
+    /// whole chat turn. Double spaces are routine in PDF-extracted text and em dashes
+    /// are everywhere in this corpus, so this pairing is not exotic.
+    #[test]
+    fn evidence_window_survives_a_collapsed_whitespace_trigger() {
+        use kwaai_rag::mentions::{MentionKind, MentionSpan, SentenceMentions};
+
+        let sentence =
+            "Mike  Allie\u{2014}the shopkeeper on Hanover Street\u{2014}ran the corner shop for many years."
+                .to_string();
+        let sentences = vec![SentenceMentions {
+            mentions: vec![MentionSpan {
+                entity_id: 1,
+                entity_name: "Mike Allie".into(),
+                start: 0,
+                end: 11, // the raw span, including the double space
+                kind: MentionKind::Literal,
+            }],
+            sentence,
+        }];
+
+        let m = ChunkMeta {
+            doc_name: "d".into(),
+            chunk_index: 0,
+            text: "unused".into(),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: kwaai_rag::doc_schema::SectionType::Main,
+        };
+
+        // A narrow column forces truncate_around to actually slice.
+        let out = pick_evidence_windowed(
+            &m,
+            ChunkOrigin::Corpus,
+            &sentences,
+            &["mike".to_string()],
+            40,
+        );
+        assert!(out.contains("Mike Allie"), "trigger lost: {out}");
+    }
+
+    // ── elastic narration pacing ──────────────────────────────────────────────
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// With no deadline the pace is exactly what --pace asked for.
+    #[test]
+    fn no_fill_target_leaves_the_pace_alone() {
+        let now = std::time::Instant::now();
+        assert_eq!(stretch_pace(ms(10), 500, None, now), ms(10));
+    }
+
+    /// The whole point: spread what is left of the script over the time left on the
+    /// answer, so narration lands with it instead of finishing early.
+    #[test]
+    fn stretches_to_fill_the_remaining_time() {
+        let now = std::time::Instant::now();
+        // 400 chars left, 8s left on the answer -> 20ms/char, not the 5ms floor.
+        let target = now + Duration::from_secs(8);
+        assert_eq!(stretch_pace(ms(5), 400, Some(target), now), ms(20));
+    }
+
+    /// --pace is a floor, never a target: a near deadline must not speed text up past
+    /// what the user asked for.
+    #[test]
+    fn never_faster_than_the_requested_pace() {
+        let now = std::time::Instant::now();
+        let target = now + ms(100); // far too little time for 400 chars
+        assert_eq!(stretch_pace(ms(10), 400, Some(target), now), ms(10));
+    }
+
+    /// A wildly over-estimated deadline must not leave text crawling out.
+    #[test]
+    fn stretch_is_capped() {
+        let now = std::time::Instant::now();
+        let target = now + Duration::from_secs(600);
+        // Would want 6s/char; capped at 8x the requested pace.
+        assert_eq!(stretch_pace(ms(10), 100, Some(target), now), ms(80));
+    }
+
+    /// A deadline already in the past, an exhausted script, and --pace 0 (pacing off)
+    /// each fall back to the plain pace rather than dividing by zero or hanging.
+    #[test]
+    fn degenerate_inputs_fall_back() {
+        let now = std::time::Instant::now();
+        let past = now - Duration::from_secs(5);
+        assert_eq!(stretch_pace(ms(10), 100, Some(past), now), ms(10));
+        assert_eq!(stretch_pace(ms(10), 0, Some(now + ms(500)), now), ms(10));
+        // --pace 0 disables pacing entirely and must stay disabled.
+        assert_eq!(
+            stretch_pace(Duration::ZERO, 100, Some(now + Duration::from_secs(9)), now),
+            Duration::ZERO
+        );
+    }
+
+    /// Line units rest for six character-times, so they must cost six in the budget —
+    /// otherwise a table-heavy script is treated as nearly free and paces far too fast.
+    #[test]
+    fn unit_cost_counts_lines_as_six() {
+        assert_eq!(unit_cost(&Unit::Prose("abcde".into())), 5);
+        assert_eq!(unit_cost(&Unit::Line("a very long table row".into())), 6);
+        assert_eq!(unit_cost(&Unit::Prose(String::new())), 0);
+    }
+
+    /// As the script drains, the same remaining time is spread over less text, so the
+    /// pace must widen rather than stay flat.
+    #[test]
+    fn pace_widens_as_the_script_drains() {
+        let now = std::time::Instant::now();
+        let target = now + Duration::from_secs(4);
+        let early = stretch_pace(ms(1), 800, Some(target), now);
+        let late = stretch_pace(ms(1), 200, Some(target), now);
+        assert!(late > early, "expected {late:?} > {early:?}");
+    }
+
+    /// The quote is centred within the columns the table will actually grant it.
+    ///
+    /// Centring inside 240 columns and letting `Table` head-truncate to ~40 discarded
+    /// the centring entirely, so the mention the window was built around was almost
+    /// never on screen — the very thing centring was added to fix.
+    #[test]
+    fn evidence_budget_matches_the_column_the_table_grants() {
+        // 80 wide, a 24-column "where" cell: 80 - (10 frame + 3 num + 24) = 43.
+        assert_eq!(evidence_budget(80, 24), 43);
+        // A wider "where" squeezes the quote.
+        assert!(evidence_budget(80, 40) < evidence_budget(80, 24));
+        // A wider table gives it back.
+        assert!(evidence_budget(120, 24) > evidence_budget(80, 24));
+    }
+
+    /// A narrow terminal must not produce a zero-width or underflowing budget.
+    #[test]
+    fn evidence_budget_has_a_floor_and_never_underflows() {
+        assert!(evidence_budget(20, 40) >= 12);
+        assert!(evidence_budget(0, 0) >= 12);
+    }
+
+    /// Regression: a single-document result must not reserve room for the document
+    /// name, which the table prints once above itself rather than in every row.
+    ///
+    /// Counting it anyway took D6's evidence column from ~47 columns to ~20 and left a
+    /// quarter of the row empty — the quote starved by a column that was never drawn.
+    #[test]
+    fn where_width_ignores_the_doc_name_when_there_is_only_one() {
+        let cells = [
+            (ChunkOrigin::Corpus, "LEST WE FORGET -rev25.pdf", "§ 137"),
+            (
+                ChunkOrigin::Corpus,
+                "LEST WE FORGET -rev25.pdf",
+                "§ Yousuf (Joe) Rass…",
+            ),
+        ];
+        let single = where_column_width(&cells, true);
+        let multi = where_column_width(&cells, false);
+        assert_eq!(single, "§ Yousuf (Joe) Rass…".chars().count());
+        assert!(
+            multi > single + 20,
+            "multi-doc should reserve the name: {multi} vs {single}"
+        );
+        // And the quote gets the rest of the row.
+        assert!(
+            evidence_budget(80, single) > evidence_budget(80, multi) + 20,
+            "single-doc must leave the quote far more room"
+        );
+    }
+
+    /// The header is a floor on the column: an empty result set still labels itself.
+    #[test]
+    fn where_width_covers_the_header() {
+        assert_eq!(where_column_width(&[], true), "where".len());
+        assert_eq!(where_column_width(&[], false), "source".len());
+    }
+
+    #[test]
+    fn parses_marks() {
+        assert_eq!(parse_cmd("+1 3"), ChatCmd::Mark(vec![1, 3], 1));
+        assert_eq!(parse_cmd("-2"), ChatCmd::Mark(vec![2], -1));
+        assert_eq!(parse_cmd("  +4  "), ChatCmd::Mark(vec![4], 1));
+    }
+
+    #[test]
+    fn parses_slash_commands() {
+        assert_eq!(parse_cmd("/retry"), ChatCmd::Retry);
+        assert_eq!(parse_cmd(" /retry "), ChatCmd::Retry);
+        assert_eq!(parse_cmd("/score 4"), ChatCmd::Score(4));
+        assert_eq!(parse_cmd("?4"), ChatCmd::Show(4));
+        assert_eq!(parse_cmd(""), ChatCmd::Continue);
+        assert_eq!(parse_cmd("exit"), ChatCmd::Exit);
+        assert_eq!(parse_cmd("/exit"), ChatCmd::Exit);
+    }
+
+    #[test]
+    fn out_of_range_score_is_not_silently_accepted() {
+        assert_eq!(parse_cmd("/score 9"), ChatCmd::Help);
+        assert_eq!(parse_cmd("/score"), ChatCmd::Help);
+    }
+
+    /// An ordinary question must never be swallowed as a command — including one that
+    /// begins with a digit-adjacent character or ends in a question mark.
+    #[test]
+    fn questions_fall_through_to_ask() {
+        assert_eq!(
+            parse_cmd("who owned the shop?"),
+            ChatCmd::Ask("who owned the shop?".into())
+        );
+        assert_eq!(
+            parse_cmd("-- what happened --"),
+            ChatCmd::Ask("-- what happened --".into())
+        );
+        assert_eq!(
+            parse_cmd("+ and - signs"),
+            ChatCmd::Ask("+ and - signs".into())
+        );
+    }
+
+    #[test]
+    fn flags_out_of_range_citations_only() {
+        assert_eq!(
+            check_citations("grounded in [1] and [3].", 3),
+            Vec::<u32>::new()
+        );
+        assert_eq!(check_citations("see [7]", 3), vec![7]);
+        assert_eq!(check_citations("see [0]", 3), vec![0]);
+        assert_eq!(check_citations("see [7] and [7] and [9]", 3), vec![7, 9]);
+        assert_eq!(check_citations("no citations here", 3), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn table_aligns_wide_characters() {
+        let mut t = Table::new(&["#", "source"]).align(0, Align::Right);
+        t.push(vec!["1".into(), "日本語のテキスト".into()]);
+        t.push(vec!["10".into(), "ascii".into()]);
+        let lines = t.render(80);
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|l| crate::display::display_width(l))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "ragged table: {widths:?}\n{}",
+            lines.join("\n")
+        );
+    }
+
+    /// Chunk text routinely contains newlines and tabs; one unsanitized cell would
+    /// destroy the alignment of the whole table.
+    #[test]
+    fn table_sanitizes_embedded_newlines() {
+        let mut t = Table::new(&["a"]);
+        t.push(vec!["line one\nline two\ttabbed".into()]);
+        let lines = t.render(80);
+        assert_eq!(lines.len(), 5, "a one-row table must render as 5 lines");
+        assert!(lines.iter().all(|l| !l.contains('\n') && !l.contains('\t')));
+    }
+
+    #[test]
+    fn table_shrinks_flex_column_to_fit() {
+        let mut t = Table::new(&["#", "evidence"]).flex(1);
+        t.push(vec!["1".into(), "x".repeat(200)]);
+        for line in t.render(60) {
+            assert!(
+                crate::display::display_width(&line) <= 60,
+                "line overflows: {} cols",
+                crate::display::display_width(&line)
+            );
+        }
+    }
+
+    #[test]
+    fn truncation_is_width_aware() {
+        assert_eq!(truncate_to_width("abcdef", 10), "abcdef");
+        assert_eq!(
+            crate::display::display_width(&truncate_to_width("abcdef", 4)),
+            4
+        );
+        assert!(crate::display::display_width(&truncate_to_width("日本語テキスト", 6)) <= 6);
+    }
+}
