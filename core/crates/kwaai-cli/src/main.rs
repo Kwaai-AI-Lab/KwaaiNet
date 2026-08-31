@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
     // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode);
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_));
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
@@ -130,9 +130,9 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         // Internal: run the native node (used in daemon mode)
         // -------------------------------------------------------------------
-        Command::RunNode => {
+        Command::RunNode(args) => {
             let cfg = KwaaiNetConfig::load_or_create()?;
-            node::run_node(&cfg).await?;
+            node::run_node(&cfg, args.grpc_port).await?;
         }
 
         // -------------------------------------------------------------------
@@ -298,7 +298,13 @@ async fn main() -> Result<()> {
             print_separator();
 
             if args.daemon {
-                let child_pid = DaemonManager::spawn_daemon_child(&[])?;
+                // The child re-execs as `run-node`, so anything the node needs
+                // has to be forwarded — it inherits the environment, not argv.
+                let child_args: Vec<String> = args
+                    .grpc_port
+                    .map(|p| vec!["--grpc-port".to_string(), p.to_string()])
+                    .unwrap_or_default();
+                let child_pid = DaemonManager::spawn_daemon_child(&child_args)?;
                 println!();
                 print_success(&format!("KwaaiNet daemon started (PID {})", child_pid));
 
@@ -379,7 +385,7 @@ async fn main() -> Result<()> {
                 print_separator();
             } else {
                 // Foreground – run until Ctrl-C
-                node::run_node(&cfg).await?;
+                node::run_node(&cfg, args.grpc_port).await?;
             }
         }
 

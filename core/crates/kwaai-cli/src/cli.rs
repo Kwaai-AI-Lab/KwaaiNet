@@ -167,7 +167,16 @@ A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
 
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
-    RunNode,
+    RunNode(RunNodeArgs),
+}
+
+/// `run-node` is spawned by `start --daemon`, so anything `start` accepts and
+/// the node needs has to be forwarded here explicitly.
+#[derive(Args, Debug)]
+pub struct RunNodeArgs {
+    /// TCP port for the gRPC control surface (0 = ephemeral)
+    #[arg(long)]
+    pub grpc_port: Option<u16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +196,11 @@ pub struct StartArgs {
     /// TCP port for P2P connections
     #[arg(long)]
     pub port: Option<u16>,
+
+    /// TCP port for the gRPC control surface (0 = ephemeral). Forwarded to
+    /// the daemon child; also settable via KWAAINET_GRPC_PORT.
+    #[arg(long)]
+    pub grpc_port: Option<u16>,
 
     /// Disable GPU acceleration (use CPU only)
     #[arg(long)]
