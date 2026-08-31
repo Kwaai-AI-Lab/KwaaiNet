@@ -825,7 +825,8 @@ enum InferencePhase {
     INFERENCE_PHASE_CHAIN_PINNED = 5;
 
     // Best-effort dial of a chain member before generation starts.
-    // Sets: peer_id, peer_name, ok.
+    // Sets: peer_id, peer_name, ok, and (since PEER_DIAL_START was
+    // added) duration_ms.
     INFERENCE_PHASE_PEER_DIAL = 6;
 
     // A hop is being dispatched. Sets: peer_id, peer_name, block_start,
@@ -854,6 +855,13 @@ enum InferencePhase {
     // Generation finished. Sets: token_index (total generated),
     // duration_ms (whole run) and message (the stop reason).
     INFERENCE_PHASE_COMPLETE = 12;
+
+    // A best-effort dial is about to be attempted, answered later by a
+    // PEER_DIAL for the same peer. Emitted separately because the dial
+    // can take tens of seconds to time out, during which the result-only
+    // event would leave a client unable to say who is being waited on.
+    // Sets: peer_id, peer_name, is_self.
+    INFERENCE_PHASE_PEER_DIAL_START = 13;
 }
 
 // Why a hop failed, which decides whether the peer stays eligible for

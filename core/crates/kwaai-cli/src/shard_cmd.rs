@@ -1806,6 +1806,7 @@ pub enum ProgressPhase {
     DiscoveryResult,
     CircuitLoaded,
     ChainPinned,
+    PeerDialStart,
     PeerDial,
     HopStart,
     HopOk,
@@ -2387,6 +2388,15 @@ async fn run_streaming_inner(
 
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {
+        // Announced first because the dial itself can take tens of seconds
+        // to time out, during which the result-only event would leave the
+        // client unable to say who is being waited on.
+        emit_progress(sink, || {
+            InferenceProgress::new(run_started, ProgressPhase::PeerDialStart)
+                .peer(entry, our_peer_id == entry.peer_id)
+                .msg("dialing")
+        });
+        let dial_started = std::time::Instant::now();
         let dialed = client
             .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await
@@ -2398,6 +2408,7 @@ async fn run_streaming_inner(
             InferenceProgress::new(run_started, ProgressPhase::PeerDial)
                 .peer(entry, our_peer_id == entry.peer_id)
                 .ok(dialed)
+                .ms(dial_started.elapsed().as_secs_f64() * 1000.0)
                 .msg(if dialed { "dialed" } else { "dial failed" })
         });
     }

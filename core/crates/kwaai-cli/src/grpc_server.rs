@@ -472,6 +472,7 @@ fn progress_to_proto(p: crate::shard_cmd::InferenceProgress) -> InferenceEvent {
         ProgressPhase::DiscoveryResult => InferencePhase::DiscoveryResult,
         ProgressPhase::CircuitLoaded => InferencePhase::CircuitLoaded,
         ProgressPhase::ChainPinned => InferencePhase::ChainPinned,
+        ProgressPhase::PeerDialStart => InferencePhase::PeerDialStart,
         ProgressPhase::PeerDial => InferencePhase::PeerDial,
         ProgressPhase::HopStart => InferencePhase::HopStart,
         ProgressPhase::HopOk => InferencePhase::HopOk,
