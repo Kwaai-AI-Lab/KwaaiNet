@@ -31,9 +31,6 @@ graph TD
         Main --> Updater
     end
 
-    subgraph map-server
-        MapServer[map-server\nnode topology API]
-    end
 
     subgraph summit-server
         Summit[summit-server\nVC issuance + coordination]

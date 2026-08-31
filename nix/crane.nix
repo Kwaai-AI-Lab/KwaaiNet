@@ -139,8 +139,6 @@ in
     '';
   };
 
-  map-server = mkBin "map-server" { };
-
   # Clippy lint check — run via `nix flake check`.
   clippy = craneLib.cargoClippy (
     commonArgs

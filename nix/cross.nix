@@ -41,15 +41,14 @@ let
 
   containers = import ./containers.nix {
     pkgs = pkgsCross;
-    inherit (cranePkgs) kwaainet map-server;
+    inherit (cranePkgs) kwaainet;
   };
 in
 {
   inherit (cranePkgs)
     kwaainet
-    map-server
     cargoArtifacts
     ;
   inherit p2pd;
-  inherit (containers) kwaainet-container map-server-container kwaainet-all-container;
+  inherit (containers) kwaainet-container kwaainet-all-container;
 }

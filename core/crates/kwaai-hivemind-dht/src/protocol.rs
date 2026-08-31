@@ -209,7 +209,7 @@ impl NodeInfo {
     /// `SHA1(bytes)` (`routing.py:261-271`); the source is already `bytes`, so the
     /// msgpack step in `generate()` is skipped and SHA1 runs over the raw multihash.
     ///
-    /// Our `map-server/src/crawler.rs:74-77` computes exactly this for its own ID.
+    /// The map's DHT crawler computes exactly this for its own ID (https://github.com/Kwaai-AI-Lab/KwaaiNetMap).
     pub fn from_peer_id(peer_id: PeerId) -> Self {
         Self {
             node_id: dht_id_from_peer_id(&peer_id),

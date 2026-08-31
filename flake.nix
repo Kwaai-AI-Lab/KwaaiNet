@@ -36,7 +36,7 @@
         containers = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           import ./nix/containers.nix {
             inherit pkgs;
-            inherit (cranePkgs) kwaainet map-server;
+            inherit (cranePkgs) kwaainet;
           }
         );
 
@@ -99,10 +99,8 @@
         # Flatten cross targets into suffixed package names.
         crossPackages = lib.concatMapAttrs (targetName: cross: {
           "kwaainet-${targetName}" = cross.kwaainet;
-          "map-server-${targetName}" = cross.map-server;
           "p2pd-${targetName}" = cross.p2pd;
           "kwaainet-container-${targetName}" = cross.kwaainet-container;
-          "map-server-container-${targetName}" = cross.map-server-container;
           "kwaainet-all-container-${targetName}" = cross.kwaainet-all-container;
         }) crossTargets;
 
@@ -133,7 +131,6 @@
           default = cranePkgs.kwaainet;
           inherit (cranePkgs)
             kwaainet
-            map-server
             cargoArtifacts
             ;
           inherit p2pd protoRs;

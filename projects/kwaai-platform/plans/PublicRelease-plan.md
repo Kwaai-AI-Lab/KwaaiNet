@@ -46,7 +46,7 @@ Trust Graph Working Group](https://lf-toip.atlassian.net/wiki/spaces/HOME/pages/
 | **`core/crates/kwaai-ledger`** | **Built** on `feat/kwaai-ledger` — `lib.rs` 1244 / `store.rs` 578 / `economy.rs` 618 lines, plus `kwaai-cli/src/{ledger_cmd,ledger_node}.rs`. Already a workspace member. Branch is 16 ahead / 22 behind `main`. | Block 2 phase 1 is a **land-and-harden**, not a build |
 | `Ledger-plan.md`, `TokenEconomy-plan.md` | Detailed, decisions locked | Reuse verbatim; do not re-litigate |
 | `systems/node-dashboard/` | React frontend + Node.js `backend/server.js` | Stays; new crate is API-only |
-| `apps/map/` | React + d3 force graph (map.kwaai.ai) | Unaffected |
+| `apps/map/` | React + d3 force graph (map.kwaai.ai) | **Moved** to https://github.com/Kwaai-AI-Lab/KwaaiNetMap, branch `map-v2` |
 | `KwaaiNetGUI` repo | Flutter desktop, split out in `1a2d34ea` | Darren continues there |
 | `core/crates/kwaai-wasm` | Exists | The browser-first path |
 | `kwaai-rag`, `kwaai-inference`, `kwaai-p2p`, `kwaai-trust` (incl. `reputation.rs`) | Shipping | Feed substrate: summarisation, prioritisation, twin-to-twin, sender trust |
