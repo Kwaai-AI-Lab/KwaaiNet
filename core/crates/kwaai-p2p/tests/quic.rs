@@ -40,6 +40,7 @@ fn spawn_quic_only() -> (NetworkHandle, tokio::task::JoinHandle<()>, PeerId) {
     let (handle, task) = NetworkService::spawn(
         NetworkConfig {
             listen_addrs: vec!["/ip4/127.0.0.1/udp/0/quic-v1".to_string()],
+            enable_quic: true,
             ..NetworkConfig::for_tests()
         },
         keypair,
