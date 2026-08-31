@@ -1,0 +1,26 @@
+# Ontology for the DeepSea KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md. Applying an ontology to a corpus
+# this dirty measures the dirt, not the ontology.
+# Corpus hygiene: 75% clean — 385 bibliography, 78 boilerplate chunks. Zero relations today.
+
+ontology:
+  name: deepsea
+  version: 1
+  extends: scholarly
+
+provenance:
+  derivation: unverified
+  note: >-
+    thin extension of scholarly; corpus not sampled
+
+entity_types:
+  - name: Habitat
+    description: A named deep-sea environment or zone.
+    irreducible: false
+relation_types:
+  - name: inhabits
+    domain: [Organism]
+    range:  [Habitat]

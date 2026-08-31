@@ -1,0 +1,23 @@
+# Ontology for the PythonDocs KB — reference documentation.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md. Applying an ontology to a corpus
+# this dirty measures the dirt, not the ontology.
+#
+# Corpus hygiene: 16.1% clean — 2850 of 3783 chunks are raw Sphinx HTML, 284 char-spaced.
+
+ontology:
+  name: pythondocs
+  version: 1
+  extends: software-docs
+
+provenance:
+  derivation: unverified
+  note: >-
+    thin extension of software-docs; corpus not sampled
+
+entity_types:
+  - name: Exception
+    description: A named exception or error class.
+    irreducible: false

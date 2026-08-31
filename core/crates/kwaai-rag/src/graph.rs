@@ -118,6 +118,46 @@ pub const PERSON_RELATION_TYPES: &[&str] = &[
     "supported",
 ];
 
+/// Sampling temperature for extraction calls.
+///
+/// Defaults to the historical 0.1. `KWAAI_EXTRACTION_TEMPERATURE=0` pins it for
+/// measurement runs.
+///
+/// Why this exists: three A/B builds over identical chunks produced 166, 194 and
+/// 208 relations — a 22% spread, against a 32% difference between the arms being
+/// compared. Signal was barely above noise, so the comparison could not decide
+/// anything. Sampling is one of the two sources (concurrent worker interleaving
+/// is the other); this makes the controllable one controllable without changing
+/// what production does.
+pub fn extraction_temperature() -> f64 {
+    std::env::var("KWAAI_EXTRACTION_TEMPERATURE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|t| (0.0..=2.0).contains(t))
+        .unwrap_or(0.1)
+}
+
+/// Choose the relation vocabulary offered to the extractor.
+///
+/// Precedence: an explicit per-KB list (the relation half of an ontology) wins;
+/// otherwise a person-only run gets `PERSON_RELATION_TYPES`; otherwise the
+/// global `RELATION_TYPES`. Split out so the precedence is testable without an
+/// LLM round-trip.
+pub fn effective_relation_types<'a>(
+    entity_types: &[&'a str],
+    relation_types: &[&'a str],
+) -> Vec<&'a str> {
+    if !relation_types.is_empty() {
+        return relation_types.to_vec();
+    }
+    let person_only = entity_types.len() == 1 && entity_types[0].eq_ignore_ascii_case("Person");
+    if person_only {
+        PERSON_RELATION_TYPES.to_vec()
+    } else {
+        RELATION_TYPES.to_vec()
+    }
+}
+
 /// Familial relation types — only valid between two Person entities.
 pub const FAMILIAL_RELS: &[&str] = &[
     "parent_of",
@@ -253,6 +293,34 @@ pub struct RelationRecord {
     /// "llm_open" (default, legacy behavior), "seeded", "manual".
     #[serde(default = "default_relation_source")]
     pub source: String,
+    /// The predicate the extractor actually emitted, when it differed from
+    /// `relation_type` — i.e. when the ontology coerced it to an alias target or
+    /// to the fallback.
+    ///
+    /// Kept because coercion was destroying meaning irreversibly. On D6, 59 of
+    /// the 70 predicates the ontology rejected carried sense a memoir depends on
+    /// — `nursed_by`, `disagreed_with`, `resigned_under`, `segregated lives` —
+    /// and every one became an undifferentiated `associated_with`. The closed
+    /// vocabulary still governs traversal and axioms; this field means the
+    /// nuance survives alongside it, queryable, and available as the residue
+    /// that ontology induction reads.
+    ///
+    /// `None` when the extractor's predicate was already the stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_predicate: Option<String>,
+    /// Context window in effect when this relation was extracted.
+    ///
+    /// `evidence_chunk_ids` records the *centre* chunk, but extraction reads
+    /// centre ± `context_window`, so half the supporting text was not
+    /// recoverable from the graph. Measured on D6: checking only the centre
+    /// chunk finds both endpoints in 42.6% of extracted relations; checking the
+    /// ±1 window the extractor actually saw finds them in 50.0%. Without this
+    /// field neither an audit nor an embedding experiment can locate the text a
+    /// relation was read out of.
+    ///
+    /// 0 for seeded relations and for graphs built before this was recorded.
+    #[serde(default)]
+    pub evidence_window: u8,
 }
 
 fn default_relation_confidence() -> f32 {
@@ -307,6 +375,170 @@ pub struct KBEntityTypeSchema {
     /// Optional field name overrides (uses expected_fields() defaults when empty).
     #[serde(default)]
     pub fields: Vec<String>,
+    /// Lexical markers that let the axiomatic classifier type a candidate
+    /// without an LLM call. Empty for KBs with no ontology, in which case the
+    /// global marker tables in `axiom_extract` apply unchanged.
+    #[serde(default)]
+    pub markers: EntityMarkers,
+}
+
+/// Per-type lexical markers, loaded from a KB's ontology rather than compiled in.
+///
+/// The global tables in `axiom_extract` (ORG_MARKERS_LAST, GEO_MARKERS_ANY, …)
+/// are the no-ontology fallback. Keeping these in YAML is the same rule the
+/// entity schemas already follow: domain knowledge does not live in Rust source.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct EntityMarkers {
+    /// Matched against the FIRST word — honorifics ("Haji", "Aboeta", "Sis").
+    #[serde(default)]
+    pub prefix: Vec<String>,
+    /// Matched against the LAST word ("… Street", "… League", "… College").
+    #[serde(default)]
+    pub last: Vec<String>,
+    /// Matched anywhere in the candidate phrase.
+    #[serde(default)]
+    pub any: Vec<String>,
+    /// Closed vocabulary matched whole — for enumerable categories such as
+    /// languages, racial classifications, and named doctrines.
+    #[serde(default)]
+    pub exact: Vec<String>,
+}
+
+impl EntityMarkers {
+    pub fn is_empty(&self) -> bool {
+        self.prefix.is_empty()
+            && self.last.is_empty()
+            && self.any.is_empty()
+            && self.exact.is_empty()
+    }
+
+    /// Match a candidate phrase, most specific rule first.
+    /// Returns the kind of match so the caller can score it.
+    pub fn match_kind(&self, candidate: &str) -> Option<MarkerMatch> {
+        let c = candidate.trim().to_lowercase();
+        if c.is_empty() {
+            return None;
+        }
+        if self.exact.iter().any(|m| m == &c) {
+            return Some(MarkerMatch::Exact);
+        }
+        let words: Vec<&str> = c.split_whitespace().collect();
+        if let Some(last) = words.last() {
+            // strip trailing punctuation so "Chapel Street," still matches
+            let last = last.trim_matches(|ch: char| !ch.is_alphanumeric());
+            if self.last.iter().any(|m| m == last) {
+                return Some(MarkerMatch::Last);
+            }
+        }
+        if let Some(first) = words.first() {
+            let first = first.trim_matches(|ch: char| !ch.is_alphanumeric());
+            if self.prefix.iter().any(|m| m == first) {
+                return Some(MarkerMatch::Prefix);
+            }
+        }
+        if self.any.iter().any(|m| c.contains(m.as_str())) {
+            return Some(MarkerMatch::Any);
+        }
+        None
+    }
+}
+
+/// Which marker rule fired, ordered most to least specific.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerMatch {
+    Exact,
+    Last,
+    Prefix,
+    Any,
+}
+
+impl MarkerMatch {
+    /// Type-confidence contributed by this rule. An exact hit on a closed
+    /// vocabulary is near-certain; a substring hit anywhere is the weakest.
+    pub fn confidence(self) -> f32 {
+        match self {
+            MarkerMatch::Exact => 0.95,
+            MarkerMatch::Last => 0.85,
+            MarkerMatch::Prefix => 0.80,
+            MarkerMatch::Any => 0.65,
+        }
+    }
+}
+
+/// A relation trigger phrase loaded from a KB's ontology.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RelationTrigger {
+    pub phrase: String,
+    pub relation_type: String,
+    pub confidence: f32,
+    /// True when the object precedes the subject ("X founded by Y" → Y founded X),
+    /// generalising the compiled-in `REVERSED_TRIGGERS` list.
+    #[serde(default)]
+    pub reversed: bool,
+}
+
+/// Words the extractor is told never to treat as entity names.
+///
+/// Global fallback only. This list is corpus-blind and has already caused real
+/// loss: it contains "Hatless", who is a named District Six character
+/// introduced in a chapter called "Characters of District Six" and indexed in
+/// the book itself. A word that is noise in one corpus is a person in another,
+/// so a KB's ontology gets the final say — see `effective_stop_words`.
+pub const DEFAULT_STOP_WORDS: &[&str] = &[
+    "Apart",
+    "Being",
+    "Figure",
+    "History",
+    "Just",
+    "Later",
+    "Little",
+    "Much",
+    "Now",
+    "Perhaps",
+    "Regrettably",
+    "Science",
+    "Several",
+    "Soon",
+    "Still",
+    "Tell",
+    "Whether",
+    "Worse",
+];
+
+/// Resolve the stop-list for a KB.
+///
+/// General rule, not a D6 patch: **anything a KB's ontology names as a positive
+/// example of an entity type is never suppressed.** A declared example is the
+/// strongest statement the ontology can make about what exists in this corpus,
+/// and it must outrank a global list of words that merely look generic.
+/// `extra` lets an ontology add corpus-specific noise words of its own.
+pub fn effective_stop_words<'a>(
+    schemas: &'a [KBEntityTypeSchema],
+    extra: &'a [String],
+) -> Vec<&'a str> {
+    let protected: std::collections::HashSet<String> = schemas
+        .iter()
+        .flat_map(|s| s.examples.iter())
+        .map(|e| e.trim().to_lowercase())
+        .collect();
+    DEFAULT_STOP_WORDS
+        .iter()
+        .copied()
+        .chain(extra.iter().map(|s| s.as_str()))
+        .filter(|w| !protected.contains(&w.trim().to_lowercase()))
+        .collect()
+}
+
+/// Choose the best trigger for a sentence: longest matching phrase wins, so
+/// "half-brother of" beats "brother of" and "moved into" beats "moved".
+pub fn best_ontology_trigger<'a>(
+    sentence_lower: &str,
+    triggers: &'a [RelationTrigger],
+) -> Option<&'a RelationTrigger> {
+    triggers
+        .iter()
+        .filter(|t| sentence_lower.contains(t.phrase.as_str()))
+        .max_by_key(|t| t.phrase.len())
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,6 +572,31 @@ pub fn entity_id(name: &str, entity_type: &str) -> i64 {
 /// Schema.org-aligned metadata fields expected for each entity type.
 /// Returns `(field_key, human_description)` pairs. Empty for types without a
 /// defined structured schema (fall back to prose description).
+/// Ontology-aware field schema. A KB that declares fields on a type gets those;
+/// otherwise the compiled table below applies.
+///
+/// The compiled table names Person/Place/Organization/Legislation/Publication
+/// fields — birthDate, historicalNote, dateEnacted — which is a memoir-and-law
+/// shape sent to climate papers and RFCs alike.
+pub fn expected_fields_for(
+    entity_type: &str,
+    ont: Option<&crate::ontology::Ontology>,
+) -> Vec<(String, String)> {
+    if let Some(o) = ont {
+        let f = o.fields_for(entity_type);
+        if !f.is_empty() {
+            return f
+                .into_iter()
+                .map(|(k, d)| (k.to_string(), d.to_string()))
+                .collect();
+        }
+    }
+    expected_fields(entity_type)
+        .iter()
+        .map(|(k, d)| (k.to_string(), d.to_string()))
+        .collect()
+}
+
 pub fn expected_fields(entity_type: &str) -> &'static [(&'static str, &'static str)] {
     match entity_type {
         "Person" => &[
@@ -601,6 +858,16 @@ pub struct GraphStore {
     chunk_to_entities: HashMap<i64, Vec<i64>>,
     /// entity_id → [chunk_id]
     entity_to_chunks: HashMap<i64, Vec<i64>>,
+    /// Context window of the current extraction run, stamped onto relations as
+    /// they are written. A property of the run, not of each call.
+    evidence_window: u8,
+    /// This KB's ontology, when one is stored. `None` for the fifteen KBs
+    /// without one, in which case every compiled fallback applies unchanged.
+    ontology: Option<crate::ontology::Ontology>,
+    /// Gender of this KB's narrator, from the document schema's
+    /// `narratorGender` metadata key. `None` when the corpus does not say —
+    /// which is the correct default. Read once at open() rather than per chunk.
+    narrator_gender: Option<String>,
     /// Exhaustive alias token index: raw-lowercased token → [entity_id].
     /// Built from every whitespace-split token of canonical name + all aliases.
     /// Stores both the raw form ("j.m.h.") and trimmed form ("j.m.h") so query
@@ -643,6 +910,9 @@ impl GraphStore {
         )?;
 
         let mut store = Self {
+            evidence_window: 0,
+            ontology: None,
+            narrator_gender: None,
             conn,
             nodes: HashMap::new(),
             adj: HashMap::new(),
@@ -651,6 +921,8 @@ impl GraphStore {
             alias_token_index: HashMap::new(),
         };
         store.rebuild()?;
+        store.load_ontology();
+        store.load_narrator_gender();
         Ok(store)
     }
 
@@ -973,9 +1245,42 @@ impl GraphStore {
         method: &str,
         source: &str,
     ) -> Result<()> {
+        // ── Vocabulary: coerce into the declared predicate set ───────────────
+        // Without this the ontology only suggests: a first A/B produced 88
+        // distinct predicates from 27 declared. Unknown ones become the
+        // corpus's fallback, or are dropped where it admits none.
+        let coerced;
+        let emitted = relation_type;
+        let relation_type = match self.ontology.as_ref() {
+            Some(ont) => match ont.coerce_relation(relation_type) {
+                Some(r) => {
+                    coerced = r;
+                    coerced.as_str()
+                }
+                None => return Ok(()),
+            },
+            None => relation_type,
+        };
+        // Preserve what the extractor said when we rewrote it.
+        let original_predicate =
+            (!relation_type.eq_ignore_ascii_case(emitted)).then(|| emitted.to_string());
+
+        // ── Constraint: ontology domain/range ────────────────────────────────
+        // The general form of the two hardcoded rules that follow. When the KB
+        // declares an ontology, a predicate whose endpoints violate its declared
+        // domain or range is dropped here, for any predicate — not just the
+        // familial ones. Unknown endpoints pass, matching the leniency below.
+        if let Some(ont) = self.ontology.as_ref() {
+            let ty = |id: &i64| self.nodes.get(id).map(|n| n.entity_type.as_str());
+            if !ont.relation_endpoints_valid(relation_type, ty(&src_id), ty(&dst_id)) {
+                return Ok(());
+            }
+        }
+
         // ── Constraint: located_in / works_at must not target a CreativeWork entity ──
         // This prevents book/document titles from being incorrectly used as place or
         // employer targets when the LLM confuses the source document title with a location.
+        // Compiled fallback: expressible as domain/range once a KB has an ontology.
         if matches!(relation_type, "located_in" | "works_at") {
             if let Some(dst_node) = self.nodes.get(&dst_id) {
                 if dst_node.schema_type.as_deref() == Some("schema:CreativeWork") {
@@ -1011,10 +1316,29 @@ impl GraphStore {
             confidence,
             method,
             source,
+            original_predicate.as_deref(),
         )?;
 
-        // ── Auto-add logical inverse for asymmetric familial relations ──
-        if let Some(&inverse) = FAMILIAL_INVERSE
+        // ── Auto-add logical inverse ──
+        // Ontology first: `inverse:` on a predicate generalises FAMILIAL_INVERSE
+        // to any relation, so a legal ontology gets overruled_by for free.
+        if let Some(inv) = self
+            .ontology
+            .as_ref()
+            .and_then(|o| o.inverse_of(relation_type))
+            .map(|s| s.to_string())
+        {
+            self.upsert_relation_unchecked(
+                dst_id,
+                src_id,
+                &inv,
+                evidence_chunk_id,
+                confidence,
+                method,
+                source,
+                original_predicate.as_deref(),
+            )?;
+        } else if let Some(&inverse) = FAMILIAL_INVERSE
             .iter()
             .find(|(r, _)| *r == relation_type)
             .map(|(_, inv)| inv)
@@ -1027,14 +1351,21 @@ impl GraphStore {
                 confidence,
                 method,
                 source,
+                original_predicate.as_deref(),
             )?;
         }
 
-        // ── Symmetric familial relations: store both directions ──
-        if matches!(
-            relation_type,
-            "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
-        ) {
+        // ── Symmetric relations: store both directions ──
+        let ont_symmetric = self
+            .ontology
+            .as_ref()
+            .is_some_and(|o| o.is_symmetric(relation_type));
+        if ont_symmetric
+            || matches!(
+                relation_type,
+                "spouse_of" | "sibling_of" | "half_sibling_of" | "cousin_of"
+            )
+        {
             self.upsert_relation_unchecked(
                 dst_id,
                 src_id,
@@ -1043,12 +1374,14 @@ impl GraphStore {
                 confidence,
                 method,
                 source,
+                original_predicate.as_deref(),
             )?;
         }
 
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn upsert_relation_unchecked(
         &mut self,
@@ -1059,6 +1392,7 @@ impl GraphStore {
         confidence: f32,
         method: &str,
         source: &str,
+        original_predicate: Option<&str>,
     ) -> Result<()> {
         let key = relation_key(src_id, dst_id, relation_type);
 
@@ -1087,6 +1421,8 @@ impl GraphStore {
                     r
                 })
                 .unwrap_or_else(|| RelationRecord {
+                    original_predicate: original_predicate.map(str::to_string),
+                    evidence_window: self.evidence_window,
                     src_id,
                     dst_id,
                     relation_type: relation_type.to_string(),
@@ -1581,10 +1917,14 @@ impl GraphStore {
         let mut seen: HashSet<i64> = HashSet::new();
         let mut candidates: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
 
-        // Always include the narrator/author entity. Force gender to Some("Male") for
-        // entities whose aliases include "narrator"/"author"/"I" — the narrator in this
-        // corpus is Yousuf Rassool, a man. The stored gender field may be wrong (inferred
-        // from an impoverished description), so we override it here.
+        // Always include the narrator/author entity. Its stored gender is often
+        // wrong (inferred from an impoverished description), so an explicit
+        // narrator gender from the KB's document schema overrides it.
+        //
+        // This used to hardcode Some("Male") with the comment "the narrator in
+        // this corpus is Yousuf Rassool, a man" — true of D6 and false of any
+        // KB with a woman narrator, which would have been silently mis-gendered.
+        // Unknown is now the default; the doc schema states it when it knows.
         for node in self.nodes.values() {
             if node.entity_type.eq_ignore_ascii_case("person")
                 && node.aliases.iter().any(|a| {
@@ -1598,7 +1938,7 @@ impl GraphStore {
                 candidates.push((
                     node.name.clone(),
                     node.aliases.clone(),
-                    Some("Male".to_string()), // narrator is always Male in this corpus
+                    self.narrator_gender.clone(),
                 ));
             }
         }
@@ -1796,6 +2136,8 @@ impl GraphStore {
                         e
                     })
                     .unwrap_or_else(|| RelationRecord {
+                        evidence_window: self.evidence_window,
+                        original_predicate: None,
                         src_id: new_src,
                         dst_id: new_dst,
                         relation_type: rel.relation_type.clone(),
@@ -2055,6 +2397,7 @@ impl GraphStore {
                             rel.confidence,
                             &rel.method,
                             &rel.source,
+                            rel.original_predicate.as_deref(),
                         )?;
                     }
                     added += 1;
@@ -2075,6 +2418,7 @@ impl GraphStore {
                         rel.confidence,
                         &rel.method,
                         &rel.source,
+                        rel.original_predicate.as_deref(),
                     )?;
                 }
                 added += 1;
@@ -4248,6 +4592,106 @@ impl GraphStore {
         Ok(())
     }
 
+    /// The narrator's gender for this KB, or `None` when the corpus does not
+    /// state one. Sourced from the document schema's `narratorGender` metadata
+    /// key so it is per-KB configuration rather than a compiled assumption.
+    pub fn narrator_gender(&self) -> Option<&str> {
+        self.narrator_gender.as_deref()
+    }
+
+    /// Load `narrator_gender` from stored doc metadata. Called at open() so the
+    /// per-chunk coref path never touches the database.
+    fn load_narrator_gender(&mut self) {
+        self.narrator_gender = self
+            .ontology
+            .as_ref()
+            .and_then(|o| o.narrator_gender.clone())
+            .or_else(|| {
+                self.get_doc_metadata()
+                    .get("narratorGender")
+                    .map(|g| g.trim().to_string())
+            })
+            .filter(|g| !g.is_empty());
+    }
+
+    /// Wipe entities and relations, preserving the KB's schema.
+    ///
+    /// `graph clear` previously deleted the whole database file, which also
+    /// discarded `kb_ontology`, `kb_entity_schemas`, `doc_metadata` and
+    /// `document_titles`. The graph is derived data; the schema that describes
+    /// it and the document metadata are configuration, and a clear-then-rebuild
+    /// silently produced a different graph because the vocabulary had vanished
+    /// with the entities. Caught when an A/B's ontology arm ran as a second
+    /// control after its ontology was cleared out from under it.
+    ///
+    /// Use `clear_all` when a full reset including schema really is wanted.
+    pub fn clear_graph_data(&mut self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM entities;
+             DELETE FROM relations;
+             DELETE FROM chunk_entity;
+             DELETE FROM entity_chunk;
+             DELETE FROM chunk_mentions;
+             DELETE FROM entity_timeline_v1;
+             DELETE FROM interactions;",
+        )?;
+        self.nodes.clear();
+        self.adj.clear();
+        self.chunk_to_entities.clear();
+        self.entity_to_chunks.clear();
+        self.alias_token_index.clear();
+        Ok(())
+    }
+
+    /// Wipe everything, schema included.
+    pub fn clear_all(&mut self) -> Result<()> {
+        self.clear_graph_data()?;
+        self.conn.execute_batch("DELETE FROM metadata;")?;
+        self.ontology = None;
+        self.narrator_gender = None;
+        Ok(())
+    }
+
+    /// Declare the context window extraction is using, so relations written
+    /// from here on record what text the extractor could see.
+    pub fn set_evidence_window(&mut self, window: u8) {
+        self.evidence_window = window;
+    }
+
+    /// This KB's ontology, if one is stored.
+    pub fn ontology(&self) -> Option<&crate::ontology::Ontology> {
+        self.ontology.as_ref()
+    }
+
+    /// Persist an ontology for this KB, and adopt it immediately.
+    pub fn set_ontology(&mut self, ont: &crate::ontology::Ontology) -> Result<()> {
+        let json = serde_json::to_string(ont)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params!["kb_ontology", json.as_str()],
+        )?;
+        // Keep the entity-schema view in sync so the prompt and validation
+        // paths that already read kb_entity_schemas see the same vocabulary.
+        self.set_kb_entity_schemas(&ont.to_kb_schemas())?;
+        self.ontology = Some(ont.clone());
+        self.load_narrator_gender();
+        Ok(())
+    }
+
+    fn load_ontology(&mut self) {
+        self.ontology = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'kb_ontology'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str(&v).ok());
+    }
+
     /// Retrieve persisted document metadata. Returns empty map if none stored.
     pub fn get_doc_metadata(&self) -> std::collections::HashMap<String, String> {
         self.conn
@@ -4321,6 +4765,70 @@ impl GraphStore {
     }
 
     /// Expose chunk→entity mapping for cross-link discovery in the dream loop.
+    /// Every stored relation, with provenance.
+    ///
+    /// Exists so the coercion residue is reachable: an edge coerced to the
+    /// fallback keeps `original_predicate`, and reading those back is what makes
+    /// ontology induction possible — the predicates a corpus emitted and its
+    /// schema rejected are the schema's own to-do list, ranked by frequency.
+    pub fn all_relation_records(&self) -> Vec<RelationRecord> {
+        let mut out = Vec::new();
+        if let Ok(mut st) = self.conn.prepare("SELECT value FROM relations") {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, Vec<u8>>(0)) {
+                for v in rows.flatten() {
+                    if let Ok(rec) = serde_json::from_slice::<RelationRecord>(&v) {
+                        out.push(rec);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The chunk ids a relation's evidence actually spans — the centre chunks
+    /// widened by the window that was in effect when it was extracted.
+    ///
+    /// `evidence_chunk_ids` alone under-reports: on D6, the centre chunk
+    /// contains both endpoints for 42.6% of extracted relations, the ±1 window
+    /// the extractor really read for 50.0%. Callers auditing provenance or
+    /// embedding evidence want this, not the raw field.
+    ///
+    /// `neighbours` maps a chunk id to its adjacent ids in document order;
+    /// pass one built from the chunk store, since the graph does not hold
+    /// document positions.
+    pub fn evidence_span(
+        &self,
+        rel: &RelationRecord,
+        neighbours: &dyn Fn(i64, u8) -> Vec<i64>,
+    ) -> Vec<i64> {
+        let mut out: Vec<i64> = Vec::new();
+        for &cid in &rel.evidence_chunk_ids {
+            if cid == 0 {
+                continue; // seeded: no text
+            }
+            for n in neighbours(cid, rel.evidence_window) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out
+    }
+
+    /// Predicates the extractor emitted that the ontology rewrote, with counts,
+    /// most frequent first. The induction signal.
+    pub fn coercion_residue(&self) -> Vec<(String, usize)> {
+        let mut c: HashMap<String, usize> = HashMap::new();
+        for r in self.all_relation_records() {
+            if let Some(o) = r.original_predicate {
+                *c.entry(o).or_default() += 1;
+            }
+        }
+        let mut v: Vec<_> = c.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
     pub fn all_chunk_entity_pairs(&self) -> impl Iterator<Item = (i64, &Vec<i64>)> {
         self.chunk_to_entities.iter().map(|(&k, v)| (k, v))
     }
@@ -4615,6 +5123,10 @@ impl GraphStore {
                 };
                 let new_key = relation_key(new_src, new_dst, &rel.relation_type);
                 let updated = RelationRecord {
+                    // Provenance survives a re-key: this is the same assertion
+                    // pointed at a merged entity, not a new observation.
+                    evidence_window: rel.evidence_window,
+                    original_predicate: rel.original_predicate.clone(),
                     src_id: new_src,
                     dst_id: new_dst,
                     relation_type: rel.relation_type.clone(),
@@ -5056,6 +5568,10 @@ pub async fn extract_from_text(
     inference_url: &str,
     model: &str,
     entity_types: &[&str],
+    // Per-KB relation vocabulary. When empty, falls back to the global
+    // RELATION_TYPES (or PERSON_RELATION_TYPES for person-only runs) — the
+    // pre-ontology behaviour, so existing call sites are unchanged.
+    relation_types: &[&str],
     no_relations: bool,
     gliner_hints: Option<&[String]>,
     kb_schemas: &[KBEntityTypeSchema],
@@ -5093,7 +5609,14 @@ pub async fn extract_from_text(
 
     // Cap prevents JSON overflow failures on entity-dense passages (+7pp reliability,
     // experiments show no recall loss at this cap with window=1 chunking).
-    let entity_cap = if entity_types.len() <= 3 { 25 } else { 20 };
+    //
+    // Keyed on `effective_types`, not on the argument. An empty argument means
+    // "offer all of ENTITY_TYPES" — the broadest case — but its `len()` is 0, so
+    // keying on the argument handed the widest vocabulary the generous cap meant
+    // for focused 2-3 type runs, while a caller that listed the same 17 types
+    // explicitly got the tight one. That also confounds any A/B between a KB
+    // with an ontology and one without.
+    let entity_cap = if effective_types.len() <= 3 { 25 } else { 20 };
 
     // Normalise OCR artifacts before presenting candidates to the LLM.
     // In this corpus underscores replace periods in initials (J_ M_ H_ → J. M. H.).
@@ -5143,12 +5666,36 @@ pub async fn extract_from_text(
                 } else {
                     format!(" (e.g. {})", s.examples.join(", "))
                 };
-                format!("  {} — {}{}", s.name, s.description, ex)
+                // An anti-example says "this is not a `T`" — it does NOT say the
+                // thing is not an entity. Flattening them into one global
+                // do-not-extract list told the model to discard "District Six",
+                // "Muslim" and "Non-European Unity Movement", every one of them
+                // a real entity of some other type, and the central Place of the
+                // corpus among them.
+                let anti = if s.anti_examples.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — NOT {}: {}", s.name, s.anti_examples.join(", "))
+                };
+                format!("  {} — {}{}{}", s.name, s.description, ex, anti)
             })
             .collect::<Vec<_>>()
             .join("\n");
         format!("KB-SPECIFIC ENTITY TYPE GUIDANCE:\n{lines}\n\n")
     };
+
+    // Stop-list and anti-examples both come from the KB's ontology when it has
+    // one, falling back to the global list. The previous hardcoded lists were
+    // D6's: a comics roster ("Tarzan, Flash, Buck Rogers … even if the memoir
+    // mentions reading/watching them") and a word list containing "Hatless",
+    // who is a District Six character. Both were being sent to all 16 KBs.
+    let stop_words = effective_stop_words(kb_schemas, &[]);
+    let stop_word_list = stop_words.join(", ");
+
+    // Anti-examples are attached to their own type in `kb_type_context` above.
+    // They must never become a global do-not-extract list: "not a Venue" is not
+    // "not an entity".
+    let anti_example_line = String::new();
 
     let prompt = if effective_no_relations {
         format!(
@@ -5208,8 +5755,7 @@ mentions reading/watching them: Tarzan, Flash, Buck Rogers, Buck Jones, Dandy, G
 Lobo, Brick Bradford, Hopalong Cassidy, Roy Rogers, Gene Autry, Cobra Woman, Ali Baba, \
 Banquo, Dorian Gray, Mephistopheles, Hunchback of Notre Dame.\n\
              - Do NOT extract common English words or sentence fragments as entity names: \
-Apart, Being, Figure, Hatless, History, Just, Later, Little, Much, Now, Perhaps, \
-Regrettably, Science, Several, Soon, Still, Tell, Whether, Worse.\n\
+{stop_word_list}.\n\
              - Do NOT fuse a fictional character with its author: \"King Lear\" and \
 \"William Shakespeare\" are separate — do not output \"King Lear William Shakespeare\".\n\
              - Do NOT fuse a list of names into one entity. If the source text has \
@@ -5218,12 +5764,7 @@ Regrettably, Science, Several, Soon, Still, Tell, Whether, Worse.\n\
              Text:\n{text}"
         )
     } else {
-        let person_only = entity_types.len() == 1 && entity_types[0].eq_ignore_ascii_case("Person");
-        let relation_list = if person_only {
-            PERSON_RELATION_TYPES.join(", ")
-        } else {
-            RELATION_TYPES.join(", ")
-        };
+        let relation_list = effective_relation_types(entity_types, relation_types).join(", ");
         format!(
             "{section_context}\
              {pronoun_context}\
@@ -5262,13 +5803,9 @@ Arab, Chinese, Bantu, Boer, Cape Malay, Coolie, Dutch, Griqua, Hindu, Irish, Jap
 Malay, Non-White, Pathan, Punjabi, Sikh, Turk, West Indian, Zulu, Afrikaner.\n\
              - Do NOT extract ideological or political labels: Nationalist, Socialist, \
 Marxist, Nazi, Communist, Labour, Victorian, Native.\n\
-             - Do NOT extract fictional characters from comics or films even if the memoir \
-mentions reading/watching them: Tarzan, Flash, Buck Rogers, Buck Jones, Dandy, Globi, \
-Lobo, Brick Bradford, Hopalong Cassidy, Roy Rogers, Gene Autry, Cobra Woman, Ali Baba, \
-Banquo, Dorian Gray, Mephistopheles.\n\
-             - Do NOT extract common English words or sentence fragments: Apart, Being, \
-Figure, Hatless, History, Just, Later, Little, Much, Now, Perhaps, Several, Soon, Still, \
-Tell, Whether, Worse.\n\
+             {anti_example_line}\
+             - Do NOT extract common English words or sentence fragments: \
+{stop_word_list}.\n\
              - Do NOT fuse a list of names into one entity. Extract each name separately.\n\
              - Only assert a relation when the text EXPLICITLY STATES IT. Do not infer \
 relations from two people being mentioned in the same paragraph.\n\
@@ -5296,7 +5833,7 @@ entities or omit the fictional one entirely.\n\n\
         // until the full generation completes, eliminating 90s send timeouts.
         "stream": true,
         "options": {
-            "temperature": 0.1,
+            "temperature": extraction_temperature(),
             "num_predict": 1024,
             "num_ctx": 8192,
         },
@@ -6158,5 +6695,261 @@ mod dedup_tests {
             "a sustained outage must surface as Err, not a silent empty success"
         );
         assert!(result.unwrap_err().to_string().contains("3 attempts"));
+    }
+}
+
+#[cfg(test)]
+mod relation_vocabulary_tests {
+    use super::*;
+
+    /// A per-KB relation vocabulary must override the global list. Without this
+    /// every KB is offered the same 35 predicates, 14 of them kinship — which is
+    /// how a climate corpus ends up being asked about uncles.
+    #[test]
+    fn explicit_relation_types_override_the_global_vocabulary() {
+        let ents = ["Person", "Place", "Event"];
+        let rels = ["participated_in", "witnessed", "occurred_at"];
+        let got = effective_relation_types(&ents, &rels);
+        assert_eq!(got, vec!["participated_in", "witnessed", "occurred_at"]);
+        assert!(!got.contains(&"uncle_of"));
+    }
+
+    /// Absent an explicit list, behaviour is exactly what it was before the
+    /// ontology work — this is the no-regression guard for every existing KB.
+    #[test]
+    fn empty_relation_types_falls_back_to_previous_behaviour() {
+        assert_eq!(
+            effective_relation_types(&["Person", "Place"], &[]),
+            RELATION_TYPES.to_vec()
+        );
+        assert_eq!(
+            effective_relation_types(&["Person"], &[]),
+            PERSON_RELATION_TYPES.to_vec()
+        );
+        assert_eq!(
+            effective_relation_types(&["person"], &[]),
+            PERSON_RELATION_TYPES.to_vec(),
+            "person-only detection is case-insensitive"
+        );
+    }
+
+    /// An explicit list wins even for a person-only run, so a narrative ontology
+    /// can drop kinship predicates it does not want.
+    #[test]
+    fn explicit_list_beats_person_only_special_case() {
+        let got = effective_relation_types(&["Person"], &["said", "commanded"]);
+        assert_eq!(got, vec!["said", "commanded"]);
+    }
+}
+
+#[cfg(test)]
+mod ontology_lexicon_tests {
+    use super::*;
+
+    fn d6_address() -> EntityMarkers {
+        EntityMarkers {
+            last: vec!["street".into(), "road".into(), "cingle".into()],
+            any: vec!["buitencingle".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn last_word_marker_types_an_address() {
+        let m = d6_address();
+        assert_eq!(m.match_kind("Chapel Street"), Some(MarkerMatch::Last));
+        // trailing punctuation must not defeat the match
+        assert_eq!(m.match_kind("Reform Street,"), Some(MarkerMatch::Last));
+        assert_eq!(m.match_kind("Cape Town"), None);
+    }
+
+    /// A closed vocabulary beats a substring hit: "Malay" is a
+    /// RacialClassification by exact match, not a weak `any` hit elsewhere.
+    #[test]
+    fn exact_match_outranks_the_other_rules() {
+        let m = EntityMarkers {
+            exact: vec!["coloured".into(), "malay".into()],
+            any: vec!["colour".into()],
+            ..Default::default()
+        };
+        assert_eq!(m.match_kind("Coloured"), Some(MarkerMatch::Exact));
+        assert!(MarkerMatch::Exact.confidence() > MarkerMatch::Any.confidence());
+    }
+
+    #[test]
+    fn honorific_prefix_marks_a_person() {
+        let m = EntityMarkers {
+            prefix: vec!["haji".into(), "aboeta".into()],
+            ..Default::default()
+        };
+        assert_eq!(m.match_kind("Haji Joosub"), Some(MarkerMatch::Prefix));
+        assert_eq!(m.match_kind("Aboeta Manie"), Some(MarkerMatch::Prefix));
+    }
+
+    #[test]
+    fn empty_markers_never_match_so_the_global_tables_still_apply() {
+        let m = EntityMarkers::default();
+        assert!(m.is_empty());
+        assert_eq!(m.match_kind("Chapel Street"), None);
+    }
+
+    /// Longest phrase wins — otherwise "attended" would swallow "attended the"
+    /// and every school reference would become an event.
+    #[test]
+    fn longest_trigger_phrase_wins() {
+        let t = vec![
+            RelationTrigger {
+                phrase: "attended".into(),
+                relation_type: "attended".into(),
+                confidence: 0.85,
+                reversed: false,
+            },
+            RelationTrigger {
+                phrase: "attended the".into(),
+                relation_type: "attended_event".into(),
+                confidence: 0.80,
+                reversed: false,
+            },
+        ];
+        let got = best_ontology_trigger("he attended the conference", &t).unwrap();
+        assert_eq!(got.relation_type, "attended_event");
+        let got = best_ontology_trigger("he attended trafalgar high", &t).unwrap();
+        assert_eq!(got.relation_type, "attended");
+    }
+
+    #[test]
+    fn reversed_flag_survives_the_round_trip() {
+        let t = vec![RelationTrigger {
+            phrase: "denounced as".into(),
+            relation_type: "denounced_as".into(),
+            confidence: 0.8,
+            reversed: true,
+        }];
+        assert!(
+            best_ontology_trigger("was denounced as a quisling", &t)
+                .unwrap()
+                .reversed
+        );
+        assert!(best_ontology_trigger("nothing here", &t).is_none());
+    }
+}
+
+#[cfg(test)]
+mod generalisation_tests {
+    use super::*;
+
+    fn schema(name: &str, examples: &[&str], anti: &[&str]) -> KBEntityTypeSchema {
+        KBEntityTypeSchema {
+            name: name.into(),
+            examples: examples.iter().map(|s| s.to_string()).collect(),
+            anti_examples: anti.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The bug this rule exists for: "Hatless" is a named District Six character
+    /// introduced in a chapter called "Characters of District Six" and listed in
+    /// the book's own index, yet the compiled stop-list suppressed him for every
+    /// KB. An ontology's positive example must outrank a global word list.
+    #[test]
+    fn an_ontology_example_is_never_stopped() {
+        assert!(DEFAULT_STOP_WORDS.contains(&"History"));
+        let s = vec![schema("Person", &["Hatless", "History"], &[])];
+        let stops = effective_stop_words(&s, &[]);
+        assert!(
+            !stops.contains(&"History"),
+            "declared example must not be stopped"
+        );
+        // and a word no ontology claims is still suppressed
+        assert!(stops.contains(&"Perhaps"));
+    }
+
+    #[test]
+    fn stop_word_matching_ignores_case_and_padding() {
+        let s = vec![schema("Person", &["  hAtLeSs  ", "perhaps"], &[])];
+        let stops = effective_stop_words(&s, &[]);
+        assert!(!stops.contains(&"Perhaps"));
+    }
+
+    /// A KB with no ontology keeps exactly the previous behaviour.
+    #[test]
+    fn no_ontology_leaves_the_global_list_intact() {
+        let stops = effective_stop_words(&[], &[]);
+        assert_eq!(stops, DEFAULT_STOP_WORDS.to_vec());
+    }
+
+    /// An ontology can add its own noise words without recompiling.
+    #[test]
+    fn ontology_can_extend_the_stop_list() {
+        let extra = vec!["Beano".to_string()];
+        let stops = effective_stop_words(&[], &extra);
+        assert!(stops.contains(&"Beano"));
+        // ...but not at the cost of its own declared examples
+        let s = vec![schema("Publication", &["Beano"], &[])];
+        assert!(!effective_stop_words(&s, &extra).contains(&"Beano"));
+    }
+}
+
+#[cfg(test)]
+mod entity_cap_tests {
+    use super::*;
+
+    /// The cap must reflect how many types are actually offered to the LLM.
+    /// Empty means "all of ENTITY_TYPES", which is the widest case, not the
+    /// narrowest — the original keying gave it the focused-run cap and so
+    /// biased any comparison against a caller that listed its types.
+    #[test]
+    fn cap_keys_on_the_effective_vocabulary() {
+        fn cap(passed: &[&str]) -> usize {
+            let effective = if passed.is_empty() {
+                ENTITY_TYPES
+            } else {
+                passed
+            };
+            if effective.len() <= 3 {
+                25
+            } else {
+                20
+            }
+        }
+        assert_eq!(
+            cap(&["Person", "Place"]),
+            25,
+            "a focused run keeps the wide cap"
+        );
+        assert_eq!(cap(&[]), 20, "empty means all 17 types — the broad cap");
+        let seventeen: Vec<&str> = ENTITY_TYPES.to_vec();
+        assert_eq!(
+            cap(&seventeen),
+            cap(&[]),
+            "listing every type explicitly must equal passing none"
+        );
+    }
+}
+
+#[cfg(test)]
+mod extraction_temperature_tests {
+    use super::*;
+
+    /// Serialised because these mutate process-wide environment.
+    #[test]
+    fn temperature_defaults_to_the_historical_value_and_can_be_pinned() {
+        // SAFETY: single-threaded within this test; no other test reads the var.
+        unsafe { std::env::remove_var("KWAAI_EXTRACTION_TEMPERATURE") };
+        assert_eq!(
+            extraction_temperature(),
+            0.1,
+            "production behaviour unchanged"
+        );
+
+        unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "0") };
+        assert_eq!(extraction_temperature(), 0.0, "measurement runs can pin it");
+
+        // Nonsense and out-of-range values fall back rather than breaking a build.
+        unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "banana") };
+        assert_eq!(extraction_temperature(), 0.1);
+        unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "99") };
+        assert_eq!(extraction_temperature(), 0.1);
+        unsafe { std::env::remove_var("KWAAI_EXTRACTION_TEMPERATURE") };
     }
 }

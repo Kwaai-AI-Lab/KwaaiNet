@@ -1,0 +1,26 @@
+# Ontology for the OSMDocs KB — reference documentation.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md. Applying an ontology to a corpus
+# this dirty measures the dirt, not the ontology.
+#
+# Corpus hygiene: 33.9% clean — 404 markup, 24 char-spaced, plus MediaWiki navigation chrome.
+
+ontology:
+  name: osmdocs
+  version: 1
+  extends: software-docs
+
+provenance:
+  derivation: derived
+  note: >-
+    4 sampled chunks (Elements, Editing, Changeset, History)
+
+entity_types:
+  - name: Tag
+    description: An OSM key=value tag.
+    irreducible: true
+  - name: Element
+    description: A node, way, or relation — the OSM data primitives.
+    irreducible: false

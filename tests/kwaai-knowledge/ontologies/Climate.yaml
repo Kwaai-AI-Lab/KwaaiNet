@@ -1,0 +1,27 @@
+# Ontology for the Climate KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md. Applying an ontology to a corpus
+# this dirty measures the dirt, not the ontology.
+# Corpus hygiene: 69% clean — 225 char-spaced, 335 bibliography, 291 boilerplate chunks.
+
+ontology:
+  name: climate
+  version: 1
+  extends: scholarly
+
+provenance:
+  derivation: derived
+  note: >-
+    6 sampled chunks (National Academies, CMIP6, Kroeker, Armstrong McKay)
+
+entity_types:
+  - name: Forcing
+    description: A named radiative driver of climate change.
+    examples: ["well-mixed greenhouse gases", "aerosols", "solar and volcanic drivers"]
+    irreducible: false
+  - name: TippingElement
+    description: A subsystem with a threshold beyond which change is self-sustaining.
+    examples: ["AMOC", "Boreal forest", "extra-polar glaciers"]
+    irreducible: false

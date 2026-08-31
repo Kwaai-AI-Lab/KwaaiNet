@@ -1,0 +1,34 @@
+# Ontology for the Manhattan KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# Thin: the shared `narrative-history` module carries almost everything. That is
+# the point of modules — five corpora, one vocabulary, per-corpus deltas only.
+
+ontology:
+  name: manhattan
+  version: 1
+  extends: narrative-history
+
+provenance:
+  derivation: unverified
+  note: >-
+    thin extension of narrative-history; corpus not sampled
+
+# Programme history: laboratories, devices, tests. Person/Place/Organization
+# alone flattens all of it — which is what the current 0.022 rel/ent shows.
+entity_types:
+  - name: Device
+    description: A named weapon, reactor, or experimental apparatus.
+    examples: ["Trinity device", "Chicago Pile-1"]
+    irreducible: false
+  - name: Test
+    description: A named experiment or detonation.
+    irreducible: false
+
+relation_types:
+  - name: developed
+    domain: [Person, Organization]
+    range:  [Device]
+  - name: tested_in
+    domain: [Device]
+    range:  [Test]
