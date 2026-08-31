@@ -1783,6 +1783,14 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
         let evidence_cols = 240usize;
 
         let stdin = io::stdin();
+        // How long the answer is expected to take, used to stretch the retrieval
+        // narration across it. Seeded high on purpose: running the narration long and
+        // being cut short by the answer is invisible, whereas running it short leaves
+        // the spinner staring back. Each turn corrects it.
+        const FIRST_TURN_GEN_ESTIMATE: std::time::Duration = std::time::Duration::from_secs(25);
+        // Aim to finish narrating slightly before the answer, so the two do not collide.
+        const FILL_MARGIN: std::time::Duration = std::time::Duration::from_millis(700);
+        let mut gen_estimate = FIRST_TURN_GEN_ESTIMATE;
         let mut marks: kwaai_rag::reranker::Marks = Default::default();
         // The turn awaiting commit. Deferring the history push means /retry has
         // nothing to unwind, so there is no rewind path and no off-by-one against the
@@ -2067,6 +2075,7 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                 // returned the same cached text would be pointless.
                 let from_cache = cached.is_some() && attempt == 0;
                 let retrying = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let gen_started = std::time::Instant::now();
                 let gen: Option<tokio::task::JoinHandle<String>> = if from_cache {
                     None
                 } else {
@@ -2104,7 +2113,14 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                     );
                     let mut st = crate::progress::StatusLine::stderr();
                     let done = || gen.as_ref().map(|h| h.is_finished()).unwrap_or(true);
-                    crate::chat_ui::play(script, &mut st, per_char, &done).await;
+                    // Stretch the narration to land with the answer rather than
+                    // finishing early and handing over to a bare spinner. The estimate
+                    // is this session's own generation times, so it sharpens per turn;
+                    // over-estimating costs nothing because `done` fast-forwards.
+                    let fill_until = gen
+                        .as_ref()
+                        .map(|_| gen_started + gen_estimate.saturating_sub(FILL_MARGIN));
+                    crate::chat_ui::play(script, &mut st, per_char, &done, fill_until).await;
                 }
 
                 let answer = match gen {
@@ -2119,6 +2135,12 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
                         }
                         st.clear_status();
+                        // Learn this turn's cost for the next turn's narration budget.
+                        // An even split between old and new tracks a model or host
+                        // change within a couple of turns without lurching on one
+                        // outlier. Cached turns are excluded: they measure nothing.
+                        let actual = gen_started.elapsed();
+                        gen_estimate = (gen_estimate + actual) / 2;
                         h.await
                             .unwrap_or_else(|_| "(inference error: task panicked)".to_string())
                     }

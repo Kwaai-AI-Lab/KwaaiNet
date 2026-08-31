@@ -488,26 +488,110 @@ pub async fn play(
     st: &mut StatusLine,
     per_char: Duration,
     fast_fwd: &dyn Fn() -> bool,
+    fill_until: Option<std::time::Instant>,
 ) {
-    let line_gap = per_char * 6;
-    for unit in script {
+    // Nobody is watching a pipe type. `emit_paced` already short-circuits on a
+    // non-terminal, but the inter-line rest did not — so a redirected run slept through
+    // every table row for no one, and stretching would have multiplied that by eight.
+    if !crate::progress::is_stderr_tty() {
+        for unit in script {
+            match unit {
+                Unit::Prose(s) | Unit::Line(s) => st.emit(&s),
+            }
+        }
+        return;
+    }
+
+    // Cost of each remaining unit in "character times", so pacing can be spread over
+    // what is actually left rather than recomputed per line from nothing.
+    let costs: Vec<usize> = script.iter().map(unit_cost).collect();
+    let mut remaining: usize = costs.iter().sum();
+
+    for (i, unit) in script.into_iter().enumerate() {
         let ff = fast_fwd();
+        // Re-derive the pace before every unit. Doing it here rather than once up front
+        // is what absorbs a bad estimate: if generation is slower than predicted the
+        // narration keeps stretching, and if it is faster `fast_fwd` cuts it short.
+        let pace = if ff {
+            per_char
+        } else {
+            stretch_pace(per_char, remaining, fill_until, std::time::Instant::now())
+        };
+        let line_gap = pace * 6;
+        remaining = remaining.saturating_sub(costs[i]);
         match unit {
             Unit::Prose(s) => {
                 if ff {
                     st.emit(&s);
                 } else {
-                    st.emit_paced(&s, per_char, fast_fwd).await;
+                    st.emit_paced(&s, pace, fast_fwd).await;
                 }
             }
             Unit::Line(s) => {
                 st.emit(&s);
                 if !ff && !line_gap.is_zero() {
-                    tokio::time::sleep(line_gap).await;
+                    // Sleep in slices so a stretched gap still fast-forwards promptly
+                    // when the answer lands mid-gap.
+                    let mut slept = Duration::ZERO;
+                    let slice = Duration::from_millis(40);
+                    while slept < line_gap {
+                        if fast_fwd() {
+                            break;
+                        }
+                        let step = slice.min(line_gap - slept);
+                        tokio::time::sleep(step).await;
+                        slept += step;
+                    }
                 }
             }
         }
     }
+}
+
+/// What one script unit costs, in units of `per_char`.
+///
+/// A rendered line is emitted whole and then rests for `pace * 6`, so it costs six
+/// character-times; prose costs one per character.
+fn unit_cost(u: &Unit) -> usize {
+    match u {
+        Unit::Prose(s) => s.chars().count(),
+        Unit::Line(_) => 6,
+    }
+}
+
+/// How long to dwell on each character so the narration lands with the answer.
+///
+/// The retrieval narration used to run at a fixed pace, finish well before the
+/// completion, and hand over to a bare "generating" spinner — the dead air this whole
+/// feature exists to remove, merely relocated. Spreading what is left of the script
+/// across the time still expected on the answer fills that gap with something worth
+/// reading.
+///
+/// `per_char` is the floor, never the target: this only ever slows narration down, so
+/// `--pace` still sets the fastest it will go. The stretch is capped at `MAX_STRETCH`
+/// because a wildly over-estimated deadline should not leave text crawling out one
+/// character per second.
+fn stretch_pace(
+    per_char: Duration,
+    remaining_cost: usize,
+    fill_until: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Duration {
+    /// Slowest the narration may be stretched, as a multiple of `--pace`.
+    const MAX_STRETCH: u32 = 8;
+
+    if per_char.is_zero() || remaining_cost == 0 {
+        return per_char;
+    }
+    let Some(target) = fill_until else {
+        return per_char;
+    };
+    let left = target.saturating_duration_since(now);
+    if left.is_zero() {
+        return per_char;
+    }
+    let want = left / remaining_cost as u32;
+    want.clamp(per_char, per_char * MAX_STRETCH)
 }
 
 #[cfg(test)]
@@ -562,6 +646,82 @@ mod tests {
             40,
         );
         assert!(out.contains("Mike Allie"), "trigger lost: {out}");
+    }
+
+    // ── elastic narration pacing ──────────────────────────────────────────────
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// With no deadline the pace is exactly what --pace asked for.
+    #[test]
+    fn no_fill_target_leaves_the_pace_alone() {
+        let now = std::time::Instant::now();
+        assert_eq!(stretch_pace(ms(10), 500, None, now), ms(10));
+    }
+
+    /// The whole point: spread what is left of the script over the time left on the
+    /// answer, so narration lands with it instead of finishing early.
+    #[test]
+    fn stretches_to_fill_the_remaining_time() {
+        let now = std::time::Instant::now();
+        // 400 chars left, 8s left on the answer -> 20ms/char, not the 5ms floor.
+        let target = now + Duration::from_secs(8);
+        assert_eq!(stretch_pace(ms(5), 400, Some(target), now), ms(20));
+    }
+
+    /// --pace is a floor, never a target: a near deadline must not speed text up past
+    /// what the user asked for.
+    #[test]
+    fn never_faster_than_the_requested_pace() {
+        let now = std::time::Instant::now();
+        let target = now + ms(100); // far too little time for 400 chars
+        assert_eq!(stretch_pace(ms(10), 400, Some(target), now), ms(10));
+    }
+
+    /// A wildly over-estimated deadline must not leave text crawling out.
+    #[test]
+    fn stretch_is_capped() {
+        let now = std::time::Instant::now();
+        let target = now + Duration::from_secs(600);
+        // Would want 6s/char; capped at 8x the requested pace.
+        assert_eq!(stretch_pace(ms(10), 100, Some(target), now), ms(80));
+    }
+
+    /// A deadline already in the past, an exhausted script, and --pace 0 (pacing off)
+    /// each fall back to the plain pace rather than dividing by zero or hanging.
+    #[test]
+    fn degenerate_inputs_fall_back() {
+        let now = std::time::Instant::now();
+        let past = now - Duration::from_secs(5);
+        assert_eq!(stretch_pace(ms(10), 100, Some(past), now), ms(10));
+        assert_eq!(stretch_pace(ms(10), 0, Some(now + ms(500)), now), ms(10));
+        // --pace 0 disables pacing entirely and must stay disabled.
+        assert_eq!(
+            stretch_pace(Duration::ZERO, 100, Some(now + Duration::from_secs(9)), now),
+            Duration::ZERO
+        );
+    }
+
+    /// Line units rest for six character-times, so they must cost six in the budget —
+    /// otherwise a table-heavy script is treated as nearly free and paces far too fast.
+    #[test]
+    fn unit_cost_counts_lines_as_six() {
+        assert_eq!(unit_cost(&Unit::Prose("abcde".into())), 5);
+        assert_eq!(unit_cost(&Unit::Line("a very long table row".into())), 6);
+        assert_eq!(unit_cost(&Unit::Prose(String::new())), 0);
+    }
+
+    /// As the script drains, the same remaining time is spread over less text, so the
+    /// pace must widen rather than stay flat.
+    #[test]
+    fn pace_widens_as_the_script_drains() {
+        let now = std::time::Instant::now();
+        let target = now + Duration::from_secs(4);
+        let early = stretch_pace(ms(1), 800, Some(target), now);
+        let late = stretch_pace(ms(1), 200, Some(target), now);
+        assert!(late > early, "expected {late:?} > {early:?}");
     }
 
     #[test]
