@@ -801,6 +801,19 @@ message ConnectReply {
 // event's `message` generically rather than dropping it, so a newer
 // daemon's added phases stay legible on an older client.
 enum InferencePhase {
+    // Declared in the order a run emits them. Tag numbers are frozen
+    // history — the wire contract is append-only — so PEER_DIAL_START
+    // is 13 despite preceding PEER_DIAL (6).
+    //
+    // The run model behind the ordering: this node is the coordinator
+    // for the whole run. It discovers and pins the chain, dials the
+    // members, and then drives every hop itself — a hop is one
+    // round-trip from here to one peer, which runs its contiguous slice
+    // of the model's blocks on the activations we sent and returns the
+    // resulting activations to us (peers never forward to each other).
+    // One full pass through the chain yields logits, one token is
+    // sampled from them, and the pass repeats for the next token.
+
     INFERENCE_PHASE_UNSPECIFIED = 0;
 
     // Run accepted; model / dht_prefix / total_blocks resolved.
@@ -824,17 +837,25 @@ enum InferencePhase {
     // rebuild with `attempt` incremented.
     INFERENCE_PHASE_CHAIN_PINNED = 5;
 
-    // Best-effort dial of a chain member before generation starts.
-    // Sets: peer_id, peer_name, ok, and (since PEER_DIAL_START was
-    // added) duration_ms.
+    // A best-effort dial of a chain member is about to be attempted,
+    // answered later by a PEER_DIAL for the same peer. Announced up
+    // front because the dial can take tens of seconds to time out,
+    // during which a result-only event would leave a client unable to
+    // say who is being waited on. Sets: peer_id, peer_name, is_self.
+    INFERENCE_PHASE_PEER_DIAL_START = 13;
+
+    // The dial's result. Sets: peer_id, peer_name, ok, and (since
+    // PEER_DIAL_START was added) duration_ms.
     INFERENCE_PHASE_PEER_DIAL = 6;
 
-    // A hop is being dispatched. Sets: peer_id, peer_name, block_start,
-    // block_end, is_self, token_index, is_prefill, candidate_index.
+    // A hop is being dispatched: the coordinator is sending this
+    // token's activations to the peer serving [block_start, block_end).
+    // Sets: peer_id, peer_name, block_start, block_end, is_self,
+    // token_index, is_prefill, candidate_index.
     INFERENCE_PHASE_HOP_START = 7;
 
-    // A hop returned activations or logits. Sets everything HOP_START
-    // does, plus duration_ms.
+    // The hop returned its activations (or, from the last hop, logits).
+    // Sets everything HOP_START does, plus duration_ms.
     INFERENCE_PHASE_HOP_OK = 8;
 
     // A hop failed. Sets everything HOP_START does, plus duration_ms,
@@ -848,20 +869,15 @@ enum InferencePhase {
     // point, so output may degrade. Sets: block_start, message, attempt.
     INFERENCE_PHASE_PATH_REBUILD = 10;
 
-    // A token was sampled. Sets: token_index, is_prefill, duration_ms
-    // (wall time for this token's whole forward pass).
+    // A token was sampled from the logits the last hop returned —
+    // generation is autoregressive, so every token costs one full pass
+    // through the chain, and this closes that pass. Sets: token_index,
+    // is_prefill, duration_ms (wall time for the whole pass).
     INFERENCE_PHASE_TOKEN_SAMPLED = 11;
 
     // Generation finished. Sets: token_index (total generated),
     // duration_ms (whole run) and message (the stop reason).
     INFERENCE_PHASE_COMPLETE = 12;
-
-    // A best-effort dial is about to be attempted, answered later by a
-    // PEER_DIAL for the same peer. Emitted separately because the dial
-    // can take tens of seconds to time out, during which the result-only
-    // event would leave a client unable to say who is being waited on.
-    // Sets: peer_id, peer_name, is_self.
-    INFERENCE_PHASE_PEER_DIAL_START = 13;
 }
 
 // Why a hop failed, which decides whether the peer stays eligible for
