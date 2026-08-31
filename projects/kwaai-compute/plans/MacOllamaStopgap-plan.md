@@ -59,7 +59,7 @@ On macOS, skip device detection, the model load, and this registration. Keep the
 `:382-398` — they are what make the node useful.
 
 Because no shard loads, `ShardManager::shard_is_ready()` stays false and
-`KwaaiNetConfig::announce_state()` (`config.rs:794`) already returns `0` rather
+`KwaaiNetConfig::announce_state()` (`config.rs:1017`) already returns `0` rather
 than `2`. **No announce changes needed** — the existing "online, no shard"
 state is exactly right.
 
