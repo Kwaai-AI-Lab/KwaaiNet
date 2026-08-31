@@ -87,6 +87,13 @@ In-memory, matching `run_dht`. A restarted bootstrap refills from the other
 nodes' 300 s re-announce loop; nothing on disk needs preserving except the
 identity key.
 
+Both tiers are bounded by bytes as well as by entry count — 256 MiB primary,
+64 MiB cache, and no single value above 1 MiB (`kwaai_hivemind_dht::server`).
+That is the ceiling on what serving other peers' records can cost, and it is
+a real ceiling rather than a nominal one: serving is not gated by record
+validators, so the peer choosing what to store is whoever dialled us. Over
+budget, the earliest-expiring records go first.
+
 ## What is not configurable: serving
 
 Answering `rpc_ping` / `rpc_store` / `rpc_find` for other peers is not a config

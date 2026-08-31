@@ -58,6 +58,31 @@ pub const DEFAULT_CACHE_SIZE: usize = 32_768;
 /// validators land (tracked in the module docs).
 pub const DEFAULT_STORAGE_SIZE: usize = 1_048_576;
 
+/// Default primary-tier byte budget.
+///
+/// The entry-count bound above does not bound memory. A stored value is
+/// capped only by the 10 MiB wire frame ([`crate::wire::MAX_FRAME_LEN`]), so
+/// a million entries reach far past any figure the count suggests — and with
+/// validators missing, the peer choosing those sizes is whoever dialled us.
+/// This is the ceiling that actually holds, and it is the one to size against
+/// the memory a bootstrap host can spare.
+pub const DEFAULT_STORAGE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Default cache-tier byte budget. Smaller than the primary tier's: the cache
+/// holds records this node fetched on someone else's behalf, and losing one
+/// costs a re-fetch rather than a gap in what the network can find.
+pub const DEFAULT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Largest single value either tier accepts.
+///
+/// Well below [`crate::wire::MAX_FRAME_LEN`], which bounds what can arrive,
+/// not what is worth keeping: every record this network actually publishes —
+/// block ranges, `_petals.models`, the inference and VPK registries — is a
+/// few hundred bytes. A megabyte is three orders of magnitude of headroom,
+/// and refusing above it keeps one sender from evicting a whole tier with a
+/// handful of stores.
+pub const MAX_VALUE_BYTES: usize = 1024 * 1024;
+
 /// Cap on `keys.len()` accepted from a single `StoreRequest`. Entries beyond
 /// it are reported `store_ok = false`. A legitimate announce carries a
 /// handful of keys; thousands in one frame is either a bug or an amplification
@@ -115,13 +140,22 @@ impl DHTStorage {
     }
 
     /// Create a storage backend with explicit cache capacity and neighbour
-    /// count. The primary tier is bounded at [`DEFAULT_STORAGE_SIZE`] — see
-    /// there for why it must not be unbounded while validators are missing.
+    /// count. Both tiers are bounded by entry count *and* by bytes — see
+    /// [`DEFAULT_STORAGE_BYTES`] for why the count alone is not a memory
+    /// bound while validators are missing.
     pub fn with_config(local_peer_id: PeerId, cache_size: usize, bucket_size: usize) -> Self {
         Self {
             inner: Arc::new(Inner {
-                storage: RwLock::new(LocalStorage::with_maxsize(DEFAULT_STORAGE_SIZE)),
-                cache: RwLock::new(LocalStorage::with_maxsize(cache_size)),
+                storage: RwLock::new(LocalStorage::with_limits(
+                    DEFAULT_STORAGE_SIZE,
+                    DEFAULT_STORAGE_BYTES,
+                    MAX_VALUE_BYTES,
+                )),
+                cache: RwLock::new(LocalStorage::with_limits(
+                    cache_size,
+                    DEFAULT_CACHE_BYTES,
+                    MAX_VALUE_BYTES,
+                )),
                 peers: RwLock::new(Vec::new()),
                 local_peer_id,
                 bucket_size,
