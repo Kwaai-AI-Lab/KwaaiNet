@@ -2413,6 +2413,13 @@ mod tests {
         // ConnectionRefused is the happy-path answer; any other Err (e.g.
         // network unreachable) we also treat as "not accepting". We bound
         // the dial with a short timeout so a slow stack can't lie to us.
+        //
+        // Silence counts as "not accepting" too: Winsock retries a RST'd
+        // connect in-stack and reports WSAECONNREFUSED only after ~1s, so on
+        // Windows a closed port looks like a timeout from inside this window.
+        // The reverse cannot mislead us — a live loopback listener completes
+        // the handshake in-kernel (backlog) long before 250ms, without the
+        // server ever calling accept.
         match tokio::time::timeout(
             Duration::from_millis(250),
             tokio::net::TcpStream::connect(("127.0.0.1", port)),
@@ -2420,8 +2427,7 @@ mod tests {
         .await
         {
             Ok(Ok(_)) => false, // still accepting
-            Ok(Err(_)) => true, // refused / unreachable
-            Err(_) => false,    // timed out = something is listening but not answering yet
+            _ => true,          // refused, unreachable, or silence
         }
     }
 

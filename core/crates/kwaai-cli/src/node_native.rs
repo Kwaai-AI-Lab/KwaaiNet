@@ -974,7 +974,14 @@ mod tests {
         // against an announce path that was broken outright.
         let home = tempfile::tempdir().expect("tmpdir");
         let config = seed_like_config(true, home.path());
+        // `control_socket_addr` wraps a path in `/unix/…` only on POSIX; on
+        // Windows the variable must already be a multiaddr, and a Unix one
+        // cannot bind there. Port 0 keeps parallel test binaries from
+        // colliding.
+        #[cfg(unix)]
         std::env::set_var("KWAAINET_SOCKET", home.path().join("node.sock"));
+        #[cfg(not(unix))]
+        std::env::set_var("KWAAINET_SOCKET", "/ip4/127.0.0.1/tcp/0");
         kwaai_p2p::identity::generate_keypair(config.identity_key.as_ref().unwrap())
             .expect("the fixture key must generate");
 
