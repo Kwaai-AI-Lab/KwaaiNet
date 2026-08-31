@@ -228,6 +228,11 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
+    /// Listen on and dial QUIC as well as TCP. Turn it off for a network that
+    /// blocks or throttles UDP. Bound at startup, so changing it needs a
+    /// restart.
+    #[serde(default = "default_true")]
+    pub enable_quic: bool,
     /// Ceiling on simultaneously established connections, inbound and
     /// outbound, enforced by the swarm's connection-limits behaviour.
     ///
@@ -892,6 +897,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
+            enable_quic: true,
             max_connections: default_max_connections(),
             announce_self: true,
             decentralized_dht: false,
@@ -1203,6 +1209,7 @@ impl KwaaiNetConfig {
             "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
+            "enable_quic" => self.enable_quic = parse_bool(value)?,
             "max_connections" => {
                 let n: usize = value
                     .parse()

@@ -260,98 +260,95 @@ impl NetworkService {
         let local_peer_id = keypair.public().to_peer_id();
         let behaviour_config = config.clone();
 
-        let mut swarm = SwarmBuilder::with_existing_identity(keypair)
+        // `SwarmBuilder` is a typestate: the chain's type differs with and
+        // without QUIC, and only the finished swarm is one type. Hence a macro.
+        macro_rules! finish {
+            ($builder:expr) => {
+                $builder
+                    .context("configuring DNS resolution")?
+                    // After `with_dns`: the circuit transport wraps the resolved
+                    // one, which is why the closure below takes two arguments.
+                    .with_relay_client(noise::Config::new, yamux::Config::default)
+                    .context("configuring the relay client transport")?
+                    .with_behaviour(|kp, relay_client| {
+                        KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
+                    })
+                    .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
+                    .with_swarm_config(|c| {
+                        c.with_idle_connection_timeout(config.idle_connection_timeout)
+                            // 0-RTT protocol negotiation on outbound
+                            // substreams.
+                            //
+                            // The default, `V1`, writes the multistream-select
+                            // proposal, waits for the peer to confirm it, and
+                            // only then sends the payload — two round trips for
+                            // one request. `V1Lazy` buffers the proposal and
+                            // flushes it with the first application data, which
+                            // is what go-libp2p does and why the p2pd path cost
+                            // one round trip where this cost two.
+                            //
+                            // Safe in a mixed fleet: the wire bytes are
+                            // identical and a *listener* behaves as `V1`
+                            // regardless, so only our dialer changes.
+                            //
+                            // SCOPE: this sits on the swarm pool config and so
+                            // applies to **every outbound substream of every
+                            // behaviour** — ping, identify, kad, autonat,
+                            // relay, dcutr, upnp and the raw-stream handler,
+                            // not just unary. libp2p-swarm 0.47 has no
+                            // per-behaviour override, so the two consequences
+                            // below are accepted deliberately rather than
+                            // worked around:
+                            //
+                            // - `ping`: its only transition to
+                            //   `State::Inactive` is the `NegotiationFailed`
+                            //   arm, now unreachable. A peer not serving
+                            //   `/ipfs/ping/1.0.0` is re-pinged every 30s for
+                            //   the connection's life. Latent today — every
+                            //   fleet peer serves ping, and the go daemon does
+                            //   so unconditionally.
+                            // - `kad`: `on_fully_negotiated_outbound` marks the
+                            //   protocol supported on the first negotiated
+                            //   substream, which now fires before the remote
+                            //   confirms anything. A query to a connected
+                            //   non-kad peer can insert it into the routing
+                            //   table until identify corrects it. This is net
+                            //   new versus p2pd, where go-libp2p-kad-dht admits
+                            //   peers only from identify plus a live FIND_NODE
+                            //   probe.
+                            //
+                            // Closing both at the source means gating laziness
+                            // on identify's known-protocol set, as go does.
+                            // Tracked as a follow-up, not done here.
+                            //
+                            // Raw streams opt out via a trailing sentinel
+                            // protocol, so their refusals stay eager — see
+                            // `raw_stream.rs`.
+                            .with_substream_upgrade_protocol_override(
+                                libp2p::core::upgrade::Version::V1Lazy,
+                            )
+                    })
+                    .build()
+            };
+        }
+
+        let tcp = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
-                // No `.port_reuse(true)` here — since libp2p 0.54 the option is
-                // deprecated and does nothing, because reuse is decided per
-                // connection by the behaviour that asks for the dial.
-                //
-                // That per-connection policy is what DCUtR needs and what a
-                // global flag got wrong. A hole punch is a simultaneous open:
-                // each peer's outbound SYN opens the pinhole that admits the
-                // other's, which only works if the port each side dials *from*
-                // is the port the other side is dialing *to* — the listen port.
-                // `libp2p-dcutr` therefore requests `PortUse::Reuse` on its
-                // punch dials, and gets it, without every ordinary dial having
-                // to share one local port.
-                //
-                // Forcing reuse globally (which is what the old flag did) made
-                // every dial bind the listen port, so a second dial to an
-                // endpoint already connected collided on the 4-tuple and failed
-                // `AddrNotAvailable`. Upstream hit the same wall and added a
-                // fallback in libp2p-tcp 0.44: on that error it re-dials from a
-                // fresh port rather than failing the connection.
-                //
-                // Neither mechanism rescues a symmetric NAT, which re-maps the
-                // port per destination — that is what the relay fallback is for.
+                // No `.port_reuse(true)`: deprecated since 0.54 and a no-op.
+                // Reuse is per-dial now, which is what DCUtR needs — a hole
+                // punch must leave from the port the peer is aiming at.
                 tcp::Config::default().nodelay(true),
                 noise::Config::new,
                 yamux::Config::default,
             )
-            .context("configuring TCP transport")?
-            // DNS resolution is required for `/dns/bootstrap-N.kwaai.ai/...`
-            // addresses; without it those dials fail at the transport layer.
-            .with_dns()
-            .context("configuring DNS resolution")?
-            // Wraps the transport so `/…/p2p-circuit` addresses dial through a
-            // relay, and hands back the matching client behaviour. It must come
-            // after `with_dns` (the circuit transport wraps the resolved one),
-            // and it is why the `with_behaviour` closure below takes two
-            // arguments rather than one.
-            .with_relay_client(noise::Config::new, yamux::Config::default)
-            .context("configuring the relay client transport")?
-            .with_behaviour(|kp, relay_client| {
-                KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
-            })
-            .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
-            .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(config.idle_connection_timeout)
-                    // 0-RTT protocol negotiation on outbound substreams.
-                    //
-                    // The default, `V1`, writes the multistream-select proposal,
-                    // waits for the peer to confirm it, and only then sends the
-                    // payload — two round trips for one request. `V1Lazy` buffers
-                    // the proposal and flushes it together with the first
-                    // application data, which is what go-libp2p does and why the
-                    // p2pd path costs one round trip where this cost two.
-                    //
-                    // Safe in a mixed fleet: the wire bytes are identical and a
-                    // *listener* behaves as `V1` regardless, so only our dialer
-                    // changes.
-                    //
-                    // SCOPE: this sits on the swarm pool config and therefore
-                    // applies to **every outbound substream of every
-                    // behaviour** — ping, identify, kad, autonat, relay, dcutr,
-                    // upnp and the raw-stream handler, not just unary. libp2p-
-                    // swarm 0.47 has no per-behaviour override, so the two
-                    // consequences below are accepted deliberately rather than
-                    // worked around:
-                    //
-                    // - `ping`: its only transition to `State::Inactive` is the
-                    //   `NegotiationFailed` arm, now unreachable. A peer not
-                    //   serving `/ipfs/ping/1.0.0` is re-pinged every 30s for
-                    //   the connection's life. Latent today — every fleet peer
-                    //   serves ping, and the go daemon does so unconditionally.
-                    // - `kad`: `on_fully_negotiated_outbound` marks the protocol
-                    //   supported on the first negotiated substream, which now
-                    //   fires before the remote confirms anything. A query to a
-                    //   connected non-kad peer can insert it into the routing
-                    //   table until identify corrects it. This is net new versus
-                    //   p2pd, where go-libp2p-kad-dht admits peers only from
-                    //   identify plus a live FIND_NODE probe.
-                    //
-                    // Closing both at the source means gating laziness on
-                    // identify's known-protocol set, as go does. Tracked as a
-                    // follow-up, not done here.
-                    //
-                    // Raw streams opt out via a trailing sentinel protocol, so
-                    // their refusals stay eager — see `raw_stream.rs`.
-                    .with_substream_upgrade_protocol_override(
-                        libp2p::core::upgrade::Version::V1Lazy,
-                    )
-            })
-            .build();
+            .context("configuring TCP transport")?;
+
+        let mut swarm = if config.enable_quic {
+            finish!(tcp.with_quic().with_dns())
+        } else {
+            finish!(tcp.with_dns())
+        };
 
         for addr in config.swarm_listen_addrs() {
             let addr: Multiaddr = addr
