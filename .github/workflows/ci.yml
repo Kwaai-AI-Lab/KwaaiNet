@@ -48,6 +48,20 @@ jobs:
         working-directory: core
         run: cargo fmt --all -- --check
 
+  # ── 1b. Memory integrity (seconds; no toolchain, no cache) ────────────────
+  # CLAUDE.md files are read by agents as authoritative, so a stale claim is
+  # amplified rather than noticed. They describe code, which moves without
+  # anyone opening the doc — a review ritual cannot catch that, a check can.
+  memory:
+    name: Memory integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # drift detection reads commit dates
+      - name: Check CLAUDE.md and glossary references resolve
+        run: python3 scripts/check_memory_integrity.py
+
   # ── 2. Clippy (default features — CUDA/Metal checked only in release.yml) ──
   clippy:
     name: Clippy

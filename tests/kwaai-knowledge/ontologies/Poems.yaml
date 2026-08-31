@@ -1,0 +1,103 @@
+# Ontology for the Poems KB — poetry and dramatic works (Longfellow, Browning).
+# Arm B, foundation-model authored 2026-08-25.
+#
+# BLOCKED ON INGESTION — do not apply yet.
+# See results/corpus_hygiene_20260825_*.md. Applying an ontology to a corpus
+# this dirty measures the dirt, not the ontology.
+#
+# Corpus hygiene: 22.3% clean — 22202 of 28742 chunks are raw HTML
+# (<div class="verse">, <pre xml:space="preserve">), many with the passage
+# duplicated inside the chunk.
+#
+# Poetry is the corpus where the global vocabulary is most absurd: 7163 entities
+# typed Person and Place, 4 relations. A poem does not assert that X is located
+# in Y — it means one thing by another.
+
+ontology:
+  name: poetics
+  version: 1
+  extends: none
+
+provenance:
+  derivation: derived
+  note: >-
+    4 sampled chunks (Longfellow, Browning)
+
+streams:
+  - name: verse
+    entity_types: [Poem, Speaker, Addressee, Image, Motif, Form, Allusion, Place, Figure]
+  - name: apparatus
+    ingest: skip          # editorial front matter, tables of contents, HTML chrome
+
+entity_types:
+  - name: Poem
+    description: A titled poem or a titled section of a dramatic work.
+    irreducible: false
+  - name: Speaker
+    description: >-
+      The voice of a poem — the dramatic "I", not the poet. Browning's dramatic
+      monologues make the distinction load-bearing.
+    irreducible: false
+  - name: Addressee
+    description: The "you" a poem speaks to.
+    irreducible: false
+  - name: Figure
+    description: >-
+      A named person or character appearing in the verse — mythological,
+      historical, or invented. Alkestis, Herakles, Admetos.
+    irreducible: false
+  - name: Place
+    description: A named place invoked in the verse. Seville, Cordova.
+    irreducible: false
+  - name: Image
+    description: >-
+      A concrete sensory particular carrying figurative weight — the rose above
+      the dungheap, the orange-orchards.
+    # An image paraphrased is an image destroyed.
+    irreducible: true
+  - name: Motif
+    description: A recurring image or idea across poems.
+    irreducible: false
+  - name: Form
+    description: A named verse form or metre — sonnet, blank verse, stanza.
+    irreducible: false
+  - name: Allusion
+    description: A reference to another text, myth, or work.
+    irreducible: false
+
+relation_types:
+  - name: voice_of
+    domain: [Speaker]
+    range:  [Poem]
+    functional: true
+  - name: addressed_to
+    domain: [Poem, Speaker]
+    range:  [Addressee, Figure]
+  - name: metaphor_for
+    description: >-
+      The central predicate of poetry, and one no existing vocabulary can
+      express. Directional and emphatically not symmetric.
+    domain: [Image]
+    range:  [Image, Motif, Figure, Place]
+  - name: alludes_to
+    domain: [Poem, Image]
+    range:  [Allusion, Figure, Poem]
+  - name: recurs_in
+    domain: [Motif, Image]
+    range:  [Poem]
+  - name: written_in
+    domain: [Poem]
+    range:  [Form]
+  - name: set_in
+    domain: [Poem]
+    range:  [Place]
+  - name: appears_in
+    domain: [Figure, Image]
+    range:  [Poem]
+
+axioms:
+  - kind: functional
+    relations: [voice_of]
+
+# Association without specified kind is exactly what reading a poem is *not*.
+fallback_predicate: null

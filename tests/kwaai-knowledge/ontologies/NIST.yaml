@@ -1,0 +1,186 @@
+# Ontology for the NIST KB — AI risk management, adversarial ML, security standards.
+# Arm B, foundation-model authored 2026-08-25, grounded in sampled corpus text
+# (NIST AI 100-1 RMF, Managing Misuse Risk for Dual-Use Foundation Models,
+# Vassilev et al. Adversarial ML Taxonomy, OWASP GenAI, MITRE ATLAS).
+#
+# 90.7% clean text, 7 relations from 5182 entities — vocabulary-bound.
+# The corpus is itself a set of taxonomies, so the ontology is largely *given*
+# rather than inferred, which is the standards case the framing doc predicted.
+
+ontology:
+  name: ai-risk-standards
+  version: 1
+  extends: none
+
+provenance:
+  derivation: derived
+  note: >-
+    6 sampled chunks (AI 100-1, dual-use misuse, Vassilev, OWASP, ATLAS)
+
+# Three genuinely different document kinds in one KB (Reza, 2026-08-25: a KB has
+# several ontologies, not one). Normative standards, practitioner guidance, and
+# adversarial-ML research assert different things and should not share one
+# extraction vocabulary.
+streams:
+  - name: normative-standard
+    description: NIST/ISO publications stating requirements.
+    entity_types: [Framework, Function, Control, Organization, Publication]
+    retention: irreducible_text     # requirement wording is the requirement
+  - name: threat-research
+    description: Adversarial ML papers and taxonomies.
+    entity_types: [AttackTechnique, Mitigation, AISystem, Asset, Publication]
+  - name: incident-report
+    description: MITRE ATLAS-style reports of observed attacks in the wild.
+    entity_types: [AttackTechnique, ThreatActor, Organization, Asset, AISystem]
+
+entity_types:
+  - name: Framework
+    description: >-
+      A named, structured body of guidance organising controls and functions.
+    examples: ["AI Risk Management Framework", "NIST Cybersecurity Framework 2.0",
+               "ISO/IEC 27001", "MITRE ATLAS"]
+    irreducible: false
+
+  - name: Function
+    description: >-
+      A top-level activity grouping within a framework. The AI RMF's are
+      Govern, Map, Measure, Manage.
+    examples: ["Govern", "Map", "Measure", "Manage"]
+    irreducible: false
+
+  - name: Control
+    description: >-
+      A specific recommended practice, safeguard, or requirement.
+    # Requirement text is normative — the exact wording is the control.
+    irreducible: true
+    fields:
+      - { key: normativeForce, desc: "shall | should | may (RFC 2119-style strength)" }
+
+  - name: Risk
+    description: >-
+      A named adverse outcome the guidance exists to reduce.
+    examples: ["misuse risk", "re-identification risk", "CB misuse risk"]
+    irreducible: false
+
+  - name: AttackTechnique
+    description: >-
+      A named adversarial method against an AI or ML system.
+    examples: ["label-flipping attack", "data poisoning", "attribute inference attack",
+               "model weight exfiltration"]
+    anti_examples:
+      - "Sysdig"        # an Organization that reported an attack
+      - "RAND"          # a publisher
+    irreducible: false
+
+  - name: Mitigation
+    description: >-
+      A named defensive technique that reduces a specific risk or blunts a
+      specific attack.
+    examples: ["label cleaning", "outlier detection", "data sanitization"]
+    irreducible: false
+
+  - name: AISystem
+    description: >-
+      A model, model class, or deployed AI system that risks apply to.
+    examples: ["dual-use foundation models", "LLM", "ensemble of multiple ML models"]
+    irreducible: false
+
+  - name: Asset
+    description: >-
+      A protected resource — model weights, training data, a deployment endpoint.
+    examples: ["model weights", "synthetic health data", "training dataset"]
+    irreducible: false
+
+  - name: ThreatActor
+    description: >-
+      A named or described adversary observed conducting an attack. Only
+      meaningful in the incident-report stream — a standards document has no
+      threat actors, and conflating actor with technique is how ATLAS-style
+      content collapses into the research vocabulary.
+    examples: ["unknown actors targeting cloud LLM services"]
+    irreducible: false
+
+  - name: Organization
+    description: >-
+      A standards body, vendor, research institution, or reporting party.
+    examples: ["NIST", "OWASP", "RAND", "OpenAI", "ISO"]
+    irreducible: false
+
+  - name: Publication
+    description: >-
+      A named standard, report, or paper. Distinguished from Framework: a
+      publication *documents* a framework.
+    examples: ["NIST.CSWP.29", "nist.ai.100-1"]
+    irreducible: false
+
+relation_types:
+  # ── Framework structure ───────────────────────────────────────────────────
+  - name: part_of
+    domain: [Function, Control]
+    range:  [Framework, Function]
+    transitive: true
+    acyclic: true
+  - name: recommends
+    domain: [Framework, Publication]
+    range:  [Control]
+  - name: published_by
+    domain: [Publication, Framework]
+    range:  [Organization]
+    functional: true
+  - name: supersedes
+    domain: [Publication, Framework]
+    range:  [Publication, Framework]
+    acyclic: true
+    inverse: superseded_by
+  - name: references
+    domain: [Publication]
+    range:  [Publication]
+    acyclic: true
+
+  # ── Risk model — the predicates the global vocabulary entirely lacks ──────
+  - name: mitigates
+    description: A mitigation reduces a risk or defeats an attack technique.
+    domain: [Mitigation, Control]
+    range:  [Risk, AttackTechnique]
+    inverse: mitigated_by
+  - name: targets
+    description: An attack technique is aimed at a system or asset.
+    domain: [AttackTechnique]
+    range:  [AISystem, Asset]
+  - name: exploits
+    domain: [AttackTechnique]
+    range:  [Asset, AISystem]
+  - name: poses_risk_to
+    domain: [Risk, AttackTechnique]
+    range:  [AISystem, Asset, Organization]
+  - name: applies_to
+    domain: [Control, Framework]
+    range:  [AISystem, Organization, Asset]
+  - name: detects
+    description: >-
+      Weaker than `mitigates` — detection without remediation. Kept separate
+      because conflating them is how a control taxonomy loses its meaning.
+    domain: [Mitigation]
+    range:  [AttackTechnique]
+  - name: governs
+    domain: [Function]
+    range:  [Risk]
+  - name: conducted
+    description: A threat actor carried out an attack technique. incident-report only.
+    domain: [ThreatActor]
+    range:  [AttackTechnique]
+  - name: compromised
+    domain: [ThreatActor]
+    range:  [Asset, AISystem, Organization]
+
+axioms:
+  - kind: contradiction
+    pairs:
+      - [mitigates, exploits]
+  - kind: acyclic
+    relations: [supersedes, references, part_of]
+  - kind: functional
+    relations: [published_by]
+
+# A standards corpus that admits a vague predicate stops being a standard.
+fallback_predicate: null

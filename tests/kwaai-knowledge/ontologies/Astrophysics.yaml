@@ -1,0 +1,168 @@
+# Ontology for the Astrophysics KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# IMPORTANT: sampling showed this KB is TWO corpora, not one — NASA spaceflight
+# programme history (Apollo Spacecraft Vol IV, Apollo 13 Mission Review) and
+# observational cosmology (Planck 2018 Results VI). They share almost no
+# vocabulary. This file uses the `streams:` mechanism from PerKBOntology-plan
+# §2.1 and is the first concrete instance of the parent doc's open question
+# "does a KB have one ontology or several?" — the answer here is plainly several.
+#
+# 94.2% clean, 23 relations from 6437 entities — vocabulary-bound.
+
+ontology:
+  name: spaceflight-and-cosmology
+  version: 1
+  extends: none
+
+provenance:
+  derivation: derived
+  note: >-
+    3 sampled chunks (Apollo Vol IV, Apollo 13 review, Planck 2018)
+
+streams:
+  - name: mission-history
+    entity_types: [Mission, Spacecraft, LaunchVehicle, Facility, Contractor,
+                   Person, Milestone, Anomaly]
+  - name: cosmology
+    entity_types: [CosmologicalParameter, Observation, Instrument, Dataset,
+                   Model, Constraint, Survey]
+
+entity_types:
+  # ── mission-history ───────────────────────────────────────────────────────
+  - name: Mission
+    description: A named crewed or uncrewed spaceflight.
+    examples: ["Apollo 7", "Apollo 13"]
+    irreducible: false
+  - name: Spacecraft
+    description: A named vehicle or module.
+    examples: ["Apollo Spacecraft", "Lunar Module"]
+    irreducible: false
+  - name: LaunchVehicle
+    description: A named booster.
+    examples: ["Saturn IB", "Saturn V"]
+    irreducible: false
+  - name: Facility
+    description: A named centre, site, or launch complex.
+    examples: ["Kennedy Space Center"]
+    irreducible: false
+  - name: Contractor
+    description: An industrial contractor or supplier organisation.
+    examples: ["North American Rockwell"]
+    irreducible: false
+  - name: Person
+    description: A named individual — astronaut, engineer, administrator.
+    irreducible: false
+  - name: Organization
+    description: >-
+      A named agency, board, review panel or institution. Declared because
+      `investigated_by.range` referenced it and nothing defined it.
+    examples: ["NASA", "the Apollo 204 Review Board"]
+    irreducible: false
+  - name: Milestone
+    description: >-
+      A dated programme event: a launch, a report submission, a team stand-down.
+    irreducible: false
+    fields:
+      - { key: date, desc: "date of the milestone as stated in the text" }
+  - name: Anomaly
+    description: >-
+      A named failure, malfunction, or investigated incident. Distinct from
+      Milestone because mission-review corpora are largely *about* these.
+    examples: ["Teflon wire insulation damage", "tank electrical initiation"]
+    irreducible: false
+
+  # ── cosmology ─────────────────────────────────────────────────────────────
+  - name: CosmologicalParameter
+    description: A measurable parameter of a cosmological model.
+    examples: ["Omega_EFT_0", "H0"]
+    irreducible: false
+    fields:
+      - { key: units, desc: "units, where the text gives them" }
+  - name: Observation
+    description: A named observational result or likelihood.
+    examples: ["Planck TT,TE,EE+lowE+lensing", "CMB lensing"]
+    irreducible: false
+  - name: Instrument
+    description: A named telescope, detector, or observing platform.
+    examples: ["Planck"]
+    irreducible: false
+  - name: Dataset
+    description: A named data product or external dataset combination.
+    examples: ["BAO/RSD+WL"]
+    irreducible: false
+  - name: Model
+    description: A named cosmological or physical model.
+    irreducible: false
+  - name: Constraint
+    description: >-
+      A stated numeric bound or shift with a significance.
+    # Numbers and sigmas must not be paraphrased.
+    irreducible: true
+    fields:
+      - { key: value,        desc: "the numeric constraint as stated" }
+      - { key: significance, desc: "sigma or confidence level" }
+  - name: Survey
+    description: A named observing programme or collaboration.
+    examples: ["Planck Collaboration"]
+    irreducible: false
+
+relation_types:
+  # ── mission-history ───────────────────────────────────────────────────────
+  - name: launched_from
+    domain: [Mission]
+    range:  [Facility]
+  - name: launched_on
+    domain: [Mission]
+    range:  [LaunchVehicle]
+  - name: carried
+    domain: [Mission]
+    range:  [Spacecraft]
+  - name: built_by
+    domain: [Spacecraft, LaunchVehicle]
+    range:  [Contractor]
+  - name: occurred_during
+    domain: [Milestone, Anomaly]
+    range:  [Mission]
+  - name: caused_by
+    description: An anomaly attributed to a named cause.
+    domain: [Anomaly]
+    range:  [Anomaly, Spacecraft, Person]
+  - name: investigated_by
+    domain: [Anomaly]
+    range:  [Organization, Person]
+
+  # ── cosmology ─────────────────────────────────────────────────────────────
+  - name: constrains
+    description: An observation places a bound on a parameter.
+    domain: [Observation, Dataset]
+    range:  [CosmologicalParameter]
+    inverse: constrained_by
+  - name: measured_by
+    domain: [CosmologicalParameter]
+    range:  [Instrument, Observation]
+  - name: produced_by
+    domain: [Dataset, Observation]
+    range:  [Instrument, Survey]
+  - name: assumes
+    domain: [Constraint]
+    range:  [Model]
+  - name: reports
+    domain: [Survey]
+    range:  [Constraint]
+  - name: tension_with
+    description: >-
+      Two constraints in statistical disagreement. Symmetric, and the predicate
+      cosmology arguments are actually about.
+    domain: [Constraint]
+    range:  [Constraint]
+    symmetric: true
+
+axioms:
+  - kind: acyclic
+    relations: [caused_by]
+  - kind: contradiction
+    pairs:
+      - [constrains, tension_with]
+
+fallback_predicate: null

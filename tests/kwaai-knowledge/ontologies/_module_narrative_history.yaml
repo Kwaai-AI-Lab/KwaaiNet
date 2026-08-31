@@ -1,0 +1,142 @@
+# Shared built-in module: narrative-history.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# Covers the corpora that are already productive under the global vocabulary —
+# D6 (0.225 rel/ent), WarPeace (0.205), MobyDick (0.023), Manhattan (0.022),
+# CountryHistory (0.009) — all clean narrative prose about people, places and
+# events. They differ in subject but share a structure of meaning, which is
+# exactly what a reusable module is for.
+#
+# `extends: genealogy` pulls in the 14 kinship predicates, their inverses and
+# the Person domain/range constraint.
+#
+# CORRECTED 2026-08-25. This module originally carried a `Vessel` type, put here
+# on the reasoning that "maritime history treats vessels as agents". Measured:
+# Vessel language appears in 31% of MobyDick chunks and 0–1% of D6, WarPeace,
+# Manhattan and CountryHistory. It was a MobyDick type in a shared module, and
+# four corpora inherited it for nothing. Moved to MobyDick.yaml.
+#
+# D6 no longer extends this module at all — deriving its ontology from its own
+# text produced Community, School, Language and Address, none of which a genre
+# module contains. Treat this module as a convenience for corpora that genuinely
+# share a structure of meaning, and verify that sharing before relying on it.
+
+ontology:
+  name: narrative-history
+  version: 1
+  extends: genealogy
+
+provenance:
+  derivation: module
+  note: >-
+    genre module; Vessel removed 2026-08-25 after measurement
+
+entity_types:
+  - name: Person
+    description: A named individual human being — historical, fictional, or living.
+    anti_examples:
+      - "Chapter VII"          # a structural division
+      - "the Pequod"           # a Vessel
+    irreducible: false
+  - name: Place
+    description: A named geographic location — settlement, region, building, waterway.
+    irreducible: false
+  - name: Organization
+    description: A named collective body — regiment, company, party, congregation, crew.
+    irreducible: false
+  - name: Event
+    description: >-
+      A named or datable happening. The type the global vocabulary declares and
+      never produces — zero Event entities exist across all 16 graphs.
+    examples: ["the Battle of Borodino", "the Trinity test", "the 1949 riots"]
+    irreducible: false
+    fields:
+      - { key: date,  desc: "date or period as stated in the text" }
+      - { key: place, desc: "where it happened, if stated" }
+  - name: Artefact
+    description: A named object of significance — a document, a weapon, a relic.
+    irreducible: false
+  - name: Quotation
+    description: >-
+      A verbatim passage attributed to a speaker. Memoir and history corpora
+      turn on who said what.
+    irreducible: true
+
+relation_types:
+  # kinship predicates arrive via `extends: genealogy`
+
+  # ── Spatial ───────────────────────────────────────────────────────────────
+  - name: located_in
+    domain: [Place, Organization, Event]
+    range:  [Place]
+    transitive: true
+    acyclic: true
+  - name: lived_in
+    domain: [Person]
+    range:  [Place]
+  - name: travelled_to
+    description: >-
+      Distinct from lived_in. `located_in` currently absorbs both, which is why
+      the graphs read as gazetteers.
+    domain: [Person]
+    range:  [Place]
+
+  # ── Agency — mostly absent from the global vocabulary ────────────────────
+  - name: participated_in
+    domain: [Person, Organization]
+    range:  [Event]
+    inverse: had_participant
+  - name: commanded
+    domain: [Person]
+    range:  [Organization]
+    inverse: commanded_by
+  - name: witnessed
+    description: >-
+      Saw but did not act in. The distinction memoir depends on and the current
+      vocabulary cannot express.
+    domain: [Person]
+    range:  [Event]
+  - name: founded
+    domain: [Person]
+    range:  [Organization]
+  - name: member_of
+    domain: [Person]
+    range:  [Organization]
+  - name: worked_at
+    domain: [Person]
+    range:  [Organization, Place]
+  - name: said
+    domain: [Person]
+    range:  [Quotation]
+    inverse: attributed_to
+
+  # ── Temporal — the whole group the global vocabulary declares and never uses
+  - name: occurred_at
+    domain: [Event]
+    range:  [Place]
+    functional: true
+  - name: preceded
+    domain: [Event]
+    range:  [Event]
+    acyclic: true
+    inverse: followed
+  - name: caused
+    domain: [Event]
+    range:  [Event]
+    acyclic: true
+    inverse: caused_by
+
+axioms:
+  - kind: contradiction
+    pairs:
+      - [preceded, followed]
+      - [participated_in, witnessed]   # acting and merely observing are exclusive
+  - kind: acyclic
+    relations: [located_in, preceded, caused]
+  - kind: functional
+    relations: [occurred_at]
+
+# Retained, unlike Legal and NIST. Narrative genuinely contains associations
+# that resist typing, and the parent doc's open question — "is associated_with
+# ever legitimate?" — is answered here as: yes, but never as the default.
+fallback_predicate: associated_with

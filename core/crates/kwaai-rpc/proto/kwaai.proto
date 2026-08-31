@@ -276,6 +276,26 @@ message StatusReply {
     // Empty when talking to a daemon built before this field existed;
     // clients should treat "" as unknown rather than as a version.
     string version = 6;
+
+    // Bootstrap connectivity, for surfacing "my configured initial peers
+    // are down" to clients. `bootstrap_total` counts the distinct peer IDs
+    // derivable from the configured bootstrap set (initial_peers, or the
+    // built-in defaults when that list is absent); entries without a /p2p
+    // component contribute nothing, so 0 with peers configured means the
+    // condition is unknowable, not healthy.
+    //
+    // `bootstrap_reachable` counts those that are currently connected OR
+    // successfully established a connection within the last ~15 minutes.
+    // Recency, not the live set, because bootstraps close idle connections
+    // (~30s) while the announce loop re-contacts them every ~5 minutes, so
+    // a healthy idle node keeps refreshing inside the window. And not the
+    // routing table, because kad seeds it with the configured addresses
+    // before any dial succeeds — membership proves nothing.
+    //
+    // Both 0 on daemons built before these fields existed and on the Go
+    // p2p path; clients should only act on reachable == 0 when total > 0.
+    uint32 bootstrap_total = 7;
+    uint32 bootstrap_reachable = 8;
 }
 
 // `kwaainet shard chain` — model block coverage from the DHT.
@@ -592,6 +612,21 @@ message NetworkUpdate {
 
     // The Kademlia routing table, sorted by peer id.
     repeated RoutingPeer routing = 5;
+
+    // Bootstrap connectivity, so a client can tell "my configured initial
+    // peers are down" apart from ordinary churn. Same definitions as the
+    // StatusReply pair: `bootstrap_total` is the distinct peer IDs derivable
+    // from the configured bootstrap set (0 = unknowable, not healthy), and
+    // `bootstrap_reachable` counts those connected or successfully connected
+    // within the last ~15 minutes — see StatusReply for why neither the live
+    // set nor the routing table can carry this on its own.
+    //
+    // Both fields are part of the subscription's change identity, so a flip
+    // in either direction — a bootstrap appearing, or the count falling as
+    // the contact window expires — is pushed on the next sample rather than
+    // suppressed as an unchanged snapshot.
+    uint32 bootstrap_total = 6;
+    uint32 bootstrap_reachable = 7;
 }
 
 // `kwaainet vpk discover` — VPK storage nodes from the DHT.

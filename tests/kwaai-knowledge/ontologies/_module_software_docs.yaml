@@ -1,0 +1,85 @@
+# Shared built-in module: software-docs. Covers PythonDocs and OSMDocs.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# Both are currently typed Publication/Organization — a function signature
+# modelled as a publication. PythonDocs: 998 entities, 3 relations.
+
+ontology:
+  name: software-docs
+  version: 1
+  extends: none
+
+provenance:
+  derivation: module
+  note: >-
+    genre module; not corpus-verified
+
+streams:
+  - name: reference
+    entity_types: [Module, Class, Function, Parameter, Type, Constant, Exception]
+  - name: prose
+    entity_types: [Concept, Tool, Organization, Person]
+  - name: chrome
+    ingest: skip     # navigation, edit links, cache reports, language selectors
+
+entity_types:
+  - name: Module
+    description: A named importable module or package.
+    irreducible: false
+  - name: Class
+    description: A named class or type definition.
+    irreducible: false
+  - name: Function
+    description: A named function or method.
+    irreducible: false
+    fields:
+      - { key: signature, desc: "the declared signature, verbatim" }
+  - name: Parameter
+    description: A named argument to a function or method.
+    irreducible: false
+  - name: Type
+    description: A named data type.
+    irreducible: false
+  - name: Constant
+    description: A named module-level constant.
+    irreducible: false
+  - name: Exception
+    description: A named exception or error type.
+    irreducible: false
+  - name: Concept
+    description: A named idea explained in prose rather than declared in an API.
+    irreducible: false
+
+relation_types:
+  - name: defined_in
+    domain: [Class, Function, Constant, Exception]
+    range:  [Module, Class]
+    acyclic: true
+  - name: parameter_of
+    domain: [Parameter]
+    range:  [Function]
+    inverse: has_parameter
+  - name: returns
+    domain: [Function]
+    range:  [Type, Class]
+  - name: raises
+    domain: [Function]
+    range:  [Exception]
+  - name: subclass_of
+    domain: [Class]
+    range:  [Class]
+    transitive: true
+    acyclic: true
+  - name: has_type
+    domain: [Parameter, Constant]
+    range:  [Type]
+  - name: deprecated_by
+    domain: [Function, Class, Module]
+    range:  [Function, Class, Module]
+    acyclic: true
+
+axioms:
+  - kind: acyclic
+    relations: [subclass_of, defined_in, deprecated_by]
+
+fallback_predicate: null

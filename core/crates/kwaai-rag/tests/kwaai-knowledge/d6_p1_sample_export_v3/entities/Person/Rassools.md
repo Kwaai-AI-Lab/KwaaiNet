@@ -1,0 +1,13 @@
+---
+entity_type: Person
+mention_count: 1
+kb: D6
+exported_at: 2026-05-29T22:47:21Z
+tags: [Person, D6-kb]
+---
+
+Rassools — nationality: my family, the Rassools and the Gools
+
+## Relations
+
+*(none)*

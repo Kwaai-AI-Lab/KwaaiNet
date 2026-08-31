@@ -1,5 +1,10 @@
 # kwaai-knowledge — Claude Code Instructions
 
+> Configuration for Claude Code working in this crate: build commands, current
+> operational settings, and the do-not list. **Not an onboarding document** — it
+> assumes the vocabulary in [`GLOSSARY.md`](GLOSSARY.md). New contributors should
+> start there, then the README's "RAG Knowledge Base" section.
+
 ## Project scope
 
 kwaai-knowledge owns the RAG (Retrieval-Augmented Generation) pipeline: document ingestion,
@@ -53,9 +58,9 @@ kwaainet rag graph seed --kb D6 --file tests/kwaai-knowledge/d6_family_tree.yaml
 |---------|-------|--------|
 | Chunk size | 100w sentence-aligned | Best balance recall/precision |
 | Context window | 1 (adjacent chunk) | +7pp recall |
-| Entity cap | 25 (3-type) | Prevents hallucination flooding |
+| Entity cap | 25 for ≤3 declared types, else 20 | Prevents hallucination flooding. Keyed on the *effective* vocabulary — passing no `--entity-types` means all 17 and gets 20 |
 | Entity types | Person, Place, Organization, Legislation, Publication | Phase 3 — KB schema guides 8B model |
-| Relations | Disabled by default | 0–17% precision without lexical trigger pre-filter |
+| Relations | Off in the naive path; use Phase-4 axiomatic extraction | 0–17% precision without the lexical trigger pre-filter |
 | Lexical trigger | Auto (Phase 4) | Relations only extracted from chunks with kinship/membership keywords |
 | Timeline | Enabled | Dated events extracted (second LLM call per chunk) |
 
@@ -137,10 +142,22 @@ kwaainet rag dream --kb D6 --query "Tell me about Walied Rassool"
 
 ## Do not
 
-- Do not re-enable relation extraction for 8B models — precision is too low; use seed YAML
+- Do not enable *unfiltered* relation extraction for 8B models — 0–17% precision.
+  This is what the Phase-4 axiomatic pipeline exists for: lexical triggers
+  pre-filter candidates, a confidence split commits only the top tier, and a
+  narrow LLM pass verifies the middle. Use that (`--relation-threshold-high`)
+  or seed YAML, not the naive path.
 - Do not change chunk size away from 100w without re-running Phase 2 experiments
 - Do not use `cargo build -p kwaai-core` to test CLI changes — the binary is `-p kwaainet`
 - Do not skip `codesign -s - --force ~/.cargo/bin/kwaainet` after installing on macOS 26+
+
+## Vocabulary
+
+`projects/kwaai-knowledge/GLOSSARY.md` — the DreamRAG lexicon. 63 terms grouped
+by pipeline stage (storage → ingestion → graph → extraction → ontology → dream →
+retrieval → evaluation). Read it before the plans; it carries the traps too —
+entity type is part of the entity ID hash, ghost entities must not be pruned,
+`graph score` is not comparable across KBs with different ontologies.
 
 ## Full project context
 

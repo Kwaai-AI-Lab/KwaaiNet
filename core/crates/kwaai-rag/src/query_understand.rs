@@ -34,7 +34,7 @@ pub enum GraphMode {
     Replace,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RelDirection {
     Outgoing,
     Incoming,
@@ -75,6 +75,46 @@ impl QueryStructure {
 // ── Rule-based classifier ─────────────────────────────────────────────────────
 
 /// "keyword of X" patterns → (keyword, relation_type, direction_from_X)
+/// Build "<role> of X" and "X's <role>" query patterns from an ontology.
+///
+/// The compiled tables below are kinship-only: sixteen family roles and nothing
+/// else, so "the founders of the TLSA" or "the author of RFC 8446" match
+/// nothing. An ontology's predicates supply their own patterns — a predicate
+/// named `founded` yields "founded of"/"'s founded", and any `triggers` it
+/// declares become natural-language forms too.
+pub fn query_patterns_from_ontology(
+    ont: Option<&crate::ontology::Ontology>,
+) -> Vec<(String, String, RelDirection)> {
+    let mut out: Vec<(String, String, RelDirection)> = OF_PATTERNS
+        .iter()
+        .map(|(p, r, d)| (p.to_string(), r.to_string(), *d))
+        .collect();
+    let Some(o) = ont.filter(|o| !o.is_empty()) else {
+        return out;
+    };
+    for r in &o.relation_types {
+        let dir = if r.symmetric {
+            RelDirection::Both
+        } else {
+            RelDirection::Outgoing
+        };
+        // Trigger phrases are already the corpus's own words for this relation,
+        // so they make better query patterns than the predicate name.
+        for t in &r.triggers {
+            let t = t.trim().to_lowercase();
+            if t.ends_with(" of") {
+                out.push((format!("{t} "), r.name.clone(), dir));
+            }
+        }
+        out.push((
+            format!("{} of ", r.name.replace('_', " ")),
+            r.name.clone(),
+            dir,
+        ));
+    }
+    out
+}
+
 const OF_PATTERNS: &[(&str, &str, RelDirection)] = &[
     ("children of ", "parent_of", RelDirection::Outgoing),
     ("sons of ", "parent_of", RelDirection::Outgoing),
@@ -118,6 +158,25 @@ const POSS_PATTERNS: &[(&str, &str, RelDirection)] = &[
     ("'s grandpa", "grandchild_of", RelDirection::Outgoing),
     ("'s granddad", "grandchild_of", RelDirection::Outgoing),
 ];
+
+/// Terms that anchor a query to the narrator/author entity.
+/// An ontology may add corpus-specific ones (a memoir's "the writer", a
+/// transcript's "the chair") without recompiling.
+pub fn author_anchors(ont: Option<&crate::ontology::Ontology>) -> Vec<String> {
+    let mut v: Vec<String> = AUTHOR_ANCHORS.iter().map(|s| s.to_string()).collect();
+    if let Some(o) = ont {
+        for d in o
+            .text_rules
+            .definite_descriptions
+            .get("Narrator")
+            .into_iter()
+            .flatten()
+        {
+            v.push(d.to_lowercase());
+        }
+    }
+    v
+}
 
 const AUTHOR_ANCHORS: &[&str] = &[
     "author",
@@ -179,7 +238,7 @@ pub fn understand_query_rule(query: &str) -> QueryStructure {
             return QueryStructure {
                 intent: QueryIntent::FamilyRelation {
                     relation: relation.to_string(),
-                    direction: direction.clone(),
+                    direction: *direction,
                 },
                 target_entities: if anchor_is_author {
                     vec![]
@@ -203,7 +262,7 @@ pub fn understand_query_rule(query: &str) -> QueryStructure {
             return QueryStructure {
                 intent: QueryIntent::FamilyRelation {
                     relation: relation.to_string(),
-                    direction: direction.clone(),
+                    direction: *direction,
                 },
                 target_entities: if anchor_is_author {
                     vec![]

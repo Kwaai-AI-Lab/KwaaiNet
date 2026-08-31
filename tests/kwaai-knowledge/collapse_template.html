@@ -1,0 +1,126 @@
+<title>Predicate Collapse</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400&display=swap">
+<style>
+  :root{
+    --surface-1:#fcfcfb; --paper:#f6f6f4; --sunk:#eeeeeb;
+    --text-primary:#16161a; --text-secondary:#4a4a52; --text-muted:#6e6e78;
+    --rule:#e2e2dd;
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --surface-1:#1a1a19; --paper:#141413; --sunk:#232322;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#93938a;
+    --rule:#2e2e2c;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  }}
+  :root[data-theme="dark"]{
+    --surface-1:#1a1a19; --paper:#141413; --sunk:#232322;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#93938a;
+    --rule:#2e2e2c;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--text-primary);
+    font-family:"Source Serif 4",Georgia,serif;font-size:16px;line-height:1.6}
+  h1,h2,.ui{font-family:"IBM Plex Sans",system-ui,sans-serif}
+  code{font-family:"IBM Plex Mono",monospace;font-size:.85em}
+  .wrap{max-width:900px;margin:0 auto;padding:40px 24px 80px}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--text-muted)}
+  h1{margin:8px 0 10px;font-size:clamp(26px,3.6vw,36px);font-weight:600;letter-spacing:-.02em;line-height:1.1}
+  .lede{margin:0 0 6px;max-width:66ch;color:var(--text-secondary);font-size:17.5px}
+
+  figure{margin:34px 0 0;background:var(--surface-1);border:1px solid var(--rule);
+    border-radius:8px;padding:22px 24px 18px}
+  figcaption{font-family:"IBM Plex Sans",sans-serif;font-size:14.5px;font-weight:600;margin-bottom:4px}
+  .sub{font-size:13.5px;color:var(--text-muted);margin-bottom:18px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px;
+    font-family:"IBM Plex Sans",sans-serif;font-size:12.5px;color:var(--text-secondary)}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .sw{width:11px;height:11px;border-radius:2px;flex:0 0 auto}
+  .row{display:grid;grid-template-columns:118px 1fr 74px;align-items:center;
+    gap:12px;margin-bottom:9px}
+  .rowlab{font-family:"IBM Plex Sans",sans-serif;font-size:12.5px;
+    color:var(--text-primary);text-align:right;line-height:1.25}
+  .rowlab span{color:var(--text-muted);font-size:11px}
+  .track{display:flex;height:26px;gap:2px}           /* 2px surface gap between fills */
+  .seg{position:relative;min-width:3px;display:flex;align-items:center;justify-content:center}
+  .seg:first-child{border-radius:4px 0 0 4px}
+  .seg:last-child{border-radius:0 4px 4px 0}
+  .s1{background:var(--s1)} .s2{background:var(--s2)}
+  .s3{background:var(--s3)} .s4{background:var(--s4)}
+  .segv{font-family:"IBM Plex Sans",sans-serif;font-size:11px;font-weight:600;
+    color:#fff;font-variant-numeric:tabular-nums}
+  .rowtot{font-family:"IBM Plex Sans",sans-serif;font-size:15px;font-weight:600;
+    font-variant-numeric:tabular-nums;display:flex;flex-direction:column;line-height:1.15}
+  .rowtot .ty{font-size:10.5px;font-weight:400;color:var(--text-muted)}
+
+  .note{margin:26px 0 0;padding:14px 16px;background:var(--sunk);
+    border-left:2px solid var(--s2);border-radius:0 5px 5px 0;
+    font-size:15px;color:var(--text-secondary);max-width:70ch}
+  .note strong{color:var(--text-primary)}
+  h2{margin:40px 0 4px;font-size:19px;font-weight:600}
+  .lostwrap{margin-top:14px;background:var(--surface-1);border:1px solid var(--rule);
+    border-radius:8px;padding:18px 20px}
+  ul.lost{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:7px}
+  ul.lost li{background:var(--sunk);border-radius:4px;padding:4px 9px;
+    display:flex;align-items:baseline;gap:6px}
+  ul.lost .n{font-family:"IBM Plex Sans",sans-serif;font-size:10.5px;
+    color:var(--text-muted);font-variant-numeric:tabular-nums}
+  table{border-collapse:collapse;width:100%;margin-top:14px;
+    font-family:"IBM Plex Sans",sans-serif;font-size:13.5px}
+  th,td{text-align:right;padding:6px 10px;border-bottom:1px solid var(--rule);
+    font-variant-numeric:tabular-nums}
+  th:first-child,td:first-child{text-align:left}
+  th{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);font-weight:500}
+  footer{margin-top:38px;color:var(--text-muted);font-size:13.5px}
+</style>
+<div class="wrap">
+  <span class="eyebrow">kwaai-rag · D6 · 120 chunks per arm</span>
+  <h1>What the fallback swallows</h1>
+  <p class="lede">Enforcing a declared vocabulary stops the extractor inventing a
+  predicate per sentence. It also routes everything undeclared into
+  <code>associated_with</code> — and most of what goes there meant something.</p>
+
+  <figure>
+    <figcaption>Where each relation edge lands</figcaption>
+    <div class="sub">Same 120 chunks in every arm. Bar length is total edges.</div>
+    <div class="legend">
+      <span><i class="sw s1"></i>Declared predicate</span>
+      <span><i class="sw s2"></i>Undeclared, carries meaning</span>
+      <span><i class="sw s3"></i><code>associated_with</code> / <code>related_to</code></span>
+      <span><i class="sw s4"></i>Undeclared, noise</span>
+    </div>
+    <!--BARS-->
+    <table>
+      <tr><th>arm</th><th>declared</th><th>meaning lost</th><th>fallback</th><th>noise</th><th>types</th></tr>
+      <tr><td>control</td><td>142</td><td>87</td><td>48</td><td>0</td><td>47</td></tr>
+      <tr><td>run 1 — unenforced</td><td>89</td><td>83</td><td>10</td><td>12</td><td>88</td></tr>
+      <tr><td>run 2 — enforced</td><td>121</td><td>5</td><td>82</td><td>0</td><td>28</td></tr>
+      <tr><td>run 3 — + aliases</td><td>120</td><td>4</td><td>42</td><td>0</td><td>26</td></tr>
+    </table>
+  </figure>
+
+  <p class="note"><strong>The trade is real.</strong> Run 1 emitted 88 predicate
+  types because nothing constrained it. Enforcement cut that to 26 — but of the
+  {{NLOST}} undeclared predicates it absorbed, only 11 were noise. The other
+  {{NLOST}} carried meaning, {{ELOST}} edges’ worth, and
+  <code>associated_with</code> keeps none of it. The original predicate is
+  discarded at write time, so the loss is irreversible.</p>
+
+  <h2>The {{NLOST}} predicates a memoir loses</h2>
+  <p class="sub">Emitted by the unenforced run, absorbed by the fallback in every
+  enforced run. Counts shown where an edge occurred more than once.</p>
+  <div class="lostwrap"><ul class="lost"><!--LOST--></ul></div>
+
+  <p class="note"><strong>These are not synonyms for “related to”.</strong>
+  <code>nursed_by</code>, <code>disagreed_with</code>, <code>resigned_under</code>,
+  <code>forced_to_obey</code> and <code>segregated&nbsp;lives</code> are distinctions
+  a memoir of District Six is largely made of. Losing them is not tidying — it is
+  discarding the corpus’s own account of how people stood to one another.</p>
+
+  <footer>Measured from <code>results/predicate_collapse.json</code>, built from the
+  three A/B runs. Classification of “meaning” vs “noise” is a hand judgement over
+  the 70 undeclared predicates and is the one non-mechanical step here.</footer>
+</div>

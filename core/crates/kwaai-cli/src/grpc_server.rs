@@ -56,13 +56,21 @@ use std::time::Instant;
 
 use crate::config::KwaaiNetConfig;
 
-/// Default TCP loopback port. Picked from the IANA dynamic range; not
-/// currently configurable but trivial to move into `KwaaiNetConfig` later.
+/// Default TCP loopback port, used when nothing asks for a specific one.
 pub const DEFAULT_GRPC_TCP_PORT: u16 = 8093;
 
-/// Relative path (under `~/.kwaainet/run/`) where we bind the Unix socket.
+/// Env var naming the TCP port to bind. Same name the GUI already uses on the
+/// client side, and the only way a port survives `start --daemon`, which
+/// re-execs `run-node` with no arguments but inherits the environment.
+pub const GRPC_PORT_ENV: &str = "KWAAINET_GRPC_PORT";
+
+/// Relative path (under the KwaaiNet dir) where we bind the Unix socket.
 #[cfg(unix)]
 const UNIX_SOCKET_RELPATH: &str = "run/kwaai.sock";
+
+/// File under `run/` recording the port we actually bound, so a supervisor
+/// that restarts (or a second GUI attaching to a live daemon) can find it.
+const GRPC_PORT_RELPATH: &str = "run/kwaainet.grpc";
 
 // ---------------------------------------------------------------------------
 // Service implementation
@@ -244,18 +252,24 @@ impl KwaaiNet for KwaaiNetService {
                     }
 
                     client_frame::Body::Status(_) => {
-                        // Routing-table size, matching the field's documented
-                        // meaning. 0 when the swarm is not up yet, or on the Go
-                        // p2p path where there is no handle to ask — the same
-                        // value this reported unconditionally before.
-                        let peer_count = match net_slot.read().await.clone() {
-                            Some(handle) => handle
-                                .routing_peers()
-                                .await
-                                .map(|p| p.len() as u32)
-                                .unwrap_or(0),
-                            None => 0,
-                        };
+                        // peer_count is the routing-table size, matching the
+                        // field's documented meaning. All three are 0 when the
+                        // swarm is not up yet, or on the Go p2p path where
+                        // there is no handle to ask — the same value this
+                        // reported unconditionally before.
+                        let (peer_count, bootstrap_total, bootstrap_reachable) =
+                            match net_slot.read().await.clone() {
+                                Some(handle) => match handle.network_snapshot().await {
+                                    Ok(snapshot) => {
+                                        let bootstraps = crate::peers_view::bootstrap_peer_ids();
+                                        let (total, reachable) =
+                                            bootstrap_health(&snapshot, &bootstraps);
+                                        (snapshot.routing.len() as u32, total, reachable)
+                                    }
+                                    Err(_) => (0, 0, 0),
+                                },
+                                None => (0, 0, 0),
+                            };
 
                         let reply = StatusReply {
                             server_time: now_rfc3339(),
@@ -267,6 +281,8 @@ impl KwaaiNet for KwaaiNetService {
                             // the version reported over the wire can never
                             // drift from the one used for update checks.
                             version: crate::updater::CURRENT_VERSION.to_string(),
+                            bootstrap_total,
+                            bootstrap_reachable,
                         };
                         let _ = out_tx
                             .send(Ok(ServerFrame {
@@ -1314,6 +1330,11 @@ type NetworkIdentity = (
     String,
     BTreeSet<String>,
     BTreeSet<String>,
+    // (bootstrap_total, bootstrap_reachable). A bootstrap appearing already
+    // changes the connected set, but the count can also *fall* with no other
+    // change — the contact window expiring on a bootstrap that went quiet —
+    // and that flip is exactly what the GUI's banner is watching for.
+    (u32, u32),
 );
 
 fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
@@ -1371,6 +1392,7 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
         self_status.local_protocols.join(","),
         connected,
         routing,
+        (u.bootstrap_total, u.bootstrap_reachable),
     )
 }
 
@@ -1605,6 +1627,42 @@ async fn spawn_session_connect(
     });
 }
 
+/// A bootstrap counts as reachable while it is connected or accepted a
+/// connection within this window. Recency rather than the live set because
+/// bootstraps close idle connections (~30 s), and the announce loop
+/// re-contacts every bootstrap every ~300 s ± 30 s — so a healthy idle node
+/// refreshes well inside the window, while one that cannot reach any
+/// bootstrap ages out after missing two-plus cycles. The routing table is
+/// deliberately not consulted: kad seeds it with the configured addresses
+/// before any dial succeeds, so membership proves nothing.
+const BOOTSTRAP_CONTACT_WINDOW: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// `(bootstrap_total, bootstrap_reachable)` for the configured bootstrap
+/// set, as defined on `StatusReply` in kwaai.proto — the one computation
+/// behind both the status frame and the network feed, so the two surfaces
+/// can never disagree.
+fn bootstrap_health(
+    snapshot: &kwaai_p2p::NetworkSnapshot,
+    bootstraps: &std::collections::HashSet<libp2p::PeerId>,
+) -> (u32, u32) {
+    use std::collections::HashSet;
+    // Both checks are load-bearing: `last_contact` is stamped at establish
+    // time, so a connection older than the window that is still open would
+    // read as gone without the live-set check.
+    let connected: HashSet<_> = snapshot.peers.iter().map(|p| p.peer_id).collect();
+    let recent: HashSet<_> = snapshot
+        .last_contact
+        .iter()
+        .filter(|(_, ago)| *ago <= BOOTSTRAP_CONTACT_WINDOW)
+        .map(|(p, _)| *p)
+        .collect();
+    let reachable = bootstraps
+        .iter()
+        .filter(|b| connected.contains(b) || recent.contains(b))
+        .count();
+    (bootstraps.len() as u32, reachable as u32)
+}
+
 /// Project a [`kwaai_p2p::NetworkSnapshot`] onto the wire type.
 ///
 /// Classification (relay-vs-direct, bootstrap, trusted-relay) and the sort
@@ -1698,6 +1756,8 @@ fn build_network_update(
         Reachability::Private => ("private", ""),
     };
 
+    let (bootstrap_total, bootstrap_reachable) = bootstrap_health(snapshot, bootstraps);
+
     NetworkUpdate {
         server_time: now_rfc3339(),
         reason: reason as i32,
@@ -1724,6 +1784,8 @@ fn build_network_update(
         }),
         connected: connected.into_iter().map(|(_, _, w)| w).collect(),
         routing,
+        bootstrap_total,
+        bootstrap_reachable,
     }
 }
 
@@ -1898,31 +1960,66 @@ fn stream_via_llama_cpp(
 // Bind / serve
 // ---------------------------------------------------------------------------
 
-/// Resolve `~/.kwaainet/run/kwaai.sock`.
+/// Resolve `<kwaainet dir>/run/kwaai.sock`. `kwaainet_dir()` rather than
+/// `dirs::home_dir()`, so the socket follows `KWAAINET_HOME` like the rest of
+/// `run/` — two daemons sharing one path meant the second one's bind
+/// *unlinked* the first one's live socket.
 #[cfg(unix)]
 fn unix_socket_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".kwaainet").join(UNIX_SOCKET_RELPATH)
+    crate::config::kwaainet_dir().join(UNIX_SOCKET_RELPATH)
+}
+
+/// Resolve `<kwaainet dir>/run/kwaainet.grpc`.
+pub fn grpc_port_file() -> PathBuf {
+    crate::config::kwaainet_dir().join(GRPC_PORT_RELPATH)
+}
+
+/// Resolve the TCP port: explicit request, then [`GRPC_PORT_ENV`], then the
+/// default. The flag says the port was *asked for* rather than defaulted,
+/// which is what makes a bind failure fatal instead of a warning.
+fn resolve_tcp_port(requested: Option<u16>) -> (u16, bool) {
+    if let Some(p) = requested {
+        return (p, true);
+    }
+    match std::env::var(GRPC_PORT_ENV)
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+    {
+        Some(p) => (p, true),
+        None => (DEFAULT_GRPC_TCP_PORT, false),
+    }
 }
 
 /// Spawn the gRPC server task(s) and return a handle that, when dropped,
 /// signals graceful shutdown.
 ///
-/// On POSIX we bind both transports concurrently; on other platforms we bind
-/// TCP only. Either failure is logged but non-fatal: the daemon must keep
-/// running even if the IPC surface didn't come up (the node still serves
-/// p2p traffic).
-pub fn spawn(config: KwaaiNetConfig) -> GrpcServerHandle {
-    spawn_on_tcp_port(config, DEFAULT_GRPC_TCP_PORT)
+/// `requested_port` is the `--grpc-port` flag; absent, [`GRPC_PORT_ENV`] then
+/// [`DEFAULT_GRPC_TCP_PORT`] apply. Port 0 binds an ephemeral port and reports
+/// the real one in [`grpc_port_file`].
+pub fn spawn(config: KwaaiNetConfig, requested_port: Option<u16>) -> Result<GrpcServerHandle> {
+    let (tcp_port, explicit) = resolve_tcp_port(requested_port);
+    spawn_bound(config, tcp_port, explicit)
 }
 
-/// As [`spawn`], but binds TCP on an explicit port.
+/// Bind on an explicit port. Tests take an ephemeral one rather than the
+/// well-known port, which a running `kwaainet run-node` holds for the life of
+/// the machine — the listener they assert has closed would be the daemon's.
 ///
-/// Exists so tests can take an ephemeral port instead of the well-known one.
-/// Binding the real port made the lifecycle tests fail on any machine with a
-/// node already running — the listener they were asserting had closed was the
-/// daemon's, not theirs.
+/// Panics on a bind failure: a test that cannot have the port it picked has
+/// nothing left to assert.
+#[cfg(test)]
 pub(crate) fn spawn_on_tcp_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcServerHandle {
+    spawn_bound(config, tcp_port, true).expect("test gRPC server binds")
+}
+
+/// As [`spawn`], but with the port already resolved.
+///
+/// `explicit` decides what a failed TCP bind means. Defaulting to the
+/// well-known port and losing it is survivable — the node still serves p2p, and
+/// that leniency predates this argument. But when a supervisor *asked* for a
+/// port, coming up without it strands it: a live pid, a written status file,
+/// and nothing listening. That case exits instead, so the caller can retry.
+fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<GrpcServerHandle> {
     let (shutdown_tcp_tx, shutdown_tcp_rx) = oneshot::channel::<()>();
     #[cfg(unix)]
     let (shutdown_unix_tx, shutdown_unix_rx) = oneshot::channel::<()>();
@@ -1931,22 +2028,49 @@ pub(crate) fn spawn_on_tcp_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcSe
     let net_slot = svc_state.net.clone();
     let service = KwaaiNetServer::new(svc_state);
 
-    // TCP: every platform.
-    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{tcp_port}")
-        .parse()
-        .expect("valid loopback addr");
-    let tcp_service = service.clone();
-    tokio::spawn(async move {
-        info!("gRPC: binding TCP at {tcp_addr}");
-        let serve = Server::builder()
-            .add_service(tcp_service)
-            .serve_with_shutdown(tcp_addr, async {
-                let _ = shutdown_tcp_rx.await;
-            });
-        if let Err(e) = serve.await {
-            warn!("gRPC TCP server exited with error: {e}");
+    // Bind up front rather than inside the serve task: a clash has to be
+    // visible here, and it is what resolves port 0 to a real number.
+    let listener = match std::net::TcpListener::bind(("127.0.0.1", tcp_port)) {
+        Ok(l) => Some(l),
+        Err(e) if explicit => {
+            return Err(anyhow::anyhow!("binding gRPC TCP port {tcp_port}: {e}"));
         }
-    });
+        Err(e) => {
+            warn!("gRPC: could not bind TCP port {tcp_port} ({e}) — TCP disabled");
+            None
+        }
+    };
+
+    let mut bound_port = None;
+    let mut shutdown_tcp = None;
+    if let Some(listener) = listener {
+        let addr = listener.local_addr().context("gRPC TCP local_addr")?;
+        listener
+            .set_nonblocking(true)
+            .context("gRPC TCP set_nonblocking")?;
+        let listener =
+            tokio::net::TcpListener::from_std(listener).context("adopting gRPC TCP listener")?;
+        bound_port = Some(addr.port());
+        shutdown_tcp = Some(shutdown_tcp_tx);
+
+        let tcp_service = service.clone();
+        tokio::spawn(async move {
+            info!("gRPC: binding TCP at {addr}");
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            let serve = Server::builder()
+                .add_service(tcp_service)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_tcp_rx.await;
+                });
+            if let Err(e) = serve.await {
+                warn!("gRPC TCP server exited with error: {e}");
+            }
+        });
+    }
+
+    // Written only once the listener exists, so the file's presence means
+    // "connectable" — the backlog holds dials until tonic starts accepting.
+    let port_file = bound_port.and_then(|p| write_port_file(p).ok());
 
     // Unix socket: POSIX only.
     #[cfg(unix)]
@@ -1958,21 +2082,36 @@ pub(crate) fn spawn_on_tcp_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcSe
                 warn!("gRPC Unix server exited with error: {e}");
             }
         });
-        GrpcServerHandle {
-            shutdown_tcp: Some(shutdown_tcp_tx),
+        Ok(GrpcServerHandle {
+            shutdown_tcp,
             #[cfg(unix)]
             shutdown_unix: Some(shutdown_unix_tx),
             net: net_slot,
-        }
+            port_file,
+        })
     }
     #[cfg(not(unix))]
     {
         drop(service); // suppress unused warning on non-unix
-        GrpcServerHandle {
-            shutdown_tcp: Some(shutdown_tcp_tx),
+        Ok(GrpcServerHandle {
+            shutdown_tcp,
             net: net_slot,
-        }
+            port_file,
+        })
     }
+}
+
+/// Record the bound port under `run/`, returning the path so shutdown can
+/// clear it. Best-effort: a daemon that cannot write here still serves.
+fn write_port_file(port: u16) -> Result<PathBuf> {
+    let path = grpc_port_file();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&path, format!("{port}\n"))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
 }
 
 #[cfg(unix)]
@@ -2026,6 +2165,8 @@ pub struct GrpcServerHandle {
     /// The service's swarm-handle slot, shared so the node can fill it once
     /// p2p is up. See [`GrpcServerHandle::attach_network`].
     net: Arc<RwLock<Option<NetworkHandle>>>,
+    /// `run/kwaainet.grpc`, when we managed to write it. Removed on shutdown.
+    port_file: Option<PathBuf>,
 }
 
 impl GrpcServerHandle {
@@ -2042,6 +2183,17 @@ impl GrpcServerHandle {
     /// Trigger a graceful shutdown of both transports. Safe to call multiple
     /// times; subsequent calls are no-ops.
     pub fn shutdown(&mut self) {
+        // Both files mean "the listener is up", so both have to go. The serve
+        // tasks clean up after themselves too, but a SIGTERM'd process exits
+        // before they observe the signal — and a stale socket file makes a
+        // client's exists() check say yes to a daemon that has gone.
+        if let Some(path) = self.port_file.take() {
+            let _ = std::fs::remove_file(path);
+        }
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(unix_socket_path());
+        }
         if let Some(tx) = self.shutdown_tcp.take() {
             let _ = tx.send(());
         }
@@ -2139,6 +2291,99 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    /// `KWAAINET_HOME` must move the gRPC endpoint files, not just
+    /// pid/lock/status. When it did not, a second daemon's bind unlinked the
+    /// first one's socket.
+    #[test]
+    fn run_artifacts_follow_kwaainet_home() {
+        let _serial = TEST_LOCK.blocking_lock();
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        // The socket is POSIX-only; the port file is how Windows finds the
+        // daemon, so that half of the assertion has to run everywhere.
+        #[cfg(unix)]
+        assert_eq!(unix_socket_path(), tmp.path().join(UNIX_SOCKET_RELPATH));
+        assert_eq!(grpc_port_file(), tmp.path().join(GRPC_PORT_RELPATH));
+    }
+
+    /// Precedence: explicit flag, then the env var, then the default. The
+    /// bool is what makes a failed bind fatal, so it is asserted too.
+    #[test]
+    fn tcp_port_resolves_flag_then_env_then_default() {
+        let _serial = TEST_LOCK.blocking_lock();
+        let prev = std::env::var_os(GRPC_PORT_ENV);
+        let restore = || match prev.clone() {
+            Some(v) => std::env::set_var(GRPC_PORT_ENV, v),
+            None => std::env::remove_var(GRPC_PORT_ENV),
+        };
+
+        std::env::remove_var(GRPC_PORT_ENV);
+        assert_eq!(resolve_tcp_port(None), (DEFAULT_GRPC_TCP_PORT, false));
+        assert_eq!(resolve_tcp_port(Some(9101)), (9101, true));
+
+        std::env::set_var(GRPC_PORT_ENV, "9102");
+        assert_eq!(resolve_tcp_port(None), (9102, true));
+        // A flag still outranks the env var.
+        assert_eq!(resolve_tcp_port(Some(9103)), (9103, true));
+
+        // Garbage falls back to the default rather than failing to start.
+        std::env::set_var(GRPC_PORT_ENV, "not-a-port");
+        assert_eq!(resolve_tcp_port(None), (DEFAULT_GRPC_TCP_PORT, false));
+
+        restore();
+    }
+
+    /// A port we asked for and could not get must abort, so the supervisor
+    /// can retry — the old behaviour left a live pid with nothing listening.
+    /// The same clash on the *default* port stays survivable.
+    #[tokio::test]
+    async fn explicit_port_clash_is_fatal_and_default_clash_is_not() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let squatter = std::net::TcpListener::bind("127.0.0.1:0").expect("bind squatter");
+        let taken = squatter.local_addr().expect("squatter addr").port();
+
+        assert!(
+            spawn_bound(KwaaiNetConfig::default(), taken, true).is_err(),
+            "explicit port clash must abort"
+        );
+
+        let lenient = spawn_bound(KwaaiNetConfig::default(), taken, false)
+            .expect("default-port clash must still come up");
+        // No listener means no port file to mislead a client into dialling.
+        assert!(!grpc_port_file().exists());
+        drop(lenient);
+    }
+
+    /// The port file is the contract that lets a restarted GUI find a live
+    /// daemon: written once bound, gone once shut down.
+    #[tokio::test]
+    async fn port_file_records_the_bound_port_and_clears_on_shutdown() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        // Port 0 exercises the ephemeral path the GUI's retry falls back on.
+        let handle = spawn_bound(KwaaiNetConfig::default(), 0, true).expect("ephemeral bind");
+
+        let recorded = std::fs::read_to_string(grpc_port_file()).expect("port file written");
+        let port: u16 = recorded.trim().parse().expect("port file holds a number");
+        assert_ne!(
+            port, 0,
+            "the resolved port must be reported, not the request"
+        );
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(),
+            "the recorded port must actually be listening"
+        );
+
+        drop(handle);
+        assert!(!grpc_port_file().exists(), "port file removed on shutdown");
     }
 
     /// Ask the OS for a free loopback port.
@@ -2545,6 +2790,7 @@ mod tests {
             }),
             connected: peers,
             routing: vec![],
+            ..Default::default()
         }
     }
 

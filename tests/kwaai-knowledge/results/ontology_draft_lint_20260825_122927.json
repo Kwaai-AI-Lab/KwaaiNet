@@ -1,0 +1,307 @@
+[
+  {
+    "kb": "RFCs",
+    "domain": "Network Protocols and Standards",
+    "entity_types": 7,
+    "relation_types": 6,
+    "grounding_kept_rate": 0.684,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 0,
+    "range_collapse": 0.333,
+    "usable_score": 0.977,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 0,
+      "range_collapse": 0.33
+    }
+  },
+  {
+    "kb": "WarPeace",
+    "domain": "War and Peace",
+    "entity_types": 7,
+    "relation_types": 10,
+    "grounding_kept_rate": 0.85,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 1,
+    "range_collapse": 0.4,
+    "usable_score": 0.952,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 1,
+      "range_collapse": 0.4
+    }
+  },
+  {
+    "kb": "Meetings",
+    "domain": "Neural Knowledge Representation",
+    "entity_types": 8,
+    "relation_types": 13,
+    "grounding_kept_rate": 1.0,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 3,
+    "range_collapse": 0.231,
+    "usable_score": 0.942,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 3,
+      "range_collapse": 0.23
+    }
+  },
+  {
+    "kb": "DeepSea",
+    "domain": "Deep-Sea Ecology and Biology",
+    "entity_types": 8,
+    "relation_types": 12,
+    "grounding_kept_rate": 0.714,
+    "sufficient": true,
+    "dupes": [
+      "is_part_of"
+    ],
+    "vague": [],
+    "reused_evidence_count": 3,
+    "range_collapse": 0.167,
+    "usable_score": 0.917,
+    "penalties": {
+      "duplicate_predicates": 1,
+      "vague_predicates": 0,
+      "reused_evidence": 3,
+      "range_collapse": 0.17
+    }
+  },
+  {
+    "kb": "Legal",
+    "domain": "US Supreme Court Jurisprudence",
+    "entity_types": 7,
+    "relation_types": 19,
+    "grounding_kept_rate": 0.839,
+    "sufficient": true,
+    "dupes": [
+      "is_bound_by_constitutional_provisions"
+    ],
+    "vague": [],
+    "reused_evidence_count": 3,
+    "range_collapse": 0.421,
+    "usable_score": 0.917,
+    "penalties": {
+      "duplicate_predicates": 1,
+      "vague_predicates": 0,
+      "reused_evidence": 3,
+      "range_collapse": 0.42
+    }
+  },
+  {
+    "kb": "MobyDick",
+    "domain": "Whaling and Maritime History",
+    "entity_types": 8,
+    "relation_types": 8,
+    "grounding_kept_rate": 1.0,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 1,
+    "range_collapse": 0.5,
+    "usable_score": 0.908,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 1,
+      "range_collapse": 0.5
+    }
+  },
+  {
+    "kb": "NIST",
+    "domain": "Artificial Intelligence and Machine Learning Security",
+    "entity_types": 8,
+    "relation_types": 14,
+    "grounding_kept_rate": 1.0,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 6,
+    "range_collapse": 0.357,
+    "usable_score": 0.886,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 6,
+      "range_collapse": 0.36
+    }
+  },
+  {
+    "kb": "Astrophysics",
+    "domain": "Space Exploration and Astronomy",
+    "entity_types": 7,
+    "relation_types": 10,
+    "grounding_kept_rate": 0.944,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [
+      "has_effect",
+      "is_related_to"
+    ],
+    "reused_evidence_count": 4,
+    "range_collapse": 0.3,
+    "usable_score": 0.85,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 2,
+      "reused_evidence": 4,
+      "range_collapse": 0.3
+    }
+  },
+  {
+    "kb": "Poems",
+    "domain": "Poetry and Dramatic Works",
+    "entity_types": 7,
+    "relation_types": 11,
+    "grounding_kept_rate": 0.857,
+    "sufficient": true,
+    "dupes": [
+      "features",
+      "takes_place",
+      "expresses",
+      "is_about"
+    ],
+    "vague": [
+      "involves"
+    ],
+    "reused_evidence_count": 4,
+    "range_collapse": 0.364,
+    "usable_score": 0.787,
+    "penalties": {
+      "duplicate_predicates": 4,
+      "vague_predicates": 1,
+      "reused_evidence": 4,
+      "range_collapse": 0.36
+    }
+  },
+  {
+    "kb": "PythonDocs",
+    "domain": "Python Library Reference",
+    "entity_types": 8,
+    "relation_types": 14,
+    "grounding_kept_rate": 1.0,
+    "sufficient": true,
+    "dupes": [
+      "HAS_ATTRIBUTE",
+      "IS_INSTANCE_OF",
+      "HAS_METHOD",
+      "IS_SUBCLASS_OF",
+      "HAS_CONSTANT",
+      "RAISES_EXCEPTION",
+      "IMPORTS_MODULE"
+    ],
+    "vague": [],
+    "reused_evidence_count": 7,
+    "range_collapse": 0.143,
+    "usable_score": 0.75,
+    "penalties": {
+      "duplicate_predicates": 7,
+      "vague_predicates": 0,
+      "reused_evidence": 7,
+      "range_collapse": 0.14
+    }
+  },
+  {
+    "kb": "Climate",
+    "domain": "Climate Science",
+    "entity_types": 9,
+    "relation_types": 15,
+    "grounding_kept_rate": 1.0,
+    "sufficient": true,
+    "dupes": [
+      "contributes_to",
+      "affects",
+      "influences",
+      "exceeds",
+      "triggers",
+      "reduces"
+    ],
+    "vague": [
+      "affects",
+      "influences",
+      "affects",
+      "influences"
+    ],
+    "reused_evidence_count": 3,
+    "range_collapse": 0.467,
+    "usable_score": 0.735,
+    "penalties": {
+      "duplicate_predicates": 6,
+      "vague_predicates": 4,
+      "reused_evidence": 3,
+      "range_collapse": 0.47
+    }
+  },
+  {
+    "kb": "DreamMem",
+    "domain": "Sleep and Memory Consolidation",
+    "entity_types": 4,
+    "relation_types": 7,
+    "grounding_kept_rate": 0.524,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [
+      "involves",
+      "has_effect",
+      "is_associated_with",
+      "is_influenced_by"
+    ],
+    "reused_evidence_count": 1,
+    "range_collapse": 0.286,
+    "usable_score": 0.615,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 4,
+      "reused_evidence": 1,
+      "range_collapse": 0.29
+    }
+  },
+  {
+    "kb": "OSMDocs",
+    "domain": "OpenStreetMap Wiki",
+    "entity_types": 4,
+    "relation_types": 4,
+    "grounding_kept_rate": 0.381,
+    "sufficient": true,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 0,
+    "range_collapse": 0.25,
+    "usable_score": 0.544,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 0,
+      "range_collapse": 0.25
+    }
+  },
+  {
+    "kb": "CountryHistory",
+    "domain": "Indian History and Culture",
+    "entity_types": 1,
+    "relation_types": 1,
+    "grounding_kept_rate": 0.143,
+    "sufficient": false,
+    "dupes": [],
+    "vague": [],
+    "reused_evidence_count": 0,
+    "range_collapse": 1.0,
+    "usable_score": 0.0,
+    "penalties": {
+      "duplicate_predicates": 0,
+      "vague_predicates": 0,
+      "reused_evidence": 0,
+      "range_collapse": 1.0
+    }
+  }
+]

@@ -51,14 +51,14 @@ fn config_builder_overrides() {
     let rec = MetricsRecorder::start("unit::p2p::config_builder_overrides", "unit");
     let cfg = NetworkConfig::builder()
         .max_connections(50)
-        .connection_timeout(Duration::from_secs(10))
+        .idle_connection_timeout(Duration::from_secs(10))
         .request_timeout(Duration::from_secs(5))
         .listen_addrs(vec!["/ip4/0.0.0.0/tcp/9000".to_string()])
         .bootstrap_peers(vec!["/ip4/1.2.3.4/tcp/8000".to_string()])
         .build();
 
     assert_eq!(cfg.max_connections, 50);
-    assert_eq!(cfg.connection_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.idle_connection_timeout, Duration::from_secs(10));
     assert_eq!(cfg.listen_addrs, vec!["/ip4/0.0.0.0/tcp/9000"]);
     assert_eq!(cfg.bootstrap_peers.len(), 1);
     rec.finish(true);

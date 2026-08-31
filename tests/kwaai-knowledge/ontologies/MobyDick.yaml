@@ -1,0 +1,41 @@
+# Ontology for the MobyDick KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# Thin: the shared `narrative-history` module carries almost everything. That is
+# the point of modules — five corpora, one vocabulary, per-corpus deltas only.
+
+ontology:
+  name: mobydick
+  version: 1
+  extends: narrative-history
+
+provenance:
+  derivation: unverified
+  note: >-
+    extension of narrative-history; corpus not sampled directly
+
+# Whaling adds a small vocabulary the shared module should not carry.
+entity_types:
+  - name: Vessel
+    description: >-
+      A named ship. Moved here from the shared narrative-history module: vessel
+      language appears in 31% of MobyDick's chunks and under 1% of every other
+      narrative corpus. Vessels are agents in this book — they sail, they are
+      commanded, they are lost.
+    examples: ["the Pequod", "the Rachel"]
+    irreducible: false
+  - name: Species
+    description: A named whale or marine species.
+    examples: ["sperm whale", "right whale"]
+    irreducible: false
+
+relation_types:
+  - name: commanded_vessel
+    domain: [Person]
+    range:  [Vessel]
+  - name: sailed_to
+    domain: [Vessel]
+    range:  [Place]
+  - name: hunted
+    domain: [Vessel, Person]
+    range:  [Species]

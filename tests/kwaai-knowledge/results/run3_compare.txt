@@ -1,0 +1,84 @@
+
+metric                          D6_ctl         D6_narr   delta
+------------------------------------------------------------------------
+entities                           332             226   -106
+relations                          277             166   -111
+ent_types                           10              15   +5
+rel_types                           47              26   -21
+density (rel/ent)               0.8343          0.7345   -0.0998
+escape rate                      17.3%           25.3%   +8.0pp
+undeclared rate                  17.0%            2.4%   -14.6pp
+uninformative rate               34.3%           27.7%   -6.6pp
+kinship rate                     35.4%           27.7%   -7.7pp
+
+── predictions (testplan §4)
+  1 Address populates & splits from Place  : PASS  (Address=12, Place=29)
+  2 Doctrine populates                     : PASS  (4)
+  3 uninformative edges fall               : PASS  34.3% -> 27.7%   (naive escape-hatch: 17.3% -> 25.3%)
+  4 density does not collapse (>=70% ctl)  : PASS  0.8343 -> 0.7345
+  5 kinship unharmed (>=80% of control)    : FAIL  98 -> 46 edges
+
+── entity types only the ontology arm produced
+    Place                      29   e.g. District Six, Windermere, Cape Flats, Mecca
+    PoliticalOrganization      24   e.g. ANC, Non-European Unity Movement, TLSA, New Era Fellowship
+    Venue                      14   e.g. British Newspaper Library, Nash, National Gandhi Museum, Cit
+    Address                    12   e.g. Cannon Street, Kloof Street, Street, Caledon Street
+    Language                    7   e.g. Integral Calculus, Mathematics, Trigonometry, Economic Histo
+    EducationalInstitution      4   e.g. Chapel Street Primary, Habibia Institute, Cape Technical Col
+    Doctrine                    4   e.g. Marxist Trotskyists, Train Apartheid, Kiesian, Ten Point
+    Community                   3   e.g. Cape Indians, Port Elizabeth Indians, Moslems
+    Legislation                 2   e.g. Majesty's Penal Service, Health Department
+    Quotation                   2   e.g. Preface, Lest We Forget
+    SportsClub                  1   e.g. Dukes
+    RacialClassification        1   e.g. West Indian
+
+── predicates only the ontology arm produced
+    lived_at                   10
+    affiliated_with             5
+    opposed                     5
+    advocated_by                3
+    advocates                   3
+    reported_in                 2
+    situated_in                 2
+    classified_as               2
+    denounced_as                2
+    taught_at                   1
+    attended_event              1
+    speaks                      1
+    had_pupil                   1
+
+── predicates the ontology arm stopped producing
+    lived_in                   28
+    works_at                   13
+    related_to                 12
+    located_in                  7
+    cites                       3
+    described_in                3
+    lives_in                    3
+    delivered                   2
+    created                     2
+    managed_by                  2
+    was_with                    1
+    managed                     1
+    belongs_to                  1
+    opposes                     1
+    nickname_of                 1
+    honoured_by                 1
+    was_defenestrated_from      1
+    left_behind                 1
+    commented_on                1
+    part_of                     1
+    cited_by                    1
+    brother_of                  1
+    published_in                1
+    programme_of                1
+    cited                       1
+    foster_sibling_of           1
+    target_of                   1
+    hero_of                     1
+    colleague_of                1
+    used                        1
+    similar_to                  1
+    supports                    1
+    manages                     1
+    excluded                    1
