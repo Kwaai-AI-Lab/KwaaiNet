@@ -244,18 +244,24 @@ impl KwaaiNet for KwaaiNetService {
                     }
 
                     client_frame::Body::Status(_) => {
-                        // Routing-table size, matching the field's documented
-                        // meaning. 0 when the swarm is not up yet, or on the Go
-                        // p2p path where there is no handle to ask — the same
-                        // value this reported unconditionally before.
-                        let peer_count = match net_slot.read().await.clone() {
-                            Some(handle) => handle
-                                .routing_peers()
-                                .await
-                                .map(|p| p.len() as u32)
-                                .unwrap_or(0),
-                            None => 0,
-                        };
+                        // peer_count is the routing-table size, matching the
+                        // field's documented meaning. All three are 0 when the
+                        // swarm is not up yet, or on the Go p2p path where
+                        // there is no handle to ask — the same value this
+                        // reported unconditionally before.
+                        let (peer_count, bootstrap_total, bootstrap_reachable) =
+                            match net_slot.read().await.clone() {
+                                Some(handle) => match handle.network_snapshot().await {
+                                    Ok(snapshot) => {
+                                        let bootstraps = crate::peers_view::bootstrap_peer_ids();
+                                        let (total, reachable) =
+                                            bootstrap_health(&snapshot, &bootstraps);
+                                        (snapshot.routing.len() as u32, total, reachable)
+                                    }
+                                    Err(_) => (0, 0, 0),
+                                },
+                                None => (0, 0, 0),
+                            };
 
                         let reply = StatusReply {
                             server_time: now_rfc3339(),
@@ -267,6 +273,8 @@ impl KwaaiNet for KwaaiNetService {
                             // the version reported over the wire can never
                             // drift from the one used for update checks.
                             version: crate::updater::CURRENT_VERSION.to_string(),
+                            bootstrap_total,
+                            bootstrap_reachable,
                         };
                         let _ = out_tx
                             .send(Ok(ServerFrame {
@@ -1314,6 +1322,11 @@ type NetworkIdentity = (
     String,
     BTreeSet<String>,
     BTreeSet<String>,
+    // (bootstrap_total, bootstrap_reachable). A bootstrap appearing already
+    // changes the connected set, but the count can also *fall* with no other
+    // change — the contact window expiring on a bootstrap that went quiet —
+    // and that flip is exactly what the GUI's banner is watching for.
+    (u32, u32),
 );
 
 fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
@@ -1371,6 +1384,7 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
         self_status.local_protocols.join(","),
         connected,
         routing,
+        (u.bootstrap_total, u.bootstrap_reachable),
     )
 }
 
@@ -1605,6 +1619,42 @@ async fn spawn_session_connect(
     });
 }
 
+/// A bootstrap counts as reachable while it is connected or accepted a
+/// connection within this window. Recency rather than the live set because
+/// bootstraps close idle connections (~30 s), and the announce loop
+/// re-contacts every bootstrap every ~300 s ± 30 s — so a healthy idle node
+/// refreshes well inside the window, while one that cannot reach any
+/// bootstrap ages out after missing two-plus cycles. The routing table is
+/// deliberately not consulted: kad seeds it with the configured addresses
+/// before any dial succeeds, so membership proves nothing.
+const BOOTSTRAP_CONTACT_WINDOW: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// `(bootstrap_total, bootstrap_reachable)` for the configured bootstrap
+/// set, as defined on `StatusReply` in kwaai.proto — the one computation
+/// behind both the status frame and the network feed, so the two surfaces
+/// can never disagree.
+fn bootstrap_health(
+    snapshot: &kwaai_p2p::NetworkSnapshot,
+    bootstraps: &std::collections::HashSet<libp2p::PeerId>,
+) -> (u32, u32) {
+    use std::collections::HashSet;
+    // Both checks are load-bearing: `last_contact` is stamped at establish
+    // time, so a connection older than the window that is still open would
+    // read as gone without the live-set check.
+    let connected: HashSet<_> = snapshot.peers.iter().map(|p| p.peer_id).collect();
+    let recent: HashSet<_> = snapshot
+        .last_contact
+        .iter()
+        .filter(|(_, ago)| *ago <= BOOTSTRAP_CONTACT_WINDOW)
+        .map(|(p, _)| *p)
+        .collect();
+    let reachable = bootstraps
+        .iter()
+        .filter(|b| connected.contains(b) || recent.contains(b))
+        .count();
+    (bootstraps.len() as u32, reachable as u32)
+}
+
 /// Project a [`kwaai_p2p::NetworkSnapshot`] onto the wire type.
 ///
 /// Classification (relay-vs-direct, bootstrap, trusted-relay) and the sort
@@ -1698,6 +1748,8 @@ fn build_network_update(
         Reachability::Private => ("private", ""),
     };
 
+    let (bootstrap_total, bootstrap_reachable) = bootstrap_health(snapshot, bootstraps);
+
     NetworkUpdate {
         server_time: now_rfc3339(),
         reason: reason as i32,
@@ -1724,6 +1776,8 @@ fn build_network_update(
         }),
         connected: connected.into_iter().map(|(_, _, w)| w).collect(),
         routing,
+        bootstrap_total,
+        bootstrap_reachable,
     }
 }
 
@@ -2545,6 +2599,7 @@ mod tests {
             }),
             connected: peers,
             routing: vec![],
+            ..Default::default()
         }
     }
 
