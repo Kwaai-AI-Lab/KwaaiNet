@@ -48,8 +48,8 @@ use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState
 use crate::relay_manager::{RelayAction, RelayManager};
 use crate::unary::{self, UnaryProtocol};
 
-/// How often the maintenance arm refreshes the Kademlia routing table.
-const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+// The maintenance cadence lives in `NetworkConfig::kad_maintenance_interval`
+// (default 5 min) so tests can shorten it.
 
 /// Depth of the command channel. Deep enough that bursts of handle calls do not
 /// serialize on the event loop, shallow enough to apply backpressure.
@@ -178,6 +178,16 @@ pub struct NetworkService {
     /// real change, so a consumer that only ever reacts to `changed()` does not
     /// re-announce on address churn.
     announce_tx: watch::Sender<AnnounceState>,
+    /// Every multiaddr ever handed to `Command::Bootstrap`, verbatim. These are
+    /// otherwise dialled exactly once, at startup: announces and routed dials
+    /// go by peer id, the periodic refresh only walks peers kad still holds,
+    /// and identify needs a live connection. So when a bootstrap's entry is
+    /// evicted — dial failures during its restart window — nothing could ever
+    /// reach it again, and the node kept listening but stopped announcing and
+    /// reserving until *it* was restarted. The maintenance tick re-seeds these.
+    bootstrap_addrs: Vec<Multiaddr>,
+    /// Cadence of the maintenance arm (`NetworkConfig::kad_maintenance_interval`).
+    kad_maintenance_interval: Duration,
 }
 
 /// A parked DHT lookup.
@@ -403,6 +413,8 @@ impl NetworkService {
             reachability,
             relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations),
             announce_tx,
+            bootstrap_addrs: Vec::new(),
+            kad_maintenance_interval: config.kad_maintenance_interval,
         };
         service.apply_reachability_effects(startup_effects);
         // `force_private` starts Private, so this is what makes reservations
@@ -423,7 +435,7 @@ impl NetworkService {
 
     /// The event loop. Exits on `Command::Shutdown` or when all handles drop.
     async fn run(mut self) {
-        let mut maintenance = tokio::time::interval(KAD_REFRESH_INTERVAL);
+        let mut maintenance = tokio::time::interval(self.kad_maintenance_interval);
         // The first tick fires immediately; skip it so startup does not race
         // the initial bootstrap dial.
         maintenance.tick().await;
@@ -464,6 +476,7 @@ impl NetworkService {
                     self.handle_swarm_event(event);
                 }
                 _ = maintenance.tick() => {
+                    self.reseed_lost_bootstraps();
                     self.refresh_routing_table();
                 }
                 _ = &mut identify_grace, if !grace_fired => {
@@ -663,6 +676,11 @@ impl NetworkService {
                 // symmetric-NAT peer flooding identify must never be able to
                 // evict a bootstrap address someone configured by hand.
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
+                let _ = reply.send(());
+            }
+
+            Command::RemoveKadPeer { peer, reply } => {
+                self.swarm.behaviour_mut().kad.remove_peer(&peer);
                 let _ = reply.send(());
             }
 
@@ -945,6 +963,13 @@ impl NetworkService {
     /// and connection state); the error case we care about is "nothing to dial
     /// and no peers known", which would make `kad.bootstrap()` fail anyway.
     fn start_bootstrap(&mut self, peers: Vec<Multiaddr>) -> P2PResult<()> {
+        // Remember every configured address so `reseed_lost_bootstraps` can
+        // re-dial one whose peer later falls out of the routing table.
+        for addr in &peers {
+            if !self.bootstrap_addrs.contains(addr) {
+                self.bootstrap_addrs.push(addr.clone());
+            }
+        }
         let mut dialed = 0usize;
         let mut last_error = None;
         for addr in peers {
@@ -977,6 +1002,47 @@ impl NetworkService {
                     debug!(error = %e, "kad bootstrap deferred until a peer connects");
                     Ok(())
                 }
+            }
+        }
+    }
+
+    /// Re-dial configured bootstraps whose peer left the routing table.
+    ///
+    /// Eviction is routine — `forget_exhausted_entry` removes a peer whose
+    /// every address failed, which is what a bootstrap restart window looks
+    /// like — but recovery used to depend on some *other* peer walking us back
+    /// to it. On a small DHT, or when every bootstrap restarted at once (a
+    /// fleet migration), no such peer exists and the node wedged: listeners
+    /// up, announces and relay reservations dead until the node restarted.
+    /// Bare addresses with no `/p2p/` are skipped — with no peer id there is
+    /// no table membership to test.
+    fn reseed_lost_bootstraps(&mut self) {
+        if self.bootstrap_addrs.is_empty() {
+            return;
+        }
+        let tabled: HashSet<PeerId> = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|entry| *entry.node.key.preimage())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let lost: Vec<Multiaddr> = self
+            .bootstrap_addrs
+            .iter()
+            .filter(|addr| dest_peer_id(addr).is_some_and(|peer| !tabled.contains(&peer)))
+            .cloned()
+            .collect();
+        for addr in lost {
+            info!(%addr, "configured bootstrap fell out of the routing table; re-seeding");
+            match self.dial(addr.clone()) {
+                Ok(_) | Err(P2PError::AlreadyConnected) => {}
+                Err(e) => debug!(%addr, error = %e, "bootstrap re-seed dial failed to start"),
             }
         }
     }

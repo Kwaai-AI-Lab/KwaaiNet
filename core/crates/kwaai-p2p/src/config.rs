@@ -55,6 +55,12 @@ pub struct NetworkConfig {
     /// Request timeout
     pub request_timeout: Duration,
 
+    /// Interval of the kad maintenance tick: bucket refresh plus re-seeding
+    /// configured bootstraps that fell out of the routing table. Defaulted so
+    /// a config predating the field still loads; tests shorten it.
+    #[serde(default = "default_kad_maintenance_interval")]
+    pub kad_maintenance_interval: Duration,
+
     /// Maximum concurrent connections, inbound and outbound.
     pub max_connections: usize,
 
@@ -204,6 +210,11 @@ fn default_relay_max_circuit_duration() -> Duration {
     Duration::from_secs(30 * 60)
 }
 
+/// 5 minutes, matching kad's own periodic bootstrap.
+fn default_kad_maintenance_interval() -> Duration {
+    Duration::from_secs(5 * 60)
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -215,6 +226,7 @@ impl Default for NetworkConfig {
             // used. `max_connections` is what keeps this bounded.
             idle_connection_timeout: Duration::from_secs(10 * 60),
             request_timeout: Duration::from_secs(60),
+            kad_maintenance_interval: default_kad_maintenance_interval(),
             max_connections: 100,
             enable_quic: false,
             enable_nat_traversal: true,
