@@ -347,6 +347,44 @@ pub struct CorefResolution {
 /// Definite descriptions and kinship roles that should be resolved to known entities.
 /// Each entry is (surface_pattern, alias_to_match_against_entity_aliases).
 /// The surface pattern is checked case-insensitively against chunk text.
+/// Definite descriptions for a type, ontology first.
+///
+/// The compiled tables below lean on one corpus's furniture — "the mosque",
+/// "my grandfather", "the district". A KB declares its own under
+/// `text_rules.definite_descriptions`, keyed by entity type.
+pub fn definite_descriptions_for(
+    entity_type: &str,
+    ont: Option<&crate::ontology::Ontology>,
+) -> Vec<(String, String)> {
+    if let Some(o) = ont {
+        if let Some(list) = o.text_rules.definite_descriptions.get(entity_type) {
+            if !list.is_empty() {
+                return list
+                    .iter()
+                    .map(|d| {
+                        let alias = d
+                            .trim_start_matches("the ")
+                            .trim_start_matches("my ")
+                            .trim_start_matches("his ")
+                            .trim_start_matches("her ")
+                            .to_string();
+                        (d.to_lowercase(), alias)
+                    })
+                    .collect();
+            }
+        }
+    }
+    let table: &[(&str, &str)] = match entity_type {
+        "Place" | "Location" | "Address" => PLACE_DEFINITE_DESCRIPTIONS,
+        "Organization" | "PoliticalOrganization" => ORG_DEFINITE_DESCRIPTIONS,
+        _ => DEFINITE_DESCRIPTIONS,
+    };
+    table
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
 const DEFINITE_DESCRIPTIONS: &[(&str, &str)] = &[
     ("grandpa", "grandpa"),
     ("grandfather", "grandfather"),

@@ -86,6 +86,35 @@ pub enum Stored {
 struct Entry {
     value: Stored,
     expiration: DHTExpiration,
+    /// This entry's contribution to the tier's byte total, cached so the
+    /// total is maintained by delta. Recomputing it over every key on each
+    /// store would be a full scan of a million-entry tier.
+    bytes: usize,
+}
+
+/// Per-entry bookkeeping charged on top of the key and value bytes: the
+/// `BTreeMap` node's share, the two `Vec` headers, the expiration and the
+/// enum discriminant. Approximate by nature — the point is that ten million
+/// empty keys cannot be free, not that the figure is exact.
+const ENTRY_OVERHEAD: usize = 96;
+
+/// The same, per subkey inside a dictionary.
+const SUBKEY_OVERHEAD: usize = 64;
+
+/// What one entry costs the tier.
+fn entry_bytes(key: &[u8], value: &Stored) -> usize {
+    let payload = match value {
+        Stored::Regular { value, .. } => value.len(),
+        Stored::Dictionary { entries, .. } => dict_payload_bytes(entries),
+    };
+    ENTRY_OVERHEAD + key.len() + payload
+}
+
+fn dict_payload_bytes(entries: &BTreeMap<Vec<u8>, (Vec<u8>, DHTExpiration)>) -> usize {
+    entries
+        .iter()
+        .map(|(subkey, (value, _))| subkey.len() + value.len() + SUBKEY_OVERHEAD)
+        .sum()
 }
 
 /// A hivemind `TimedStorage`-alike: expiring entries with an optional size bound.
@@ -98,6 +127,17 @@ pub struct LocalStorage {
     /// Capacity bound; `None` = unbounded. Enforced by evicting the
     /// earliest-expiring entry (`timed_storage.py:60-68`).
     maxsize: Option<usize>,
+    /// Byte bound, enforced by the same eviction. `None` = unbounded.
+    ///
+    /// An entry-count bound alone does not bound memory: a value is capped
+    /// only by the 10 MiB wire frame, so a tier of a million entries has a
+    /// ceiling four orders of magnitude above what its count suggests.
+    max_bytes: Option<usize>,
+    /// Largest single value this tier accepts. A value above it is refused
+    /// outright rather than admitted and then evicting everything else.
+    max_value_bytes: Option<usize>,
+    /// Running sum of `Entry::bytes`.
+    bytes: usize,
 }
 
 impl LocalStorage {
@@ -106,6 +146,9 @@ impl LocalStorage {
         Self {
             data: BTreeMap::new(),
             maxsize: None,
+            max_bytes: None,
+            max_value_bytes: None,
+            bytes: 0,
         }
     }
 
@@ -115,9 +158,34 @@ impl LocalStorage {
     /// (`protocol.py` `create(cache_size=...)` → `DHTLocalStorage(maxsize)`).
     pub fn with_maxsize(maxsize: usize) -> Self {
         Self {
-            data: BTreeMap::new(),
             maxsize: Some(maxsize),
+            ..Self::new()
         }
+    }
+
+    /// Bound the tier by entry count *and* by bytes, refusing any single value
+    /// above `max_value_bytes`.
+    ///
+    /// The byte bound is what actually caps memory; the count bound stays
+    /// because it is hivemind's, and because a tier of tiny entries still
+    /// costs per-entry overhead the byte figure only approximates.
+    pub fn with_limits(maxsize: usize, max_bytes: usize, max_value_bytes: usize) -> Self {
+        Self {
+            maxsize: Some(maxsize),
+            max_bytes: Some(max_bytes),
+            max_value_bytes: Some(max_value_bytes),
+            ..Self::new()
+        }
+    }
+
+    /// Bytes currently accounted to this tier.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Whether `len` is above this tier's per-value ceiling.
+    fn value_too_large(&self, len: usize) -> bool {
+        self.max_value_bytes.is_some_and(|max| len > max)
     }
 
     /// Number of entries currently held (including not-yet-swept expired ones).
@@ -136,7 +204,15 @@ impl LocalStorage {
     /// periodically without needing a request to arrive.
     pub fn remove_outdated(&mut self) {
         let now = get_dht_time();
-        self.data.retain(|_, e| e.expiration >= now);
+        let mut freed = 0;
+        self.data.retain(|_, e| {
+            let live = e.expiration >= now;
+            if !live {
+                freed += e.bytes;
+            }
+            live
+        });
+        self.bytes = self.bytes.saturating_sub(freed);
         self.enforce_capacity();
     }
 
@@ -146,8 +222,7 @@ impl LocalStorage {
     /// `len(self.data) > self.maxsize`, i.e. it evicts the entry that expires
     /// soonest.
     fn enforce_capacity(&mut self) {
-        let Some(maxsize) = self.maxsize else { return };
-        while self.data.len() > maxsize {
+        while self.over_capacity() {
             let victim = self
                 .data
                 .iter()
@@ -159,11 +234,18 @@ impl LocalStorage {
                 .map(|(k, _)| k.clone());
             match victim {
                 Some(k) => {
-                    self.data.remove(&k);
+                    if let Some(e) = self.data.remove(&k) {
+                        self.bytes = self.bytes.saturating_sub(e.bytes);
+                    }
                 }
                 None => break,
             }
         }
+    }
+
+    fn over_capacity(&self) -> bool {
+        self.maxsize.is_some_and(|max| self.data.len() > max)
+            || self.max_bytes.is_some_and(|max| self.bytes > max)
     }
 
     /// Look up a live entry, returning its value and *outer* expiration.
@@ -190,19 +272,26 @@ impl LocalStorage {
         if expiration < get_dht_time() {
             return false;
         }
+        if self.value_too_large(value.len()) {
+            return false;
+        }
         if let Some(existing) = self.data.get(&key) {
             // Strictly-greater freshness. Equal expirations lose.
             if existing.expiration >= expiration {
                 return false;
             }
         }
-        self.data.insert(
+        let stored = Stored::Regular { value, expiration };
+        let bytes = entry_bytes(&key, &stored);
+        let replaced = self.data.insert(
             key,
             Entry {
-                value: Stored::Regular { value, expiration },
+                value: stored,
                 expiration,
+                bytes,
             },
         );
+        self.bytes = self.bytes.saturating_sub(replaced.map_or(0, |e| e.bytes)) + bytes;
         self.enforce_capacity();
         true
     }
@@ -235,7 +324,13 @@ impl LocalStorage {
         // rejects already-expired entries (timed_storage.py:75-76).
         let now = get_dht_time();
 
-        match self.data.get_mut(&key) {
+        if self.value_too_large(value.len()) {
+            return false;
+        }
+
+        // Each arm below re-prices the entry it touched and reports the delta,
+        // so the tier total is maintained without rescanning every key.
+        let stored = match self.data.get_mut(&key) {
             Some(entry) => {
                 match &mut entry.value {
                     // Case 2: existing dictionary.
@@ -265,6 +360,11 @@ impl LocalStorage {
                             _ => {
                                 entries.insert(subkey, (value, expiration));
                                 bound_dictionary(entries, *maxsize_field);
+                                let after =
+                                    ENTRY_OVERHEAD + key.len() + dict_payload_bytes(entries);
+                                let before = entry.bytes;
+                                entry.bytes = after;
+                                self.bytes = self.bytes.saturating_sub(before) + after;
                                 true
                             }
                         }
@@ -281,12 +381,16 @@ impl LocalStorage {
                         // Case 1 — promote to a dictionary.
                         let mut entries = BTreeMap::new();
                         entries.insert(subkey, (value, expiration));
+                        let after = ENTRY_OVERHEAD + key.len() + dict_payload_bytes(&entries);
                         entry.value = Stored::Dictionary {
                             entries,
                             maxsize: self.maxsize.map(|m| m as u64),
                             latest_expiration: expiration,
                         };
                         entry.expiration = expiration;
+                        let before = entry.bytes;
+                        entry.bytes = after;
+                        self.bytes = self.bytes.saturating_sub(before) + after;
                         true
                     }
                 }
@@ -298,6 +402,7 @@ impl LocalStorage {
                 }
                 let mut entries = BTreeMap::new();
                 entries.insert(subkey, (value, expiration));
+                let bytes = ENTRY_OVERHEAD + key.len() + dict_payload_bytes(&entries);
                 self.data.insert(
                     key,
                     Entry {
@@ -307,12 +412,18 @@ impl LocalStorage {
                             latest_expiration: expiration,
                         },
                         expiration,
+                        bytes,
                     },
                 );
-                self.enforce_capacity();
+                self.bytes += bytes;
                 true
             }
+        };
+
+        if stored {
+            self.enforce_capacity();
         }
+        stored
     }
 }
 
@@ -785,6 +896,129 @@ mod tests {
         assert_eq!(outer, exp + 10.0);
     }
 
+    // ── Byte bounds ─────────────────────────────────────────────────────
+    //
+    // The entry-count bound is hivemind's and does not bound memory: a value
+    // is capped only by the 10 MiB wire frame, and with no record validators
+    // the peer choosing that size is whoever dialled us.
+
+    /// A tier stays under its byte budget however few entries that is, and it
+    /// evicts by the same earliest-expiring rule the count bound uses.
+    #[test]
+    fn a_tier_is_bounded_by_bytes_not_only_by_entries() {
+        // Room for far more entries than the byte budget allows.
+        let mut s = LocalStorage::with_limits(1000, 4096, 64 * 1024);
+        let base = future();
+
+        for i in 0..64u32 {
+            // Later index, later expiration — so eviction order is known.
+            s.store(
+                format!("k{i:03}").into_bytes(),
+                vec![0u8; 512],
+                base + f64::from(i),
+            );
+        }
+
+        assert!(
+            s.bytes() <= 4096,
+            "byte budget must hold: {} bytes over {} entries",
+            s.bytes(),
+            s.len()
+        );
+        assert!(s.len() < 64, "entries were evicted to stay under it");
+        assert!(
+            s.get(b"k000").is_none(),
+            "the earliest-expiring entry goes first"
+        );
+        assert!(s.get(b"k063").is_some(), "the newest survives");
+    }
+
+    /// One key with unbounded subkeys is the obvious way around a per-entry
+    /// budget, so a dictionary's growth is priced into the tier total too.
+    #[test]
+    fn dictionary_growth_counts_against_the_byte_budget() {
+        let mut s = LocalStorage::with_limits(1000, 4096, 64 * 1024);
+        let base = future();
+        let key = b"one-key".to_vec();
+
+        for i in 0..64u32 {
+            s.store_subkey(
+                key.clone(),
+                format!("sub{i:03}").into_bytes(),
+                vec![0u8; 512],
+                base + f64::from(i),
+            );
+        }
+
+        assert!(
+            s.bytes() <= 4096,
+            "one key must not escape the budget: {} bytes",
+            s.bytes()
+        );
+    }
+
+    /// A value above the per-value ceiling is refused outright. Admitting it
+    /// and then evicting to fit would let one sender empty a tier.
+    #[test]
+    fn an_oversized_value_is_refused_rather_than_evicting_the_tier() {
+        let mut s = LocalStorage::with_limits(1000, 1024 * 1024, 1024);
+        let exp = future();
+
+        assert!(s.store(b"small".to_vec(), vec![0u8; 512], exp));
+        let held = s.bytes();
+
+        assert!(
+            !s.store(b"huge".to_vec(), vec![0u8; 4096], exp),
+            "over the per-value ceiling"
+        );
+        assert!(
+            !s.store_subkey(b"huge".to_vec(), b"sk".to_vec(), vec![0u8; 4096], exp),
+            "the subkey path enforces it too"
+        );
+
+        assert!(s.get(b"small").is_some(), "the refusal cost nothing");
+        assert_eq!(s.bytes(), held, "and was not accounted");
+    }
+
+    /// The running total is a delta, not a rescan, so every path that replaces
+    /// or drops an entry has to give the bytes back.
+    #[test]
+    fn the_byte_total_is_released_on_replace_and_expiry() {
+        let mut s = LocalStorage::with_limits(1000, 1024 * 1024, 64 * 1024);
+        let exp = future();
+
+        assert!(s.store(b"k".to_vec(), vec![0u8; 4096], exp));
+        let large = s.bytes();
+        assert!(s.store(b"k".to_vec(), vec![0u8; 16], exp + 1.0));
+        assert!(
+            s.bytes() < large,
+            "replacing a big value with a small one must release the difference"
+        );
+
+        // Inject an expired entry directly — `store` would refuse it.
+        s.data.insert(
+            b"gone".to_vec(),
+            Entry {
+                value: Stored::Regular {
+                    value: vec![0u8; 4096],
+                    expiration: 1.0,
+                },
+                expiration: 1.0,
+                bytes: ENTRY_OVERHEAD + 4 + 4096,
+            },
+        );
+        s.bytes += ENTRY_OVERHEAD + 4 + 4096;
+        let before = s.bytes();
+
+        s.remove_outdated();
+        assert!(s.bytes() < before, "sweeping an expired entry frees it");
+        assert_eq!(
+            s.bytes(),
+            s.data.values().map(|e| e.bytes).sum::<usize>(),
+            "the running total still matches the entries held"
+        );
+    }
+
     /// `storage.py:68-69` — a subkeyed store cannot clobber a regular value that
     /// is at least as fresh.
     #[test]
@@ -854,6 +1088,7 @@ mod tests {
                     expiration: 1.0,
                 },
                 expiration: 1.0,
+                bytes: ENTRY_OVERHEAD + 4 + 1,
             },
         );
         assert_eq!(s.len(), 2);

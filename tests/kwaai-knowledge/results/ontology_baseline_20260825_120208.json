@@ -1,0 +1,422 @@
+{
+  "generated": "2026-08-25T19:02:08.632089Z",
+  "kbs": [
+    {
+      "kb": "Astrophysics",
+      "entities": 6437,
+      "relations": 23,
+      "escape_hatch_rate": 0.3478,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 5,
+      "entity_types": {
+        "Organization": 2214,
+        "Person": 2164,
+        "Publication": 2059
+      },
+      "relation_types": {
+        "associated_with": 8,
+        "part_of": 7,
+        "works_at": 5,
+        "contains": 2,
+        "described_in": 1
+      }
+    },
+    {
+      "kb": "Climate",
+      "entities": 1979,
+      "relations": 4,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 3,
+      "entity_types": {
+        "Publication": 1163,
+        "Organization": 655,
+        "Legislation": 161
+      },
+      "relation_types": {
+        "works_at": 2,
+        "part_of": 1,
+        "cites": 1
+      }
+    },
+    {
+      "kb": "CountryHistory",
+      "entities": 7613,
+      "relations": 68,
+      "escape_hatch_rate": 0.4412,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 6,
+      "entity_types": {
+        "Person": 3123,
+        "Organization": 2777,
+        "Place": 1713
+      },
+      "relation_types": {
+        "associated_with": 30,
+        "located_in": 16,
+        "part_of": 10,
+        "belongs_to": 8,
+        "works_at": 3,
+        "contains": 1
+      }
+    },
+    {
+      "kb": "D6",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    },
+    {
+      "kb": "D6_10pct_A",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    },
+    {
+      "kb": "D6_native",
+      "entities": 1591,
+      "relations": 216,
+      "escape_hatch_rate": 0.037,
+      "kinship_rate": 0.8704,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 5,
+      "distinct_relation_types": 15,
+      "entity_types": {
+        "Person": 745,
+        "Organization": 342,
+        "Place": 339,
+        "Publication": 114,
+        "Legislation": 51
+      },
+      "relation_types": {
+        "child_of": 47,
+        "parent_of": 47,
+        "spouse_of": 20,
+        "sibling_of": 16,
+        "half_sibling_of": 14,
+        "grandchild_of": 14,
+        "grandparent_of": 14,
+        "associated_with": 8,
+        "foster_child_of": 8,
+        "member_of": 8,
+        "foster_parent_of": 8,
+        "lived_in": 7,
+        "romantic_interest_of": 2,
+        "affiliated_with": 2,
+        "founded": 1
+      }
+    },
+    {
+      "kb": "D6_ord_A",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    },
+    {
+      "kb": "D6_ord_B",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    },
+    {
+      "kb": "D6_ord_C",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    },
+    {
+      "kb": "DeepSea",
+      "entities": 2358,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 0,
+      "entity_types": {
+        "Person": 1207,
+        "Publication": 773,
+        "Organization": 378
+      },
+      "relation_types": {}
+    },
+    {
+      "kb": "DreamMem",
+      "entities": 2968,
+      "relations": 8,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 4,
+      "entity_types": {
+        "Person": 1868,
+        "Publication": 904,
+        "Organization": 196
+      },
+      "relation_types": {
+        "cites": 5,
+        "works_at": 1,
+        "located_in": 1,
+        "part_of": 1
+      }
+    },
+    {
+      "kb": "Legal",
+      "entities": 2955,
+      "relations": 2,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 1,
+      "entity_types": {
+        "Person": 1241,
+        "Legislation": 968,
+        "Organization": 746
+      },
+      "relation_types": {
+        "contains": 2
+      }
+    },
+    {
+      "kb": "Manhattan",
+      "entities": 725,
+      "relations": 16,
+      "escape_hatch_rate": 0.1875,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 5,
+      "entity_types": {
+        "Organization": 272,
+        "Person": 267,
+        "Place": 186
+      },
+      "relation_types": {
+        "works_at": 6,
+        "located_in": 5,
+        "associated_with": 3,
+        "part_of": 1,
+        "belongs_to": 1
+      }
+    },
+    {
+      "kb": "Meetings",
+      "entities": 728,
+      "relations": 3,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 2,
+      "distinct_relation_types": 2,
+      "entity_types": {
+        "Organization": 470,
+        "Person": 258
+      },
+      "relation_types": {
+        "works_at": 2,
+        "contains": 1
+      }
+    },
+    {
+      "kb": "MetroWinProbe",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    },
+    {
+      "kb": "MobyDick",
+      "entities": 12183,
+      "relations": 275,
+      "escape_hatch_rate": 0.3164,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 7,
+      "entity_types": {
+        "Person": 6725,
+        "Place": 2859,
+        "Organization": 2599
+      },
+      "relation_types": {
+        "located_in": 140,
+        "associated_with": 87,
+        "part_of": 22,
+        "works_at": 16,
+        "belongs_to": 6,
+        "contains": 3,
+        "visited": 1
+      }
+    },
+    {
+      "kb": "NIST",
+      "entities": 5182,
+      "relations": 7,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 5,
+      "entity_types": {
+        "Publication": 2992,
+        "Organization": 1550,
+        "Legislation": 640
+      },
+      "relation_types": {
+        "cites": 2,
+        "contains": 2,
+        "works_at": 1,
+        "part_of": 1,
+        "located_in": 1
+      }
+    },
+    {
+      "kb": "OSMDocs",
+      "entities": 240,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 1,
+      "distinct_relation_types": 0,
+      "entity_types": {
+        "Organization": 240
+      },
+      "relation_types": {}
+    },
+    {
+      "kb": "Poems",
+      "entities": 7163,
+      "relations": 4,
+      "escape_hatch_rate": 0.25,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 2,
+      "distinct_relation_types": 3,
+      "entity_types": {
+        "Person": 4915,
+        "Place": 2248
+      },
+      "relation_types": {
+        "located_in": 2,
+        "associated_with": 1,
+        "part_of": 1
+      }
+    },
+    {
+      "kb": "PythonDocs",
+      "entities": 998,
+      "relations": 3,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 2,
+      "distinct_relation_types": 3,
+      "entity_types": {
+        "Publication": 761,
+        "Organization": 237
+      },
+      "relation_types": {
+        "part_of": 1,
+        "contains": 1,
+        "works_at": 1
+      }
+    },
+    {
+      "kb": "RFCs",
+      "entities": 1928,
+      "relations": 11,
+      "escape_hatch_rate": 0.0,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 2,
+      "distinct_relation_types": 2,
+      "entity_types": {
+        "Publication": 1626,
+        "Organization": 302
+      },
+      "relation_types": {
+        "cites": 8,
+        "part_of": 3
+      }
+    },
+    {
+      "kb": "WarPeace",
+      "entities": 3624,
+      "relations": 742,
+      "escape_hatch_rate": 0.3235,
+      "kinship_rate": 0.0,
+      "unknown_entity_rate": 0.0,
+      "distinct_entity_types": 3,
+      "distinct_relation_types": 6,
+      "entity_types": {
+        "Person": 2451,
+        "Place": 722,
+        "Organization": 451
+      },
+      "relation_types": {
+        "located_in": 404,
+        "associated_with": 240,
+        "belongs_to": 54,
+        "part_of": 29,
+        "works_at": 11,
+        "contains": 4
+      }
+    },
+    {
+      "kb": "ragbench",
+      "entities": 0,
+      "relations": 0,
+      "escape_hatch_rate": null,
+      "kinship_rate": null,
+      "unknown_entity_rate": null,
+      "distinct_entity_types": 0,
+      "distinct_relation_types": 0,
+      "entity_types": {},
+      "relation_types": {}
+    }
+  ]
+}

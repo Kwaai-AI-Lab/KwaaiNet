@@ -789,11 +789,16 @@ optimisation but a requirement.
 
 | | |
 |---|---|
+| **Start here — glossary of terms** | [`projects/kwaai-knowledge/GLOSSARY.md`](projects/kwaai-knowledge/GLOSSARY.md) |
 | Design and literature review | [`projects/kwaai-knowledge/plans/DreamRAG-Ontology-Eval-Compression.md`](projects/kwaai-knowledge/plans/DreamRAG-Ontology-Eval-Compression.md) |
+| Per-KB ontology plan | [`projects/kwaai-knowledge/plans/PerKBOntology-plan.md`](projects/kwaai-knowledge/plans/PerKBOntology-plan.md) |
 | Cross-KB baseline and analysis | [`tests/kwaai-knowledge/results/`](tests/kwaai-knowledge/results/) |
 | Intern research curriculum | [`projects/kwaai-knowledge/plans/DreamRAG-Intern-Curriculum.md`](projects/kwaai-knowledge/plans/DreamRAG-Intern-Curriculum.md) |
 
-**Contributing to it.** The open problems are real ones — domain ontology
+**Contributing to it.** Read the
+[glossary](projects/kwaai-knowledge/GLOSSARY.md) first — sixty-odd terms grouped
+by pipeline stage, so it doubles as a tour of how the system fits together.
+The open problems are real ones — domain ontology
 induction, curriculum-based evaluation, rate–distortion memory compaction, and
 federated forgetting across a trust-gated peer network. Issues tagged
 `dreamrag` are the way in, and the design document ends with the questions we
@@ -853,6 +858,7 @@ Learn more at [kwaai.ai](https://www.kwaai.ai) and the [Kwaai-AI-Lab GitHub orga
 | [docs/METAL_PERFORMANCE_ANALYSIS.md](docs/METAL_PERFORMANCE_ANALYSIS.md) | Metal GPU performance analysis and optimization roadmap |
 | [docs/MLX_BACKEND_PLAN.md](docs/MLX_BACKEND_PLAN.md) | MLX backend research — investigation results and path forward |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Node architecture, lobes, and Layer 8 stack |
+| [projects/kwaai-knowledge/GLOSSARY.md](projects/kwaai-knowledge/GLOSSARY.md) | DreamRAG lexicon — the RAG and knowledge-graph vocabulary, by pipeline stage |
 | [docs/WHITEPAPER.md](docs/WHITEPAPER.md) | Layer 8: The Decentralized AI Trust Layer (whitepaper) |
 | [docs/vpk-shard-bench/README.md](docs/vpk-shard-bench/README.md) | VPK shard benchmark — sharded Eve vs local HNSW vs Qdrant, with chart and analysis |
 | [docs/hnsw_vs_brute_force.md](docs/hnsw_vs_brute_force.md) | HNSW parameter study — ef_search, ef_construction, and m sweeps for dim=768 RAG workloads |

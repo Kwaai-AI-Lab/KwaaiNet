@@ -36,6 +36,7 @@ Without these, the process is an ordinary node, not a bootstrap.
 | `announce_addr` | the reachable multiaddr | *(none)* | What identify reports to peers — the `ANNOUNCE_MADDRS` analogue. Declared, so it outranks AutoNAT and is confirmed at t=0 rather than after a probe round. Without it the node advertises only its container-internal address. |
 | `port` | `8000` | `31337` | The listen port. The address built is `/ip4/0.0.0.0/tcp/<port>`. |
 | `no_relay` | `false` | `false` | Keep the circuit relay hop service **on**: NATed nodes reserve circuits through the bootstraps. Set `true` only to deliberately withhold relay. |
+| `max_connections` | sized to the host | `100` | The ceiling on established connections, and the only bound on how far the swarm's memory grows — idle connections are held for ten minutes. 100 suits a node that mostly dials out; a bootstrap mostly receives, and wants several hundred to low thousands. Budget roughly a megabyte per connection. Inbound is capped at 4/5 of this so the node can always still dial. |
 
 ### Independent keys worth setting
 
@@ -72,6 +73,7 @@ initial_peers: []
 announce_addr: /dns4/bootstrap1/tcp/8000
 port: 8000
 no_relay: false
+max_connections: 1024
 vpk_enabled: false
 ollama_manage: false
 health_monitoring:
@@ -86,6 +88,13 @@ enable_upnp: false
 In-memory, matching `run_dht`. A restarted bootstrap refills from the other
 nodes' 300 s re-announce loop; nothing on disk needs preserving except the
 identity key.
+
+Both tiers are bounded by bytes as well as by entry count — 256 MiB primary,
+64 MiB cache, and no single value above 1 MiB (`kwaai_hivemind_dht::server`).
+That is the ceiling on what serving other peers' records can cost, and it is
+a real ceiling rather than a nominal one: serving is not gated by record
+validators, so the peer choosing what to store is whoever dialled us. Over
+budget, the earliest-expiring records go first.
 
 ## What is not configurable: serving
 

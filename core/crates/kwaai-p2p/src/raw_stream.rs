@@ -464,9 +464,7 @@ impl Behaviour {
                 // establishes.
                 if parked.is_empty() {
                     self.pending_events.push_back(ToSwarm::Dial {
-                        // A new port: binding our listen port as a dial
-                        // source fails `EADDRINUSE` against our own listener.
-                        opts: DialOpts::peer_id(peer).allocate_new_port().build(),
+                        opts: DialOpts::peer_id(peer).build(),
                     });
                 }
                 parked.push(open);

@@ -146,9 +146,6 @@ pub enum Command {
     /// Uninstall KwaaiNet — stop the node, remove all data, and delete binaries
     Uninstall(UninstallArgs),
 
-    /// Open the Node Dashboard (web UI). Run from repo root; requires Node.js.
-    Ui,
-
     /// Distributed transformer block sharding
     #[command(long_about = "Distributed transformer block sharding (Petals-style)
 
@@ -167,7 +164,16 @@ A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
 
     /// Internal: run the node in the foreground (used by daemon mode)
     #[command(hide = true)]
-    RunNode,
+    RunNode(RunNodeArgs),
+}
+
+/// `run-node` is spawned by `start --daemon`, so anything `start` accepts and
+/// the node needs has to be forwarded here explicitly.
+#[derive(Args, Debug)]
+pub struct RunNodeArgs {
+    /// TCP port for the gRPC control surface (0 = ephemeral)
+    #[arg(long)]
+    pub grpc_port: Option<u16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +193,11 @@ pub struct StartArgs {
     /// TCP port for P2P connections
     #[arg(long)]
     pub port: Option<u16>,
+
+    /// TCP port for the gRPC control surface (0 = ephemeral). Forwarded to
+    /// the daemon child; also settable via KWAAINET_GRPC_PORT.
+    #[arg(long)]
+    pub grpc_port: Option<u16>,
 
     /// Disable GPU acceleration (use CPU only)
     #[arg(long)]
@@ -287,7 +298,7 @@ pub enum ConfigAction {
     /// Valid keys:
     ///   model, blocks, start_block, port, use_gpu, log_level,
     ///   public_name, public_ip, announce_addr, no_relay, native_p2p,
-    ///   announce_self, enable_upnp,
+    ///   announce_self, enable_upnp, max_connections,
     ///   decentralized_dht, dht_replication,
     ///   vpk_enabled, vpk_mode, vpk_local_port,
     ///   auto_rebalance, rebalance_interval_secs, rebalance_min_redundancy
@@ -1345,6 +1356,11 @@ pub enum RagAction {
         #[arg(long, value_name = "TYPES")]
         entity_types: Option<String>,
 
+        /// Restrict extraction to these relation types (comma-separated).
+        /// See `graph build --relation-types`.
+        #[arg(long, value_name = "TYPES")]
+        relation_types: Option<String>,
+
         /// Skip relation extraction entirely (recommended for 8B models — precision too low).
         #[arg(long)]
         no_relations: bool,
@@ -1712,8 +1728,13 @@ pub enum GraphAction {
         name: String,
     },
 
-    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards
+    /// Wipe the knowledge graph (entities + relations) — rebuild with `graph build` afterwards.
+    /// The KB's ontology, entity schemas and document metadata are preserved; use --all to drop those too.
     Clear {
+        /// Also drop the ontology, entity schemas and document metadata
+        #[arg(long)]
+        all: bool,
+
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
@@ -1755,6 +1776,14 @@ pub enum GraphAction {
         /// Default: all 15 types.
         #[arg(long, value_name = "TYPES")]
         entity_types: Option<String>,
+
+        /// Restrict extraction to these relation types (comma-separated).
+        /// The relation half of a per-KB ontology; without it every KB is
+        /// offered the same 35 predicates, 14 of which are kinship.
+        /// Example: --relation-types "participated_in,commanded,occurred_at"
+        /// Default: all 35 types.
+        #[arg(long, value_name = "TYPES")]
+        relation_types: Option<String>,
 
         /// Skip relation extraction entirely (entities only).
         #[arg(long)]
@@ -2279,6 +2308,21 @@ pub enum GraphAction {
 
 #[derive(Subcommand)]
 pub enum SchemaAction {
+    /// Load a full ontology (entity types, relation types with domain/range,
+    /// axioms, lexical markers and triggers) from a YAML file.
+    ///
+    /// This is the whole knowledge schema for a corpus, replacing compiled-in
+    /// defaults for that KB only. KBs without one are unaffected.
+    Load {
+        /// Path to the ontology YAML file
+        #[arg(long, value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Knowledge base name
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+    },
+
     /// Load entity type schemas from a YAML file into the KB.
     ///
     /// The YAML file must have a top-level `entity_type_schemas:` list. Each entry has:

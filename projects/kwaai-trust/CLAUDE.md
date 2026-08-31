@@ -15,7 +15,8 @@ It does **not** handle P2P transport, inference, or storage.
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `identity.rs` — `kwaainet identity` subcommands (create, show, export)
-- `trust.rs` — `kwaainet trust` subcommands (score, issue, verify)
+- `identity.rs` — `kwaainet identity` subcommands (show, import-vc, list-vcs, verify-vc)
+- `reputation_cmd.rs` — `kwaainet reputation` subcommands (list, show, reset)
 
 ## Build & test
 
@@ -54,7 +55,9 @@ wasm-pack build core/crates/kwaai-wasm --target bundler
 | `kwaai-trust/src/verify.rs` | VC verification, signature checks |
 | `kwaai-trust/src/storage.rs` | Credential wallet persistence (`~/.kwaainet/credentials/`) |
 | `kwaai-cli/src/identity.rs` | `kwaainet identity` command handler |
-| `kwaai-cli/src/trust.rs` | `kwaainet trust` command handler |
+| `kwaai-cli/src/identity.rs` | `kwaainet identity` handler — DID, VC import/list/verify |
+| `kwaai-cli/src/reputation_cmd.rs` | `kwaainet reputation` handler — trust tiers and scores |
+| `kwaai-cli/src/reputation.rs` | Local reputation store and scoring |
 
 ## Do not
 

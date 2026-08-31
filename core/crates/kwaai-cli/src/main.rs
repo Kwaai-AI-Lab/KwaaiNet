@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
     // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode);
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_));
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
@@ -130,9 +130,9 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         // Internal: run the native node (used in daemon mode)
         // -------------------------------------------------------------------
-        Command::RunNode => {
+        Command::RunNode(args) => {
             let cfg = KwaaiNetConfig::load_or_create()?;
-            node::run_node(&cfg).await?;
+            node::run_node(&cfg, args.grpc_port).await?;
         }
 
         // -------------------------------------------------------------------
@@ -298,7 +298,13 @@ async fn main() -> Result<()> {
             print_separator();
 
             if args.daemon {
-                let child_pid = DaemonManager::spawn_daemon_child(&[])?;
+                // The child re-execs as `run-node`, so anything the node needs
+                // has to be forwarded — it inherits the environment, not argv.
+                let child_args: Vec<String> = args
+                    .grpc_port
+                    .map(|p| vec!["--grpc-port".to_string(), p.to_string()])
+                    .unwrap_or_default();
+                let child_pid = DaemonManager::spawn_daemon_child(&child_args)?;
                 println!();
                 print_success(&format!("KwaaiNet daemon started (PID {})", child_pid));
 
@@ -379,7 +385,7 @@ async fn main() -> Result<()> {
                 print_separator();
             } else {
                 // Foreground – run until Ctrl-C
-                node::run_node(&cfg).await?;
+                node::run_node(&cfg, args.grpc_port).await?;
             }
         }
 
@@ -1731,80 +1737,6 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Uninstall(args) => {
             uninstall::run_uninstall(&args)?;
-        }
-
-        // -------------------------------------------------------------------
-        // ui — launch Node Dashboard (web UI)
-        // -------------------------------------------------------------------
-        Command::Ui => {
-            use std::env;
-            use std::process::Command;
-            use std::thread;
-            use std::time::Duration;
-
-            print_box_header("KwaaiNet Node Dashboard");
-
-            let mut dir = env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let mut backend_dir = None;
-            for _ in 0..20 {
-                let dashboard = dir.join("systems").join("node-dashboard");
-                let backend = dashboard.join("backend");
-                let server_js = backend.join("server.js");
-                if server_js.exists() {
-                    backend_dir = Some(backend);
-                    break;
-                }
-                if !dir.pop() {
-                    break;
-                }
-            }
-
-            let backend_dir = match backend_dir {
-                Some(d) => d,
-                None => {
-                    print_error("Node Dashboard not found. Run from KwaaiNet repo root:");
-                    println!("  ./start-ui.sh");
-                    println!("  Or: cd systems/node-dashboard && npm run dev");
-                    print_separator();
-                    return Ok(());
-                }
-            };
-
-            // Check for Node.js
-            if Command::new("node").arg("--version").output().is_err() {
-                print_error(
-                    "Node.js not found. Install Node.js 18+ and ensure it is on your PATH.",
-                );
-                print_separator();
-                return Ok(());
-            }
-
-            println!("  Starting dashboard backend at http://127.0.0.1:3456 ...");
-            let child = Command::new("node")
-                .arg("server.js")
-                .current_dir(&backend_dir)
-                .spawn();
-
-            match child {
-                Ok(_) => {
-                    thread::sleep(Duration::from_secs(2));
-                    let url = "http://127.0.0.1:3456";
-                    #[cfg(target_os = "macos")]
-                    let _ = Command::new("open").arg(url).spawn();
-                    #[cfg(target_os = "windows")]
-                    let _ = Command::new("cmd").args(["/C", "start", url]).spawn();
-                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-                    let _ = Command::new("xdg-open").arg(url).spawn();
-                    print_success(
-                        "Dashboard started. Open in browser if it did not open automatically.",
-                    );
-                    println!("  {}", url);
-                }
-                Err(e) => {
-                    print_error(&format!("Failed to start dashboard: {}", e));
-                }
-            }
-            print_separator();
         }
 
         // -------------------------------------------------------------------

@@ -22,13 +22,15 @@ pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
     //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
 ];
 
-/// KwaaiNet bootstrap servers addressed by DNS name rather than by a pinned IP.
+/// KwaaiNet bootstrap servers addressed by `/dnsaddr/`.
 ///
-/// Prefer these for the native swarm: the transport is built `.with_dns()`, and
-/// a DNS name survives the bootstrap hosts being re-addressed.
+/// TXT records at `_dnsaddr.bootstrap.kwaai.ai` name each bootstrap's current
+/// transport, so re-addressing a host is a DNS edit rather than a release. The
+/// `/p2p/<id>` suffix pins the identity and selects that peer's record; adding
+/// a port or transport here would filter out any record that later differs.
 pub const KWAAI_BOOTSTRAP_SERVERS_DNS: &[&str] = &[
-    "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
-    "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+    "/dnsaddr/bootstrap.kwaai.ai/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+    "/dnsaddr/bootstrap.kwaai.ai/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
 ];
 
 /// Configuration for the P2P network
@@ -46,13 +48,14 @@ pub struct NetworkConfig {
     /// DHT replication factor
     pub dht_replication: usize,
 
-    /// Connection timeout
-    pub connection_timeout: Duration,
+    /// How long a connection may sit idle before the swarm closes it.
+    #[serde(alias = "connection_timeout")]
+    pub idle_connection_timeout: Duration,
 
     /// Request timeout
     pub request_timeout: Duration,
 
-    /// Maximum concurrent connections
+    /// Maximum concurrent connections, inbound and outbound.
     pub max_connections: usize,
 
     /// Enable NAT traversal
@@ -203,7 +206,9 @@ impl Default for NetworkConfig {
             bootstrap_peers: Vec::new(),
             enable_dht: true,
             dht_replication: 20,
-            connection_timeout: Duration::from_secs(30),
+            // Long enough that a punched connection survives to be seen and
+            // used. `max_connections` is what keeps this bounded.
+            idle_connection_timeout: Duration::from_secs(10 * 60),
             request_timeout: Duration::from_secs(60),
             max_connections: 100,
             enable_nat_traversal: true,
@@ -322,8 +327,8 @@ impl NetworkConfigBuilder {
     }
 
     /// Set connection timeout
-    pub fn connection_timeout(mut self, timeout: Duration) -> Self {
-        self.config.connection_timeout = timeout;
+    pub fn idle_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.config.idle_connection_timeout = timeout;
         self
     }
 
@@ -417,7 +422,7 @@ mod relay_circuit_limits {
         let legacy = r#"{
             "listen_addrs": [], "bootstrap_peers": [], "enable_dht": true,
             "dht_replication": 20,
-            "connection_timeout": {"secs": 30, "nanos": 0},
+            "idle_connection_timeout": {"secs": 600, "nanos": 0},
             "request_timeout": {"secs": 60, "nanos": 0},
             "max_connections": 100, "enable_nat_traversal": true,
             "enable_relay_client": true, "protocol_version": "x",

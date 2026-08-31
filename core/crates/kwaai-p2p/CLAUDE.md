@@ -9,11 +9,18 @@ for NAT traversal, Yamux stream multiplexing, and the p2pd daemon.
 
 | File | Description |
 |------|-------------|
-| `src/network.rs` | libp2p swarm, behaviour, event loop |
-| `src/dht.rs` | Kademlia DHT: find/put record |
-| `src/hivemind.rs` | Hivemind DHT wire format (Ext64 msgpack) |
+| `src/service.rs` | `NetworkService` — owns the swarm and its event loop |
+| `src/behaviour.rs` | The composed libp2p `NetworkBehaviour` for a node |
+| `src/handle.rs` | `NetworkHandle` — clonable facade over the swarm task |
+| `src/dht_service.rs` | Serving the hivemind DHT natively: `rpc_ping` / `rpc_store` / `rpc_find` |
+| `src/unary.rs` | Hivemind unary RPC as a `NetworkBehaviour` |
+| `src/raw_stream.rs` | Raw libp2p streams as a `NetworkBehaviour` |
 | `src/transport.rs` | Transport stack, relay, Yamux |
-| `src/protocol.rs` | RPC protocol definitions |
+| `src/relay_manager.rs` | Circuit relay reservation and lifecycle |
+| `src/addresses.rs` | Multiaddr construction and parsing |
+| `src/reachability.rs` | NAT/reachability detection |
+
+Hivemind DHT wire format lives in the `kwaai-hivemind-dht` crate, not here.
 
 ## DHT compatibility
 

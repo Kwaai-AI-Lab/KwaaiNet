@@ -51,6 +51,10 @@ Each page will label its primary audience at the top to make navigation easier.
 
 ### 4. Reference
 
+- [`../projects/kwaai-knowledge/GLOSSARY.md`](../projects/kwaai-knowledge/GLOSSARY.md)
+  **DreamRAG lexicon** — the vocabulary of the RAG and knowledge-graph pipeline,
+  grouped by stage rather than alphabetically so it reads as a tour of the
+  system. Start here before the RAG design docs.
 - `docker-images.md` *(planned)*
   Overview of official Docker images (bootstrap, node, etc.) and key env vars.
 - `config-reference.md` *(planned)*

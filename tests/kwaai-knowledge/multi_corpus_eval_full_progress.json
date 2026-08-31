@@ -1,0 +1,39 @@
+{
+  "kbs": {
+    "Manhattan": {
+      "status": "done"
+    },
+    "MobyDick": {
+      "status": "done"
+    },
+    "Legal": {
+      "status": "done"
+    },
+    "Meetings": {
+      "status": "done"
+    },
+    "PythonDocs": {
+      "status": "done"
+    },
+    "NIST": {
+      "status": "done"
+    },
+    "Climate": {
+      "status": "done"
+    },
+    "RFCs": {
+      "status": "done"
+    },
+    "DeepSea": {
+      "status": "done"
+    },
+    "DreamMem": {
+      "status": "done"
+    },
+    "Astrophysics": {
+      "status": "done"
+    }
+  },
+  "current_kb": "ALL",
+  "status": "complete"
+}

@@ -41,7 +41,7 @@ use crate::announce::{dht_id, DHTServerInfo, ModelInfo, VpkInfo};
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
+pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result<()> {
     // Register the SIGHUP handler BEFORE writing the PID file — see
     // [`SigHup::register`] for why the ordering is load-bearing.
     let mut sighup = SigHup::register();
@@ -63,13 +63,15 @@ pub async fn run_node(config: &KwaaiNetConfig) -> Result<()> {
     // Ops that depend on p2p state (shard_run, distributed status)
     // will simply return UNAVAILABLE / NO_PEERS_FOR_MODEL until the
     // node is fully up; ops that don't (ping, status, generate) work
-    // straight away. Failure here is non-fatal: the p2p node must
-    // keep running even if the IPC surface didn't come up. The
-    // handle's Drop signals graceful shutdown when run_node returns.
+    // straight away. Failure on the default port is non-fatal: the p2p
+    // node must keep running even if the IPC surface didn't come up. An
+    // explicitly requested port that cannot bind does abort — see
+    // `spawn_on_tcp_port`. The handle's Drop signals graceful shutdown
+    // when run_node returns.
     //
     // The native path also hands it the swarm once that exists, which is what
     // lets the Network op serve; see `attach_network`.
-    let grpc_handle = crate::grpc_server::spawn(config.clone());
+    let grpc_handle = crate::grpc_server::spawn(config.clone(), grpc_port)?;
 
     // -----------------------------------------------------------------------
     // Persistent identity — load or generate the keypair so the PeerId is

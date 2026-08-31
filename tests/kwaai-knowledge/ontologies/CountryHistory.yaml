@@ -1,0 +1,19 @@
+# Ontology for the CountryHistory KB.
+# Arm B, foundation-model authored 2026-08-25.
+#
+# Thin: the shared `narrative-history` module carries almost everything. That is
+# the point of modules — five corpora, one vocabulary, per-corpus deltas only.
+
+ontology:
+  name: countryhistory
+  version: 1
+  extends: narrative-history
+
+provenance:
+  derivation: unverified
+  note: >-
+    thin extension of narrative-history; corpus not sampled
+
+# NOTE: 25.0% clean text — 12296 of 18754 chunks are raw HTML markup.
+# This ontology is authored but should NOT be applied until ingestion is fixed;
+# see results/corpus_hygiene_*.md. Applying it now would measure the markup.

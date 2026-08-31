@@ -40,7 +40,7 @@
 use std::time::Duration;
 
 use libp2p::{
-    autonat, dcutr, identify, kad,
+    autonat, connection_limits, dcutr, identify, kad,
     kad::store::MemoryStore,
     ping, relay,
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
@@ -66,6 +66,9 @@ pub fn default_agent_version() -> String {
 /// The composed behaviour driven by [`crate::service::NetworkService`].
 #[derive(NetworkBehaviour)]
 pub struct KwaaiBehaviour {
+    /// First so a refusal happens before anything else allocates for the
+    /// connection.
+    pub connection_limits: connection_limits::Behaviour,
     pub ping: ping::Behaviour,
     pub identify: identify::Behaviour,
     pub kad: kad::Behaviour<MemoryStore>,
@@ -92,6 +95,25 @@ impl KwaaiBehaviour {
         relay_client: relay::client::Behaviour,
     ) -> Self {
         let local_peer_id = PeerId::from(keypair.public());
+
+        // `max_connections` has been in the config all along, enforced nowhere.
+        // It matters now: idle connections are kept for ten minutes rather than
+        // thirty seconds, so this is the only thing bounding growth, and a
+        // bootstrap is where that bites first.
+        //
+        // Incoming is capped below the total so a node can always dial out. If
+        // inbound filled every slot the node would go deaf — unable to re-dial
+        // the bootstraps and relays that keep it reachable.
+        //
+        // Deliberately no per-peer cap: DCUtR holds the relayed and the punched
+        // connection at once, and refusing the second is refusing the punch.
+        let max = u32::try_from(config.max_connections).unwrap_or(u32::MAX);
+        let connection_limits = connection_limits::Behaviour::new(
+            connection_limits::ConnectionLimits::default()
+                .with_max_established(Some(max))
+                .with_max_established_incoming(Some((max / 5 * 4).max(1)))
+                .with_max_pending_incoming(Some((max / 4).max(4))),
+        );
 
         let ping = ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(30)));
 
@@ -197,6 +219,7 @@ impl KwaaiBehaviour {
         let upnp = Toggle::from(config.enable_upnp.then(upnp::tokio::Behaviour::default));
 
         Self {
+            connection_limits,
             ping,
             identify,
             kad,

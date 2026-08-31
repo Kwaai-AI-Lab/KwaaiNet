@@ -55,6 +55,11 @@ const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// serialize on the event loop, shallow enough to apply backpressure.
 const COMMAND_CHANNEL_SIZE: usize = 64;
 
+/// Upper bound on `last_connected` entries. Sized for its one consumer —
+/// bootstrap-health recency — with room for a busy node's whole active
+/// neighbourhood, not as a history of every peer ever seen.
+const LAST_CONNECTED_CAP: usize = 1024;
+
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -121,6 +126,15 @@ pub struct NetworkService {
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
+    /// When each peer last *established* a connection to us, in either
+    /// direction. Unlike `connections` this survives the close, which is what
+    /// makes bootstrap health readable: kad seeds its routing table with the
+    /// configured bootstrap addresses before any dial succeeds, so table
+    /// membership proves nothing, and bootstraps drop idle connections after
+    /// ~30 s, so the live set reads empty on a healthy node. "Connected
+    /// recently" is the signal that distinguishes the two. Recency cache, not
+    /// a ledger — capped at [`LAST_CONNECTED_CAP`], oldest evicted.
+    last_connected: HashMap<PeerId, Instant>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
@@ -292,7 +306,7 @@ impl NetworkService {
             })
             .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
             .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(config.connection_timeout)
+                c.with_idle_connection_timeout(config.idle_connection_timeout)
                     // 0-RTT protocol negotiation on outbound substreams.
                     //
                     // The default, `V1`, writes the multistream-select proposal,
@@ -381,6 +395,7 @@ impl NetworkService {
             pending_routed: HashMap::new(),
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
+            last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
             peer_protocols: HashMap::new(),
@@ -536,6 +551,11 @@ impl NetworkService {
                     observed_addrs: observed,
                     listen_addrs: self.swarm.listeners().cloned().collect(),
                     local_protocols: self.collect_local_protocols(),
+                    last_contact: self
+                        .last_connected
+                        .iter()
+                        .map(|(p, at)| (*p, at.elapsed()))
+                        .collect(),
                 });
             }
 
@@ -881,21 +901,16 @@ impl NetworkService {
         let peer = peer_id_from_multiaddr(&addr);
         let condition_safe = peer.is_some() && !is_circuit(&addr);
 
-        // Both arms call `allocate_new_port()`, overriding the `DialOpts`
-        // default of best-effort port reuse.
+        // Nothing here touches the port policy. `DialOpts` defaults to
+        // `PortUse::Reuse` — `#[default]` on the enum itself — and that default
+        // exists for one reason: reusing the listen port as a dial's source
+        // port is what makes NAT traversal work. It puts our listen port's NAT
+        // binding into the address peers observe for us, and that observed
+        // address is the only thing DCUtR has to punch at.
         //
-        // Reuse asks the transport to bind our listen port as the dial's source
-        // port. That is right for a DCUtR hole punch — `libp2p-dcutr` requests
-        // it on its own dials and still gets it — but wrong for an ordinary
-        // dial, because the bind fails outright: `SO_REUSEPORT` lets several
-        // *listeners* share a port, not a listener plus an outbound connect.
-        // Measured on macOS (errno 48) and Linux (errno 98) alike, with no
-        // prior connection to the target.
-        //
-        // libp2p-tcp 0.44 does retry on a fresh port, but only for
-        // `AddrNotAvailable` raised by `connect`. Our failure is `EADDRINUSE`
-        // from `bind`, one step earlier, where the `?` propagates before the
-        // fallback can run — so the dial simply fails.
+        // Overriding it with `allocate_new_port()` is what silently disabled
+        // hole punching for a release. The upstream dcutr example sets no port
+        // policy at all; neither do we.
         let opts = match peer {
             // DisconnectedAndNotDialing rather than Disconnected: the latter
             // still permits a second dial while the first is in flight, which
@@ -903,15 +918,10 @@ impl NetworkService {
             Some(peer) if condition_safe => DialOpts::peer_id(peer)
                 .addresses(vec![addr.clone()])
                 .condition(PeerCondition::DisconnectedAndNotDialing)
-                .allocate_new_port()
                 .build(),
-            // `unknown_peer_id().address(..)` rather than
-            // `DialOpts::from(addr)`, because only the builder exposes
-            // `allocate_new_port()`; the two are otherwise the same dial.
-            _ => DialOpts::unknown_peer_id()
-                .address(addr.clone())
-                .allocate_new_port()
-                .build(),
+            // `unknown_peer_id().address(..)` and `DialOpts::from(addr)` are
+            // the same dial; the builder form just reads consistently above.
+            _ => DialOpts::unknown_peer_id().address(addr.clone()).build(),
         };
         let connection_id = opts.connection_id();
         match self.swarm.dial(opts) {
@@ -1112,9 +1122,6 @@ impl NetworkService {
         let opts = DialOpts::peer_id(peer)
             .addresses(addrs)
             .condition(PeerCondition::DisconnectedAndNotDialing)
-            // As in `dial()`: reuse asks the transport to bind our listen
-            // port, which `EADDRINUSE`s against our own listener.
-            .allocate_new_port()
             .build();
         let connection_id = opts.connection_id();
 
@@ -1245,10 +1252,7 @@ impl NetworkService {
                     let _ = reply.send(Ok(peer));
                     return;
                 }
-                // A new port for the same reason as `dial()`: reuse
-                // asks the transport to bind our listen port, which
-                // `EADDRINUSE`s against our own listener.
-                let opts = DialOpts::peer_id(peer).allocate_new_port().build();
+                let opts = DialOpts::peer_id(peer).build();
                 let connection_id = opts.connection_id();
                 match self.swarm.dial(opts) {
                     Ok(()) => {
@@ -1562,6 +1566,20 @@ impl NetworkService {
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
+                if self.last_connected.len() >= LAST_CONNECTED_CAP
+                    && !self.last_connected.contains_key(&peer_id)
+                {
+                    if let Some(oldest) = self
+                        .last_connected
+                        .iter()
+                        .min_by_key(|(_, at)| **at)
+                        .map(|(p, _)| *p)
+                    {
+                        self.last_connected.remove(&oldest);
+                    }
+                }
+                self.last_connected.insert(peer_id, Instant::now());
+
                 self.connections.entry(peer_id).or_default().insert(
                     connection_id,
                     Connection {
@@ -1714,6 +1732,17 @@ impl NetworkService {
 
             SwarmEvent::Behaviour(event) => self.handle_behaviour_event(event),
 
+            // The candidate feed *is* DCUtR's punch-target list: `dcutr` builds
+            // its address candidates from this event and nothing else — notably
+            // not from `ExternalAddrConfirmed`, so what the reachability machine
+            // confirms never reaches it. Logged because a punch aimed at the
+            // wrong port is otherwise invisible: on a NATed node these should
+            // carry the port the NAT mapped, which is only true while dials
+            // leave from our listen port.
+            SwarmEvent::NewExternalAddrCandidate { address } => {
+                info!(%address, "external address candidate (DCUtR punch target)");
+            }
+
             other => trace!(?other, "unhandled swarm event"),
         }
     }
@@ -1776,6 +1805,34 @@ impl NetworkService {
                     if let Some(conns) = self.connections.get_mut(&remote_peer_id) {
                         if let Some(conn) = conns.get_mut(&connection_id) {
                             conn.dcutr = true;
+                        }
+                    }
+
+                    // Retire the circuit the punch just replaced, migrating
+                    // traffic onto the newly punched connection
+                    let circuits: Vec<ConnectionId> = self
+                        .connections
+                        .get(&remote_peer_id)
+                        .map(|conns| {
+                            conns
+                                .iter()
+                                .filter(|(id, c)| {
+                                    // `via` is what identifies an *inbound*
+                                    // relayed connection: its `addr` is a bare
+                                    // `/p2p/<peer>` with no circuit component.
+                                    **id != connection_id
+                                        && (is_circuit(&c.addr) || c.via.is_some())
+                                })
+                                .map(|(id, _)| *id)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for id in circuits {
+                        if self.swarm.close_connection(id) {
+                            debug!(
+                                peer = %remote_peer_id, ?id,
+                                "closing the relayed path the punch replaced"
+                            );
                         }
                     }
                 }

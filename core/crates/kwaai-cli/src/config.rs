@@ -228,6 +228,21 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
+    /// Ceiling on simultaneously established connections, inbound and
+    /// outbound, enforced by the swarm's connection-limits behaviour.
+    ///
+    /// Inbound is capped below this total so the node can always dial out;
+    /// see `kwaai_p2p::behaviour` for the split. It bounds memory growth
+    /// because idle connections are now held for ten minutes rather than
+    /// thirty seconds, so nothing else does.
+    ///
+    /// The default suits a participating node. A bootstrap, which mostly
+    /// receives connections rather than making them, wants several hundred to
+    /// low thousands — sized against the memory the host can spare, roughly
+    /// a megabyte per connection once buffers and per-peer state are counted.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+
     /// Whether this node publishes DHT records *of its own* — its block range,
     /// `_petals.models`, `_kwaai.inference.nodes` and the VPK registry entry —
     /// and, symmetrically, the `state = -1` tombstone on shutdown.
@@ -747,11 +762,34 @@ fn default_log_level() -> String {
 }
 fn default_peers() -> Vec<String> {
     vec![
-        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
+        "/dnsaddr/bootstrap.kwaai.ai/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
             .to_string(),
-        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
+        "/dnsaddr/bootstrap.kwaai.ai/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
             .to_string(),
     ]
+}
+
+/// Bootstrap lists shipped by earlier releases, superseded by [`default_peers`].
+const LEGACY_DEFAULT_PEERS: &[&[&str]] = &[&[
+    "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+    "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+]];
+
+/// Rewrite an untouched shipped bootstrap list to the current default.
+///
+/// `initial_peers` is written to every config.yaml, so a new `default_peers`
+/// alone would never reach an existing install. Only an exact match is
+/// rewritten: an operator's own peers — a sealed test bed's `198.18.0.x` among
+/// them — must survive verbatim.
+fn migrate_default_peers(peers: &mut Vec<String>) -> bool {
+    let is_shipped_default = LEGACY_DEFAULT_PEERS.iter().any(|legacy| {
+        legacy.len() == peers.len() && legacy.iter().all(|a| peers.iter().any(|p| p == a))
+    });
+    if !is_shipped_default {
+        return false;
+    }
+    *peers = default_peers();
+    true
 }
 /// No trusted relays by default — candidates come from identify hop discovery;
 /// see the `trusted_relays` field.
@@ -761,6 +799,12 @@ fn default_trusted_relays() -> Vec<String> {
 fn default_force_private() -> bool {
     true
 }
+/// Matches `kwaai_p2p::NetworkConfig::default()`, so making the knob
+/// settable changes no node that does not set it.
+fn default_max_connections() -> usize {
+    100
+}
+
 fn default_enable_upnp() -> bool {
     true
 }
@@ -848,6 +892,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
+            max_connections: default_max_connections(),
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
@@ -993,6 +1038,10 @@ impl KwaaiNetConfig {
             if cfg.model.contains('/') {
                 cfg.model_dht_prefix = None;
                 cfg.model_repository = None;
+            }
+            if migrate_default_peers(&mut cfg.initial_peers) {
+                info!("initial_peers migrated to the /dnsaddr bootstrap list");
+                let _ = cfg.save();
             }
             debug!("Loaded config from {}", cfg_file.display());
             Ok(cfg)
@@ -1154,6 +1203,17 @@ impl KwaaiNetConfig {
             "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
+            "max_connections" => {
+                let n: usize = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("max_connections must be a positive integer"))?;
+                // Below the bootstraps plus a relay reservation the node cannot
+                // hold the connections it needs to stay reachable.
+                if n < 8 {
+                    anyhow::bail!("max_connections must be at least 8");
+                }
+                self.max_connections = n;
+            }
             "decentralized_dht" => self.decentralized_dht = parse_bool(value)?,
             "dht_replication" => {
                 let k: usize = value
@@ -1479,6 +1539,10 @@ mod tests {
             "a config written before announce_self existed must keep announcing"
         );
         assert!(c.enable_upnp, "likewise for enable_upnp");
+        assert_eq!(
+            c.max_connections, 100,
+            "and max_connections must match the swarm default it mirrors"
+        );
     }
 
     /// `config set` round-trips each key through YAML, which is how an operator
@@ -1504,6 +1568,28 @@ mod tests {
         let yaml = serde_yaml::to_string(&c).expect("serialise");
         let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
         assert!(reloaded.announce_self);
+    }
+
+    /// An operator raising the ceiling on a bootstrap must survive the YAML
+    /// round-trip, and a value too small to hold the bootstraps plus a relay
+    /// reservation must be refused rather than silently stranding the node.
+    #[test]
+    fn max_connections_round_trips_and_rejects_a_crippling_value() {
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("max_connections", "1024")
+            .expect("max_connections is a valid key");
+
+        let yaml = serde_yaml::to_string(&c).expect("serialise");
+        let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
+        assert_eq!(reloaded.max_connections, 1024);
+
+        let mut c = reloaded;
+        assert!(c.set_key("max_connections", "0").is_err());
+        assert!(c.set_key("max_connections", "lots").is_err());
+        assert_eq!(
+            c.max_connections, 1024,
+            "a rejected set must not have changed the field"
+        );
     }
 
     /// A non-boolean value is rejected rather than coerced, so a typo'd
@@ -1811,5 +1897,82 @@ mod shard_flag_is_an_opt_in {
         let p = policy(Some(false), false);
         assert!(!p.shards);
         assert!(p.serve_shards(true, false));
+    }
+}
+
+#[cfg(test)]
+mod dnsaddr_bootstrap {
+    use super::*;
+
+    fn v(addrs: &[&str]) -> Vec<String> {
+        addrs.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Every default is `/dnsaddr/<host>/p2p/<id>` and nothing between the two:
+    /// a `/tcp/8000` here would filter out any TXT record that later moves port
+    /// or transport, which is the whole point of publishing them in DNS.
+    #[test]
+    fn the_defaults_pin_identity_and_nothing_else() {
+        for addr in default_peers() {
+            let rest = addr
+                .strip_prefix("/dnsaddr/bootstrap.kwaai.ai")
+                .unwrap_or_else(|| panic!("not a bootstrap dnsaddr: {addr}"));
+            assert!(rest.starts_with("/p2p/"), "extra components in {addr}");
+            assert_eq!(rest.matches('/').count(), 2, "extra components in {addr}");
+        }
+    }
+
+    #[test]
+    fn a_shipped_dns_list_is_rewritten() {
+        let mut peers = v(LEGACY_DEFAULT_PEERS[0]);
+        assert!(migrate_default_peers(&mut peers));
+        assert_eq!(peers, default_peers());
+    }
+
+    /// Order is not part of the match — a config someone reordered by hand is
+    /// still the shipped list.
+    #[test]
+    fn order_does_not_defeat_the_match() {
+        let mut peers = v(LEGACY_DEFAULT_PEERS[0]);
+        peers.reverse();
+        assert!(migrate_default_peers(&mut peers));
+        assert_eq!(peers, default_peers());
+    }
+
+    #[test]
+    fn the_current_default_is_left_alone() {
+        let mut peers = default_peers();
+        assert!(!migrate_default_peers(&mut peers));
+        assert_eq!(peers, default_peers());
+    }
+
+    /// The one that matters: rewriting a test bed's peers would point sealed
+    /// nodes at production.
+    #[test]
+    fn a_test_bed_list_survives_verbatim() {
+        let sealed = v(&[
+            "/ip4/198.18.0.10/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+            "/ip4/198.18.0.11/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+        ]);
+        let mut peers = sealed.clone();
+        assert!(!migrate_default_peers(&mut peers));
+        assert_eq!(peers, sealed);
+    }
+
+    /// A partly-edited list is the operator's, not ours.
+    #[test]
+    fn one_changed_entry_blocks_the_rewrite() {
+        let mut peers = v(LEGACY_DEFAULT_PEERS[0]);
+        peers[1] = "/dns/bootstrap-9.example.com/tcp/8000/p2p/QmSomethingElse".to_string();
+        let before = peers.clone();
+        assert!(!migrate_default_peers(&mut peers));
+        assert_eq!(peers, before);
+    }
+
+    #[test]
+    fn an_empty_list_is_never_treated_as_the_default() {
+        let mut peers: Vec<String> = Vec::new();
+        assert!(!migrate_default_peers(&mut peers));
+        assert!(peers.is_empty());
     }
 }

@@ -275,10 +275,10 @@ impl UpdateChecker {
             // We rename the old binary aside first, then copy the new files in.
             // The .old file is kept so that the user can manually restore it if
             // the daemon fails to start with the new binary.
-            let exe_bak = install_dir.join("kwaainet.exe.old");
-            let _ = std::fs::remove_file(&exe_bak); // clean up any previous backup
-            std::fs::rename(&kwaainet_exe, &exe_bak)
-                .context("Could not rename kwaainet.exe — is another process holding it?")?;
+            let exe_bak = backup_path(&install_dir)?;
+            std::fs::rename(&kwaainet_exe, &exe_bak).with_context(|| {
+                format!("Could not move kwaainet.exe aside to {}", exe_bak.display())
+            })?;
 
             for entry in std::fs::read_dir(&tmp).context("Reading extract dir")? {
                 let entry = entry?;
@@ -539,6 +539,64 @@ async fn nvidia_smi_windows() -> bool {
     .unwrap_or(false)
 }
 
+/// Cap on numbered fallback backups before we give up and report the failure.
+/// Reaching this means ~100 locked `.old` files, which is a broken machine,
+/// not a case worth silently working around.
+#[cfg(windows)]
+const MAX_BACKUP_SLOTS: u32 = 100;
+
+/// Pick the path to move the running `kwaainet.exe` aside to.
+///
+/// Prefers the canonical `kwaainet.exe.old` so repeated updates don't litter
+/// the install directory, and removes a previous backup to free that name.
+///
+/// That removal can fail. Windows lets a running image be *renamed* (the loader
+/// opens EXEs with FILE_SHARE_DELETE, so the mapping survives) but refuses to
+/// *unlink* it, so a `.old` left behind by an earlier in-place swap stays locked
+/// for as long as any process started from it is alive — including a daemon that
+/// a `cp` install overwrote rather than restarted.
+///
+/// This used to be `let _ = remove_file(&exe_bak)`, discarding that error. The
+/// rename that followed then failed with the same `Access is denied (os error 5)`
+/// — but reported against the *source* path, under a message blaming "another
+/// process holding" `kwaainet.exe`. Every prior investigation went looking at the
+/// running binary instead of the undeletable destination. Worse, the failure is
+/// permanent: auto-update retries on every tick and can never succeed until
+/// someone stops the daemon by hand, so a node silently stops receiving updates
+/// (observed on metro-win: ~5-minute retries, hundreds of times, across days).
+///
+/// So when the canonical name cannot be freed, fall back to a numbered sibling
+/// rather than failing the update. Unlocked numbered leftovers are swept as we
+/// scan past them, so the directory doesn't grow without bound.
+#[cfg(windows)]
+fn backup_path(install_dir: &std::path::Path) -> Result<std::path::PathBuf> {
+    let canonical = install_dir.join("kwaainet.exe.old");
+    match std::fs::remove_file(&canonical) {
+        // Freed it, or it was never there — either way the name is usable.
+        Ok(()) => return Ok(canonical),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(canonical),
+        // Locked (or otherwise undeletable): fall through to a numbered slot.
+        Err(_) => {}
+    }
+
+    for n in 1..=MAX_BACKUP_SLOTS {
+        let candidate = install_dir.join(format!("kwaainet.exe.old.{n}"));
+        match std::fs::remove_file(&candidate) {
+            // A stale backup nothing holds any more — reclaim the slot.
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(_) => continue,
+        }
+    }
+
+    anyhow::bail!(
+        "No usable backup name in {} — {} and {MAX_BACKUP_SLOTS} numbered backups are all \
+         locked. Stop the running kwaainet processes and delete them.",
+        install_dir.display(),
+        canonical.display()
+    )
+}
+
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
     // `(major, minor, patch, is_release)`. The fourth field orders a release
@@ -605,6 +663,95 @@ mod tests {
             assert!(is_newer(v, "0.6.2"), "{v} should outrank 0.6.2");
             assert!(!is_newer(v, "0.7.0"), "{v} should not outrank 0.7.0");
         }
+    }
+
+    /// Open `path` in the one mode that makes Windows refuse to unlink it.
+    ///
+    /// Rust's `File::open` shares DELETE, so a plain handle does *not* reproduce
+    /// the bug. Omitting `FILE_SHARE_DELETE` from the share mode is what the OS
+    /// loader effectively does for a running image, and is what makes
+    /// `remove_file` return `Access is denied (os error 5)`.
+    #[cfg(windows)]
+    fn lock_against_deletion(path: &std::path::Path) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x00000001;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ) // no FILE_SHARE_DELETE
+            .open(path)
+            .expect("test should be able to open its own file")
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn backup_path_uses_the_canonical_name_when_nothing_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = backup_path(dir.path()).unwrap();
+        assert_eq!(got, dir.path().join("kwaainet.exe.old"));
+    }
+
+    /// The common case: last update's backup is unlocked, so it is reclaimed
+    /// rather than leaving a second copy of a ~54 MB binary behind.
+    #[test]
+    #[cfg(windows)]
+    fn backup_path_reclaims_an_unlocked_previous_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().join("kwaainet.exe.old");
+        std::fs::write(&canonical, b"stale").unwrap();
+
+        let got = backup_path(dir.path()).unwrap();
+
+        assert_eq!(got, canonical);
+        assert!(
+            !canonical.exists(),
+            "the stale backup should have been removed"
+        );
+    }
+
+    /// The metro-win failure: a `.old` still backing a live process cannot be
+    /// unlinked. Before the fix this error was swallowed and the *rename* then
+    /// failed, wedging auto-update permanently. Now it must route around it.
+    #[test]
+    #[cfg(windows)]
+    fn backup_path_falls_back_when_the_canonical_name_is_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().join("kwaainet.exe.old");
+        std::fs::write(&canonical, b"held by a running process").unwrap();
+        let _handle = lock_against_deletion(&canonical);
+
+        // Precondition: this really is undeletable, or the test proves nothing.
+        assert!(
+            std::fs::remove_file(&canonical).is_err(),
+            "test setup failed to lock the file"
+        );
+
+        let got = backup_path(dir.path()).unwrap();
+
+        assert_eq!(got, dir.path().join("kwaainet.exe.old.1"));
+        assert!(canonical.exists(), "the locked backup must be left alone");
+    }
+
+    /// Numbered slots are skipped while locked and reused once free, so a
+    /// machine that hits this repeatedly doesn't accumulate backups forever.
+    #[test]
+    #[cfg(windows)]
+    fn backup_path_skips_locked_slots_and_reuses_free_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().join("kwaainet.exe.old");
+        let slot1 = dir.path().join("kwaainet.exe.old.1");
+        let slot2 = dir.path().join("kwaainet.exe.old.2");
+        for p in [&canonical, &slot1, &slot2] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        let _held_canonical = lock_against_deletion(&canonical);
+        let _held_slot1 = lock_against_deletion(&slot1);
+
+        // slot2 is unlocked, so it is the first reclaimable name.
+        let got = backup_path(dir.path()).unwrap();
+
+        assert_eq!(got, slot2);
+        assert!(!slot2.exists(), "the free slot should have been reclaimed");
+        assert!(slot1.exists(), "locked slots must be left alone");
     }
 
     /// On a Windows machine with an NVIDIA GPU, nvidia_smi_windows() must return
