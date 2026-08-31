@@ -747,11 +747,34 @@ fn default_log_level() -> String {
 }
 fn default_peers() -> Vec<String> {
     vec![
-        "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
+        "/dnsaddr/bootstrap.kwaai.ai/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc"
             .to_string(),
-        "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
+        "/dnsaddr/bootstrap.kwaai.ai/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY"
             .to_string(),
     ]
+}
+
+/// Bootstrap lists shipped by earlier releases, superseded by [`default_peers`].
+const LEGACY_DEFAULT_PEERS: &[&[&str]] = &[&[
+    "/dns/bootstrap-1.kwaai.ai/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+    "/dns/bootstrap-2.kwaai.ai/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+]];
+
+/// Rewrite an untouched shipped bootstrap list to the current default.
+///
+/// `initial_peers` is written to every config.yaml, so a new `default_peers`
+/// alone would never reach an existing install. Only an exact match is
+/// rewritten: an operator's own peers — a sealed test bed's `198.18.0.x` among
+/// them — must survive verbatim.
+fn migrate_default_peers(peers: &mut Vec<String>) -> bool {
+    let is_shipped_default = LEGACY_DEFAULT_PEERS.iter().any(|legacy| {
+        legacy.len() == peers.len() && legacy.iter().all(|a| peers.iter().any(|p| p == a))
+    });
+    if !is_shipped_default {
+        return false;
+    }
+    *peers = default_peers();
+    true
 }
 /// No trusted relays by default — candidates come from identify hop discovery;
 /// see the `trusted_relays` field.
@@ -993,6 +1016,10 @@ impl KwaaiNetConfig {
             if cfg.model.contains('/') {
                 cfg.model_dht_prefix = None;
                 cfg.model_repository = None;
+            }
+            if migrate_default_peers(&mut cfg.initial_peers) {
+                info!("initial_peers migrated to the /dnsaddr bootstrap list");
+                let _ = cfg.save();
             }
             debug!("Loaded config from {}", cfg_file.display());
             Ok(cfg)
@@ -1811,5 +1838,82 @@ mod shard_flag_is_an_opt_in {
         let p = policy(Some(false), false);
         assert!(!p.shards);
         assert!(p.serve_shards(true, false));
+    }
+}
+
+#[cfg(test)]
+mod dnsaddr_bootstrap {
+    use super::*;
+
+    fn v(addrs: &[&str]) -> Vec<String> {
+        addrs.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Every default is `/dnsaddr/<host>/p2p/<id>` and nothing between the two:
+    /// a `/tcp/8000` here would filter out any TXT record that later moves port
+    /// or transport, which is the whole point of publishing them in DNS.
+    #[test]
+    fn the_defaults_pin_identity_and_nothing_else() {
+        for addr in default_peers() {
+            let rest = addr
+                .strip_prefix("/dnsaddr/bootstrap.kwaai.ai")
+                .unwrap_or_else(|| panic!("not a bootstrap dnsaddr: {addr}"));
+            assert!(rest.starts_with("/p2p/"), "extra components in {addr}");
+            assert_eq!(rest.matches('/').count(), 2, "extra components in {addr}");
+        }
+    }
+
+    #[test]
+    fn a_shipped_dns_list_is_rewritten() {
+        let mut peers = v(LEGACY_DEFAULT_PEERS[0]);
+        assert!(migrate_default_peers(&mut peers));
+        assert_eq!(peers, default_peers());
+    }
+
+    /// Order is not part of the match — a config someone reordered by hand is
+    /// still the shipped list.
+    #[test]
+    fn order_does_not_defeat_the_match() {
+        let mut peers = v(LEGACY_DEFAULT_PEERS[0]);
+        peers.reverse();
+        assert!(migrate_default_peers(&mut peers));
+        assert_eq!(peers, default_peers());
+    }
+
+    #[test]
+    fn the_current_default_is_left_alone() {
+        let mut peers = default_peers();
+        assert!(!migrate_default_peers(&mut peers));
+        assert_eq!(peers, default_peers());
+    }
+
+    /// The one that matters: rewriting a test bed's peers would point sealed
+    /// nodes at production.
+    #[test]
+    fn a_test_bed_list_survives_verbatim() {
+        let sealed = v(&[
+            "/ip4/198.18.0.10/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc",
+            "/ip4/198.18.0.11/tcp/8000/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
+        ]);
+        let mut peers = sealed.clone();
+        assert!(!migrate_default_peers(&mut peers));
+        assert_eq!(peers, sealed);
+    }
+
+    /// A partly-edited list is the operator's, not ours.
+    #[test]
+    fn one_changed_entry_blocks_the_rewrite() {
+        let mut peers = v(LEGACY_DEFAULT_PEERS[0]);
+        peers[1] = "/dns/bootstrap-9.example.com/tcp/8000/p2p/QmSomethingElse".to_string();
+        let before = peers.clone();
+        assert!(!migrate_default_peers(&mut peers));
+        assert_eq!(peers, before);
+    }
+
+    #[test]
+    fn an_empty_list_is_never_treated_as_the_default() {
+        let mut peers: Vec<String> = Vec::new();
+        assert!(!migrate_default_peers(&mut peers));
+        assert!(peers.is_empty());
     }
 }
