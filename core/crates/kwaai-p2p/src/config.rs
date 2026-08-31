@@ -58,9 +58,9 @@ pub struct NetworkConfig {
     /// Maximum concurrent connections, inbound and outbound.
     pub max_connections: usize,
 
-    /// Listen on and dial QUIC as well as TCP. Off for networks that block or
-    /// throttle UDP. Defaulted so a config predating the field still loads.
-    #[serde(default = "default_true")]
+    /// Listen on and dial QUIC as well as TCP. Off by default: some networks
+    /// block or throttle UDP. Defaulted so a config predating the field still loads.
+    #[serde(default)]
     pub enable_quic: bool,
 
     /// Enable NAT traversal
@@ -216,7 +216,7 @@ impl Default for NetworkConfig {
             idle_connection_timeout: Duration::from_secs(10 * 60),
             request_timeout: Duration::from_secs(60),
             max_connections: 100,
-            enable_quic: true,
+            enable_quic: false,
             enable_nat_traversal: true,
             enable_relay_client: true,
             protocol_version: crate::behaviour::DEFAULT_PROTOCOL_VERSION.to_string(),
