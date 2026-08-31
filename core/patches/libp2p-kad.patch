@@ -1,0 +1,37 @@
+--- a/src/behaviour.rs
++++ b/src/behaviour.rs
+@@ -238,6 +238,13 @@
+         }
+     }
+ 
++    /// KWAAI PATCH: replace the protocol names, in outbound preference
++    /// order. See `ProtocolConfig::set_protocol_names`.
++    pub fn set_protocol_names(&mut self, names: Vec<StreamProtocol>) -> &mut Self {
++        self.protocol_config.set_protocol_names(names);
++        self
++    }
++
+     /// Sets the timeout for a single query.
+     ///
+     /// > **Note**: A single query usually comprises at least as many requests
+--- a/src/protocol.rs
++++ b/src/protocol.rs
+@@ -166,6 +166,18 @@
+         &self.protocol_names
+     }
+ 
++    /// KWAAI PATCH: multi-protocol support. The upgrade machinery already
++    /// negotiates every name in `protocol_names` (see the `UpgradeInfo` impl
++    /// below), but upstream removed the public setter, leaving no way to
++    /// serve a renamed network alongside the legacy name during a protocol
++    /// migration. An empty list is ignored: a kad with no protocols could
++    /// talk to nobody.
++    pub fn set_protocol_names(&mut self, names: Vec<StreamProtocol>) {
++        if !names.is_empty() {
++            self.protocol_names = names;
++        }
++    }
++
+     /// Modifies the maximum allowed size of a single Kademlia packet.
+     pub fn set_max_packet_size(&mut self, size: usize) {
+         self.max_packet_size = size;

@@ -5,10 +5,13 @@
 //! - [`ping`] — liveness / RTT, and it keeps otherwise-idle connections honest.
 //! - [`identify`] — protocol/agent advertisement plus the **observed address**
 //!   feed that later phases use for reachability detection.
-//! - [`kad`] — Kademlia peer routing on the *default* `/ipfs/kad/1.0.0`
-//!   protocol. This is deliberate: the Python bootstraps run hivemind's
-//!   go-libp2p daemon with no `ProtocolPrefix`, so any custom protocol name
-//!   here silently partitions us from the live network.
+//! - [`kad`] — Kademlia peer routing, by default on both `/kwaai/kad/1.0.0`
+//!   and the legacy `/ipfs/kad/1.0.0` (see [`NetworkConfig::kad_protocols`]).
+//!   Outbound streams offer the list in order, so kwaai↔kwaai pairs negotiate
+//!   the kwaai name while hivemind's go-libp2p daemon (no `ProtocolPrefix`)
+//!   still matches on the legacy one. Serving the legacy name is what lets
+//!   the public IPFS DHT absorb a publicly reachable node — bootstrap-grade
+//!   deployments configure the kwaai name alone.
 //!
 //! - [`unary`] — hivemind unary RPC. Inbound handler protocols register at
 //!   runtime, so the behaviour starts with an empty protocol set and the
@@ -138,9 +141,8 @@ impl KwaaiBehaviour {
                 .with_interval(Duration::from_secs(5 * 60)),
         );
 
-        // NOTE: `kad::Config::default()` uses `/ipfs/kad/1.0.0`. Do not call
-        // `set_protocol_names` — see the module docs.
         let mut kad_config = kad::Config::default();
+        kad_config.set_protocol_names(config.kad_stream_protocols());
         kad_config.set_query_timeout(config.request_timeout);
         kad_config.set_replication_factor(
             std::num::NonZeroUsize::new(config.dht_replication)

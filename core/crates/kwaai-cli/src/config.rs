@@ -297,6 +297,20 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_dht_replication")]
     pub dht_replication: usize,
 
+    /// Kademlia protocol IDs, in outbound preference order.
+    ///
+    /// Empty (the default) means kwaai-p2p's compiled default:
+    /// `/kwaai/kad/1.0.0` preferred, legacy `/ipfs/kad/1.0.0` accepted for
+    /// peers that predate the kwaai name. A bootstrap-grade node on a public
+    /// address sets `["/kwaai/kad/1.0.0"]` alone — serving the legacy name on
+    /// a public address is what lets the global IPFS DHT absorb the node and
+    /// crawl it indefinitely.
+    ///
+    /// **Native path only** (`native_p2p = true`). The p2pd path's daemon is
+    /// fixed on the legacy name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kad_protocols: Vec<String>,
+
     #[serde(default)]
     pub health_monitoring: HealthConfig,
 
@@ -902,6 +916,7 @@ impl Default for KwaaiNetConfig {
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
+            kad_protocols: Vec::new(),
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,

@@ -1,5 +1,6 @@
 //! Configuration for P2P networking
 
+use libp2p::StreamProtocol;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -21,6 +22,15 @@ pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
     // uncomment for local development bootstrap server
     //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
 ];
+
+/// KwaaiNet's own Kademlia protocol ID.
+pub const KWAAI_KAD_PROTOCOL: &str = "/kwaai/kad/1.0.0";
+
+/// The default libp2p Kademlia protocol ID — shared with the public IPFS DHT,
+/// which is exactly the problem: any node serving it on a public address gets
+/// absorbed into IPFS's routing tables and crawled indefinitely. Kept only for
+/// wire compatibility with peers that predate [`KWAAI_KAD_PROTOCOL`].
+pub const LEGACY_KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 
 /// KwaaiNet bootstrap servers addressed by `/dnsaddr/`.
 ///
@@ -180,6 +190,20 @@ pub struct NetworkConfig {
     /// weakest claim worth acting on.
     #[serde(default = "default_identify_min_confirmations")]
     pub identify_min_confirmations: usize,
+
+    /// Kademlia protocol IDs, in outbound preference order.
+    ///
+    /// Defaults to `[KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]`: kwaai↔kwaai
+    /// pairs negotiate the kwaai name, while peers that predate it fall back
+    /// to `/ipfs/kad/1.0.0`. A bootstrap-grade node on a public address should
+    /// set this to `[KWAAI_KAD_PROTOCOL]` alone — serving the legacy name is
+    /// what lets the public IPFS DHT absorb it (see [`LEGACY_KAD_PROTOCOL`]).
+    ///
+    /// An empty list means the default, not "no kad": disabling the DHT is
+    /// `enable_dht`'s job, and treating `[]` as default keeps a config
+    /// template that omits the key from silently changing the protocol set.
+    #[serde(default = "default_kad_protocols")]
+    pub kad_protocols: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -192,6 +216,13 @@ fn default_max_relay_reservations() -> usize {
 
 fn default_identify_min_confirmations() -> usize {
     2
+}
+
+fn default_kad_protocols() -> Vec<String> {
+    vec![
+        KWAAI_KAD_PROTOCOL.to_string(),
+        LEGACY_KAD_PROTOCOL.to_string(),
+    ]
 }
 
 /// 4 GiB, the p2pd relay's `-relayDataLimit`.
@@ -234,6 +265,7 @@ impl Default for NetworkConfig {
             require_global_ips: false,
             max_relay_reservations: default_max_relay_reservations(),
             identify_min_confirmations: default_identify_min_confirmations(),
+            kad_protocols: default_kad_protocols(),
         }
     }
 }
@@ -303,6 +335,38 @@ impl NetworkConfig {
             self.bootstrap_peers.clone()
         } else {
             self.initial_peers.clone()
+        }
+    }
+
+    /// [`Self::kad_protocols`] as validated [`StreamProtocol`]s, preserving
+    /// order.
+    ///
+    /// Invalid entries (no leading `/`) are dropped with a warning rather than
+    /// failing startup, and an empty or entirely-invalid list falls back to
+    /// the default set — a bad config degrades to the compatible protocols,
+    /// never to a kad that can talk to nobody.
+    pub fn kad_stream_protocols(&self) -> Vec<StreamProtocol> {
+        let parsed: Vec<StreamProtocol> = self
+            .kad_protocols
+            .iter()
+            .filter_map(|name| match StreamProtocol::try_from_owned(name.clone()) {
+                Ok(protocol) => Some(protocol),
+                Err(err) => {
+                    tracing::warn!(%name, "ignoring invalid kad protocol id: {err}");
+                    None
+                }
+            })
+            .collect();
+        if parsed.is_empty() {
+            default_kad_protocols()
+                .into_iter()
+                .map(|name| {
+                    StreamProtocol::try_from_owned(name)
+                        .expect("default kad protocol ids are valid")
+                })
+                .collect()
+        } else {
+            parsed
         }
     }
 
@@ -446,6 +510,71 @@ mod relay_circuit_limits {
             old.relay_max_circuit_duration,
             Duration::from_secs(30 * 60),
             "an old config must pick up the new default, not libp2p's",
+        );
+        assert_eq!(
+            old.kad_protocols,
+            vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL],
+            "a config predating kad_protocols must get the dual default",
+        );
+    }
+}
+
+#[cfg(test)]
+mod kad_protocols {
+    use super::*;
+
+    /// Order is the outbound preference: the kwaai name must come first so
+    /// kwaai↔kwaai pairs stop negotiating the protocol the public IPFS DHT
+    /// matches on.
+    #[test]
+    fn default_kad_protocols_prefer_kwaai_over_legacy() {
+        let names: Vec<String> = NetworkConfig::default()
+            .kad_stream_protocols()
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        assert_eq!(names, vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]);
+    }
+
+    /// `kad_protocols: []` in a config template means "the default", the same
+    /// contract as an absent key — not a kad with no protocols.
+    #[test]
+    fn empty_kad_protocols_fall_back_to_the_default() {
+        let cfg = NetworkConfig {
+            kad_protocols: Vec::new(),
+            ..NetworkConfig::default()
+        };
+        assert_eq!(
+            cfg.kad_stream_protocols(),
+            NetworkConfig::default().kad_stream_protocols()
+        );
+    }
+
+    /// A typo'd entry is dropped, and a list of nothing but typos degrades to
+    /// the default set rather than a kad that can talk to nobody.
+    #[test]
+    fn invalid_kad_protocol_entries_are_dropped_not_fatal() {
+        let cfg = NetworkConfig {
+            kad_protocols: vec![
+                "no-leading-slash".to_string(),
+                KWAAI_KAD_PROTOCOL.to_string(),
+            ],
+            ..NetworkConfig::default()
+        };
+        let names: Vec<String> = cfg
+            .kad_stream_protocols()
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        assert_eq!(names, vec![KWAAI_KAD_PROTOCOL]);
+
+        let all_bad = NetworkConfig {
+            kad_protocols: vec!["no-leading-slash".to_string()],
+            ..NetworkConfig::default()
+        };
+        assert_eq!(
+            all_bad.kad_stream_protocols(),
+            NetworkConfig::default().kad_stream_protocols()
         );
     }
 }

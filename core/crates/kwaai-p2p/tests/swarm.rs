@@ -191,6 +191,64 @@ async fn kad_resolves_a_peer_two_hops_away() {
 }
 
 // ---------------------------------------------------------------------------
+// Kad protocol migration: legacy-only ↔ dual-default ↔ kwaai-only
+// ---------------------------------------------------------------------------
+
+/// Like [`spawn_test_swarm`] but with an explicit kad protocol list.
+fn spawn_swarm_with_kad_protocols(
+    protocols: &[&str],
+) -> (NetworkHandle, tokio::task::JoinHandle<()>, PeerId) {
+    let keypair = Keypair::generate_ed25519();
+    let peer_id = keypair.public().to_peer_id();
+    let config = NetworkConfig {
+        kad_protocols: protocols.iter().map(|s| s.to_string()).collect(),
+        ..NetworkConfig::for_tests()
+    };
+    let (handle, task) = NetworkService::spawn(config, keypair).expect("swarm should start");
+    (handle, task, peer_id)
+}
+
+/// The cutover topology in miniature. A speaks only the legacy
+/// `/ipfs/kad/1.0.0` (a node that predates the kwaai name), B runs the dual
+/// default (an upgraded node), C speaks only `/kwaai/kad/1.0.0` (a native
+/// bootstrap that must never serve the public IPFS protocol). A and C share no
+/// kad protocol, so the resolve only succeeds if B negotiates the legacy name
+/// with A *and* the kwaai name with C — outbound must offer the whole list,
+/// not just the preferred entry.
+#[tokio::test]
+async fn kad_negotiates_across_the_protocol_migration() {
+    let (a, _a_task, _a_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+    let (b, _b_task, b_id) = spawn_test_swarm();
+    let (c, _c_task, c_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+
+    let b_addr = dialable_addr(&b, b_id).await;
+    let c_addr = dialable_addr(&c, c_id).await;
+
+    a.connect_peer(&b_addr.to_string()).await.expect("A → B");
+    b.connect_peer(&c_addr.to_string()).await.expect("B → C");
+
+    eventually("B's routing table to learn C over /kwaai/kad", || async {
+        let addrs = b.dht_find_peer(c_id).await.ok()?;
+        (!addrs.is_empty()).then_some(())
+    })
+    .await;
+
+    // A has never seen C and could not query it directly even if it had. The
+    // walk must go through B on the legacy protocol.
+    let c_addrs = eventually("A to resolve C through B", || async {
+        let addrs = a.dht_find_peer(c_id).await.ok()?;
+        (!addrs.is_empty()).then_some(addrs)
+    })
+    .await;
+    assert!(
+        c_addrs
+            .iter()
+            .any(|addr| addr.to_string().contains("/tcp/")),
+        "resolved addresses should be dialable TCP addrs: {c_addrs:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Handle semantics
 // ---------------------------------------------------------------------------
 

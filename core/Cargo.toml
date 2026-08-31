@@ -28,6 +28,7 @@ default-members = ["crates/kwaai-cli"]
 # patches/README.md for the diff.
 [patch.crates-io]
 multistream-select = { path = "patches/multistream-select" }
+libp2p-kad = { path = "patches/libp2p-kad" }
 
 # Root package for examples
 [package]
