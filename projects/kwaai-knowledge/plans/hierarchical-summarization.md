@@ -23,10 +23,10 @@ concurrent worker model, and evidence trimming — no new HTTP/LLM client needed
 | Asset | File | Role |
 |---|---|---|
 | `MetaStore` + redb tables pattern | `meta_store.rs` | Add `SUMMARY_NODES_TABLE` alongside `CHUNKS_TABLE` |
-| `call_llm()` + concurrent workers | `dream_tasks.rs:220` | Generate summaries with same LLM infrastructure |
-| `trim_evidence()` 8k-char limit | `dream_tasks.rs:188` | Keep context within LLM window |
+| `call_llm()` + concurrent workers | `dream_tasks.rs:236` | Generate summaries with same LLM infrastructure |
+| `trim_evidence()` 8k-char limit | `dream_tasks.rs:200` | Keep context within LLM window |
 | `EmbedClient::embed_batch()` | `embedder.rs:66` | Embed summary text with `search_document:` prefix |
-| `retrieve_hybrid()`, RRF fusion | `retriever.rs:120` | Augment with summary-first expansion |
+| `retrieve_hybrid()`, RRF fusion | `retriever.rs:145` | Augment with summary-first expansion |
 | Round 2 gap-fill in `retrieve_iterative()` | `iterative.rs:222` | Insert summary expansion as Round 2.5 |
 | `DreamConfig` workers + semaphore | `dream.rs:29` | Re-use for summarize concurrency |
 
@@ -99,7 +99,7 @@ two-level bottom-up pass.
 **Concurrency**: Reuse the `DreamConfig.workers` + `tokio::sync::Semaphore` pattern
 from `dream.rs` — same concurrent fan-out, same channel-based drain.
 
-**LLM call**: Reuse `call_llm(prompt, url, model)` from `dream_tasks.rs:220`.
+**LLM call**: Reuse `call_llm(prompt, url, model)` from `dream_tasks.rs:236`.
 
 **CLI command** — `kwaainet rag summarize`:
 ```

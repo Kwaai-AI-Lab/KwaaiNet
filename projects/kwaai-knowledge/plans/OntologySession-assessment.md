@@ -73,6 +73,12 @@ that produced `Vessel` and have not been re-derived.
 D6 v6: 17 entity types, 27 predicates, 187 trigger phrases, 5 axioms, 38 of 40
 eval questions covered.
 
+*(As committed, `ontologies/D6.yaml` is **v9**: 18 entity types, 33 predicates,
+240 trigger/marker phrases, 71 aliases, 4 axioms. v6-v9 are revisions of the
+same third derivation; the counts below describe v6 as it stood for the smoke
+runs. The file's comment header says "third authored derivation", which is a
+different number from `ontology.version` and used to read as "Version 3".)*
+
 Two findings worth keeping:
 
 - **An independent NotebookLM pass beat my recall.** It surfaced `Doctrine`
@@ -188,6 +194,14 @@ graph.** What survives is only what is deterministic:
   (4), `Venue`, `PoliticalOrganization` (24), `EducationalInstitution` — a type
   is in the vocabulary or it is not, and no sampling changes that;
 - undeclared predicates 17.0% → 2.4%, which is enforcement, not chance.
+
+The per-edge breakdown behind that last line is in `results/predicate_collapse.json`
+(chart via `build_collapse_chart.py`), and it sharpens the reading: the control's
+87 undeclared edges are almost all *nuance* — undeclared predicates that carry
+real meaning — against 0 junk, while run 1 traded 83 nuance for 12 junk. So
+enforcement is not removing noise; it is removing meaning and noise together,
+and the residue mechanism in [`PredicateVectors-exploration.md`](./PredicateVectors-exploration.md)
+§4 exists to keep the first of those recoverable.
 
 **What would make it decidable.** Extraction runs at `temperature: 0.1`
 (`graph.rs:5672`) with 2 concurrent workers, so request interleaving and

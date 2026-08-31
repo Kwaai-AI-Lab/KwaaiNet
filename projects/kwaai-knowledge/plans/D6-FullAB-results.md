@@ -101,3 +101,13 @@ experiment and it is another ~9 hours.
 
 Before spending it, the cheap fix is §3: add the eight missing aliases and the
 `opposed_by` inverse. They are named, counted, and take minutes.
+
+**Update, 2026-08-31 — the cheap fix has landed in #150, so the re-run is
+unblocked.** `father_of`/`mother_of` → `parent_of`, `married_to` → `spouse_of`
+and `brother_of` → `sibling_of` are aliases on the built-in `genealogy` module
+in `ontology.rs` (with a test pinning the 7/6/5/5 edge counts recovered), and
+`ontologies/D6.yaml` declares `inverse: opposed_by`. They went to the module
+rather than to `D6.yaml` because `father_of` means `parent_of` in every corpus,
+not just this one. The 23 kinship edges §3 attributes to missing aliases should
+therefore return; whether that alone reverses prediction 5 is the thing the
+production-config re-run now measures.

@@ -1,6 +1,20 @@
 # Per-KB ontology: making the knowledge schema a first-class artifact
 
-Status: **plan of record, not yet started.** Written 2026-08-25.
+Status: **phases 0-2 landed** in #150 (merged 2026-08-31). Written 2026-08-25.
+
+| Phase | State |
+|---|---|
+| 0 — reconcile vocabularies, persist `--entity-types` per KB | done |
+| 1 — `Ontology` struct + loader, `ontology load` CLI | done for `ontology.yaml` (`Ontology::from_yaml`); the **LinkML loader was not built**, so the §5.1 deferral is spent rather than exercised — the format question in §7.2 is still open and now has one implementation, not two |
+| 2 — `genealogy` module; extraction, axioms and `scorer.rs` read the ontology | done (`schema_type_for_ontology`, `query_patterns_from_ontology`); **query-side abstention (§3.9) was not built** |
+| 3 — run the bakeoff | D6 only, and inconclusive — see [`D6-FullAB-results.md`](./D6-FullAB-results.md). Arms B/D over Legal, Astrophysics, NIST not run |
+| 4 — ontology-driven extraction becomes the default | not done; a KB uses its ontology only when one is loaded |
+
+The sections below are the plan **as written on 2026-08-25** and are kept in that
+tense as a record of what was predicted. Two of its predictions did not survive:
+§5's bakeoff was defeated by run-to-run variance (`OntologySession-assessment.md`
+§4d), and the recall benefit it was designed to demonstrate has not appeared in
+four attempts.
 
 Implements step 1 of *Concrete first steps* in
 [`DreamRAG-Ontology-Eval-Compression.md`](./DreamRAG-Ontology-Eval-Compression.md)
@@ -32,7 +46,7 @@ ontology mismatch showing up as a number.
 | `ENTITY_TYPES` | `core/crates/kwaai-rag/src/graph.rs:19` | 17 | extraction prompt, when `--entity-types` is not passed |
 | `RELATION_TYPES` | `graph.rs:40` | 35 (14 kinship) | extraction prompt; `dream.rs:334` and `dream_tasks.rs:365` validation |
 | `PERSON_RELATION_TYPES` | `graph.rs:96` | 20 | extraction prompt when `entity_types == ["Person"]` |
-| `IN_SCOPE_RELATION_TYPES` | `relation_extract.rs:76` | 15 (9 kinship) | Phase-4 axiomatic relation pipeline + its verify prompt (`rag_cmd.rs:7130`, `:7226`) |
+| `IN_SCOPE_RELATION_TYPES` | `relation_extract.rs:100` | 15 (9 kinship) | Phase-4 axiomatic relation pipeline + its verify prompt (`rag_cmd.rs:7130`, `:7226`) |
 
 Correction to the framing doc: it stated the complete relation vocabulary is
 "thirteen kinship predicates and one escape hatch." That describes
@@ -53,14 +67,14 @@ Motif or Speaker.
 3. The field-key block in the extraction prompt (`graph.rs:5168–5174`) is a
    hardcoded D6-shaped literal — `Person: birthDate, birthPlace, deathDate…;
    Legislation: dateEnacted…` — sent verbatim to every KB including RFCs and
-   PythonDocs. It duplicates `expected_fields()` (`graph.rs:343`) rather than
+   PythonDocs. It duplicates `expected_fields()` (`graph.rs:600`) rather than
    deriving from it, so the two can drift.
 
 ### 1.3 What is already per-KB
 
 More than the framing doc credits, and it is the right foundation to build on:
 
-- **`KBEntityTypeSchema`** (`graph.rs:294`) — `name`, `description`, `examples`,
+- **`KBEntityTypeSchema`** (`graph.rs:365`) — `name`, `description`, `examples`,
   `anti_examples`, `fields`.
 - Persisted per-KB in the graph store's `metadata` table under key
   `kb_entity_schemas` (`graph.rs:4299` set / `:4309` get), alongside
@@ -84,7 +98,7 @@ More than the framing doc credits, and it is the right foundation to build on:
   - familial-requires-Person — `relation_extract.rs:368` (Axiom 1)
   - ambiguous-window — Axiom 2, same function
   - contradiction table — Axiom 3, via `family_role_contradicts`
-  - `FAMILIAL_INVERSE` (`graph.rs:143`), applied at `:1017`, `:1524`, `:2042`, `:3605`
+  - `FAMILIAL_INVERSE` (`graph.rs:183`), applied at `:1017`, `:1524`, `:2042`, `:3605`
   - the gender heuristic in the spouse/sanitise path (`graph.rs:1357–1409`),
     which deleted valid D6 relations because Gadija was recorded as Male
 
@@ -245,7 +259,7 @@ Every axiom kind generalises something currently hardcoded:
 | Axiom kind | Generalises |
 |---|---|
 | `domain` / `range` on a relation | Axiom 1, familial-requires-Person (`relation_extract.rs:368`) |
-| `inverse` | `FAMILIAL_INVERSE` (`graph.rs:143`) |
+| `inverse` | `FAMILIAL_INVERSE` (`graph.rs:183`) |
 | `symmetric` | the caller-side both-directions storage for `spouse_of`/`sibling_of` |
 | `contradiction` | `family_role_contradicts` / Axiom 3 |
 | `functional`, `transitive`, `acyclic` | new — no current equivalent |
@@ -280,16 +294,16 @@ and must not change until each is given an ontology deliberately.
    deserialises). `set_kb_ontology` / `get_kb_ontology` beside the existing
    `set_kb_entity_schemas` / `get_kb_entity_schemas`, which stay as a
    back-compat read path.
-2. **`extract_from_text`** (`graph.rs:5050`) — entity list, relation list, the
+2. **`extract_from_text`** (`graph.rs:5563`) — entity list, relation list, the
    field-key block and the guidance block all derive from the ontology. Delete
    the hardcoded field literal at `:5168–5174`; derive from `expected_fields()`
    merged with the ontology's `fields`.
-3. **`validate_relation_axioms`** (`relation_extract.rs:357`) — replace the
+3. **`validate_relation_axioms`** (`relation_extract.rs:453`) — replace the
    hardcoded Axiom 1 with a generic domain/range check driven by
    `RelationAxiomSnapshot.entity_types`; drive Axiom 3 from the ontology's
    `contradiction` pairs. Keep demotion-not-deletion, so demoted candidates keep
    showing up in metrics.
-4. **`upsert_relation`** (`graph.rs:943`) — inverse and symmetry from the
+4. **`upsert_relation`** (`graph.rs:1215`) — inverse and symmetry from the
    ontology rather than `FAMILIAL_INVERSE`; enforce domain/range at commit.
 5. **`dream.rs:334` / `dream_tasks.rs:365`** — validate against the KB's
    vocabulary, not the global const. Fixes the `affiliated_with` disagreement by

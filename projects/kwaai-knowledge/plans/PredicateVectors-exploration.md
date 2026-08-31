@@ -98,10 +98,8 @@ Before training anything, the cheap checks are worth running:
   separate contradiction from entailment by construction, which is close to the
   polarity property we need. Worth measuring against the same 59-predicate set
   before assuming a custom model is required.
-- **Embed the evidence, not the label.** A predicate's meaning may be better
-  carried by the sentences it was extracted from than by its name. We already
-  store `evidence_chunk_ids` on every edge, so this is testable now and costs
-  nothing to try.
+- ~~**Embed the evidence, not the label.**~~ **Run 2026-08-26 — null both ways,
+  but on too small a sample to settle it.** See §6.
 - **Direction as a separate axis.** Polarity and inverse may not belong in the
   same vector at all — the ontology already declares `inverse:` and
   `contradiction` axioms symbolically, and those are exactly the facts the
@@ -110,3 +108,62 @@ Before training anything, the cheap checks are worth running:
 
 The 59-predicate set with hand labels is the ready-made benchmark for whichever
 route is tried.
+
+---
+
+## 6. The evidence-vector check — run, and inconclusive
+
+Recorded 2026-08-31; the run itself was 2026-08-26 and its outputs sat
+uncommitted until then. Scripts `evidence_vectors.py` and `span_vectors.py`,
+data in `results/evidence_vectors.json` and `results/span_samples.json`.
+
+The hypothesis in §5: a predicate's meaning may live in the text it was read
+out of rather than in whatever the extractor chose to call it. Two units were
+tried, and auto-generated inverses were excluded from both — `parent_of` and
+`child_of` are written from one sentence, so their evidence is identical by
+construction and no embedding could separate them. Direction is the ontology's
+job.
+
+| unit embedded | within-predicate cohesion | between-predicate | separation |
+|---|---|---|---|
+| evidence chunk (~100w) | 0.574 | 0.574 | **+0.000** |
+| evidence span (one sentence) | 0.480 | 0.484 | **−0.004** |
+
+Separation is the number that matters: if evidence carried the predicate's
+meaning, same-predicate edges would sit closer together than different-predicate
+edges. They do not, at either granularity.
+
+**But the sample cannot carry that conclusion.** Only three predicates cleared
+n ≥ 3 in either run, and they are the same three both times:
+
+```
+chunk unit:  located_in (12)  belongs_to (12)  associated_with (12)
+span unit:   located_in (8)   associated_with (7)  belongs_to (3)
+```
+
+Those are the vaguest predicates in the vocabulary — two locatives and the
+escape hatch itself. **Every kinship predicate fell below the floor**, which is
+precisely where §2 found the disqualifying failure and precisely where D6 is
+densest. So this is a null measured where a null was least surprising, and the
+hypothesis is untested where it matters rather than refuted.
+
+**The span run failed for a second reason worth keeping.** Of the production D6
+graph's **340** relations, only **21** had a locatable span — a sentence
+containing both endpoint names. Name matching does not recover the evidence for
+the other 94%, because the second endpoint is usually a pronoun or an epithet.
+That is the same gap `Phase6-PersistentMentionIndex-plan.md` exists to close,
+and it makes the mention index a prerequisite for retrying this, not an
+unrelated piece of work.
+
+**What a real test needs**, in order:
+
+1. The mention index, so spans are recoverable for more than the 6% of edges
+   name matching reaches.
+2. A floor of n ≥ 20 per predicate, and kinship predicates present — otherwise
+   the comparison is between three shades of "vague".
+3. The polarity pair from §2 (`supported`/`opposed`) carried through as the
+   control. Cohesion is not the property that failed; polarity is, and neither
+   run here measured it.
+
+Until then the §3 conclusion stands unchanged: vectors for alias proposal and
+retrieval-side matching, never for write-time coercion.
