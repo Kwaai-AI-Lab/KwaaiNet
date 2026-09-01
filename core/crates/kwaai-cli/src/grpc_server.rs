@@ -2407,21 +2407,61 @@ mod tests {
             .is_ok()
     }
 
-    /// True iff a fresh TCP connect to `port` is refused quickly (used to
-    /// assert the listener is gone after shutdown).
-    async fn tcp_refused(port: u16) -> bool {
-        // ConnectionRefused is the happy-path answer; any other Err (e.g.
-        // network unreachable) we also treat as "not accepting". We bound
-        // the dial with a short timeout so a slow stack can't lie to us.
-        match tokio::time::timeout(
-            Duration::from_millis(250),
-            tokio::net::TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await
-        {
-            Ok(Ok(_)) => false, // still accepting
-            Ok(Err(_)) => true, // refused / unreachable
-            Err(_) => false,    // timed out = something is listening but not answering yet
+    /// Whether a fresh listener can be bound to `port` — which is the
+    /// question these tests actually ask, and unlike "is the port refusing
+    /// connections?" it has an immediate, unambiguous answer on every
+    /// platform.
+    ///
+    /// The connect-probe this replaces had to tell "closed" from "slow to
+    /// answer" by waiting, and on Windows a refused loopback connect is only
+    /// reported after an in-stack SYN retry — ~2.04s on one box, ~2.30s on a
+    /// slower one, scaling with the hardware. Every version of that test was a
+    /// guess at a threshold, and two of them shipped wrong in the direction
+    /// that cannot pass at all.
+    ///
+    /// `bind` needs no threshold. Measured on Windows 10 22H2, and matching
+    /// how the server binds (`std::net::TcpListener::bind`, no socket options
+    /// set — std sets `SO_REUSEADDR` on Unix only):
+    ///
+    /// - against a live listener it fails in under a millisecond with
+    ///   `WSAEADDRINUSE`; on Unix `SO_REUSEADDR` permits `TIME_WAIT`, never an
+    ///   active listener;
+    /// - after a connection closed *server-side*, leaving `TIME_WAIT` on this
+    ///   very port, it succeeds in ~0.3ms with the entry still in `netstat`.
+    ///   That was the failure mode worth fearing, and it does not occur.
+    ///
+    /// The one way this differs from the old probe: it answers "is the port
+    /// bindable", not "did *our* listener close". Something else taking the
+    /// port in between would report a leak that isn't there. That is a
+    /// spurious *failure*, never a silent pass — a leaked listener still holds
+    /// the port and still fails the assertion — which is the direction to err
+    /// in for a test guarding a shutdown regression.
+    fn port_is_free(port: u16) -> bool {
+        // Bound and dropped inside the call: holding it would be indis-
+        // tinguishable from the leak we are testing for.
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    }
+
+    /// How long to wait for an asynchronous shutdown to release the port.
+    ///
+    /// An ordinary liveness budget, not a threshold anything is inferred
+    /// from: each probe is decisive on its own, so this only bounds how long
+    /// a genuine leak takes to be reported. `drop` -> oneshot ->
+    /// `serve_with_incoming_shutdown` returns -> listener closed is normally
+    /// well under a millisecond.
+    const LISTENER_CLOSE_BUDGET: Duration = Duration::from_secs(10);
+
+    /// Poll until `port` can be bound again, i.e. the listener is gone.
+    async fn wait_for_close(port: u16) -> Result<(), ()> {
+        let deadline = Instant::now() + LISTENER_CLOSE_BUDGET;
+        loop {
+            if port_is_free(port) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
 
@@ -2484,11 +2524,11 @@ mod tests {
         // tonic's serve_with_shutdown returns -> listener is closed.
         drop(handle);
 
-        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
-        assert!(
-            down,
-            "TCP listener on 127.0.0.1:{port} did not close within 2s of dropping the handle"
-        );
+        wait_for_close(port).await.unwrap_or_else(|()| {
+            panic!(
+                "127.0.0.1:{port} still not bindable {LISTENER_CLOSE_BUDGET:?} after dropping the handle"
+            )
+        });
 
         #[cfg(unix)]
         {
@@ -2568,8 +2608,9 @@ mod tests {
         drop(handle);
         // Wait for the listener to actually go away before the next test
         // tries to bind the same port.
-        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
-        assert!(down, "TCP listener did not close after handle drop");
+        wait_for_close(port).await.unwrap_or_else(|()| {
+            panic!("port still not bindable {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
     }
 
     #[test]
