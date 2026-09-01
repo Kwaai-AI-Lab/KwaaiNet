@@ -48,8 +48,12 @@ use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState
 use crate::relay_manager::{RelayAction, RelayManager};
 use crate::unary::{self, UnaryProtocol};
 
-/// How often the maintenance arm refreshes the Kademlia routing table.
-const KAD_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Floor on `NetworkConfig::kad_maintenance_interval`, which holds the
+/// maintenance cadence (default 5 min) so tests can shorten it.
+/// `tokio::time::interval` panics on a zero period, and it is built inside the
+/// spawned event loop — where a panic kills networking rather than failing
+/// `spawn`.
+const MIN_KAD_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Depth of the command channel. Deep enough that bursts of handle calls do not
 /// serialize on the event loop, shallow enough to apply backpressure.
@@ -178,6 +182,22 @@ pub struct NetworkService {
     /// real change, so a consumer that only ever reacts to `changed()` does not
     /// re-announce on address churn.
     announce_tx: watch::Sender<AnnounceState>,
+    /// The node's *configured* bootstraps, from
+    /// [`NetworkConfig::effective_initial_peers`]. These were otherwise dialled
+    /// exactly once, at startup: announces and routed dials go by peer id, the
+    /// periodic refresh only walks peers kad still holds, and identify needs a
+    /// live connection. So when a bootstrap's entry was evicted — dial failures
+    /// during its restart window — nothing could turn its peer id back into an
+    /// address, and the node kept listening but stopped announcing and
+    /// reserving until *it* was restarted. The maintenance tick re-seeds these.
+    ///
+    /// From config, not from what `Command::Bootstrap` was handed: that dial
+    /// set also carries the peer cache's remembered peers, mostly NATed or long
+    /// gone, and re-dialling a hundred of those every tick would keep feeding
+    /// unreachable peers back into the table for us to serve to others.
+    bootstrap_addrs: Vec<Multiaddr>,
+    /// Cadence of the maintenance arm (`NetworkConfig::kad_maintenance_interval`).
+    kad_maintenance_interval: Duration,
 }
 
 /// A parked DHT lookup.
@@ -419,6 +439,20 @@ impl NetworkService {
             reachability,
             relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations),
             announce_tx,
+            bootstrap_addrs: config
+                .effective_initial_peers()
+                .iter()
+                .filter_map(|addr| match addr.parse::<Multiaddr>() {
+                    Ok(parsed) => Some(parsed),
+                    Err(e) => {
+                        warn!(%addr, error = %e, "unparseable bootstrap address; not re-seeding it");
+                        None
+                    }
+                })
+                .collect(),
+            kad_maintenance_interval: config
+                .kad_maintenance_interval
+                .max(MIN_KAD_MAINTENANCE_INTERVAL),
         };
         service.apply_reachability_effects(startup_effects);
         // `force_private` starts Private, so this is what makes reservations
@@ -439,7 +473,7 @@ impl NetworkService {
 
     /// The event loop. Exits on `Command::Shutdown` or when all handles drop.
     async fn run(mut self) {
-        let mut maintenance = tokio::time::interval(KAD_REFRESH_INTERVAL);
+        let mut maintenance = tokio::time::interval(self.kad_maintenance_interval);
         // The first tick fires immediately; skip it so startup does not race
         // the initial bootstrap dial.
         maintenance.tick().await;
@@ -480,6 +514,7 @@ impl NetworkService {
                     self.handle_swarm_event(event);
                 }
                 _ = maintenance.tick() => {
+                    self.reseed_lost_bootstraps();
                     self.refresh_routing_table();
                 }
                 _ = &mut identify_grace, if !grace_fired => {
@@ -680,6 +715,11 @@ impl NetworkService {
                 // evict a bootstrap address someone configured by hand.
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
                 let _ = reply.send(());
+            }
+
+            Command::RemoveKadPeer { peer, reply } => {
+                let existed = self.swarm.behaviour_mut().kad.remove_peer(&peer).is_some();
+                let _ = reply.send(existed);
             }
 
             Command::Bootstrap { peers, reply } => {
@@ -993,6 +1033,39 @@ impl NetworkService {
                     debug!(error = %e, "kad bootstrap deferred until a peer connects");
                     Ok(())
                 }
+            }
+        }
+    }
+
+    /// Re-dial configured bootstraps we have not managed a connection to since
+    /// the previous tick.
+    ///
+    /// Eviction is routine — `forget_exhausted_entry` removes a peer whose
+    /// every address failed, which is what a bootstrap restart window looks
+    /// like — but recovery used to depend on some *other* peer walking us back
+    /// to it. On a small DHT, or when every bootstrap restarted at once (a
+    /// fleet migration), no such peer exists and the node wedged: listeners
+    /// up, announces and relay reservations dead until the node restarted.
+    fn reseed_lost_bootstraps(&mut self) {
+        if self.bootstrap_addrs.is_empty() {
+            return;
+        }
+        let connected: HashSet<PeerId> = self.connections.keys().copied().collect();
+        let stale: Vec<Multiaddr> = bootstraps_to_reseed(
+            &self.bootstrap_addrs,
+            &connected,
+            &self.last_connected,
+            Instant::now(),
+            self.kad_maintenance_interval,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+        for addr in stale {
+            info!(%addr, "no recent connection to this configured bootstrap; re-dialing");
+            match self.dial(addr.clone()) {
+                Ok(_) | Err(P2PError::AlreadyConnected) => {}
+                Err(e) => debug!(%addr, error = %e, "bootstrap re-seed dial failed to start"),
             }
         }
     }
@@ -2230,5 +2303,118 @@ fn dial_error(error: &DialError, peer_id: Option<PeerId>) -> P2PError {
             "{who}: peer id mismatch, remote identified as {obtained}"
         )),
         other => P2PError::ConnectionFailed(format!("{who}: {other}")),
+    }
+}
+
+/// Which configured bootstraps [`NetworkService::reseed_lost_bootstraps`] should
+/// re-dial: those we hold no connection to and have not connected to within
+/// `stale_after`.
+///
+/// Routing-table membership is deliberately not the test, for the reason
+/// `last_connected`'s field comment gives: kad holds a bootstrap's address
+/// before any dial succeeds, so membership proves nothing. `dial` calls
+/// `kad.add_address` *before* dialing, so one re-seed would satisfy a
+/// membership test forever while the node stayed exactly as wedged; and kad
+/// never drops a peer's last address, so an entry can survive holding only a
+/// stale one.
+///
+/// Addresses with no `/p2p/` are skipped — nothing to test recency against.
+/// The bias is toward dialing: a redundant dial answers `AlreadyConnected`.
+fn bootstraps_to_reseed<'a>(
+    addrs: &'a [Multiaddr],
+    connected: &HashSet<PeerId>,
+    last_connected: &HashMap<PeerId, Instant>,
+    now: Instant,
+    stale_after: Duration,
+) -> Vec<&'a Multiaddr> {
+    addrs
+        .iter()
+        .filter(|addr| {
+            dest_peer_id(addr).is_some_and(|peer| {
+                !connected.contains(&peer)
+                    && last_connected
+                        .get(&peer)
+                        .is_none_or(|seen| now.duration_since(*seen) >= stale_after)
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TICK: Duration = Duration::from_secs(300);
+
+    fn addr_of(peer: PeerId) -> Multiaddr {
+        format!("/ip4/198.51.100.1/tcp/8000/p2p/{peer}")
+            .parse()
+            .expect("test address should parse")
+    }
+
+    #[test]
+    fn a_bootstrap_we_are_connected_to_is_left_alone() {
+        let peer = PeerId::random();
+        let now = Instant::now();
+        let connected = HashSet::from([peer]);
+        // Stale `last_connected` on purpose: a long-lived connection is not
+        // re-established, so recency alone would misread it as lost.
+        let last = HashMap::from([(peer, now - TICK * 10)]);
+        assert!(bootstraps_to_reseed(&[addr_of(peer)], &connected, &last, now, TICK).is_empty());
+    }
+
+    #[test]
+    fn a_bootstrap_seen_within_the_window_is_left_alone() {
+        let peer = PeerId::random();
+        let now = Instant::now();
+        let last = HashMap::from([(peer, now - TICK / 2)]);
+        let addrs = [addr_of(peer)];
+        let selected = bootstraps_to_reseed(&addrs, &HashSet::new(), &last, now, TICK);
+        assert!(
+            selected.is_empty(),
+            "a bootstrap that dropped an idle connection since the last tick is healthy"
+        );
+    }
+
+    #[test]
+    fn a_bootstrap_never_connected_is_redialled_every_tick() {
+        // The one the membership test got wrong: `dial` tables the peer before
+        // the dial resolves, so after a single re-seed a membership test sees a
+        // healthy bootstrap and stops trying. Nothing here reads the table, so
+        // an unreachable bootstrap is retried for as long as it stays that way.
+        let peer = PeerId::random();
+        let now = Instant::now();
+        let addrs = [addr_of(peer)];
+        for tick in 1..=3 {
+            let selected = bootstraps_to_reseed(
+                &addrs,
+                &HashSet::new(),
+                &HashMap::new(),
+                now + TICK * tick,
+                TICK,
+            );
+            assert_eq!(selected.len(), 1, "tick {tick} should still re-dial");
+        }
+    }
+
+    #[test]
+    fn a_bootstrap_last_seen_before_the_window_is_redialled() {
+        let peer = PeerId::random();
+        let now = Instant::now();
+        let last = HashMap::from([(peer, now - TICK * 2)]);
+        let addrs = [addr_of(peer)];
+        let selected = bootstraps_to_reseed(&addrs, &HashSet::new(), &last, now, TICK);
+        assert_eq!(selected, vec![&addrs[0]]);
+    }
+
+    #[test]
+    fn an_address_with_no_peer_id_is_skipped() {
+        let addr: Multiaddr = "/ip4/198.51.100.1/tcp/8000"
+            .parse()
+            .expect("test address should parse");
+        let now = Instant::now();
+        assert!(
+            bootstraps_to_reseed(&[addr], &HashSet::new(), &HashMap::new(), now, TICK).is_empty()
+        );
     }
 }

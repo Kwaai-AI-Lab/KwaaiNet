@@ -268,6 +268,12 @@ pub enum Command {
         addr: Multiaddr,
         reply: oneshot::Sender<()>,
     },
+    /// Remove a peer from the Kademlia routing table. Test support — see
+    /// [`NetworkHandle::drop_routing_entry`].
+    RemoveKadPeer {
+        peer: PeerId,
+        reply: oneshot::Sender<bool>,
+    },
     /// Dial every initial peer, then run `kad.bootstrap()`.
     Bootstrap {
         peers: Vec<Multiaddr>,
@@ -523,6 +529,20 @@ impl NetworkHandle {
     /// Add a known address for `peer` to the Kademlia routing table.
     pub async fn add_kad_address(&self, peer: PeerId, addr: Multiaddr) -> P2PResult<()> {
         self.call(|reply| Command::AddKadAddress { peer, addr, reply })
+            .await
+    }
+
+    /// Remove `peer` from the Kademlia routing table, reporting whether it was
+    /// there.
+    ///
+    /// Test support: stands in for the eviction a busy DHT applies to a
+    /// disconnected peer (bucket replacement, exhausted-address removal), which
+    /// a two-swarm loopback test cannot produce naturally. The return value is
+    /// what makes the eviction checkable without a follow-up query that a
+    /// maintenance tick could win. Production code has no reason to call this.
+    #[doc(hidden)]
+    pub async fn drop_routing_entry(&self, peer: PeerId) -> P2PResult<bool> {
+        self.call(|reply| Command::RemoveKadPeer { peer, reply })
             .await
     }
 
