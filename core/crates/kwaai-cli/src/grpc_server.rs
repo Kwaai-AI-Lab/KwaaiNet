@@ -3175,8 +3175,9 @@ mod tests {
         drop(tx);
         drop(client);
         drop(handle);
-        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
-        assert!(down, "TCP listener did not close after handle drop");
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!("TCP listener still {last:?} {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
     }
 
     /// The mirror of the above: with `events` unset the daemon must stay
@@ -3246,7 +3247,8 @@ mod tests {
         drop(tx);
         drop(client);
         drop(handle);
-        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
-        assert!(down, "TCP listener did not close after handle drop");
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!("TCP listener still {last:?} {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
     }
 }
