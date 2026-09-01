@@ -2407,34 +2407,55 @@ mod tests {
             .is_ok()
     }
 
-    /// True iff a fresh TCP connect to `port` is refused quickly (used to
-    /// assert the listener is gone after shutdown).
-    async fn tcp_refused(port: u16) -> bool {
-        // ConnectionRefused is the happy-path answer; any other Err (e.g.
-        // network unreachable) we also treat as "not accepting".
-        //
-        // Silence must NOT count as "not accepting". Winsock retries a RST'd
-        // connect in-stack and reports WSAECONNREFUSED only after ~1s, so the
-        // budget has to clear that — but treating a timeout as "closed" would
-        // make the assertion unfalsifiable from the other direction. These are
-        // current-thread `#[tokio::test]`s and `timeout` measures wall clock,
-        // including time the inner future is not polled; the probe runs while
-        // the server task, its connection drain and the client channel are all
-        // still scheduled on this one thread. A starved runtime would then
-        // report a live listener as closed, which is precisely the
-        // serve_with_shutdown regression these tests exist to catch.
-        //
-        // So: wait long enough for Winsock to answer, and keep silence
-        // meaning "still up".
+    /// What one connect probe learned about a port.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Probe {
+        Accepting,
+        /// Refused, or unreachable — either way nothing is serving.
+        Refused,
+        /// No answer inside the ceiling; tells us nothing either way.
+        Silent,
+    }
+
+    /// Winsock answers a refused loopback connect only after a fixed in-stack
+    /// retry, measured at ~2.04s on Windows and the same for a port that never
+    /// had a listener. Probing below that reads every closed port as `Silent`.
+    const REFUSAL_PROBE_CEILING: Duration = Duration::from_secs(4);
+
+    /// Three probes at the ceiling, so one starved answer is not the verdict.
+    /// Kept next to the ceiling it derives from: as independent literals the
+    /// two drifted apart twice, each time breaking the assertion below.
+    const LISTENER_CLOSE_BUDGET: Duration = Duration::from_secs(12);
+
+    async fn probe_port(port: u16) -> Probe {
         match tokio::time::timeout(
-            Duration::from_millis(1500),
+            REFUSAL_PROBE_CEILING,
             tokio::net::TcpStream::connect(("127.0.0.1", port)),
         )
         .await
         {
-            Ok(Ok(_)) => false, // still accepting
-            Ok(Err(_)) => true, // refused / unreachable
-            Err(_) => false,    // timed out — something is listening but not answering yet
+            Ok(Ok(_)) => Probe::Accepting,
+            Ok(Err(_)) => Probe::Refused,
+            Err(_) => Probe::Silent,
+        }
+    }
+
+    /// Poll until `port` refuses. `Silent` never counts as closed: `timeout`
+    /// measures wall clock, so on these current-thread tests a probe starved by
+    /// the server task it is shutting down would report a live listener as gone
+    /// — the `serve_with_shutdown` regression these tests exist to catch.
+    /// Returns the last outcome seen, so a failure says which one it was.
+    async fn wait_for_close(port: u16) -> Result<(), Probe> {
+        let deadline = Instant::now() + LISTENER_CLOSE_BUDGET;
+        loop {
+            let seen = probe_port(port).await;
+            if seen == Probe::Refused {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(seen);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
 
@@ -2497,11 +2518,11 @@ mod tests {
         // tonic's serve_with_shutdown returns -> listener is closed.
         drop(handle);
 
-        let down = wait_for(Duration::from_secs(10), || tcp_refused(port)).await;
-        assert!(
-            down,
-            "TCP listener on 127.0.0.1:{port} did not close within 10s of dropping the handle"
-        );
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!(
+                "TCP listener on 127.0.0.1:{port} still {last:?} {LISTENER_CLOSE_BUDGET:?} after dropping the handle"
+            )
+        });
 
         #[cfg(unix)]
         {
@@ -2581,8 +2602,9 @@ mod tests {
         drop(handle);
         // Wait for the listener to actually go away before the next test
         // tries to bind the same port.
-        let down = wait_for(Duration::from_secs(10), || tcp_refused(port)).await;
-        assert!(down, "TCP listener did not close after handle drop");
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!("TCP listener still {last:?} {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
     }
 
     #[test]
