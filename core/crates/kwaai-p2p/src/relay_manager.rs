@@ -245,11 +245,19 @@ impl RelayManager {
             return self.on_relay_ready(peer, now);
         }
         if let Some(entry) = self.discovered.iter_mut().find(|(p, _)| *p == peer) {
-            // Refresh the stored address: it was recorded at first sighting,
-            // and a relay that came back somewhere else (a reborn bootstrap)
-            // would otherwise be re-dialled at the stale address forever.
-            if let Some(fresh) = listen_addrs.iter().find(|a| is_relay_candidate_addr(a)) {
-                entry.1 = strip_p2p(fresh);
+            // Refresh the stored address only once the peer stops listening on
+            // it: it was recorded at first sighting, so a relay that came back
+            // somewhere else (a reborn bootstrap) would otherwise be re-dialled
+            // at the stale address forever. Conditional because
+            // `with_push_listen_addr_updates` means a relay pushes identify
+            // whenever its listen set *changes* — merely gaining an address —
+            // and replacing unconditionally would move us off one that works.
+            let stored_still_listed = listen_addrs.iter().any(|a| strip_p2p(a) == entry.1);
+            if !stored_still_listed {
+                if let Some(fresh) = listen_addrs.iter().find(|a| is_relay_candidate_addr(a)) {
+                    debug!(%peer, from = %entry.1, to = %fresh, "relay candidate moved");
+                    entry.1 = strip_p2p(fresh);
+                }
             }
             return self.on_relay_ready(peer, now);
         }
@@ -893,6 +901,46 @@ mod tests {
             [RelayAction::Dial { relay, relay_addr }] => {
                 assert_eq!(*relay, peer(7));
                 assert_eq!(relay_addr.to_string(), "/ip4/198.51.100.8/tcp/9090");
+            }
+            other => panic!("expected one Dial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_discovered_relay_that_only_gained_an_address_is_not_moved() {
+        // The other half of the refresh: `with_push_listen_addr_updates` means
+        // a relay pushes identify whenever its listen set changes, so a relay
+        // we are reaching perfectly well announces itself again the moment it
+        // adds an address. Taking the first candidate unconditionally would
+        // walk us off the address that works onto whichever one sorts first.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(&[], 1);
+        mgr.set_enabled(true, now);
+        let actions = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            now,
+        );
+        assert_eq!(dial_target(&actions[0]), peer(7));
+        mgr.on_relay_dial_failed(peer(7), now);
+
+        // Still listening where we know it, plus a new address listed first.
+        mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &[
+                "/ip4/198.51.100.9/tcp/9999".parse().unwrap(),
+                "/ip4/198.51.100.7/tcp/8080".parse().unwrap(),
+            ],
+            now,
+        );
+
+        let actions = mgr.on_tick(now + Duration::from_secs(120));
+        match &actions[..] {
+            [RelayAction::Dial { relay, relay_addr }] => {
+                assert_eq!(*relay, peer(7));
+                assert_eq!(relay_addr.to_string(), "/ip4/198.51.100.7/tcp/8080");
             }
             other => panic!("expected one Dial, got {other:?}"),
         }

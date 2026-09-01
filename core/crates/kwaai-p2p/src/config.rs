@@ -55,9 +55,11 @@ pub struct NetworkConfig {
     /// Request timeout
     pub request_timeout: Duration,
 
-    /// Interval of the kad maintenance tick: bucket refresh plus re-seeding
-    /// configured bootstraps that fell out of the routing table. Defaulted so
-    /// a config predating the field still loads; tests shorten it.
+    /// Interval of the kad maintenance tick: bucket refresh plus re-dialing
+    /// configured bootstraps with no recent connection. Defaulted so a config
+    /// predating the field still loads; tests shorten it. Clamped to at least
+    /// a second when the service starts — `serde(default)` covers a missing
+    /// field, not an explicit `0s`, which `tokio::time::interval` panics on.
     #[serde(default = "default_kad_maintenance_interval")]
     pub kad_maintenance_interval: Duration,
 
