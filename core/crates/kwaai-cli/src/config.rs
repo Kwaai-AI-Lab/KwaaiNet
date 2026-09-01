@@ -308,6 +308,10 @@ pub struct KwaaiNetConfig {
     ///
     /// **Native path only** (`native_p2p = true`). The p2pd path's daemon is
     /// fixed on the legacy name.
+    ///
+    /// **More than one entry needs a `kad-multi-protocol` build** — the
+    /// bootstrap-grade one that bridges both names through the cutover. An
+    /// ordinary build serves a single name and rejects a longer list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kad_protocols: Vec<String>,
 
@@ -1299,6 +1303,17 @@ impl KwaaiNetConfig {
                         )
                     })?;
                 }
+                // Caught here rather than at startup: a build that can serve
+                // one name should say so when the value is set, not the next
+                // time the node comes up.
+                if names.len() > 1 && !cfg!(feature = "kad-multi-protocol") {
+                    anyhow::bail!(
+                        "this build serves one kad protocol; {} were given. A \
+                         bootstrap-grade `kad-multi-protocol` build carries both \
+                         names during the cutover.",
+                        names.len()
+                    );
+                }
                 // An empty value clears the key, which means the compiled
                 // default — not a kad with no protocols.
                 self.kad_protocols = names;
@@ -1796,27 +1811,36 @@ mod test_isolation {
             .expect("a valid protocol id");
         assert_eq!(cfg.kad_protocols, vec!["/kwaai/kad/1.0.0".to_string()]);
 
-        cfg.set_key("kad_protocols", "/kwaai/kad/1.0.0, /ipfs/kad/1.0.0")
-            .expect("comma-separated, whitespace trimmed");
-        assert_eq!(
-            cfg.kad_protocols,
-            vec![
-                "/kwaai/kad/1.0.0".to_string(),
-                "/ipfs/kad/1.0.0".to_string()
-            ]
-        );
+        // Two names are a bootstrap-grade build's business. An ordinary build
+        // serves one, and says so here rather than at the next startup.
+        let dual = cfg.set_key("kad_protocols", "/kwaai/kad/1.0.0, /ipfs/kad/1.0.0");
+        if cfg!(feature = "kad-multi-protocol") {
+            dual.expect("comma-separated, whitespace trimmed");
+            assert_eq!(
+                cfg.kad_protocols,
+                vec![
+                    "/kwaai/kad/1.0.0".to_string(),
+                    "/ipfs/kad/1.0.0".to_string()
+                ]
+            );
+        } else {
+            let err = dual.expect_err("this build serves one name");
+            assert!(err.to_string().contains("serves one kad protocol"), "{err}");
+            assert_eq!(
+                cfg.kad_protocols,
+                vec!["/kwaai/kad/1.0.0".to_string()],
+                "a rejected value must not have been half-applied"
+            );
+        }
 
         // The typo that would otherwise put the legacy name back on the wire.
         let err = cfg
             .set_key("kad_protocols", "kwaai/kad/1.0.0")
             .expect_err("no leading slash");
         assert!(err.to_string().contains("must start with"), "{err}");
-        assert_eq!(
-            cfg.kad_protocols,
-            vec![
-                "/kwaai/kad/1.0.0".to_string(),
-                "/ipfs/kad/1.0.0".to_string()
-            ],
+        let before_typo = cfg.kad_protocols.clone();
+        assert!(
+            !before_typo.is_empty(),
             "a rejected value must not have been half-applied"
         );
 

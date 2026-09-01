@@ -203,6 +203,14 @@ pub struct NetworkConfig {
     /// `enable_dht`'s job, and treating `[]` as default keeps a config
     /// template that omits the key from silently changing the protocol set.
     ///
+    /// **More than one name needs a `kad-multi-protocol` build.** Upstream
+    /// libp2p-kad removed the multi-name setter in 0.47, so the whole list is
+    /// only settable against the patched crate, and the call is behind that
+    /// feature so the published crate still compiles. A default build serves
+    /// one name and rejects a longer list at startup rather than silently
+    /// honouring the first. The compiled default follows the same switch:
+    /// dual for a bootstrap-grade build, kwaai-only otherwise.
+    ///
     /// **Carrying two names costs a round trip.** The `V1Lazy` substream
     /// override takes the 0-RTT shortcut only on the last protocol offered,
     /// so with two entries the preferred one negotiates eagerly: +1 RTT per
@@ -227,11 +235,19 @@ fn default_identify_min_confirmations() -> usize {
     2
 }
 
+/// The compiled default follows the build: a `kad-multi-protocol` build is a
+/// bootstrap-grade one and bridges both names through the cutover; an ordinary
+/// build serves the kwaai name alone and can never be absorbed by the public
+/// IPFS DHT. So the feature flag *is* the migration switch, and a released
+/// node needs no config change to be on the new protocol.
 fn default_kad_protocols() -> Vec<String> {
-    vec![
+    #[cfg(feature = "kad-multi-protocol")]
+    return vec![
         KWAAI_KAD_PROTOCOL.to_string(),
         LEGACY_KAD_PROTOCOL.to_string(),
-    ]
+    ];
+    #[cfg(not(feature = "kad-multi-protocol"))]
+    return vec![KWAAI_KAD_PROTOCOL.to_string()];
 }
 
 fn default_kad_stream_protocols() -> Vec<StreamProtocol> {
@@ -243,20 +259,42 @@ fn default_kad_stream_protocols() -> Vec<StreamProtocol> {
         .collect()
 }
 
-/// Every entry of a non-empty `kad_protocols` failed to parse.
+/// Why a `kad_protocols` list cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidKadProtocols {
-    pub entries: Vec<String>,
+pub enum InvalidKadProtocols {
+    /// Every entry of a non-empty list failed to parse.
+    NoneParsed { entries: Vec<String> },
+    /// More than one name, in a build without `kad-multi-protocol`. Failing
+    /// beats quietly serving the first: an operator who asked for the legacy
+    /// name too would otherwise never learn this binary cannot honour it.
+    MultiUnsupported { entries: Vec<StreamProtocol> },
+}
+
+impl InvalidKadProtocols {
+    #[cfg_attr(feature = "kad-multi-protocol", allow(dead_code))]
+    pub(crate) fn unsupported_multi(entries: &[StreamProtocol]) -> Self {
+        Self::MultiUnsupported {
+            entries: entries.to_vec(),
+        }
+    }
 }
 
 impl std::fmt::Display for InvalidKadProtocols {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "kad_protocols has no usable entry ({:?}); protocol ids must start with '/', \
-             e.g. \"{KWAAI_KAD_PROTOCOL}\". Remove the key to get the default set.",
-            self.entries,
-        )
+        match self {
+            Self::NoneParsed { entries } => write!(
+                f,
+                "kad_protocols has no usable entry ({entries:?}); protocol ids must start \
+                 with '/', e.g. \"{KWAAI_KAD_PROTOCOL}\". Remove the key for the default set.",
+            ),
+            Self::MultiUnsupported { entries } => write!(
+                f,
+                "kad_protocols lists {} names ({entries:?}) but this binary was built without \
+                 the `kad-multi-protocol` feature and can serve exactly one. Configure a \
+                 single name, or use a build with the feature enabled.",
+                entries.len(),
+            ),
+        }
     }
 }
 
@@ -405,7 +443,7 @@ impl NetworkConfig {
             })
             .collect();
         if parsed.is_empty() {
-            Err(InvalidKadProtocols {
+            Err(InvalidKadProtocols::NoneParsed {
                 entries: self.kad_protocols.clone(),
             })
         } else {
@@ -556,8 +594,8 @@ mod relay_circuit_limits {
         );
         assert_eq!(
             old.kad_protocols,
-            vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL],
-            "a config predating kad_protocols must get the dual default",
+            default_kad_protocols(),
+            "a config predating kad_protocols must get this build's default",
         );
     }
 }
@@ -577,7 +615,10 @@ mod kad_protocols {
             .iter()
             .map(|p| p.to_string())
             .collect();
+        #[cfg(feature = "kad-multi-protocol")]
         assert_eq!(names, vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]);
+        #[cfg(not(feature = "kad-multi-protocol"))]
+        assert_eq!(names, vec![KWAAI_KAD_PROTOCOL]);
     }
 
     /// `kad_protocols: []` in a config template means "the default", the same
@@ -628,7 +669,12 @@ mod kad_protocols {
         let err = all_bad
             .kad_stream_protocols()
             .expect_err("no entry parses, so there is nothing to serve");
-        assert_eq!(err.entries, vec!["kwaai/kad/1.0.0".to_string()]);
+        assert_eq!(
+            err,
+            InvalidKadProtocols::NoneParsed {
+                entries: vec!["kwaai/kad/1.0.0".to_string()]
+            }
+        );
         assert!(
             !err.to_string().is_empty(),
             "the error names the offending entries"

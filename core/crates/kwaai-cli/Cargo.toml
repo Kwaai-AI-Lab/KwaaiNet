@@ -129,5 +129,11 @@ cuda-windows = ["kwaai-inference/cuda"]
 llama-cpp = ["llama-cpp-2"]
 storage = ["kwaai-storage", "uuid"]
 rag = ["kwaai-rag", "uuid"]
+# Bootstrap-grade build: serve /kwaai/kad/1.0.0 and the legacy /ipfs/kad/1.0.0
+# at once, bridging both halves of the fleet during the protocol cutover.
+# Never enabled by a published crate — it needs the patched libp2p-kad, which
+# `[patch.crates-io]` cannot carry into a package. Build with
+# `cargo build --release -p kwaainet --features kad-multi-protocol`.
+kad-multi-protocol = ["kwaai-p2p/kad-multi-protocol"]
 
 

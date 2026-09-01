@@ -43,3 +43,9 @@ sha1 = "0.10"                     # DHTID derivation in the live DHT test
 [features]
 default = ["tcp"]
 tcp = []
+# Offer more than one kad protocol name at once. Needs the patched libp2p-kad
+# in [patch.crates-io] (patches/libp2p-kad.patch restores `set_protocol_names`,
+# removed upstream in 0.47), so it is OFF by default: the published crate has
+# no such patch and must still compile. Bootstraps enable it as a build flag
+# during the protocol cutover; nothing enables it in a manifest.
+kad-multi-protocol = []

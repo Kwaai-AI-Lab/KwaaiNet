@@ -145,8 +145,16 @@ impl KwaaiBehaviour {
                 .with_interval(Duration::from_secs(5 * 60)),
         );
 
-        let mut kad_config = kad::Config::default();
-        kad_config.set_protocol_names(config.kad_stream_protocols()?);
+        let kad_protocols = config.kad_stream_protocols()?;
+        // `Config::new` takes one name; the whole list needs the patched
+        // setter, hence the feature. See `kad-multi-protocol` in Cargo.toml.
+        let mut kad_config = kad::Config::new(kad_protocols[0].clone());
+        #[cfg(feature = "kad-multi-protocol")]
+        kad_config.set_protocol_names(kad_protocols.clone());
+        #[cfg(not(feature = "kad-multi-protocol"))]
+        if kad_protocols.len() > 1 {
+            return Err(InvalidKadProtocols::unsupported_multi(&kad_protocols));
+        }
         kad_config.set_query_timeout(config.request_timeout);
         kad_config.set_replication_factor(
             std::num::NonZeroUsize::new(config.dht_replication)

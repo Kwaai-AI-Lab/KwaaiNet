@@ -194,7 +194,9 @@ async fn kad_resolves_a_peer_two_hops_away() {
 // Kad protocol migration: legacy-only ↔ dual-default ↔ kwaai-only
 // ---------------------------------------------------------------------------
 
-/// Like [`spawn_test_swarm`] but with an explicit kad protocol list.
+/// Like [`spawn_test_swarm`] but with an explicit kad protocol list. Only the
+/// multi-protocol test uses it, and that test needs the feature.
+#[cfg(feature = "kad-multi-protocol")]
 fn spawn_swarm_with_kad_protocols(
     protocols: &[&str],
 ) -> (NetworkHandle, tokio::task::JoinHandle<()>, PeerId) {
@@ -215,6 +217,9 @@ fn spawn_swarm_with_kad_protocols(
 /// kad protocol, so the resolve only succeeds if B negotiates the legacy name
 /// with A *and* the kwaai name with C — outbound must offer the whole list,
 /// not just the preferred entry.
+/// Needs the patched setter, so it is a `kad-multi-protocol` build only — a
+/// single-name build cannot construct the bridging node this topology tests.
+#[cfg(feature = "kad-multi-protocol")]
 #[tokio::test]
 async fn kad_negotiates_across_the_protocol_migration() {
     let (a, _a_task, _a_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
