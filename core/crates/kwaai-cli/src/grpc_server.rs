@@ -2411,23 +2411,30 @@ mod tests {
     /// assert the listener is gone after shutdown).
     async fn tcp_refused(port: u16) -> bool {
         // ConnectionRefused is the happy-path answer; any other Err (e.g.
-        // network unreachable) we also treat as "not accepting". We bound
-        // the dial with a short timeout so a slow stack can't lie to us.
+        // network unreachable) we also treat as "not accepting".
         //
-        // Silence counts as "not accepting" too: Winsock retries a RST'd
-        // connect in-stack and reports WSAECONNREFUSED only after ~1s, so on
-        // Windows a closed port looks like a timeout from inside this window.
-        // The reverse cannot mislead us — a live loopback listener completes
-        // the handshake in-kernel (backlog) long before 250ms, without the
-        // server ever calling accept.
+        // Silence must NOT count as "not accepting". Winsock retries a RST'd
+        // connect in-stack and reports WSAECONNREFUSED only after ~1s, so the
+        // budget has to clear that — but treating a timeout as "closed" would
+        // make the assertion unfalsifiable from the other direction. These are
+        // current-thread `#[tokio::test]`s and `timeout` measures wall clock,
+        // including time the inner future is not polled; the probe runs while
+        // the server task, its connection drain and the client channel are all
+        // still scheduled on this one thread. A starved runtime would then
+        // report a live listener as closed, which is precisely the
+        // serve_with_shutdown regression these tests exist to catch.
+        //
+        // So: wait long enough for Winsock to answer, and keep silence
+        // meaning "still up".
         match tokio::time::timeout(
-            Duration::from_millis(250),
+            Duration::from_millis(1500),
             tokio::net::TcpStream::connect(("127.0.0.1", port)),
         )
         .await
         {
             Ok(Ok(_)) => false, // still accepting
-            _ => true,          // refused, unreachable, or silence
+            Ok(Err(_)) => true, // refused / unreachable
+            Err(_) => false,    // timed out — something is listening but not answering yet
         }
     }
 
@@ -2490,10 +2497,10 @@ mod tests {
         // tonic's serve_with_shutdown returns -> listener is closed.
         drop(handle);
 
-        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
+        let down = wait_for(Duration::from_secs(10), || tcp_refused(port)).await;
         assert!(
             down,
-            "TCP listener on 127.0.0.1:{port} did not close within 2s of dropping the handle"
+            "TCP listener on 127.0.0.1:{port} did not close within 10s of dropping the handle"
         );
 
         #[cfg(unix)]
@@ -2574,7 +2581,7 @@ mod tests {
         drop(handle);
         // Wait for the listener to actually go away before the next test
         // tries to bind the same port.
-        let down = wait_for(Duration::from_secs(2), || tcp_refused(port)).await;
+        let down = wait_for(Duration::from_secs(10), || tcp_refused(port)).await;
         assert!(down, "TCP listener did not close after handle drop");
     }
 
