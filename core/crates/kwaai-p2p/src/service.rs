@@ -272,7 +272,6 @@ impl NetworkService {
                     .context("configuring the relay client transport")?
                     .with_behaviour(|kp, relay_client| {
                         KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
-                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
                     })
                     .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
                     .with_swarm_config(|c| {

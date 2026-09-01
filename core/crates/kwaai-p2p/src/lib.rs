@@ -52,8 +52,8 @@ pub mod unary;
 pub use addresses::{is_announceable, is_circuit, is_routable_v4};
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
-    InvalidKadProtocols, NetworkConfig, KWAAI_BOOTSTRAP_SERVERS, KWAAI_BOOTSTRAP_SERVERS_DNS,
-    KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL, PETALS_BOOTSTRAP_SERVERS,
+    kad_protocols, NetworkConfig, KAD_MULTI_PROTOCOL_BUILD, KWAAI_BOOTSTRAP_SERVERS,
+    KWAAI_BOOTSTRAP_SERVERS_DNS, KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL, PETALS_BOOTSTRAP_SERVERS,
 };
 pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};

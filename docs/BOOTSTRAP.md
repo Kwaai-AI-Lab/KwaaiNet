@@ -37,7 +37,32 @@ Without these, the process is an ordinary node, not a bootstrap.
 | `port` | `8000` | `31337` | The listen port. The address built is `/ip4/0.0.0.0/tcp/<port>`. |
 | `no_relay` | `false` | `false` | Keep the circuit relay hop service **on**: NATed nodes reserve circuits through the bootstraps. Set `true` only to deliberately withhold relay. |
 | `max_connections` | sized to the host | `100` | The ceiling on established connections, and the only bound on how far the swarm's memory grows — idle connections are held for ten minutes. 100 suits a node that mostly dials out; a bootstrap mostly receives, and wants several hundred to low thousands. Budget roughly a megabyte per connection. Inbound is capped at 4/5 of this so the node can always still dial. |
-| `kad_protocols` | `["/kwaai/kad/1.0.0"]` | `["/kwaai/kad/1.0.0", "/ipfs/kad/1.0.0"]` | Kademlia protocol IDs, in outbound preference order. The default also serves the legacy `/ipfs/kad/1.0.0`, which is what lets the global IPFS DHT absorb a node at a public address — measured 300–600 foreign peers per bootstrap against a ~12-node real routing table, with p2pd OOM-killed every 30–90 min. The kwaai name alone makes that impossible. **The cutover is one-way for un-upgraded peers**: a node still on the legacy name only can no longer reach a kwaai-only bootstrap, so drop the legacy entry once the fleet speaks the kwaai name, not before. Native path only — the p2pd path is fixed on the legacy name. Set with `kwaainet config set kad_protocols /kwaai/kad/1.0.0` (comma-separated for more than one); an entry without a leading `/` is rejected here, and a config file whose every entry is invalid refuses to start rather than falling back to the legacy-serving default. |
+
+### The kad protocol set is a build flag, not a key
+
+There is deliberately no `kad_protocols` setting. Which Kademlia protocol
+names a node serves decides whether the public IPFS DHT can absorb it —
+measured at 300–600 foreign peers per bootstrap against a ~12-node real
+routing table, with p2pd OOM-killed every 30–90 minutes — and every attempt to
+express that as configuration turned out to be a way of getting it silently
+wrong. So it is compiled in:
+
+| build | serves |
+|---|---|
+| ordinary (`cargo build --release -p kwaainet`) | `/kwaai/kad/1.0.0` |
+| `--features kad-multi-protocol` | `/kwaai/kad/1.0.0` **and** `/ipfs/kad/1.0.0` |
+
+**A bootstrap needs the second one during the migration window**, and only
+then. Peers that predate the kwaai name reach the network through the
+bootstraps, so a bootstrap that serves the kwaai name alone cuts them off
+until they upgrade. It is the one host where the IPFS-absorption exposure is
+a deliberate, temporary trade. Once the fleet has moved, rebuild the
+bootstraps without the feature — that is the end of the migration, and the
+patched `libp2p-kad` goes with it.
+
+The node logs its protocol set at startup (`kad protocol set`), including
+whether this is a multi-protocol build, because nothing else distinguishes
+the two binaries at runtime. Check it after deploying a bootstrap.
 
 ### Independent keys worth setting
 
@@ -75,7 +100,6 @@ announce_addr: /dns4/bootstrap1/tcp/8000
 port: 8000
 no_relay: false
 max_connections: 1024
-kad_protocols: ["/kwaai/kad/1.0.0"]
 vpk_enabled: false
 ollama_manage: false
 health_monitoring:

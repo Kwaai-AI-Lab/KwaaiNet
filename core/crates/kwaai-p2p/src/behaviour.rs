@@ -50,7 +50,7 @@ use libp2p::{
     upnp, {identity, PeerId},
 };
 
-use crate::config::{InvalidKadProtocols, NetworkConfig};
+use crate::config::{NetworkConfig, KAD_MULTI_PROTOCOL_BUILD};
 use crate::{raw_stream, unary};
 
 /// The `protocol_version` advertised over identify.
@@ -92,15 +92,11 @@ impl KwaaiBehaviour {
     /// only `SwarmBuilder::with_relay_client` can produce the pair. It arrives
     /// already built from `NetworkService::spawn`'s builder chain — which is
     /// also why the `with_behaviour` closure there takes two arguments.
-    /// Fails if `kad_protocols` is set but names nothing usable — see
-    /// [`NetworkConfig::kad_stream_protocols`]. `SwarmBuilder::with_behaviour`
-    /// takes a `Result`-returning constructor, so this surfaces from
-    /// `NetworkService::spawn` rather than from a task.
     pub fn new(
         keypair: &identity::Keypair,
         config: &NetworkConfig,
         relay_client: relay::client::Behaviour,
-    ) -> Result<Self, InvalidKadProtocols> {
+    ) -> Self {
         let local_peer_id = PeerId::from(keypair.public());
 
         // `max_connections` has been in the config all along, enforced nowhere.
@@ -145,8 +141,22 @@ impl KwaaiBehaviour {
                 .with_interval(Duration::from_secs(5 * 60)),
         );
 
-        let mut kad_config = kad::Config::default();
-        kad_config.set_protocol_names(config.kad_stream_protocols()?);
+        // Compiled in, so nothing here can disagree with the binary. Logged
+        // because a bootstrap built from the wrong artifact is otherwise
+        // silent about it: the build flag shows up nowhere else at runtime.
+        let protocols = config.kad_protocols.clone();
+        debug_assert!(
+            protocols.len() <= 1 || KAD_MULTI_PROTOCOL_BUILD,
+            "more than one kad protocol on a build that cannot serve them"
+        );
+        tracing::info!(
+            protocols = ?protocols.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+            multi_protocol_build = KAD_MULTI_PROTOCOL_BUILD,
+            "kad protocol set"
+        );
+        let mut kad_config = kad::Config::new(protocols[0].clone());
+        #[cfg(feature = "kad-multi-protocol")]
+        kad_config.set_protocol_names(protocols);
         kad_config.set_query_timeout(config.request_timeout);
         kad_config.set_replication_factor(
             std::num::NonZeroUsize::new(config.dht_replication)
@@ -224,7 +234,7 @@ impl KwaaiBehaviour {
         // has no business talking to whatever gateway happens to answer.
         let upnp = Toggle::from(config.enable_upnp.then(upnp::tokio::Behaviour::default));
 
-        Ok(Self {
+        Self {
             connection_limits,
             ping,
             identify,
@@ -236,6 +246,6 @@ impl KwaaiBehaviour {
             relay_server,
             dcutr,
             upnp,
-        })
+        }
     }
 }

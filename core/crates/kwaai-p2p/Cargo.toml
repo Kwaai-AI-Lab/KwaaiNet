@@ -43,3 +43,9 @@ sha1 = "0.10"                     # DHTID derivation in the live DHT test
 [features]
 default = ["tcp"]
 tcp = []
+# Serve /ipfs/kad/1.0.0 alongside /kwaai/kad/1.0.0 — the bootstrap-grade build
+# for the migration window. Needs the patched libp2p-kad in [patch.crates-io]
+# (patches/libp2p-kad.patch restores `set_protocol_names`, removed upstream in
+# 0.47), so it is OFF by default: the published crate carries no patch and must
+# still compile. See `kad_protocols()` in src/config.rs.
+kad-multi-protocol = []
