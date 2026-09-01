@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use libp2p::{
     autonat,
-    core::ConnectedPoint,
+    core::{transport::PortUse, ConnectedPoint},
     dcutr, identify, identity, kad, noise, ping, relay,
     swarm::{ConnectionId, DialError, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
@@ -131,6 +131,10 @@ pub struct NetworkService {
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
+    /// Peers with an AutoNAT dial-back probe in flight → the addresses they
+    /// asked us to dial. Consulted once, when the dial-back connects; see
+    /// `is_autonat_dialback`.
+    autonat_probes: HashMap<PeerId, Vec<Multiaddr>>,
     /// Addresses we were told about peers — the peerstore rust-libp2p does not
     /// have. Consulted ahead of the routing table by
     /// [`Self::candidate_addresses`]; see [`crate::learned_addrs`] for why a
@@ -442,6 +446,7 @@ impl NetworkService {
             pending_routed: HashMap::new(),
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
+            autonat_probes: HashMap::new(),
             learned_addrs: LearnedAddrs::new(local_peer_id),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
@@ -1783,6 +1788,27 @@ impl NetworkService {
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
+                // The probe was answered one layer down, inside `on_swarm_event`,
+                // so this connection is already spent — see `is_autonat_dialback`.
+                //
+                // Seed kad before closing: this is the one address we have
+                // *proved* reaches the peer, and kad would otherwise pick it up
+                // only if a substream happened to negotiate first.
+                if self.is_autonat_dialback(&peer_id, &endpoint)
+                    && self.connections.contains_key(&peer_id)
+                {
+                    let stripped = strip_dest_p2p(&addr);
+                    if !stripped.is_empty() {
+                        self.swarm
+                            .behaviour_mut()
+                            .kad
+                            .add_address(&peer_id, stripped);
+                    }
+                    debug!(peer = %peer_id, ?connection_id, "closing autonat dial-back");
+                    self.swarm.close_connection(connection_id);
+                    return;
+                }
+
                 if self.last_connected.len() >= LAST_CONNECTED_CAP
                     && !self.last_connected.contains_key(&peer_id)
                 {
@@ -1845,6 +1871,9 @@ impl NetworkService {
                     Entry::Vacant(_) => true,
                 };
                 if last {
+                    // A probe whose dial-back never landed has nothing left to
+                    // match against, so it would otherwise sit here for good.
+                    self.autonat_probes.remove(&peer_id);
                     // The capability list describes a peer we can act on; a
                     // disconnected peer's is stale by definition.
                     self.peer_protocols.remove(&peer_id);
@@ -2218,6 +2247,37 @@ impl NetworkService {
         }
     }
 
+    /// Whether this connection is the one AutoNAT's server side opened purely
+    /// to dial `peer_id` back, and is therefore ours to close.
+    ///
+    /// A reachability probe is only meaningful if a *fresh* dial reaches the
+    /// peer, so AutoNAT dials with `PeerCondition::Always` and
+    /// `allocate_new_port()`, bypassing both the connection we already hold and
+    /// the port policy. It then never closes the result: `on_outbound_connection`
+    /// answers the probe over the *requester's* connection and drops the
+    /// dial-back for the idle timeout to reap. Ours never reaps it — identify's
+    /// 5-minute interval opens a stream on every connection at half the
+    /// 10-minute `idle_connection_timeout` — so each probe leaves a duplicate
+    /// connection behind for good, one per probing peer per refresh.
+    ///
+    /// `PortUse::New` is the discriminator: nothing else here allocates a new
+    /// port, DCUtR included. Narrowed to a probe we actually saw requested, and
+    /// to an address that probe named, so a future behaviour reaching for the
+    /// same port policy is not caught by it.
+    fn is_autonat_dialback(&self, peer_id: &PeerId, endpoint: &ConnectedPoint) -> bool {
+        let ConnectedPoint::Dialer {
+            address,
+            port_use: PortUse::New,
+            ..
+        } = endpoint
+        else {
+            return false;
+        };
+        self.autonat_probes
+            .get(peer_id)
+            .is_some_and(|addrs| addrs.contains(address))
+    }
+
     /// AutoNAT status and probe outcomes.
     fn handle_autonat_event(&mut self, event: autonat::Event) {
         match event {
@@ -2239,6 +2299,20 @@ impl NetworkService {
             }
             autonat::Event::InboundProbe(probe) => {
                 trace!(?probe, "autonat inbound probe");
+                match &probe {
+                    // Remembered only so the dial it is about to queue can be
+                    // recognised when it connects. AutoNAT tracks one inbound
+                    // probe per peer, so this map is bounded by the peer count.
+                    autonat::InboundProbeEvent::Request {
+                        peer, addresses, ..
+                    } => {
+                        self.autonat_probes.insert(*peer, addresses.clone());
+                    }
+                    autonat::InboundProbeEvent::Response { peer, .. }
+                    | autonat::InboundProbeEvent::Error { peer, .. } => {
+                        self.autonat_probes.remove(peer);
+                    }
+                }
             }
         }
     }

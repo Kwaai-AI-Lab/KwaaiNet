@@ -655,3 +655,49 @@ async fn re_dialing_a_connected_peer_does_not_open_a_second_connection() {
         "re-dialing an already-connected peer must not add connections",
     );
 }
+
+// ---------------------------------------------------------------------------
+// AutoNAT dial-back
+// ---------------------------------------------------------------------------
+
+/// An AutoNAT dial-back must not be left open beside the connection it
+/// duplicates.
+///
+/// The server side of a probe dials with `PeerCondition::Always` and
+/// `allocate_new_port()` — a fresh dial is the only thing that proves
+/// reachability — and then never closes the result. Nothing else does either:
+/// identify refreshes every connection at half the idle timeout, so the
+/// duplicate outlives any reaping. Measured on the nat-test bed, every node
+/// held two byte-identical direct connections to each peer that had probed it.
+#[tokio::test]
+async fn an_autonat_dial_back_does_not_leave_a_duplicate_connection() {
+    let (alice, _alice_task, alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    // Alice's listen address is what she asks bob to dial back, so she must be
+    // listening before she probes.
+    let _alice_addr = dialable_addr(&alice, alice_id).await;
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    alice
+        .connect_peer(&bob_addr.to_string())
+        .await
+        .expect("dial");
+
+    // Nothing observable marks the probe: a closed dial-back leaves no trace,
+    // and loopback is never announceable, so no reachability verdict follows
+    // either. Waiting out AutoNAT's 5 s `boot_delay` is the only gate there is
+    // — drop the close in the `ConnectionEstablished` arm and this fails.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let connections = bob
+        .list_peers()
+        .await
+        .expect("bob lists peers")
+        .into_iter()
+        .filter(|p| p.peer_id == alice_id)
+        .count();
+    assert_eq!(
+        connections, 1,
+        "the dial-back must be closed, not held beside the connection it duplicates",
+    );
+}
