@@ -35,7 +35,7 @@ git checkout -B native-p2p origin/native-p2p-pr7-nat-traversal
 git log --oneline -1        # expect: 8822d4d chore: verification-run metrics...
 
 # fetch + patch multistream-select (required — the build fails without it)
-bash core/patches/fetch-multistream-select.sh
+bash core/patches/fetch-patches.sh
 
 # build (thin LTO keeps this to minutes instead of ~1.5h)
 cd core
@@ -90,14 +90,14 @@ git checkout -B native-p2p origin/native-p2p-pr7-nat-traversal
 git log --oneline -1        # expect: 8822d4d
 
 # Git Bash needs: curl, shasum, tar, patch, mktemp — all ship with Git for Windows
-bash core/patches/fetch-multistream-select.sh
+bash core/patches/fetch-patches.sh
 
 cd core
 CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
   cargo build -p kwaainet --release
 ```
 
-If `fetch-multistream-select.sh` fails on a missing tool, tell me which one — that
+If `fetch-patches.sh` fails on a missing tool, tell me which one — that
 is itself a finding (the script has no Windows equivalent and CI only runs it on
 ubuntu-latest, so Windows build portability is currently unproven).
 

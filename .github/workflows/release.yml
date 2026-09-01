@@ -71,7 +71,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
@@ -137,7 +137,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
@@ -336,7 +336,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
       - name: Install build deps (manylinux container)
         if: matrix.container
@@ -597,7 +597,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
       - name: Install cached dist
         uses: actions/download-artifact@v7
@@ -673,7 +673,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
       - name: Install cached dist
         uses: actions/download-artifact@v7
@@ -793,7 +793,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -855,6 +855,6 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 

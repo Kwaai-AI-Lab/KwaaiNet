@@ -298,7 +298,7 @@ design change, not a tweak.
 - **Go is still required to build this branch.** `kwaai-p2p-daemon/build.rs` clones and
   builds go-libp2p-daemon even though the native path never launches it. Removal is
   Phase 5.
-- `core/patches/fetch-multistream-select.sh` is bash-only with no PowerShell
+- `core/patches/fetch-patches.sh` (then `fetch-multistream-select.sh`) is bash-only with no PowerShell
   equivalent, and CI runs it only on `ubuntu-latest`. Windows builds must use Git Bash.
 - There is no `origin/native-p2p` branch — the stack tip is
   `origin/native-p2p-pr7-nat-traversal`.

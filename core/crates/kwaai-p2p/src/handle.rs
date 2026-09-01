@@ -482,7 +482,7 @@ impl NetworkHandle {
     /// `kwaai_hivemind_dht::DHTStorage::update_peer_ids`.
     ///
     /// Note these are **connected-or-known kad peers**, not the hivemind DHT
-    /// node set: a peer here may speak `/ipfs/kad/1.0.0` without serving
+    /// node set: a peer here may speak a kad protocol without serving
     /// `DHTProtocol.rpc_*`. That only costs a caller one wasted hop during an
     /// iterative lookup, which is why it is acceptable to return them
     /// unfiltered; hivemind's own routing table has the same property.

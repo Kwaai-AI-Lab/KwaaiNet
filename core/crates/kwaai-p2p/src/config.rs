@@ -1,5 +1,6 @@
 //! Configuration for P2P networking
 
+use libp2p::StreamProtocol;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -21,6 +22,15 @@ pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
     // uncomment for local development bootstrap server
     //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
 ];
+
+/// KwaaiNet's own Kademlia protocol ID.
+pub const KWAAI_KAD_PROTOCOL: &str = "/kwaai/kad/1.0.0";
+
+/// The default libp2p Kademlia protocol ID — shared with the public IPFS DHT,
+/// which is exactly the problem: any node serving it on a public address gets
+/// absorbed into IPFS's routing tables and crawled indefinitely. Kept only for
+/// wire compatibility with peers that predate [`KWAAI_KAD_PROTOCOL`].
+pub const LEGACY_KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 
 /// KwaaiNet bootstrap servers addressed by `/dnsaddr/`.
 ///
@@ -180,6 +190,29 @@ pub struct NetworkConfig {
     /// weakest claim worth acting on.
     #[serde(default = "default_identify_min_confirmations")]
     pub identify_min_confirmations: usize,
+
+    /// Kademlia protocol IDs, in outbound preference order.
+    ///
+    /// Defaults to `[KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]`: kwaai↔kwaai
+    /// pairs negotiate the kwaai name, while peers that predate it fall back
+    /// to `/ipfs/kad/1.0.0`. A bootstrap-grade node on a public address should
+    /// set this to `[KWAAI_KAD_PROTOCOL]` alone — serving the legacy name is
+    /// what lets the public IPFS DHT absorb it (see [`LEGACY_KAD_PROTOCOL`]).
+    ///
+    /// An empty list means the default, not "no kad": disabling the DHT is
+    /// `enable_dht`'s job, and treating `[]` as default keeps a config
+    /// template that omits the key from silently changing the protocol set.
+    ///
+    /// **Carrying two names costs a round trip.** The `V1Lazy` substream
+    /// override takes the 0-RTT shortcut only on the last protocol offered,
+    /// so with two entries the preferred one negotiates eagerly: +1 RTT per
+    /// kad substream against an upgraded peer, and +2 against a legacy-only
+    /// peer, which refuses the kwaai name before the lazy fallback. kad opens
+    /// a substream per request, so that is per DHT hop. A single-entry list —
+    /// what a bootstrap wants anyway — is back on the 0-RTT path, which makes
+    /// this a cost of the migration window rather than of the feature.
+    #[serde(default = "default_kad_protocols")]
+    pub kad_protocols: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -193,6 +226,41 @@ fn default_max_relay_reservations() -> usize {
 fn default_identify_min_confirmations() -> usize {
     2
 }
+
+fn default_kad_protocols() -> Vec<String> {
+    vec![
+        KWAAI_KAD_PROTOCOL.to_string(),
+        LEGACY_KAD_PROTOCOL.to_string(),
+    ]
+}
+
+fn default_kad_stream_protocols() -> Vec<StreamProtocol> {
+    default_kad_protocols()
+        .into_iter()
+        .map(|name| {
+            StreamProtocol::try_from_owned(name).expect("default kad protocol ids are valid")
+        })
+        .collect()
+}
+
+/// Every entry of a non-empty `kad_protocols` failed to parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidKadProtocols {
+    pub entries: Vec<String>,
+}
+
+impl std::fmt::Display for InvalidKadProtocols {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "kad_protocols has no usable entry ({:?}); protocol ids must start with '/', \
+             e.g. \"{KWAAI_KAD_PROTOCOL}\". Remove the key to get the default set.",
+            self.entries,
+        )
+    }
+}
+
+impl std::error::Error for InvalidKadProtocols {}
 
 /// 4 GiB, the p2pd relay's `-relayDataLimit`.
 fn default_relay_max_circuit_bytes() -> u64 {
@@ -234,6 +302,7 @@ impl Default for NetworkConfig {
             require_global_ips: false,
             max_relay_reservations: default_max_relay_reservations(),
             identify_min_confirmations: default_identify_min_confirmations(),
+            kad_protocols: default_kad_protocols(),
         }
     }
 }
@@ -303,6 +372,44 @@ impl NetworkConfig {
             self.bootstrap_peers.clone()
         } else {
             self.initial_peers.clone()
+        }
+    }
+
+    /// [`Self::kad_protocols`] as validated [`StreamProtocol`]s, preserving
+    /// order.
+    ///
+    /// An *empty* list means the default set — that is the "key absent from
+    /// the template" contract, and a kad with no protocols could talk to
+    /// nobody. Invalid entries (no leading `/`) alongside at least one valid
+    /// one are dropped with a warning.
+    ///
+    /// A non-empty list with *no* valid entry is an error, not a fallback.
+    /// The fallback would restore `/ipfs/kad/1.0.0` on the one node type that
+    /// set this key to be rid of it, so a single missing slash in
+    /// `kad_protocols: ["kwaai/kad/1.0.0"]` would quietly re-expose a
+    /// bootstrap to the public IPFS DHT with only a `warn!` nobody is tailing.
+    /// Refusing to start is the safe direction here.
+    pub fn kad_stream_protocols(&self) -> Result<Vec<StreamProtocol>, InvalidKadProtocols> {
+        if self.kad_protocols.is_empty() {
+            return Ok(default_kad_stream_protocols());
+        }
+        let parsed: Vec<StreamProtocol> = self
+            .kad_protocols
+            .iter()
+            .filter_map(|name| match StreamProtocol::try_from_owned(name.clone()) {
+                Ok(protocol) => Some(protocol),
+                Err(err) => {
+                    tracing::warn!(%name, "ignoring invalid kad protocol id: {err}");
+                    None
+                }
+            })
+            .collect();
+        if parsed.is_empty() {
+            Err(InvalidKadProtocols {
+                entries: self.kad_protocols.clone(),
+            })
+        } else {
+            Ok(parsed)
         }
     }
 
@@ -446,6 +553,85 @@ mod relay_circuit_limits {
             old.relay_max_circuit_duration,
             Duration::from_secs(30 * 60),
             "an old config must pick up the new default, not libp2p's",
+        );
+        assert_eq!(
+            old.kad_protocols,
+            vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL],
+            "a config predating kad_protocols must get the dual default",
+        );
+    }
+}
+
+#[cfg(test)]
+mod kad_protocols {
+    use super::*;
+
+    /// Order is the outbound preference: the kwaai name must come first so
+    /// kwaai↔kwaai pairs stop negotiating the protocol the public IPFS DHT
+    /// matches on.
+    #[test]
+    fn default_kad_protocols_prefer_kwaai_over_legacy() {
+        let names: Vec<String> = NetworkConfig::default()
+            .kad_stream_protocols()
+            .expect("the default set is valid")
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        assert_eq!(names, vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]);
+    }
+
+    /// `kad_protocols: []` in a config template means "the default", the same
+    /// contract as an absent key — not a kad with no protocols.
+    #[test]
+    fn empty_kad_protocols_fall_back_to_the_default() {
+        let cfg = NetworkConfig {
+            kad_protocols: Vec::new(),
+            ..NetworkConfig::default()
+        };
+        assert_eq!(
+            cfg.kad_stream_protocols(),
+            NetworkConfig::default().kad_stream_protocols()
+        );
+    }
+
+    /// A typo'd entry alongside a usable one is dropped: the operator still
+    /// gets the protocol set they asked for, minus the typo.
+    #[test]
+    fn invalid_kad_protocol_entries_are_dropped_when_one_survives() {
+        let cfg = NetworkConfig {
+            kad_protocols: vec![
+                "no-leading-slash".to_string(),
+                KWAAI_KAD_PROTOCOL.to_string(),
+            ],
+            ..NetworkConfig::default()
+        };
+        let names: Vec<String> = cfg
+            .kad_stream_protocols()
+            .expect("one entry parses")
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        assert_eq!(names, vec![KWAAI_KAD_PROTOCOL]);
+    }
+
+    /// The reachable typo: `kwaai/kad/1.0.0` without the leading slash, on a
+    /// bootstrap whose whole reason for setting the key is to stop serving
+    /// the legacy name. Falling back to the default here would put
+    /// `/ipfs/kad/1.0.0` back on the wire, which is the incident. It must
+    /// fail instead.
+    #[test]
+    fn an_entirely_invalid_kad_protocol_list_is_fatal() {
+        let all_bad = NetworkConfig {
+            kad_protocols: vec!["kwaai/kad/1.0.0".to_string()],
+            ..NetworkConfig::default()
+        };
+        let err = all_bad
+            .kad_stream_protocols()
+            .expect_err("no entry parses, so there is nothing to serve");
+        assert_eq!(err.entries, vec!["kwaai/kad/1.0.0".to_string()]);
+        assert!(
+            !err.to_string().is_empty(),
+            "the error names the offending entries"
         );
     }
 }

@@ -177,6 +177,9 @@ impl NativeNode {
             // The only bound on connection growth, and so on the memory the
             // swarm holds: idle connections live for ten minutes.
             max_connections: config.max_connections,
+            // Empty passes through: `kad_stream_protocols` falls back to the
+            // dual kwaai+legacy default.
+            kad_protocols: config.kad_protocols.clone(),
             ..NetworkConfig::default()
         };
 

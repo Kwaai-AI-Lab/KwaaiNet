@@ -5,10 +5,13 @@
 //! - [`ping`] — liveness / RTT, and it keeps otherwise-idle connections honest.
 //! - [`identify`] — protocol/agent advertisement plus the **observed address**
 //!   feed that later phases use for reachability detection.
-//! - [`kad`] — Kademlia peer routing on the *default* `/ipfs/kad/1.0.0`
-//!   protocol. This is deliberate: the Python bootstraps run hivemind's
-//!   go-libp2p daemon with no `ProtocolPrefix`, so any custom protocol name
-//!   here silently partitions us from the live network.
+//! - [`kad`] — Kademlia peer routing, by default on both `/kwaai/kad/1.0.0`
+//!   and the legacy `/ipfs/kad/1.0.0` (see [`NetworkConfig::kad_protocols`]).
+//!   Outbound streams offer the list in order, so kwaai↔kwaai pairs negotiate
+//!   the kwaai name while hivemind's go-libp2p daemon (no `ProtocolPrefix`)
+//!   still matches on the legacy one. Serving the legacy name is what lets
+//!   the public IPFS DHT absorb a publicly reachable node — bootstrap-grade
+//!   deployments configure the kwaai name alone.
 //!
 //! - [`unary`] — hivemind unary RPC. Inbound handler protocols register at
 //!   runtime, so the behaviour starts with an empty protocol set and the
@@ -47,7 +50,7 @@ use libp2p::{
     upnp, {identity, PeerId},
 };
 
-use crate::config::NetworkConfig;
+use crate::config::{InvalidKadProtocols, NetworkConfig};
 use crate::{raw_stream, unary};
 
 /// The `protocol_version` advertised over identify.
@@ -89,11 +92,15 @@ impl KwaaiBehaviour {
     /// only `SwarmBuilder::with_relay_client` can produce the pair. It arrives
     /// already built from `NetworkService::spawn`'s builder chain — which is
     /// also why the `with_behaviour` closure there takes two arguments.
+    /// Fails if `kad_protocols` is set but names nothing usable — see
+    /// [`NetworkConfig::kad_stream_protocols`]. `SwarmBuilder::with_behaviour`
+    /// takes a `Result`-returning constructor, so this surfaces from
+    /// `NetworkService::spawn` rather than from a task.
     pub fn new(
         keypair: &identity::Keypair,
         config: &NetworkConfig,
         relay_client: relay::client::Behaviour,
-    ) -> Self {
+    ) -> Result<Self, InvalidKadProtocols> {
         let local_peer_id = PeerId::from(keypair.public());
 
         // `max_connections` has been in the config all along, enforced nowhere.
@@ -138,9 +145,8 @@ impl KwaaiBehaviour {
                 .with_interval(Duration::from_secs(5 * 60)),
         );
 
-        // NOTE: `kad::Config::default()` uses `/ipfs/kad/1.0.0`. Do not call
-        // `set_protocol_names` — see the module docs.
         let mut kad_config = kad::Config::default();
+        kad_config.set_protocol_names(config.kad_stream_protocols()?);
         kad_config.set_query_timeout(config.request_timeout);
         kad_config.set_replication_factor(
             std::num::NonZeroUsize::new(config.dht_replication)
@@ -218,7 +224,7 @@ impl KwaaiBehaviour {
         // has no business talking to whatever gateway happens to answer.
         let upnp = Toggle::from(config.enable_upnp.then(upnp::tokio::Behaviour::default));
 
-        Self {
+        Ok(Self {
             connection_limits,
             ping,
             identify,
@@ -230,6 +236,6 @@ impl KwaaiBehaviour {
             relay_server,
             dcutr,
             upnp,
-        }
+        })
     }
 }
