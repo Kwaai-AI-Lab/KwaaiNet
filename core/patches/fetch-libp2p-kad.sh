@@ -7,6 +7,13 @@
 # Idempotent: re-runs are no-ops unless the patch file changed.
 set -euo pipefail
 
+# Partial by design: this fetches one crate. Run directly it still exits 0 with
+# the other patched crates missing, and the omission only surfaces later as a
+# workspace parse failure — so say so. fetch-patches.sh sets the variable.
+if [ -z "${KWAAI_FETCH_PATCHES:-}" ]; then
+    echo "note: this script fetches only libp2p-kad; run core/patches/fetch-patches.sh to get every patched crate" >&2
+fi
+
 # SHA-256 front end — probed by running, not `command -v`; see
 # fetch-multistream-select.sh for why.
 if echo | shasum -a 256 >/dev/null 2>&1; then

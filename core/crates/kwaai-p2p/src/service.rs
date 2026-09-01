@@ -272,6 +272,7 @@ impl NetworkService {
                     .context("configuring the relay client transport")?
                     .with_behaviour(|kp, relay_client| {
                         KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
+                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
                     })
                     .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
                     .with_swarm_config(|c| {
@@ -316,6 +317,21 @@ impl NetworkService {
                             //   new versus p2pd, where go-libp2p-kad-dht admits
                             //   peers only from identify plus a live FIND_NODE
                             //   probe.
+                            //
+                            //   That reasoning assumed kad offers a single
+                            //   protocol name, and since the kad migration it
+                            //   does not: the default list is
+                            //   `[/kwaai/kad/1.0.0, /ipfs/kad/1.0.0]`. V1Lazy
+                            //   only takes the 0-RTT shortcut on the *last*
+                            //   name it has to offer (see `dialer_select.rs`),
+                            //   so the preferred name negotiates eagerly and
+                            //   the paragraph above describes only the
+                            //   fallback. Cost, per kad substream: +1 RTT
+                            //   against an upgraded peer, +2 against a
+                            //   legacy-only one (a refusal round trip, then
+                            //   the lazy fallback). Transitional — a node
+                            //   configured with one name is back on the 0-RTT
+                            //   path. See `NetworkConfig::kad_protocols`.
                             //
                             // Closing both at the source means gating laziness
                             // on identify's known-protocol set, as go does.

@@ -202,6 +202,15 @@ pub struct NetworkConfig {
     /// An empty list means the default, not "no kad": disabling the DHT is
     /// `enable_dht`'s job, and treating `[]` as default keeps a config
     /// template that omits the key from silently changing the protocol set.
+    ///
+    /// **Carrying two names costs a round trip.** The `V1Lazy` substream
+    /// override takes the 0-RTT shortcut only on the last protocol offered,
+    /// so with two entries the preferred one negotiates eagerly: +1 RTT per
+    /// kad substream against an upgraded peer, and +2 against a legacy-only
+    /// peer, which refuses the kwaai name before the lazy fallback. kad opens
+    /// a substream per request, so that is per DHT hop. A single-entry list —
+    /// what a bootstrap wants anyway — is back on the 0-RTT path, which makes
+    /// this a cost of the migration window rather than of the feature.
     #[serde(default = "default_kad_protocols")]
     pub kad_protocols: Vec<String>,
 }
@@ -224,6 +233,34 @@ fn default_kad_protocols() -> Vec<String> {
         LEGACY_KAD_PROTOCOL.to_string(),
     ]
 }
+
+fn default_kad_stream_protocols() -> Vec<StreamProtocol> {
+    default_kad_protocols()
+        .into_iter()
+        .map(|name| {
+            StreamProtocol::try_from_owned(name).expect("default kad protocol ids are valid")
+        })
+        .collect()
+}
+
+/// Every entry of a non-empty `kad_protocols` failed to parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidKadProtocols {
+    pub entries: Vec<String>,
+}
+
+impl std::fmt::Display for InvalidKadProtocols {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "kad_protocols has no usable entry ({:?}); protocol ids must start with '/', \
+             e.g. \"{KWAAI_KAD_PROTOCOL}\". Remove the key to get the default set.",
+            self.entries,
+        )
+    }
+}
+
+impl std::error::Error for InvalidKadProtocols {}
 
 /// 4 GiB, the p2pd relay's `-relayDataLimit`.
 fn default_relay_max_circuit_bytes() -> u64 {
@@ -341,11 +378,21 @@ impl NetworkConfig {
     /// [`Self::kad_protocols`] as validated [`StreamProtocol`]s, preserving
     /// order.
     ///
-    /// Invalid entries (no leading `/`) are dropped with a warning rather than
-    /// failing startup, and an empty or entirely-invalid list falls back to
-    /// the default set — a bad config degrades to the compatible protocols,
-    /// never to a kad that can talk to nobody.
-    pub fn kad_stream_protocols(&self) -> Vec<StreamProtocol> {
+    /// An *empty* list means the default set — that is the "key absent from
+    /// the template" contract, and a kad with no protocols could talk to
+    /// nobody. Invalid entries (no leading `/`) alongside at least one valid
+    /// one are dropped with a warning.
+    ///
+    /// A non-empty list with *no* valid entry is an error, not a fallback.
+    /// The fallback would restore `/ipfs/kad/1.0.0` on the one node type that
+    /// set this key to be rid of it, so a single missing slash in
+    /// `kad_protocols: ["kwaai/kad/1.0.0"]` would quietly re-expose a
+    /// bootstrap to the public IPFS DHT with only a `warn!` nobody is tailing.
+    /// Refusing to start is the safe direction here.
+    pub fn kad_stream_protocols(&self) -> Result<Vec<StreamProtocol>, InvalidKadProtocols> {
+        if self.kad_protocols.is_empty() {
+            return Ok(default_kad_stream_protocols());
+        }
         let parsed: Vec<StreamProtocol> = self
             .kad_protocols
             .iter()
@@ -358,15 +405,11 @@ impl NetworkConfig {
             })
             .collect();
         if parsed.is_empty() {
-            default_kad_protocols()
-                .into_iter()
-                .map(|name| {
-                    StreamProtocol::try_from_owned(name)
-                        .expect("default kad protocol ids are valid")
-                })
-                .collect()
+            Err(InvalidKadProtocols {
+                entries: self.kad_protocols.clone(),
+            })
         } else {
-            parsed
+            Ok(parsed)
         }
     }
 
@@ -530,6 +573,7 @@ mod kad_protocols {
     fn default_kad_protocols_prefer_kwaai_over_legacy() {
         let names: Vec<String> = NetworkConfig::default()
             .kad_stream_protocols()
+            .expect("the default set is valid")
             .iter()
             .map(|p| p.to_string())
             .collect();
@@ -550,10 +594,10 @@ mod kad_protocols {
         );
     }
 
-    /// A typo'd entry is dropped, and a list of nothing but typos degrades to
-    /// the default set rather than a kad that can talk to nobody.
+    /// A typo'd entry alongside a usable one is dropped: the operator still
+    /// gets the protocol set they asked for, minus the typo.
     #[test]
-    fn invalid_kad_protocol_entries_are_dropped_not_fatal() {
+    fn invalid_kad_protocol_entries_are_dropped_when_one_survives() {
         let cfg = NetworkConfig {
             kad_protocols: vec![
                 "no-leading-slash".to_string(),
@@ -563,18 +607,31 @@ mod kad_protocols {
         };
         let names: Vec<String> = cfg
             .kad_stream_protocols()
+            .expect("one entry parses")
             .iter()
             .map(|p| p.to_string())
             .collect();
         assert_eq!(names, vec![KWAAI_KAD_PROTOCOL]);
+    }
 
+    /// The reachable typo: `kwaai/kad/1.0.0` without the leading slash, on a
+    /// bootstrap whose whole reason for setting the key is to stop serving
+    /// the legacy name. Falling back to the default here would put
+    /// `/ipfs/kad/1.0.0` back on the wire, which is the incident. It must
+    /// fail instead.
+    #[test]
+    fn an_entirely_invalid_kad_protocol_list_is_fatal() {
         let all_bad = NetworkConfig {
-            kad_protocols: vec!["no-leading-slash".to_string()],
+            kad_protocols: vec!["kwaai/kad/1.0.0".to_string()],
             ..NetworkConfig::default()
         };
-        assert_eq!(
-            all_bad.kad_stream_protocols(),
-            NetworkConfig::default().kad_stream_protocols()
+        let err = all_bad
+            .kad_stream_protocols()
+            .expect_err("no entry parses, so there is nothing to serve");
+        assert_eq!(err.entries, vec!["kwaai/kad/1.0.0".to_string()]);
+        assert!(
+            !err.to_string().is_empty(),
+            "the error names the offending entries"
         );
     }
 }

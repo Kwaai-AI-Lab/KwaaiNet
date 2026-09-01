@@ -4,8 +4,28 @@ Build-time patched dependencies. Nothing here is vendored source: the repo
 carries only the patch files and checksum-pinned fetch scripts; the expanded
 crate sources are produced locally and gitignored.
 
-`fetch-patches.sh` is the single entry point — it runs every per-crate fetch
-script and is what `setup.sh` and the CI workflows call.
+## Fresh checkout
+
+`cargo` cannot parse the workspace until *every* patched source exists, so run
+the umbrella script — never a per-crate one:
+
+```sh
+bash core/patches/fetch-patches.sh
+```
+
+`setup.sh` and every CI workflow run this automatically. Each per-crate script
+pins its crates.io tarball by sha256 and is an instant no-op once the source is
+present and matches the patch.
+
+A per-crate script run on its own **succeeds and exits 0** while leaving the
+other patched crates absent; the omission surfaces much later as a workspace
+parse failure with nothing pointing back at the patch step. They warn about
+this when invoked directly.
+
+Nix does not run these scripts: a flake build reads the git tree and their
+output is gitignored, so `nix/crane.nix` materializes each patched crate from
+the same pinned tarball and patch file. Adding a patched crate means adding it
+there too.
 
 ## libp2p-kad (multi-protocol names)
 
@@ -54,18 +74,6 @@ peers negotiate slash-less IDs: `kwaai-network-tests/tests/07_wire_interop.rs`
 (`slashless_protocol_negotiates`).
 
 The entire delta is `multistream-select.patch` (~23 changed lines, one file).
-
-### Fresh checkout
-
-`cargo` cannot parse the workspace until the patched source exists:
-
-```sh
-bash core/patches/fetch-multistream-select.sh
-```
-
-`setup.sh` and every CI workflow run this automatically. The script pins the
-crates.io tarball by sha256 and is an instant no-op once the source is present
-and matches the patch.
 
 ### Upgrading / removing
 

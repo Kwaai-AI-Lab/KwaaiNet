@@ -1279,6 +1279,30 @@ impl KwaaiNetConfig {
                     anyhow::anyhow!("identify_timeout_secs must be a positive integer")
                 })?
             }
+            // Comma-separated, in outbound preference order. Validated here
+            // rather than at startup: a missing leading slash on a bootstrap
+            // is exactly the typo that would otherwise put `/ipfs/kad/1.0.0`
+            // back on the wire.
+            "kad_protocols" => {
+                let names: Vec<String> = value
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                for name in &names {
+                    kwaai_p2p::StreamProtocol::try_from_owned(name.clone()).map_err(|_| {
+                        anyhow::anyhow!(
+                            "invalid kad protocol id '{name}': ids must start with '/', \
+                             e.g. '{}'",
+                            kwaai_p2p::KWAAI_KAD_PROTOCOL
+                        )
+                    })?;
+                }
+                // An empty value clears the key, which means the compiled
+                // default — not a kad with no protocols.
+                self.kad_protocols = names;
+            }
             _ => anyhow::bail!(
                 "Unknown config key '{}'. Run `kwaainet config set --help` to see valid keys.",
                 key
@@ -1760,6 +1784,45 @@ mod test_isolation {
             "set_key wrote to disk; it must only mutate the struct"
         );
         assert_eq!(cfg.start_block, Some(16), "but it must still mutate");
+    }
+
+    /// The key exists at all — `kwaainet config set kad_protocols …` is the
+    /// documented way to take a bootstrap off the legacy name, and it used to
+    /// answer "Unknown config key".
+    #[test]
+    fn set_key_accepts_kad_protocols_and_rejects_a_missing_slash() {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("kad_protocols", "/kwaai/kad/1.0.0")
+            .expect("a valid protocol id");
+        assert_eq!(cfg.kad_protocols, vec!["/kwaai/kad/1.0.0".to_string()]);
+
+        cfg.set_key("kad_protocols", "/kwaai/kad/1.0.0, /ipfs/kad/1.0.0")
+            .expect("comma-separated, whitespace trimmed");
+        assert_eq!(
+            cfg.kad_protocols,
+            vec![
+                "/kwaai/kad/1.0.0".to_string(),
+                "/ipfs/kad/1.0.0".to_string()
+            ]
+        );
+
+        // The typo that would otherwise put the legacy name back on the wire.
+        let err = cfg
+            .set_key("kad_protocols", "kwaai/kad/1.0.0")
+            .expect_err("no leading slash");
+        assert!(err.to_string().contains("must start with"), "{err}");
+        assert_eq!(
+            cfg.kad_protocols,
+            vec![
+                "/kwaai/kad/1.0.0".to_string(),
+                "/ipfs/kad/1.0.0".to_string()
+            ],
+            "a rejected value must not have been half-applied"
+        );
+
+        cfg.set_key("kad_protocols", "")
+            .expect("empty clears the key");
+        assert!(cfg.kad_protocols.is_empty());
     }
 
     // There is deliberately no test here that calls `save()` and then asserts

@@ -50,7 +50,7 @@ use libp2p::{
     upnp, {identity, PeerId},
 };
 
-use crate::config::NetworkConfig;
+use crate::config::{InvalidKadProtocols, NetworkConfig};
 use crate::{raw_stream, unary};
 
 /// The `protocol_version` advertised over identify.
@@ -92,11 +92,15 @@ impl KwaaiBehaviour {
     /// only `SwarmBuilder::with_relay_client` can produce the pair. It arrives
     /// already built from `NetworkService::spawn`'s builder chain — which is
     /// also why the `with_behaviour` closure there takes two arguments.
+    /// Fails if `kad_protocols` is set but names nothing usable — see
+    /// [`NetworkConfig::kad_stream_protocols`]. `SwarmBuilder::with_behaviour`
+    /// takes a `Result`-returning constructor, so this surfaces from
+    /// `NetworkService::spawn` rather than from a task.
     pub fn new(
         keypair: &identity::Keypair,
         config: &NetworkConfig,
         relay_client: relay::client::Behaviour,
-    ) -> Self {
+    ) -> Result<Self, InvalidKadProtocols> {
         let local_peer_id = PeerId::from(keypair.public());
 
         // `max_connections` has been in the config all along, enforced nowhere.
@@ -142,7 +146,7 @@ impl KwaaiBehaviour {
         );
 
         let mut kad_config = kad::Config::default();
-        kad_config.set_protocol_names(config.kad_stream_protocols());
+        kad_config.set_protocol_names(config.kad_stream_protocols()?);
         kad_config.set_query_timeout(config.request_timeout);
         kad_config.set_replication_factor(
             std::num::NonZeroUsize::new(config.dht_replication)
@@ -220,7 +224,7 @@ impl KwaaiBehaviour {
         // has no business talking to whatever gateway happens to answer.
         let upnp = Toggle::from(config.enable_upnp.then(upnp::tokio::Behaviour::default));
 
-        Self {
+        Ok(Self {
             connection_limits,
             ping,
             identify,
@@ -232,6 +236,6 @@ impl KwaaiBehaviour {
             relay_server,
             dcutr,
             upnp,
-        }
+        })
     }
 }
