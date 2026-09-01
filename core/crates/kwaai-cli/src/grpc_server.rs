@@ -2418,14 +2418,31 @@ mod tests {
     }
 
     /// Winsock answers a refused loopback connect only after a fixed in-stack
-    /// retry, measured at ~2.04s on Windows and the same for a port that never
-    /// had a listener. Probing below that reads every closed port as `Silent`.
-    const REFUSAL_PROBE_CEILING: Duration = Duration::from_secs(4);
+    /// retry — identical for a port that never had a listener, so it is the
+    /// stack, not the server. Probing below it reads every closed port as
+    /// `Silent`, which is a test that cannot pass on Windows.
+    ///
+    /// Measured, `MaxSynRetransmissions = 4` and no registry overrides on both:
+    ///
+    /// | box | | worst |
+    /// |---|---|---|
+    /// | Win 11 Pro Workstations, 64 cores | ~2.04s | 2.12s |
+    /// | Win 10 22H2, i7-3667U 2c/4t | ~2.30s | 2.43s |
+    ///
+    /// Same retry count, different per-retry latency: the floor tracks the
+    /// hardware, so it is not a constant to sit just above. This is 4x the
+    /// slower reading rather than a tight margin on either, because the two
+    /// directions do not cost the same. Too low and every probe expires as
+    /// silence and the assertion can never pass — shipped twice, at 250ms and
+    /// 1500ms. Too high costs only how long a *genuinely* failing test takes
+    /// to give up: the probe returns the moment Winsock answers, so a healthy
+    /// shutdown still resolves in one refusal latency whatever this says.
+    const REFUSAL_PROBE_CEILING: Duration = Duration::from_secs(10);
 
     /// Three probes at the ceiling, so one starved answer is not the verdict.
     /// Kept next to the ceiling it derives from: as independent literals the
     /// two drifted apart twice, each time breaking the assertion below.
-    const LISTENER_CLOSE_BUDGET: Duration = Duration::from_secs(12);
+    const LISTENER_CLOSE_BUDGET: Duration = Duration::from_secs(30);
 
     async fn probe_port(port: u16) -> Probe {
         match tokio::time::timeout(
