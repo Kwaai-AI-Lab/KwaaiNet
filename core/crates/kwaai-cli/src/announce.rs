@@ -110,9 +110,10 @@ impl VpkInfo {
 /// trust model (e.g., map.kwaai.ai v2) display trust badges; legacy clients
 /// ignore the field.
 ///
-/// `state` is a **deliberate KwaaiNet divergence** from upstream petals'
-/// `ServerState` enum: `0` joining, `2` ready, `-1` offline. The map decodes
-/// these values directly — preserve them verbatim.
+/// `state` follows petals' `ServerState` — `0` offline, `1` joining, `2`
+/// online — with one KwaaiNet extension: `-1`, an explicit departure tombstone
+/// (a shutdown cannot shorten a record's expiration, so leaving has to be said
+/// in the value). The map decodes these directly; preserve them verbatim.
 pub struct DHTServerInfo {
     pub state: i32,
     pub throughput: f64,

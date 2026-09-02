@@ -1031,6 +1031,12 @@ impl KwaaiNetConfig {
     /// (which the map rendered as "offline", indistinguishable from the `-1`
     /// departure tombstone) was a lie about a healthy node.
     ///
+    /// Every consumer that survives the native migration filters on `== 2`. The
+    /// one that read this as a threshold — a python petals server's
+    /// `block_selection`, counting everything `>= JOINING` — would weigh a node
+    /// that may never load a shard; it matters again only if a
+    /// `petals.cli.run_server` ever rejoins the swarm.
+    ///
     /// ONLINE means "this node will serve inference", not merely "this node is
     /// up" — `shard run` filters on `state == 2`, so a node that claims it
     /// without anything to serve gets dialled and fails the session with

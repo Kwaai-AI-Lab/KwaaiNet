@@ -1154,7 +1154,7 @@ async fn announce(
     let node_info = NodeInfo::from_peer_id(peer_id);
 
     // Build block STORE request — always announce configured blocks so the node
-    // appears on the map. State=0 (joining) when shard is not yet loaded.
+    // appears on the map. State=1 (joining) when shard is not yet loaded.
     {
         let mut keys = Vec::new();
         let mut subkeys = Vec::new();
