@@ -707,6 +707,9 @@ mod whole_model_readiness_tests {
     /// `KWAAINET_HOME`, so they must not run against a live node's run dir.
     #[test]
     fn whole_model_serving_announces_online() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("kwaai-wm-ready-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("KWAAINET_HOME", &tmp);
@@ -757,6 +760,9 @@ mod whole_model_readiness_tests {
     #[tokio::test]
     #[ignore = "probes the local Ollama on 11434"]
     async fn live_whole_model_readiness_tracks_real_ollama() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("kwaai-wm-live-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("KWAAINET_HOME", &tmp);
@@ -811,6 +817,9 @@ mod whole_model_readiness_tests {
     /// implies, and a whole-model node has none.
     #[test]
     fn whole_model_readiness_does_not_imply_a_block_shard() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("kwaai-wm-distinct-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("KWAAINET_HOME", &tmp);

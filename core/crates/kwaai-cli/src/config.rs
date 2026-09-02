@@ -1509,18 +1509,19 @@ mod native_p2p_tri_state {
     }
 }
 
+/// Serialises the tests that drive `KWAAINET_HOME`, crate-wide.
+///
+/// The var is process-global. These tests each point it at their own tempdir
+/// and some remove it when done, so run concurrently one test reads another's
+/// directory — or none at all — and sees the wrong config back. One lock for
+/// the whole crate, not one per module: the racing tests live in different
+/// files (`config`, `daemon`), and per-module mutexes never serialise those.
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Serialises the tests that drive `KWAAINET_HOME`.
-    ///
-    /// The var is process-global. These tests each point it at their own
-    /// tempdir and some remove it when done, so run concurrently one test
-    /// reads another's directory — or none at all — and sees the wrong
-    /// config back. Identical block on every branch that adds such a test,
-    /// so the copies merge as a duplicate rather than a conflict.
-    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn cfg(start: u32, blocks: u32, total_hint: &str) -> KwaaiNetConfig {
         KwaaiNetConfig {
