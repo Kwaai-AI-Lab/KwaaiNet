@@ -742,6 +742,70 @@ mod whole_model_readiness_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Live check against this machine's actual Ollama, following the
+    /// `live_*` convention: `#[ignore]` alone, because it is read-only against
+    /// the network (localhost only) and writes its sentinel into an isolated
+    /// `KWAAINET_HOME` rather than the running node's run dir.
+    ///
+    /// ```text
+    /// cargo test -p kwaainet --bin kwaainet live_whole_model -- --ignored --nocapture
+    /// ```
+    ///
+    /// This is the half the unit tests cannot cover: that the real
+    /// `ollama::readiness` probe agrees with the sentinel, and that losing
+    /// Ollama retracts the claim rather than leaving a dead path advertised.
+    #[tokio::test]
+    #[ignore = "probes the local Ollama on 11434"]
+    async fn live_whole_model_readiness_tracks_real_ollama() {
+        let tmp = std::env::temp_dir().join(format!("kwaai-wm-live-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("KWAAINET_HOME", &tmp);
+
+        let port: u16 = std::env::var("KWAAI_OLLAMA_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(11434);
+
+        match crate::ollama::readiness(port).await {
+            Ok(models) => eprintln!("Ollama on {port} is serving {} model(s)", models.len()),
+            Err(why) => {
+                eprintln!("SKIPPED: Ollama on {port} is not ready ({why})");
+                std::env::remove_var("KWAAINET_HOME");
+                return;
+            }
+        }
+
+        // Ollama up: the probe must mark us ready and the announcement must say ONLINE.
+        ShardManager::clear_whole_model_ready();
+        crate::ollama::refresh_whole_model_ready(port).await;
+        assert!(
+            ShardManager::whole_model_is_ready(),
+            "a live Ollama must produce the whole-model sentinel"
+        );
+        assert_eq!(
+            KwaaiNetConfig::announce_state(),
+            2,
+            "with Ollama serving, this node announces ONLINE"
+        );
+        eprintln!("announce_state() = 2 (ONLINE) with Ollama up");
+
+        // Ollama gone: the claim must be retracted, not left standing.
+        crate::ollama::refresh_whole_model_ready(1).await;
+        assert!(
+            !ShardManager::whole_model_is_ready(),
+            "an unreachable Ollama must clear the sentinel"
+        );
+        assert_eq!(
+            KwaaiNetConfig::announce_state(),
+            0,
+            "with Ollama gone, the node must stop claiming it can serve"
+        );
+        eprintln!("announce_state() = 0 (JOINING) with Ollama unreachable");
+
+        std::env::remove_var("KWAAINET_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// The two sentinels stay distinct: whole-model readiness must not make
     /// `shard_is_ready()` true, because its callers act on the block range that
     /// implies, and a whole-model node has none.
