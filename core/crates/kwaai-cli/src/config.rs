@@ -1012,10 +1012,18 @@ impl KwaaiNetConfig {
     ///
     /// ONLINE means "this node will serve inference", not merely "this node is
     /// up" — `shard run` filters on `state == 2`, so a node that claims it
-    /// without a loaded shard gets dialled and fails the session with
-    /// "protocols not supported". Hence the gate on `shard_is_ready()`.
+    /// without anything to serve gets dialled and fails the session with
+    /// "protocols not supported".
+    ///
+    /// There are **two** ways to have something to serve, and gating on the
+    /// block shard alone hid the second one: an Apple-silicon node serves whole
+    /// models over `/kwaai/ollama-proxy/1.0.0` and deliberately loads no block
+    /// shard (Metal decode is unviable — see the stopgap in `shard_cmd`). Those
+    /// nodes announced JOINING for as long as they ran, which put them off the
+    /// map and, worse, out of `shard run`'s candidate set while they were
+    /// serving perfectly well.
     pub fn announce_state() -> i32 {
-        if ShardManager::shard_is_ready() {
+        if ShardManager::shard_is_ready() || ShardManager::whole_model_is_ready() {
             2
         } else {
             0

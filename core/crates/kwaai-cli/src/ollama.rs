@@ -335,6 +335,27 @@ impl std::fmt::Display for OllamaNotReady {
 ///
 /// Used on macOS, where block sharding is not viable and Ollama is the whole
 /// serving story (`projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`).
+/// Refresh the whole-model serving sentinel from a live Ollama probe.
+///
+/// Whole-model serving is the other way a node earns `state = 2` — see
+/// `KwaaiNetConfig::announce_state`. It is re-derived on every announce rather
+/// than latched once, so a node that loses Ollama stops claiming it can serve
+/// instead of advertising a dead path until it restarts.
+///
+/// Gated on macOS to match the platform condition that selects the whole-model
+/// path at all (`shard_cmd`: `cfg!(target_os = "macos") && !force_blocks`).
+/// Elsewhere a node earns ONLINE by loading a block shard, and marking it here
+/// would promise a block range this node does not have.
+pub async fn refresh_whole_model_ready(port: u16) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    match readiness(port).await {
+        Ok(_) => crate::daemon::ShardManager::mark_whole_model_ready(),
+        Err(_) => crate::daemon::ShardManager::clear_whole_model_ready(),
+    }
+}
+
 pub async fn readiness(port: u16) -> Result<Vec<String>, OllamaNotReady> {
     let url = format!("http://localhost:{port}/api/tags");
     let up = match reqwest::Client::builder()
