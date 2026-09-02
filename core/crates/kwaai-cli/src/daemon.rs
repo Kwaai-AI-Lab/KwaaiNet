@@ -759,6 +759,9 @@ mod whole_model_readiness_tests {
     /// Ollama retracts the claim rather than leaving a dead path advertised.
     #[tokio::test]
     #[ignore = "probes the local Ollama on 11434"]
+    // The guard is held across awaits deliberately: it serialises `KWAAINET_HOME`
+    // for the whole test, and a single-threaded test runtime cannot deadlock on it.
+    #[allow(clippy::await_holding_lock)]
     async fn live_whole_model_readiness_tracks_real_ollama() {
         let _env_lock = crate::config::HOME_ENV_LOCK
             .lock()
