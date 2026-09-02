@@ -2244,10 +2244,17 @@ mod tests {
     struct EnvGuard {
         prev_home: Option<std::ffi::OsString>,
         prev_kwaainet_home: Option<std::ffi::OsString>,
+        /// `TEST_LOCK` above serialises these tests against each other only.
+        /// `KWAAINET_HOME` is process-global, so the guard also holds the
+        /// crate-wide lock the tests in other modules take.
+        _home_env: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
         fn set(dir: &std::path::Path) -> Self {
+            let _home_env = crate::config::HOME_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev_home = std::env::var_os("HOME");
             let prev_kwaainet_home = std::env::var_os("KWAAINET_HOME");
             std::env::set_var("HOME", dir);
@@ -2255,6 +2262,7 @@ mod tests {
             Self {
                 prev_home,
                 prev_kwaainet_home,
+                _home_env,
             }
         }
     }
