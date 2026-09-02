@@ -38,14 +38,19 @@ entry on both inbound and outbound streams, but upstream removed the public
 patch restores the setter on `Config` (and adds one on `ProtocolConfig`,
 where the field lives) — no behavioral change to negotiation itself.
 
-We need it for the kad protocol migration: nodes serve and offer
-`/kwaai/kad/1.0.0` *and* the legacy `/ipfs/kad/1.0.0`
-(`NetworkConfig::kad_protocols`), so upgraded peers negotiate the kwaai name
-while peers that predate it still match on the legacy one. Serving the legacy
-name on a public address is what let the global IPFS DHT absorb the
-bootstraps (2026-08-31: several hundred foreign peers per bootstrap, p2pd
-OOM-killed every 30–90 min), so bootstrap-grade nodes configure the kwaai
-name alone — which is only possible if the protocol list is settable.
+We need it for the kad protocol migration, and **only the bootstrap-grade
+build uses it**: `cargo build --release -p kwaainet --features
+kad-multi-protocol` serves `/kwaai/kad/1.0.0` *and* the legacy
+`/ipfs/kad/1.0.0`, bridging peers that predate the kwaai name while the
+fleet upgrades. A **stock build serves the kwaai name alone** and never
+touches this patched API — that is what keeps `cargo publish` working, and
+it means a bootstrap built with default features silently cuts off every
+legacy peer; the migration-window bootstraps must be the feature build.
+Serving the legacy name on a public address is what let the global IPFS DHT
+absorb the old bootstraps (2026-08-31: several hundred foreign peers each,
+p2pd OOM-killed every 30–90 min), which is why the stock default is
+kwaai-only and there is no runtime knob (`docs/BOOTSTRAP.md` has the
+rollout order).
 
 The entire delta is `libp2p-kad.patch` (two added methods, two files).
 

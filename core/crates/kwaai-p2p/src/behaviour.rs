@@ -5,13 +5,17 @@
 //! - [`ping`] — liveness / RTT, and it keeps otherwise-idle connections honest.
 //! - [`identify`] — protocol/agent advertisement plus the **observed address**
 //!   feed that later phases use for reachability detection.
-//! - [`kad`] — Kademlia peer routing, by default on both `/kwaai/kad/1.0.0`
-//!   and the legacy `/ipfs/kad/1.0.0` (see [`NetworkConfig::kad_protocols`]).
-//!   Outbound streams offer the list in order, so kwaai↔kwaai pairs negotiate
-//!   the kwaai name while hivemind's go-libp2p daemon (no `ProtocolPrefix`)
-//!   still matches on the legacy one. Serving the legacy name is what lets
-//!   the public IPFS DHT absorb a publicly reachable node — bootstrap-grade
-//!   deployments configure the kwaai name alone.
+//! - [`kad`] — Kademlia peer routing. **The build decides the protocol set**
+//!   (see [`crate::config::kad_protocols()`]): a stock build serves
+//!   `/kwaai/kad/1.0.0` alone, and the `kad-multi-protocol` build — the
+//!   bootstrap-grade one for the migration window — also answers the legacy
+//!   `/ipfs/kad/1.0.0`, so peers that predate the kwaai name still match.
+//!   Serving the legacy name is what lets the public IPFS DHT absorb a
+//!   publicly reachable node, which is why the stock default is the name
+//!   that cannot be absorbed, and why the dual build is reserved for the
+//!   one host that must bridge. There is no runtime knob; the rollout
+//!   order (dual bootstraps deployed before any node upgrades) is what
+//!   keeps upgraded and legacy nodes routable to each other.
 //!
 //! - [`unary`] — hivemind unary RPC. Inbound handler protocols register at
 //!   runtime, so the behaviour starts with an empty protocol set and the
@@ -154,7 +158,17 @@ impl KwaaiBehaviour {
             multi_protocol_build = KAD_MULTI_PROTOCOL_BUILD,
             "kad protocol set"
         );
-        let mut kad_config = kad::Config::new(protocols[0].clone());
+        // `first()` with a fallback rather than an index: the compiled sets
+        // are never empty, but the field is a pub Vec that tests and helpers
+        // may hand an empty list — which must not panic from inside the
+        // swarm builder. The patched `set_protocol_names` already ignores
+        // an empty list, so the fallback keeps the two behaviours aligned.
+        let mut kad_config = kad::Config::new(
+            protocols
+                .first()
+                .cloned()
+                .unwrap_or_else(|| crate::config::kad_protocols()[0].clone()),
+        );
         #[cfg(feature = "kad-multi-protocol")]
         kad_config.set_protocol_names(protocols);
         kad_config.set_query_timeout(config.request_timeout);

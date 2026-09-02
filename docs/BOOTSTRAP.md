@@ -64,6 +64,15 @@ The node logs its protocol set at startup (`kad protocol set`), including
 whether this is a multi-protocol build, because nothing else distinguishes
 the two binaries at runtime. Check it after deploying a bootstrap.
 
+**Disable self-update on a dual-protocol bootstrap.** The release pipeline
+builds no `kad-multi-protocol` artifact, and `contribute.auto_update`
+defaults to `true` — so a hand-built dual bootstrap would replace itself
+with the stock kwaai-only release at its next update check, silently ending
+legacy bridging mid-migration. Set `contribute.auto_update: false` in its
+config, or `KWAAINET_NO_AUTO_UPDATE=1` in the service environment (what the
+production systemd units do): the version a bootstrap runs is the
+deployment's decision, and the running binary must not overrule it.
+
 ### Independent keys worth setting
 
 Nothing about being a bootstrap changes what these mean, and no code derives

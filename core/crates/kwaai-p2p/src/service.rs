@@ -317,20 +317,22 @@ impl NetworkService {
                             //   peers only from identify plus a live FIND_NODE
                             //   probe.
                             //
-                            //   That reasoning assumed kad offers a single
-                            //   protocol name, and since the kad migration it
-                            //   does not: the default list is
-                            //   `[/kwaai/kad/1.0.0, /ipfs/kad/1.0.0]`. V1Lazy
-                            //   only takes the 0-RTT shortcut on the *last*
-                            //   name it has to offer (see `dialer_select.rs`),
-                            //   so the preferred name negotiates eagerly and
-                            //   the paragraph above describes only the
-                            //   fallback. Cost, per kad substream: +1 RTT
-                            //   against an upgraded peer, +2 against a
-                            //   legacy-only one (a refusal round trip, then
-                            //   the lazy fallback). Transitional — a node
-                            //   configured with one name is back on the 0-RTT
-                            //   path. See `NetworkConfig::kad_protocols`.
+                            //   Which build you are in decides how much of
+                            //   that caveat applies. A stock (single-name)
+                            //   build takes the 0-RTT shortcut on every kad
+                            //   substream, so the paragraph above is fully in
+                            //   force: during the migration window a routing
+                            //   table can fill with peers that never confirmed
+                            //   kad, and the connection-manager work (#174)
+                            //   plus gating laziness on identify's protocol
+                            //   set are the follow-ups that close it. The
+                            //   `kad-multi-protocol` (bootstrap) build offers
+                            //   two names, V1Lazy only shortcuts the *last*
+                            //   offer (see `dialer_select.rs`), so its
+                            //   preferred name negotiates eagerly — refusals
+                            //   visible, at +1 RTT per substream (+2 against a
+                            //   legacy-only peer). Accepted for the migration
+                            //   window on the handful of hosts that run it.
                             //
                             // Closing both at the source means gating laziness
                             // on identify's known-protocol set, as go does.
