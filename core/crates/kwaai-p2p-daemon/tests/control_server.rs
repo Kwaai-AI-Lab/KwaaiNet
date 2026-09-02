@@ -73,10 +73,21 @@ impl TestNode {
         .expect("the swarm must report a listen address");
 
         let tmpdir = TempDir::new().expect("tmpdir");
-        let socket = format!("/unix/{}", tmpdir.path().join("kwaai.sock").display());
-        let server = ControlServer::bind(&socket, handle.clone())
+
+        // Windows has no Unix sockets, and `bind` refuses `/unix/` there. The
+        // control protocol is transport-independent — the server speaks both —
+        // so Windows runs the same suite over loopback TCP rather than skipping
+        // it, which is the platform with the least coverage elsewhere.
+        #[cfg(unix)]
+        let bind = format!("/unix/{}", tmpdir.path().join("kwaai.sock").display());
+        #[cfg(not(unix))]
+        let bind = "/ip4/127.0.0.1/tcp/0".to_string();
+
+        let server = ControlServer::bind(&bind, handle.clone())
             .await
             .expect("control socket binds");
+        // Port 0 only resolves once bound, so take the address from the server.
+        let socket = server.local_addr().expect("the bound control address");
         let server_task = tokio::spawn(server.run());
 
         Self {
