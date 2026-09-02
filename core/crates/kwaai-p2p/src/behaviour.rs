@@ -10,10 +10,16 @@
 //!   `/kwaai/kad/1.0.0` alone, and the `kad-multi-protocol` build — the
 //!   bootstrap-grade one for the migration window — also answers the legacy
 //!   `/ipfs/kad/1.0.0`, so peers that predate the kwaai name still match.
-//!   Serving the legacy name is what lets the public IPFS DHT absorb a
-//!   publicly reachable node, which is why the stock default is the name
-//!   that cannot be absorbed, and why the dual build is reserved for the
-//!   one host that must bridge. There is no runtime knob; the rollout
+//!   Serving the legacy name is what lets the public IPFS DHT recruit a
+//!   publicly reachable node as one of its *DHT servers* — the absorption
+//!   mode that fills routing tables and OOM-killed the old bootstraps — so
+//!   the stock default is the name that cannot be recruited, and the dual
+//!   build is reserved for the one host that must bridge. Narrower claim
+//!   than it sounds: foreign peers still *connect* (TCP/noise/identify all
+//!   negotiate below kad, and their addresses arrive from already-absorbed
+//!   peers' tables), so the connection table fills either way — measured
+//!   live on both builds. Connection-level gating is #174's job, not this
+//!   protocol set's. There is no runtime knob; the rollout
 //!   order (dual bootstraps deployed before any node upgrades) is what
 //!   keeps upgraded and legacy nodes routable to each other.
 //!

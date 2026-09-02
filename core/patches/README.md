@@ -50,7 +50,9 @@ Serving the legacy name on a public address is what let the global IPFS DHT
 absorb the old bootstraps (2026-08-31: several hundred foreign peers each,
 p2pd OOM-killed every 30–90 min), which is why the stock default is
 kwaai-only and there is no runtime knob (`docs/BOOTSTRAP.md` has the
-rollout order).
+rollout order). The rename ends recruitment as a *DHT server* — the
+routing-table/OOM vector — but foreign peers still connect below kad, so
+connection tables fill regardless; that half belongs to KwaaiNet#174.
 
 The entire delta is `libp2p-kad.patch` (two added methods, two files).
 
