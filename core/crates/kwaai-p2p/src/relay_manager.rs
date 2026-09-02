@@ -241,9 +241,24 @@ impl RelayManager {
         // Already a candidate — configured, or discovered earlier. Nothing to
         // add, but this identify may be the one that makes a pending
         // reservation negotiable, so hand it to `on_relay_ready`.
-        if self.configured.iter().any(|(p, _)| *p == peer)
-            || self.discovered.iter().any(|(p, _)| *p == peer)
-        {
+        if self.configured.iter().any(|(p, _)| *p == peer) {
+            return self.on_relay_ready(peer, now);
+        }
+        if let Some(entry) = self.discovered.iter_mut().find(|(p, _)| *p == peer) {
+            // Refresh the stored address only once the peer stops listening on
+            // it: it was recorded at first sighting, so a relay that came back
+            // somewhere else (a reborn bootstrap) would otherwise be re-dialled
+            // at the stale address forever. Conditional because
+            // `with_push_listen_addr_updates` means a relay pushes identify
+            // whenever its listen set *changes* — merely gaining an address —
+            // and replacing unconditionally would move us off one that works.
+            let stored_still_listed = listen_addrs.iter().any(|a| strip_p2p(a) == entry.1);
+            if !stored_still_listed {
+                if let Some(fresh) = listen_addrs.iter().find(|a| is_relay_candidate_addr(a)) {
+                    debug!(%peer, from = %entry.1, to = %fresh, "relay candidate moved");
+                    entry.1 = strip_p2p(fresh);
+                }
+            }
             return self.on_relay_ready(peer, now);
         }
         // A relay we can only reach at a LAN address is no use to peers who are
@@ -849,6 +864,85 @@ mod tests {
                 assert!(circuit_addr.to_string().ends_with("/p2p-circuit"))
             }
             other => panic!("expected a Listen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_discovered_relay_that_moved_is_redialled_at_its_new_address() {
+        // Regression: the discovered list froze a candidate's address at first
+        // sighting. A relay that came back somewhere else — a reborn bootstrap
+        // after a fleet migration — was re-dialled at the stale address on
+        // every backoff expiry, forever.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(&[], 1);
+        mgr.set_enabled(true, now);
+        let actions = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            now,
+        );
+        assert_eq!(dial_target(&actions[0]), peer(7));
+
+        // The dial fails (the relay is restarting elsewhere)…
+        mgr.on_relay_dial_failed(peer(7), now);
+        // …and a later identify shows the same peer at a new address.
+        let refresh = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.8/tcp/9090".parse().unwrap()],
+            now,
+        );
+        assert!(refresh.is_empty(), "not pending, so nothing to do yet");
+
+        // Once the backoff lapses, the retry must go where the relay is now.
+        let actions = mgr.on_tick(now + Duration::from_secs(120));
+        match &actions[..] {
+            [RelayAction::Dial { relay, relay_addr }] => {
+                assert_eq!(*relay, peer(7));
+                assert_eq!(relay_addr.to_string(), "/ip4/198.51.100.8/tcp/9090");
+            }
+            other => panic!("expected one Dial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_discovered_relay_that_only_gained_an_address_is_not_moved() {
+        // The other half of the refresh: `with_push_listen_addr_updates` means
+        // a relay pushes identify whenever its listen set changes, so a relay
+        // we are reaching perfectly well announces itself again the moment it
+        // adds an address. Taking the first candidate unconditionally would
+        // walk us off the address that works onto whichever one sorts first.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(&[], 1);
+        mgr.set_enabled(true, now);
+        let actions = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            now,
+        );
+        assert_eq!(dial_target(&actions[0]), peer(7));
+        mgr.on_relay_dial_failed(peer(7), now);
+
+        // Still listening where we know it, plus a new address listed first.
+        mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &[
+                "/ip4/198.51.100.9/tcp/9999".parse().unwrap(),
+                "/ip4/198.51.100.7/tcp/8080".parse().unwrap(),
+            ],
+            now,
+        );
+
+        let actions = mgr.on_tick(now + Duration::from_secs(120));
+        match &actions[..] {
+            [RelayAction::Dial { relay, relay_addr }] => {
+                assert_eq!(*relay, peer(7));
+                assert_eq!(relay_addr.to_string(), "/ip4/198.51.100.7/tcp/8080");
+            }
+            other => panic!("expected one Dial, got {other:?}"),
         }
     }
 
