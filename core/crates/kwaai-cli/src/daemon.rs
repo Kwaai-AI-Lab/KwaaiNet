@@ -391,10 +391,48 @@ impl ShardManager {
         run_dir().join("shard.ready")
     }
 
+    /// Sentinel for the *other* way a node serves inference: whole-model, over
+    /// `/kwaai/ollama-proxy/1.0.0`.
+    ///
+    /// Deliberately not `shard.ready`. That one means "a block shard is loaded",
+    /// and callers act on the block range it implies; a Mac on the Ollama path
+    /// has no block range at all. Two sentinels keep both claims truthful, and
+    /// keep `shard_is_ready()` meaning what its callers already assume.
+    pub fn whole_model_ready_file() -> PathBuf {
+        run_dir().join("whole_model.ready")
+    }
+
     /// Returns true only when the shard process is alive AND the model is fully
     /// loaded (i.e. shard_cmd has written the `shard.ready` sentinel file).
     pub fn shard_is_ready() -> bool {
         Self::ready_file().exists() && Self::new().is_running()
+    }
+
+    /// Whether this node is serving whole-model inference.
+    ///
+    /// No liveness check, unlike [`shard_is_ready`]: the block shard runs as a
+    /// separate process that can die behind its pid file, whereas whole-model
+    /// serving is registered by the announcing process itself — so reaching
+    /// this code is the liveness proof. A sentinel left by a killed process is
+    /// rewritten on the next registration.
+    pub fn whole_model_is_ready() -> bool {
+        Self::whole_model_ready_file().exists()
+    }
+
+    /// Record that this node is serving whole-model inference.
+    pub fn mark_whole_model_ready() {
+        let path = Self::whole_model_ready_file();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, b"") {
+            tracing::warn!(path = %path.display(), "could not write whole-model sentinel: {e}");
+        }
+    }
+
+    /// Clear the whole-model sentinel — the node is no longer serving.
+    pub fn clear_whole_model_ready() {
+        let _ = std::fs::remove_file(Self::whole_model_ready_file());
     }
 
     pub fn is_running(&self) -> bool {
@@ -648,5 +686,87 @@ extern "C" {
 mod libc {
     extern "C" {
         pub fn setsid() -> i32;
+    }
+}
+
+#[cfg(test)]
+mod whole_model_readiness_tests {
+    use super::*;
+    use crate::config::KwaaiNetConfig;
+
+    /// Regression for #175: a node serving whole models over the Ollama proxy
+    /// must announce ONLINE (2), not JOINING (0).
+    ///
+    /// `announce_state` gated only on `shard.ready`, which the block-sharding
+    /// path writes and the macOS whole-model path deliberately does not — so a
+    /// Mac that was serving perfectly well announced JOINING for as long as it
+    /// ran. That put it off the map and, worse, out of `shard run`'s candidate
+    /// set, which filters on `state == 2`.
+    ///
+    /// Serialised and env-scoped: these tests move a real sentinel under
+    /// `KWAAINET_HOME`, so they must not run against a live node's run dir.
+    #[test]
+    fn whole_model_serving_announces_online() {
+        let tmp = std::env::temp_dir().join(format!("kwaai-wm-ready-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("KWAAINET_HOME", &tmp);
+
+        // Neither mode ready: JOINING. This is the state the bug left a Mac in.
+        ShardManager::clear_whole_model_ready();
+        let _ = std::fs::remove_file(ShardManager::ready_file());
+        assert!(!ShardManager::whole_model_is_ready());
+        assert_eq!(
+            KwaaiNetConfig::announce_state(),
+            0,
+            "nothing to serve must stay JOINING"
+        );
+
+        // Whole-model serving, no block shard — the macOS stopgap.
+        ShardManager::mark_whole_model_ready();
+        assert!(ShardManager::whole_model_is_ready());
+        assert_eq!(
+            KwaaiNetConfig::announce_state(),
+            2,
+            "a node serving whole models over the Ollama proxy is ONLINE"
+        );
+
+        // Losing Ollama must retract the claim rather than advertise a dead path.
+        ShardManager::clear_whole_model_ready();
+        assert_eq!(
+            KwaaiNetConfig::announce_state(),
+            0,
+            "clearing the sentinel must drop back to JOINING"
+        );
+
+        std::env::remove_var("KWAAINET_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The two sentinels stay distinct: whole-model readiness must not make
+    /// `shard_is_ready()` true, because its callers act on the block range that
+    /// implies, and a whole-model node has none.
+    #[test]
+    fn whole_model_readiness_does_not_imply_a_block_shard() {
+        let tmp = std::env::temp_dir().join(format!("kwaai-wm-distinct-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("KWAAINET_HOME", &tmp);
+
+        let _ = std::fs::remove_file(ShardManager::ready_file());
+        ShardManager::mark_whole_model_ready();
+
+        assert!(ShardManager::whole_model_is_ready());
+        assert!(
+            !ShardManager::shard_is_ready(),
+            "the whole-model sentinel must not be mistaken for a loaded block shard"
+        );
+        assert_ne!(
+            ShardManager::ready_file(),
+            ShardManager::whole_model_ready_file(),
+            "the two sentinels must be separate files"
+        );
+
+        ShardManager::clear_whole_model_ready();
+        std::env::remove_var("KWAAINET_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

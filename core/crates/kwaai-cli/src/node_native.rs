@@ -472,6 +472,10 @@ pub async fn run_native_node(
     };
 
     let mut config = config.clone();
+    // Derive whole-model readiness before the first announce, so a Mac that is
+    // already serving comes up ONLINE instead of sitting at JOINING until the
+    // first re-announce tick.
+    crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
     let mut server_info = DHTServerInfo::new(
         config.start_block() as i32,
         config.effective_end_block() as i32,
@@ -585,10 +589,15 @@ pub async fn run_native_node(
                 }
 
                 if config.announce_self {
+                    // Re-derive whole-model readiness first: on a Mac this is what
+                    // makes the difference between ONLINE and JOINING, and Ollama
+                    // can come and go under a long-running node.
+                    crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
                     refresh_server_info(&mut server_info, &config);
                     info!(
-                        "Re-announcing to DHT (shard_ready={})...",
-                        ShardManager::shard_is_ready()
+                        "Re-announcing to DHT (shard_ready={}, whole_model_ready={})...",
+                        ShardManager::shard_is_ready(),
+                        ShardManager::whole_model_is_ready()
                     );
                     match node.announce(&ctx, &server_info, bootstrap_peers).await {
                         Ok(timings) => {

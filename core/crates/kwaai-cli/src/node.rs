@@ -504,6 +504,10 @@ pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result
     let announce_start = config.start_block() as i32;
     let announce_end = config.effective_end_block() as i32;
 
+    // Derive whole-model readiness before the first announce, so a Mac that is
+    // already serving comes up ONLINE instead of sitting at JOINING until the
+    // first re-announce tick.
+    crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
     let mut server_info = DHTServerInfo::new(
         announce_start,
         announce_end,
@@ -820,8 +824,16 @@ pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result
                 let eb = config.effective_end_block() as i32;
                 server_info.start_block = sb;
                 server_info.end_block = eb;
+                // Re-derive whole-model readiness first: on a Mac this is what
+                // makes the difference between ONLINE and JOINING, and Ollama can
+                // come and go under a long-running node.
+                crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
                 server_info.state = KwaaiNetConfig::announce_state();
-                info!("Re-announcing to DHT (shard_ready={})...", ShardManager::shard_is_ready());
+                info!(
+                    "Re-announcing to DHT (shard_ready={}, whole_model_ready={})...",
+                    ShardManager::shard_is_ready(),
+                    ShardManager::whole_model_is_ready()
+                );
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
                     &prefix, &repository, config.model_total_blocks(),
