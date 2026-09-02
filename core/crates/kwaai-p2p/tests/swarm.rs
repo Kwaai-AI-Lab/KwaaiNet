@@ -191,6 +191,118 @@ async fn kad_resolves_a_peer_two_hops_away() {
 }
 
 // ---------------------------------------------------------------------------
+// Kad protocol migration: legacy-only ↔ dual-default ↔ kwaai-only
+// ---------------------------------------------------------------------------
+
+/// Like [`spawn_test_swarm`] but with an explicit kad protocol list.
+/// Needs the patched setter: a single-name build cannot construct the
+/// bridging node this topology tests.
+#[cfg(feature = "kad-multi-protocol")]
+fn spawn_swarm_with_kad_protocols(
+    protocols: &[&str],
+) -> (NetworkHandle, tokio::task::JoinHandle<()>, PeerId) {
+    let keypair = Keypair::generate_ed25519();
+    let peer_id = keypair.public().to_peer_id();
+    let config = NetworkConfig {
+        kad_protocols: protocols
+            .iter()
+            .map(|s| libp2p::StreamProtocol::try_from_owned((*s).to_string()).expect("valid"))
+            .collect(),
+        ..NetworkConfig::for_tests()
+    };
+    let (handle, task) = NetworkService::spawn(config, keypair).expect("swarm should start");
+    (handle, task, peer_id)
+}
+
+/// The cutover topology in miniature — with the probe placed where the
+/// short-circuit cannot reach it. A speaks only the legacy `/ipfs/kad/1.0.0`
+/// (a node predating the kwaai name), B runs this build's dual set (a
+/// migration-window bootstrap), C and D speak only `/kwaai/kad/1.0.0`.
+///
+/// The previous version of this test asked B for C — but `dial()` seeds the
+/// routing table for every dialled peer and `DhtFindPeer` short-circuits on
+/// any known address, so that resolved from B's own dial records without a
+/// kad substream ever opening; it passed with B legacy-only, i.e. with the
+/// patched multi-name negotiation deleted (found in review). The probes are
+/// now for peers the caller has *never dialled*, so each answer can only
+/// come from a real FIND_NODE round trip:
+///
+/// - `b.dht_find_peer(d)` — B has no address for D; only C knows D, so the
+///   walk must negotiate `/kwaai/kad/1.0.0` with C.
+/// - `a.dht_find_peer(d)` — A must first negotiate the legacy name with B,
+///   and the answer still only exists on the far side of B↔C.
+#[cfg(feature = "kad-multi-protocol")]
+#[tokio::test]
+async fn kad_negotiates_across_the_protocol_migration() {
+    let (a, _a_task, _a_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+    let (b, _b_task, b_id) = spawn_test_swarm();
+    let (c, _c_task, c_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (d, _d_task, d_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+
+    let b_addr = dialable_addr(&b, b_id).await;
+    let c_addr = dialable_addr(&c, c_id).await;
+    let d_addr = dialable_addr(&d, d_id).await;
+
+    a.connect_peer(&b_addr.to_string()).await.expect("A → B");
+    b.connect_peer(&c_addr.to_string()).await.expect("B → C");
+    c.connect_peer(&d_addr.to_string()).await.expect("C → D");
+
+    // The kwaai leg: B has never dialled D, so this is a genuine walk that
+    // must open a kad substream to C and negotiate the kwaai name.
+    let d_addrs = eventually("B to resolve D through C over /kwaai/kad", || async {
+        let addrs = b.dht_find_peer(d_id).await.ok()?;
+        (!addrs.is_empty()).then_some(addrs)
+    })
+    .await;
+    assert!(
+        d_addrs
+            .iter()
+            .any(|addr| addr.to_string().contains("/tcp/")),
+        "resolved addresses should be dialable TCP addrs: {d_addrs:?}"
+    );
+
+    // The legacy leg, end to end: A's only kad peer is B (legacy name), and
+    // D's address only exists beyond B's kwaai leg.
+    eventually("A to resolve D through B on the legacy name", || async {
+        let addrs = a.dht_find_peer(d_id).await.ok()?;
+        (!addrs.is_empty()).then_some(())
+    })
+    .await;
+}
+
+/// The negative control that makes the test above falsifiable: identical
+/// topology, but the bridge speaks only the legacy name — the state the
+/// fleet is in when the patched `set_protocol_names` stops working. B and C
+/// share no kad protocol, so B must NOT be able to resolve D. If this probe
+/// ever yields addresses, the short-circuit is back and the migration test
+/// proves nothing again.
+#[cfg(feature = "kad-multi-protocol")]
+#[tokio::test]
+async fn a_legacy_only_bridge_cannot_resolve_across_the_protocol_boundary() {
+    let (b, _b_task, _b_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+    let (c, _c_task, c_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (d, _d_task, d_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+
+    let c_addr = dialable_addr(&c, c_id).await;
+    let d_addr = dialable_addr(&d, d_id).await;
+
+    b.connect_peer(&c_addr.to_string()).await.expect("B → C");
+    c.connect_peer(&d_addr.to_string()).await.expect("C → D");
+
+    // A failed or timed-out walk is the correct outcome; only a walk that
+    // *yields addresses* means the boundary leaked.
+    if let Ok(Ok(addrs)) =
+        tokio::time::timeout(std::time::Duration::from_secs(8), b.dht_find_peer(d_id)).await
+    {
+        assert!(
+            addrs.is_empty(),
+            "B resolved D without a shared kad protocol — the walk was \
+             short-circuited: {addrs:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Handle semantics
 // ---------------------------------------------------------------------------
 

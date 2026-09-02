@@ -7,6 +7,13 @@
 # Idempotent: re-runs are no-ops unless the patch file changed.
 set -euo pipefail
 
+# Partial by design: this fetches one crate. Run directly it still exits 0 with
+# the other patched crates missing, and the omission only surfaces later as a
+# workspace parse failure — so say so. fetch-patches.sh sets the variable.
+if [ -z "${KWAAI_FETCH_PATCHES:-}" ]; then
+    echo "note: this script fetches only multistream-select; run core/patches/fetch-patches.sh to get every patched crate" >&2
+fi
+
 # SHA-256 front end. Stock macOS ships `shasum` (a perl script) but not
 # `sha256sum`; most Linux images ship `sha256sum` and usually, but not always,
 # `shasum`. Git Bash on a Windows runner reaches this script through

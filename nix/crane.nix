@@ -22,11 +22,11 @@ let
   cargoToml = builtins.fromTOML (builtins.readFile (./.. + "/core/Cargo.toml"));
   version = cargoToml.package.version;
 
-  # multistream-select with the slash-less protocol-ID patch. The working-tree
-  # copy is produced by core/patches/fetch-multistream-select.sh and is
-  # gitignored, so the flake materializes it the same way: pristine crates.io
-  # tarball (same pinned sha256 as the script) plus the tracked patch file.
-  # See core/patches/README.md.
+  # The patched dependencies, materialized the way core/patches/*.sh do it:
+  # pristine crates.io tarball (same pinned sha256 as each script) plus the
+  # tracked patch file. Running the scripts is not an option here — their
+  # output is gitignored, and a flake build reads the git tree, not the
+  # working copy. See core/patches/README.md.
   multistreamSelectPatched =
     pkgs.runCommand "multistream-select-0.13.0-slashless"
       {
@@ -41,6 +41,24 @@ let
         mv multistream-select-0.13.0 $out
         cd $out
         patch -p1 < ${./.. + "/core/patches/multistream-select.patch"}
+      '';
+
+  # libp2p-kad with `set_protocol_names` restored, for the kad protocol
+  # migration. Same shape as multistream-select above; sha256 matches
+  # core/patches/fetch-libp2p-kad.sh.
+  libp2pKadPatched =
+    pkgs.runCommand "libp2p-kad-0.48.0-multi-protocol"
+      {
+        crate = pkgs.fetchurl {
+          url = "https://static.crates.io/crates/libp2p-kad/libp2p-kad-0.48.0.crate";
+          sha256 = "13d3fd632a5872ec804d37e7413ceea20588f69d027a0fa3c46f82574f4dee60";
+        };
+      }
+      ''
+        tar -xzf "$crate"
+        mv libp2p-kad-0.48.0 $out
+        cd $out
+        patch -p1 < ${./.. + "/core/patches/libp2p-kad.patch"}
       '';
 
   # Source filter: keep .rs, .toml, .lock, .proto, and non-code assets
@@ -65,6 +83,8 @@ let
     mkdir -p $out/patches
     rm -rf $out/patches/multistream-select
     cp -r ${multistreamSelectPatched} $out/patches/multistream-select
+    rm -rf $out/patches/libp2p-kad
+    cp -r ${libp2pKadPatched} $out/patches/libp2p-kad
   '';
 
   commonArgs = {

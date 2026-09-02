@@ -14,7 +14,7 @@ jobs:
         with:
           submodules: recursive
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 
       - name: Install build deps

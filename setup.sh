@@ -32,7 +32,7 @@ echo ""
 
 # 0. Patched dependencies — cargo cannot parse the workspace without them.
 #    See core/patches/README.md.
-bash "$(dirname "$0")/core/patches/fetch-multistream-select.sh"
+bash "$(dirname "$0")/core/patches/fetch-patches.sh"
 
 # 1. Git
 if ! command -v git &> /dev/null; then

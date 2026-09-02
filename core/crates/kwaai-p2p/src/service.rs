@@ -337,6 +337,23 @@ impl NetworkService {
                             //   peers only from identify plus a live FIND_NODE
                             //   probe.
                             //
+                            //   Which build you are in decides how much of
+                            //   that caveat applies. A stock (single-name)
+                            //   build takes the 0-RTT shortcut on every kad
+                            //   substream, so the paragraph above is fully in
+                            //   force: during the migration window a routing
+                            //   table can fill with peers that never confirmed
+                            //   kad, and the connection-manager work (#174)
+                            //   plus gating laziness on identify's protocol
+                            //   set are the follow-ups that close it. The
+                            //   `kad-multi-protocol` (bootstrap) build offers
+                            //   two names, V1Lazy only shortcuts the *last*
+                            //   offer (see `dialer_select.rs`), so its
+                            //   preferred name negotiates eagerly — refusals
+                            //   visible, at +1 RTT per substream (+2 against a
+                            //   legacy-only peer). Accepted for the migration
+                            //   window on the handful of hosts that run it.
+                            //
                             // Closing both at the source means gating laziness
                             // on identify's known-protocol set, as go does.
                             // Tracked as a follow-up, not done here.

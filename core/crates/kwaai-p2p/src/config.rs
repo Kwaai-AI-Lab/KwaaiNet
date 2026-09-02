@@ -1,5 +1,6 @@
 //! Configuration for P2P networking
 
+use libp2p::StreamProtocol;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -21,6 +22,15 @@ pub const PETALS_BOOTSTRAP_SERVERS: &[&str] = &[
     // uncomment for local development bootstrap server
     //"/ip4/127.0.0.1/tcp/8000/p2p/QmXwErKD4k7aLzgDWGuNj5yjEtiMuicGp72juNB3Yyqtt9"
 ];
+
+/// KwaaiNet's own Kademlia protocol ID.
+pub const KWAAI_KAD_PROTOCOL: &str = "/kwaai/kad/1.0.0";
+
+/// The default libp2p Kademlia protocol ID — shared with the public IPFS DHT,
+/// which is exactly the problem: any node serving it on a public address gets
+/// absorbed into IPFS's routing tables and crawled indefinitely. Kept only for
+/// wire compatibility with peers that predate [`KWAAI_KAD_PROTOCOL`].
+pub const LEGACY_KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
 
 /// KwaaiNet bootstrap servers addressed by `/dnsaddr/`.
 ///
@@ -133,6 +143,17 @@ pub struct NetworkConfig {
     #[serde(default = "default_relay_max_circuit_duration")]
     pub relay_max_circuit_duration: Duration,
 
+    /// Kad protocol names this swarm serves, in outbound preference order.
+    ///
+    /// **Not a user-facing setting** — `#[serde(skip)]`, no `config.yaml`
+    /// key, and production always takes the compiled default. It exists as a
+    /// field only so tests can build swarms with differing protocol sets and
+    /// exercise the migration topology in-process; there is no way for an
+    /// operator to reach it. See [`kad_protocols()`] for why the real choice
+    /// is a build flag rather than configuration.
+    #[serde(skip, default = "default_kad_protocol_field")]
+    pub kad_protocols: Vec<StreamProtocol>,
+
     /// Ask the local gateway to map our listen port via UPnP/IGD.
     ///
     /// On by default (parity with p2pd's `-natPortMap`), off in
@@ -202,6 +223,54 @@ fn default_identify_min_confirmations() -> usize {
     2
 }
 
+/// Default for [`NetworkConfig::kad_protocols`] — see [`kad_protocols()`].
+fn default_kad_protocol_field() -> Vec<StreamProtocol> {
+    kad_protocols()
+}
+
+/// Whether this build can serve more than one kad protocol name.
+pub const KAD_MULTI_PROTOCOL_BUILD: bool = cfg!(feature = "kad-multi-protocol");
+
+/// The kad protocol names this build serves, in outbound preference order.
+///
+/// Compiled in, deliberately not configurable. Which names a node serves
+/// decides whether the public IPFS DHT can absorb it, and every attempt to
+/// express that as configuration turned out to be a way of getting it
+/// silently wrong: entries droppable one at a time, an invalid list falling
+/// back to the default that restored the very name the operator was removing,
+/// and validation split across two crates that could disagree with each
+/// other. A build flag has none of those failure modes — a binary either can
+/// serve both names or cannot — and it logs which at startup.
+///
+/// `kad-multi-protocol` is the bootstrap-grade build for the migration
+/// window: it also answers the legacy `/ipfs/kad/1.0.0`, so peers predating
+/// the kwaai name are not cut off while the fleet upgrades. Serving that name
+/// on a public address is what lets the global IPFS DHT absorb a node, so it
+/// is a deliberate, temporary trade on the one host that has to bridge.
+/// Retire the feature, and the patched libp2p-kad with it, once the fleet has
+/// moved.
+///
+/// **Two names cost a round trip.** `V1Lazy` takes the 0-RTT shortcut only on
+/// the last protocol offered, so the preferred name negotiates eagerly: +1
+/// RTT per kad substream against an upgraded peer, +2 against a legacy-only
+/// one, which refuses the kwaai name before falling back. kad opens a
+/// substream per request, so that is per DHT hop — another reason this
+/// belongs to the migration window rather than to steady state.
+pub fn kad_protocols() -> Vec<StreamProtocol> {
+    let names: &[&str] = if KAD_MULTI_PROTOCOL_BUILD {
+        &[KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]
+    } else {
+        &[KWAAI_KAD_PROTOCOL]
+    };
+    names
+        .iter()
+        .map(|n| {
+            StreamProtocol::try_from_owned((*n).to_string())
+                .expect("compiled kad protocol ids are valid")
+        })
+        .collect()
+}
+
 /// 4 GiB, the p2pd relay's `-relayDataLimit`.
 fn default_relay_max_circuit_bytes() -> u64 {
     1 << 32
@@ -242,6 +311,7 @@ impl Default for NetworkConfig {
             relay_server: true,
             relay_max_circuit_bytes: default_relay_max_circuit_bytes(),
             relay_max_circuit_duration: default_relay_max_circuit_duration(),
+            kad_protocols: default_kad_protocol_field(),
             enable_upnp: true,
             force_private: false,
             external_addr: None,
@@ -461,5 +531,28 @@ mod relay_circuit_limits {
             Duration::from_secs(30 * 60),
             "an old config must pick up the new default, not libp2p's",
         );
+    }
+}
+
+#[cfg(test)]
+mod kad_protocols {
+    use super::*;
+
+    /// The kwaai name is always preferred, and is the only one an ordinary
+    /// build serves. A node serving `/ipfs/kad/1.0.0` on a public address is
+    /// one the global IPFS DHT can absorb, which is the whole point.
+    #[test]
+    fn the_build_decides_the_protocol_set() {
+        let names: Vec<String> = kad_protocols().iter().map(|p| p.to_string()).collect();
+        assert_eq!(names[0], KWAAI_KAD_PROTOCOL, "kwaai is always preferred");
+        if KAD_MULTI_PROTOCOL_BUILD {
+            assert_eq!(names, vec![KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL]);
+        } else {
+            assert_eq!(
+                names,
+                vec![KWAAI_KAD_PROTOCOL],
+                "an ordinary build must not serve the legacy name"
+            );
+        }
     }
 }

@@ -38,6 +38,41 @@ Without these, the process is an ordinary node, not a bootstrap.
 | `no_relay` | `false` | `false` | Keep the circuit relay hop service **on**: NATed nodes reserve circuits through the bootstraps. Set `true` only to deliberately withhold relay. |
 | `max_connections` | sized to the host | `100` | The ceiling on established connections, and the only bound on how far the swarm's memory grows — idle connections are held for ten minutes. 100 suits a node that mostly dials out; a bootstrap mostly receives, and wants several hundred to low thousands. Budget roughly a megabyte per connection. Inbound is capped at 4/5 of this so the node can always still dial. |
 
+### The kad protocol set is a build flag, not a key
+
+There is deliberately no `kad_protocols` setting. Which Kademlia protocol
+names a node serves decides whether the public IPFS DHT can absorb it —
+measured at 300–600 foreign peers per bootstrap against a ~12-node real
+routing table, with p2pd OOM-killed every 30–90 minutes — and every attempt to
+express that as configuration turned out to be a way of getting it silently
+wrong. So it is compiled in:
+
+| build | serves |
+|---|---|
+| ordinary (`cargo build --release -p kwaainet`) | `/kwaai/kad/1.0.0` |
+| `--features kad-multi-protocol` | `/kwaai/kad/1.0.0` **and** `/ipfs/kad/1.0.0` |
+
+**A bootstrap needs the second one during the migration window**, and only
+then. Peers that predate the kwaai name reach the network through the
+bootstraps, so a bootstrap that serves the kwaai name alone cuts them off
+until they upgrade. It is the one host where the IPFS-absorption exposure is
+a deliberate, temporary trade. Once the fleet has moved, rebuild the
+bootstraps without the feature — that is the end of the migration, and the
+patched `libp2p-kad` goes with it.
+
+The node logs its protocol set at startup (`kad protocol set`), including
+whether this is a multi-protocol build, because nothing else distinguishes
+the two binaries at runtime. Check it after deploying a bootstrap.
+
+**Disable self-update on a dual-protocol bootstrap.** The release pipeline
+builds no `kad-multi-protocol` artifact, and `contribute.auto_update`
+defaults to `true` — so a hand-built dual bootstrap would replace itself
+with the stock kwaai-only release at its next update check, silently ending
+legacy bridging mid-migration. Set `contribute.auto_update: false` in its
+config, or `KWAAINET_NO_AUTO_UPDATE=1` in the service environment (what the
+production systemd units do): the version a bootstrap runs is the
+deployment's decision, and the running binary must not overrule it.
+
 ### Independent keys worth setting
 
 Nothing about being a bootstrap changes what these mean, and no code derives

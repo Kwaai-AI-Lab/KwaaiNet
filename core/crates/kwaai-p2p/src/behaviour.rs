@@ -5,10 +5,23 @@
 //! - [`ping`] — liveness / RTT, and it keeps otherwise-idle connections honest.
 //! - [`identify`] — protocol/agent advertisement plus the **observed address**
 //!   feed that later phases use for reachability detection.
-//! - [`kad`] — Kademlia peer routing on the *default* `/ipfs/kad/1.0.0`
-//!   protocol. This is deliberate: the Python bootstraps run hivemind's
-//!   go-libp2p daemon with no `ProtocolPrefix`, so any custom protocol name
-//!   here silently partitions us from the live network.
+//! - [`kad`] — Kademlia peer routing. **The build decides the protocol set**
+//!   (see [`crate::config::kad_protocols()`]): a stock build serves
+//!   `/kwaai/kad/1.0.0` alone, and the `kad-multi-protocol` build — the
+//!   bootstrap-grade one for the migration window — also answers the legacy
+//!   `/ipfs/kad/1.0.0`, so peers that predate the kwaai name still match.
+//!   Serving the legacy name is what lets the public IPFS DHT recruit a
+//!   publicly reachable node as one of its *DHT servers* — the absorption
+//!   mode that fills routing tables and OOM-killed the old bootstraps — so
+//!   the stock default is the name that cannot be recruited, and the dual
+//!   build is reserved for the one host that must bridge. Narrower claim
+//!   than it sounds: foreign peers still *connect* (TCP/noise/identify all
+//!   negotiate below kad, and their addresses arrive from already-absorbed
+//!   peers' tables), so the connection table fills either way — measured
+//!   live on both builds. Connection-level gating is #174's job, not this
+//!   protocol set's. There is no runtime knob; the rollout
+//!   order (dual bootstraps deployed before any node upgrades) is what
+//!   keeps upgraded and legacy nodes routable to each other.
 //!
 //! - [`unary`] — hivemind unary RPC. Inbound handler protocols register at
 //!   runtime, so the behaviour starts with an empty protocol set and the
@@ -47,7 +60,7 @@ use libp2p::{
     upnp, {identity, PeerId},
 };
 
-use crate::config::NetworkConfig;
+use crate::config::{NetworkConfig, KAD_MULTI_PROTOCOL_BUILD};
 use crate::{raw_stream, unary};
 
 /// The `protocol_version` advertised over identify.
@@ -138,9 +151,32 @@ impl KwaaiBehaviour {
                 .with_interval(Duration::from_secs(5 * 60)),
         );
 
-        // NOTE: `kad::Config::default()` uses `/ipfs/kad/1.0.0`. Do not call
-        // `set_protocol_names` — see the module docs.
-        let mut kad_config = kad::Config::default();
+        // Compiled in, so nothing here can disagree with the binary. Logged
+        // because a bootstrap built from the wrong artifact is otherwise
+        // silent about it: the build flag shows up nowhere else at runtime.
+        let protocols = config.kad_protocols.clone();
+        debug_assert!(
+            protocols.len() <= 1 || KAD_MULTI_PROTOCOL_BUILD,
+            "more than one kad protocol on a build that cannot serve them"
+        );
+        tracing::info!(
+            protocols = ?protocols.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+            multi_protocol_build = KAD_MULTI_PROTOCOL_BUILD,
+            "kad protocol set"
+        );
+        // `first()` with a fallback rather than an index: the compiled sets
+        // are never empty, but the field is a pub Vec that tests and helpers
+        // may hand an empty list — which must not panic from inside the
+        // swarm builder. The patched `set_protocol_names` already ignores
+        // an empty list, so the fallback keeps the two behaviours aligned.
+        let mut kad_config = kad::Config::new(
+            protocols
+                .first()
+                .cloned()
+                .unwrap_or_else(|| crate::config::kad_protocols()[0].clone()),
+        );
+        #[cfg(feature = "kad-multi-protocol")]
+        kad_config.set_protocol_names(protocols);
         kad_config.set_query_timeout(config.request_timeout);
         kad_config.set_replication_factor(
             std::num::NonZeroUsize::new(config.dht_replication)

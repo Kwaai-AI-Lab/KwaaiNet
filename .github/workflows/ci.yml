@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
@@ -122,7 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
@@ -184,6 +184,15 @@ jobs:
         working-directory: core
         run: cargo test --all
 
+      # The bootstrap-grade build: the one artifact that must not break is
+      # otherwise the only one nothing compiles. This also builds the
+      # patched-API call and the feature-gated migration test, so a libp2p
+      # bump that invalidates patches/libp2p-kad.patch fails here instead of
+      # at bootstrap deploy time.
+      - name: Test kwaai-p2p with kad-multi-protocol (bootstrap build)
+        working-directory: core
+        run: cargo test -p kwaai-p2p --features kad-multi-protocol
+
   # ── 3b. Windows type check (#146) ──────────────────────────────────────────
   # `main` did not compile on Windows for five days between #130 and #142: a
   # field added to a struct was populated only in the `#[cfg(unix)]` arm, and
@@ -213,7 +222,7 @@ jobs:
       # push, so a hashing problem there surfaced during a release.
       - name: fetch patched deps
         shell: bash
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -277,7 +286,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
@@ -336,7 +345,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: fetch patched deps
-        run: bash core/patches/fetch-multistream-select.sh
+        run: bash core/patches/fetch-patches.sh
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
