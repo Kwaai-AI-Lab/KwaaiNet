@@ -695,7 +695,7 @@ mod whole_model_readiness_tests {
     use crate::config::KwaaiNetConfig;
 
     /// Regression for #175: a node serving whole models over the Ollama proxy
-    /// must announce ONLINE (2), not JOINING (0).
+    /// must announce ONLINE (2), not JOINING (1).
     ///
     /// `announce_state` gated only on `shard.ready`, which the block-sharding
     /// path writes and the macOS whole-model path deliberately does not — so a
@@ -720,7 +720,7 @@ mod whole_model_readiness_tests {
         assert!(!ShardManager::whole_model_is_ready());
         assert_eq!(
             KwaaiNetConfig::announce_state(),
-            0,
+            1,
             "nothing to serve must stay JOINING"
         );
 
@@ -737,7 +737,7 @@ mod whole_model_readiness_tests {
         ShardManager::clear_whole_model_ready();
         assert_eq!(
             KwaaiNetConfig::announce_state(),
-            0,
+            1,
             "clearing the sentinel must drop back to JOINING"
         );
 
@@ -803,10 +803,10 @@ mod whole_model_readiness_tests {
         );
         assert_eq!(
             KwaaiNetConfig::announce_state(),
-            0,
+            1,
             "with Ollama gone, the node must stop claiming it can serve"
         );
-        eprintln!("announce_state() = 0 (JOINING) with Ollama unreachable");
+        eprintln!("announce_state() = 1 (JOINING) with Ollama unreachable");
 
         std::env::remove_var("KWAAINET_HOME");
         let _ = std::fs::remove_dir_all(&tmp);

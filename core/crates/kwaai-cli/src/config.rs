@@ -298,7 +298,7 @@ pub struct KwaaiNetConfig {
     pub dht_replication: usize,
     /// Announce `state=2` (ONLINE) even when no shard server is running.
     ///
-    /// Off by default, and deliberately so. A node announces `state=0`
+    /// Off by default, and deliberately so. A node announces `state=1`
     /// (JOINING) until `shard serve` reports its model loaded, because
     /// `shard run` filters on `state==2`: a node claiming ONLINE without an
     /// `/kwaai/inference/1.0.0` handler gets dialled and fails the session
@@ -1024,7 +1024,12 @@ impl KwaaiNetConfig {
         self.native_p2p == Some(false)
     }
 
-    /// The `state` field for a DHT announcement: `2` ONLINE, `0` JOINING.
+    /// The `state` field for a DHT announcement: `2` ONLINE, `1` JOINING.
+    ///
+    /// Not-serving is `1`, not `0`: petals' enum is `OFFLINE = 0, JOINING = 1,
+    /// ONLINE = 2`, and a node reaching this code is up and announcing, so `0`
+    /// (which the map rendered as "offline", indistinguishable from the `-1`
+    /// departure tombstone) was a lie about a healthy node.
     ///
     /// ONLINE means "this node will serve inference", not merely "this node is
     /// up" — `shard run` filters on `state == 2`, so a node that claims it
@@ -1051,7 +1056,7 @@ impl KwaaiNetConfig {
         }
         match Self::load_or_create() {
             Ok(cfg) if cfg.announce_online_without_shard => 2,
-            _ => 0,
+            _ => 1,
         }
     }
 
