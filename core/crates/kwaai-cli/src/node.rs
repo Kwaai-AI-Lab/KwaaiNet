@@ -1057,6 +1057,9 @@ async fn unannounce(
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
         shard_loading: false,
+        // A tombstone says "stop using me"; where to reach the node is
+        // exactly the thing it is withdrawing.
+        dial_addrs: Vec::new(),
     };
     // Use the same 360 s TTL as a regular announcement — Hivemind bootstrap
     // peers reject updates with a shorter TTL than the existing record.

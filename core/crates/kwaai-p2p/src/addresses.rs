@@ -152,6 +152,32 @@ pub fn is_circuit(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::P2pCircuit))
 }
 
+/// Whether this build could dial `addr` if a peer published it.
+///
+/// The swarm is built with TCP and QUIC only (`service.rs`, `with_tcp` →
+/// `with_quic` → `with_dns`), so a `/webtransport`, `/webrtc-direct` or
+/// `/ws` address is not merely unlikely to work — there is no transport
+/// registered that can attempt it. A relay that speaks those advertises them
+/// alongside its TCP and QUIC listeners, so our own circuit list picks them up
+/// and would otherwise publish them.
+///
+/// Worth filtering rather than letting the dial fail, on two counts: a
+/// certhash-bearing webtransport address is ~250 bytes against a DHT record
+/// replicated under every block key, and each undialable entry a peer
+/// publishes costs the dialer one more attempt before it reaches a usable one.
+pub fn uses_dialable_transport(addr: &Multiaddr) -> bool {
+    !addr.iter().any(|p| {
+        matches!(
+            p,
+            Protocol::WebTransport
+                | Protocol::WebRTCDirect
+                | Protocol::Ws(_)
+                | Protocol::Wss(_)
+                | Protocol::Certhash(_)
+        )
+    })
+}
+
 /// Whether a peer reachable at `addr` can serve as *our* relay.
 ///
 /// Deliberately **not** [`is_announceable`], which answers a different question.
@@ -287,6 +313,32 @@ mod tests {
 
     fn v4(s: &str) -> Ipv4Addr {
         s.parse().expect("test ipv4 should parse")
+    }
+
+    // -- transports this build can dial ---------------------------------
+
+    #[test]
+    fn tcp_and_quic_are_dialable_and_the_browser_transports_are_not() {
+        assert!(uses_dialable_transport(&ma("/ip4/1.2.3.4/tcp/4001")));
+        assert!(uses_dialable_transport(&ma(
+            "/ip4/1.2.3.4/udp/4001/quic-v1"
+        )));
+        assert!(!uses_dialable_transport(&ma(
+            "/ip4/1.2.3.4/udp/4001/webrtc-direct/certhash/uEiChFgLr6nfyrSBnELIvIQ0nEWo1hPP2shkHIZpFxRttKw"
+        )));
+        assert!(!uses_dialable_transport(&ma(
+            "/dns4/example.libp2p.direct/tcp/4001/tls/ws"
+        )));
+    }
+
+    /// A relay offering webtransport puts the certhash *before* the
+    /// `/p2p-circuit`, so the check has to look at the whole address rather
+    /// than just its tail.
+    #[test]
+    fn a_webtransport_circuit_is_rejected_despite_the_circuit_suffix() {
+        assert!(!uses_dialable_transport(&ma(
+            "/ip4/76.13.5.74/udp/4001/quic-v1/webtransport/certhash/uEiBIeyYi7BYMq_u71nPi3WJna-9kL5yAURJ5HYy0qXW3YQ/p2p/12D3KooWF7ckKo2HQojbtueQNuLYRT2XC2yzbvBbh4NK2rbi2Azg/p2p-circuit"
+        )));
     }
 
     // -- the golden case ------------------------------------------------

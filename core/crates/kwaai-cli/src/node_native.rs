@@ -106,6 +106,10 @@ pub struct NativeNode {
     /// Replica target for decentralized placement; meaningless when
     /// `decentralized` is false.
     replication: usize,
+    /// The operator's declared reachable address, if any. Copied here for the
+    /// same reason as the two fields above: it is an announce input, and
+    /// `announce` should not need a config reference to publish it.
+    announce_addr: Option<String>,
 }
 
 impl NativeNode {
@@ -286,6 +290,7 @@ impl NativeNode {
             tasks,
             decentralized: config.decentralized_dht,
             replication: config.dht_replication,
+            announce_addr: configured_announce_addr(config),
         })
     }
 
@@ -327,9 +332,18 @@ impl NativeNode {
     pub async fn announce(
         &self,
         ctx: &AnnounceContext<'_>,
-        server_info: &DHTServerInfo,
+        server_info: &mut DHTServerInfo,
         bootstrap_peers: &[String],
     ) -> Result<Vec<crate::announce::StoreTiming>> {
+        // Refreshed here, not by the caller, so no announce path can forget —
+        // a reservation rotating is what makes a published address wrong, and
+        // it lands between ticks.
+        server_info.dial_addrs = crate::announce::publishable_dial_addrs(
+            &self.handle,
+            self.peer_id,
+            self.announce_addr.as_deref(),
+        )
+        .await;
         let records = build_announce_records(ctx, server_info)?;
         for record in &records {
             self.storage.handle_store(record.clone());
@@ -490,7 +504,7 @@ pub async fn run_native_node(
     // ── Initial announcement ───────────────────────────────────────────────
     if config.announce_self {
         info!("[3/4] Announcing to DHT...");
-        if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+        if let Err(e) = node.announce(&ctx, &mut server_info, bootstrap_peers).await {
             warn!("Initial announce failed: {e:#} — will retry at the 300 s tick");
         }
     }
@@ -547,7 +561,7 @@ pub async fn run_native_node(
                 reload_block_range(&mut config);
                 refresh_server_info(&mut server_info, &config);
                 if config.announce_self {
-                    if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    if let Err(e) = node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                         warn!("Re-announce after SIGHUP failed: {e:#}");
                     }
                 }
@@ -599,7 +613,7 @@ pub async fn run_native_node(
                         ShardManager::shard_is_ready(),
                         ShardManager::whole_model_is_ready()
                     );
-                    match node.announce(&ctx, &server_info, bootstrap_peers).await {
+                    match node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                         Ok(timings) => {
                             record_reputation(&mut rep_store, timings);
                             if tick_state.announceable {
@@ -661,7 +675,7 @@ pub async fn run_native_node(
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 server_info.using_relay = using_relay;
                 refresh_server_info(&mut server_info, &config);
-                match node.announce(&ctx, &server_info, bootstrap_peers).await {
+                match node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                     // Only a successful publish consumes the epoch; on failure
                     // the next settle window or the 300 s tick retries it.
                     Ok(_) => last_announced_epoch = state.epoch,
@@ -674,7 +688,7 @@ pub async fn run_native_node(
             Some(()) = ollama_recovery_rx.recv(), if config.announce_self => {
                 info!("Ollama recovered — triggering immediate re-announce");
                 refresh_server_info(&mut server_info, &config);
-                if let Err(e) = node.announce(&ctx, &server_info, bootstrap_peers).await {
+                if let Err(e) = node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                     warn!("Re-announce after Ollama recovery failed: {e:#}");
                 }
             }
@@ -1006,7 +1020,7 @@ mod tests {
             repository: "https://huggingface.co/Qwen/Qwen3-8B",
             total_blocks: 32,
         };
-        let server_info = DHTServerInfo::new(
+        let mut server_info = DHTServerInfo::new(
             config.start_block() as i32,
             config.effective_end_block() as i32,
             "node-under-test",
@@ -1017,7 +1031,7 @@ mod tests {
             node.peer_id.to_base58(),
         );
 
-        node.announce(&ctx, &server_info, &[])
+        node.announce(&ctx, &mut server_info, &[])
             .await
             .expect("an ordinary announce must build its records");
         assert!(

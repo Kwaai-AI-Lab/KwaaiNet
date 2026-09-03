@@ -1406,11 +1406,10 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     println!("  Max tokens:   {}", max_tokens);
     print_separator();
 
-    // Connect to all block-server peers
+    // Connect to all block-server peers — best effort, and over the addresses
+    // each one published rather than by bare PeerId.
     for entry in &chain {
-        let multiaddr_hint = format!("/p2p/{}", entry.peer_id.to_base58());
-        let _ = client.connect_peer(&multiaddr_hint).await;
-        // best effort — may already be connected
+        let _ = connect_chain_entry(&mut client, entry).await;
     }
 
     // ── Inference loop ────────────────────────────────────────────────────────
@@ -1881,9 +1880,7 @@ async fn run_streaming_inner(
 
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {
-        let _ = client
-            .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
-            .await;
+        let _ = connect_chain_entry(&mut client, entry).await;
     }
 
     // Pin the path for this session.
@@ -2155,6 +2152,11 @@ pub struct BlockServerEntry {
     /// the shard-chain integration phase without another decoder pass.
     #[allow(dead_code)]
     pub lease_v1: bool,
+    /// Multiaddrs the peer published for itself, each already ending in
+    /// `/p2p/<its-peer-id>`. Empty for a peer running a binary that predates
+    /// the `addrs` field — the case [`connect_chain_entry`] falls back to a
+    /// bare-PeerId dial for.
+    pub dial_addrs: Vec<String>,
 }
 
 /// The peers a DHT read should query, given the configured list.
@@ -2223,6 +2225,39 @@ async fn resolve_query_peers(client: &mut P2PClient, configured: &[String]) -> V
         crate::peer_cache::PeerCache::load_default().dial_addrs(&out.iter().cloned().collect());
     out.extend(cached);
     out
+}
+
+/// Best-effort pre-connect to one chain entry, over the addresses it published.
+///
+/// Returns whether a connection exists afterwards — every caller treats this as
+/// advisory (dispatch retries the peer anyway and falls back to another), so a
+/// failure here is not an error.
+///
+/// # Why this is not just `connect_peer("/p2p/<id>")`
+///
+/// That form asks the daemon to resolve the peer through kad, which usually
+/// cannot: rust-libp2p answers `FIND_NODE` from its k-buckets alone, so a peer
+/// is findable only while it holds a slot in the right bucket on a peer the
+/// walk reaches — see [`crate::announce::DHTServerInfo::dial_addrs`]. When it
+/// does not, the lookup returns nothing after spending a full query timeout.
+/// Dialing a published address needs no lookup at all.
+///
+/// The bare-PeerId form is still tried last, and still matters: it is the only
+/// path for a peer whose binary predates `addrs`, and it succeeds immediately
+/// when the peer is already connected or already in our routing table. It is
+/// kept even when published addresses were tried and failed — a reservation
+/// that rotated since the announce leaves stale addresses and a peer that may
+/// still be in the table — at the cost of one lookup timeout when it is not.
+pub async fn connect_chain_entry(client: &mut P2PClient, entry: &BlockServerEntry) -> bool {
+    for addr in &entry.dial_addrs {
+        if client.connect_peer(addr).await.is_ok() {
+            return true;
+        }
+    }
+    client
+        .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
+        .await
+        .is_ok()
 }
 
 /// Query bootstrap peers for all block keys of `dht_prefix` and return a
@@ -2406,12 +2441,10 @@ pub async fn discover_inference_peer(
             // Values stored under _kwaai.inference.nodes use the same
             // DHTServerInfo msgpack encoding as block records.
             if result.result_type == 1 {
-                if let Some((state, _, _, name, peer_id_b58, version, tps, _lease_v1)) =
-                    decode_server_info_ext(&result.value)
-                {
-                    if state == 2 && version_meets_minimum(&version) {
-                        if let Ok(pid) = peer_id_b58.parse::<PeerId>() {
-                            candidates.push((tps, pid, name));
+                if let Some(info) = decode_server_info_ext(&result.value) {
+                    if info.state == 2 && version_meets_minimum(&info.version) {
+                        if let Ok(pid) = info.peer_id_b58.parse::<PeerId>() {
+                            candidates.push((info.throughput, pid, info.public_name));
                         }
                     }
                 }
@@ -2549,19 +2582,18 @@ async fn pick_gap_blocks(
 /// synthesise a stable key from `public_name:start_block` so they still count
 /// for gap detection even though they cannot be routed to directly.
 fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)> {
-    let (state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1) =
-        decode_server_info_ext(bytes)?;
+    let info = decode_server_info_ext(bytes)?;
     // Only include ONLINE nodes (state=2); skip JOINING (1) and OFFLINE (0/-1).
-    if state != 2 {
+    if info.state != 2 {
         return None;
     }
-    if !version_meets_minimum(&version) {
+    if !version_meets_minimum(&info.version) {
         return None;
     }
-    let (dedup_key, peer_id) = match peer_id_b58.parse::<PeerId>() {
+    let (dedup_key, peer_id) = match info.peer_id_b58.parse::<PeerId>() {
         Ok(pid) => (pid.to_base58(), pid),
         Err(_) => {
-            let key = format!("legacy:{}:{}", public_name, start_block);
+            let key = format!("legacy:{}:{}", info.public_name, info.start_block);
             (key, PeerId::random())
         }
     };
@@ -2569,12 +2601,13 @@ fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)
         dedup_key,
         BlockServerEntry {
             peer_id,
-            start_block,
-            end_block,
-            public_name,
-            throughput,
+            start_block: info.start_block,
+            end_block: info.end_block,
+            public_name: info.public_name,
+            throughput: info.throughput,
             trust_score: None,
-            lease_v1,
+            lease_v1: info.lease_v1,
+            dial_addrs: info.dial_addrs,
         },
     ))
 }
@@ -2636,32 +2669,23 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             Err(_) => continue,
         };
 
-        if let Some((
-            state,
-            start_block,
-            end_block,
-            public_name,
-            _,
-            version,
-            throughput,
-            lease_v1,
-        )) = decode_server_info_ext(value_bytes)
-        {
-            if state != 2 {
+        if let Some(info) = decode_server_info_ext(value_bytes) {
+            if info.state != 2 {
                 continue;
             }
-            if !version_meets_minimum(&version) {
+            if !version_meets_minimum(&info.version) {
                 continue;
             }
             let key = peer_id_b58.clone();
             out.entry(key).or_insert(BlockServerEntry {
                 peer_id,
-                start_block,
-                end_block,
-                public_name,
-                throughput,
+                start_block: info.start_block,
+                end_block: info.end_block,
+                public_name: info.public_name,
+                throughput: info.throughput,
                 trust_score: None,
-                lease_v1,
+                lease_v1: info.lease_v1,
+                dial_addrs: info.dial_addrs,
             });
         }
     }
@@ -2722,9 +2746,24 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
 /// Core decoder: `Ext(64, msgpack([state, throughput, {start_block, end_block, …}]))`
 /// Returns `(state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1)`.
 #[allow(clippy::type_complexity)]
-fn decode_server_info_ext(
-    bytes: &[u8],
-) -> Option<(i32, usize, usize, String, String, String, f64, bool)> {
+/// One decoded announcement, as a struct rather than the positional tuple this
+/// used to return: nine fields where three call sites want different subsets is
+/// exactly the shape where `_`-holes drift out of alignment with the producer.
+struct ServerInfoFields {
+    state: i32,
+    start_block: usize,
+    end_block: usize,
+    public_name: String,
+    peer_id_b58: String,
+    version: String,
+    throughput: f64,
+    lease_v1: bool,
+    /// Multiaddrs the peer says it can be dialed on (`addrs`), empty for a peer
+    /// that published none — see [`crate::announce::DHTServerInfo::dial_addrs`].
+    dial_addrs: Vec<String>,
+}
+
+fn decode_server_info_ext(bytes: &[u8]) -> Option<ServerInfoFields> {
     let val = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
     let inner_bytes = match &val {
         rmpv::Value::Ext(64, b) => b.as_slice(),
@@ -2765,7 +2804,22 @@ fn decode_server_info_ext(
         .and_then(|(_, v)| v.as_bool())
         .unwrap_or(false);
 
-    Some((
+    // Anything that is not a string is dropped rather than failing the whole
+    // record: an address list is an optimisation, and a peer that garbles one
+    // entry is still worth reaching on the others.
+    let dial_addrs = map
+        .iter()
+        .find(|(ky, _)| ky.as_str() == Some("addrs"))
+        .and_then(|(_, v)| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .take(crate::announce::MAX_DIAL_ADDRS)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ServerInfoFields {
         state,
         start_block,
         end_block,
@@ -2774,7 +2828,8 @@ fn decode_server_info_ext(
         version,
         throughput,
         lease_v1,
-    ))
+        dial_addrs,
+    })
 }
 
 // ── Pinned path ──────────────────────────────────────────────────────────────
@@ -2862,6 +2917,10 @@ impl SerializableEntry {
             // Capacity Lease — conservatively unknown/false, same as any
             // other legacy-shaped record with the key absent.
             lease_v1: false,
+            // Likewise no addresses: a saved circuit is a list of peers, and
+            // where they were reachable months ago is not worth replaying.
+            // Rediscovery refills these from the live record.
+            dial_addrs: Vec::new(),
         })
     }
 }
@@ -3839,8 +3898,86 @@ mod tests {
     #[test]
     fn decode_server_info_ext_reads_lease_v1_when_present() {
         let bytes = make_server_info_ext_bytes(Some(true));
-        let (_, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
-        assert!(lease_v1);
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        assert!(info.lease_v1);
+    }
+
+    /// The publisher's own encoder is the producer of record, so the decoder is
+    /// tested against what it emits rather than against a hand-built map.
+    #[test]
+    fn decode_server_info_ext_round_trips_the_published_addrs() {
+        let peer = PeerId::random();
+        let addr = format!("/ip4/203.0.113.7/tcp/4001/p2p/{}", peer.to_base58());
+        let mut published = crate::announce::DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        published.dial_addrs = vec![addr.clone()];
+
+        let info =
+            decode_server_info_ext(&published.to_msgpack().expect("encodes")).expect("decodes");
+        assert_eq!(info.dial_addrs, vec![addr]);
+    }
+
+    /// A peer on a binary that predates `addrs` decodes to an empty list, not a
+    /// dropped record — it is still dialable by PeerId if it happens to be in
+    /// the routing table.
+    #[test]
+    fn decode_server_info_ext_defaults_addrs_empty_for_legacy_bytes() {
+        let bytes = make_server_info_ext_bytes(None);
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        assert_eq!(info.state, 2, "the rest of the record must still decode");
+        assert!(info.dial_addrs.is_empty());
+    }
+
+    /// A malformed entry costs that entry, not the record: the peer is still
+    /// worth reaching on whatever else it published.
+    #[test]
+    fn decode_server_info_ext_skips_non_string_addrs() {
+        let mut bytes_fields = vec![
+            (rmpv::Value::from("start_block"), rmpv::Value::from(0i64)),
+            (rmpv::Value::from("end_block"), rmpv::Value::from(32i64)),
+            (
+                rmpv::Value::from("public_name"),
+                rmpv::Value::from("test-node"),
+            ),
+            (
+                rmpv::Value::from("peer_id"),
+                rmpv::Value::from(PeerId::random().to_base58().as_str()),
+            ),
+            (
+                rmpv::Value::from("version"),
+                rmpv::Value::from("kwaai-0.5.4"),
+            ),
+        ];
+        bytes_fields.push((
+            rmpv::Value::from("addrs"),
+            rmpv::Value::Array(vec![
+                rmpv::Value::from(7i64),
+                rmpv::Value::from("/ip4/203.0.113.7/tcp/4001"),
+            ]),
+        ));
+        let inner = rmpv::Value::Array(vec![
+            rmpv::Value::from(2i32),
+            rmpv::Value::from(10.0),
+            rmpv::Value::Map(bytes_fields),
+        ]);
+        let mut inner_bytes = Vec::new();
+        rmpv::encode::write_value(&mut inner_bytes, &inner).unwrap();
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &rmpv::Value::Ext(64, inner_bytes)).unwrap();
+
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        assert_eq!(
+            info.dial_addrs,
+            vec!["/ip4/203.0.113.7/tcp/4001".to_string()]
+        );
     }
 
     #[test]
@@ -3849,7 +3986,8 @@ mod tests {
         // announcement looks like. Must decode successfully (not error) and
         // default to false, not panic or silently drop the record.
         let bytes = make_server_info_ext_bytes(None);
-        let (state, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        let (state, lease_v1) = (info.state, info.lease_v1);
         assert_eq!(
             state, 2,
             "pre-existing fields must still decode alongside the new one"
