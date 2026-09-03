@@ -2,6 +2,18 @@
 
 All notable changes to KwaaiNet are documented here.
 
+## [Unreleased]
+
+### Added
+- **IPv6 support**, behind a new `ipv6: auto | true | false` config key (default `auto`). `auto` binds `/ip6/::` and runs IPv4-only if the host refuses; `true` makes a refused v6 bind a startup error, so a dual-stack deployment cannot silently come up serving half the network; `false` opens no v6 listener and drops v6 addresses from the dial and announce sets. Also a cargo feature, on by default in `kwaai-p2p` and `kwaainet` — compiled out, the key still parses and reads as `false`.
+- `is_routable_v6` / `is_globally_routable_v6` mirror the IPv4 classifiers, including the carve-out: unique-local `fc00::/7` and the documentation and benchmarking prefixes are announceable unless `require_global_ips` is set. IPv4-mapped addresses are classified as the IPv4 address they carry.
+- `SelfStatus.ipv6` on the gRPC network snapshot (`"off"`, `"active"` or `"unavailable"`), so a v6 bind the host refused is visible rather than merely absent. `kwaainet p2p info` prints the configured mode.
+
+### Changed
+- The node's own local servers — the gRPC control port, the OpenAI-compatible HTTP APIs and the storage health endpoint — now bind IPv6 alongside IPv4 on the same port. A client whose `localhost` resolves to `::1` first, which is the default on Windows and most modern Linux distributions, previously got connection refused from a daemon that was running.
+- A v6 `public_ip` is announced as `/ip6/…` instead of being formatted into an `/ip4/` multiaddr that does not parse, which left a correctly configured node announcing nothing.
+- `port_in_use` probes both address families, so the "already running" message is not defeated by a squatter holding only the v6 half.
+
 ## [v0.3.7] - 2026-03-04
 
 ### Fixed

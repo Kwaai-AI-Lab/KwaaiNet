@@ -162,3 +162,66 @@ returns a new stream and decremented when the spawned handler task completes.
 | Address change goes undetected if IDENTIFY peers are slow | Medium | 10-second timeout at startup; 8-second timeout on periodic checks. Bootstrap peers are expected to be stable. |
 | Node stays on stale address longer than expected if always busy | Low | In practice DHT RPC streams complete in milliseconds. Sustained load would need to span multiple 120-second ticks. |
 | `announce_addr` or `public_ip` set but wrong (manual misconfiguration) | User error | IDENTIFY path is bypassed entirely when either field is set. The node relies on the user-provided value. |
+
+---
+
+## IPv6
+
+Everything above describes discovery of one address. A dual-stack node has two,
+and the `ipv6` config key decides whether the second one exists at all.
+
+| value | listeners | a refused v6 bind | v6 addresses from peers |
+|---|---|---|---|
+| `auto` (default) | `/ip4/0.0.0.0` + `/ip6/::` | one warning, run IPv4-only | accepted |
+| `true` | same | **startup error** | accepted |
+| `false` | `/ip4/0.0.0.0` only | n/a | dropped from the dial and announce sets |
+
+`true` exists because the two failures are not equally visible. A node that
+wanted v6 and quietly came up v4-only looks healthy from every angle — it
+announces, it serves, it holds reservations — while being unreachable to the
+half of the network that only has v6. On a host provisioned with a delegated
+prefix, that is a deployment error worth refusing to start over.
+
+Both families listen on the same port number. libp2p-tcp and libp2p-quic set
+`IPV6_V6ONLY` on their v6 sockets, so `0.0.0.0` and `::` do not collide; the
+node's own local servers (gRPC, the HTTP APIs, the storage health endpoint) set
+it explicitly through `kwaai-cli::net`, since the OS default differs by
+platform.
+
+`kwaainet p2p info` prints the configured mode. What actually happened is in
+the network snapshot's `ipv6` field — `off`, `active` or `unavailable` — which
+is the one that distinguishes "v6 is disabled" from "v6 was wanted and the host
+refused".
+
+### The classifier, and why it accepts ULAs
+
+`is_routable_v6` mirrors `is_routable_v4`, including its deliberate carve-out.
+Rejected: unspecified, loopback, multicast, link-local `fe80::/10`, the
+deprecated site-local `fec0::/10` and IPv4-compatible `::a.b.c.d` forms, and the
+discard-only `100::/64`. An IPv4-mapped `::ffff:a.b.c.d` is classified as the v4
+address it carries, so the v4 filters cannot be walked past by respelling an
+address.
+
+**Accepted:** unique-local `fc00::/7`, documentation `2001:db8::/32` and
+`3fff::/20`, and benchmarking `2001:2::/48`. This is the same decision as
+accepting RFC2544 `198.18/15` on the v4 side, and for the same reason: a docker
+bridge hands out ULAs unless it is given a delegated global prefix, so the v6
+test bed lives on `fdc6:1200::/64` and would classify itself unreachable
+otherwise.
+
+`is_globally_routable_v6` is the strict form, reached by `require_global_ips`.
+It rejects all of the above plus the ranges that name a v4 endpoint or an
+overlay rather than a host on the v6 internet: Teredo `2001::/32`, 6to4
+`2002::/16`, and ORCHID `2001:10::/28` and `2001:20::/28`. Turn it on for a node
+on the real internet, where a documentation-range address in the announce set
+could only ever be a misconfiguration.
+
+### Rolling v6 out to the fleet
+
+The compiled-in bootstrap literals in `kwaai-p2p::config` are IPv4 and stay
+that way — changing them is a release, and a release is the slowest lever
+available. The fast one is `/dnsaddr/`: `KWAAI_BOOTSTRAP_SERVERS_DNS` resolves
+TXT records at `_dnsaddr.bootstrap.kwaai.ai`, so adding a bootstrap's v6
+transport is a DNS edit that every already-deployed node picks up on its next
+resolve. Add the `/ip6/` record first, confirm nodes are reaching it, and only
+then consider whether the v4 literal is still carrying anyone.
