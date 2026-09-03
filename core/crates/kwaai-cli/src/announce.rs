@@ -25,7 +25,7 @@ use kwaai_hivemind_dht::value::get_dht_time;
 use kwaai_p2p::{NetworkHandle, PeerId};
 use prost::Message;
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 use crate::config::KwaaiNetConfig;
@@ -158,6 +158,38 @@ pub struct DHTServerInfo {
     /// nothing to load. Only meaningful while `state` is JOINING; encoded only
     /// when true, so a node that is merely idle says nothing extra.
     pub shard_loading: bool,
+
+    /// Multiaddrs a peer can actually dial us on, each ending in
+    /// `/p2p/<our-peer-id>`. Empty for a node that has no reachable address
+    /// yet, and for every path that does not fill it in — see
+    /// [`crate::node_native::NativeNode::announce`], which is what populates it.
+    ///
+    /// # Why the record has to carry this
+    ///
+    /// Discovery hands dispatch a bare PeerId, and dialing by PeerId resolves
+    /// through kad — which cannot answer. rust-libp2p serves `FIND_NODE` from
+    /// its k-buckets alone (`find_closest_local_peers`), where the kad-DHT spec
+    /// §6.1.1 says a server MUST answer for a requested peer it holds in its
+    /// *peerstore* "even if the target node isn't a DHT Server or only
+    /// advertises private addresses", and where go-libp2p's `handleFindPeer`
+    /// does exactly that. So a peer is findable only while it occupies one of
+    /// the twenty slots in the right bucket on a peer the walk happens to
+    /// reach, and a disconnected entry is the first one replaced. That is the
+    /// half the Go p2pd bootstrap used to supply; on the native stack it made
+    /// dispatch fail fleet-wide with `peer not found in DHT (no addresses)` —
+    /// ~2000 of them in one node's log.
+    ///
+    /// Note this is *not* about kad's mode: `dht_server` is true on every
+    /// native node (`node_native.rs`), so kad is pinned to `Mode::Server`
+    /// whether the node is reachable or not.
+    ///
+    /// The relay path works fine once the address is known; what is missing is
+    /// only the address. Nothing else carries it — a circuit address names the
+    /// relay a node happens to hold a reservation on, reservations rotate
+    /// (`kwaai_p2p::relay_manager`), and a dialer cannot guess which relay that
+    /// is: dialing a peer through a bootstrap it has not reserved on returns
+    /// `Relay has no reservation for destination`.
+    pub dial_addrs: Vec<String>,
 }
 
 impl DHTServerInfo {
@@ -189,6 +221,10 @@ impl DHTServerInfo {
             peer_id_b58,
             lease_v1: true,
             shard_loading: KwaaiNetConfig::announce_shard_loading(),
+            // Filled in per-announce from the live swarm rather than here: the
+            // set changes as reservations rotate, and a value captured at
+            // startup would be wrong by the first re-announce.
+            dial_addrs: Vec::new(),
         }
     }
 
@@ -256,6 +292,19 @@ impl DHTServerInfo {
             fields.push((rmpv::Value::from("shard_loading"), rmpv::Value::from(true)));
         }
 
+        // Dial addresses, omitted entirely when empty so a node with nothing
+        // reachable to say adds no bytes. Same unknown-key tolerance as the
+        // fields above: a legacy client ignores `addrs` and keeps dialing by
+        // PeerId exactly as it does today.
+        if !self.dial_addrs.is_empty() {
+            let addrs: Vec<rmpv::Value> = self
+                .dial_addrs
+                .iter()
+                .map(|a| rmpv::Value::String(rmpv::Utf8String::from(a.as_str())))
+                .collect();
+            fields.push((rmpv::Value::from("addrs"), rmpv::Value::Array(addrs)));
+        }
+
         // Include VPK capability when enabled and reachable.
         // Unknown map keys are silently ignored by legacy Hivemind clients
         // and old map viewers — no backward-compatibility risk.
@@ -278,6 +327,99 @@ impl DHTServerInfo {
         rmpv::encode::write_value(&mut out, &ext)?;
         Ok(out)
     }
+}
+
+/// How many dial addresses one announcement may carry.
+///
+/// The same value is stored under every block key the node serves — 32 keys
+/// for an 8B model — so an address costs its own length times the block count
+/// in DHT bytes. Four is enough for the shapes that occur: a direct address
+/// plus the circuits from the two or three reservations `relay_manager` holds
+/// at once, or one address per transport on a public node.
+pub const MAX_DIAL_ADDRS: usize = 4;
+
+/// The addresses to publish so other peers can dial this node, most useful
+/// first, at most [`MAX_DIAL_ADDRS`] of them.
+///
+/// Sourced from the swarm's live listeners, which is where a relay reservation
+/// shows up: `libp2p-relay` turns an accepted reservation into a listen address
+/// of the form `<relay-addr>/p2p/<relay>/p2p-circuit/p2p/<us>`, already carrying
+/// both hops a dialer needs. Three filters apply:
+///
+/// - [`is_announceable`](kwaai_p2p::is_announceable) drops the loopback and
+///   RFC1918 listeners that every node has and no remote peer can use, while
+///   passing circuits unconditionally (the relay's address is the routable
+///   half).
+/// - [`uses_dialable_transport`](kwaai_p2p::uses_dialable_transport) drops
+///   webtransport/websocket forms this build has no transport for.
+/// - One address per relay. A relay that offers TCP *and* QUIC produces a
+///   circuit on each, and both traverse the same hop: keeping the second
+///   spends a scarce slot on a path that fails with the first.
+///
+/// Direct addresses sort ahead of circuits so a dialer that can reach one
+/// never pays for a relay, and a `declared` announce address — an operator
+/// saying "I forwarded this port" — sorts ahead of everything, since it is the
+/// one address the swarm cannot observe for itself.
+pub async fn publishable_dial_addrs(
+    handle: &NetworkHandle,
+    peer_id: PeerId,
+    declared: Option<&str>,
+) -> Vec<String> {
+    let listeners = handle.listen_addrs().await.unwrap_or_default();
+    select_dial_addrs(listeners, peer_id, declared)
+}
+
+/// The selection itself, split from the swarm call so it can be tested against
+/// a fixed address list rather than a live node.
+fn select_dial_addrs(
+    listeners: Vec<libp2p::Multiaddr>,
+    peer_id: PeerId,
+    declared: Option<&str>,
+) -> Vec<String> {
+    use kwaai_p2p::addresses::{peer_id_from_multiaddr, strip_dest_p2p};
+    use kwaai_p2p::{is_announceable, is_circuit, uses_dialable_transport};
+    use libp2p::multiaddr::Protocol;
+
+    let mut sorted: Vec<libp2p::Multiaddr> = declared
+        .and_then(|d| d.parse().ok())
+        .into_iter()
+        .chain(listeners)
+        .filter(|a| is_announceable(a) && uses_dialable_transport(a))
+        .collect();
+    // Direct before circuit (`false` sorts before `true`), stably, so the
+    // declared address stays ahead of the listeners it was chained onto.
+    sorted.sort_by_key(is_circuit);
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen_hops: HashSet<String> = HashSet::new();
+    for addr in sorted {
+        // A circuit is keyed on the relay itself, so its TCP and QUIC forms
+        // collapse to one entry — both cross the same hop, and if that hop is
+        // down neither works. A direct address is keyed on the address, where
+        // TCP and QUIC are genuinely separate chances.
+        let key = match (is_circuit(&addr), peer_id_from_multiaddr(&addr)) {
+            (true, Some(relay)) => relay.to_base58(),
+            _ => strip_dest_p2p(&addr).to_string(),
+        };
+        if !seen_hops.insert(key) {
+            continue;
+        }
+        // A circuit listener already names us; a direct one does not, and a
+        // dialer needs the destination to know who it expects to answer.
+        let addr = if addr
+            .iter()
+            .any(|p| matches!(p, Protocol::P2p(id) if id == peer_id))
+        {
+            addr
+        } else {
+            addr.with(Protocol::P2p(peer_id))
+        };
+        out.push(addr.to_string());
+        if out.len() == MAX_DIAL_ADDRS {
+            break;
+        }
+    }
+    out
 }
 
 /// Model info stored in the `_petals.models` DHT registry.
@@ -456,6 +598,9 @@ pub fn build_unannounce_records(
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
         shard_loading: false,
+        // A tombstone says "stop using me"; where to reach the node is
+        // exactly the thing it is withdrawing.
+        dial_addrs: Vec::new(),
     };
 
     let info_bytes = offline_info.to_msgpack()?;
@@ -853,7 +998,136 @@ mod tests {
             peer_id_b58: peer().to_base58(),
             lease_v1: true,
             shard_loading: false,
+            dial_addrs: vec![],
         }
+    }
+
+    /// A relay's peer id, distinct from [`peer`] — the node being announced.
+    fn relay() -> PeerId {
+        "12D3KooWF7ckKo2HQojbtueQNuLYRT2XC2yzbvBbh4NK2rbi2Azg"
+            .parse()
+            .expect("a valid peer id")
+    }
+
+    fn addrs(list: &[String]) -> Vec<libp2p::Multiaddr> {
+        list.iter()
+            .map(|a| a.parse().expect("a valid addr"))
+            .collect()
+    }
+
+    /// The listener set a NATed node actually has: loopback, two LAN
+    /// interfaces, and the circuit its reservation produced.
+    #[test]
+    fn select_dial_addrs_keeps_only_the_circuit_for_a_natted_node() {
+        let circuit = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let listeners = addrs(&[
+            "/ip4/127.0.0.1/tcp/54428".to_string(),
+            "/ip4/192.168.68.135/tcp/54428".to_string(),
+            "/ip6/::1/udp/54428/quic-v1".to_string(),
+            circuit.clone(),
+        ]);
+
+        assert_eq!(select_dial_addrs(listeners, peer(), None), vec![circuit]);
+    }
+
+    /// Both circuits cross the same relay, so publishing both spends two of
+    /// four slots on one hop.
+    #[test]
+    fn select_dial_addrs_collapses_two_transports_on_one_relay() {
+        let tcp = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let quic = format!(
+            "/ip4/76.13.5.74/udp/4001/quic-v1/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+
+        let out = select_dial_addrs(addrs(&[tcp.clone(), quic]), peer(), None);
+        assert_eq!(out, vec![tcp], "one address per relay, first one wins");
+    }
+
+    /// This build has no webtransport transport, and the certhash form is the
+    /// longest address a relay offers — publishing it is pure cost.
+    #[test]
+    fn select_dial_addrs_drops_transports_this_build_cannot_dial() {
+        let wt = format!(
+            "/ip4/76.13.5.74/udp/4001/quic-v1/webtransport/certhash/uEiBIeyYi7BYMq_u71nPi3WJna-9kL5yAURJ5HYy0qXW3YQ/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        assert!(select_dial_addrs(addrs(&[wt]), peer(), None).is_empty());
+    }
+
+    /// A dialer needs to know who it expects to answer; a direct listener does
+    /// not carry that, a circuit already does and must not be given a second.
+    #[test]
+    fn select_dial_addrs_ends_every_address_at_this_node() {
+        let out = select_dial_addrs(
+            addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]),
+            peer(),
+            None,
+        );
+        assert_eq!(
+            out,
+            vec![format!(
+                "/ip4/198.18.0.40/tcp/8080/p2p/{}",
+                peer().to_base58()
+            )]
+        );
+    }
+
+    /// A declared address is the operator saying "I forwarded this port" — the
+    /// one address the swarm cannot observe for itself, and the cheapest hop
+    /// for a dialer, so it leads.
+    #[test]
+    fn select_dial_addrs_puts_a_declared_address_first() {
+        let circuit = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let out = select_dial_addrs(addrs(&[circuit]), peer(), Some("/ip4/203.0.113.7/tcp/4001"));
+        assert_eq!(out.len(), 2);
+        assert!(out[0].starts_with("/ip4/203.0.113.7/tcp/4001/p2p/"));
+    }
+
+    /// The same value is stored under every block key, so the list is capped.
+    #[test]
+    fn select_dial_addrs_stops_at_the_cap() {
+        let listeners: Vec<String> = (1..=MAX_DIAL_ADDRS + 3)
+            .map(|i| format!("/ip4/203.0.113.{i}/tcp/4001"))
+            .collect();
+        assert_eq!(
+            select_dial_addrs(addrs(&listeners), peer(), None).len(),
+            MAX_DIAL_ADDRS
+        );
+    }
+
+    /// A node with nothing reachable to say must add no bytes to the record,
+    /// so that `addrs` is absent rather than an empty array.
+    #[test]
+    fn to_msgpack_omits_addrs_when_there_are_none() {
+        let bytes = server_info(None).to_msgpack().expect("encodes");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("addrs"));
+    }
+
+    #[test]
+    fn to_msgpack_carries_addrs_when_present() {
+        let mut info = server_info(None);
+        let addr = format!("/ip4/203.0.113.7/tcp/4001/p2p/{}", peer().to_base58());
+        info.dial_addrs = vec![addr.clone()];
+        let bytes = info.to_msgpack().expect("encodes");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("addrs"));
+        assert!(text.contains(&addr));
     }
 
     fn vpk_info() -> VpkInfo {

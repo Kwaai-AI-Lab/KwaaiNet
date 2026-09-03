@@ -148,6 +148,7 @@ mod tests {
             trust_score: None,
             throughput: 0.0,
             lease_v1: false,
+            dial_addrs: Vec::new(),
         }
     }
 

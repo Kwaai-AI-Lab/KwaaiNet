@@ -2615,6 +2615,7 @@ mod tests {
             throughput: 1.0,
             trust_score: None,
             lease_v1: false,
+            dial_addrs: Vec::new(),
         };
 
         // Gap at block 3: [0,3) + [4,8).

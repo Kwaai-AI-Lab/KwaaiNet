@@ -49,7 +49,7 @@ pub mod service;
 pub mod transport;
 pub mod unary;
 
-pub use addresses::{is_announceable, is_circuit, is_routable_v4};
+pub use addresses::{is_announceable, is_circuit, is_routable_v4, uses_dialable_transport};
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
     kad_protocols, NetworkConfig, KAD_MULTI_PROTOCOL_BUILD, KWAAI_BOOTSTRAP_SERVERS,
