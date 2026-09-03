@@ -1,6 +1,24 @@
 # Changelog
 
-All notable changes to KwaaiNet are documented here.
+## Status of this file
+
+**This file stopped being maintained after v0.3.7 (2026-03-04).** The project has shipped
+188 tagged releases since, up to v0.6.8, none of them recorded here. Anyone reading down
+from the top would take a March 2026 release as current.
+
+Until per-release notes resume, the accurate sources are:
+
+- **[Releases](https://github.com/Kwaai-AI-Lab/KwaaiNet/releases)** — every tag, with
+  install instructions and assets.
+- **`git log --oneline v0.3.7..HEAD`** — the actual change history. Commit subjects follow
+  `type(scope): summary` and reference their PR.
+- **[projects/*/plans/](../projects)** — design and outcome documents for the larger pieces
+  of work.
+
+The entries below are retained as the historical record up to v0.3.7. They are accurate for
+their releases and have not been edited.
+
+---
 
 ## [v0.3.7] - 2026-03-04
 

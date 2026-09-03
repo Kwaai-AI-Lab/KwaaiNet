@@ -1282,8 +1282,8 @@ async fn announce(
 
     // VPK nodes registry — advertise this node's VPK capability when enabled.
     // Key: _kwaai.vpk.nodes  subkey: msgpack(peer_id_base58)
-    // Value: msgpack({ mode, endpoint, capacity_gb, tenant_count, vpk_version })
-    // TTL: 360 s (refreshed every 120 s together with block records)
+    // Value: msgpack({ mode, capacity_gb, tenant_count, vpk_version, public_name })
+    // TTL: 360 s (refreshed every 300 s ± 30 s together with block records)
     if let Some(ref vpk) = server_info.vpk_info {
         let vpk_req = StoreRequest {
             auth: Some(RequestAuthInfo::new()),

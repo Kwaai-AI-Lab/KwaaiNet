@@ -66,7 +66,7 @@ kwaainet shard run "What is the capital of France?"
 **Shipped:**
 - CandelEngine: block-sharded inference over SafeTensors models
 - RoPE positional encoding (broadcast_mul fix), Grouped Query Attention (GQA), SwiGLU MLP
-- Per-session KV cache with 60s TTL, session HashMap in `TransformerShard`
+- Per-session KV cache with 600 s TTL, session HashMap in `TransformerShard`
 - OpenAI-compatible HTTP API: `/v1/models`, `/v1/chat/completions` (streaming)
 - Shard chain discovery via DHT block keys (`{prefix}.{block_n}`)
 - Temperature, top-k, top-p sampling; argmax greedy sampler for chain mode

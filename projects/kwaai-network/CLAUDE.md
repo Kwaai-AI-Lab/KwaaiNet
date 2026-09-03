@@ -42,8 +42,8 @@ cargo build -p kwaai-p2p -p kwaai-p2p-daemon -p kwaai-hivemind-dht -p kwaai-rpc
 # Run p2pd daemon
 kwaainet start --daemon
 
-# P2P status
-kwaainet p2p status
+# P2P identity and connected peers
+kwaainet p2p info
 
 # Tests
 cargo test -p kwaai-p2p
@@ -84,7 +84,7 @@ cargo test -p kwaai-p2p
 
 Unknown map keys are silently ignored by legacy Hivemind clients — safe to extend.
 
-`_kwaai.vpk.nodes`: subkey=msgpack(peer_id_base58), value=msgpack({mode, endpoint, capacity_gb, tenant_count, vpk_version}), TTL=360s
+`_kwaai.vpk.nodes`: subkey=msgpack(peer_id_base58), value=msgpack({mode, capacity_gb, tenant_count, vpk_version, public_name}), TTL=360s
 
 ## Do not
 

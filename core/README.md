@@ -122,13 +122,18 @@ core/
 ├── crates/
 │   ├── kwaai-cli/           # kwaainet binary — all CLI commands
 │   ├── kwaai-storage/       # Embedded vector store (hnsw_rs + SQLite)
+│   ├── kwaai-rag/           # RAG: chunking, retrieval, knowledge graph, dream cycle
+│   ├── kwaai-trust/         # Identity, Verifiable Credentials, trust scoring
 │   ├── kwaai-p2p/           # P2P networking (libp2p, Kademlia DHT)
-│   ├── kwaai-p2p-daemon/    # go-libp2p-daemon wrapper (p2pd)
+│   ├── kwaai-p2p-daemon/    # go-libp2p-daemon wrapper (p2pd) — legacy path
 │   ├── kwaai-hivemind-dht/  # Hivemind/Petals DHT protocol
+│   ├── kwaai-rpc/           # Shared RPC types
 │   ├── kwaai-inference/     # ML inference engine (Candle, block sharding)
 │   ├── kwaai-distributed/   # Distributed ML (MoE, gradient averaging)
 │   ├── kwaai-compression/   # Gradient compression (8-bit quantization)
-│   └── kwaai-wasm/          # Browser WASM bindings
+│   ├── kwaai-wasm/          # Browser WASM bindings (scaffold)
+│   ├── kwaai-network-tests/ # Cross-crate network integration tests
+│   └── summit-server/       # Summit registration/attestation service
 ├── examples/                # Runnable examples
 └── tests/                   # Integration tests
 ```

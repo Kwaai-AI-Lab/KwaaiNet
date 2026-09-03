@@ -370,7 +370,7 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 ### Knowledge — RAG
 
 - **Local, private knowledge base** (`rag ingest/sync`) — `txt`, `md`, `pdf`, `docx`, `doc` chunked and embedded with no network required; hybrid BM25 + dense retrieval, grounded citations, HyDE query expansion, LLM reranking, and an eval harness.
-- **GraphRAG** (`rag graph build`) — LLM-extracted entity/relation property graph (2300+ entities, 7900+ relations on a typical memoir-length corpus); graph-anchored retrieval reached 56.9% keyword recall on the D6 eval set (up from 24.6% baseline).
+- **GraphRAG** (`rag graph build`) — LLM-extracted entity/relation property graph (2300+ entities, 7900+ relations on a typical memoir-length corpus); graph-anchored retrieval has taken the D6 eval set from a 24.6% keyword-recall baseline to 82.7% at its best recorded milestone. The per-milestone history lives in [d6_accuracy_progress.md](projects/kwaai-knowledge/d6_accuracy_progress.md) rather than being pinned here, because a single number in this file goes stale.
 - **Dream RAG** (`rag dream run`) — autonomous, self-improving graph refinement: schema.org completeness scoring, LLM completion fan-out, auto-merge, auto-prune.
 - **OpenAI-compatible RAG server** (`rag serve`) — point OpenWebUI or any compatible client at it as a custom base URL. See [RAG Knowledge Base](#rag-knowledge-base) below.
 

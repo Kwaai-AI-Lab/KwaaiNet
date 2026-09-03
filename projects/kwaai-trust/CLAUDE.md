@@ -14,7 +14,6 @@ It does **not** handle P2P transport, inference, or storage.
 | `kwaai-wasm` | `core/crates/kwaai-wasm/` | WASM bindings for browser nodes |
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
-- `identity.rs` — `kwaainet identity` subcommands (create, show, export)
 - `identity.rs` — `kwaainet identity` subcommands (show, import-vc, list-vcs, verify-vc)
 - `reputation_cmd.rs` — `kwaainet reputation` subcommands (list, show, reset)
 
@@ -36,7 +35,7 @@ wasm-pack build core/crates/kwaai-wasm --target bundler
 **Shipped:**
 - Ed25519 keypair at `~/.kwaainet/identity.key`, derived `PeerId` and `did:peer:` DID
 - VC wallet at `~/.kwaainet/credentials/` with types: `FiduciaryPledgeVC`, `VerifiedNodeVC`,
-  `UptimeVC`, `ThroughputVC`, `EventAttendeeVC`, `PeerEndorsementVC`
+  `UptimeVC`, `ThroughputVC`, `SummitAttendeeVC`, `PeerEndorsementVC`, `BindingVC`
 - Local trust scoring with time decay and tiers: `Unknown → Known → Verified → Trusted`
 - Active participation in Trust over IP (ToIP) Decentralized Trust Graph
 
