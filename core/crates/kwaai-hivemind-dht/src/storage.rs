@@ -76,26 +76,20 @@ pub enum Stored {
     },
 }
 
-/// What [`LocalStorage::summaries`] reports about one live entry.
-///
-/// Everything here is O(1) or O(subkeys) to produce and holds no value bytes,
-/// which is what makes enumerating a whole tier affordable.
+/// What [`LocalStorage::summaries`] reports about one live entry. Holds no
+/// value bytes, which is what makes enumerating a whole tier affordable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntrySummary {
-    /// The DHT key, exactly as stored — a 20-byte DHTID for hivemind traffic,
-    /// but nothing here requires that.
+    /// The DHT key, exactly as stored.
     pub key: Vec<u8>,
-    /// The *outer* expiration, which is what `rpc_find` reports
-    /// (`protocol.py:355`) and can differ from `latest_expiration`.
+    /// The *outer* expiration, which `rpc_find` reports (`protocol.py:355`)
+    /// and which can differ from `latest_expiration`.
     pub expiration: DHTExpiration,
-    /// `None` for a regular value; the subkey count for a dictionary. This is
-    /// the discriminator — a dictionary with no live subkeys is still a
-    /// dictionary, and `Some(0)` says so.
+    /// `None` for a regular value, the subkey count for a dictionary — the
+    /// discriminator, so an emptied dictionary reports `Some(0)`, not `None`.
     pub subkeys: Option<usize>,
-    /// Value bytes only: the stored value for a regular entry, the summed
-    /// subkey values for a dictionary. Not the serialized wire size, which
-    /// adds msgpack framing, and not [`LocalStorage::bytes`]'s accounting,
-    /// which adds per-entry overhead.
+    /// Value bytes only, expired subkeys included. Neither the wire size (which
+    /// adds framing) nor [`LocalStorage::bytes`] (which adds overhead).
     pub value_bytes: usize,
     /// `DictionaryDHTValue.latest_expiration_time`, for dictionaries only.
     pub latest_expiration: Option<DHTExpiration>,
@@ -289,13 +283,9 @@ impl LocalStorage {
 
     /// Metadata for every live entry, in key order.
     ///
-    /// Deliberately value-free. A tier holds up to [`crate::server`]'s
-    /// `DEFAULT_STORAGE_SIZE` entries of up to `MAX_VALUE_BYTES` each, so a
-    /// listing that cloned values would be orders of magnitude larger than the
-    /// listing itself; [`Self::get`] serves the one record a detail view wants.
-    ///
-    /// Expired-but-unswept entries are skipped, so this agrees with `get`
-    /// rather than with [`Self::len`].
+    /// Value-free: a tier holds up to a million entries of up to a megabyte
+    /// each, so cloning values here would dwarf the listing. Expired-but-unswept
+    /// entries are skipped, agreeing with `get` rather than [`Self::len`].
     pub fn summaries(&self) -> Vec<EntrySummary> {
         let now = get_dht_time();
         self.data
@@ -1204,10 +1194,9 @@ mod tests {
         );
     }
 
-    /// Enumeration is the only way to ask what a node holds — Kademlia has no
-    /// key listing — so `summaries` has to agree with `get` on what is live,
-    /// and has to keep regular and dictionary entries apart. `len` deliberately
-    /// counts unswept expired entries; this must not.
+    /// `summaries` must agree with `get` on what is live and keep regular and
+    /// dictionary entries apart. `len` counts unswept expired entries; this
+    /// must not.
     #[test]
     fn summaries_report_live_entries_and_their_shape() {
         let mut s = LocalStorage::new();
@@ -1250,9 +1239,8 @@ mod tests {
         assert_eq!(plain.latest_expiration, None);
     }
 
-    /// A dictionary whose subkeys have all been evicted is still a dictionary.
-    /// `Some(0)` is the claim; `None` would report it as a regular value and
-    /// send a reader looking for bytes that are not there.
+    /// An emptied dictionary is still a dictionary: `None` would report it as
+    /// a regular value and send a reader looking for bytes that are not there.
     #[test]
     fn an_empty_dictionary_is_not_a_regular_value() {
         let mut s = LocalStorage::new();

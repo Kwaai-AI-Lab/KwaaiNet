@@ -1,26 +1,10 @@
 //! Projecting hivemind DHT records onto the gRPC surface.
 //!
-//! Two sources feed the same [`DhtRecord`] shape, which is the point: a record
-//! this node happens to hold and one a remote peer returned should read
-//! identically, so a client can put them side by side.
+//! A locally-held record and one a remote peer returned share the [`DhtRecord`]
+//! shape deliberately, so a client can put them side by side.
 //!
-//! # What can and cannot be listed
-//!
-//! Kademlia has no key-enumeration operation. A node can be asked for a key; it
-//! cannot be asked what keys it has, and there is no operation at all that means
-//! "every key in the DHT". So the listing here is the *local store* — complete
-//! and cheap, but a statement about this node, not about the network — while
-//! anything network-wide has to name a key up front. [`known_keys`] is what
-//! makes that usable: the registries every node publishes under, plus the
-//! per-block keys derived from the configured model prefix.
-//!
-//! # Rendering
-//!
-//! [`render_value`] decodes msgpack and shows what is there. It deliberately
-//! knows no schemas: a petals `ServerInfo` is an `Ext(64)` wrapping a msgpack
-//! tuple, so it renders as its contents rather than as named fields we would
-//! have to guess at, and an Ext whose body is *not* msgpack is reported as
-//! opaque bytes under its type code rather than mangled into text.
+//! [`render_value`] is structural and schema-free: it decodes msgpack and shows
+//! what is there, never guessing at field names it cannot verify.
 
 use kwaai_hivemind_dht::{DHTExpiration, LocalRecord, ParsedDictionary, Stored};
 use kwaai_rpc::v1::{DhtKnownKey, DhtRecord, DhtRecordKind, DhtSubkey, DhtValueView};
@@ -28,18 +12,12 @@ use kwaai_rpc::v1::{DhtKnownKey, DhtRecord, DhtRecordKind, DhtSubkey, DhtValueVi
 use crate::announce::{dht_id, PETALS_MODELS_KEY, VPK_NODES_KEY};
 use crate::config::KwaaiNetConfig;
 
-/// Cap on the per-block keys [`known_keys`] derives.
-///
-/// The block count comes from the model's `config.json` when it is on disk and
-/// from a name heuristic when it is not, so a misconfigured model could ask for
-/// an unbounded list. No published model is near this.
+/// Cap on the per-block keys [`known_keys`] derives; the block count is a
+/// heuristic when the model is not on disk, so it needs a bound.
 const MAX_KNOWN_BLOCK_KEYS: u32 = 1024;
 
-/// Every key this node can name, with the DHT id each hashes to.
-///
-/// Serves two jobs at once: the reverse table for [`DhtRecord::key_name`] — a
-/// DHT id is `SHA1(msgpack(name))` and cannot be inverted — and the candidate
-/// list a client offers for a network lookup.
+/// Every key this node can name, with the DHT id each hashes to — the reverse
+/// table for `key_name`, and the candidate list for a lookup.
 pub fn known_keys(config: &KwaaiNetConfig) -> Vec<DhtKnownKey> {
     let prefix = config.effective_dht_prefix();
     let blocks = config.model_total_blocks().max(0) as u32;
@@ -104,10 +82,9 @@ pub fn local_record(
 
 /// Project a `FindResult` value returned by a remote peer.
 ///
-/// The remote gives us the serialized value and the outer expiration and
-/// nothing else, so the shape has to be recovered by parsing: a value that
-/// parses as hivemind's `Ext(0x50)` is a dictionary, anything else is regular.
-/// That is the same test `handle_store` applies on the receiving side.
+/// A remote sends bytes and an expiration, no shape flag, so the shape is
+/// recovered by parsing for hivemind's `Ext(0x50)` — the same test
+/// `handle_store` applies on receipt.
 pub fn remote_record(
     key: &str,
     key_id: &[u8],
@@ -161,11 +138,8 @@ fn subkey_view(subkey: &[u8], value: &[u8], expiration: DHTExpiration, now: f64)
     }
 }
 
-/// Decode msgpack bytes into a displayable form.
-///
-/// Falls back to hex rather than to a lossy string: a value that is not msgpack
-/// is a genuine finding about the record, and printing its bytes as replacement
-/// characters would hide it.
+/// Decode msgpack bytes into a displayable form, falling back to hex: bytes
+/// that are not msgpack are a finding, not something to paper over.
 pub fn render_value(bytes: &[u8]) -> DhtValueView {
     let Some(value) = decode_full(bytes) else {
         return DhtValueView {
@@ -189,15 +163,104 @@ pub fn render_value(bytes: &[u8]) -> DhtValueView {
     }
 }
 
-/// Decode exactly one msgpack value, requiring it to consume every byte.
+/// Nesting limit for [`scan`]: a hostile peer must not be able to overflow the
+/// stack with depth alone.
+const MAX_SCAN_DEPTH: u32 = 64;
+
+/// Decode exactly one msgpack value, requiring well-formed bytes and nothing
+/// else in the buffer.
 ///
-/// `rmpv::decode::read_value` stops at the end of the first value and reports
-/// success on trailing garbage, so a record with junk appended would render as
-/// though it were clean. Full consumption is the check that catches it.
+/// `rmpv::decode::read_value` is permissive twice over: it calls trailing
+/// garbage success, and it decodes the reserved marker `0xc1` to `Nil`
+/// (rmpv 1.3.1 `decode/value.rs:203`), so `0xc1` — alone or nested — would
+/// render as a clean `null`. [`scan`] catches both.
 fn decode_full(bytes: &[u8]) -> Option<rmpv::Value> {
-    let mut cursor = bytes;
-    let value = rmpv::decode::read_value(&mut cursor).ok()?;
-    cursor.is_empty().then_some(value)
+    if scan(bytes, 0, 0)? != bytes.len() {
+        return None;
+    }
+    rmpv::decode::read_value(&mut &bytes[..]).ok()
+}
+
+/// Walk one msgpack value from `at`, returning the offset just past it, or
+/// `None` if the bytes are malformed or carry the reserved marker. Ext payloads
+/// are opaque here; [`render`] scans a body it re-decodes.
+fn scan(bytes: &[u8], at: usize, depth: u32) -> Option<usize> {
+    use rmp::Marker::*;
+
+    if depth > MAX_SCAN_DEPTH {
+        return None;
+    }
+    let marker = rmp::Marker::from_u8(*bytes.get(at)?);
+    let at = at + 1;
+
+    // `skip` counts payload bytes after any length prefix; `children` counts
+    // nested values, already doubled for maps.
+    let (skip, children) = match marker {
+        Reserved => return None,
+        Null | True | False | FixPos(_) | FixNeg(_) => (0, 0),
+        U8 | I8 => (1, 0),
+        U16 | I16 => (2, 0),
+        U32 | I32 | F32 => (4, 0),
+        U64 | I64 | F64 => (8, 0),
+        // One type byte ahead of the fixed-width body.
+        FixExt1 => (2, 0),
+        FixExt2 => (3, 0),
+        FixExt4 => (5, 0),
+        FixExt8 => (9, 0),
+        FixExt16 => (17, 0),
+        FixStr(n) => (n as usize, 0),
+        FixArray(n) => (0, n as usize),
+        FixMap(n) => (0, 2 * n as usize),
+        Str8 | Bin8 => return scan_after(bytes, at, 1, 0),
+        Str16 | Bin16 => return scan_after(bytes, at, 2, 0),
+        Str32 | Bin32 => return scan_after(bytes, at, 4, 0),
+        Ext8 => return scan_after(bytes, at, 1, 1),
+        Ext16 => return scan_after(bytes, at, 2, 1),
+        Ext32 => return scan_after(bytes, at, 4, 1),
+        Array16 => return scan_children(bytes, at, 2, 1, depth),
+        Array32 => return scan_children(bytes, at, 4, 1, depth),
+        Map16 => return scan_children(bytes, at, 2, 2, depth),
+        Map32 => return scan_children(bytes, at, 4, 2, depth),
+    };
+
+    let mut at = bounded_end(bytes, at, skip)?;
+    for _ in 0..children {
+        at = scan(bytes, at, depth + 1)?;
+    }
+    Some(at)
+}
+
+/// Skip a `width`-byte big-endian length, then that many payload bytes plus
+/// `extra` (the Ext type byte).
+fn scan_after(bytes: &[u8], at: usize, width: usize, extra: usize) -> Option<usize> {
+    let (len, at) = read_len(bytes, at, width)?;
+    bounded_end(bytes, at, len.checked_add(extra)?)
+}
+
+/// Skip a `width`-byte big-endian count, then scan that many values, times
+/// `per` (2 for a map's key/value pairs).
+fn scan_children(bytes: &[u8], at: usize, width: usize, per: usize, depth: u32) -> Option<usize> {
+    let (count, mut at) = read_len(bytes, at, width)?;
+    for _ in 0..count.checked_mul(per)? {
+        at = scan(bytes, at, depth + 1)?;
+    }
+    Some(at)
+}
+
+fn read_len(bytes: &[u8], at: usize, width: usize) -> Option<(usize, usize)> {
+    let end = bounded_end(bytes, at, width)?;
+    let mut len = 0usize;
+    for b in &bytes[at..end] {
+        len = len.checked_mul(256)?.checked_add(*b as usize)?;
+    }
+    Some((len, end))
+}
+
+/// `at + n`, rejecting an overflow or a length running past the buffer — which
+/// is how a truncated value is caught.
+fn bounded_end(bytes: &[u8], at: usize, n: usize) -> Option<usize> {
+    let end = at.checked_add(n)?;
+    (end <= bytes.len()).then_some(end)
 }
 
 fn type_name(v: &rmpv::Value) -> &'static str {
@@ -217,10 +280,9 @@ fn type_name(v: &rmpv::Value) -> &'static str {
 
 /// One-line JSON-ish rendering of a decoded msgpack value.
 ///
-/// An Ext body is re-decoded when it is itself msgpack, which is what Python's
-/// tuple encoding (`Ext(0x40, msgpack([...]))`) and hivemind's dictionary
-/// encoding both produce — so a `ServerInfo` shows its contents without this
-/// having to know its field names. A body that is not msgpack stays hex.
+/// An Ext body that is itself msgpack is re-decoded — Python's tuple encoding
+/// — so a `ServerInfo` shows its contents without this knowing its field
+/// names. A body that is not msgpack stays hex.
 fn render(v: &rmpv::Value) -> String {
     use rmpv::Value;
     match v {
@@ -259,10 +321,9 @@ fn render(v: &rmpv::Value) -> String {
 mod tests {
     use super::*;
 
-    /// A petals `ServerInfo` is `Ext(64, msgpack([state, throughput, {…}]))`.
-    /// Unwrapping the Ext body is structural — no field names are invented —
-    /// and the type code stays visible so a reader knows what they are looking
-    /// at rather than seeing a bare array.
+    /// Unwrapping a `ServerInfo`'s `Ext(64)` body is structural — no field
+    /// names are invented — and the code stays visible, so a reader is not
+    /// shown a bare array.
     #[test]
     fn ext64_server_info_renders_as_its_contents_under_its_code() {
         use rmpv::Value;
@@ -286,13 +347,12 @@ mod tests {
         assert_eq!(view.rendered, r#"ext(64)[2, 1.5, {"start_block": 0}]"#);
     }
 
-    /// An Ext body that is not msgpack must stay opaque. Guessing at it would
-    /// turn arbitrary bytes from an unknown peer into text that looks decoded.
+    /// An Ext body that is not msgpack must stay opaque — guessing would turn
+    /// bytes from an unknown peer into text that looks decoded.
     #[test]
     fn an_undecodable_ext_body_stays_hex_under_its_code() {
         use rmpv::Value;
-        // 0x92 declares a 2-element array and then supplies one — truncated,
-        // not merely unrecognised.
+        // A 2-element array header supplying one element: truncated.
         let mut bytes = Vec::new();
         rmpv::encode::write_value(&mut bytes, &Value::Ext(99, vec![0x92, 0x01])).unwrap();
 
@@ -301,16 +361,64 @@ mod tests {
         assert_eq!(view.rendered, "ext(99)hex:9201");
     }
 
-    /// Trailing bytes after a complete value make the whole thing suspect.
+    /// The reserved marker 0xc1, at every position it can hide in.
     ///
-    /// `read_value` stops at the end of the first value and calls that success,
-    /// so without the full-consumption check a record with junk appended would
-    /// render as a clean `null` and the junk would never be seen.
+    /// rmpv decodes it to `Nil` rather than failing (1.3.1
+    /// `decode/value.rs:203`), so each of these rendered as a clean `null` with
+    /// `decoded: true` until [`scan`] went in. Trailing-byte checking alone
+    /// caught only the last one.
     #[test]
-    fn trailing_bytes_are_not_silently_dropped() {
-        let view = render_value(&[0xc0, 0xc0]);
-        assert!(!view.decoded);
-        assert_eq!(view.rendered, "c0c0");
+    fn the_reserved_marker_is_never_rendered_as_null() {
+        for (bytes, what) in [
+            (vec![0xc1u8], "bare"),
+            (vec![0x91, 0xc1], "inside an array"),
+            (vec![0x81, 0xc1, 0xc1], "as a map key and value"),
+            (vec![0xc1, 0xc1], "with trailing bytes"),
+        ] {
+            let view = render_value(&bytes);
+            assert!(!view.decoded, "0xc1 {what} must not decode");
+            assert_eq!(view.msgpack_type, "undecodable", "0xc1 {what}");
+            assert_eq!(view.rendered, hex::encode(&bytes), "0xc1 {what}");
+        }
+
+        // And inside an Ext body, which `render` re-decodes separately.
+        let mut ext = Vec::new();
+        rmpv::encode::write_value(&mut ext, &rmpv::Value::Ext(64, vec![0xc1])).unwrap();
+        assert_eq!(render_value(&ext).rendered, "ext(64)hex:c1");
+    }
+
+    /// 0xc1 inside a str or bin *payload* is data, not a marker. A byte scan
+    /// would reject these; the marker walk must not.
+    #[test]
+    fn a_reserved_byte_inside_a_payload_is_just_data() {
+        use rmpv::Value;
+        let mut bin = Vec::new();
+        rmpv::encode::write_value(&mut bin, &Value::Binary(vec![0xc1, 0xc1])).unwrap();
+        let view = render_value(&bin);
+        assert!(view.decoded, "0xc1 in a bin payload is a legitimate byte");
+        assert_eq!(view.rendered, "hex:c1c1");
+
+        // The shape every announce actually uses, for good measure.
+        let packed = rmp_serde::to_vec("12D3KooWExample").unwrap();
+        assert!(render_value(&packed).decoded);
+    }
+
+    /// Hostile shapes must fail, not panic: an oversized declared length and
+    /// nesting past [`MAX_SCAN_DEPTH`] both come from bytes a peer chooses.
+    #[test]
+    fn malformed_input_is_rejected_rather_than_trusted() {
+        // bin32 claiming 4 GiB of payload it does not have.
+        assert!(!render_value(&[0xc6, 0xff, 0xff, 0xff, 0xff]).decoded);
+
+        // 200 nested single-element arrays, past the depth limit.
+        let mut deep = vec![0x91u8; 200];
+        deep.push(0xc0);
+        assert!(!render_value(&deep).decoded);
+
+        // Just inside it, the same shape is fine.
+        let mut shallow = vec![0x91u8; 32];
+        shallow.push(0xc0);
+        assert!(render_value(&shallow).decoded);
     }
 
     /// Bytes that are not msgpack at all are a finding about the record, not a
@@ -324,9 +432,8 @@ mod tests {
         assert_eq!(view.rendered, "92");
     }
 
-    /// Binary is rendered as a string only when it really is UTF-8; otherwise
-    /// hex, so a subkey that happens to be text and one that is not can never
-    /// be confused for each other.
+    /// Binary renders as a string only when it really is UTF-8, so a textual
+    /// subkey and a binary one are never confused.
     #[test]
     fn binary_renders_as_text_only_when_it_is_text() {
         use rmpv::Value;
@@ -345,9 +452,8 @@ mod tests {
         assert_eq!(render_value(&raw).rendered, "hex:fffe");
     }
 
-    /// A dictionary returned by a remote peer arrives as opaque bytes: the
-    /// `FindResult` carries no shape flag we trust, so the shape is recovered
-    /// by parsing, and each subkey keeps its own expiration.
+    /// A remote dictionary arrives as opaque bytes — `FindResult` carries no
+    /// shape flag — so the shape is recovered by parsing.
     #[test]
     fn a_remote_dictionary_is_recovered_from_its_bytes() {
         use std::collections::BTreeMap;
@@ -383,9 +489,8 @@ mod tests {
         assert_eq!(rec.subkeys[1].value_bytes, 4);
     }
 
-    /// A regular value under the same key is not a dictionary with one entry —
-    /// it is a peer that overwrote every other announcer, which is exactly the
-    /// failure a reader is looking for.
+    /// A regular value under a shared key is not a one-entry dictionary: it is
+    /// a peer that overwrote every other announcer.
     #[test]
     fn a_remote_regular_value_is_not_mistaken_for_a_dictionary() {
         let value = rmp_serde::to_vec("solo").unwrap();
@@ -399,9 +504,8 @@ mod tests {
         );
     }
 
-    /// The registries are always nameable; block keys follow the node's own
-    /// prefix, and the ids must be the same `SHA1(msgpack(name))` the announce
-    /// path publishes under — otherwise every row would come back unnamed.
+    /// The ids must be the same `SHA1(msgpack(name))` the announce path
+    /// publishes under, or every row comes back unnamed.
     #[test]
     fn known_keys_cover_the_registries_and_agree_with_announce() {
         let config = KwaaiNetConfig::default();

@@ -448,13 +448,9 @@ fn network_frames_occupy_oneof_tag_17() {
     );
 }
 
-/// A dictionary record with its subkey breakdown, which is the shape every
-/// per-block key really has.
-///
-/// The `optional` fields carry meaning that absent-vs-zero would destroy:
-/// `latest_expiration` and `dict_maxsize` only exist for dictionaries, and
-/// `value` is absent for one precisely because the values are per-subkey. A
-/// widening to 0/empty would report an unbounded dictionary as capped at zero.
+/// A dictionary record with its subkey breakdown — the shape every per-block
+/// key really has. The `optional` fields would lose meaning if widened to
+/// 0/empty: an unbounded dictionary would read as capped at zero.
 #[test]
 fn dht_record_roundtrip_dictionary_with_subkeys() {
     let original = DhtRecord {
@@ -510,9 +506,8 @@ fn dht_record_roundtrip_dictionary_with_subkeys() {
     );
 }
 
-/// A regular record is the degenerate case a client must be able to tell from
-/// a one-entry dictionary: the value lives on the record, there are no
-/// subkeys, and every dictionary-only field is absent rather than zero.
+/// A regular record must be distinguishable from a one-entry dictionary: the
+/// value lives on the record and the dictionary-only fields are absent.
 #[test]
 fn dht_record_roundtrip_regular_value_absent_optionals() {
     let original = DhtRecord {
@@ -545,10 +540,8 @@ fn dht_record_roundtrip_regular_value_absent_optionals() {
     assert!(decoded.subkeys.is_empty());
 }
 
-/// A lookup reply, including the two cases that are easy to conflate: a peer
-/// that answered NOT_FOUND and a peer that never answered. Both have no
-/// record, and only `outcome` separates "nobody has this" from "nobody was
-/// reachable".
+/// A lookup reply. NOT_FOUND and ERROR both carry no record, so only `outcome`
+/// separates "nobody has this" from "nobody was reachable".
 #[test]
 fn dht_lookup_reply_roundtrip_distinguishes_not_found_from_error() {
     let original = DhtLookupReply {
@@ -596,35 +589,67 @@ fn dht_lookup_reply_roundtrip_distinguishes_not_found_from_error() {
     );
 }
 
-/// Both new bodies must reach the wire under tags 26/27, and must not collide
-/// with any body already allocated. Encoding a frame and decoding it back into
-/// the *same* variant is what proves the tag was not quietly reused.
+/// Both new bodies must serialise at tags 26 and 27, asserted as wire bytes:
+/// a decode-back-into-the-same-variant check passes for any tag protoc
+/// accepts, so only the bytes catch a renumbering.
 #[test]
-fn dht_frames_roundtrip_under_their_own_tags() {
+fn dht_frames_occupy_oneof_tags_26_and_27() {
+    // Tag 26, wire type 2 (LEN) => (26 << 3) | 2 = 210 => varint [0xd2, 0x01].
+    // Tag 27 => (27 << 3) | 2 = 218 => varint [0xda, 0x01].
+    let records_req = ClientFrame {
+        id: 0,
+        body: Some(client_frame::Body::DhtRecords(DhtRecordsRequest::default())),
+    };
+    assert_eq!(
+        records_req.encode_to_vec().as_slice(),
+        &[0xd2, 0x01, 0x00],
+        "ClientFrame.dht_records must serialise at proto tag 26"
+    );
+
+    let lookup_req = ClientFrame {
+        id: 0,
+        body: Some(client_frame::Body::DhtLookup(DhtLookupRequest::default())),
+    };
+    assert_eq!(
+        lookup_req.encode_to_vec().as_slice(),
+        &[0xda, 0x01, 0x00],
+        "ClientFrame.dht_lookup must serialise at proto tag 27"
+    );
+
+    let records_reply = ServerFrame {
+        id: 1,
+        body: Some(server_frame::Body::DhtRecords(DhtRecordsReply::default())),
+    };
+    assert_eq!(
+        records_reply.encode_to_vec().as_slice(),
+        &[0x08, 0x01, 0xd2, 0x01, 0x00],
+        "ServerFrame.dht_records must serialise at proto tag 26"
+    );
+
+    let lookup_reply = ServerFrame {
+        id: 1,
+        body: Some(server_frame::Body::DhtLookup(DhtLookupReply::default())),
+    };
+    assert_eq!(
+        lookup_reply.encode_to_vec().as_slice(),
+        &[0x08, 0x01, 0xda, 0x01, 0x00],
+        "ServerFrame.dht_lookup must serialise at proto tag 27"
+    );
+}
+
+/// `limit` bounds a listing and `total_records` says when it was cut short.
+#[test]
+fn dht_records_roundtrip_carries_the_listing_bounds() {
     let req = ClientFrame {
         id: 26,
         body: Some(client_frame::Body::DhtRecords(DhtRecordsRequest {
             include_values: true,
             key_ids: vec!["ab".repeat(20)],
+            limit: 250,
         })),
     };
     let decoded = ClientFrame::decode(req.encode_to_vec().as_slice()).expect("must decode");
     assert_eq!(decoded, req);
-    assert!(matches!(
-        decoded.body,
-        Some(client_frame::Body::DhtRecords(_))
-    ));
-
-    let lookup = ClientFrame {
-        id: 27,
-        body: Some(client_frame::Body::DhtLookup(DhtLookupRequest {
-            key: "_kwaai.vpk.nodes".to_string(),
-            peers: vec!["12D3KooWBootstrapOne".to_string()],
-            timeout_secs: 5,
-        })),
-    };
-    let decoded = ClientFrame::decode(lookup.encode_to_vec().as_slice()).expect("must decode");
-    assert_eq!(decoded, lookup);
 
     let reply = ServerFrame {
         id: 26,
@@ -638,12 +663,14 @@ fn dht_frames_roundtrip_under_their_own_tags() {
                 name: "_petals.models".to_string(),
                 key_id: "ab".repeat(20),
             }],
+            // One row returned out of many matched: the truncation signal.
+            total_records: 12_043,
         })),
     };
     let decoded = ServerFrame::decode(reply.encode_to_vec().as_slice()).expect("must decode");
     assert_eq!(decoded, reply);
-    assert!(matches!(
-        decoded.body,
-        Some(server_frame::Body::DhtRecords(_))
-    ));
+    let Some(server_frame::Body::DhtRecords(r)) = decoded.body else {
+        panic!("wrong arm");
+    };
+    assert!(r.records.len() < r.total_records as usize);
 }

@@ -116,9 +116,8 @@ impl RoutingPeer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalRecord {
     pub summary: EntrySummary,
-    /// Cache tier rather than primary. A cached record is here because a
-    /// lookup passed through us, not because anyone chose to replicate onto
-    /// us, and it is evictable — so the two are worth telling apart on screen.
+    /// Cache tier rather than primary: a record a lookup left here, evictable,
+    /// rather than one someone chose to replicate onto us.
     pub in_cache: bool,
 }
 
@@ -222,14 +221,9 @@ impl DHTStorage {
 
     /// Every live record this node holds, primary tier first, then cache.
     ///
-    /// The only enumeration over the store there is — and the only one there
-    /// can be for the DHT as a whole: Kademlia has no key-listing operation,
-    /// so "what is in the DHT" is only ever answerable for the subset that
-    /// replication happened to land here.
-    ///
-    /// A key present in both tiers appears twice, which is the truth: the two
-    /// copies carry independent expirations and `handle_find` prefers the
-    /// primary one.
+    /// A key present in both tiers appears twice: the copies carry independent
+    /// expirations and values, and [`Self::lookup`] serves whichever expires
+    /// later, so collapsing them would hide one that really is there.
     pub fn local_records(&self) -> Vec<LocalRecord> {
         let mut out = Vec::new();
         let mut take = |tier: &RwLock<LocalStorage>, in_cache: bool| {
@@ -246,17 +240,21 @@ impl DHTStorage {
         out
     }
 
-    /// One live record's value, by DHT key. Primary tier wins, matching
-    /// `handle_find`'s lookup order.
-    pub fn local_record(&self, key: &[u8]) -> Option<(Stored, DHTExpiration, bool)> {
-        if let Ok(s) = self.inner.storage.read() {
-            if let Some((v, exp)) = s.get(key) {
-                return Some((v.clone(), exp, false));
-            }
-        }
-        let c = self.inner.cache.read().ok()?;
-        let (v, exp) = c.get(key)?;
-        Some((v.clone(), exp, true))
+    /// One live record's value from the named tier.
+    ///
+    /// The tier is explicit rather than resolved here: [`Self::local_records`]
+    /// reports each tier's copy as its own row, so a caller filling in a row's
+    /// value already knows which one it wants. Choosing a tier internally would
+    /// let a cache row be captioned with the primary tier's value.
+    pub fn local_record(&self, key: &[u8], in_cache: bool) -> Option<(Stored, DHTExpiration)> {
+        let tier = if in_cache {
+            &self.inner.cache
+        } else {
+            &self.inner.storage
+        };
+        let guard = tier.read().ok()?;
+        let (value, expiration) = guard.get(key)?;
+        Some((value.clone(), expiration))
     }
 
     // ── STORE ───────────────────────────────────────────────────────────────
@@ -1190,13 +1188,17 @@ mod tests {
 
     /// Enumeration spans both tiers and says which one each record came from.
     ///
-    /// A key stored in both appears twice, deliberately: the copies carry
-    /// independent expirations, `handle_find` answers from the primary one,
-    /// and collapsing them would hide the cache copy that is actually there.
+    /// The two copies carry different expirations *and* different values here,
+    /// which is what makes the next assertion mean anything: a getter that
+    /// picked a tier itself would caption one of these rows with the other's
+    /// value, and equal expirations would hide the difference.
     #[test]
-    fn local_records_span_both_tiers_and_tag_the_cache() {
+    fn local_records_span_both_tiers_and_read_back_per_tier() {
         let s = DHTStorage::new(PeerId::random());
-        let exp = future();
+        let primary_exp = future();
+        // Strictly later, so `lookup` (protocol.py:342-347) would serve the
+        // cache copy — the case a primary-first getter gets wrong.
+        let cache_exp = primary_exp + 60.0;
         s.handle_store(store_req(
             vec![b"both".to_vec(), b"both".to_vec(), b"cached-only".to_vec()],
             vec![
@@ -1205,38 +1207,45 @@ mod tests {
                 IS_REGULAR_VALUE.to_vec(),
             ],
             vec![b"primary".to_vec(), b"cache".to_vec(), b"c".to_vec()],
-            vec![exp, exp, exp],
+            vec![primary_exp, cache_exp, cache_exp],
             vec![false, true, true],
         ));
 
-        let records = s.local_records();
-        let tagged: Vec<_> = records
+        let tagged: Vec<_> = s
+            .local_records()
             .iter()
-            .map(|r| (r.summary.key.clone(), r.in_cache))
+            .map(|r| (r.summary.key.clone(), r.in_cache, r.summary.expiration))
             .collect();
         assert_eq!(
             tagged,
             vec![
-                (b"both".to_vec(), false),
-                (b"both".to_vec(), true),
-                (b"cached-only".to_vec(), true),
+                (b"both".to_vec(), false, primary_exp),
+                (b"both".to_vec(), true, cache_exp),
+                (b"cached-only".to_vec(), true, cache_exp),
             ]
         );
 
-        // The primary copy wins the detail read, matching `handle_find`.
-        let (value, _, in_cache) = s.local_record(b"both").expect("stored");
-        assert!(!in_cache);
-        assert_eq!(
-            value,
-            Stored::Regular {
-                value: b"primary".to_vec(),
-                expiration: exp,
-            }
-        );
+        // Each row reads back its own tier's value, not the other's.
+        for (in_cache, expected, exp) in [
+            (false, b"primary".as_slice(), primary_exp),
+            (true, b"cache".as_slice(), cache_exp),
+        ] {
+            let (value, got_exp) = s.local_record(b"both", in_cache).expect("stored");
+            assert_eq!(
+                value,
+                Stored::Regular {
+                    value: expected.to_vec(),
+                    expiration: exp,
+                },
+                "in_cache={in_cache}"
+            );
+            assert_eq!(got_exp, exp);
+        }
 
-        // A cache-only key still resolves, and says so.
-        let (_, _, in_cache) = s.local_record(b"cached-only").expect("stored");
-        assert!(in_cache);
-        assert!(s.local_record(b"absent").is_none());
+        // A tier that does not hold the key answers None rather than falling
+        // through to the other one.
+        assert!(s.local_record(b"cached-only", false).is_none());
+        assert!(s.local_record(b"cached-only", true).is_some());
+        assert!(s.local_record(b"absent", false).is_none());
     }
 }

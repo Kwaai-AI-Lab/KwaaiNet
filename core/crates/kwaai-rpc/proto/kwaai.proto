@@ -843,44 +843,44 @@ message ConnectReply {
 // Hivemind DHT records
 // =====================================================================
 
-// List the DHT records this node holds locally.
-//
-// The local store is the *only* thing that can be enumerated. Hivemind
-// is a Kademlia DHT and Kademlia has no key-listing operation: there is
-// no request that means "tell me every key you know". What a node holds
-// is whatever replication, caching and its own announces happened to
-// land on it, so this listing is a true and complete answer about *this
-// node* and says nothing about the network's key space. Use
+// List the DHT records this node holds locally — the only listing that
+// exists. Kademlia has no key-enumeration operation, so what a node
+// holds is answerable in full while "what is in the DHT" is not; use
 // DhtLookupRequest for a key you already know the name of.
 message DhtRecordsRequest {
-    // Fill in `value` and `subkeys` on every record.
-    //
-    // Off by default because it is the expensive half: a listing needs
-    // only the metadata, while a detail view needs one record's decoded
-    // value. Combine with `key_ids` to pay it for one row.
+    // Fill in `value` and `subkeys`. Requires a non-empty `key_ids`:
+    // values run to a megabyte each, so a whole-store listing carrying
+    // them could not fit one frame. INVALID_ARGUMENT otherwise.
     bool include_values = 1;
 
     // Restrict the listing to these DHT ids (hex, as reported in
     // DhtRecord.key_id). Empty lists everything.
     repeated string key_ids = 2;
+
+    // Maximum records to return. 0 uses the daemon's default (500);
+    // above its ceiling (5000) it is clamped, not rejected.
+    uint32 limit = 3;
 }
 
 message DhtRecordsReply {
     // Daemon wall-clock time of this snapshot, RFC 3339.
     string server_time = 1;
 
-    // Every live record, primary tier first, then cache, each tier in
-    // key order. A key held in both tiers appears twice — the copies
-    // carry independent expirations and a lookup answers from the
-    // primary one, so they are genuinely two records.
+    // Live records, primary tier first, then cache, each tier in key
+    // order. A key held in both appears twice: the copies carry their
+    // own expirations and values, and a find serves whichever expires
+    // later, so they are genuinely two records.
     repeated DhtRecord records = 2;
 
-    // The keys this node can name: the well-known registries plus the
-    // per-block keys derived from its configured model prefix. This is
-    // both the reverse table for DhtRecord.key_name — a DHT id is
-    // SHA1(msgpack(name)) and cannot be inverted — and the candidate
-    // list a client offers for DhtLookupRequest.
+    // The keys this node can name: the registries plus one per block of
+    // its configured prefix. Both the reverse table for
+    // DhtRecord.key_name — a DHT id is SHA1(msgpack(name)) and cannot be
+    // inverted — and the candidate list for DhtLookupRequest.
     repeated DhtKnownKey known_keys = 3;
+
+    // Records matching the filter before `limit` was applied. Greater
+    // than `records.len()` means the listing was cut short.
+    uint32 total_records = 4;
 }
 
 // A plaintext key name and the DHT id it hashes to.
@@ -916,28 +916,28 @@ message DhtRecord {
     // replicate onto it, and it is evictable.
     bool in_cache = 4;
 
-    // Subkey count for a dictionary; 0 for a regular value, and also 0
-    // for a dictionary whose subkeys have all expired — `kind` is what
-    // separates those two.
+    // Subkeys held for a dictionary, 0 for a regular value; `kind`
+    // separates those. Counts expired subkeys too: nothing prunes a
+    // stored subkey once it expires — sweeping drops whole records, and
+    // the freshness check only rejects incoming stores — so compare
+    // each subkey's own expiration to see what is still live.
     uint32 subkey_count = 5;
 
     // Value bytes only: the stored value for a regular record, the
-    // summed subkey values for a dictionary. Not the serialized wire
-    // size, which adds msgpack framing.
+    // summed subkey values (expired ones included) for a dictionary.
+    // Not the serialized wire size, which adds msgpack framing.
     uint64 value_bytes = 6;
 
-    // The record's outer expiration, seconds since the UNIX epoch. This
-    // is the one `rpc_find` reports, and for a dictionary it can differ
-    // from `latest_expiration`.
+    // The record's outer expiration, seconds since the UNIX epoch. The
+    // one `rpc_find` reports, and for a dictionary it can differ from
+    // `latest_expiration`.
     double expiration = 7;
 
-    // Seconds until `expiration`, as of `server_time`. Negative for a
-    // record that has expired but not yet been swept — which a listing
-    // can legitimately see, since sweeping is periodic.
-    //
-    // Sent alongside the absolute time rather than instead of it: a
-    // client's clock is not the daemon's, and the countdown is what a
-    // reader actually wants.
+    // Seconds until `expiration`, as of `server_time`. Never negative
+    // in a local listing, which filters expired records; a lookup
+    // result can be, since it is stamped with the answering peer's
+    // clock. Sent alongside the absolute time because a client's clock
+    // is not the daemon's.
     double expires_in_secs = 8;
 
     // `DictionaryDHTValue.latest_expiration_time` — the running maximum
@@ -1015,23 +1015,20 @@ enum DhtRecordKind {
     DHT_RECORD_KIND_DICTIONARY = 2;
 }
 
-// Resolve one key across the network.
-//
-// The counterpart to DhtRecordsRequest: that one enumerates what is
-// here, this one fetches what is elsewhere. It can only ever work for a
-// key whose *name* is known, because the id is SHA1(msgpack(name)) and
-// there is nothing to enumerate against.
+// Resolve one key across the network — the counterpart to
+// DhtRecordsRequest, and only ever possible for a key whose *name* is
+// known, since the id is SHA1(msgpack(name)).
 message DhtLookupRequest {
     // The plaintext key name — `_petals.models`, `_kwaai.vpk.nodes`,
     // `_kwaai.inference.nodes`, `<prefix>.<block>`, or anything else.
-    // Hashed to its DHT id here so a client never has to reproduce
-    // SHA1(msgpack(name)).
+    // Hashed to its DHT id here.
     string key = 1;
 
-    // Peers to ask, base58 peer ids. Empty means this node's own
-    // configured peers plus its routing table — never a compiled-in
-    // default, so a lookup can only reach the network this node is
-    // already part of.
+    // Peers to ask, base58 peer ids. Empty means the node's configured
+    // peers plus its routing table — whoever it was already going to
+    // talk to. A node configured with an explicitly empty peer list
+    // gets UNAVAILABLE, never a fallback to a compiled-in bootstrap.
+    // Both lists are capped at 16 peers.
     repeated string peers = 2;
 
     // Per-peer budget. 0 uses the daemon's default.

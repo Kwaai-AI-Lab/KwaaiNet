@@ -1645,22 +1645,25 @@ async fn spawn_session_connect(
     });
 }
 
-/// Cap on the peers one lookup fans out to when the client named none.
-///
-/// The default set is the routing table, which holds up to k×256 entries; a
-/// lookup that dialled all of them would be a crawl, not a query.
+/// Cap on the peers one lookup fans out to, client-named or not.
 const DHT_LOOKUP_MAX_PEERS: usize = 16;
 
 /// Per-peer budget when the request does not set one.
 const DHT_LOOKUP_TIMEOUT_SECS: u64 = 10;
 
+/// Records returned when the request names no `limit`, and the ceiling any
+/// `limit` is clamped to.
+///
+/// A reply has to fit one gRPC frame, and tonic's client default
+/// `max_decoding_message_size` is 4 MiB. The store's own bound is a million
+/// entries, whose metadata alone would be ~100 MB.
+const DHT_RECORDS_DEFAULT_LIMIT: usize = 500;
+const DHT_RECORDS_MAX_LIMIT: usize = 5_000;
+
 /// Serve a `dht_records` op: enumerate this node's own hivemind DHT store.
 ///
-/// One-shot by construction. There is no subscription arm because there is
-/// nothing to subscribe to that a client could not poll: the store changes on
-/// the ~120 s announce cycle, and a change-detecting feed over a store that can
-/// hold a million entries would cost more to maintain than the listing costs to
-/// re-take.
+/// One-shot: the store moves on the ~120 s announce cycle, so a client that
+/// wants to watch it can poll.
 async fn spawn_session_dht_records(
     id: u64,
     req: DhtRecordsRequest,
@@ -1680,38 +1683,63 @@ async fn spawn_session_dht_records(
             return;
         };
 
+        // Values are up to MAX_VALUE_BYTES each, so a whole-store listing that
+        // carried them could not fit a frame at any useful limit.
+        if req.include_values && req.key_ids.is_empty() {
+            let _ = out_tx
+                .send(Ok(error_frame(
+                    id,
+                    ErrorCode::InvalidArgument,
+                    "include_values needs key_ids: values are only served for named records",
+                )))
+                .await;
+            return;
+        }
+
         let known = crate::dht_records::known_keys(&cfg);
         let names: HashMap<&str, &str> = known
             .iter()
             .map(|k| (k.key_id.as_str(), k.name.as_str()))
             .collect();
 
-        // The filter is applied to the hex id rather than to the raw key so the
-        // client can echo back exactly what it was shown.
+        // Filtered on the hex id rather than the raw key so the client can echo
+        // back exactly what it was shown.
         let wanted: BTreeSet<&str> = req.key_ids.iter().map(String::as_str).collect();
         let now = kwaai_hivemind_dht::value::get_dht_time();
+        let limit = match req.limit as usize {
+            0 => DHT_RECORDS_DEFAULT_LIMIT,
+            n => n.min(DHT_RECORDS_MAX_LIMIT),
+        };
 
-        let records = storage
+        let matched: Vec<_> = storage
             .local_records()
             .into_iter()
-            .filter_map(|record| {
+            .filter(|record| {
+                wanted.is_empty() || wanted.contains(hex::encode(&record.summary.key).as_str())
+            })
+            .collect();
+        // Counted before truncation: a client comparing it against `records`
+        // is how it learns the listing was cut short.
+        let total_records = matched.len() as u32;
+
+        let records = matched
+            .into_iter()
+            .take(limit)
+            .map(|record| {
                 let key_id = hex::encode(&record.summary.key);
-                if !wanted.is_empty() && !wanted.contains(key_id.as_str()) {
-                    return None;
-                }
-                // The value read is a second lock acquisition per record, so it
-                // is taken only for the records that will carry one.
-                let stored = if req.include_values {
-                    storage.local_record(&record.summary.key).map(|(v, _, _)| v)
-                } else {
-                    None
-                };
-                Some(crate::dht_records::local_record(
+                // A second lock acquisition per record, so it is taken only for
+                // records that will carry a value — and from this row's own
+                // tier, or a cache row would show the primary tier's value.
+                let stored = req
+                    .include_values
+                    .then(|| storage.local_record(&record.summary.key, record.in_cache))
+                    .flatten();
+                crate::dht_records::local_record(
                     &record,
-                    stored.as_ref(),
+                    stored.as_ref().map(|(v, _)| v),
                     names.get(key_id.as_str()).copied().unwrap_or_default(),
                     now,
-                ))
+                )
             })
             .collect();
 
@@ -1719,6 +1747,7 @@ async fn spawn_session_dht_records(
             server_time: now_rfc3339(),
             records,
             known_keys: known,
+            total_records,
         };
         let _ = out_tx
             .send(Ok(ServerFrame {
@@ -1732,11 +1761,15 @@ async fn spawn_session_dht_records(
 
 /// Serve a `dht_lookup` op: ask named peers for one key.
 ///
-/// The peer set is the request's, or this node's own configured peers plus its
-/// routing table. Never a compiled-in default — `NetworkConfig::with_petals_bootstrap`
-/// and `peers_view::bootstrap_peer_ids` both fall back to the production
-/// bootstraps when `initial_peers` is empty, and a diagnostic op must not be
-/// the thing that dials a network the node is not otherwise part of.
+/// The peer set is the request's, or `cfg.initial_peers` plus the routing
+/// table. Not the same as "never production": when `initial_peers` is *absent*
+/// from config.yaml, serde fills it from `config::default_peers`, which is the
+/// production pair — so this op asks whoever the node was already configured to
+/// talk to, no more. What it never does is the *empty-list* fallback
+/// (`with_petals_bootstrap`, and `peers_view::bootstrap_peer_ids`), which is
+/// the case that merged the test DHT with production on 2026-08-23: a node
+/// deliberately configured with `initial_peers: []` gets no peers here and an
+/// error, rather than the production bootstraps.
 async fn spawn_session_dht_lookup(
     id: u64,
     req: DhtLookupRequest,
@@ -1906,8 +1939,8 @@ async fn run_dht_lookup(
 }
 
 /// Who to ask: the request's peers, else the configured ones plus the routing
-/// table, capped. See [`spawn_session_dht_lookup`] for why there is no
-/// compiled-in fallback.
+/// table. Capped either way — every peer costs a dial-by-id with a DHT-walk
+/// fallback, so an uncapped client list would turn one request into a crawl.
 async fn lookup_peer_set(
     req: &DhtLookupRequest,
     cfg: &KwaaiNetConfig,
@@ -1918,14 +1951,15 @@ async fn lookup_peer_set(
             .peers
             .iter()
             .filter_map(|p| p.parse::<libp2p::PeerId>().ok())
+            .take(DHT_LOOKUP_MAX_PEERS)
             .collect();
     }
 
     let mut seen = BTreeSet::new();
     let mut peers = Vec::new();
     let configured = crate::peers_view::peer_ids_from_multiaddrs(&cfg.initial_peers);
-    // Configured peers first: they are the ones that hold the records this node
-    // published, and the cap should spend itself on them before the table.
+    // Configured peers first: they hold the records this node published, so the
+    // cap should spend itself on them before the table.
     for peer in configured
         .into_iter()
         .chain(handle.routing_peers().await.unwrap_or_default())
