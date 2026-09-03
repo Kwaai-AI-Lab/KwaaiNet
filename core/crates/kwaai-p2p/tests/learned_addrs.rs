@@ -107,8 +107,8 @@ async fn connect_with_addresses_reaches_a_peer_the_dht_cannot() {
     assert_eq!(echoed, b"hello");
 }
 
-/// The property `connect_chain_entry`'s pre-connect could not give: the
-/// addresses outlive the connection.
+/// The property a caller-side pre-connect could not give: the addresses
+/// outlive the connection.
 ///
 /// A pre-connect only helps while its connection lasts. The hop RPCs go through
 /// `dispatch_routed`, which never saw the published addresses — so a dropped
