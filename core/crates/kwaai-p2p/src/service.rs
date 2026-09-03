@@ -2347,6 +2347,20 @@ mod tests {
 
     const TICK: Duration = Duration::from_secs(300);
 
+    /// A base instant far enough ahead of the process start that a test can
+    /// subtract from it.
+    ///
+    /// `Instant` is monotonic from an arbitrary epoch, and on Windows that
+    /// epoch is close enough to boot that `Instant::now() - TICK * 10` (50
+    /// minutes) underflows on a runner that booted more recently than that.
+    /// `Instant`'s `Sub` impl `expect`s on the overflow, so the test panics
+    /// rather than failing an assertion — and only on Windows, and only when
+    /// the runner happens to be fresh. Shifting the base forward keeps the
+    /// arithmetic identical and cannot underflow.
+    fn base_instant() -> Instant {
+        Instant::now() + TICK * 100
+    }
+
     fn addr_of(peer: PeerId) -> Multiaddr {
         format!("/ip4/198.51.100.1/tcp/8000/p2p/{peer}")
             .parse()
@@ -2356,7 +2370,7 @@ mod tests {
     #[test]
     fn a_bootstrap_we_are_connected_to_is_left_alone() {
         let peer = PeerId::random();
-        let now = Instant::now();
+        let now = base_instant();
         let connected = HashSet::from([peer]);
         // Stale `last_connected` on purpose: a long-lived connection is not
         // re-established, so recency alone would misread it as lost.
@@ -2367,7 +2381,7 @@ mod tests {
     #[test]
     fn a_bootstrap_seen_within_the_window_is_left_alone() {
         let peer = PeerId::random();
-        let now = Instant::now();
+        let now = base_instant();
         let last = HashMap::from([(peer, now - TICK / 2)]);
         let addrs = [addr_of(peer)];
         let selected = bootstraps_to_reseed(&addrs, &HashSet::new(), &last, now, TICK);
@@ -2401,7 +2415,7 @@ mod tests {
     #[test]
     fn a_bootstrap_last_seen_before_the_window_is_redialled() {
         let peer = PeerId::random();
-        let now = Instant::now();
+        let now = base_instant();
         let last = HashMap::from([(peer, now - TICK * 2)]);
         let addrs = [addr_of(peer)];
         let selected = bootstraps_to_reseed(&addrs, &HashSet::new(), &last, now, TICK);
