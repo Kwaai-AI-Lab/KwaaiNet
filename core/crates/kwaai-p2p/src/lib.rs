@@ -50,8 +50,8 @@ pub mod transport;
 pub mod unary;
 
 pub use addresses::{
-    has_ip6, is_announceable, is_circuit, is_globally_routable_v6, is_routable_v4, is_routable_v6,
-    AddrPolicy,
+    has_ip6, ipv6_loopback_available, is_announceable, is_circuit, is_globally_routable_v6,
+    is_routable_v4, is_routable_v6, AddrPolicy,
 };
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{

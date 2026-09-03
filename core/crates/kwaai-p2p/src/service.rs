@@ -33,8 +33,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
-    dest_peer_id, has_ip6, is_circuit, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
-    AddrPolicy, OwnAddresses,
+    dest_peer_id, has_ip6, ipv6_loopback_available, is_circuit, peer_id_from_multiaddr,
+    strip_dest_p2p, strip_p2p, AddrPolicy, OwnAddresses,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::{Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD};
@@ -268,6 +268,29 @@ enum RoutedDial {
     Shared,
 }
 
+/// Whether to open IPv6 listeners at all, given the mode and whether the host
+/// has a v6 stack.
+///
+/// Separate from the per-address bind because `listen_on("/ip6/::/tcp/P")` is
+/// not an availability test. Binding the *unspecified* address succeeds on
+/// Linux even with `net.ipv6.conf.all.disable_ipv6=1`, so a node with IPv6
+/// switched off at the kernel reported `ipv6_status = "active"` and advertised
+/// itself dual-stack, while every concrete v6 address on the host was
+/// unassignable. The loopback probe asks the question the bind does not.
+///
+/// A pure function so the six mode/host combinations are testable without a
+/// swarm; the caller does the logging and the listening.
+fn resolve_ipv6(mode: Ipv6Mode, loopback_ok: bool) -> Result<bool> {
+    match (mode, loopback_ok) {
+        (Ipv6Mode::Off, _) => Ok(false),
+        (_, true) => Ok(true),
+        (Ipv6Mode::On, false) => {
+            anyhow::bail!("ipv6 is required but this host has no IPv6 loopback")
+        }
+        (Ipv6Mode::Auto, false) => Ok(false),
+    }
+}
+
 impl NetworkService {
     /// Build the swarm, start listening, and spawn the event loop.
     ///
@@ -390,6 +413,12 @@ impl NetworkService {
         };
 
         let ipv6_mode = config.ipv6.effective();
+        // Probe before listening, not by listening: see `resolve_ipv6`.
+        let open_v6 = resolve_ipv6(ipv6_mode, ipv6_loopback_available())?;
+        if ipv6_mode != Ipv6Mode::Off && !open_v6 {
+            warn!("IPv6 unavailable on this host, running IPv4-only");
+        }
+
         let mut ipv6_listening = false;
         let mut ipv6_warned = false;
         for addr in config.swarm_listen_addrs() {
@@ -397,6 +426,10 @@ impl NetworkService {
                 .parse()
                 .with_context(|| format!("parsing listen address {addr}"))?;
             let v6 = has_ip6(&addr);
+            if v6 && !open_v6 {
+                debug!(%addr, "skipping IPv6 listen address");
+                continue;
+            }
             match swarm.listen_on(addr.clone()) {
                 Ok(_) => {
                     ipv6_listening |= v6;
@@ -2477,5 +2510,44 @@ mod tests {
         assert!(
             bootstraps_to_reseed(&[addr], &HashSet::new(), &HashMap::new(), now, TICK).is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod ipv6_resolution {
+    use super::*;
+
+    /// All six combinations. The row that matters is `(On, false)`: before the
+    /// loopback probe existed the unspecified bind succeeded on a host with
+    /// IPv6 disabled, so `ipv6: true` started happily and reported "active".
+    #[test]
+    fn the_mode_and_the_host_together_decide() {
+        for (mode, loopback_ok, want) in [
+            (Ipv6Mode::Off, true, Some(false)),
+            (Ipv6Mode::Off, false, Some(false)),
+            (Ipv6Mode::Auto, true, Some(true)),
+            (Ipv6Mode::Auto, false, Some(false)),
+            (Ipv6Mode::On, true, Some(true)),
+            (Ipv6Mode::On, false, None),
+        ] {
+            let got = resolve_ipv6(mode, loopback_ok);
+            match want {
+                Some(open) => assert_eq!(got.unwrap(), open, "{mode:?}/{loopback_ok}"),
+                None => {
+                    let e = got
+                        .expect_err("ipv6: true on a v4-only host must fail")
+                        .to_string();
+                    assert!(e.contains("no IPv6 loopback"), "unhelpful error: {e}");
+                }
+            }
+        }
+    }
+
+    /// `off` never consults the host: a node told not to use IPv6 must not
+    /// fail to start on a box that happens to lack it.
+    #[test]
+    fn off_ignores_the_host_entirely() {
+        assert!(!resolve_ipv6(Ipv6Mode::Off, false).unwrap());
+        assert!(!resolve_ipv6(Ipv6Mode::Off, true).unwrap());
     }
 }

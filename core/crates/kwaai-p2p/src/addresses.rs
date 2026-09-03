@@ -204,6 +204,23 @@ pub fn has_ip6(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::Ip6(_)))
 }
 
+/// Whether this host has a usable IPv6 stack.
+///
+/// Binding the *unspecified* `[::]` is not a probe: on Linux it succeeds even
+/// with `net.ipv6.conf.all.disable_ipv6=1`, so a node concluded IPv6 was
+/// working and reported itself dual-stack while every concrete v6 address on
+/// the box was unassignable. A concrete address is the question actually worth
+/// asking, and loopback is the one address every v6 host has.
+pub fn ipv6_loopback_available() -> bool {
+    match std::net::TcpListener::bind("[::1]:0") {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "no IPv6 loopback on this host");
+            false
+        }
+    }
+}
+
 /// The two address-class decisions a node makes, carried together.
 ///
 /// They travel as a pair because every call site that filters addresses needs

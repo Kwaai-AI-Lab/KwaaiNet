@@ -236,10 +236,11 @@ pub struct KwaaiNetConfig {
 
     /// Whether to open IPv6 listeners: `auto`, `true` or `false`.
     ///
-    /// `auto` binds `/ip6/::` and runs IPv4-only if the host refuses; `true`
-    /// turns that refusal into a startup error; `false` opens no v6 listener
-    /// and drops v6 addresses from the dial and announce sets. Bound at
-    /// startup, so changing it needs a restart.
+    /// `auto` binds `/ip6/::` when the host has an IPv6 loopback and runs
+    /// IPv4-only when it does not or the bind is refused; `true` turns either
+    /// into a startup error; `false` opens no v6 listener and drops v6
+    /// addresses from the dial and announce sets. Bound at startup, so
+    /// changing it needs a restart.
     #[serde(default)]
     pub ipv6: kwaai_p2p::Ipv6Mode,
     /// Ceiling on simultaneously established connections, inbound and

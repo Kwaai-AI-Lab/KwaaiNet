@@ -85,9 +85,10 @@ pub struct NetworkConfig {
 
     /// Whether to open IPv6 listeners, and how hard to insist.
     ///
-    /// `auto` binds `/ip6/::` and falls back to IPv4-only if the OS refuses;
-    /// `true` makes that refusal a startup error; `false` opens no v6 listener
-    /// and drops v6 addresses from the dial and announce sets.
+    /// `auto` binds `/ip6/::` when the host has an IPv6 loopback, and falls
+    /// back to IPv4-only when it does not or when the bind is refused; `true`
+    /// makes either a startup error; `false` opens no v6 listener and drops v6
+    /// addresses from the dial and announce sets.
     #[serde(default)]
     pub ipv6: Ipv6Mode,
 
@@ -251,10 +252,12 @@ pub const IPV6_BUILD: bool = cfg!(feature = "ipv6");
 /// v4-only is exactly the failure a v6 deployment needs to see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Ipv6Mode {
-    /// Bind `/ip6/::`; log once and carry on v4-only if the OS refuses.
+    /// Bind `/ip6/::` when the host has an IPv6 loopback; log once and carry
+    /// on v4-only when it does not, or when the bind is refused.
     #[default]
     Auto,
-    /// Bind `/ip6/::`; a refusal is a startup error.
+    /// Bind `/ip6/::`; a host with no IPv6 loopback, or a refused bind, is a
+    /// startup error.
     On,
     /// No v6 listeners, and v6 addresses are dropped from the dial and
     /// announce sets.

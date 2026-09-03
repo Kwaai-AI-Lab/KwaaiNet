@@ -70,15 +70,26 @@ pub fn bind_dual_stack(scope: Scope, port: u16, mode: Ipv6Mode) -> Result<Bound>
         return Ok(Bound { v4, v6: None, port });
     }
 
+    // Binding the unspecified `[::]` succeeds on Linux even with IPv6 disabled
+    // at the kernel, so it proves nothing; ask about a concrete address first.
+    if !kwaai_p2p::ipv6_loopback_available() {
+        if mode == Ipv6Mode::On {
+            anyhow::bail!("ipv6 is required but this host has no IPv6 loopback");
+        }
+        warn!("IPv6 unavailable on this host; serving IPv4 only on port {port}");
+        return Ok(Bound { v4, v6: None, port });
+    }
+
     match bind_v6(scope, port) {
         Ok(v6) => Ok(Bound {
             v4,
             v6: Some(v6),
             port,
         }),
-        Err(e) if mode == Ipv6Mode::On => {
-            Err(e.context(format!("ipv6 is required but binding [::]:{port} failed")))
-        }
+        Err(e) if mode == Ipv6Mode::On => Err(e.context(format!(
+            "ipv6 is required but binding [{}]:{port} failed",
+            scope.v6()
+        ))),
         Err(e) => {
             warn!("IPv6 unavailable on port {port} ({e:#}); serving IPv4 only");
             Ok(Bound { v4, v6: None, port })
@@ -131,7 +142,7 @@ pub fn port_is_free(port: u16, mode: Ipv6Mode) -> bool {
             return false;
         }
     }
-    if mode.is_off() {
+    if mode.is_off() || !kwaai_p2p::ipv6_loopback_available() {
         return true;
     }
     match bind_v6(Scope::Any, port) {
@@ -191,6 +202,15 @@ mod tests {
             }
             None => println!("skipping v6 assertions: no IPv6 loopback on this host"),
         }
+    }
+
+    /// The twin exists exactly when the host has a v6 loopback. These two
+    /// disagreeing *is* the bug: `[::]` binds on a Linux host with IPv6
+    /// disabled, so the server reported a v6 listener that could never accept.
+    #[test]
+    fn the_v6_twin_tracks_the_host_probe() {
+        let bound = bind_dual_stack(Scope::Loopback, 0, Ipv6Mode::Auto).expect("v4 must bind");
+        assert_eq!(bound.v6.is_some(), kwaai_p2p::ipv6_loopback_available());
     }
 
     #[test]
