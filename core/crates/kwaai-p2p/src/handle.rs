@@ -146,6 +146,8 @@ pub struct NetworkSnapshot {
     pub observed_addrs: Vec<(Multiaddr, usize)>,
     /// The swarm's listen addresses.
     pub listen_addrs: Vec<Multiaddr>,
+    /// What IPv6 ended up doing: off, active, or wanted-but-refused.
+    pub ipv6: crate::config::Ipv6Status,
     /// Protocols this node serves to peers, sorted.
     ///
     /// The handlers actually registered — the unary and raw-stream namespaces

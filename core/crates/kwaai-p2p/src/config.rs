@@ -1,7 +1,9 @@
 //! Configuration for P2P networking
 
 use libp2p::StreamProtocol;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
+use std::str::FromStr;
 use std::time::Duration;
 
 /// KwaaiNet bootstrap servers for DHT discovery.
@@ -80,6 +82,14 @@ pub struct NetworkConfig {
     /// block or throttle UDP. Defaulted so a config predating the field still loads.
     #[serde(default)]
     pub enable_quic: bool,
+
+    /// Whether to open IPv6 listeners, and how hard to insist.
+    ///
+    /// `auto` binds `/ip6/::` and falls back to IPv4-only if the OS refuses;
+    /// `true` makes that refusal a startup error; `false` opens no v6 listener
+    /// and drops v6 addresses from the dial and announce sets.
+    #[serde(default)]
+    pub ipv6: Ipv6Mode,
 
     /// Enable NAT traversal
     pub enable_nat_traversal: bool,
@@ -231,6 +241,115 @@ fn default_kad_protocol_field() -> Vec<StreamProtocol> {
 /// Whether this build can serve more than one kad protocol name.
 pub const KAD_MULTI_PROTOCOL_BUILD: bool = cfg!(feature = "kad-multi-protocol");
 
+/// Whether this build has IPv6 support compiled in.
+pub const IPV6_BUILD: bool = cfg!(feature = "ipv6");
+
+/// How hard a node insists on IPv6.
+///
+/// Three states rather than a bool because "bind v6 if you can" and "v6 is
+/// required" are different operational promises, and a host that silently ran
+/// v4-only is exactly the failure a v6 deployment needs to see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Ipv6Mode {
+    /// Bind `/ip6/::`; log once and carry on v4-only if the OS refuses.
+    #[default]
+    Auto,
+    /// Bind `/ip6/::`; a refusal is a startup error.
+    On,
+    /// No v6 listeners, and v6 addresses are dropped from the dial and
+    /// announce sets.
+    Off,
+}
+
+impl Ipv6Mode {
+    /// The mode this build can actually honour: always `Off` without the
+    /// `ipv6` feature, so the config key stays loadable either way.
+    pub fn effective(self) -> Self {
+        if IPV6_BUILD {
+            self
+        } else {
+            Self::Off
+        }
+    }
+
+    /// Whether v6 is disabled once the build is taken into account.
+    pub fn is_off(self) -> bool {
+        self.effective() == Self::Off
+    }
+}
+
+impl fmt::Display for Ipv6Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::On => "true",
+            Self::Off => "false",
+        })
+    }
+}
+
+impl FromStr for Ipv6Mode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "true" | "on" | "yes" | "1" => Ok(Self::On),
+            "false" | "off" | "no" | "0" => Ok(Self::Off),
+            other => Err(format!("expected auto, true or false, got `{other}`")),
+        }
+    }
+}
+
+// Serialized as YAML's own `auto` / `true` / `false` rather than as an enum
+// variant, so the key reads the way an operator writes it.
+impl Serialize for Ipv6Mode {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Auto => s.serialize_str("auto"),
+            Self::On => s.serialize_bool(true),
+            Self::Off => s.serialize_bool(false),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Ipv6Mode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Str(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(true) => Ok(Self::On),
+            Raw::Bool(false) => Ok(Self::Off),
+            Raw::Str(s) => s.parse().map_err(de::Error::custom),
+        }
+    }
+}
+
+/// What IPv6 actually ended up doing, once the listeners were opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv6Status {
+    /// Disabled by config or by the build.
+    Off,
+    /// At least one v6 listener is bound.
+    Active,
+    /// Wanted, but the host refused every v6 bind.
+    Unavailable,
+}
+
+impl Ipv6Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Active => "active",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// The kad protocol names this build serves, in outbound preference order.
 ///
 /// Compiled in, deliberately not configurable. Which names a node serves
@@ -300,6 +419,7 @@ impl Default for NetworkConfig {
             kad_maintenance_interval: default_kad_maintenance_interval(),
             max_connections: 100,
             enable_quic: false,
+            ipv6: Ipv6Mode::Auto,
             enable_nat_traversal: true,
             enable_relay_client: true,
             protocol_version: crate::behaviour::DEFAULT_PROTOCOL_VERSION.to_string(),
@@ -353,6 +473,7 @@ impl NetworkConfig {
         Self {
             listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
             port: 0,
+            ipv6: Ipv6Mode::Auto,
             dht_server: true,
             relay_server: false,
             enable_upnp: false,
@@ -362,20 +483,26 @@ impl NetworkConfig {
 
     /// Multiaddrs the swarm should listen on.
     ///
-    /// If `listen_addrs` was set explicitly it wins; otherwise both the IPv4
-    /// and IPv6 wildcards on [`NetworkConfig::port`] are used.
+    /// If `listen_addrs` was set explicitly it wins; otherwise the IPv4
+    /// wildcard on [`NetworkConfig::port`] is used, plus the IPv6 one unless
+    /// [`NetworkConfig::ipv6`] is off. Both transports listen on the same port
+    /// number: libp2p sets `IPV6_V6ONLY` on the v6 socket, so they do not
+    /// collide.
     pub fn swarm_listen_addrs(&self) -> Vec<String> {
         if !self.listen_addrs.is_empty() {
             return self.listen_addrs.clone();
         }
-        let mut addrs = vec![
-            format!("/ip4/0.0.0.0/tcp/{}", self.port),
-            format!("/ip6/::/tcp/{}", self.port),
-        ];
+        let ipv6 = !self.ipv6.is_off();
+        let mut addrs = vec![format!("/ip4/0.0.0.0/tcp/{}", self.port)];
+        if ipv6 {
+            addrs.push(format!("/ip6/::/tcp/{}", self.port));
+        }
         if self.enable_quic {
             // Same port number: a different protocol, so it does not collide.
             addrs.push(format!("/ip4/0.0.0.0/udp/{}/quic-v1", self.port));
-            addrs.push(format!("/ip6/::/udp/{}/quic-v1", self.port));
+            if ipv6 {
+                addrs.push(format!("/ip6/::/udp/{}/quic-v1", self.port));
+            }
         }
         addrs
     }
@@ -449,6 +576,12 @@ impl NetworkConfigBuilder {
     /// Set the peers dialed at startup
     pub fn initial_peers(mut self, peers: Vec<String>) -> Self {
         self.config.initial_peers = peers;
+        self
+    }
+
+    /// Set the IPv6 mode
+    pub fn ipv6(mut self, mode: Ipv6Mode) -> Self {
+        self.config.ipv6 = mode;
         self
     }
 
@@ -554,5 +687,96 @@ mod kad_protocols {
                 "an ordinary build must not serve the legacy name"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ipv6_mode {
+    use super::*;
+
+    fn parse(yaml: &str) -> Ipv6Mode {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            ipv6: Ipv6Mode,
+        }
+        serde_yaml::from_str::<Wrapper>(yaml)
+            .expect("valid ipv6 key")
+            .ipv6
+    }
+
+    /// `auto` is a string and `true`/`false` are booleans in the same key, so
+    /// the deserializer has to accept both shapes.
+    #[test]
+    fn the_key_accepts_auto_and_the_booleans() {
+        assert_eq!(parse("ipv6: auto"), Ipv6Mode::Auto);
+        assert_eq!(parse("ipv6: true"), Ipv6Mode::On);
+        assert_eq!(parse("ipv6: false"), Ipv6Mode::Off);
+        assert_eq!(parse("other: 1"), Ipv6Mode::Auto, "absent means auto");
+    }
+
+    #[test]
+    fn a_bogus_value_is_an_error() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            #[allow(dead_code)]
+            ipv6: Ipv6Mode,
+        }
+        assert!(serde_yaml::from_str::<Wrapper>("ipv6: bogus").is_err());
+    }
+
+    /// Round-tripping must not turn `true` into the string `"true"`, which
+    /// would still parse but no longer look like the boolean an operator wrote.
+    #[test]
+    fn on_serializes_as_a_yaml_boolean() {
+        assert_eq!(serde_yaml::to_string(&Ipv6Mode::On).unwrap().trim(), "true");
+        assert_eq!(
+            serde_yaml::to_string(&Ipv6Mode::Off).unwrap().trim(),
+            "false"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&Ipv6Mode::Auto).unwrap().trim(),
+            "auto"
+        );
+    }
+
+    #[test]
+    fn strings_parse_case_insensitively() {
+        for (s, want) in [
+            ("AUTO", Ipv6Mode::Auto),
+            ("On", Ipv6Mode::On),
+            ("yes", Ipv6Mode::On),
+            ("1", Ipv6Mode::On),
+            ("NO", Ipv6Mode::Off),
+            ("0", Ipv6Mode::Off),
+        ] {
+            assert_eq!(s.parse::<Ipv6Mode>().unwrap(), want, "{s}");
+        }
+        assert!("maybe".parse::<Ipv6Mode>().is_err());
+    }
+
+    /// Without the feature the key still loads; it just cannot mean anything.
+    #[test]
+    fn the_build_has_the_last_word() {
+        assert_eq!(Ipv6Mode::On.effective() == Ipv6Mode::On, IPV6_BUILD);
+        assert_eq!(Ipv6Mode::Auto.is_off(), !IPV6_BUILD);
+        assert!(Ipv6Mode::Off.is_off());
+    }
+
+    /// A config written before the key existed must default to `auto`.
+    #[test]
+    fn a_legacy_config_defaults_to_auto() {
+        let legacy = r#"{
+            "listen_addrs": [], "bootstrap_peers": [], "enable_dht": true,
+            "dht_replication": 20,
+            "idle_connection_timeout": {"secs": 600, "nanos": 0},
+            "request_timeout": {"secs": 60, "nanos": 0},
+            "max_connections": 100, "enable_nat_traversal": true,
+            "enable_relay_client": true, "protocol_version": "x",
+            "agent_version": "y"
+        }"#;
+        let old: NetworkConfig = serde_json::from_str(legacy).expect("legacy config");
+        assert_eq!(old.ipv6, Ipv6Mode::Auto);
     }
 }
