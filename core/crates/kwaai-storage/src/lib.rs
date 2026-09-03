@@ -13,7 +13,7 @@ pub mod db;
 pub mod tenant;
 pub mod vectors;
 
-pub use api::{build_app, run_storage_api};
+pub use api::{build_app, run_storage_api, run_storage_api_on};
 pub use db::{StorageDb, TenantIndex};
 pub use tenant::{TenantInfo, TenantManager, TenantStats};
 pub use vectors::{SearchResult, VectorStore};
