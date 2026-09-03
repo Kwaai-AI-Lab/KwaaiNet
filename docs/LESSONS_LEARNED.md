@@ -153,7 +153,7 @@ launchctl list | grep -i kwaai
 ### Related Documentation
 
 - [petals_visible.rs](/core/examples/petals_visible.rs) - Node announcement example
-- [ARCHITECTURE.md](/ARCHITECTURE.md) - System architecture
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
 - [P2P Configuration](/core/crates/kwaai-p2p/src/config.rs) - Bootstrap and DHT settings
 
 ---

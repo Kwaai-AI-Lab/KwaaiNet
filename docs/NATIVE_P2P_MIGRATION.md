@@ -13,7 +13,7 @@ p2pd goroutines, `node.rs:1635`; global kill-by-name of orphaned `p2pd` that can
 nodes' daemons), and leaves all NAT/relay/AutoNAT capability in Go. Goal: a native
 rust-libp2p node, daemon removed entirely.
 
-Note: `docs/FEATURE_GAP_ANALYSIS.md` and `docs/HIVEMIND_RUST_ARCHITECTURE.md` describe the
+Note: `archive/FEATURE_GAP_ANALYSIS.md` and `archive/HIVEMIND_RUST_ARCHITECTURE.md` describe the
 native-Rust stack as if it already exists — they are aspirational. This document reflects
 the verified current state.
 

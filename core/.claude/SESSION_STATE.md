@@ -176,7 +176,7 @@ cargo test
 # Read docs
 cat ARCHITECTURE.md
 cat HACKATHONS.md
-cat docs/HIVEMIND_RUST_ARCHITECTURE.md
+cat docs/archive/HIVEMIND_RUST_ARCHITECTURE.md
 ```
 
 ## Key Resources

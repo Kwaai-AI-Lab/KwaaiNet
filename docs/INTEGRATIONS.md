@@ -7,7 +7,7 @@ KwaaiNet is designed with a modular architecture allowing integration with vario
 ### Verida Network
 **Status**: Reference Implementation Available
 
-Decentralized storage with built-in identity management. See [docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md) for complete integration guide.
+Decentralized storage with built-in identity management. See [archive/VERIDA_INTEGRATION.md](archive/VERIDA_INTEGRATION.md) for complete integration guide.
 
 **Features**:
 - End-to-end encrypted private databases
@@ -177,7 +177,7 @@ Built-in carbon footprint tracking for distributed computing.
 
 ## Contributing Integrations
 
-Want to add a new integration? See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Want to add a new integration? See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 
 ### Integration Requirements
 1. **Trait Implementation**: Implement the appropriate provider trait

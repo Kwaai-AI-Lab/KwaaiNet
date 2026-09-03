@@ -71,6 +71,15 @@ Each page will label its primary audience at the top to make navigation easier.
 
 ---
 
+## Archive
+
+Nine older architecture documents (~8,500 lines, last touched between November 2025 and
+March 2026) now live in [`archive/`](archive/README.md). They record why decisions were made
+but do not describe the current release — several still assert WebRTC transport, `p2pd` as
+the live path, or `redb` as the storage engine.
+
+---
+
 ## Background reading
 
 For deeper context, we recommend:
