@@ -37,7 +37,7 @@ use std::time::Duration;
 use libp2p::{Multiaddr, PeerId};
 use tracing::{debug, info, warn};
 
-use crate::addresses::is_announceable_with;
+use crate::addresses::AddrPolicy;
 
 /// How long to wait for real evidence before falling back to identify
 /// consensus. Long enough for AutoNAT's boot delay plus a probe round-trip
@@ -193,8 +193,10 @@ pub struct ReachabilityState {
     declared: Option<Multiaddr>,
     /// Distinct-observer threshold for the identify-consensus fallback.
     min_confirmations: usize,
-    /// Whether the reserved IPv4 ranges count as routable.
-    require_global_ips: bool,
+    /// Which addresses count as evidence. UPnP evidence is IPv4-only by
+    /// construction (IGD maps v4 ports), so a v6-only host reaches Public
+    /// through AutoNAT or the identify consensus.
+    policy: AddrPolicy,
     /// Whether the grace period has elapsed. Before it does, an absence of
     /// evidence is not evidence of absence.
     grace_elapsed: bool,
@@ -209,6 +211,7 @@ impl ReachabilityState {
         declared: Option<Multiaddr>,
         min_confirmations: usize,
         require_global_ips: bool,
+        ipv6: bool,
     ) -> (Self, Vec<Effect>) {
         if force_private && declared.is_some() {
             warn!(
@@ -242,7 +245,10 @@ impl ReachabilityState {
                 force_private,
                 declared,
                 min_confirmations: min_confirmations.max(1),
-                require_global_ips,
+                policy: AddrPolicy {
+                    strict: require_global_ips,
+                    ipv6,
+                },
                 grace_elapsed: false,
             },
             effects,
@@ -279,7 +285,7 @@ impl ReachabilityState {
         // from a peer on our own LAN can "confirm" an RFC1918 address. Promoting
         // it would advertise a LAN address to the whole network and tear down
         // relay circuits — the Direct-but-unreachable failure mode.
-        if !is_announceable_with(&addr, self.require_global_ips) {
+        if !self.policy.announceable(&addr) {
             info!(%addr, "autonat says public at a non-announceable address; ignoring");
             return Vec::new();
         }
@@ -315,7 +321,7 @@ impl ReachabilityState {
         }
         // Same guard as the autonat path: a gateway can report an internal or
         // carrier-grade address, and standing on it would be worse than Unknown.
-        if !is_announceable_with(&addr, self.require_global_ips) {
+        if !self.policy.announceable(&addr) {
             info!(%addr, "upnp mapped a non-announceable external address; ignoring");
             return Vec::new();
         }
@@ -396,7 +402,7 @@ impl ReachabilityState {
     ) -> Option<(Multiaddr, usize)> {
         observed
             .iter()
-            .filter(|(addr, _)| is_announceable_with(addr, self.require_global_ips))
+            .filter(|(addr, _)| self.policy.announceable(addr))
             .map(|(addr, observers)| (addr.clone(), observers.len()))
             .filter(|(_, n)| *n >= self.min_confirmations)
             // Ties broken by address so the choice is deterministic — a
@@ -513,14 +519,14 @@ mod tests {
     }
 
     fn plain() -> ReachabilityState {
-        ReachabilityState::new(false, None, 2, false).0
+        ReachabilityState::new(false, None, 2, false, true).0
     }
 
     // -- force_private ---------------------------------------------------
 
     #[test]
     fn force_private_is_terminal_against_autonat_public() {
-        let (mut state, effects) = ReachabilityState::new(true, None, 2, false);
+        let (mut state, effects) = ReachabilityState::new(true, None, 2, false, true);
         assert!(effects.is_empty());
         // Private from t=0, not Unknown: reservations start immediately, which
         // is the entire reason the flag exists.
@@ -536,7 +542,7 @@ mod tests {
 
     #[test]
     fn force_private_also_refuses_upnp_and_identify_consensus() {
-        let (mut state, _) = ReachabilityState::new(true, None, 2, false);
+        let (mut state, _) = ReachabilityState::new(true, None, 2, false, true);
         assert!(state
             .on_upnp_external(ma("/ip4/1.2.3.4/tcp/8080"))
             .is_empty());
@@ -586,7 +592,7 @@ mod tests {
     #[test]
     fn declared_external_addr_outranks_force_private_with_a_warning() {
         let addr = ma("/ip4/203.0.113.7/tcp/8080");
-        let (mut state, effects) = ReachabilityState::new(true, Some(addr.clone()), 2, false);
+        let (mut state, effects) = ReachabilityState::new(true, Some(addr.clone()), 2, false, true);
         assert_eq!(effects, vec![Effect::ConfirmExternal(addr.clone())]);
         assert_eq!(state.current().source(), Some(Source::Declared));
 
@@ -619,7 +625,7 @@ mod tests {
 
         // …declared is not.
         let addr = ma("/ip4/203.0.113.7/tcp/8080");
-        let (mut declared, _) = ReachabilityState::new(false, Some(addr), 2, false);
+        let (mut declared, _) = ReachabilityState::new(false, Some(addr), 2, false, true);
         assert!(declared.on_autonat_private().is_empty());
         assert!(declared.current().is_public());
     }
@@ -774,7 +780,7 @@ mod tests {
         assert!(state.current().is_public());
 
         // Strict: it is not, and with nothing else on offer we go Private.
-        let mut strict = ReachabilityState::new(false, None, 2, true).0;
+        let mut strict = ReachabilityState::new(false, None, 2, true, true).0;
         strict.on_grace_elapsed(&observed(&[("/ip4/198.18.0.30/tcp/8080", &[1, 2])]));
         assert_eq!(*strict.current(), Reachability::Private);
     }

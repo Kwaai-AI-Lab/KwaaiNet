@@ -49,11 +49,15 @@ pub mod service;
 pub mod transport;
 pub mod unary;
 
-pub use addresses::{is_announceable, is_circuit, is_routable_v4};
+pub use addresses::{
+    has_ip6, is_announceable, is_circuit, is_globally_routable_v6, is_routable_v4, is_routable_v6,
+    AddrPolicy,
+};
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
-    kad_protocols, NetworkConfig, KAD_MULTI_PROTOCOL_BUILD, KWAAI_BOOTSTRAP_SERVERS,
-    KWAAI_BOOTSTRAP_SERVERS_DNS, KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL, PETALS_BOOTSTRAP_SERVERS,
+    kad_protocols, Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD, KAD_MULTI_PROTOCOL_BUILD,
+    KWAAI_BOOTSTRAP_SERVERS, KWAAI_BOOTSTRAP_SERVERS_DNS, KWAAI_KAD_PROTOCOL, LEGACY_KAD_PROTOCOL,
+    PETALS_BOOTSTRAP_SERVERS,
 };
 pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};

@@ -22,6 +22,15 @@
 //!    classify itself unreachable. `is_routable_v4` therefore permits them, and
 //!    the golden test at the bottom of this file pins that.
 //!
+//! IPv6 gets the same carve-out, for the same reason. `is_routable_v6` accepts
+//! unique-local `fc00::/7` alongside the documentation and benchmarking
+//! prefixes: a docker bridge hands out ULAs unless it is given a delegated
+//! global prefix, so the v6 test bed lives on `fdc6:1200::/64` and would
+//! otherwise classify itself unreachable exactly as the v4 bed would.
+//! `is_globally_routable_v6` is the strict form and rejects all of them, plus
+//! the transition ranges (Teredo, 6to4) that name a v4 endpoint rather than a
+//! v6 host.
+//!
 //! rust-libp2p 0.53 does its own filtering in exactly one place that matters:
 //! `autonat::Config::only_global_ips` (default `true`) rejects RFC2544 via its
 //! `is_benchmarking` check. That is why [`crate::config::NetworkConfig`] carries
@@ -30,7 +39,7 @@
 //! is the only lever, and it has to be off for the test bed to work.
 
 use std::collections::HashSet;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use libp2p::swarm::FromSwarm;
 use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
@@ -57,10 +66,10 @@ pub fn is_announceable(addr: &Multiaddr) -> bool {
                 }
             }
             Protocol::Ip6(a) => {
-                if a.is_unspecified() || a.is_loopback() {
-                    bad_ip = true;
-                } else {
+                if is_routable_v6(a) {
                     routable_ip = true;
+                } else {
+                    bad_ip = true;
                 }
             }
             _ => {}
@@ -125,6 +134,103 @@ pub fn is_globally_routable_v4(a: Ipv4Addr) -> bool {
     true
 }
 
+/// The IPv6 counterpart of [`is_routable_v4`].
+///
+/// Rejects unspecified, loopback, multicast, link-local `fe80::/10`, the
+/// deprecated site-local `fec0::/10` and IPv4-compatible `::a.b.c.d` forms, and
+/// the discard-only `100::/64`. An IPv4-mapped address is classified as the v4
+/// address it carries.
+///
+/// **Accepts** unique-local `fc00::/7` and the documentation and benchmarking
+/// prefixes — the v6 half of the carve-out in the module docs.
+pub fn is_routable_v6(a: Ipv6Addr) -> bool {
+    if let Some(v4) = a.to_ipv4_mapped() {
+        return is_routable_v4(v4);
+    }
+    if a.is_unspecified() || a.is_loopback() || a.is_multicast() || a.is_unicast_link_local() {
+        return false;
+    }
+    let s = a.segments();
+    // Deprecated site-local fec0::/10.
+    if s[0] & 0xffc0 == 0xfec0 {
+        return false;
+    }
+    // RFC6666 discard-only 100::/64: a black hole by definition.
+    if s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
+        return false;
+    }
+    // Deprecated IPv4-compatible ::a.b.c.d — 96 zero bits, and not the mapped
+    // form, which was handled above.
+    if s[..6].iter().all(|seg| *seg == 0) {
+        return false;
+    }
+    true
+}
+
+/// The stricter classification used when `require_global_ips` is set.
+///
+/// Drops what [`is_routable_v6`] deliberately permits — ULA, documentation
+/// `2001:db8::/32` and `3fff::/20`, benchmarking `2001:2::/48` — and also the
+/// transition and experimental ranges, which name a v4 endpoint or an overlay
+/// rather than a host on the v6 internet.
+pub fn is_globally_routable_v6(a: Ipv6Addr) -> bool {
+    if let Some(v4) = a.to_ipv4_mapped() {
+        return is_globally_routable_v4(v4);
+    }
+    if !is_routable_v6(a) || a.is_unique_local() {
+        return false;
+    }
+    let s = a.segments();
+    // Documentation: 2001:db8::/32 (RFC3849) and 3fff::/20 (RFC9637).
+    if (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x3fff && s[1] & 0xf000 == 0) {
+        return false;
+    }
+    // Benchmarking 2001:2::/48, Teredo 2001::/32, 6to4 2002::/16, and the
+    // ORCHID overlays 2001:10::/28 and 2001:20::/28.
+    if s[0] == 0x2002
+        || (s[0] == 0x2001
+            && (s[1] == 0
+                || (s[1] == 0x0002 && s[2] == 0)
+                || s[1] & 0xfff0 == 0x0010
+                || s[1] & 0xfff0 == 0x0020))
+    {
+        return false;
+    }
+    true
+}
+
+/// Whether `addr` names an IPv6 host.
+pub fn has_ip6(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, Protocol::Ip6(_)))
+}
+
+/// The two address-class decisions a node makes, carried together.
+///
+/// They travel as a pair because every call site that filters addresses needs
+/// both, and deriving either one separately is how the reachability state and
+/// the identify filter drifted apart before.
+#[derive(Clone, Copy, Debug)]
+pub struct AddrPolicy {
+    /// `require_global_ips`: reject the reserved ranges too.
+    pub strict: bool,
+    /// Whether IPv6 addresses are usable at all on this node.
+    pub ipv6: bool,
+}
+
+impl AddrPolicy {
+    /// Whether `addr` is worth advertising, and worth storing for a peer.
+    pub fn announceable(&self, addr: &Multiaddr) -> bool {
+        (self.ipv6 || !has_ip6(addr)) && is_announceable_with(addr, self.strict)
+    }
+
+    /// Whether `addr` may be dialed. Deliberately weaker than
+    /// [`Self::announceable`]: loopback and LAN addresses stay dialable, which
+    /// is how two nodes on one host reach each other.
+    pub fn dialable(&self, addr: &Multiaddr) -> bool {
+        self.ipv6 || !has_ip6(addr)
+    }
+}
+
 /// [`is_announceable`], with the reserved ranges rejected when `strict`.
 ///
 /// The one entry point callers should use, so the `require_global_ips` decision
@@ -143,6 +249,7 @@ pub fn is_announceable_with(addr: &Multiaddr, strict: bool) -> bool {
     }
     addr.iter().all(|p| match p {
         Protocol::Ip4(a) => is_globally_routable_v4(a),
+        Protocol::Ip6(a) => is_globally_routable_v6(a),
         _ => true,
     })
 }
@@ -289,6 +396,10 @@ mod tests {
         s.parse().expect("test ipv4 should parse")
     }
 
+    fn v6(s: &str) -> Ipv6Addr {
+        s.parse().expect("test ipv6 should parse")
+    }
+
     // -- the golden case ------------------------------------------------
 
     #[test]
@@ -370,7 +481,122 @@ mod tests {
 
     #[test]
     fn public_ipv6_is_announceable() {
+        // 2001:db8::/32 is documentation space: announceable like RFC5737 is,
+        // and rejected by the same switch that rejects RFC5737.
         assert!(is_announceable(&ma("/ip6/2001:db8::1/tcp/8080")));
+        assert!(!is_announceable_with(
+            &ma("/ip6/2001:db8::1/tcp/8080"),
+            true
+        ));
+        assert!(is_announceable_with(
+            &ma("/ip6/2606:4700::1111/tcp/8080"),
+            true
+        ));
+    }
+
+    // -- the IPv6 classifier ---------------------------------------------
+
+    /// ULAs are what a docker bridge hands out, so the v6 test bed depends on
+    /// them passing the permissive check and failing the strict one — exactly
+    /// the RFC2544 story on the v4 side.
+    #[test]
+    fn unique_local_addresses_are_routable_but_not_global() {
+        for addr in ["fd00::1", "fdc6:1200::10", "fc00::1"] {
+            assert!(is_routable_v6(v6(addr)), "{addr} should be routable");
+            assert!(
+                !is_globally_routable_v6(v6(addr)),
+                "{addr} should fail the strict check"
+            );
+        }
+    }
+
+    #[test]
+    fn the_v6_reject_list() {
+        for addr in [
+            "::",        // unspecified
+            "::1",       // loopback
+            "fe80::1",   // link-local
+            "ff02::1",   // multicast
+            "fec0::1",   // deprecated site-local
+            "100::1",    // RFC6666 discard-only
+            "::1.2.3.4", // deprecated IPv4-compatible
+        ] {
+            assert!(!is_routable_v6(v6(addr)), "{addr} should not be routable");
+            assert!(!is_globally_routable_v6(v6(addr)));
+        }
+        assert!(!is_announceable(&ma("/ip6/fe80::1/tcp/8080")));
+        assert!(!is_announceable(&ma("/ip6/ff02::1/tcp/8080")));
+    }
+
+    /// A mapped address is the v4 address it carries, or the v4 filters could
+    /// be walked straight past by spelling the same address in v6.
+    #[test]
+    fn ipv4_mapped_addresses_are_classified_as_ipv4() {
+        assert!(!is_routable_v6(v6("::ffff:10.0.0.1")));
+        assert!(is_routable_v6(v6("::ffff:8.8.8.8")));
+        assert!(is_globally_routable_v6(v6("::ffff:8.8.8.8")));
+        assert!(!is_globally_routable_v6(v6("::ffff:198.18.0.20")));
+    }
+
+    #[test]
+    fn documentation_and_benchmarking_ranges_are_routable_but_not_global() {
+        for addr in ["2001:db8::1", "3fff::1", "2001:2::1"] {
+            assert!(is_routable_v6(v6(addr)), "{addr} should be routable");
+            assert!(
+                !is_globally_routable_v6(v6(addr)),
+                "{addr} should fail the strict check"
+            );
+        }
+    }
+
+    /// Teredo and 6to4 name a v4 endpoint wrapped in a v6 address; a strict
+    /// node has no business advertising itself at one.
+    #[test]
+    fn transition_ranges_fail_the_strict_check() {
+        for addr in ["2001::1", "2002:c000:204::1"] {
+            assert!(!is_globally_routable_v6(v6(addr)), "{addr}");
+        }
+    }
+
+    #[test]
+    fn ordinary_global_v6_passes_both_checks() {
+        assert!(is_routable_v6(v6("2606:4700::1111")));
+        assert!(is_globally_routable_v6(v6("2606:4700::1111")));
+    }
+
+    #[test]
+    fn a_mixed_v4_v6_address_is_rejected() {
+        // Same rule as the v4 case: the unroutable half is a local interface
+        // that leaked into the list, so the whole address is suspect.
+        assert!(!is_announceable(&ma(
+            "/ip4/1.2.3.4/tcp/8080/ip6/fe80::1/tcp/9"
+        )));
+    }
+
+    // -- AddrPolicy -------------------------------------------------------
+
+    #[test]
+    fn a_v4_only_policy_rejects_every_v6_address() {
+        let v4_only = AddrPolicy {
+            strict: false,
+            ipv6: false,
+        };
+        let global_v6 = ma("/ip6/2606:4700::1111/tcp/8080");
+        assert!(!v4_only.announceable(&global_v6));
+        assert!(!v4_only.dialable(&global_v6));
+        assert!(!v4_only.dialable(&ma("/ip6/::1/tcp/8080")));
+
+        // v4 is untouched, and loopback stays dialable — that is the whole
+        // difference between the two questions.
+        assert!(v4_only.announceable(&ma("/ip4/8.8.8.8/tcp/8080")));
+        assert!(v4_only.dialable(&ma("/ip4/127.0.0.1/tcp/8080")));
+
+        let dual = AddrPolicy {
+            strict: false,
+            ipv6: true,
+        };
+        assert!(dual.announceable(&global_v6));
+        assert!(dual.dialable(&ma("/ip6/::1/tcp/8080")));
     }
 
     #[test]

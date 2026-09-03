@@ -33,11 +33,11 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
-    dest_peer_id, is_announceable_with, is_circuit, peer_id_from_multiaddr, strip_dest_p2p,
-    strip_p2p, OwnAddresses,
+    dest_peer_id, has_ip6, is_circuit, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
+    AddrPolicy, OwnAddresses,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
-use crate::config::NetworkConfig;
+use crate::config::{Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD};
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
@@ -142,11 +142,13 @@ pub struct NetworkService {
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
-    /// Whether the reserved documentation/benchmarking ranges count as
-    /// unroutable. Mirrors `NetworkConfig::require_global_ips`; held here
-    /// because identify-learned addresses are filtered before they reach kad,
-    /// and that decision has to match the one the reachability state makes.
-    require_global_ips: bool,
+    /// Which addresses this node will announce and dial. Mirrors
+    /// `require_global_ips` and the IPv6 mode; held here because
+    /// identify-learned addresses are filtered before they reach kad, and that
+    /// decision has to match the one the reachability state makes.
+    policy: AddrPolicy,
+    /// What IPv6 ended up doing once the listeners were opened.
+    ipv6_status: Ipv6Status,
     /// The protocol list each connected peer advertised over identify. This is
     /// the capability feed: relay-hop support, AutoNAT and dcutr all show up
     /// here. Dropped when the last connection to a peer closes, so an entry
@@ -387,16 +389,44 @@ impl NetworkService {
             finish!(tcp.with_dns())
         };
 
+        let ipv6_mode = config.ipv6.effective();
+        let mut ipv6_listening = false;
+        let mut ipv6_warned = false;
         for addr in config.swarm_listen_addrs() {
             let addr: Multiaddr = addr
                 .parse()
                 .with_context(|| format!("parsing listen address {addr}"))?;
+            let v6 = has_ip6(&addr);
             match swarm.listen_on(addr.clone()) {
-                Ok(_) => debug!(%addr, "listening"),
+                Ok(_) => {
+                    ipv6_listening |= v6;
+                    debug!(%addr, "listening");
+                }
+                // `ipv6: true` is an operator saying v6 is the point of this
+                // deployment, so a silent v4-only fallback is the failure.
+                Err(e) if v6 && ipv6_mode == Ipv6Mode::On => {
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("ipv6 is required but listening on {addr} failed")));
+                }
                 // One failed listener (commonly IPv6 on a v4-only host) must
                 // not sink the whole node.
+                Err(e) if v6 => {
+                    if !ipv6_warned {
+                        ipv6_warned = true;
+                        warn!(%addr, error = %e, "IPv6 unavailable on this host, running IPv4-only");
+                    }
+                }
                 Err(e) => warn!(%addr, error = %e, "failed to listen on address"),
             }
+        }
+
+        let ipv6_status = match (ipv6_mode, ipv6_listening) {
+            (Ipv6Mode::Off, _) => Ipv6Status::Off,
+            (_, true) => Ipv6Status::Active,
+            (_, false) => Ipv6Status::Unavailable,
+        };
+        if config.ipv6 != Ipv6Mode::Off && !IPV6_BUILD {
+            warn!("ipv6 requested but this build has no ipv6 support");
         }
 
         // A declared external address is an instruction, not a guess, so a
@@ -417,6 +447,7 @@ impl NetworkService {
             declared,
             config.identify_min_confirmations,
             config.require_global_ips,
+            !ipv6_mode.is_off(),
         );
 
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
@@ -431,7 +462,11 @@ impl NetworkService {
             connections: HashMap::new(),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
-            require_global_ips: config.require_global_ips,
+            policy: AddrPolicy {
+                strict: config.require_global_ips,
+                ipv6: !ipv6_mode.is_off(),
+            },
+            ipv6_status,
             peer_protocols: HashMap::new(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
@@ -465,7 +500,12 @@ impl NetworkService {
         service.publish_announce_state();
 
         let task = tokio::spawn(service.run());
-        info!(peer_id = %local_peer_id, "network service started");
+        info!(
+            peer_id = %local_peer_id,
+            ipv6 = %config.ipv6,
+            ipv6_status = ipv6_status.as_str(),
+            "network service started"
+        );
         Ok((
             NetworkHandle::new(local_peer_id, tx, config.request_timeout, announce_rx),
             task,
@@ -599,6 +639,7 @@ impl NetworkService {
                     relay_addrs: self.relays.confirmed_addrs(),
                     observed_addrs: observed,
                     listen_addrs: self.swarm.listeners().cloned().collect(),
+                    ipv6: self.ipv6_status,
                     local_protocols: self.collect_local_protocols(),
                     last_contact: self
                         .last_connected
@@ -1005,6 +1046,10 @@ impl NetworkService {
         let mut dialed = 0usize;
         let mut last_error = None;
         for addr in peers {
+            if !self.policy.dialable(&addr) {
+                debug!(%addr, "skipping bootstrap address: ipv6 is disabled");
+                continue;
+            }
             match self.dial(addr.clone()) {
                 // A skipped dial counts as reached: we are already connected
                 // to that bootstrap, which is what the dial was for. Counting
@@ -1085,14 +1130,15 @@ impl NetworkService {
     /// Announceable addresses we know for `peer`: routing-table entries first,
     /// then any live connection's address.
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
-        let strict = self.require_global_ips;
-        self.candidate_addresses(peer, |a| is_announceable_with(a, strict))
+        let policy = self.policy;
+        self.candidate_addresses(peer, move |a| policy.announceable(a))
     }
 
     /// Every address we could try for `peer`; unlike [`Self::known_addresses`]
     /// it keeps loopback and LAN, which is how two nodes on one host reach each other.
     fn dial_candidates(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
-        self.candidate_addresses(peer, |_| true)
+        let policy = self.policy;
+        self.candidate_addresses(peer, move |a| policy.dialable(a))
     }
 
     /// `table_filter` decides which routing-table entries qualify; a live
@@ -1123,7 +1169,7 @@ impl NetworkService {
 
         if let Some(conns) = self.connections.get(peer) {
             for conn in conns.values() {
-                if !addrs.contains(&conn.addr) {
+                if self.policy.dialable(&conn.addr) && !addrs.contains(&conn.addr) {
                     addrs.push(conn.addr.clone());
                 }
             }
@@ -2164,7 +2210,7 @@ impl NetworkService {
                     .any(|p| self.swarm.behaviour().kad.protocol_names().contains(p));
                 if speaks_kad {
                     for addr in &info.listen_addrs {
-                        if !is_announceable_with(addr, self.require_global_ips) {
+                        if !self.policy.announceable(addr) {
                             trace!(
                                 peer = %peer_id,
                                 %addr,
