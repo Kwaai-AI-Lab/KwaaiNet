@@ -36,6 +36,7 @@ use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
+use kwaai_hivemind_dht::{DHTStorage, ResultType};
 use kwaai_p2p::{
     reachability::{Reachability, Source},
     NetworkHandle,
@@ -45,10 +46,11 @@ use kwaai_rpc::v1::{
     error::Code as ErrorCode,
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
-    ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, Done, Error as RpcError,
-    GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest,
-    RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest,
-    StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
+    ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, DhtLookupOutcome,
+    DhtLookupPeer, DhtLookupReply, DhtLookupRequest, DhtRecord, DhtRecordsReply, DhtRecordsRequest,
+    Done, Error as RpcError, GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind,
+    PingReply, PingRequest, RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply,
+    StorageDiscoveryRequest, StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -103,6 +105,9 @@ pub struct KwaaiNetService {
     /// so ping/status/generate answer while p2p is still coming up. Empty
     /// therefore means the node has not started yet.
     net: Arc<RwLock<Option<NetworkHandle>>>,
+    /// This node's own hivemind DHT store, filled in alongside `net`. Late-bound
+    /// for the same reason, and empty means the same two things.
+    dht: Arc<RwLock<Option<DHTStorage>>>,
     /// Captured at service construction so StatusReply.uptime_secs can
     /// report a process-level uptime without a separate clock.
     started_at: Instant,
@@ -114,6 +119,7 @@ impl KwaaiNetService {
             config: Arc::new(config),
             inference: Arc::new(Mutex::new(None)),
             net: Arc::new(RwLock::new(None)),
+            dht: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -205,6 +211,7 @@ impl KwaaiNet for KwaaiNetService {
         let cfg = self.config.clone();
         let inference_slot = self.inference.clone();
         let net_slot = self.net.clone();
+        let dht_slot = self.dht.clone();
         let started_at = self.started_at;
 
         tokio::spawn(async move {
@@ -340,6 +347,29 @@ impl KwaaiNet for KwaaiNetService {
 
                     client_frame::Body::Connect(req) => {
                         spawn_session_connect(id, req, net_slot.clone(), out_tx.clone()).await;
+                    }
+
+                    client_frame::Body::DhtRecords(req) => {
+                        spawn_session_dht_records(
+                            id,
+                            req,
+                            dht_slot.clone(),
+                            cfg.clone(),
+                            out_tx.clone(),
+                        )
+                        .await;
+                    }
+
+                    client_frame::Body::DhtLookup(req) => {
+                        spawn_session_dht_lookup(
+                            id,
+                            req,
+                            net_slot.clone(),
+                            cfg.clone(),
+                            out_tx.clone(),
+                            cancels.clone(),
+                        )
+                        .await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
@@ -1615,6 +1645,301 @@ async fn spawn_session_connect(
     });
 }
 
+/// Cap on the peers one lookup fans out to when the client named none.
+///
+/// The default set is the routing table, which holds up to k×256 entries; a
+/// lookup that dialled all of them would be a crawl, not a query.
+const DHT_LOOKUP_MAX_PEERS: usize = 16;
+
+/// Per-peer budget when the request does not set one.
+const DHT_LOOKUP_TIMEOUT_SECS: u64 = 10;
+
+/// Serve a `dht_records` op: enumerate this node's own hivemind DHT store.
+///
+/// One-shot by construction. There is no subscription arm because there is
+/// nothing to subscribe to that a client could not poll: the store changes on
+/// the ~120 s announce cycle, and a change-detecting feed over a store that can
+/// hold a million entries would cost more to maintain than the listing costs to
+/// re-take.
+async fn spawn_session_dht_records(
+    id: u64,
+    req: DhtRecordsRequest,
+    dht: Arc<RwLock<Option<DHTStorage>>>,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+) {
+    tokio::spawn(async move {
+        let Some(storage) = dht.read().await.clone() else {
+            let _ = out_tx
+                .send(Ok(error_frame(
+                    id,
+                    ErrorCode::Unimplemented,
+                    "dht_records requires the native p2p stack",
+                )))
+                .await;
+            return;
+        };
+
+        let known = crate::dht_records::known_keys(&cfg);
+        let names: HashMap<&str, &str> = known
+            .iter()
+            .map(|k| (k.key_id.as_str(), k.name.as_str()))
+            .collect();
+
+        // The filter is applied to the hex id rather than to the raw key so the
+        // client can echo back exactly what it was shown.
+        let wanted: BTreeSet<&str> = req.key_ids.iter().map(String::as_str).collect();
+        let now = kwaai_hivemind_dht::value::get_dht_time();
+
+        let records = storage
+            .local_records()
+            .into_iter()
+            .filter_map(|record| {
+                let key_id = hex::encode(&record.summary.key);
+                if !wanted.is_empty() && !wanted.contains(key_id.as_str()) {
+                    return None;
+                }
+                // The value read is a second lock acquisition per record, so it
+                // is taken only for the records that will carry one.
+                let stored = if req.include_values {
+                    storage.local_record(&record.summary.key).map(|(v, _, _)| v)
+                } else {
+                    None
+                };
+                Some(crate::dht_records::local_record(
+                    &record,
+                    stored.as_ref(),
+                    names.get(key_id.as_str()).copied().unwrap_or_default(),
+                    now,
+                ))
+            })
+            .collect();
+
+        let reply = DhtRecordsReply {
+            server_time: now_rfc3339(),
+            records,
+            known_keys: known,
+        };
+        let _ = out_tx
+            .send(Ok(ServerFrame {
+                id,
+                body: Some(server_frame::Body::DhtRecords(reply)),
+            }))
+            .await;
+        let _ = out_tx.send(Ok(done_frame(id))).await;
+    });
+}
+
+/// Serve a `dht_lookup` op: ask named peers for one key.
+///
+/// The peer set is the request's, or this node's own configured peers plus its
+/// routing table. Never a compiled-in default — `NetworkConfig::with_petals_bootstrap`
+/// and `peers_view::bootstrap_peer_ids` both fall back to the production
+/// bootstraps when `initial_peers` is empty, and a diagnostic op must not be
+/// the thing that dials a network the node is not otherwise part of.
+async fn spawn_session_dht_lookup(
+    id: u64,
+    req: DhtLookupRequest,
+    net: Arc<RwLock<Option<NetworkHandle>>>,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    cancels.lock().await.insert(id, cancel_tx);
+
+    let cancels_for_cleanup = cancels.clone();
+    tokio::spawn(async move {
+        let result = tokio::select! {
+            r = run_dht_lookup(&req, &cfg, net) => r,
+            _ = cancel_rx => {
+                let _ = out_tx
+                    .send(Ok(error_frame(id, ErrorCode::Cancelled, "cancelled")))
+                    .await;
+                cancels_for_cleanup.lock().await.remove(&id);
+                return;
+            }
+        };
+
+        match result {
+            Ok(reply) => {
+                let _ = out_tx
+                    .send(Ok(ServerFrame {
+                        id,
+                        body: Some(server_frame::Body::DhtLookup(reply)),
+                    }))
+                    .await;
+                let _ = out_tx.send(Ok(done_frame(id))).await;
+            }
+            Err((code, msg)) => {
+                let _ = out_tx.send(Ok(error_frame(id, code, &msg))).await;
+            }
+        }
+        cancels_for_cleanup.lock().await.remove(&id);
+    });
+}
+
+async fn run_dht_lookup(
+    req: &DhtLookupRequest,
+    cfg: &KwaaiNetConfig,
+    net: Arc<RwLock<Option<NetworkHandle>>>,
+) -> Result<DhtLookupReply, (ErrorCode, String)> {
+    use kwaai_hivemind_dht::protocol::{FindRequest, FindResponse, NodeInfo, RequestAuthInfo};
+    use prost::Message as _;
+
+    if req.key.is_empty() {
+        return Err((
+            ErrorCode::InvalidArgument,
+            "dht_lookup needs a key name".to_string(),
+        ));
+    }
+    let Some(handle) = net.read().await.clone() else {
+        return Err((
+            ErrorCode::Unimplemented,
+            "dht_lookup requires the native p2p stack".to_string(),
+        ));
+    };
+
+    let peers = lookup_peer_set(req, cfg, &handle).await;
+    if peers.is_empty() {
+        return Err((
+            ErrorCode::Unavailable,
+            "no peers to ask: this node has no configured peers and an empty routing table"
+                .to_string(),
+        ));
+    }
+
+    let key_id = crate::announce::dht_id(&req.key);
+    let find = FindRequest {
+        auth: Some(RequestAuthInfo::new()),
+        keys: vec![key_id.clone()],
+        peer: Some(NodeInfo {
+            node_id: kwaai_hivemind_dht::dht_id_from_peer_id(&handle.peer_id()),
+        }),
+    };
+    let mut req_bytes = Vec::new();
+    find.encode(&mut req_bytes)
+        .map_err(|e| (ErrorCode::Internal, format!("encoding rpc_find: {e}")))?;
+
+    let budget = std::time::Duration::from_secs(if req.timeout_secs > 0 {
+        req.timeout_secs as u64
+    } else {
+        DHT_LOOKUP_TIMEOUT_SECS
+    });
+
+    // Fanned out concurrently but reported in the order asked: a client that
+    // named its peers is comparing them, and re-ordering by who answered first
+    // would make the comparison depend on the network.
+    let answers = futures::future::join_all(peers.into_iter().map(|peer| {
+        let handle = handle.clone();
+        let req_bytes = req_bytes.clone();
+        async move {
+            let started = Instant::now();
+            let call = handle.call_unary_handler(peer, "DHTProtocol.rpc_find", &req_bytes);
+            let outcome = match tokio::time::timeout(budget, call).await {
+                Ok(Ok(bytes)) => Ok(bytes),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err(format!("timed out after {}s", budget.as_secs())),
+            };
+            (peer, outcome, started.elapsed())
+        }
+    }))
+    .await;
+
+    let now = kwaai_hivemind_dht::value::get_dht_time();
+    let mut rows = Vec::with_capacity(answers.len());
+    let mut best: Option<DhtRecord> = None;
+
+    for (peer, outcome, elapsed) in answers {
+        let mut row = DhtLookupPeer {
+            peer_id: peer.to_base58(),
+            outcome: DhtLookupOutcome::Error as i32,
+            error: String::new(),
+            elapsed_ms: elapsed.as_millis() as u32,
+            record: None,
+        };
+
+        match outcome {
+            Err(e) => row.error = e,
+            Ok(bytes) => match FindResponse::decode(&bytes[..]) {
+                Err(e) => row.error = format!("undecodable rpc_find response: {e}"),
+                Ok(resp) => {
+                    // One key was asked for, so one result is expected. A peer
+                    // that sends none answered the frame without answering the
+                    // question, which is a protocol fault, not a NOT_FOUND.
+                    match resp.results.first() {
+                        None => row.error = "rpc_find returned no result".to_string(),
+                        Some(r) if r.result_type == ResultType::NotFound as i32 => {
+                            row.outcome = DhtLookupOutcome::NotFound as i32;
+                        }
+                        Some(r) => {
+                            let record = crate::dht_records::remote_record(
+                                &req.key,
+                                &key_id,
+                                &r.value,
+                                r.expiration_time,
+                                now,
+                            );
+                            if best
+                                .as_ref()
+                                .is_none_or(|b| record.expiration > b.expiration)
+                            {
+                                best = Some(record.clone());
+                            }
+                            row.outcome = DhtLookupOutcome::Found as i32;
+                            row.record = Some(record);
+                        }
+                    }
+                }
+            },
+        }
+        rows.push(row);
+    }
+
+    Ok(DhtLookupReply {
+        server_time: now_rfc3339(),
+        key: req.key.clone(),
+        key_id: hex::encode(&key_id),
+        peers: rows,
+        record: best,
+    })
+}
+
+/// Who to ask: the request's peers, else the configured ones plus the routing
+/// table, capped. See [`spawn_session_dht_lookup`] for why there is no
+/// compiled-in fallback.
+async fn lookup_peer_set(
+    req: &DhtLookupRequest,
+    cfg: &KwaaiNetConfig,
+    handle: &NetworkHandle,
+) -> Vec<libp2p::PeerId> {
+    if !req.peers.is_empty() {
+        return req
+            .peers
+            .iter()
+            .filter_map(|p| p.parse::<libp2p::PeerId>().ok())
+            .collect();
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut peers = Vec::new();
+    let configured = crate::peers_view::peer_ids_from_multiaddrs(&cfg.initial_peers);
+    // Configured peers first: they are the ones that hold the records this node
+    // published, and the cap should spend itself on them before the table.
+    for peer in configured
+        .into_iter()
+        .chain(handle.routing_peers().await.unwrap_or_default())
+    {
+        if peer != handle.peer_id() && seen.insert(peer) {
+            peers.push(peer);
+        }
+        if peers.len() >= DHT_LOOKUP_MAX_PEERS {
+            break;
+        }
+    }
+    peers
+}
+
 /// A bootstrap counts as reachable while it is connected or accepted a
 /// connection within this window. Recency rather than the live set because
 /// bootstraps close idle connections (~30 s), and the announce loop
@@ -2039,6 +2364,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
 
     let svc_state = KwaaiNetService::new(config);
     let net_slot = svc_state.net.clone();
+    let dht_slot = svc_state.dht.clone();
     let service = KwaaiNetServer::new(svc_state);
 
     // Bind up front rather than inside the serve task: a clash has to be
@@ -2108,6 +2434,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
             #[cfg(unix)]
             shutdown_unix: Some(shutdown_unix_tx),
             net: net_slot,
+            dht: dht_slot,
             port_file,
         })
     }
@@ -2117,6 +2444,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
         Ok(GrpcServerHandle {
             shutdown_tcp,
             net: net_slot,
+            dht: dht_slot,
             port_file,
         })
     }
@@ -2186,6 +2514,8 @@ pub struct GrpcServerHandle {
     /// The service's swarm-handle slot, shared so the node can fill it once
     /// p2p is up. See [`GrpcServerHandle::attach_network`].
     net: Arc<RwLock<Option<NetworkHandle>>>,
+    /// The service's DHT-store slot; see [`GrpcServerHandle::attach_dht_storage`].
+    dht: Arc<RwLock<Option<DHTStorage>>>,
     /// `run/kwaainet.grpc`, when we managed to write it. Removed on shutdown.
     port_file: Option<PathBuf>,
 }
@@ -2199,6 +2529,12 @@ impl GrpcServerHandle {
     /// "unsupported" distinguishable from "still starting".
     pub async fn attach_network(&self, handle: NetworkHandle) {
         *self.net.write().await = Some(handle);
+    }
+
+    /// Hand this node's DHT store to the gRPC service, so the records op can
+    /// enumerate it. Same lifecycle as [`Self::attach_network`].
+    pub async fn attach_dht_storage(&self, storage: DHTStorage) {
+        *self.dht.write().await = Some(storage);
     }
 
     /// Trigger a graceful shutdown of both transports. Safe to call multiple

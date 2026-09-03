@@ -76,6 +76,33 @@ pub enum Stored {
     },
 }
 
+/// What [`LocalStorage::summaries`] reports about one live entry.
+///
+/// Everything here is O(1) or O(subkeys) to produce and holds no value bytes,
+/// which is what makes enumerating a whole tier affordable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntrySummary {
+    /// The DHT key, exactly as stored — a 20-byte DHTID for hivemind traffic,
+    /// but nothing here requires that.
+    pub key: Vec<u8>,
+    /// The *outer* expiration, which is what `rpc_find` reports
+    /// (`protocol.py:355`) and can differ from `latest_expiration`.
+    pub expiration: DHTExpiration,
+    /// `None` for a regular value; the subkey count for a dictionary. This is
+    /// the discriminator — a dictionary with no live subkeys is still a
+    /// dictionary, and `Some(0)` says so.
+    pub subkeys: Option<usize>,
+    /// Value bytes only: the stored value for a regular entry, the summed
+    /// subkey values for a dictionary. Not the serialized wire size, which
+    /// adds msgpack framing, and not [`LocalStorage::bytes`]'s accounting,
+    /// which adds per-entry overhead.
+    pub value_bytes: usize,
+    /// `DictionaryDHTValue.latest_expiration_time`, for dictionaries only.
+    pub latest_expiration: Option<DHTExpiration>,
+    /// The dictionary's own `maxsize`; `None` when unbounded or regular.
+    pub maxsize: Option<u64>,
+}
+
 /// An entry in the outer storage, carrying the outer expiration separately.
 ///
 /// Hivemind tracks the outer expiration in `TimedStorage.data` independently of
@@ -258,6 +285,47 @@ impl LocalStorage {
             return None;
         }
         Some((&entry.value, entry.expiration))
+    }
+
+    /// Metadata for every live entry, in key order.
+    ///
+    /// Deliberately value-free. A tier holds up to [`crate::server`]'s
+    /// `DEFAULT_STORAGE_SIZE` entries of up to `MAX_VALUE_BYTES` each, so a
+    /// listing that cloned values would be orders of magnitude larger than the
+    /// listing itself; [`Self::get`] serves the one record a detail view wants.
+    ///
+    /// Expired-but-unswept entries are skipped, so this agrees with `get`
+    /// rather than with [`Self::len`].
+    pub fn summaries(&self) -> Vec<EntrySummary> {
+        let now = get_dht_time();
+        self.data
+            .iter()
+            .filter(|(_, e)| e.expiration >= now)
+            .map(|(key, e)| EntrySummary {
+                key: key.clone(),
+                expiration: e.expiration,
+                subkeys: match &e.value {
+                    Stored::Regular { .. } => None,
+                    Stored::Dictionary { entries, .. } => Some(entries.len()),
+                },
+                value_bytes: match &e.value {
+                    Stored::Regular { value, .. } => value.len(),
+                    Stored::Dictionary { entries, .. } => {
+                        entries.values().map(|(v, _)| v.len()).sum::<usize>()
+                    }
+                },
+                latest_expiration: match &e.value {
+                    Stored::Regular { .. } => None,
+                    Stored::Dictionary {
+                        latest_expiration, ..
+                    } => Some(*latest_expiration),
+                },
+                maxsize: match &e.value {
+                    Stored::Regular { .. } => None,
+                    Stored::Dictionary { maxsize, .. } => *maxsize,
+                },
+            })
+            .collect()
     }
 
     /// Store a regular (subkey-less) value.
@@ -1134,5 +1202,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             "eviction must drop the earliest-expiring subkeys"
         );
+    }
+
+    /// Enumeration is the only way to ask what a node holds — Kademlia has no
+    /// key listing — so `summaries` has to agree with `get` on what is live,
+    /// and has to keep regular and dictionary entries apart. `len` deliberately
+    /// counts unswept expired entries; this must not.
+    #[test]
+    fn summaries_report_live_entries_and_their_shape() {
+        let mut s = LocalStorage::new();
+        s.store(b"plain".to_vec(), b"0123456789".to_vec(), future());
+        s.store_subkey(b"dict".to_vec(), b"sk1".to_vec(), b"aa".to_vec(), future());
+        s.store_subkey(
+            b"dict".to_vec(),
+            b"sk2".to_vec(),
+            b"bbbb".to_vec(),
+            future() + 10.0,
+        );
+
+        // Past its expiration but never swept: `get` hides it, so must this.
+        s.data.insert(
+            b"stale".to_vec(),
+            Entry {
+                value: Stored::Regular {
+                    value: b"x".to_vec(),
+                    expiration: 1.0,
+                },
+                expiration: 1.0,
+                bytes: 0,
+            },
+        );
+        assert_eq!(s.len(), 3, "the stale entry is still counted by len");
+
+        let got = s.summaries();
+        let keys: Vec<_> = got.iter().map(|e| e.key.clone()).collect();
+        assert_eq!(keys, vec![b"dict".to_vec(), b"plain".to_vec()]);
+
+        let dict = &got[0];
+        assert_eq!(dict.subkeys, Some(2));
+        // Value bytes only — subkeys and msgpack framing are not counted.
+        assert_eq!(dict.value_bytes, 6);
+        assert_eq!(dict.latest_expiration, Some(dict.expiration));
+
+        let plain = &got[1];
+        assert_eq!(plain.subkeys, None, "a regular value has no subkey count");
+        assert_eq!(plain.value_bytes, 10);
+        assert_eq!(plain.latest_expiration, None);
+    }
+
+    /// A dictionary whose subkeys have all been evicted is still a dictionary.
+    /// `Some(0)` is the claim; `None` would report it as a regular value and
+    /// send a reader looking for bytes that are not there.
+    #[test]
+    fn an_empty_dictionary_is_not_a_regular_value() {
+        let mut s = LocalStorage::new();
+        s.store_subkey(b"d".to_vec(), b"sk".to_vec(), b"v".to_vec(), future());
+        let Some(Entry {
+            value: Stored::Dictionary { entries, .. },
+            ..
+        }) = s.data.get_mut(b"d".as_slice())
+        else {
+            panic!("expected a dictionary");
+        };
+        entries.clear();
+
+        assert_eq!(s.summaries()[0].subkeys, Some(0));
+        assert_eq!(s.summaries()[0].value_bytes, 0);
     }
 }

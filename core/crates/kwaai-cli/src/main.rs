@@ -11,6 +11,7 @@ mod circuit_breaker;
 mod cli;
 mod config;
 mod daemon;
+mod dht_records;
 mod display;
 #[cfg(feature = "rag")]
 mod eval_dump;

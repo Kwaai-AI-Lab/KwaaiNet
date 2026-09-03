@@ -15,8 +15,10 @@
 //!     to `None` (we are NOT silently widening absent-vs-empty).
 
 use kwaai_rpc::v1::{
-    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtRole,
-    KadStatus, NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
+    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtKnownKey,
+    DhtLookupOutcome, DhtLookupPeer, DhtLookupReply, DhtLookupRequest, DhtRecord, DhtRecordKind,
+    DhtRecordsReply, DhtRecordsRequest, DhtRole, DhtSubkey, DhtValueView, KadStatus,
+    NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
     UpdateReason,
 };
 use prost::Message;
@@ -444,4 +446,204 @@ fn network_frames_occupy_oneof_tag_17() {
         &[0x08, 0x01, 0x8a, 0x01, 0x00],
         "ServerFrame.network must serialise at proto tag 17"
     );
+}
+
+/// A dictionary record with its subkey breakdown, which is the shape every
+/// per-block key really has.
+///
+/// The `optional` fields carry meaning that absent-vs-zero would destroy:
+/// `latest_expiration` and `dict_maxsize` only exist for dictionaries, and
+/// `value` is absent for one precisely because the values are per-subkey. A
+/// widening to 0/empty would report an unbounded dictionary as capped at zero.
+#[test]
+fn dht_record_roundtrip_dictionary_with_subkeys() {
+    let original = DhtRecord {
+        key_id: "5b7a1c0f".repeat(5),
+        key_name: "Qwen3-8B.0".to_string(),
+        kind: DhtRecordKind::Dictionary as i32,
+        in_cache: false,
+        subkey_count: 2,
+        value_bytes: 412,
+        expiration: 1_788_000_000.5,
+        expires_in_secs: 317.25,
+        latest_expiration: Some(1_788_000_090.0),
+        dict_maxsize: Some(1_048_576),
+        value: None,
+        subkeys: vec![
+            DhtSubkey {
+                subkey: "\"12D3KooWExampleA\"".to_string(),
+                expiration: 1_788_000_000.5,
+                expires_in_secs: 317.25,
+                value_bytes: 206,
+                value: Some(DhtValueView {
+                    msgpack_type: "ext".to_string(),
+                    rendered: "ext(64)[2, 1.5, {\"start_block\": 0}]".to_string(),
+                    raw_bytes: 206,
+                    ext_code: Some(64),
+                    decoded: true,
+                }),
+            },
+            DhtSubkey {
+                // Independent expiration: a subkey outliving its record is
+                // normal, and the countdown must be able to go negative.
+                subkey: "\"12D3KooWExampleB\"".to_string(),
+                expiration: 1_787_999_900.0,
+                expires_in_secs: -82.75,
+                value_bytes: 206,
+                value: Some(DhtValueView {
+                    msgpack_type: "undecodable".to_string(),
+                    rendered: "c1".to_string(),
+                    raw_bytes: 1,
+                    ext_code: None,
+                    decoded: false,
+                }),
+            },
+        ],
+    };
+
+    let decoded = DhtRecord::decode(original.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, original);
+    assert_eq!(decoded.subkeys[1].expires_in_secs, -82.75);
+    assert_eq!(
+        decoded.subkeys[0].value.as_ref().unwrap().ext_code,
+        Some(64)
+    );
+}
+
+/// A regular record is the degenerate case a client must be able to tell from
+/// a one-entry dictionary: the value lives on the record, there are no
+/// subkeys, and every dictionary-only field is absent rather than zero.
+#[test]
+fn dht_record_roundtrip_regular_value_absent_optionals() {
+    let original = DhtRecord {
+        key_id: "00".repeat(20),
+        // Unnamed is the normal case for a record replicated onto us: the id
+        // is a hash and there is nothing to invert.
+        key_name: String::new(),
+        kind: DhtRecordKind::Regular as i32,
+        in_cache: true,
+        subkey_count: 0,
+        value_bytes: 9,
+        expiration: 1_788_000_000.0,
+        expires_in_secs: -5.0,
+        latest_expiration: None,
+        dict_maxsize: None,
+        value: Some(DhtValueView {
+            msgpack_type: "bin".to_string(),
+            rendered: "hex:fffe".to_string(),
+            raw_bytes: 9,
+            ext_code: None,
+            decoded: true,
+        }),
+        subkeys: vec![],
+    };
+
+    let decoded = DhtRecord::decode(original.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, original);
+    assert!(decoded.latest_expiration.is_none());
+    assert!(decoded.dict_maxsize.is_none());
+    assert!(decoded.subkeys.is_empty());
+}
+
+/// A lookup reply, including the two cases that are easy to conflate: a peer
+/// that answered NOT_FOUND and a peer that never answered. Both have no
+/// record, and only `outcome` separates "nobody has this" from "nobody was
+/// reachable".
+#[test]
+fn dht_lookup_reply_roundtrip_distinguishes_not_found_from_error() {
+    let original = DhtLookupReply {
+        server_time: "2026-09-03T12:00:00.000Z".to_string(),
+        key: "_petals.models".to_string(),
+        key_id: "ab".repeat(20),
+        peers: vec![
+            DhtLookupPeer {
+                peer_id: "12D3KooWBootstrapOne".to_string(),
+                outcome: DhtLookupOutcome::Found as i32,
+                error: String::new(),
+                elapsed_ms: 42,
+                record: Some(DhtRecord {
+                    key_id: "ab".repeat(20),
+                    key_name: "_petals.models".to_string(),
+                    kind: DhtRecordKind::Dictionary as i32,
+                    subkey_count: 1,
+                    ..Default::default()
+                }),
+            },
+            DhtLookupPeer {
+                peer_id: "12D3KooWBootstrapTwo".to_string(),
+                outcome: DhtLookupOutcome::NotFound as i32,
+                error: String::new(),
+                elapsed_ms: 17,
+                record: None,
+            },
+            DhtLookupPeer {
+                peer_id: "12D3KooWUnreachable".to_string(),
+                outcome: DhtLookupOutcome::Error as i32,
+                error: "timed out after 10s".to_string(),
+                elapsed_ms: 10_000,
+                record: None,
+            },
+        ],
+        record: None,
+    };
+
+    let decoded = DhtLookupReply::decode(original.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, original);
+    assert_ne!(decoded.peers[1].outcome, decoded.peers[2].outcome);
+    assert!(
+        decoded.record.is_none(),
+        "no merged record when none was best"
+    );
+}
+
+/// Both new bodies must reach the wire under tags 26/27, and must not collide
+/// with any body already allocated. Encoding a frame and decoding it back into
+/// the *same* variant is what proves the tag was not quietly reused.
+#[test]
+fn dht_frames_roundtrip_under_their_own_tags() {
+    let req = ClientFrame {
+        id: 26,
+        body: Some(client_frame::Body::DhtRecords(DhtRecordsRequest {
+            include_values: true,
+            key_ids: vec!["ab".repeat(20)],
+        })),
+    };
+    let decoded = ClientFrame::decode(req.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, req);
+    assert!(matches!(
+        decoded.body,
+        Some(client_frame::Body::DhtRecords(_))
+    ));
+
+    let lookup = ClientFrame {
+        id: 27,
+        body: Some(client_frame::Body::DhtLookup(DhtLookupRequest {
+            key: "_kwaai.vpk.nodes".to_string(),
+            peers: vec!["12D3KooWBootstrapOne".to_string()],
+            timeout_secs: 5,
+        })),
+    };
+    let decoded = ClientFrame::decode(lookup.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, lookup);
+
+    let reply = ServerFrame {
+        id: 26,
+        body: Some(server_frame::Body::DhtRecords(DhtRecordsReply {
+            server_time: "2026-09-03T12:00:00.000Z".to_string(),
+            records: vec![DhtRecord {
+                key_id: "cd".repeat(20),
+                ..Default::default()
+            }],
+            known_keys: vec![DhtKnownKey {
+                name: "_petals.models".to_string(),
+                key_id: "ab".repeat(20),
+            }],
+        })),
+    };
+    let decoded = ServerFrame::decode(reply.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, reply);
+    assert!(matches!(
+        decoded.body,
+        Some(server_frame::Body::DhtRecords(_))
+    ));
 }
