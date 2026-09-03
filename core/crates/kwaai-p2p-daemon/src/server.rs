@@ -652,11 +652,24 @@ impl ConnState {
 
     /// `CONNECT` — dial a peer at the supplied addresses.
     ///
-    /// The client sends one multiaddr that already carries `/p2p/<id>`;
-    /// `NetworkHandle::connect_peer` requires that component, so an address
-    /// without it is completed from the request's `peer` field rather than
-    /// rejected — Go accepts the split form (`peer.AddrInfo{ID, Addrs}`) and
-    /// some call sites rely on it.
+    /// Two shapes arrive on this one request, and they are told apart by
+    /// whether the address names its destination:
+    ///
+    /// * **One multiaddr ending in `/p2p/<peer>`** — the classic dial, what
+    ///   `P2PClient::connect_peer` and `p2p peers connect --addr` send. Handed
+    ///   to `NetworkHandle::connect_peer` unchanged, which is what makes a
+    ///   bare `/p2p/<id>` still resolve through the DHT like Go's routed host.
+    /// * **Anything else** — bare addresses, or several of them, beside an
+    ///   explicit `peer`: Go's `peer.AddrInfo{ID, Addrs}` split form, which is
+    ///   what `P2PClient::connect_peer_with_addrs` sends and what a signed
+    ///   peer record produces. These go to `connect_peer_with_addrs`, which
+    ///   *keeps* them in the daemon's learned-address map so later routed
+    ///   requests to the peer can re-dial from them.
+    ///
+    /// The distinction is the address shape rather than the count because a
+    /// NATed peer commonly publishes exactly one circuit address, and that is
+    /// the case the learned map exists for — a count-based rule would send it
+    /// down the old path and lose it.
     async fn do_connect(&self, request: Request) -> Response {
         let Some(connect) = request.connect else {
             return error_response("Malformed request; missing parameters".to_string());
@@ -669,6 +682,27 @@ impl ConnState {
 
         if connect.addrs.is_empty() {
             return error_response("Malformed request; missing parameters".to_string());
+        }
+
+        let parsed: Vec<Multiaddr> = connect
+            .addrs
+            .iter()
+            .filter_map(|raw| Multiaddr::try_from(raw.clone()).ok())
+            .collect();
+        let classic = parsed.len() == 1
+            && connect.addrs.len() == 1
+            && kwaai_p2p::addresses::dest_peer_id(&parsed[0]) == Some(peer);
+
+        if !classic && !parsed.is_empty() {
+            return match self
+                .shared
+                .handle
+                .connect_peer_with_addrs(peer, parsed)
+                .await
+            {
+                Ok(_) => ok_response(),
+                Err(e) => error_response(e.to_string()),
+            };
         }
 
         let mut last_error = String::from("no addresses could be dialed");

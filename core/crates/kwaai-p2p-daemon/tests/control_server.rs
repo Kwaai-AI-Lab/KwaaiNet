@@ -190,6 +190,58 @@ async fn connect_then_list_peers_shows_the_remote() {
     b.shutdown().await;
 }
 
+/// The split `AddrInfo{ID, Addrs}` form of CONNECT, which is what a signed peer
+/// record produces: bare addresses beside an explicit peer id.
+///
+/// It must dial like the classic form *and* leave the addresses in the daemon's
+/// learned map — proved here by dropping the connection and issuing a routed
+/// unary, which has no other way to find B (nothing bootstrapped these two
+/// together, so B is in no routing table of A's).
+#[tokio::test]
+async fn connect_with_addrs_seeds_the_daemon_and_survives_a_disconnect() {
+    let a = TestNode::spawn().await;
+    let b = TestNode::spawn().await;
+
+    b.handle
+        .add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("registering a handler on B");
+
+    let b_listen: Multiaddr = b
+        .addr
+        .parse::<Multiaddr>()
+        .expect("a valid addr")
+        .iter()
+        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        .collect();
+
+    let mut client = a.client().await;
+    tokio::time::timeout(
+        TIMEOUT,
+        client.connect_peer_with_addrs(&b.peer_id, &[b_listen]),
+    )
+    .await
+    .expect("connect must not hang")
+    .expect("a supplied address must be enough to dial");
+
+    a.handle
+        .disconnect_peer(b.peer_id)
+        .await
+        .expect("disconnect");
+
+    let echoed = tokio::time::timeout(
+        TIMEOUT,
+        a.handle.call_unary_handler(b.peer_id, PROTO, b"hi"),
+    )
+    .await
+    .expect("the re-dial must not hang")
+    .expect("the daemon must re-dial from the addresses CONNECT supplied");
+    assert_eq!(echoed, b"hi");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
 /// A malformed CONNECT must come back as a protocol error on the socket, not
 /// close the connection — the client keeps using it afterwards.
 #[tokio::test]
