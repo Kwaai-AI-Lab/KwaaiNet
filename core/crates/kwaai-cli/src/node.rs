@@ -2612,7 +2612,7 @@ mod capacity_lease_dht_tests {
     use super::*;
 
     /// Decode `to_msgpack()`'s `Ext(64, ...)` wrapper down to the inner
-    /// fields map, mirroring what `shard_cmd.rs`'s `decode_server_info_ext`
+    /// fields map, mirroring what `announce.rs`'s `decode_server_info_ext`
     /// does on the read side.
     fn decode_fields_map(bytes: &[u8]) -> rmpv::Value {
         let ext = rmpv::decode::read_value(&mut &bytes[..]).expect("valid outer msgpack");
