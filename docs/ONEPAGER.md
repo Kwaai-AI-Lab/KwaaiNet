@@ -16,7 +16,7 @@ KwaaiNet turns ordinary computers — laptops, workstations, edge servers — in
 
 ## Three capabilities, one trust core
 
-**Run AI models together.** Any machine with a model installed can serve requests for the whole network, so capacity comes from ordinary hardware rather than a data centre. Splitting a single oversized model across several machines — passing results between them like an assembly line — also works, and is the more ambitious goal, but it is still experimental. Your queries travel between nodes encrypted, and a machine holding a middle slice of a model sees neither your prompt nor the final answer.
+**Run AI models together.** No single machine needs to be powerful enough to run a full model. KwaaiNet splits the model across many machines and passes results between them, like an assembly line — on ordinary CPUs as well as NVIDIA GPUs. Any machine with a model installed can also serve whole requests on its own. Your queries travel between nodes encrypted, and a machine holding a middle slice of a model sees neither your prompt nor the final answer.
 
 **Store and search private knowledge — privately.** Storage nodes hold only numeric vectors and return only matches; your documents never leave your machine, and no storage host ever receives the text of a document or a query. The next step, already designed, is for those vectors to be scrambled on your side before upload, so the host cannot read them either.
 
@@ -33,9 +33,11 @@ Every one of these capabilities is governed by a trust layer at the center. Each
 
 ## Status
 
-KwaaiNet is running today. Shipped: whole-model inference contributed by any node with a model installed, encrypted node identity, verifiable credential wallets, an OpenAI-compatible API for existing AI tools, multi-tenant vector storage, and automatic network self-organization.
+KwaaiNet is running today. Shipped: distributed inference across machines on CPU and CUDA, whole-model inference contributed by any node with a model installed, encrypted node identity, verifiable credential wallets, an OpenAI-compatible API for existing AI tools, multi-tenant vector storage, and automatic network self-organization.
 
-In progress: splitting a single model across machines works on Linux with NVIDIA GPUs but is not yet dependable enough to rely on, and does not work on Apple Silicon. Client-side encryption of stored vectors, trust-gated routing, and confidential-computing enclaves for inference are designed but not yet shipped.
+The one exception is Apple Silicon: Metal decode is slower than the CPU path, so Macs contribute whole models through Ollama rather than model slices.
+
+Designed but not yet shipped: client-side encryption of stored vectors, trust-gated routing, and confidential-computing enclaves for inference.
 
 ---
 
