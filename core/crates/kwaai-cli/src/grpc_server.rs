@@ -2728,12 +2728,21 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
             // here would suppress the update that reports it.
             let mut addrs: Vec<&str> = r.addrs.iter().map(String::as_str).collect();
             addrs.sort_unstable();
+            // `last_contact_secs` is excluded for the same reason as `rtt_ms`:
+            // it moves every tick. `distance` and `bucket` are fixed for the
+            // life of an entry, so including them costs no wakeups and keeps
+            // the identity a complete description of what a client renders.
             format!(
-                "{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 r.peer_id,
                 r.connected,
                 r.is_bootstrap,
-                addrs.join(",")
+                addrs.join(","),
+                r.kad_status,
+                r.bucket,
+                r.bucket_entries,
+                r.bucket_pending,
+                r.distance,
             )
         })
         .collect();
@@ -3014,7 +3023,8 @@ fn build_network_update(
     reason: UpdateReason,
 ) -> NetworkUpdate {
     use crate::peers_view::{classify_addr, dht_role, group_index, ConnKind, DhtRole};
-    use kwaai_rpc::v1::DhtRole as WireDhtRole;
+    use kwaai_rpc::v1::{DhtRole as WireDhtRole, KadStatus as WireKadStatus};
+    use libp2p::kad::NodeStatus;
 
     let connected_ids: std::collections::HashSet<libp2p::PeerId> =
         snapshot.peers.iter().map(|p| p.peer_id).collect();
@@ -3066,6 +3076,14 @@ fn build_network_update(
     // view flicker as rows swap under the user.
     connected.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
+    // Linear scans over `last_contact` would be quadratic in the routing table;
+    // it is a small bounded cache, so one map serves the whole projection.
+    let last_contact: std::collections::HashMap<_, _> = snapshot
+        .last_contact
+        .iter()
+        .map(|(p, ago)| (*p, *ago))
+        .collect();
+
     let mut routing: Vec<RoutingPeer> = snapshot
         .routing
         .iter()
@@ -3074,6 +3092,18 @@ fn build_network_update(
             connected: connected_ids.contains(&p.peer_id),
             is_bootstrap: bootstraps.contains(&p.peer_id),
             addrs: p.addrs.iter().map(|a| a.to_string()).collect(),
+            kad_status: match p.status {
+                NodeStatus::Connected => WireKadStatus::Connected as i32,
+                NodeStatus::Disconnected => WireKadStatus::Disconnected as i32,
+            },
+            bucket: p.bucket as u32,
+            bucket_entries: p.bucket_entries as u32,
+            bucket_capacity: libp2p::kad::K_VALUE.get() as u32,
+            bucket_pending: p.bucket_pending,
+            // Fixed-width so distances sort and compare as strings, which is
+            // the only thing a client can usefully do with a 256-bit number.
+            distance: format!("{:064x}", p.distance.0),
+            last_contact_secs: last_contact.get(&p.peer_id).map(|ago| ago.as_secs() as u32),
         })
         .collect();
     routing.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
@@ -4291,6 +4321,7 @@ mod tests {
             connected: true,
             is_bootstrap: false,
             addrs: vec![],
+            ..Default::default()
         }];
         assert_ne!(network_identity(&a), network_identity(&routed));
 
@@ -4305,6 +4336,7 @@ mod tests {
             connected: false,
             is_bootstrap: false,
             addrs: vec!["/ip4/198.18.0.32/tcp/8080".into()],
+            ..Default::default()
         }];
         let mut stripped = addressed.clone();
         stripped.routing[0].addrs.clear();
@@ -4349,6 +4381,7 @@ mod tests {
             connected: false,
             is_bootstrap: true,
             addrs: vec![],
+            ..Default::default()
         }];
         let mut plain_routed = a.clone();
         plain_routed.routing = vec![RoutingPeer {
@@ -4356,10 +4389,61 @@ mod tests {
             connected: false,
             is_bootstrap: false,
             addrs: vec![],
+            ..Default::default()
         }];
         assert_ne!(
             network_identity(&bootstrap_routed),
             network_identity(&plain_routed)
+        );
+    }
+
+    /// The k-bucket detail behind the DHT-entry dialog: kad's own verdict and
+    /// the bucket's occupancy are things the client renders, so they have to
+    /// wake it — but `last_contact_secs` grows every tick and must not, or the
+    /// dialog's own detail fields would defeat suppression for the whole feed.
+    #[test]
+    fn network_identity_tracks_kad_detail_but_not_last_contact() {
+        let base = |f: fn(&mut RoutingPeer)| {
+            let mut u = net_update("2026-01-01T00:00:00Z", vec![net_peer("A")]);
+            let mut r = RoutingPeer {
+                peer_id: "A".into(),
+                connected: true,
+                kad_status: kwaai_rpc::v1::KadStatus::Connected as i32,
+                bucket: 250,
+                bucket_entries: 3,
+                bucket_capacity: 20,
+                ..Default::default()
+            };
+            f(&mut r);
+            u.routing = vec![r];
+            u
+        };
+
+        let a = base(|_| {});
+
+        // Kad lags the swarm by an event-loop turn, so this flips on its own.
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&base(
+                |r| r.kad_status = kwaai_rpc::v1::KadStatus::Disconnected as i32
+            ))
+        );
+
+        // Whether the bucket is full decides if a newly-found peer can be
+        // inserted at all — the dialog says so, so it must stay current.
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&base(|r| r.bucket_entries = 20))
+        );
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&base(|r| r.bucket_pending = true))
+        );
+
+        // Elapsed time, on every entry, on every tick.
+        assert_eq!(
+            network_identity(&a),
+            network_identity(&base(|r| r.last_contact_secs = Some(41)))
         );
     }
 
