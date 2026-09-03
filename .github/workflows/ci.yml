@@ -196,6 +196,17 @@ jobs:
         working-directory: core
         run: cargo test -p kwaai-p2p --features kad-multi-protocol
 
+      # The `ipv6` feature is on by default, so nothing else ever compiles it
+      # out — and the config key has to keep parsing on a build that cannot
+      # honour it, which is exactly what a v4-only target would ship.
+      - name: Test kwaai-p2p without ipv6
+        working-directory: core
+        run: cargo test -p kwaai-p2p --no-default-features --features tcp
+
+      - name: Build kwaainet without ipv6
+        working-directory: core
+        run: cargo build -p kwaainet --no-default-features --features storage,rag
+
       # Same trap for cudarc, which no CI job compiles (CUDA is release-only):
       # `[patch.crates-io]` only applies when the patched version satisfies
       # what candle asks for, and a candle bump past cudarc 0.19 turns the
