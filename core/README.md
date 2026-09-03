@@ -1,6 +1,6 @@
 # KwaaiNet Core
 
-Rust core for KwaaiNet sovereign AI infrastructure — P2P inference, distributed block sharding, and privacy-preserving vector storage.
+Rust core for KwaaiNet sovereign AI infrastructure — P2P inference, distributed block sharding, and multi-tenant vector storage.
 
 ## Status
 

@@ -100,9 +100,12 @@ KwaaiNet aims to treat personal and organizational knowledge as a distributed, p
 
 Currently, VPK:
 
-- Runs as a separate process bound to the node's `PeerId`.
-- Supports roles `bob` (personal), `eve` (encrypted inference), and `both` (shared).
-- Performs homomorphic-encrypted vector search over multi-tenant vector tables.
+- Runs in-process inside the `kwaainet` binary, bound to the node's `PeerId`. (It is reachable
+  over `/kwaai/storage/1.0.0`; the HTTP API binds loopback only.)
+- Supports roles `bob` (data owner), `eve` (storage host), and `both` (shared).
+- Performs plaintext cosine search over multi-tenant vector tables — exact below 2,000 vectors,
+  HNSW above. Sealing vectors client-side so the host cannot read them is designed but not yet
+  wired in; the schemes themselves live in the Kwaai PHE project.
 - Advertises presence and health via the DHT; cross-node shard placement is not yet deployed.
 
 ### 3.3 Roadmap gaps and contributions

@@ -43,9 +43,14 @@ This attribute-level score becomes part of Eve's local reputation on Bob's node,
 
 ## 3. Computing local trust scores
 
-Each node combines credential evidence and behavioral evidence into a single **local trust score** per peer, which maps into tiers: `Unknown`, `Known`, `Verified`, and `Trusted`.
+A node today computes **two separate scores** per peer, which are not yet combined. Both discretize into the same tier names — `Unknown`, `Known`, `Verified`, `Trusted` — on different scales, so a tier is only meaningful alongside the score it came from. Unifying them is the intent described at the end of this section.
 
-**Credential component** (from the whitepaper):
+### Design sketch
+
+The formulas below are the intended shape, carried over from the whitepaper. What the code
+actually computes is in *What ships today*.
+
+**Credential component:**
 
 ```
 score_vc = min(1.0, Σ weight(vc_type) × 0.5^(age_days / 365))
@@ -53,7 +58,7 @@ score_vc = min(1.0, Σ weight(vc_type) × 0.5^(age_days / 365))
 
 Older VCs naturally lose weight unless renewed.
 
-**Metrics component** (illustrative):
+**Metrics component:**
 
 ```
 s_throughput  = observed / claimed throughput  (clamped to [0, 1])
@@ -63,15 +68,34 @@ s_availability = fraction of successful requests
 score_metrics = w_t × s_throughput + w_u × s_uptime + w_a × s_availability
 ```
 
-**Overall local trust score:**
+### What ships today
+
+**Behavioural score** — `kwaai-cli`'s reputation store, the one `shard chain` displays:
+
+```
+score = 0.5 × s_availability + 0.3 × s_throughput + 0.2 × s_latency
+```
+
+The weights are constants in `reputation.rs`, not configuration; `ReputationConfig` exposes
+only `enabled`. A peer with fewer than five recorded observations stays at `Unknown`
+regardless of score; above that the tiers are `< 0.40` Known, `< 0.70` Verified, else Trusted.
+
+**Credential score** — `kwaai-trust` computes the `score_vc` above from the credential wallet,
+with its own tier thresholds. It does not read the behavioural store, and the behavioural store
+does not read it.
+
+### Intended
 
 ```
 trust_local = α × score_vc + (1 - α) × score_metrics
 ```
 
-Weights and thresholds are **configurable per node**, so an operator can choose how much to rely on credentials vs live performance.
+A single blended score, with weights and thresholds **configurable per node** so an operator can
+choose how much to rely on credentials versus live performance. This is not implemented: there is
+no α, no blending, and no configurable weights. Uptime is not yet a term in either score.
 
-These scores are discretized into tiers, which are used when routing intents (e.g. "only use nodes with trust tier ≥ Verified").
+Tiers are shown to the operator and break ties during shard-chain selection. They do not exclude
+peers — see §6.
 
 ---
 

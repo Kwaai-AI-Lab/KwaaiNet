@@ -23,7 +23,7 @@ KwaaiNet combines these strands into a unified architecture grounded in one desi
 
 ## 2. Architecture Overview
 
-Each KwaaiNet node is a single Rust process (`kwaainet`) composed of three subsystems and a mandatory trust core:
+Each KwaaiNet node is a single Rust process (`kwaainet`) composed of three subsystems and a mandatory trust core. The sketch below is illustrative — it names the architectural roles rather than types in the tree, and `carbon_tracker` in particular has no implementation today:
 
 ```rust
 pub struct DistributedAINode {
@@ -207,15 +207,22 @@ VPK nodes serve three roles:
 
 | Mode | Role |
 |---|---|
-| `bob` | Data owner — encrypts and submits documents |
-| `eve` | Storage provider — holds encrypted shards |
+| `bob` | Data owner — embeds and submits documents; seals the vectors in the designed pipeline of §5.3 |
+| `eve` | Storage provider — holds tenant-scoped vector shards, never the documents |
 | `both` | Serves both roles simultaneously |
 
 Every document, embedding, and metadata entry carries a `tenant_id` bound to its originating DID. All query execution is scoped to that identifier. Multiple tenants may share a physical Eve node without access to each other's data; the `tenant_id` column propagates through all storage, index, and audit tables.
 
-A DHT-backed shard manager maintains the mapping from tenant knowledge bases to Eve nodes, handles replication, and rebalances on churn — applying the same gap-filling logic described for inference block sharding.
+A DHT-backed shard manager is planned to maintain the mapping from tenant knowledge bases to Eve nodes, handle replication, and rebalance on churn — applying the same gap-filling logic described for inference block sharding. Today a Bob node discovers Eve nodes by PeerId through the DHT and uses one; `vpk shard` and `vpk resolve` are stubs.
 
 ### 5.3 Homomorphic Encryption for Confidential Vector Search
+
+> **Implementation status.** This section describes the designed pipeline, not what the reference
+> node ships today. The partially homomorphic schemes below — dimensional scrambling, noise
+> injection, and ROME — are implemented and evaluated in the Kwaai PHE project; the KwaaiNet node
+> does not yet apply them, so vectors currently reach a storage node as raw embeddings. In both
+> cases the storage node receives neither documents nor queries. Integration is designed in
+> [KwaaiNet #170](https://github.com/Kwaai-AI-Lab/KwaaiNet/pull/170).
 
 The knowledge plane is designed around a pipeline that preserves confidentiality through the full retrieval path, drawing on the body of work on homomorphic encryption [4, 26] and encrypted similarity search [27].
 
@@ -251,7 +258,7 @@ Trust scoring governs which Eve nodes are eligible to hold a given tenant's shar
 
 ### 6.1 Transport Stack
 
-All inter-node communication uses **libp2p** [8] as the networking substrate, managed through an embedded `go-libp2p-daemon` (`p2pd`) that the CLI starts and supervises alongside the main process. libp2p provides transport-layer encryption via Noise [29] and TLS 1.3, stream multiplexing via Yamux, NAT traversal via circuit relay, and a protocol negotiation layer (multistream-select) that maps human-readable protocol strings to typed handlers.
+All inter-node communication uses **libp2p** [8] as the networking substrate, run in-process through rust-libp2p (the default since v0.6.0; the earlier embedded `go-libp2p-daemon` remains selectable with `native_p2p: false`). libp2p provides transport-layer encryption via Noise [29], stream multiplexing via Yamux, NAT traversal via circuit relay, and a protocol negotiation layer (multistream-select) that maps human-readable protocol strings to typed handlers.
 
 Three application-layer protocols are currently registered:
 
@@ -293,7 +300,7 @@ The design intent for that filtering is that enforcement remains decentralized: 
 - **Stable cryptographic identity** with a verifiable attestation chain anchored in W3C standard credentials.
 - **Encrypted transport** for all inter-node traffic via Noise and TLS 1.3.
 - **Partial inference privacy.** Intermediate shard nodes receive only hidden-state activation tensors — not the original prompt tokens — and return hidden states rather than generated text. An adversary operating a single middle shard observes neither the input nor the output of an inference request in plaintext.
-- **Tenant-isolated encrypted storage** with homomorphic similarity search (Eve nodes never hold plaintext).
+- **Tenant-isolated storage.** Every vector carries a `tenant_id` bound to its originating DID and all query execution is scoped to it, so tenants sharing an Eve node cannot read each other's data. The storage node holds vectors and returns `(id, score)`; it never receives documents or queries. Sealing those vectors so the host cannot read them either is designed but not yet shipped — see §5.3.
 - **Local trust computation** — no central authority can grant or revoke trust; each node computes its own view.
 
 ### 7.2 Known Limitations
@@ -342,7 +349,7 @@ The design intent for that filtering is that enforcement remains decentralized: 
 
 KwaaiNet is not a research prototype of decentralized AI — it is a working system running on commodity hardware today. Its defining architectural commitment is to treat trust as infrastructure rather than policy: every node has a verifiable identity, every claim about uptime or throughput is a signed credential, and every scheduling and placement decision is computed locally from first principles rather than delegated to a central authority.
 
-The encrypted storage and inference pipelines are deliberately incremental. The current system already separates activation tensors from plaintext prompts at intermediate shard nodes, and stores knowledge bases encrypted at rest with strict tenant isolation. The path to full end-to-end confidentiality — homomorphic encrypted vector search, confidential-computing inference enclaves, and EigenTrust-grounded Sybil resistance — is well-defined and laid on a foundation that is already running at scale.
+The encrypted storage and inference pipelines are deliberately incremental. The current system already separates activation tensors from plaintext prompts at intermediate shard nodes, and stores knowledge bases with strict tenant isolation on nodes that never receive the source documents. The path to full end-to-end confidentiality — homomorphic encrypted vector search, confidential-computing inference enclaves, and EigenTrust-grounded Sybil resistance — is well-defined and laid on a foundation that is already running at scale.
 
 KwaaiNet is open-source, developed by a nonprofit AI lab, and designed to run on hardware already owned by individuals, communities, and institutions. It is intended to remain that way.
 

@@ -16,7 +16,7 @@ KwaaiNet represents a **paradigm shift** from centralized AI infrastructure to a
 1. **User Sovereignty**: Users own and control all aspects of their participation
 2. **Universal Runtime**: Single codebase deploys across all platforms via Rust/WASM
 3. **Privacy by Design**: End-to-end encryption and regulatory compliance built-in
-4. **Environmental Accountability**: Carbon footprint tracking and renewable energy monitoring
+4. **Environmental Accountability**: Carbon footprint tracking and renewable energy monitoring *(design principle; not yet implemented)*
 5. **Modular Architecture**: Optional integrations for storage, identity, and other services
 6. **Decentralized Trust**: Node reputation earned through Verifiable Credentials and peer endorsements — no central authority, portable across infrastructure changes
 
@@ -111,7 +111,7 @@ pub struct KwaaiNetCore {
     pub resource_manager: ResourceManager,
 
     // P2P Networking (Hivemind-compatible DHT)
-    pub network_layer: P2PNetwork,         // libp2p with WebRTC
+    pub network_layer: P2PNetwork,         // libp2p: TCP, optionally QUIC
     pub dht: KademliaDHT,                  // Peer discovery & model registry
 
     // Distributed ML (Hivemind patterns)
@@ -180,8 +180,8 @@ graph TB
 
 **Technical Specifications**:
 - **Framework**: Rust with `candle-core` for ML operations
-- **WASM Target**: `wasm32-unknown-unknown` with WebRTC support
-- **P2P Networking**: `rust-libp2p` (native, not go-libp2p-daemon) with WebRTC transport
+- **WASM Target**: `wasm32-unknown-unknown`. The `kwaai-wasm` crate is scaffold; WebRTC support is planned
+- **P2P Networking**: `rust-libp2p`, in-process by default since v0.6.0. TCP transport, with QUIC behind `enable_quic` (off by default). WebRTC is planned, not built
 - **DHT**: Kademlia for peer discovery and expert registry
 - **Model Loading**: GGUF format with IPFS/HTTP fallback
 - **Memory Management**: Efficient model sharding for low-resource devices
@@ -205,7 +205,7 @@ graph TB
 5. Documentation and API specification
 
 *P2P Networking*:
-6. libp2p networking with WebRTC transport (browser-native)
+6. libp2p networking over TCP (WebRTC, for browser-native peers, is planned)
 7. Kademlia DHT for peer discovery and model registry
 8. NAT traversal (hole punching, relay circuits)
 
@@ -299,13 +299,13 @@ kwaainet.on('environmentalImpact', (metrics) => updateGreenStats(metrics));
 **Core Features**:
 - **Distributed Services**: AI compute + optional storage + optional identity
 - **Privacy-First Analytics**: Zero tracking, GDPR compliant by design
-- **Environmental Tracking**: Carbon footprint monitoring and renewable energy detection
+- **Environmental Tracking**: Carbon footprint monitoring and renewable energy detection *(planned)*
 - **Contribution Tracking**: Monitor and display resource contributions
 - **Progressive Disclosure**: Anonymous usage → authenticated participation
 
 **Technical Implementation**:
 - **WASM Integration**: Seamless loading of Rust/WASM core engine
-- **WebRTC Networking**: Browser-native P2P communication
+- **WebRTC Networking**: Browser-native P2P communication *(planned)*
 - **Service Workers**: Background processing for better user experience
 - **Consent Management**: Built-in privacy controls without external banners
 - **Performance Monitoring**: Real-time resource usage and optimization
