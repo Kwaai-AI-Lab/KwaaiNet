@@ -159,10 +159,10 @@ pub struct DHTServerInfo {
     /// when true, so a node that is merely idle says nothing extra.
     pub shard_loading: bool,
 
-    /// Multiaddrs a peer can actually dial us on, each ending in
-    /// `/p2p/<our-peer-id>`. Empty for a node that has no reachable address
-    /// yet, and for every path that does not fill it in — see
-    /// [`crate::node_native::NativeNode::announce`], which is what populates it.
+    /// A signed RFC 0003 peer record naming the multiaddrs a peer can dial us
+    /// on, protobuf-encoded as a `SignedEnvelope`. Empty for a node with no
+    /// reachable address yet, and for every path that does not fill it in —
+    /// see [`crate::node_native::NativeNode::announce`], which populates it.
     ///
     /// # Why the record has to carry this
     ///
@@ -189,7 +189,33 @@ pub struct DHTServerInfo {
     /// (`kwaai_p2p::relay_manager`), and a dialer cannot guess which relay that
     /// is: dialing a peer through a bootstrap it has not reserved on returns
     /// `Relay has no reservation for destination`.
-    pub dial_addrs: Vec<String>,
+    ///
+    /// # Why it is signed rather than a plain list
+    ///
+    /// `kwaai-hivemind-dht` implements no record validators, so any peer can
+    /// `STORE` under another node's subkey with a later expiration. A plain
+    /// address list would therefore be an instruction, from anyone, about
+    /// where to send a victim's traffic: black-hole a node by pointing its
+    /// addresses at a dead host, or aim dials at a third party. Impersonation
+    /// is already caught at the Noise handshake, but neither of those needs
+    /// the attacker to complete a handshake.
+    ///
+    /// The envelope closes *that*, and only that.
+    /// `PeerRecord::from_signed_envelope_interop` verifies the signature and
+    /// binds the record's peer id to the signing key, so an address list the
+    /// announced peer did not sign is one the reader drops. The interop format
+    /// (`libp2p-peer-record`) is used rather than rust-libp2p's legacy domain
+    /// because this record is a published wire format that a Go or JS reader
+    /// may one day verify.
+    ///
+    /// What it does **not** close, because the signature covers the address
+    /// list rather than the record: an attacker can still overwrite a peer's
+    /// announcement with one that omits this field — dropping it back to the
+    /// bare-PeerId dial that fails — tombstone it with `state = -1`, or replay
+    /// an older genuine list of addresses the peer has since moved off. All
+    /// three are plain overwrites, which is what a record validator in the DHT
+    /// store would answer; none of them need a forged signature.
+    pub signed_addrs: Vec<u8>,
 }
 
 impl DHTServerInfo {
@@ -224,7 +250,7 @@ impl DHTServerInfo {
             // Filled in per-announce from the live swarm rather than here: the
             // set changes as reservations rotate, and a value captured at
             // startup would be wrong by the first re-announce.
-            dial_addrs: Vec::new(),
+            signed_addrs: Vec::new(),
         }
     }
 
@@ -294,15 +320,15 @@ impl DHTServerInfo {
 
         // Dial addresses, omitted entirely when empty so a node with nothing
         // reachable to say adds no bytes. Same unknown-key tolerance as the
-        // fields above: a legacy client ignores `addrs` and keeps dialing by
-        // PeerId exactly as it does today.
-        if !self.dial_addrs.is_empty() {
-            let addrs: Vec<rmpv::Value> = self
-                .dial_addrs
-                .iter()
-                .map(|a| rmpv::Value::String(rmpv::Utf8String::from(a.as_str())))
-                .collect();
-            fields.push((rmpv::Value::from("addrs"), rmpv::Value::Array(addrs)));
+        // fields above: a legacy client ignores `addrs_signed` and keeps
+        // dialing by PeerId exactly as it does today. Binary, not a string
+        // list — the value is the signed envelope, and only what the node's
+        // own key signed is worth publishing.
+        if !self.signed_addrs.is_empty() {
+            fields.push((
+                rmpv::Value::from("addrs_signed"),
+                rmpv::Value::Binary(self.signed_addrs.clone()),
+            ));
         }
 
         // Include VPK capability when enabled and reachable.
@@ -338,8 +364,10 @@ impl DHTServerInfo {
 /// at once, or one address per transport on a public node.
 pub const MAX_DIAL_ADDRS: usize = 4;
 
-/// The addresses to publish so other peers can dial this node, most useful
-/// first, at most [`MAX_DIAL_ADDRS`] of them.
+/// A signed peer record naming the addresses other peers can dial this node
+/// on — most useful first, at most [`MAX_DIAL_ADDRS`] of them — protobuf
+/// encoded and ready to publish. Empty when the node has no address worth
+/// announcing, or when signing fails.
 ///
 /// Sourced from the swarm's live listeners, which is where a relay reservation
 /// shows up: `libp2p-relay` turns an accepted reservation into a listen address
@@ -360,25 +388,45 @@ pub const MAX_DIAL_ADDRS: usize = 4;
 /// never pays for a relay, and a `declared` announce address — an operator
 /// saying "I forwarded this port" — sorts ahead of everything, since it is the
 /// one address the swarm cannot observe for itself.
-pub async fn publishable_dial_addrs(
+///
+/// The result is signed with the node's own identity key, the same key the
+/// peer id is derived from — see [`DHTServerInfo::signed_addrs`] for why an
+/// unsigned list would be a standing invitation to redirect a node's traffic.
+pub async fn signed_dial_addrs(
     handle: &NetworkHandle,
-    peer_id: PeerId,
+    keypair: &libp2p::identity::Keypair,
     declared: Option<&str>,
-) -> Vec<String> {
+) -> Vec<u8> {
     let listeners = handle.listen_addrs().await.unwrap_or_default();
-    select_dial_addrs(listeners, peer_id, declared)
+    let addrs = select_dial_addrs(listeners, declared);
+    if addrs.is_empty() {
+        return Vec::new();
+    }
+    match libp2p::core::PeerRecord::new_interop(keypair, addrs) {
+        Ok(record) => record.into_signed_envelope().into_protobuf_encoding(),
+        Err(e) => {
+            // Signing failing means the identity key is unusable, which the
+            // swarm would already have died on. Publish nothing rather than
+            // an unsigned list a reader would be right to refuse.
+            warn!("could not sign the dial-address record: {e}");
+            Vec::new()
+        }
+    }
 }
 
-/// The selection itself, split from the swarm call so it can be tested against
-/// a fixed address list rather than a live node.
+/// The selection itself, split from the swarm call and the signing so it can
+/// be tested against a fixed address list rather than a live node.
+///
+/// Addresses come back **without** a trailing `/p2p/<us>`: the peer record
+/// names the peer once, in a field the signature covers, and a reader
+/// re-attaches it when it dials. `strip_dest_p2p` is what does that, and it
+/// keeps a circuit's relay hop — the half a dialer cannot reconstruct.
 fn select_dial_addrs(
     listeners: Vec<libp2p::Multiaddr>,
-    peer_id: PeerId,
     declared: Option<&str>,
-) -> Vec<String> {
+) -> Vec<libp2p::Multiaddr> {
     use kwaai_p2p::addresses::{peer_id_from_multiaddr, strip_dest_p2p};
     use kwaai_p2p::{is_announceable, is_circuit, uses_dialable_transport};
-    use libp2p::multiaddr::Protocol;
 
     let mut sorted: Vec<libp2p::Multiaddr> = declared
         .and_then(|d| d.parse().ok())
@@ -390,7 +438,7 @@ fn select_dial_addrs(
     // declared address stays ahead of the listeners it was chained onto.
     sorted.sort_by_key(is_circuit);
 
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<libp2p::Multiaddr> = Vec::new();
     let mut seen_hops: HashSet<String> = HashSet::new();
     for addr in sorted {
         // A circuit is keyed on the relay itself, so its TCP and QUIC forms
@@ -404,17 +452,7 @@ fn select_dial_addrs(
         if !seen_hops.insert(key) {
             continue;
         }
-        // A circuit listener already names us; a direct one does not, and a
-        // dialer needs the destination to know who it expects to answer.
-        let addr = if addr
-            .iter()
-            .any(|p| matches!(p, Protocol::P2p(id) if id == peer_id))
-        {
-            addr
-        } else {
-            addr.with(Protocol::P2p(peer_id))
-        };
-        out.push(addr.to_string());
+        out.push(strip_dest_p2p(&addr));
         if out.len() == MAX_DIAL_ADDRS {
             break;
         }
@@ -600,7 +638,7 @@ pub fn build_unannounce_records(
         shard_loading: false,
         // A tombstone says "stop using me"; where to reach the node is
         // exactly the thing it is withdrawing.
-        dial_addrs: Vec::new(),
+        signed_addrs: Vec::new(),
     };
 
     let info_bytes = offline_info.to_msgpack()?;
@@ -998,7 +1036,7 @@ mod tests {
             peer_id_b58: peer().to_base58(),
             lease_v1: true,
             shard_loading: false,
-            dial_addrs: vec![],
+            signed_addrs: vec![],
         }
     }
 
@@ -1028,10 +1066,16 @@ mod tests {
             "/ip4/127.0.0.1/tcp/54428".to_string(),
             "/ip4/192.168.68.135/tcp/54428".to_string(),
             "/ip6/::1/udp/54428/quic-v1".to_string(),
-            circuit.clone(),
+            circuit,
         ]);
 
-        assert_eq!(select_dial_addrs(listeners, peer(), None), vec![circuit]);
+        // The destination hop is stripped — the record names the peer itself —
+        // but the relay hop, which a dialer cannot reconstruct, is kept.
+        let expected = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
+            relay().to_base58()
+        );
+        assert_eq!(select_dial_addrs(listeners, None), addrs(&[expected]));
     }
 
     /// Both circuits cross the same relay, so publishing both spends two of
@@ -1049,8 +1093,12 @@ mod tests {
             peer().to_base58()
         );
 
-        let out = select_dial_addrs(addrs(&[tcp.clone(), quic]), peer(), None);
-        assert_eq!(out, vec![tcp], "one address per relay, first one wins");
+        let out = select_dial_addrs(addrs(&[tcp, quic]), None);
+        let expected = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
+            relay().to_base58()
+        );
+        assert_eq!(out, addrs(&[expected]), "one address per relay, first wins");
     }
 
     /// This build has no webtransport transport, and the certhash form is the
@@ -1062,25 +1110,15 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        assert!(select_dial_addrs(addrs(&[wt]), peer(), None).is_empty());
+        assert!(select_dial_addrs(addrs(&[wt]), None).is_empty());
     }
 
-    /// A dialer needs to know who it expects to answer; a direct listener does
-    /// not carry that, a circuit already does and must not be given a second.
+    /// The peer id belongs in the record, under the signature, not repeated on
+    /// every address — a reader re-attaches it when it dials.
     #[test]
-    fn select_dial_addrs_ends_every_address_at_this_node() {
-        let out = select_dial_addrs(
-            addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]),
-            peer(),
-            None,
-        );
-        assert_eq!(
-            out,
-            vec![format!(
-                "/ip4/198.18.0.40/tcp/8080/p2p/{}",
-                peer().to_base58()
-            )]
-        );
+    fn select_dial_addrs_leaves_the_peer_id_to_the_record() {
+        let out = select_dial_addrs(addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]), None);
+        assert_eq!(out, addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]));
     }
 
     /// A declared address is the operator saying "I forwarded this port" — the
@@ -1093,9 +1131,9 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        let out = select_dial_addrs(addrs(&[circuit]), peer(), Some("/ip4/203.0.113.7/tcp/4001"));
+        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"));
         assert_eq!(out.len(), 2);
-        assert!(out[0].starts_with("/ip4/203.0.113.7/tcp/4001/p2p/"));
+        assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
     }
 
     /// The same value is stored under every block key, so the list is capped.
@@ -1105,7 +1143,7 @@ mod tests {
             .map(|i| format!("/ip4/203.0.113.{i}/tcp/4001"))
             .collect();
         assert_eq!(
-            select_dial_addrs(addrs(&listeners), peer(), None).len(),
+            select_dial_addrs(addrs(&listeners), None).len(),
             MAX_DIAL_ADDRS
         );
     }
@@ -1122,12 +1160,30 @@ mod tests {
     #[test]
     fn to_msgpack_carries_addrs_when_present() {
         let mut info = server_info(None);
-        let addr = format!("/ip4/203.0.113.7/tcp/4001/p2p/{}", peer().to_base58());
-        info.dial_addrs = vec![addr.clone()];
+        info.signed_addrs = vec![1, 2, 3];
         let bytes = info.to_msgpack().expect("encodes");
-        let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("addrs"));
-        assert!(text.contains(&addr));
+        assert!(String::from_utf8_lossy(&bytes).contains("addrs_signed"));
+    }
+
+    /// The whole point of the field: what is published is signed by the key
+    /// the peer id is derived from, so a reader can bind the two.
+    #[test]
+    fn a_signed_record_verifies_and_names_the_signer() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let me = key.public().to_peer_id();
+        let addr: libp2p::Multiaddr = "/ip4/203.0.113.7/tcp/4001".parse().expect("parses");
+
+        let bytes = libp2p::core::PeerRecord::new_interop(&key, vec![addr.clone()])
+            .expect("signs")
+            .into_signed_envelope()
+            .into_protobuf_encoding();
+
+        let envelope =
+            libp2p::core::SignedEnvelope::from_protobuf_encoding(&bytes).expect("decodes");
+        let record =
+            libp2p::core::PeerRecord::from_signed_envelope_interop(envelope).expect("verifies");
+        assert_eq!(record.peer_id(), me);
+        assert_eq!(record.addresses(), &[addr]);
     }
 
     fn vpk_info() -> VpkInfo {

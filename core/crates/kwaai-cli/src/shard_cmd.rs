@@ -2152,10 +2152,11 @@ pub struct BlockServerEntry {
     /// the shard-chain integration phase without another decoder pass.
     #[allow(dead_code)]
     pub lease_v1: bool,
-    /// Multiaddrs the peer published for itself, each already ending in
-    /// `/p2p/<its-peer-id>`. Empty for a peer running a binary that predates
-    /// the `addrs` field — the case [`connect_chain_entry`] falls back to a
-    /// bare-PeerId dial for.
+    /// Multiaddrs the peer published for itself and signed, each ending in
+    /// `/p2p/<its-peer-id>` — see [`verified_dial_addrs`], which is the only
+    /// thing that fills this in. Empty for a peer running a binary that
+    /// predates the field, and for one whose record failed verification: both
+    /// are cases [`connect_chain_entry`] falls back to a bare-PeerId dial for.
     pub dial_addrs: Vec<String>,
 }
 
@@ -2238,7 +2239,7 @@ async fn resolve_query_peers(client: &mut P2PClient, configured: &[String]) -> V
 /// That form asks the daemon to resolve the peer through kad, which usually
 /// cannot: rust-libp2p answers `FIND_NODE` from its k-buckets alone, so a peer
 /// is findable only while it holds a slot in the right bucket on a peer the
-/// walk reaches — see [`crate::announce::DHTServerInfo::dial_addrs`]. When it
+/// walk reaches — see [`crate::announce::DHTServerInfo::signed_addrs`]. When it
 /// does not, the lookup returns nothing after spending a full query timeout.
 /// Dialing a published address needs no lookup at all.
 ///
@@ -2676,6 +2677,16 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             if !version_meets_minimum(&info.version) {
                 continue;
             }
+            // The entry is identified by its *subkey*, but the signature was
+            // checked against the `peer_id` inside the value — and one writer
+            // controls both. A value naming a different peer than the subkey
+            // it sits under would hand this entry `peer_id` from the subkey
+            // and addresses belonging to whoever the value names. Legacy
+            // records omit `peer_id` entirely, so only a present-and-different
+            // one is a contradiction.
+            if !info.peer_id_b58.is_empty() && info.peer_id_b58 != peer_id_b58 {
+                continue;
+            }
             let key = peer_id_b58.clone();
             out.entry(key).or_insert(BlockServerEntry {
                 peer_id,
@@ -2743,9 +2754,54 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
         .unwrap_or(&4)
 }
 
-/// Core decoder: `Ext(64, msgpack([state, throughput, {start_block, end_block, …}]))`
-/// Returns `(state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1)`.
-#[allow(clippy::type_complexity)]
+/// Addresses from a signed peer record, but only if `peer_id_b58` really
+/// signed them.
+///
+/// The DHT has no record validators (`kwaai-hivemind-dht`), so the bytes under
+/// a peer's subkey are whatever the last writer put there — and an address
+/// list is a dialing instruction. Verification is what makes it safe to
+/// follow: `from_signed_envelope_interop` checks the signature and binds the
+/// record's peer id to the signing key, and the equality check below ties that
+/// to the peer being dialed. A record that fails either yields no addresses,
+/// which costs the peer nothing worse than the bare-PeerId dial it would have
+/// got before the field existed.
+///
+/// Both checks are load-bearing. The library only proves the record is
+/// self-consistent — that whoever signed it named themselves — so without the
+/// caller comparing that to the peer it is about, an attacker signs a record
+/// with their own key, stores it under the victim's subkey, and every library
+/// check passes.
+///
+/// Addresses come back with `/p2p/<peer>` re-attached, because a peer record
+/// stores them bare: the peer id is in the record, once, under the signature.
+fn verified_dial_addrs(envelope_bytes: &[u8], peer_id_b58: &str) -> Vec<String> {
+    let Ok(claimed) = peer_id_b58.parse::<PeerId>() else {
+        return Vec::new();
+    };
+    let Ok(envelope) = libp2p::core::SignedEnvelope::from_protobuf_encoding(envelope_bytes) else {
+        return Vec::new();
+    };
+    let Ok(record) = libp2p::core::PeerRecord::from_signed_envelope_interop(envelope) else {
+        return Vec::new();
+    };
+    if record.peer_id() != claimed {
+        return Vec::new();
+    }
+    record
+        .addresses()
+        .iter()
+        .take(crate::announce::MAX_DIAL_ADDRS)
+        // Stripped before re-attaching rather than appended blindly: a
+        // publisher that is not `select_dial_addrs` may leave the destination
+        // on, and `/p2p/X/p2p/X` is not a dialable address.
+        .map(|a| {
+            kwaai_p2p::addresses::strip_dest_p2p(a)
+                .with(libp2p::multiaddr::Protocol::P2p(claimed))
+                .to_string()
+        })
+        .collect()
+}
+
 /// One decoded announcement, as a struct rather than the positional tuple this
 /// used to return: nine fields where three call sites want different subsets is
 /// exactly the shape where `_`-holes drift out of alignment with the producer.
@@ -2758,8 +2814,9 @@ struct ServerInfoFields {
     version: String,
     throughput: f64,
     lease_v1: bool,
-    /// Multiaddrs the peer says it can be dialed on (`addrs`), empty for a peer
-    /// that published none — see [`crate::announce::DHTServerInfo::dial_addrs`].
+    /// Verified multiaddrs the peer can be dialed on, empty for a peer that
+    /// published none or whose record did not verify — see
+    /// [`verified_dial_addrs`].
     dial_addrs: Vec<String>,
 }
 
@@ -2804,19 +2861,11 @@ fn decode_server_info_ext(bytes: &[u8]) -> Option<ServerInfoFields> {
         .and_then(|(_, v)| v.as_bool())
         .unwrap_or(false);
 
-    // Anything that is not a string is dropped rather than failing the whole
-    // record: an address list is an optimisation, and a peer that garbles one
-    // entry is still worth reaching on the others.
     let dial_addrs = map
         .iter()
-        .find(|(ky, _)| ky.as_str() == Some("addrs"))
-        .and_then(|(_, v)| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .take(crate::announce::MAX_DIAL_ADDRS)
-                .collect()
-        })
+        .find(|(ky, _)| ky.as_str() == Some("addrs_signed"))
+        .and_then(|(_, v)| v.as_slice())
+        .map(|bytes| verified_dial_addrs(bytes, &peer_id_b58))
         .unwrap_or_default();
 
     Some(ServerInfoFields {
@@ -3902,12 +3951,48 @@ mod tests {
         assert!(info.lease_v1);
     }
 
+    /// Helper: one entry wrapped in the `Ext(80, [expiry, created, [[subkey,
+    /// value, expiry]]])` shape a FoundDictionary response carries.
+    fn dictionary_bytes(subkey_peer_b58: &str, value: &[u8]) -> Vec<u8> {
+        let subkey = rmp_serde::to_vec(&subkey_peer_b58).expect("msgpack subkey");
+        let entry = rmpv::Value::Array(vec![
+            rmpv::Value::Binary(subkey),
+            rmpv::Value::Binary(value.to_vec()),
+            rmpv::Value::from(0.0),
+        ]);
+        let inner = rmpv::Value::Array(vec![
+            rmpv::Value::from(0.0),
+            rmpv::Value::from(0.0),
+            rmpv::Value::Array(vec![entry]),
+        ]);
+        let mut inner_bytes = Vec::new();
+        rmpv::encode::write_value(&mut inner_bytes, &inner).expect("encodes");
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &rmpv::Value::Ext(80, inner_bytes)).expect("encodes");
+        out
+    }
+
+    /// Helper: a signed envelope for `key` naming `addrs`, exactly as the
+    /// publisher emits one.
+    fn signed_envelope(key: &libp2p::identity::Keypair, addrs: &[&str]) -> Vec<u8> {
+        let addrs = addrs
+            .iter()
+            .map(|a| a.parse().expect("a valid addr"))
+            .collect();
+        libp2p::core::PeerRecord::new_interop(key, addrs)
+            .expect("signs")
+            .into_signed_envelope()
+            .into_protobuf_encoding()
+    }
+
     /// The publisher's own encoder is the producer of record, so the decoder is
-    /// tested against what it emits rather than against a hand-built map.
+    /// tested against what it emits rather than against a hand-built map. The
+    /// bare address the record carries comes back with `/p2p/<peer>` on it,
+    /// which is the form `connect_peer` needs.
     #[test]
-    fn decode_server_info_ext_round_trips_the_published_addrs() {
-        let peer = PeerId::random();
-        let addr = format!("/ip4/203.0.113.7/tcp/4001/p2p/{}", peer.to_base58());
+    fn decode_server_info_ext_round_trips_a_signed_address() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
         let mut published = crate::announce::DHTServerInfo::new(
             0,
             32,
@@ -3918,66 +4003,195 @@ mod tests {
             None,
             peer.to_base58(),
         );
-        published.dial_addrs = vec![addr.clone()];
+        published.signed_addrs = signed_envelope(&key, &["/ip4/203.0.113.7/tcp/4001"]);
 
         let info =
             decode_server_info_ext(&published.to_msgpack().expect("encodes")).expect("decodes");
-        assert_eq!(info.dial_addrs, vec![addr]);
+        assert_eq!(
+            info.dial_addrs,
+            vec![format!(
+                "/ip4/203.0.113.7/tcp/4001/p2p/{}",
+                peer.to_base58()
+            )]
+        );
     }
 
-    /// A peer on a binary that predates `addrs` decodes to an empty list, not a
-    /// dropped record — it is still dialable by PeerId if it happens to be in
-    /// the routing table.
+    /// The attack the signature exists to stop: anyone may write under any
+    /// subkey, so a record whose addresses were signed by a different key must
+    /// yield nothing — the peer falls back to a bare-PeerId dial rather than
+    /// being steered at an address its own key never vouched for.
+    #[test]
+    fn decode_server_info_ext_rejects_addresses_signed_by_another_key() {
+        let victim = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let attacker = libp2p::identity::Keypair::generate_ed25519();
+        let mut forged = crate::announce::DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            victim.to_base58(),
+        );
+        forged.signed_addrs = signed_envelope(&attacker, &["/ip4/198.51.100.9/tcp/4001"]);
+
+        let info = decode_server_info_ext(&forged.to_msgpack().expect("encodes")).expect("decodes");
+        assert!(
+            info.dial_addrs.is_empty(),
+            "an address list the announced peer did not sign must not be dialed"
+        );
+        assert_eq!(
+            info.public_name, "test-node",
+            "the rest of the record still decodes"
+        );
+    }
+
+    /// Garbage in the field costs the addresses, not the record.
+    #[test]
+    fn decode_server_info_ext_ignores_an_unparseable_envelope() {
+        let peer = PeerId::random();
+        let mut info = crate::announce::DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        info.signed_addrs = vec![0xde, 0xad, 0xbe, 0xef];
+
+        let decoded =
+            decode_server_info_ext(&info.to_msgpack().expect("encodes")).expect("decodes");
+        assert!(decoded.dial_addrs.is_empty());
+        assert_eq!(
+            decoded.end_block, 32,
+            "the rest of the record still decodes"
+        );
+    }
+
+    /// The dictionary path keys an entry by its *subkey* but verified the
+    /// signature against the value's `peer_id`, and one writer controls both.
+    /// A value naming a different peer must be dropped, or the entry would
+    /// carry the victim's peer id beside a stranger's addresses.
+    #[test]
+    fn decode_server_info_dictionary_drops_a_value_naming_another_peer() {
+        let victim = PeerId::random();
+        let attacker = libp2p::identity::Keypair::generate_ed25519();
+        let mut forged = crate::announce::DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            attacker.public().to_peer_id().to_base58(),
+        );
+        forged.state = 2;
+        forged.signed_addrs = signed_envelope(&attacker, &["/ip4/198.51.100.9/tcp/4001"]);
+
+        let mut out = HashMap::new();
+        decode_server_info_dictionary(
+            &dictionary_bytes(&victim.to_base58(), &forged.to_msgpack().expect("encodes")),
+            &mut out,
+        );
+        assert!(
+            out.is_empty(),
+            "an entry whose value names a peer other than its subkey must not be used"
+        );
+    }
+
+    /// The same shape, honestly published, still decodes — so the check above
+    /// rejects the contradiction rather than the dictionary path itself.
+    #[test]
+    fn decode_server_info_dictionary_keeps_a_value_matching_its_subkey() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let mut honest = crate::announce::DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        honest.state = 2;
+        honest.signed_addrs = signed_envelope(&key, &["/ip4/203.0.113.7/tcp/4001"]);
+
+        let mut out = HashMap::new();
+        decode_server_info_dictionary(
+            &dictionary_bytes(&peer.to_base58(), &honest.to_msgpack().expect("encodes")),
+            &mut out,
+        );
+        let entry = out.get(&peer.to_base58()).expect("the entry decodes");
+        assert_eq!(
+            entry.dial_addrs,
+            vec![format!(
+                "/ip4/203.0.113.7/tcp/4001/p2p/{}",
+                peer.to_base58()
+            )]
+        );
+    }
+
+    /// Circuits are the whole motivation, and their shape is the one a dialer
+    /// cannot reconstruct: the relay hop must survive the round trip and the
+    /// destination must come back on the end, where `connect_peer` reads it.
+    #[test]
+    fn decode_server_info_ext_round_trips_a_circuit_address() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let relay = PeerId::random();
+        let circuit = format!("/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit", relay);
+
+        let mut published = crate::announce::DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        published.signed_addrs = signed_envelope(&key, &[&circuit]);
+
+        let info =
+            decode_server_info_ext(&published.to_msgpack().expect("encodes")).expect("decodes");
+        assert_eq!(info.dial_addrs, vec![format!("{circuit}/p2p/{peer}")]);
+    }
+
+    /// The publisher signs in the interop domain deliberately, so that a Go or
+    /// JS reader can verify it. A record in rust-libp2p's legacy domain is not
+    /// that, and must not be accepted by accident.
+    #[test]
+    fn verified_dial_addrs_rejects_the_legacy_signing_domain() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let addr = "/ip4/203.0.113.7/tcp/4001".parse().expect("a valid addr");
+        let legacy = libp2p::core::PeerRecord::new(&key, vec![addr])
+            .expect("signs")
+            .into_signed_envelope()
+            .into_protobuf_encoding();
+
+        assert!(verified_dial_addrs(&legacy, &peer.to_base58()).is_empty());
+    }
+
+    /// A peer on a binary that predates the field decodes to an empty list,
+    /// not a dropped record — it is still dialable by PeerId if it happens to
+    /// be in the routing table.
     #[test]
     fn decode_server_info_ext_defaults_addrs_empty_for_legacy_bytes() {
         let bytes = make_server_info_ext_bytes(None);
         let info = decode_server_info_ext(&bytes).expect("decodes");
         assert_eq!(info.state, 2, "the rest of the record must still decode");
         assert!(info.dial_addrs.is_empty());
-    }
-
-    /// A malformed entry costs that entry, not the record: the peer is still
-    /// worth reaching on whatever else it published.
-    #[test]
-    fn decode_server_info_ext_skips_non_string_addrs() {
-        let mut bytes_fields = vec![
-            (rmpv::Value::from("start_block"), rmpv::Value::from(0i64)),
-            (rmpv::Value::from("end_block"), rmpv::Value::from(32i64)),
-            (
-                rmpv::Value::from("public_name"),
-                rmpv::Value::from("test-node"),
-            ),
-            (
-                rmpv::Value::from("peer_id"),
-                rmpv::Value::from(PeerId::random().to_base58().as_str()),
-            ),
-            (
-                rmpv::Value::from("version"),
-                rmpv::Value::from("kwaai-0.5.4"),
-            ),
-        ];
-        bytes_fields.push((
-            rmpv::Value::from("addrs"),
-            rmpv::Value::Array(vec![
-                rmpv::Value::from(7i64),
-                rmpv::Value::from("/ip4/203.0.113.7/tcp/4001"),
-            ]),
-        ));
-        let inner = rmpv::Value::Array(vec![
-            rmpv::Value::from(2i32),
-            rmpv::Value::from(10.0),
-            rmpv::Value::Map(bytes_fields),
-        ]);
-        let mut inner_bytes = Vec::new();
-        rmpv::encode::write_value(&mut inner_bytes, &inner).unwrap();
-        let mut bytes = Vec::new();
-        rmpv::encode::write_value(&mut bytes, &rmpv::Value::Ext(64, inner_bytes)).unwrap();
-
-        let info = decode_server_info_ext(&bytes).expect("decodes");
-        assert_eq!(
-            info.dial_addrs,
-            vec!["/ip4/203.0.113.7/tcp/4001".to_string()]
-        );
     }
 
     #[test]

@@ -1059,7 +1059,7 @@ async fn unannounce(
         shard_loading: false,
         // A tombstone says "stop using me"; where to reach the node is
         // exactly the thing it is withdrawing.
-        dial_addrs: Vec::new(),
+        signed_addrs: Vec::new(),
     };
     // Use the same 360 s TTL as a regular announcement — Hivemind bootstrap
     // peers reject updates with a shorter TTL than the existing record.

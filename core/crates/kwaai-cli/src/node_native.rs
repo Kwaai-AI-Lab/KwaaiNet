@@ -110,6 +110,10 @@ pub struct NativeNode {
     /// same reason as the two fields above: it is an announce input, and
     /// `announce` should not need a config reference to publish it.
     announce_addr: Option<String>,
+    /// The node's identity key, kept to sign the dial-address record every
+    /// announce carries. The same key the swarm authenticates connections
+    /// with, which is what makes the signature checkable against the peer id.
+    identity: libp2p::identity::Keypair,
 }
 
 impl NativeNode {
@@ -184,8 +188,11 @@ impl NativeNode {
             ..NetworkConfig::default()
         };
 
-        let (handle, swarm_task) =
-            NetworkService::spawn(net_config, keypair).context("starting the libp2p swarm")?;
+        // Cloned, not moved: the same key signs the dial-address record on
+        // every announce, which is what lets a reader bind those addresses to
+        // this peer id.
+        let (handle, swarm_task) = NetworkService::spawn(net_config, keypair.clone())
+            .context("starting the libp2p swarm")?;
         info!("Peer ID: {}", peer_id.to_base58());
 
         let mut tasks = vec![swarm_task];
@@ -291,6 +298,7 @@ impl NativeNode {
             decentralized: config.decentralized_dht,
             replication: config.dht_replication,
             announce_addr: configured_announce_addr(config),
+            identity: keypair,
         })
     }
 
@@ -338,9 +346,9 @@ impl NativeNode {
         // Refreshed here, not by the caller, so no announce path can forget —
         // a reservation rotating is what makes a published address wrong, and
         // it lands between ticks.
-        server_info.dial_addrs = crate::announce::publishable_dial_addrs(
+        server_info.signed_addrs = crate::announce::signed_dial_addrs(
             &self.handle,
-            self.peer_id,
+            &self.identity,
             self.announce_addr.as_deref(),
         )
         .await;
