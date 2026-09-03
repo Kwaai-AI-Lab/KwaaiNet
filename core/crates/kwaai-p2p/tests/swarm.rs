@@ -896,3 +896,58 @@ async fn an_autonat_dial_back_does_not_leave_a_duplicate_connection() {
         "a loopback dial-back address must not enter the routing table"
     );
 }
+
+/// The k-bucket detail a routing entry carries, checked against kad's own
+/// arithmetic rather than against itself.
+///
+/// The bucket index is derived from the XOR distance, not from the position of
+/// the bucket in the walk — `kbuckets()` skips empty buckets, so a counted
+/// index would be a position in a filtered list and would drift as the table
+/// fills. Recomputing the distance here from the two peer ids is the
+/// independent check that it really is `floor(log2)` of it.
+#[tokio::test]
+async fn a_routing_entry_reports_its_bucket_and_distance() {
+    use libp2p::kad::{KBucketKey, K_VALUE};
+
+    let (alice, _alice_task, alice_id) = spawn_test_swarm();
+    let (bob, _bob_task, bob_id) = spawn_test_swarm();
+
+    let bob_addr = dialable_addr(&bob, bob_id).await;
+    let stripped: Multiaddr = bob_addr
+        .iter()
+        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        .collect();
+    alice.add_kad_address(bob_id, stripped).await.unwrap();
+
+    let entry = eventually("bob to appear in alice's routing table", || async {
+        alice
+            .network_snapshot()
+            .await
+            .ok()?
+            .routing
+            .into_iter()
+            .find(|e| e.peer_id == bob_id)
+    })
+    .await;
+
+    let expected = KBucketKey::from(alice_id).distance(&KBucketKey::from(bob_id));
+    assert_eq!(
+        entry.distance, expected,
+        "distance must be the XOR of the ids"
+    );
+    assert_eq!(
+        u32::from(entry.bucket),
+        expected
+            .ilog2()
+            .expect("two distinct peers are never distance 0"),
+        "the bucket must be floor(log2) of the distance"
+    );
+
+    // Seeding an address does not dial. Kad holds the entry as disconnected,
+    // which is exactly the state the dialog exists to make legible: known,
+    // dialable, not currently up.
+    assert_eq!(entry.status, libp2p::kad::NodeStatus::Disconnected);
+    assert!(entry.bucket_entries >= 1);
+    assert!(!entry.bucket_pending, "one entry cannot fill a bucket");
+    assert!(entry.bucket_entries <= K_VALUE.get());
+}
