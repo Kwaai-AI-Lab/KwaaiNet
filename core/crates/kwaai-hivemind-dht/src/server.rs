@@ -12,8 +12,8 @@
 
 use crate::codec::{DHTRequest, DHTResponse};
 use crate::protocol::*;
-use crate::storage::{parse_dictionary, LocalStorage, Stored};
-use crate::value::get_dht_time;
+use crate::storage::{parse_dictionary, EntrySummary, LocalStorage, Stored};
+use crate::value::{get_dht_time, DHTExpiration};
 use crate::Result;
 use libp2p::PeerId;
 use std::sync::{Arc, RwLock};
@@ -112,6 +112,16 @@ impl RoutingPeer {
     }
 }
 
+/// One locally-held record: its metadata and which tier it sits in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalRecord {
+    pub summary: EntrySummary,
+    /// Cache tier rather than primary. A cached record is here because a
+    /// lookup passed through us, not because anyone chose to replicate onto
+    /// us, and it is evictable — so the two are worth telling apart on screen.
+    pub in_cache: bool,
+}
+
 /// DHT storage + serving backend.
 ///
 /// Cloning shares the underlying state (`Arc`), so the swarm task and any
@@ -208,6 +218,45 @@ impl DHTStorage {
         let cache_len = self.inner.cache.read().map(|c| c.len()).unwrap_or(0);
         let total = storage_len + cache_len;
         (total, total)
+    }
+
+    /// Every live record this node holds, primary tier first, then cache.
+    ///
+    /// The only enumeration over the store there is — and the only one there
+    /// can be for the DHT as a whole: Kademlia has no key-listing operation,
+    /// so "what is in the DHT" is only ever answerable for the subset that
+    /// replication happened to land here.
+    ///
+    /// A key present in both tiers appears twice, which is the truth: the two
+    /// copies carry independent expirations and `handle_find` prefers the
+    /// primary one.
+    pub fn local_records(&self) -> Vec<LocalRecord> {
+        let mut out = Vec::new();
+        let mut take = |tier: &RwLock<LocalStorage>, in_cache: bool| {
+            if let Ok(s) = tier.read() {
+                out.extend(
+                    s.summaries()
+                        .into_iter()
+                        .map(|summary| LocalRecord { summary, in_cache }),
+                );
+            }
+        };
+        take(&self.inner.storage, false);
+        take(&self.inner.cache, true);
+        out
+    }
+
+    /// One live record's value, by DHT key. Primary tier wins, matching
+    /// `handle_find`'s lookup order.
+    pub fn local_record(&self, key: &[u8]) -> Option<(Stored, DHTExpiration, bool)> {
+        if let Ok(s) = self.inner.storage.read() {
+            if let Some((v, exp)) = s.get(key) {
+                return Some((v.clone(), exp, false));
+            }
+        }
+        let c = self.inner.cache.read().ok()?;
+        let (v, exp) = c.get(key)?;
+        Some((v.clone(), exp, true))
     }
 
     // ── STORE ───────────────────────────────────────────────────────────────
@@ -1137,5 +1186,57 @@ mod tests {
             .all(|&ok| !ok));
         let (stored, _) = s.stats();
         assert_eq!(stored, MAX_STORE_KEYS_PER_REQUEST);
+    }
+
+    /// Enumeration spans both tiers and says which one each record came from.
+    ///
+    /// A key stored in both appears twice, deliberately: the copies carry
+    /// independent expirations, `handle_find` answers from the primary one,
+    /// and collapsing them would hide the cache copy that is actually there.
+    #[test]
+    fn local_records_span_both_tiers_and_tag_the_cache() {
+        let s = DHTStorage::new(PeerId::random());
+        let exp = future();
+        s.handle_store(store_req(
+            vec![b"both".to_vec(), b"both".to_vec(), b"cached-only".to_vec()],
+            vec![
+                IS_REGULAR_VALUE.to_vec(),
+                IS_REGULAR_VALUE.to_vec(),
+                IS_REGULAR_VALUE.to_vec(),
+            ],
+            vec![b"primary".to_vec(), b"cache".to_vec(), b"c".to_vec()],
+            vec![exp, exp, exp],
+            vec![false, true, true],
+        ));
+
+        let records = s.local_records();
+        let tagged: Vec<_> = records
+            .iter()
+            .map(|r| (r.summary.key.clone(), r.in_cache))
+            .collect();
+        assert_eq!(
+            tagged,
+            vec![
+                (b"both".to_vec(), false),
+                (b"both".to_vec(), true),
+                (b"cached-only".to_vec(), true),
+            ]
+        );
+
+        // The primary copy wins the detail read, matching `handle_find`.
+        let (value, _, in_cache) = s.local_record(b"both").expect("stored");
+        assert!(!in_cache);
+        assert_eq!(
+            value,
+            Stored::Regular {
+                value: b"primary".to_vec(),
+                expiration: exp,
+            }
+        );
+
+        // A cache-only key still resolves, and says so.
+        let (_, _, in_cache) = s.local_record(b"cached-only").expect("stored");
+        assert!(in_cache);
+        assert!(s.local_record(b"absent").is_none());
     }
 }

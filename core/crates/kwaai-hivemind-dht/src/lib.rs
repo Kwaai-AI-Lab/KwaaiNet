@@ -25,8 +25,10 @@ pub use protocol::{
     dht_id_from_peer_id, AccessToken, FindResult, NodeInfo, RequestAuthInfo, ResponseAuthInfo,
     ResultType,
 };
-pub use server::{DHTStorage, RoutingPeer, IS_DICTIONARY, IS_REGULAR_VALUE};
-pub use storage::{parse_dictionary, serialize_dictionary, LocalStorage, ParsedDictionary, Stored};
+pub use server::{DHTStorage, LocalRecord, RoutingPeer, IS_DICTIONARY, IS_REGULAR_VALUE};
+pub use storage::{
+    parse_dictionary, serialize_dictionary, EntrySummary, LocalStorage, ParsedDictionary, Stored,
+};
 pub use value::{DHTExpiration, DHTValue};
 
 /// Hivemind DHT protocol IDs, as they appear on the libp2p wire.
