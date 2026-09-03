@@ -170,11 +170,18 @@ returns a new stream and decremented when the spawned handler task completes.
 Everything above describes discovery of one address. A dual-stack node has two,
 and the `ipv6` config key decides whether the second one exists at all.
 
-| value | listeners | a refused v6 bind | v6 addresses from peers |
+| value | listeners | no IPv6 loopback, or a refused v6 bind | v6 addresses from peers |
 |---|---|---|---|
 | `auto` (default) | `/ip4/0.0.0.0` + `/ip6/::` | one warning, run IPv4-only | accepted |
 | `true` | same | **startup error** | accepted |
 | `false` | `/ip4/0.0.0.0` only | n/a | dropped from the dial and announce sets |
+
+Availability is decided by binding a concrete address — `[::1]:0` — **before**
+any listener is opened, not by whether the listener bound. Binding the
+unspecified `[::]` succeeds on Linux even with
+`net.ipv6.conf.all.disable_ipv6=1`, so a node with IPv6 switched off at the
+kernel would otherwise report itself `active` and advertise a dual stack it
+does not have.
 
 `true` exists because the two failures are not equally visible. A node that
 wanted v6 and quietly came up v4-only looks healthy from every angle — it
