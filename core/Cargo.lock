@@ -3248,6 +3248,7 @@ dependencies = [
  "serde_yaml",
  "sha1",
  "sha2",
+ "socket2 0.6.4",
  "sysinfo",
  "tempfile",
  "tokio",

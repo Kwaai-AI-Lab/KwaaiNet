@@ -47,6 +47,9 @@ tracing-subscriber = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
+# Dual-stack binds for our own local servers: `set_only_v6` has no std
+# equivalent. 0.6 is the major tokio and libp2p-tcp already pull in.
+socket2 = { version = "0.6", features = ["all"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }

@@ -20,6 +20,7 @@ mod inference_mux;
 mod llama_local;
 mod map;
 mod monitor;
+mod net;
 mod node;
 mod node_native;
 mod ollama;
