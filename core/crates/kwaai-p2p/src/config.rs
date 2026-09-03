@@ -78,9 +78,9 @@ pub struct NetworkConfig {
     /// Maximum concurrent connections, inbound and outbound.
     pub max_connections: usize,
 
-    /// Listen on and dial QUIC as well as TCP. Off by default: some networks
-    /// block or throttle UDP. Defaulted so a config predating the field still loads.
-    #[serde(default)]
+    /// Listen on and dial QUIC as well as TCP. Off for networks that block or
+    /// throttle UDP. Defaulted so a config predating the field still loads.
+    #[serde(default = "default_true")]
     pub enable_quic: bool,
 
     /// Whether to open IPv6 listeners, and how hard to insist.
@@ -421,7 +421,7 @@ impl Default for NetworkConfig {
             request_timeout: Duration::from_secs(60),
             kad_maintenance_interval: default_kad_maintenance_interval(),
             max_connections: 100,
-            enable_quic: false,
+            enable_quic: true,
             ipv6: Ipv6Mode::Auto,
             enable_nat_traversal: true,
             enable_relay_client: true,

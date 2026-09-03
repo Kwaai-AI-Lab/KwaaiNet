@@ -206,10 +206,10 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
-    /// Listen on and dial QUIC as well as TCP. Off by default: some networks
-    /// block or throttle UDP. Bound at startup, so changing it needs a
+    /// Listen on and dial QUIC as well as TCP. Turn it off for a network that
+    /// blocks or throttles UDP. Bound at startup, so changing it needs a
     /// restart.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enable_quic: bool,
 
     /// Whether to open IPv6 listeners: `auto`, `true` or `false`.
@@ -907,7 +907,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
-            enable_quic: false,
+            enable_quic: true,
             ipv6: kwaai_p2p::Ipv6Mode::Auto,
             only_global_ips: true,
             max_connections: default_max_connections(),
