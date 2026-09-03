@@ -122,12 +122,15 @@ tokio = { workspace = true, features = ["test-util"] }
 sha2 = "0.10"
 
 [features]
-default = ["storage", "rag"]
+default = ["storage", "rag", "ipv6"]
 cuda = ["kwaai-inference/flash-attn"]
 # cuda-windows: CUDA without flash-attn (flash-attn requires Linux nvcc and cannot build on Windows)
 cuda-windows = ["kwaai-inference/cuda"]
 llama-cpp = ["llama-cpp-2"]
 storage = ["kwaai-storage", "uuid"]
+# Listen on and dial IPv6. On by default; off makes the `ipv6` config key read
+# as `false` whatever it says.
+ipv6 = ["kwaai-p2p/ipv6"]
 rag = ["kwaai-rag", "uuid"]
 # Bootstrap-grade build: also serve the legacy /ipfs/kad/1.0.0 so peers that
 # predate /kwaai/kad/1.0.0 are not cut off during the migration. Needs the

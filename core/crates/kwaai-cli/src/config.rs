@@ -233,6 +233,15 @@ pub struct KwaaiNetConfig {
     /// restart.
     #[serde(default)]
     pub enable_quic: bool,
+
+    /// Whether to open IPv6 listeners: `auto`, `true` or `false`.
+    ///
+    /// `auto` binds `/ip6/::` and runs IPv4-only if the host refuses; `true`
+    /// turns that refusal into a startup error; `false` opens no v6 listener
+    /// and drops v6 addresses from the dial and announce sets. Bound at
+    /// startup, so changing it needs a restart.
+    #[serde(default)]
+    pub ipv6: kwaai_p2p::Ipv6Mode,
     /// Ceiling on simultaneously established connections, inbound and
     /// outbound, enforced by the swarm's connection-limits behaviour.
     ///
@@ -913,6 +922,7 @@ impl Default for KwaaiNetConfig {
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
             enable_quic: false,
+            ipv6: kwaai_p2p::Ipv6Mode::Auto,
             max_connections: default_max_connections(),
             announce_self: true,
             decentralized_dht: false,
@@ -1014,6 +1024,14 @@ impl KwaaiNetConfig {
     /// `Some(false)` must keep beating a flipped default.
     pub fn native_p2p(&self) -> bool {
         self.native_p2p.unwrap_or(DEFAULT_NATIVE_P2P)
+    }
+
+    /// The IPv6 mode this build can honour.
+    ///
+    /// Always read it through here — a binary compiled without the `ipv6`
+    /// feature reports `false` however the config key is written.
+    pub fn ipv6(&self) -> kwaai_p2p::Ipv6Mode {
+        self.ipv6.effective()
     }
 
     /// True when the user has explicitly opted out of the native stack, as
@@ -1262,6 +1280,7 @@ impl KwaaiNetConfig {
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "enable_quic" => self.enable_quic = parse_bool(value)?,
+            "ipv6" => self.ipv6 = value.parse().map_err(|e| anyhow::anyhow!("ipv6: {e}"))?,
             "max_connections" => {
                 let n: usize = value
                     .parse()
@@ -1655,11 +1674,13 @@ mod tests {
             .expect("announce_self is a valid key");
         c.set_key("enable_upnp", "false")
             .expect("enable_upnp is a valid key");
+        c.set_key("ipv6", "false").expect("ipv6 is a valid key");
 
         let yaml = serde_yaml::to_string(&c).expect("serialise");
         let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
         assert!(!reloaded.announce_self);
         assert!(!reloaded.enable_upnp);
+        assert_eq!(reloaded.ipv6, kwaai_p2p::Ipv6Mode::Off);
 
         // And back again, so neither direction is a one-way door.
         let mut c = reloaded;
@@ -1699,6 +1720,49 @@ mod tests {
         assert!(c.set_key("announce_self", "flase").is_err());
         assert!(
             c.announce_self,
+            "a rejected set must not have changed the field"
+        );
+    }
+
+    /// The key is three-valued and written the way an operator writes it, so
+    /// both the string and the boolean forms have to survive `config set` and
+    /// a YAML round-trip.
+    #[test]
+    fn ipv6_accepts_auto_and_the_booleans() {
+        use kwaai_p2p::Ipv6Mode;
+
+        assert_eq!(
+            KwaaiNetConfig::default().ipv6,
+            Ipv6Mode::Auto,
+            "a config that never mentions ipv6 means auto"
+        );
+
+        for (value, want) in [
+            ("auto", Ipv6Mode::Auto),
+            ("true", Ipv6Mode::On),
+            ("false", Ipv6Mode::Off),
+        ] {
+            let mut c = KwaaiNetConfig::default();
+            c.set_key("ipv6", value).expect("ipv6 is a valid key");
+            assert_eq!(c.ipv6, want, "{value}");
+            let yaml = serde_yaml::to_string(&c).expect("serialise");
+            let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
+            assert_eq!(
+                reloaded.ipv6, want,
+                "{value} did not survive the round trip"
+            );
+        }
+    }
+
+    /// A typo must fail rather than silently mean something.
+    #[test]
+    fn a_bogus_ipv6_value_is_rejected() {
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("ipv6", "true").expect("set");
+        assert!(c.set_key("ipv6", "maybe").is_err());
+        assert_eq!(
+            c.ipv6,
+            kwaai_p2p::Ipv6Mode::On,
             "a rejected set must not have changed the field"
         );
     }

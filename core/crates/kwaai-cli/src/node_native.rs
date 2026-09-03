@@ -58,6 +58,7 @@ use kwaai_hivemind_dht::DHTStorage;
 use kwaai_p2p::{NetworkConfig, NetworkHandle, NetworkService};
 use kwaai_p2p_daemon::ControlServer;
 use libp2p::PeerId;
+use std::net::IpAddr;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -163,6 +164,7 @@ impl NativeNode {
             // address (a bootstrap node), which has no gateway to ask.
             enable_upnp: config.enable_upnp,
             enable_quic: config.enable_quic,
+            ipv6: config.ipv6(),
             // `-forceReachabilityPrivate`. Defaults true, so relay reservations
             // start immediately rather than after an AutoNAT round.
             force_private: config.force_private,
@@ -759,11 +761,18 @@ async fn write_peer_cache(handle: &NetworkHandle) {
 fn configured_announce_addr(config: &KwaaiNetConfig) -> Option<String> {
     config.announce_addr.clone().or_else(|| {
         let port = config.public_port.unwrap_or(config.port);
-        config
-            .public_ip
-            .as_deref()
-            .filter(|ip| !ip.is_empty())
-            .map(|ip| format!("/ip4/{ip}/tcp/{port}"))
+        let ip = config.public_ip.as_deref().filter(|ip| !ip.is_empty())?;
+        // A v6 literal needs `/ip6/`; anything that does not parse keeps the
+        // old `/ip4/` behaviour, so a hostname still reaches the same error it
+        // always did rather than a new one from here.
+        match ip.parse::<IpAddr>() {
+            Ok(IpAddr::V6(_)) if config.ipv6().is_off() => {
+                warn!("public_ip {ip} is IPv6 but ipv6 is disabled; not announcing it");
+                None
+            }
+            Ok(IpAddr::V6(_)) => Some(format!("/ip6/{ip}/tcp/{port}")),
+            _ => Some(format!("/ip4/{ip}/tcp/{port}")),
+        }
     })
 }
 
@@ -1027,5 +1036,43 @@ mod tests {
 
         node.shutdown().await;
         std::env::remove_var("KWAAINET_SOCKET");
+    }
+
+    /// `public_ip` is a bare IP, so the multiaddr prefix has to be chosen from
+    /// its family; formatting a v6 literal as `/ip4/` yields an address that
+    /// does not parse and the node announces nothing.
+    #[test]
+    fn a_v6_public_ip_is_announced_as_ip6() {
+        let announce = |ip: &str, ipv6| {
+            configured_announce_addr(&KwaaiNetConfig {
+                public_ip: Some(ip.to_string()),
+                public_port: Some(8080),
+                ipv6,
+                ..KwaaiNetConfig::default()
+            })
+        };
+
+        assert_eq!(
+            announce("203.0.113.5", kwaai_p2p::Ipv6Mode::Auto).as_deref(),
+            Some("/ip4/203.0.113.5/tcp/8080")
+        );
+        if kwaai_p2p::IPV6_BUILD {
+            assert_eq!(
+                announce("2606:4700::1111", kwaai_p2p::Ipv6Mode::Auto).as_deref(),
+                Some("/ip6/2606:4700::1111/tcp/8080")
+            );
+        }
+        assert_eq!(
+            announce("2606:4700::1111", kwaai_p2p::Ipv6Mode::Off),
+            None,
+            "announcing a v6 address a disabled stack cannot serve is worse than announcing none"
+        );
+
+        // A hostname is not an IP; it keeps the behaviour it always had rather
+        // than acquiring a new failure mode here.
+        assert_eq!(
+            announce("node.example.com", kwaai_p2p::Ipv6Mode::Auto).as_deref(),
+            Some("/ip4/node.example.com/tcp/8080")
+        );
     }
 }
