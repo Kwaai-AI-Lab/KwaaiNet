@@ -277,10 +277,12 @@ Clients express intent rather than binding to fixed servers: "run model X over t
 
 1. Query the DHT for all block records matching the target model prefix.
 2. Decode each `Ext(64)` record to extract peer IDs, block ranges, and announced throughput.
-3. Filter candidates by trust tier if the intent specifies a minimum tier.
+3. Rank candidates by block coverage, using the local trust score as a tie-breaker.
 4. Construct the inference chain using a widest-coverage-first ordering; skip nodes that fail RPC calls with a logged warning rather than aborting the request.
 
-Step 3 is the point at which trust gating operates: a low-trust node may be unreachable at the networking layer not because it is down, but because upstream nodes refuse streams from peers below their configured minimum tier. This makes trust enforcement decentralized — no single gateway enforces it — while remaining locally consistent for each participating node.
+Trust currently **weights** selection rather than gating it: a lower-trust node is preferred less, but is still used when it is the only peer covering a block range. Filtering against a minimum tier declared in the intent is planned rather than shipped. It requires a configurable minimum tier, and it requires enough of the fleet to have earned one — a node stays at `Unknown` until it has accumulated several recorded observations, so gating today would reject most of the network and leave the block range uncovered.
+
+The design intent for that filtering is that enforcement remains decentralized: no single gateway applies it, and each node applies its own local view of trust rather than deferring to a shared authority.
 
 ---
 

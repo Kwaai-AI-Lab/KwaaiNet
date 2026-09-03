@@ -132,8 +132,9 @@ This aligns incentives: nodes should only make endorsements they are willing to 
 
 Reputation is used at several key decision points:
 
-- **Intent routing** — When resolving an intent like "run model X with minimum trust tier Verified, max latency Y," nodes filter candidates by local trust tier and pick shard chains that satisfy both trust and capability constraints.
-- **Shard selection and rebalancing** — Nodes may bias shard selection toward peers with a strong track record for that model or workload profile.
+- **Shard-chain ranking** *(today)* — Nodes rank candidates by block coverage first and local trust second. Trust breaks ties rather than excluding peers, and no minimum tier is enforced.
+- **Intent routing** *(planned)* — Resolving an intent like "run model X with minimum trust tier Verified, max latency Y" so only nodes satisfying every constraint are eligible. Requires a configurable minimum tier and latency measurement in the candidate set.
+- **Per-model and per-workload bias** *(planned)* — Biasing selection toward peers with a strong track record *for that model or workload profile*. Scores today are per-peer only, not segmented by model.
 - **Future features** — Tool-calling, VPK shard placement, and intent-casting marketplaces can all be gated or weighted by local reputation, ensuring that sensitive operations are preferentially routed through highly trusted nodes.
 
 In all cases, reputation remains **decentralized, evidence-based, and local**, forming a trust fabric that guides Layer 8 behavior without ever collapsing into a single global score.
