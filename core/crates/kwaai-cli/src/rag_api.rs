@@ -149,17 +149,17 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
             .route("/", get(serve_ui))
             .with_state(state);
 
-        let addr = format!("0.0.0.0:{port}");
         print_box_header("RAG Server");
         println!("  Listening on http://localhost:{port}");
         println!("  Inference:  {inference_url}");
         println!("  Tenant:     {tenant_id}");
         print_separator();
 
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("binding {addr}"))?;
-        axum::serve(listener, app).await?;
+        let ipv6 = crate::net::configured_ipv6_mode();
+        let listeners = crate::net::bind_dual_stack(crate::net::Scope::Any, port, ipv6)
+            .with_context(|| format!("binding port {port}"))?
+            .into_tokio()?;
+        crate::api::serve_all(listeners, app).await?;
         Ok(())
     }
 }

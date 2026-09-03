@@ -1538,7 +1538,7 @@ async fn cmd_chat(opts: ChatOpts) -> Result<()> {
                 // it is the p2p://auto sentinel.
                 let global = crate::config::KwaaiNetConfig::load_or_create().ok()?;
                 let url = &global.inference_url;
-                let is_remote = !url.contains("localhost") && !url.contains("127.0.0.1");
+                let is_remote = !crate::net::is_loopback_host(url);
                 (is_remote || url == "p2p://auto").then(|| url.clone())
             })
             .unwrap_or_else(|| rag_cfg.inference_url.clone());
@@ -8507,7 +8507,7 @@ async fn cmd_eval(
             .or_else(|| {
                 let global = crate::config::KwaaiNetConfig::load_or_create().ok()?;
                 let url = &global.inference_url;
-                let is_remote = !url.contains("localhost") && !url.contains("127.0.0.1");
+                let is_remote = !crate::net::is_loopback_host(url);
                 (is_remote || url == "p2p://auto").then(|| url.clone())
             })
             .unwrap_or_else(|| rag_cfg_for_url.inference_url.clone());

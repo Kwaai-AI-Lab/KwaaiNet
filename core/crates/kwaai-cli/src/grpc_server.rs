@@ -2020,7 +2020,8 @@ pub(crate) fn spawn_on_tcp_port(config: KwaaiNetConfig, tcp_port: u16) -> GrpcSe
 /// port, coming up without it strands it: a live pid, a written status file,
 /// and nothing listening. That case exits instead, so the caller can retry.
 fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<GrpcServerHandle> {
-    let (shutdown_tcp_tx, shutdown_tcp_rx) = oneshot::channel::<()>();
+    let ipv6 = config.ipv6();
+    let (shutdown_tcp_tx, shutdown_tcp_rx) = tokio::sync::broadcast::channel::<()>(1);
     #[cfg(unix)]
     let (shutdown_unix_tx, shutdown_unix_rx) = oneshot::channel::<()>();
 
@@ -2030,8 +2031,8 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
 
     // Bind up front rather than inside the serve task: a clash has to be
     // visible here, and it is what resolves port 0 to a real number.
-    let listener = match std::net::TcpListener::bind(("127.0.0.1", tcp_port)) {
-        Ok(l) => Some(l),
+    let bound = match crate::net::bind_dual_stack(crate::net::Scope::Loopback, tcp_port, ipv6) {
+        Ok(b) => Some(b),
         Err(e) if explicit => {
             return Err(anyhow::anyhow!("binding gRPC TCP port {tcp_port}: {e}"));
         }
@@ -2043,29 +2044,32 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
 
     let mut bound_port = None;
     let mut shutdown_tcp = None;
-    if let Some(listener) = listener {
-        let addr = listener.local_addr().context("gRPC TCP local_addr")?;
-        listener
-            .set_nonblocking(true)
-            .context("gRPC TCP set_nonblocking")?;
-        let listener =
-            tokio::net::TcpListener::from_std(listener).context("adopting gRPC TCP listener")?;
-        bound_port = Some(addr.port());
+    if let Some(bound) = bound {
+        let port = bound.port;
+        // The v4 listener decides the reported port, and both are torn down by
+        // the one shutdown signal — a `broadcast` rather than the `oneshot`
+        // this had, since two serve tasks now wait on it.
+        let listeners = bound.into_tokio().context("adopting gRPC TCP listeners")?;
+        bound_port = Some(port);
         shutdown_tcp = Some(shutdown_tcp_tx);
 
-        let tcp_service = service.clone();
-        tokio::spawn(async move {
-            info!("gRPC: binding TCP at {addr}");
-            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-            let serve = Server::builder()
-                .add_service(tcp_service)
-                .serve_with_incoming_shutdown(incoming, async {
-                    let _ = shutdown_tcp_rx.await;
-                });
-            if let Err(e) = serve.await {
-                warn!("gRPC TCP server exited with error: {e}");
-            }
-        });
+        for listener in listeners {
+            let addr = listener.local_addr().context("gRPC TCP local_addr")?;
+            let tcp_service = service.clone();
+            let mut shutdown = shutdown_tcp_rx.resubscribe();
+            tokio::spawn(async move {
+                info!("gRPC: binding TCP at {addr}");
+                let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+                let serve = Server::builder()
+                    .add_service(tcp_service)
+                    .serve_with_incoming_shutdown(incoming, async {
+                        let _ = shutdown.recv().await;
+                    });
+                if let Err(e) = serve.await {
+                    warn!("gRPC TCP server exited with error: {e}");
+                }
+            });
+        }
     }
 
     // Written only once the listener exists, so the file's presence means
@@ -2159,7 +2163,7 @@ async fn serve_unix(
 /// Drop-to-shutdown handle for the gRPC server task(s). Sending on the
 /// embedded oneshot triggers `serve_with_shutdown` to return cleanly.
 pub struct GrpcServerHandle {
-    shutdown_tcp: Option<oneshot::Sender<()>>,
+    shutdown_tcp: Option<tokio::sync::broadcast::Sender<()>>,
     #[cfg(unix)]
     shutdown_unix: Option<oneshot::Sender<()>>,
     /// The service's swarm-handle slot, shared so the node can fill it once
@@ -2496,6 +2500,19 @@ mod tests {
         // up the TCP listener. In practice this happens in <50 ms locally.
         let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
         assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
+
+        // The v6 twin is the point of the dual-stack bind: a client that
+        // resolves `localhost` to `::1` first must reach the same daemon.
+        // Skipped where the host has no v6 loopback to bind.
+        if std::net::TcpListener::bind("[::1]:0").is_ok() && kwaai_p2p::IPV6_BUILD {
+            let up_v6 = wait_for(Duration::from_secs(2), || async move {
+                tokio::net::TcpStream::connect(format!("[::1]:{port}"))
+                    .await
+                    .is_ok()
+            })
+            .await;
+            assert!(up_v6, "gRPC listener never came up on [::1]:{port}");
+        }
 
         #[cfg(unix)]
         {

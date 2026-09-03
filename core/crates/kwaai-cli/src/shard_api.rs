@@ -923,8 +923,9 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         .route("/v1/completions", post(completions))
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", args.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let ipv6 = crate::net::configured_ipv6_mode();
+    let listeners =
+        crate::net::bind_dual_stack(crate::net::Scope::Any, args.port, ipv6)?.into_tokio()?;
 
     // Advertise our port so the shard-proxy P2P handler can find us.
     let _ = std::fs::create_dir_all(crate::config::run_dir());
@@ -954,7 +955,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     println!();
     print_separator();
 
-    axum::serve(listener, app).await?;
+    crate::api::serve_all(listeners, app).await?;
     let _ = std::fs::remove_file(crate::shard_cmd::shard_api_port_file());
     Ok(())
 }
