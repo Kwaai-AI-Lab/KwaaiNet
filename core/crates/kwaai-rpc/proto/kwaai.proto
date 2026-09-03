@@ -146,6 +146,15 @@ message ClientFrame {
         // the KB doesn't hold is NOT_FOUND rather than a silent no-op,
         // so a stale UI row doesn't read as a successful delete.
         RagDeleteRequest rag_delete = 25;
+
+        // Hivemind DHT records this node holds locally. One
+        // DhtRecordsReply, then Done. Reads the local store only — see
+        // DhtRecordsRequest for why there is no network-wide listing.
+        DhtRecordsRequest dht_records = 26;
+
+        // Resolve one known key across the network. One DhtLookupReply,
+        // then Done.
+        DhtLookupRequest dht_lookup = 27;
     }
 }
 
@@ -222,6 +231,12 @@ message ServerFrame {
 
         // Reply to RagDeleteRequest.
         RagDeleteReply rag_delete = 25;
+
+        // Reply to a DhtRecordsRequest.
+        DhtRecordsReply dht_records = 26;
+
+        // Reply to a DhtLookupRequest.
+        DhtLookupReply dht_lookup = 27;
     }
 }
 
@@ -1336,6 +1351,254 @@ message RagDeleteReply {
     // of vectors dropped. Never 0 on success: a document with no chunks
     // answers NOT_FOUND instead.
     uint32 chunks_deleted = 1;
+}
+
+// =====================================================================
+// Hivemind DHT records
+// =====================================================================
+
+// List the DHT records this node holds locally.
+//
+// The local store is the *only* thing that can be enumerated. Hivemind
+// is a Kademlia DHT and Kademlia has no key-listing operation: there is
+// no request that means "tell me every key you know". What a node holds
+// is whatever replication, caching and its own announces happened to
+// land on it, so this listing is a true and complete answer about *this
+// node* and says nothing about the network's key space. Use
+// DhtLookupRequest for a key you already know the name of.
+message DhtRecordsRequest {
+    // Fill in `value` and `subkeys` on every record.
+    //
+    // Off by default because it is the expensive half: a listing needs
+    // only the metadata, while a detail view needs one record's decoded
+    // value. Combine with `key_ids` to pay it for one row.
+    bool include_values = 1;
+
+    // Restrict the listing to these DHT ids (hex, as reported in
+    // DhtRecord.key_id). Empty lists everything.
+    repeated string key_ids = 2;
+}
+
+message DhtRecordsReply {
+    // Daemon wall-clock time of this snapshot, RFC 3339.
+    string server_time = 1;
+
+    // Every live record, primary tier first, then cache, each tier in
+    // key order. A key held in both tiers appears twice — the copies
+    // carry independent expirations and a lookup answers from the
+    // primary one, so they are genuinely two records.
+    repeated DhtRecord records = 2;
+
+    // The keys this node can name: the well-known registries plus the
+    // per-block keys derived from its configured model prefix. This is
+    // both the reverse table for DhtRecord.key_name — a DHT id is
+    // SHA1(msgpack(name)) and cannot be inverted — and the candidate
+    // list a client offers for DhtLookupRequest.
+    repeated DhtKnownKey known_keys = 3;
+}
+
+// A plaintext key name and the DHT id it hashes to.
+message DhtKnownKey {
+    // e.g. `_petals.models`, `_kwaai.vpk.nodes`, `Qwen3-8B.0`.
+    string name = 1;
+    // SHA1(msgpack(name)), hex.
+    string key_id = 2;
+}
+
+// One DHT record: a stored value plus everything known about it that is
+// not the value itself.
+message DhtRecord {
+    // The record's DHT id, hex. This is the key the store is indexed
+    // by, and what `key_ids` filters on.
+    string key_id = 1;
+
+    // The plaintext name, when this id matches one this node knows how
+    // to derive. Empty otherwise, which is the normal case for a record
+    // replicated onto us for a model we do not serve — the id is a hash
+    // and there is nothing to invert.
+    string key_name = 2;
+
+    // Regular value vs dictionary. The distinction is not cosmetic: a
+    // dictionary is how N peers announce under one key without
+    // overwriting each other, so a block key with one subkey per server
+    // is the shape to expect, and a *regular* value under such a key is
+    // a peer that clobbered the others.
+    DhtRecordKind kind = 3;
+
+    // Cache tier rather than primary. A cached record is here because a
+    // lookup passed through this node, not because anyone chose to
+    // replicate onto it, and it is evictable.
+    bool in_cache = 4;
+
+    // Subkey count for a dictionary; 0 for a regular value, and also 0
+    // for a dictionary whose subkeys have all expired — `kind` is what
+    // separates those two.
+    uint32 subkey_count = 5;
+
+    // Value bytes only: the stored value for a regular record, the
+    // summed subkey values for a dictionary. Not the serialized wire
+    // size, which adds msgpack framing.
+    uint64 value_bytes = 6;
+
+    // The record's outer expiration, seconds since the UNIX epoch. This
+    // is the one `rpc_find` reports, and for a dictionary it can differ
+    // from `latest_expiration`.
+    double expiration = 7;
+
+    // Seconds until `expiration`, as of `server_time`. Negative for a
+    // record that has expired but not yet been swept — which a listing
+    // can legitimately see, since sweeping is periodic.
+    //
+    // Sent alongside the absolute time rather than instead of it: a
+    // client's clock is not the daemon's, and the countdown is what a
+    // reader actually wants.
+    double expires_in_secs = 8;
+
+    // `DictionaryDHTValue.latest_expiration_time` — the running maximum
+    // over every subkey ever stored, which Python never recomputes on
+    // expiry. Set for dictionaries only, and a value well past
+    // `expiration` is normal rather than a bug.
+    optional double latest_expiration = 9;
+
+    // The dictionary's own subkey cap. Absent when unbounded, and for
+    // regular records.
+    optional uint64 dict_maxsize = 10;
+
+    // The decoded value, when `include_values` was set. Absent for a
+    // dictionary, whose values live per-subkey below.
+    optional DhtValueView value = 11;
+
+    // Per-subkey breakdown, when `include_values` was set and this is a
+    // dictionary. Each subkey expires independently of the record.
+    repeated DhtSubkey subkeys = 12;
+}
+
+message DhtSubkey {
+    // The subkey rendered from its msgpack form — a base58 peer id for
+    // every record this network publishes, but nothing enforces that,
+    // so it is rendered by the same rules as a value.
+    string subkey = 1;
+
+    // Absolute expiration, seconds since the UNIX epoch, and the
+    // countdown to it. Independent of the record's own expiration:
+    // that is the whole point of a dictionary.
+    double expiration = 2;
+    double expires_in_secs = 3;
+
+    uint64 value_bytes = 4;
+
+    // The decoded value.
+    DhtValueView value = 5;
+}
+
+// A msgpack value rendered for display.
+//
+// Deliberately structural, not semantic: this decodes msgpack and shows
+// what is there. It does not know that an Ext(64) under a block key is a
+// petals ServerInfo, and does not invent field names for one — an Ext
+// body that is itself msgpack (which is what Python's tuple encoding
+// produces) is unwrapped and rendered as its contents, and one that is
+// not is reported as opaque bytes under its type code.
+message DhtValueView {
+    // Top-level msgpack type: `map`, `array`, `str`, `bin`, `int`,
+    // `float`, `bool`, `nil`, or `ext`. `undecodable` when the bytes
+    // are not msgpack at all, in which case `rendered` is their hex.
+    string msgpack_type = 1;
+
+    // JSON-like rendering, one line. Binary that is valid UTF-8 renders
+    // as a quoted string; binary that is not renders as `hex:…`, so the
+    // two are never confused. Ext renders as `ext(<code>)<contents>`.
+    string rendered = 2;
+
+    // Size of the value as stored, before any decoding.
+    uint64 raw_bytes = 3;
+
+    // The ext type code, when the top level is an Ext. 0x40 (64) is
+    // hivemind's Python-tuple code and 0x50 (80) its dictionary code;
+    // anything else came from a peer we do not have a decoder for.
+    optional int32 ext_code = 4;
+
+    // True when `rendered` was produced by decoding, false when the
+    // bytes defeated the decoder and it fell back to hex.
+    bool decoded = 5;
+}
+
+enum DhtRecordKind {
+    DHT_RECORD_KIND_UNSPECIFIED = 0;
+    DHT_RECORD_KIND_REGULAR = 1;
+    DHT_RECORD_KIND_DICTIONARY = 2;
+}
+
+// Resolve one key across the network.
+//
+// The counterpart to DhtRecordsRequest: that one enumerates what is
+// here, this one fetches what is elsewhere. It can only ever work for a
+// key whose *name* is known, because the id is SHA1(msgpack(name)) and
+// there is nothing to enumerate against.
+message DhtLookupRequest {
+    // The plaintext key name — `_petals.models`, `_kwaai.vpk.nodes`,
+    // `_kwaai.inference.nodes`, `<prefix>.<block>`, or anything else.
+    // Hashed to its DHT id here so a client never has to reproduce
+    // SHA1(msgpack(name)).
+    string key = 1;
+
+    // Peers to ask, base58 peer ids. Empty means this node's own
+    // configured peers plus its routing table — never a compiled-in
+    // default, so a lookup can only reach the network this node is
+    // already part of.
+    repeated string peers = 2;
+
+    // Per-peer budget. 0 uses the daemon's default.
+    uint32 timeout_secs = 3;
+}
+
+message DhtLookupReply {
+    string server_time = 1;
+
+    // Echoed back with the id it hashed to, so a client can show what
+    // was actually asked for.
+    string key = 2;
+    string key_id = 3;
+
+    // One entry per peer asked, in the order asked. A peer that
+    // answered NOT_FOUND is a real result — it is how you tell "nobody
+    // has this" from "nobody was reachable".
+    repeated DhtLookupPeer peers = 4;
+
+    // The freshest answer across every peer that returned one, by outer
+    // expiration. Absent when no peer had the key.
+    //
+    // Its `in_cache` is meaningless here (nothing was stored locally)
+    // and is always false; `key_name` is the requested key.
+    optional DhtRecord record = 5;
+}
+
+message DhtLookupPeer {
+    string peer_id = 1;
+    DhtLookupOutcome outcome = 2;
+
+    // Failure detail when `outcome` is ERROR, empty otherwise. A dial
+    // failure and a protocol refusal both land here — the text
+    // distinguishes them.
+    string error = 3;
+
+    // Round trip for this peer, including any dial it had to make.
+    uint32 elapsed_ms = 4;
+
+    // What this peer returned, when `outcome` is FOUND. Kept per peer
+    // rather than only merged, because peers disagreeing about a record
+    // is exactly what a reader is looking for.
+    optional DhtRecord record = 5;
+}
+
+enum DhtLookupOutcome {
+    DHT_LOOKUP_OUTCOME_UNSPECIFIED = 0;
+    // The peer answered and had the key.
+    DHT_LOOKUP_OUTCOME_FOUND = 1;
+    // The peer answered and did not have it.
+    DHT_LOOKUP_OUTCOME_NOT_FOUND = 2;
+    // We never got an answer: dial failure, timeout, or a refusal.
+    DHT_LOOKUP_OUTCOME_ERROR = 3;
 }
 
 // =====================================================================
