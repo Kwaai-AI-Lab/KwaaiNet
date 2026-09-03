@@ -185,7 +185,7 @@ Recent work has demonstrated that plain text can often be reconstructed with hig
 
 ### 5.1 Virtual Private Knowledge (VPK)
 
-The Shared Secure Storage layer is implemented as an embedded Rust crate (`kwaai-storage`) running in-process alongside the KwaaiNet node. The storage engine uses `redb` for durable vector persistence and `hnsw_rs` for approximate nearest-neighbour search. Each Eve node manages multiple tenants in isolated per-tenant HNSW indices.
+The Shared Secure Storage layer is implemented as an embedded Rust crate (`kwaai-storage`) running in-process alongside the KwaaiNet node. The storage engine uses SQLite in WAL mode (via bundled `rusqlite`) for durable vector persistence and `hnsw_rs` for approximate nearest-neighbour search. Each Eve node manages multiple tenants in isolated per-tenant HNSW indices.
 
 The integration has two channels:
 

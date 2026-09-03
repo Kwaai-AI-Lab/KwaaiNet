@@ -50,7 +50,7 @@ kwaainet stop
 
 Eve nodes store opaque float vectors on behalf of Bob nodes. Bob embeds documents locally — Eve never sees the text, only the vectors. Search returns IDs and scores; Bob resolves them from his own knowledge base.
 
-**No Docker. No PostgreSQL. Pure embedded Rust (hnsw_rs + redb).**
+**No Docker. No PostgreSQL server. Pure embedded Rust (hnsw_rs + bundled SQLite).**
 
 ### Quick start
 
@@ -121,7 +121,7 @@ kwaainet shard chain --total-blocks 32
 core/
 ├── crates/
 │   ├── kwaai-cli/           # kwaainet binary — all CLI commands
-│   ├── kwaai-storage/       # Embedded vector store (hnsw_rs + redb)
+│   ├── kwaai-storage/       # Embedded vector store (hnsw_rs + SQLite)
 │   ├── kwaai-p2p/           # P2P networking (libp2p, Kademlia DHT)
 │   ├── kwaai-p2p-daemon/    # go-libp2p-daemon wrapper (p2pd)
 │   ├── kwaai-hivemind-dht/  # Hivemind/Petals DHT protocol
@@ -150,8 +150,10 @@ The `kwaainet` binary — manages everything:
 
 Embedded multi-tenant vector store — no system dependencies:
 - **hnsw_rs** — pure Rust HNSW approximate nearest-neighbour search (same algorithm as pgvector)
-- **redb** — pure Rust ACID embedded KV store for tenant metadata and vector persistence
-- Per-tenant in-memory index, rebuilt from redb on startup
+- **SQLite** (bundled `rusqlite`, WAL mode) — ACID embedded store for tenant metadata and vector
+  persistence, compiled into the binary so no system library is needed. Replaced `redb` in July 2026
+  because redb's exclusive file lock made concurrent processes fail hard
+- Per-tenant in-memory index, rebuilt from SQLite on startup
 - Full REST API via Axum (`run_storage_api`)
 - Search by Index privacy protocol — Eve returns only `(id, score)`, never embeddings
 

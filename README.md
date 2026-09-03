@@ -567,7 +567,7 @@ Bob (any node)                         Eve (storage node)
   │   returns PeerId, mode, capacity        │  (no IP addresses)
   │                                         │
   │── /kwaai/storage/1.0.0 ───────────────▶ kwaainet (Eve)
-  │   libp2p, Noise-encrypted, PeerId-routed│── redb + HNSW index
+  │   libp2p, Noise-encrypted, PeerId-routed│── SQLite + HNSW index
   │   CreateTenant / UploadVectors /        │   (multi-tenant)
   │   SearchVectors → {id, score} only      │
   │                                         │
@@ -584,7 +584,7 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | Local peer reputation system (`kwaainet reputation list/show/reset`) | ✅ Shipped |
 | Gemma3/4 GGUF inference support (candle 0.10, BF16) | ✅ Shipped |
 | Eve storage node (`kwaainet storage init`, `kwaainet vpk enable --mode eve`) | ✅ Shipped |
-| Multi-tenant vector store (redb + hnsw_rs, cosine distance) | ✅ Shipped |
+| Multi-tenant vector store (SQLite + hnsw_rs, cosine distance) | ✅ Shipped |
 | P2P vector protocol (`/kwaai/storage/1.0.0` — CreateTenant, UploadVectors, SearchVectors, DeleteTenant) | ✅ Shipped |
 | DHT advertisement (`_kwaai.vpk.nodes`, PeerId-addressed, no IP) | ✅ Shipped |
 | Eve discovery (`kwaainet vpk discover`) | ✅ Shipped |
@@ -604,7 +604,7 @@ Eve returns only `{id, score}` pairs — vectors never travel back over the wire
 | Knowledge graph extraction (`rag graph build`) — entity/relation graph from corpus via LLM | ✅ Shipped |
 | Graph-anchored retrieval (`rag query --mode graph`) — BFS entity traversal + RRF fusion with vector results | ✅ Shipped |
 | **Dream RAG** — autonomous graph refinement: schema.org 3-pillar health scorer, fan-out LLM completion, dedup, prune (`rag graph score`, `rag dream run/status`) | ✅ Shipped |
-| Semantic query cache (`rag cache stats/clear`) — 24h TTL, cosine similarity dedup, redb-backed | ✅ Shipped |
+| Semantic query cache (`rag cache stats/clear`) — 24h TTL, cosine similarity dedup, SQLite-backed | ✅ Shipped |
 | Obsidian vault & MediaWiki ingestion (`rag ingest` with markdown/wiki format detection) | ✅ Shipped |
 | Obsidian vault export/import (`rag export/import`) — human-in-the-loop knowledge graph curation via Obsidian Graph View | ✅ Shipped |
 | Grounded RAG answers — mandatory inline citations [1], hard hallucination refusal | ✅ Shipped |
