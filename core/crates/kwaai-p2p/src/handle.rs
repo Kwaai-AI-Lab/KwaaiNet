@@ -218,6 +218,17 @@ pub enum Command {
         addr: Multiaddr,
         reply: oneshot::Sender<P2PResult<PeerId>>,
     },
+    /// Connect to `peer`, seeding the learned-address map with `addrs` first.
+    ///
+    /// Go's `doConnect` took a `peer.AddrInfo{ID, Addrs}` and handed it to a
+    /// *routed* host: the addresses are a hint, and the DHT is the fallback.
+    /// This is that, with the hint kept — see [`crate::learned_addrs`] — so a
+    /// later dial to the same peer still has it after the connection drops.
+    ConnectPeerWithAddrs {
+        peer: PeerId,
+        addrs: Vec<Multiaddr>,
+        reply: oneshot::Sender<P2PResult<PeerId>>,
+    },
     /// Close all connections to a peer.
     DisconnectPeer {
         peer: PeerId,
@@ -423,6 +434,29 @@ impl NetworkHandle {
             .parse()
             .map_err(|e| P2PError::InvalidAddress(format!("{multiaddr_str}: {e}")))?;
         self.call(|reply| Command::ConnectPeer { addr, reply })
+            .await?
+    }
+
+    /// Connect to `peer`, first recording `addrs` as ways to reach it.
+    ///
+    /// The split `(peer, addrs)` form rather than one full multiaddr, because
+    /// that is what the sources of these addresses produce: a signed peer
+    /// record carries the id once, under the signature, and the addresses bare
+    /// ([`crate::peer_record::verified_addrs`]).
+    ///
+    /// Unlike [`Self::connect_peer`], the addresses outlive the call. They go
+    /// into the service's learned-address map, which every later dial to this
+    /// peer consults ahead of the routing table — so a routed unary request
+    /// after the connection drops re-dials from them instead of failing with
+    /// "peer not found in DHT (no addresses)". An empty list, or addresses that
+    /// all fail, falls back to the DHT walk exactly as a bare-PeerId connect
+    /// does today.
+    pub async fn connect_peer_with_addrs(
+        &self,
+        peer: PeerId,
+        addrs: Vec<Multiaddr>,
+    ) -> P2PResult<PeerId> {
+        self.call(|reply| Command::ConnectPeerWithAddrs { peer, addrs, reply })
             .await?
     }
 

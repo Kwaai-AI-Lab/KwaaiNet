@@ -2762,49 +2762,20 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
         .unwrap_or(&4)
 }
 
-/// Addresses from a signed peer record, but only if `peer_id_b58` really
-/// signed them.
+/// [`kwaai_p2p::peer_record::verified_addrs`], as dialable strings.
 ///
-/// The DHT has no record validators (`kwaai-hivemind-dht`), so the bytes under
-/// a peer's subkey are whatever the last writer put there — and an address
-/// list is a dialing instruction. Verification is what makes it safe to
-/// follow: `from_signed_envelope_interop` checks the signature and binds the
-/// record's peer id to the signing key, and the equality check below ties that
-/// to the peer being dialed. A record that fails either yields no addresses,
-/// which costs the peer nothing worse than the bare-PeerId dial it would have
-/// got before the field existed.
-///
-/// Both checks are load-bearing. The library only proves the record is
-/// self-consistent — that whoever signed it named themselves — so without the
-/// caller comparing that to the peer it is about, an attacker signs a record
-/// with their own key, stores it under the victim's subkey, and every library
-/// check passes.
-///
-/// Addresses come back with `/p2p/<peer>` re-attached, because a peer record
-/// stores them bare: the peer id is in the record, once, under the signature.
+/// The verification itself is network-layer work and lives in `kwaai-p2p`; all
+/// this adds is the announcement's string-typed peer id and the `/p2p/<peer>`
+/// the record deliberately omits — a peer record stores its addresses bare,
+/// with the id inside, under the signature, so a reader re-attaches it to dial.
 fn verified_dial_addrs(envelope_bytes: &[u8], peer_id_b58: &str) -> Vec<String> {
     let Ok(claimed) = peer_id_b58.parse::<PeerId>() else {
         return Vec::new();
     };
-    let Ok(envelope) = libp2p::core::SignedEnvelope::from_protobuf_encoding(envelope_bytes) else {
-        return Vec::new();
-    };
-    let Ok(record) = libp2p::core::PeerRecord::from_signed_envelope_interop(envelope) else {
-        return Vec::new();
-    };
-    if record.peer_id() != claimed {
-        return Vec::new();
-    }
-    record
-        .addresses()
-        .iter()
-        .take(crate::announce::MAX_DIAL_ADDRS)
-        // Stripped before re-attaching rather than appended blindly: a
-        // publisher that is not `select_dial_addrs` may leave the destination
-        // on, and `/p2p/X/p2p/X` is not a dialable address.
+    kwaai_p2p::peer_record::verified_addrs(envelope_bytes, claimed)
+        .into_iter()
         .map(|a| {
-            kwaai_p2p::addresses::strip_dest_p2p(a)
-                .with(libp2p::multiaddr::Protocol::P2p(claimed))
+            a.with(libp2p::multiaddr::Protocol::P2p(claimed))
                 .to_string()
         })
         .collect()
@@ -4173,22 +4144,6 @@ mod tests {
         let info =
             decode_server_info_ext(&published.to_msgpack().expect("encodes")).expect("decodes");
         assert_eq!(info.dial_addrs, vec![format!("{circuit}/p2p/{peer}")]);
-    }
-
-    /// The publisher signs in the interop domain deliberately, so that a Go or
-    /// JS reader can verify it. A record in rust-libp2p's legacy domain is not
-    /// that, and must not be accepted by accident.
-    #[test]
-    fn verified_dial_addrs_rejects_the_legacy_signing_domain() {
-        let key = libp2p::identity::Keypair::generate_ed25519();
-        let peer = key.public().to_peer_id();
-        let addr = "/ip4/203.0.113.7/tcp/4001".parse().expect("a valid addr");
-        let legacy = libp2p::core::PeerRecord::new(&key, vec![addr])
-            .expect("signs")
-            .into_signed_envelope()
-            .into_protobuf_encoding();
-
-        assert!(verified_dial_addrs(&legacy, &peer.to_base58()).is_empty());
     }
 
     /// A peer on a binary that predates the field decodes to an empty list,
