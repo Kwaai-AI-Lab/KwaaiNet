@@ -16,7 +16,7 @@
 
 use kwaai_rpc::v1::{
     client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtRole,
-    NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
+    KadStatus, NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
     UpdateReason,
 };
 use prost::Message;
@@ -270,6 +270,7 @@ fn network_update_roundtrip_all_sections() {
                 connected: true,
                 is_bootstrap: false,
                 addrs: vec!["/ip4/198.18.0.10/tcp/8000".to_string()],
+                ..Default::default()
             },
             RoutingPeer {
                 peer_id: "12D3KooWExampleKnownButOffline".to_string(),
@@ -278,6 +279,7 @@ fn network_update_roundtrip_all_sections() {
                 // A routing entry keeps its addresses after the connection
                 // drops — that is what makes it dialable again later.
                 addrs: vec!["/ip4/198.18.0.99/tcp/8000".to_string()],
+                ..Default::default()
             },
         ],
         bootstrap_total: 2,
@@ -329,12 +331,46 @@ fn network_update_roundtrip_disjoint_peer_sets() {
             // the degenerate case a client has to be able to distinguish,
             // and an empty list must survive the wire as one.
             addrs: vec![],
+            ..Default::default()
         }],
         ..Default::default()
     };
     let decoded =
         NetworkUpdate::decode(known_not_connected.encode_to_vec().as_slice()).expect("must decode");
     assert_eq!(decoded, known_not_connected);
+}
+
+/// The k-bucket detail the DHT-entry dialog renders.
+///
+/// `last_contact_secs` is `optional`, and absent is a real state — a routing
+/// entry seeded from a configured address before any dial succeeded. Proto3
+/// erases a zero-valued scalar, so without the `optional` keyword "never
+/// connected" and "connected this very second" would arrive identical.
+#[test]
+fn routing_peer_roundtrip_kad_detail() {
+    let never_dialed = RoutingPeer {
+        peer_id: "12D3KooWExampleSeeded".to_string(),
+        connected: false,
+        kad_status: KadStatus::Disconnected as i32,
+        bucket: 255,
+        bucket_entries: 20,
+        bucket_capacity: 20,
+        bucket_pending: true,
+        distance: "f".repeat(64),
+        last_contact_secs: None,
+        ..Default::default()
+    };
+    let decoded = RoutingPeer::decode(never_dialed.encode_to_vec().as_slice())
+        .expect("RoutingPeer must decode from its own encoding");
+    assert_eq!(decoded, never_dialed);
+    assert_eq!(decoded.last_contact_secs, None);
+
+    let just_now = RoutingPeer {
+        last_contact_secs: Some(0),
+        ..never_dialed.clone()
+    };
+    let decoded = RoutingPeer::decode(just_now.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded.last_contact_secs, Some(0));
 }
 
 /// `UpdateReason::Tick` is the proto3 zero value, so it occupies no bytes on
