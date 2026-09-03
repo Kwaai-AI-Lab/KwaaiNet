@@ -443,6 +443,11 @@ impl P2PClient {
     ///
     /// Addresses are sent bare deliberately; that is what tells the daemon this
     /// is the split form rather than the classic one-full-multiaddr dial.
+    ///
+    /// An **empty** slice is valid and means "dial by id, from whatever you
+    /// already know" — the daemon takes its routed path, exactly as Go's
+    /// routed host does for an `AddrInfo` with no addresses. A caller holding a
+    /// peer that published none therefore needs no fallback of its own.
     pub async fn connect_peer_with_addrs(
         &mut self,
         peer: &libp2p::PeerId,

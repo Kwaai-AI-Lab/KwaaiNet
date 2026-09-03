@@ -242,6 +242,50 @@ async fn connect_with_addrs_seeds_the_daemon_and_survives_a_disconnect() {
     b.shutdown().await;
 }
 
+/// CONNECT with a peer and **no** addresses is the routed form, not a
+/// malformed request: finding the peer is the daemon's job. Already connected
+/// is the cheap end of that — the routed path forwards immediately.
+#[tokio::test]
+async fn connect_with_no_addrs_is_routed_not_malformed() {
+    let a = TestNode::spawn().await;
+    let b = TestNode::spawn().await;
+
+    let mut client = a.client().await;
+    tokio::time::timeout(TIMEOUT, client.connect_peer(&b.addr))
+        .await
+        .expect("connect must not hang")
+        .expect("dial B");
+
+    tokio::time::timeout(TIMEOUT, client.connect_peer_with_addrs(&b.peer_id, &[]))
+        .await
+        .expect("connect must not hang")
+        .expect("an empty address list must dial by id, not be refused");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+/// The same request for a peer the daemon has never heard of fails on the
+/// *lookup*, which is the honest error — a caller that has no address for a
+/// peer has made a well-formed request the daemon could not satisfy.
+#[tokio::test]
+async fn connect_with_no_addrs_to_an_unknown_peer_fails_on_the_lookup() {
+    let node = TestNode::spawn().await;
+    let mut client = node.client().await;
+
+    let stranger = Keypair::generate_ed25519().public().to_peer_id();
+    let err = tokio::time::timeout(TIMEOUT, client.connect_peer_with_addrs(&stranger, &[]))
+        .await
+        .expect("connect must not hang")
+        .expect_err("a peer nothing knows about cannot be dialed");
+    assert!(
+        err.to_string().contains("peer not found in DHT"),
+        "expected a routing failure, not a protocol complaint, got: {err}"
+    );
+
+    node.shutdown().await;
+}
+
 /// A malformed CONNECT must come back as a protocol error on the socket, not
 /// close the connection — the client keeps using it afterwards.
 #[tokio::test]

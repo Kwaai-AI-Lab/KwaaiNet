@@ -873,18 +873,9 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
 
     // Pre-connect to all block-server peers
     for entry in &chain {
-        // A peer whose binary predates `addrs_signed` publishes none, and the
-        // daemon rejects a connect carrying no addresses — that one case keeps
-        // the bare-PeerId dial.
-        let _ = if entry.dial_addrs.is_empty() {
-            client
-                .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
-                .await
-        } else {
-            client
-                .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
-                .await
-        };
+        let _ = client
+            .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
+            .await;
     }
 
     // Detect llama.cpp fast path (full model on this node + GGUF available)

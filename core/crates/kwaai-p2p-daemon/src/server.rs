@@ -652,9 +652,15 @@ impl ConnState {
 
     /// `CONNECT` — dial a peer at the supplied addresses.
     ///
-    /// Two shapes arrive on this one request, and they are told apart by
-    /// whether the address names its destination:
+    /// Three shapes arrive on this one request, told apart by the addresses:
     ///
+    /// * **No addresses at all** — the routed dial: `peer.AddrInfo{ID, Addrs:
+    ///   []}` on a Go routed host, which consults routing rather than erroring.
+    ///   Handed on as a bare `/p2p/<peer>`, so `dispatch_routed` finds the peer
+    ///   from what the daemon already knows. A caller reading a peer record
+    ///   that carried no addresses — a peer on a binary predating
+    ///   `addrs_signed` — arrives here, and finding a peer is the daemon's job
+    ///   rather than something every caller should branch on.
     /// * **One multiaddr ending in `/p2p/<peer>`** — the classic dial, what
     ///   `P2PClient::connect_peer` and `p2p peers connect --addr` send. Handed
     ///   to `NetworkHandle::connect_peer` unchanged, which is what makes a
@@ -681,7 +687,15 @@ impl ConnState {
         };
 
         if connect.addrs.is_empty() {
-            return error_response("Malformed request; missing parameters".to_string());
+            return match self
+                .shared
+                .handle
+                .connect_peer(&format!("/p2p/{peer}"))
+                .await
+            {
+                Ok(_) => ok_response(),
+                Err(e) => error_response(e.to_string()),
+            };
         }
 
         let parsed: Vec<Multiaddr> = connect
