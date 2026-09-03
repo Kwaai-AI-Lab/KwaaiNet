@@ -156,7 +156,7 @@ pub fn trusted_relay_peer_ids() -> HashSet<PeerId> {
 /// Entries without one, or with an unparseable id, are skipped rather than
 /// failing the lot: a single malformed line in config should not blank out the
 /// bootstrap labels on an otherwise healthy peer list.
-pub fn peer_ids_from_multiaddrs(addrs: &[String]) -> HashSet<PeerId> {
+pub(crate) fn peer_ids_from_multiaddrs(addrs: &[String]) -> HashSet<PeerId> {
     addrs
         .iter()
         .filter_map(|addr| addr.split("/p2p/").nth(1))
