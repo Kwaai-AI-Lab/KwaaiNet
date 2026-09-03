@@ -153,6 +153,11 @@ pub struct DHTServerInfo {
     /// attempt-and-fallback probe; absence of this key entirely (a legacy
     /// pre-Capacity-Lease peer) is itself the "false" signal on decode.
     pub lease_v1: bool,
+
+    /// A block shard is loading right now, as opposed to this node having
+    /// nothing to load. Only meaningful while `state` is JOINING; encoded only
+    /// when true, so a node that is merely idle says nothing extra.
+    pub shard_loading: bool,
 }
 
 impl DHTServerInfo {
@@ -183,6 +188,7 @@ impl DHTServerInfo {
             vpk_info,
             peer_id_b58,
             lease_v1: true,
+            shard_loading: KwaaiNetConfig::announce_shard_loading(),
         }
     }
 
@@ -244,6 +250,10 @@ impl DHTServerInfo {
                 rmpv::Value::from("trust_attestations"),
                 rmpv::Value::Array(ta_values),
             ));
+        }
+
+        if self.shard_loading {
+            fields.push((rmpv::Value::from("shard_loading"), rmpv::Value::from(true)));
         }
 
         // Include VPK capability when enabled and reachable.
@@ -445,6 +455,7 @@ pub fn build_unannounce_records(
         vpk_info: None,
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
+        shard_loading: false,
     };
 
     let info_bytes = offline_info.to_msgpack()?;
@@ -841,6 +852,7 @@ mod tests {
             vpk_info: vpk,
             peer_id_b58: peer().to_base58(),
             lease_v1: true,
+            shard_loading: false,
         }
     }
 

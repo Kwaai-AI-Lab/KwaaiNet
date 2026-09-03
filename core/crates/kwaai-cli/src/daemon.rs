@@ -745,6 +745,43 @@ mod whole_model_readiness_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// JOINING covers two different situations and the map has to tell them
+    /// apart: a shard part-way through loading, and a node that will never load
+    /// one. The live pid is this test process, which is certainly running.
+    #[test]
+    fn shard_loading_is_only_true_while_a_shard_process_loads() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("kwaai-loading-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("KWAAINET_HOME", &tmp);
+
+        let shard = ShardManager::new();
+        let _ = std::fs::remove_file(ShardManager::ready_file());
+        shard.remove_pid();
+        assert!(
+            !KwaaiNetConfig::announce_shard_loading(),
+            "no shard process means nothing is loading"
+        );
+
+        shard.write_pid(std::process::id());
+        assert!(
+            KwaaiNetConfig::announce_shard_loading(),
+            "a live shard process with no ready sentinel is loading"
+        );
+
+        std::fs::write(ShardManager::ready_file(), "").unwrap();
+        assert!(
+            !KwaaiNetConfig::announce_shard_loading(),
+            "a loaded shard is serving, not loading"
+        );
+        assert_eq!(KwaaiNetConfig::announce_state(), 2);
+
+        std::env::remove_var("KWAAINET_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// Live check against this machine's actual Ollama, following the
     /// `live_*` convention: `#[ignore]` alone, because it is read-only against
     /// the network (localhost only) and writes its sentinel into an isolated

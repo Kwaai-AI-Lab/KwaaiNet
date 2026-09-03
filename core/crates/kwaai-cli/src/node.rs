@@ -699,6 +699,7 @@ pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result
                 server_info.start_block = sb;
                 server_info.end_block = eb;
                 server_info.state = KwaaiNetConfig::announce_state();
+                server_info.shard_loading = KwaaiNetConfig::announce_shard_loading();
                 if let Err(e) = announce(
                     &mut client, peer_id, &storage, &bootstrap_peers,
                     &prefix, &repository, config.model_total_blocks(),
@@ -829,6 +830,7 @@ pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result
                 // come and go under a long-running node.
                 crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
                 server_info.state = KwaaiNetConfig::announce_state();
+                server_info.shard_loading = KwaaiNetConfig::announce_shard_loading();
                 info!(
                     "Re-announcing to DHT (shard_ready={}, whole_model_ready={})...",
                     ShardManager::shard_is_ready(),
@@ -1054,6 +1056,7 @@ async fn unannounce(
         vpk_info: None,
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
+        shard_loading: false,
     };
     // Use the same 360 s TTL as a regular announcement — Hivemind bootstrap
     // peers reject updates with a shorter TTL than the existing record.

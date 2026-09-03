@@ -1066,6 +1066,14 @@ impl KwaaiNetConfig {
         }
     }
 
+    /// Whether a block shard is mid-load: `shard serve` is alive but has not
+    /// written its ready sentinel. Both this and "up, serving nothing" announce
+    /// JOINING, and only the node can tell them apart — so it says which, and
+    /// the map stops implying progress that may never come.
+    pub fn announce_shard_loading() -> bool {
+        !ShardManager::shard_is_ready() && ShardManager::new().is_running()
+    }
+
     /// Re-read config.yaml before a save so writes by other processes are kept;
     /// falls back to `self` if the file cannot be read.
     pub fn reloaded(&self) -> Self {
