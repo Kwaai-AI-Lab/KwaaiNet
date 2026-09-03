@@ -429,6 +429,10 @@ class SovereignAIForegroundService: Service() {
 
 ## Component 6: Environmental Tracking
 
+> **Not implemented.** No carbon, energy or renewable-source measurement code exists in
+> `core/` today — `grep -riE "carbon|renewable" core/ --include=*.rs` returns nothing. The
+> section below is a design for a component that has not been built.
+
 ### Technical Requirements
 
 **Primary Objective**: Carbon accountability for distributed computing with renewable energy monitoring

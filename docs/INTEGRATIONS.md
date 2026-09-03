@@ -165,9 +165,9 @@ Connect to renewable energy verification services.
 - Solar panel monitoring APIs
 
 ### Carbon Tracking
-**Status**: Core Feature
+**Status**: Planned — not implemented
 
-Built-in carbon footprint tracking for distributed computing.
+Built-in carbon footprint tracking for distributed computing. No measurement code ships today.
 
 **Features**:
 - Energy source detection
