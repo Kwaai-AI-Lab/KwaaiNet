@@ -188,7 +188,7 @@ async fn serve() -> Result<()> {
 
     let vpk_port = cfg.vpk_local_port.unwrap_or(7432);
     // Bind to loopback only — remote access goes through /kwaai/storage/1.0.0 P2P relay.
-    let bind_addr = format!("127.0.0.1:{}", vpk_port);
+    let bind_addr = format!("localhost:{}", vpk_port);
     let data_dir = PathBuf::from(&storage.data_dir);
     let capacity_gb = storage.capacity_gb;
 
@@ -251,7 +251,9 @@ async fn serve() -> Result<()> {
     ));
     print_separator();
 
-    kwaai_storage::run_storage_api(db, &bind_addr, capacity_gb, peer_id).await?;
+    let listeners = crate::net::bind_dual_stack(crate::net::Scope::Loopback, vpk_port, cfg.ipv6())?
+        .into_tokio()?;
+    kwaai_storage::run_storage_api_on(db, listeners, capacity_gb, peer_id).await?;
 
     Ok(())
 }
