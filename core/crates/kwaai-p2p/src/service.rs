@@ -1956,16 +1956,17 @@ impl NetworkService {
     /// Recompute the announce state and publish it if anything a consumer acts
     /// on changed.
     ///
-    /// The equality gate is the whole point. A node's addresses churn
-    /// constantly — identify pushes, a reservation moving between relays, a
-    /// re-NAT — and none of that belongs in a DHT record that carries no
-    /// addresses (see [`AnnounceState`]). Only a change in *how reachable the
-    /// node is* wakes the announce loop.
+    /// The equality gate is the whole point. Direct addresses churn constantly
+    /// — identify pushes, a re-NAT — and none of that belongs in the DHT
+    /// record. What does is the *circuit* set (see [`AnnounceState`]): the
+    /// record publishes those addresses, so a reservation moving between
+    /// relays has to wake the announce loop or the record names a relay the
+    /// node has left.
     fn publish_announce_state(&mut self) {
         let current = self.reachability.current().clone();
-        let has_circuit = self.relays.has_circuit();
+        let circuits = self.relays.confirmed_addrs();
         self.announce_tx.send_if_modified(|state| {
-            let next = AnnounceState::derive(&current, has_circuit, state.epoch);
+            let next = AnnounceState::derive(&current, &circuits, state.epoch);
             if !next.differs(state) {
                 return false;
             }

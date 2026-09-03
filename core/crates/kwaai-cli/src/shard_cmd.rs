@@ -2252,9 +2252,17 @@ async fn resolve_query_peers(client: &mut P2PClient, configured: &[String]) -> V
 pub async fn connect_chain_entry(client: &mut P2PClient, entry: &BlockServerEntry) -> bool {
     for addr in &entry.dial_addrs {
         if client.connect_peer(addr).await.is_ok() {
+            tracing::debug!(peer = %entry.peer_id, %addr, "pre-connected via published address");
             return true;
         }
     }
+    // Which path a pre-connect took is the one fact worth having when a chain
+    // fails to form, so the fallback is logged even though it is routine.
+    tracing::debug!(
+        peer = %entry.peer_id,
+        published = entry.dial_addrs.len(),
+        "no published address connected — falling back to a bare-PeerId dial"
+    );
     client
         .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
         .await
