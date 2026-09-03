@@ -110,9 +110,10 @@ impl VpkInfo {
 /// trust model (e.g., map.kwaai.ai v2) display trust badges; legacy clients
 /// ignore the field.
 ///
-/// `state` is a **deliberate KwaaiNet divergence** from upstream petals'
-/// `ServerState` enum: `0` joining, `2` ready, `-1` offline. The map decodes
-/// these values directly — preserve them verbatim.
+/// `state` follows petals' `ServerState` — `0` offline, `1` joining, `2`
+/// online — with one KwaaiNet extension: `-1`, an explicit departure tombstone
+/// (a shutdown cannot shorten a record's expiration, so leaving has to be said
+/// in the value). The map decodes these directly; preserve them verbatim.
 pub struct DHTServerInfo {
     pub state: i32,
     pub throughput: f64,
@@ -152,6 +153,11 @@ pub struct DHTServerInfo {
     /// attempt-and-fallback probe; absence of this key entirely (a legacy
     /// pre-Capacity-Lease peer) is itself the "false" signal on decode.
     pub lease_v1: bool,
+
+    /// A block shard is loading right now, as opposed to this node having
+    /// nothing to load. Only meaningful while `state` is JOINING; encoded only
+    /// when true, so a node that is merely idle says nothing extra.
+    pub shard_loading: bool,
 }
 
 impl DHTServerInfo {
@@ -182,6 +188,7 @@ impl DHTServerInfo {
             vpk_info,
             peer_id_b58,
             lease_v1: true,
+            shard_loading: KwaaiNetConfig::announce_shard_loading(),
         }
     }
 
@@ -243,6 +250,10 @@ impl DHTServerInfo {
                 rmpv::Value::from("trust_attestations"),
                 rmpv::Value::Array(ta_values),
             ));
+        }
+
+        if self.shard_loading {
+            fields.push((rmpv::Value::from("shard_loading"), rmpv::Value::from(true)));
         }
 
         // Include VPK capability when enabled and reachable.
@@ -444,6 +455,7 @@ pub fn build_unannounce_records(
         vpk_info: None,
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
+        shard_loading: false,
     };
 
     let info_bytes = offline_info.to_msgpack()?;
@@ -840,6 +852,7 @@ mod tests {
             vpk_info: vpk,
             peer_id_b58: peer().to_base58(),
             lease_v1: true,
+            shard_loading: false,
         }
     }
 

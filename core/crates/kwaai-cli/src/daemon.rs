@@ -695,7 +695,7 @@ mod whole_model_readiness_tests {
     use crate::config::KwaaiNetConfig;
 
     /// Regression for #175: a node serving whole models over the Ollama proxy
-    /// must announce ONLINE (2), not JOINING (0).
+    /// must announce ONLINE (2), not JOINING (1).
     ///
     /// `announce_state` gated only on `shard.ready`, which the block-sharding
     /// path writes and the macOS whole-model path deliberately does not — so a
@@ -707,6 +707,9 @@ mod whole_model_readiness_tests {
     /// `KWAAINET_HOME`, so they must not run against a live node's run dir.
     #[test]
     fn whole_model_serving_announces_online() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("kwaai-wm-ready-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("KWAAINET_HOME", &tmp);
@@ -717,7 +720,7 @@ mod whole_model_readiness_tests {
         assert!(!ShardManager::whole_model_is_ready());
         assert_eq!(
             KwaaiNetConfig::announce_state(),
-            0,
+            1,
             "nothing to serve must stay JOINING"
         );
 
@@ -734,9 +737,46 @@ mod whole_model_readiness_tests {
         ShardManager::clear_whole_model_ready();
         assert_eq!(
             KwaaiNetConfig::announce_state(),
-            0,
+            1,
             "clearing the sentinel must drop back to JOINING"
         );
+
+        std::env::remove_var("KWAAINET_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// JOINING covers two different situations and the map has to tell them
+    /// apart: a shard part-way through loading, and a node that will never load
+    /// one. The live pid is this test process, which is certainly running.
+    #[test]
+    fn shard_loading_is_only_true_while_a_shard_process_loads() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("kwaai-loading-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("KWAAINET_HOME", &tmp);
+
+        let shard = ShardManager::new();
+        let _ = std::fs::remove_file(ShardManager::ready_file());
+        shard.remove_pid();
+        assert!(
+            !KwaaiNetConfig::announce_shard_loading(),
+            "no shard process means nothing is loading"
+        );
+
+        shard.write_pid(std::process::id());
+        assert!(
+            KwaaiNetConfig::announce_shard_loading(),
+            "a live shard process with no ready sentinel is loading"
+        );
+
+        std::fs::write(ShardManager::ready_file(), "").unwrap();
+        assert!(
+            !KwaaiNetConfig::announce_shard_loading(),
+            "a loaded shard is serving, not loading"
+        );
+        assert_eq!(KwaaiNetConfig::announce_state(), 2);
 
         std::env::remove_var("KWAAINET_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -756,7 +796,13 @@ mod whole_model_readiness_tests {
     /// Ollama retracts the claim rather than leaving a dead path advertised.
     #[tokio::test]
     #[ignore = "probes the local Ollama on 11434"]
+    // The guard is held across awaits deliberately: it serialises `KWAAINET_HOME`
+    // for the whole test, and a single-threaded test runtime cannot deadlock on it.
+    #[allow(clippy::await_holding_lock)]
     async fn live_whole_model_readiness_tracks_real_ollama() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("kwaai-wm-live-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("KWAAINET_HOME", &tmp);
@@ -797,10 +843,10 @@ mod whole_model_readiness_tests {
         );
         assert_eq!(
             KwaaiNetConfig::announce_state(),
-            0,
+            1,
             "with Ollama gone, the node must stop claiming it can serve"
         );
-        eprintln!("announce_state() = 0 (JOINING) with Ollama unreachable");
+        eprintln!("announce_state() = 1 (JOINING) with Ollama unreachable");
 
         std::env::remove_var("KWAAINET_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -811,6 +857,9 @@ mod whole_model_readiness_tests {
     /// implies, and a whole-model node has none.
     #[test]
     fn whole_model_readiness_does_not_imply_a_block_shard() {
+        let _env_lock = crate::config::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("kwaai-wm-distinct-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("KWAAINET_HOME", &tmp);

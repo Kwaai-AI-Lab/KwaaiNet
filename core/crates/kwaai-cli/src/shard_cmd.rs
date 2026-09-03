@@ -329,8 +329,8 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     //
     // So a Mac does not register as a block server. It serves whole-model
     // inference over `/kwaai/ollama-proxy/1.0.0`, which every node already
-    // registers, and stays at announce state 0 ("online, no shard") because no
-    // shard ever loads — no announce change needed.
+    // registers, and stays at announce state 1 (JOINING) because no shard ever
+    // loads — no announce change needed.
     //
     // Stopgap. Delete this branch when an Apple fast path lands: MLX
     // (`mlx_shard.rs`) already implements sharding and failed only on graph
@@ -660,7 +660,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             // The PID file normally comes from the supervised launch path, but
             // `shard_is_ready()` requires it (ready sentinel AND live process),
             // so a standalone `kwaainet shard serve` must write its own or the
-            // node announces state 0 (map: "offline") forever.
+            // node announces state 1 (JOINING) forever.
             crate::daemon::ShardManager::new().write_pid(std::process::id());
             let ready_file = crate::daemon::ShardManager::ready_file();
             let _ = std::fs::write(&ready_file, "");
@@ -2551,7 +2551,7 @@ async fn pick_gap_blocks(
 fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)> {
     let (state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1) =
         decode_server_info_ext(bytes)?;
-    // Only include ONLINE nodes (state=2); skip JOINING (0) and OFFLINE (-1).
+    // Only include ONLINE nodes (state=2); skip JOINING (1) and OFFLINE (0/-1).
     if state != 2 {
         return None;
     }

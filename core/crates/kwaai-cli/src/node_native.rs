@@ -792,6 +792,7 @@ fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig)
     server_info.start_block = config.start_block() as i32;
     server_info.end_block = config.effective_end_block() as i32;
     server_info.state = KwaaiNetConfig::announce_state();
+    server_info.shard_loading = KwaaiNetConfig::announce_shard_loading();
 }
 
 /// Fold one announce round's per-bootstrap timings into the reputation store.

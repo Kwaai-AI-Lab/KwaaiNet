@@ -296,6 +296,21 @@ pub struct KwaaiNetConfig {
     /// when `decentralized_dht` is false.
     #[serde(default = "default_dht_replication")]
     pub dht_replication: usize,
+    /// Announce `state=2` (ONLINE) even when no shard server is running.
+    ///
+    /// Off by default, and deliberately so. A node announces `state=1`
+    /// (JOINING) until `shard serve` reports its model loaded, because
+    /// `shard run` filters on `state==2`: a node claiming ONLINE without an
+    /// `/kwaai/inference/1.0.0` handler gets dialled and fails the session
+    /// with "protocols not supported".
+    ///
+    /// Turn it on only where that cannot happen — a topology test exercising
+    /// NAT traversal, relays and hole punching, where no inference is served
+    /// and no client will route to these nodes. It exists because such a
+    /// topology otherwise shows every node as offline on the map, which
+    /// obscures the connectivity it is there to test.
+    #[serde(default)]
+    pub announce_online_without_shard: bool,
 
     #[serde(default)]
     pub health_monitoring: HealthConfig,
@@ -902,6 +917,7 @@ impl Default for KwaaiNetConfig {
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
+            announce_online_without_shard: false,
             health_monitoring: HealthConfig::default(),
             model_dht_prefix: None,
             model_repository: None,
@@ -1008,7 +1024,18 @@ impl KwaaiNetConfig {
         self.native_p2p == Some(false)
     }
 
-    /// The `state` field for a DHT announcement: `2` ONLINE, `0` JOINING.
+    /// The `state` field for a DHT announcement: `2` ONLINE, `1` JOINING.
+    ///
+    /// Not-serving is `1`, not `0`: petals' enum is `OFFLINE = 0, JOINING = 1,
+    /// ONLINE = 2`, and a node reaching this code is up and announcing, so `0`
+    /// (which the map rendered as "offline", indistinguishable from the `-1`
+    /// departure tombstone) was a lie about a healthy node.
+    ///
+    /// Every consumer that survives the native migration filters on `== 2`. The
+    /// one that read this as a threshold — a python petals server's
+    /// `block_selection`, counting everything `>= JOINING` — would weigh a node
+    /// that may never load a shard; it matters again only if a
+    /// `petals.cli.run_server` ever rejoins the swarm.
     ///
     /// ONLINE means "this node will serve inference", not merely "this node is
     /// up" — `shard run` filters on `state == 2`, so a node that claims it
@@ -1022,12 +1049,29 @@ impl KwaaiNetConfig {
     /// nodes announced JOINING for as long as they ran, which put them off the
     /// map and, worse, out of `shard run`'s candidate set while they were
     /// serving perfectly well.
+    ///
+    /// `announce_online_without_shard` overrides the gate entirely for topology
+    /// tests, which serve no inference and would otherwise show every node as
+    /// offline on the map — hiding the connectivity they exist to exercise.
+    ///
+    /// Lives beside the flag it reads, and reachable from both the p2pd and the
+    /// native announce paths, so the two cannot drift on what ONLINE means.
     pub fn announce_state() -> i32 {
         if ShardManager::shard_is_ready() || ShardManager::whole_model_is_ready() {
-            2
-        } else {
-            0
+            return 2;
         }
+        match Self::load_or_create() {
+            Ok(cfg) if cfg.announce_online_without_shard => 2,
+            _ => 1,
+        }
+    }
+
+    /// Whether a block shard is mid-load: `shard serve` is alive but has not
+    /// written its ready sentinel. Both this and "up, serving nothing" announce
+    /// JOINING, and only the node can tell them apart — so it says which, and
+    /// the map stops implying progress that may never come.
+    pub fn announce_shard_loading() -> bool {
+        !ShardManager::shard_is_ready() && ShardManager::new().is_running()
     }
 
     /// Re-read config.yaml before a save so writes by other processes are kept;
@@ -1238,6 +1282,9 @@ impl KwaaiNetConfig {
                     anyhow::bail!("dht_replication must be at least 1");
                 }
                 self.dht_replication = k;
+            }
+            "announce_online_without_shard" => {
+                self.announce_online_without_shard = parse_bool(value)?
             }
             "start_block" => {
                 self.start_block =
@@ -1481,6 +1528,16 @@ mod native_p2p_tri_state {
     }
 }
 
+/// Serialises the tests that drive `KWAAINET_HOME`, crate-wide.
+///
+/// The var is process-global. These tests each point it at their own tempdir
+/// and some remove it when done, so run concurrently one test reads another's
+/// directory — or none at all — and sees the wrong config back. One lock for
+/// the whole crate, not one per module: the racing tests live in different
+/// files (`config`, `daemon`), and per-module mutexes never serialise those.
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1492,6 +1549,33 @@ mod tests {
             blocks,
             ..KwaaiNetConfig::default()
         }
+    }
+
+    #[test]
+    fn announce_online_without_shard_defaults_off() {
+        // The default has to stay false. Announcing ONLINE without a loaded
+        // shard is what `shard run` filters on, so a node that does it gets
+        // dialled and fails the session with "protocols not supported" — the
+        // exact bug the state gate was introduced to fix.
+        assert!(!KwaaiNetConfig::default().announce_online_without_shard);
+    }
+
+    #[test]
+    fn announce_online_without_shard_round_trips() {
+        let _env_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // `set_key` persists to $KWAAINET_HOME. Without our own tempdir this
+        // writes into whichever directory another test has pointed the var
+        // at — and fails with ENOENT when that test's TempDir drops mid-run.
+        // Harmless on this branch alone; a ~1-in-6 flake once `combined` puts
+        // it alongside the bootstrap-serve tests that drive the same var.
+        let home = tempfile::tempdir().expect("tmpdir");
+        std::env::set_var("KWAAINET_HOME", home.path());
+
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("announce_online_without_shard", "true").unwrap();
+        assert!(c.announce_online_without_shard);
+        c.set_key("announce_online_without_shard", "false").unwrap();
+        assert!(!c.announce_online_without_shard);
     }
 
     #[test]
