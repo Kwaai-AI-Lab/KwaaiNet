@@ -542,6 +542,63 @@ message RoutingPeer {
     // also what makes a poisoned entry legible: a peer whose only address
     // is its own loopback reads as healthy until the address is visible.
     repeated string addrs = 4;
+
+    // Kad's own liveness verdict for this entry.
+    //
+    // Not the same claim as `connected`, which is the swarm's live
+    // connection set: kad marks an entry Disconnected on connection close
+    // but keeps it in the bucket, and it lags the swarm by an event loop
+    // turn either way. A row where the two disagree is the normal
+    // steady state for a peer we have dropped and still know how to reach.
+    KadStatus kad_status = 5;
+
+    // Which k-bucket holds this entry: floor(log2(XOR distance)), 0-255.
+    //
+    // Derived from the distance rather than the iteration order, so it is
+    // the bucket's real index and not a position in a filtered walk.
+    uint32 bucket = 6;
+
+    // How many entries that bucket currently holds, and the k it is capped
+    // at. Together they say whether the bucket is full — which is what
+    // decides if a newly-discovered peer can be inserted at all, or has to
+    // wait as a pending replacement for a disconnected occupant.
+    uint32 bucket_entries = 7;
+    uint32 bucket_capacity = 8;
+
+    // Whether that bucket holds a pending node: a peer waiting to take the
+    // place of a disconnected entry. Per bucket, not per entry — every
+    // entry in a full bucket reports the same flag.
+    bool bucket_pending = 9;
+
+    // XOR distance from our own key to this peer's, big-endian hex, 64
+    // digits, no leading `0x`.
+    //
+    // The DHT's own metric, and the only way to check that a lookup
+    // actually walked closer. Fixed for the life of the entry, so it costs
+    // nothing in subscription churn.
+    string distance = 10;
+
+    // Seconds since we last *established* a connection to this peer, in
+    // either direction. Absent means never — which is a real and common
+    // state for a routing entry: kad holds a peer the moment a configured
+    // address is seeded into it, before any dial has succeeded.
+    //
+    // Deliberately not part of the subscription's change identity, for the
+    // same reason as `rtt_ms`: it moves every tick and would turn a quiet
+    // node into a 5-second frame generator. The value a client holds is
+    // therefore as of the last snapshot it was actually sent.
+    optional uint32 last_contact_secs = 11;
+}
+
+// Kad's view of a routing entry's liveness.
+//
+// Distinct from `RoutingPeer.connected` — see the field. UNSPECIFIED is
+// reserved for a daemon predating the field rather than a third real
+// state: kad itself has only the two.
+enum KadStatus {
+    KAD_STATUS_UNSPECIFIED = 0;
+    KAD_STATUS_CONNECTED = 1;
+    KAD_STATUS_DISCONNECTED = 2;
 }
 
 // This node's own position in the network.
