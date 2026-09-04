@@ -1,0 +1,129 @@
+.TH KWAAINET 1 "2026-09-04" "KwaaiNet" "User Commands"
+.SH NAME
+kwaainet \- KwaaiNet node CLI for decentralized inference and training
+.SH SYNOPSIS
+.B kwaainet
+.RI [ OPTIONS ]
+.I COMMAND
+.RI [ ARGS ...]
+.SH DESCRIPTION
+.B kwaainet
+runs and controls a node on KwaaiNet, a libp2p peer-to-peer network for
+sovereign AI: decentralized model inference, distributed transformer block
+sharding, and private vector storage.
+.PP
+A node joins the network through bootstrap peers, announces the model blocks it
+can serve, and discovers other nodes over a distributed hash table. Nodes behind
+NAT connect via hole punching or relay circuits, so no port forwarding is
+required in the common case.
+.PP
+The node process is backed by
+.BR p2pd (1),
+a libp2p daemon shipped alongside this binary. Configuration and state, including
+the node identity key, live under
+.IR ~/.kwaainet .
+.SH COMMANDS
+.TP
+.B start
+Start the KwaaiNet node.
+.TP
+.B stop
+Stop the KwaaiNet daemon.
+.TP
+.B restart
+Restart the KwaaiNet daemon.
+.TP
+.B run\-node
+Run the node in the foreground. This is the entry point used by the systemd
+service unit; prefer
+.B start
+interactively.
+.TP
+.B status
+Show daemon status.
+.TP
+.B logs
+Show daemon logs.
+.TP
+.B config
+View or modify configuration.
+.TP
+.B node\-health
+Live health check: p2pd, Ollama, and relay circuit status.
+.TP
+.B service
+Manage the auto\-start service.
+.TP
+.B p2p
+Inspect live p2p state, such as identity and connected peers.
+.TP
+.B shard
+Distributed transformer block sharding: serve a range of blocks, coordinate
+inference across peers, or inspect block coverage on the network.
+.TP
+.B serve
+Serve an OpenAI\-compatible API backed by the local model.
+.TP
+.B storage
+Manage the local storage fabric.
+.TP
+.B vpk
+Manage VPK (Virtual Private Knowledge) vector database integration.
+.TP
+.B update
+Check or install updates. Disabled in packaged installs; see
+.B NOTES
+below.
+.PP
+This is not the full command set. Run
+.B kwaainet \-\-help
+for the complete list, and
+.BI "kwaainet " COMMAND " \-\-help"
+for the options of any one command.
+.SH OPTIONS
+.TP
+.B \-h ", " \-\-help
+Print help.
+.TP
+.B \-V ", " \-\-version
+Print version.
+.SH ENVIRONMENT
+.TP
+.B KWAAINET_NO_AUTO_UPDATE
+When set to
+.BR 1 ,
+the node does not check for or install updates. Set by default in
+.IR /etc/default/kwaainet .
+.TP
+.B RUST_LOG
+Log filter, e.g.
+.BR kwaainet=debug .
+.SH FILES
+.TP
+.I ~/.kwaainet/config.yaml
+Node configuration.
+.TP
+.I ~/.kwaainet/identity.key
+Node identity key. Never removed by package upgrade or removal.
+.TP
+.I ~/.kwaainet/logs/kwaainet.log
+Node log.
+.TP
+.I /etc/default/kwaainet
+Environment for the packaged systemd user unit.
+.TP
+.I /usr/lib/systemd/user/kwaainet.service
+Packaged systemd user unit. Not enabled on install.
+.SH NOTES
+This package installs KwaaiNet from a distribution package. Self\-update is
+disabled, because it would replace files the package manager owns. Upgrade with
+.B apt
+instead. See
+.I /usr/share/doc/kwaainet/README.Debian
+for details.
+.SH SEE ALSO
+.BR systemctl (1)
+.PP
+Project home:
+.UR https://kwaai.ai
+.UE
