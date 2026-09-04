@@ -18,7 +18,7 @@
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 
-use crate::addresses::{is_announceable, is_circuit, strip_dest_p2p, uses_dialable_transport};
+use crate::addresses::{is_announceable_with, is_circuit, strip_dest_p2p, uses_dialable_transport};
 
 /// How many addresses one record may contribute.
 ///
@@ -61,11 +61,15 @@ pub const MAX_RECORD_ADDRS: usize = 4;
 ///
 /// It proves who wrote the list, not that the list is worth following. A
 /// peer's own key can vouch for `/ip4/127.0.0.1/tcp/25`, and every reader
-/// would then dial its own port 25 on that peer's say-so. So the publisher's
-/// address-class rule is applied again here, by [`worth_dialing`]. This is the
-/// place for it: the daemon's dial path deliberately keeps loopback and LAN
-/// (two nodes on one host reach each other that way), and cannot tell an
-/// address it learned from a live connection from one a remote record named.
+/// would then dial its own port 25 on that peer's say-so. So the lenient
+/// address-class rule is applied here, by [`worth_dialing`]: loopback, LAN and
+/// the other classes no remote peer can use are dropped. This is the place
+/// for it — the daemon's dial path deliberately keeps loopback and LAN (two
+/// nodes on one host reach each other that way, and supply such addresses
+/// with a connect request) and cannot tell a record's address from a learned
+/// one. The reserved-range question (`require_global_ips`) is left to the
+/// dialer: this decoder has no config, and a signed claim of a reserved
+/// address costs a strict node at most one failed dial.
 ///
 /// # Shape of what comes back
 ///
@@ -94,16 +98,17 @@ pub fn verified_addrs(envelope: &[u8], claimed: PeerId) -> Vec<Multiaddr> {
         .collect()
 }
 
-/// The publisher's filter, re-run on the reader: a direct address must be
-/// announceable and on a transport this build dials; a circuit's relay hop
-/// must not carry an unroutable IP. A relay named by DNS — how the bootstraps
-/// are addressed — has no IP to judge and passes, as it does when published.
+/// The publisher's filter, re-run on the reader in its lenient tier: a direct
+/// address must be announceable and on a transport this build dials; a
+/// circuit's relay hop must not carry an unroutable IP. A relay named by DNS
+/// — how the bootstraps are addressed — has no IP to judge and passes, as it
+/// does when published.
 fn worth_dialing(addr: &Multiaddr) -> bool {
     if !uses_dialable_transport(addr) {
         return false;
     }
     if !is_circuit(addr) {
-        return is_announceable(addr);
+        return is_announceable_with(addr, false);
     }
     let hop: Multiaddr = addr
         .iter()
@@ -112,7 +117,7 @@ fn worth_dialing(addr: &Multiaddr) -> bool {
     let has_ip = hop
         .iter()
         .any(|p| matches!(p, Protocol::Ip4(_) | Protocol::Ip6(_)));
-    !has_ip || is_announceable(&hop)
+    !has_ip || is_announceable_with(&hop, false)
 }
 
 #[cfg(test)]
