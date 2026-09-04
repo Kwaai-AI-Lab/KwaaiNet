@@ -648,11 +648,11 @@ jobs:
                 --outdir /out --lintian
             '
       - name: Verify derived Depends has not drifted
-        if: matrix.arch == 'amd64'
         run: |
           # A silent Depends change means the support floor moved without
-          # anyone deciding to move it.
-          diff -u distrib/debian/expected-depends.amd64 packages/depends.amd64
+          # anyone deciding to move it. Checked per arch: the two can diverge.
+          diff -u distrib/debian/expected-depends.${{ matrix.arch }} \
+                  packages/depends.${{ matrix.arch }}
       - name: Install smoke test
         run: |
           # --expect-update-gate: this payload is built from the branch, so it

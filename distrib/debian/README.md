@@ -78,8 +78,10 @@ Currently derived, for both amd64 and arm64:
 libc6 (>= 2.34), libgcc-s1 (>= 4.2)
 ```
 
-`expected-depends.amd64` pins that string and `package-linux` diffs against it,
-so the supported-distro floor cannot move without someone deciding to move it.
+`expected-depends.amd64` and `expected-depends.arm64` pin that string per
+architecture and `package-linux` diffs against them on every arch, so the
+supported-distro floor cannot move without someone deciding to move it. The two
+are identical today, but they are derived from different ELFs and can diverge.
 Regenerate it from a real build's `depends.amd64` when it legitimately changes.
 
 The container's architecture must match the payload's, or `dpkg-shlibdeps`
