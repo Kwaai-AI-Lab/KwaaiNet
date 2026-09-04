@@ -19,9 +19,9 @@ From an app's point of view, KwaaiNet looks like a familiar chat-completion styl
 
 **As of v0.6.8.** Two things are worth knowing before you set up a node.
 
-**The networking stack is now native.** As of **v0.6.0** every node runs the in-process
-rust-libp2p stack by default; the Go `p2pd` child process is no longer required. Existing
-nodes keep working — set `native_p2p: false` in `~/.kwaainet/config.yaml` to opt out.
+**The networking stack is native.** Every node runs the in-process rust-libp2p stack;
+the Go `p2pd` child process has been removed. A `native_p2p: false` line in an
+existing `~/.kwaainet/config.yaml` is ignored with a warning.
 
 **Two ways to contribute compute, and Apple Silicon is the one platform split.** Block sharding —
 pooling a model too large for any single machine across several — runs on CPU and CUDA. Whole-model
@@ -222,8 +222,6 @@ kwaainet setup
 
 This generates `~/.kwaainet/identity.key` (Ed25519 keypair) and creates a default config with a smart default node name (e.g. `alice-linux-aarch64`).
 
-> If `kwaainet start` reports that `p2pd` is missing (e.g. manual install from a `.tar.xz`), run `kwaainet setup --get-deps` to download and install it automatically.
-
 Start the node:
 
 ```bash
@@ -375,7 +373,7 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 
 ### Networking
 
-- **Native rust-libp2p stack, default since v0.6.0** — the Go `p2pd` child process is no longer required. Same PeerId, same control socket, same NAT traversal (AutoNAT, circuit relay, DCUtR, UPnP) in-process. Opt out with `native_p2p: false`.
+- **Native rust-libp2p stack** — default since v0.6.0 and now the only path. Same PeerId, same control socket, same NAT traversal (AutoNAT, circuit relay, DCUtR, UPnP) in-process.
 - libp2p + Kademlia DHT swarm, Petals/Hivemind-compatible, with live diagnostics (`p2p info`, `p2p peers list/find`) and direct peer messaging (`p2p peers send`).
 - **IDENTIFY-based public-IP detection** — auto-confirms and announces a node's public address with no manual config.
 - **Trusted relays** and **stable bootstrap identities** (`start --identity-key`) so NATed and bootstrap nodes keep consistent routing and `PeerId` across restarts.

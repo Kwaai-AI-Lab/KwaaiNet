@@ -33,7 +33,7 @@ Run all tests: `cd core && cargo test`
 | Project | Crates | CLI files | Docs |
 |---------|--------|-----------|------|
 | **kwaai-trust** | kwaai-trust, kwaai-wasm | identity.rs, reputation.rs, reputation_cmd.rs | `projects/kwaai-trust/` |
-| **kwaai-network** | kwaai-p2p, kwaai-p2p-daemon, kwaai-hivemind-dht, kwaai-rpc | p2p_cmd.rs, node.rs | `projects/kwaai-network/` |
+| **kwaai-network** | kwaai-p2p, kwaai-p2p-daemon (control-socket protocol), kwaai-hivemind-dht, kwaai-rpc | p2p_cmd.rs, node.rs | `projects/kwaai-network/` |
 | **kwaai-compute** | kwaai-inference, kwaai-compression, kwaai-distributed | shard_cmd.rs, block_rpc.rs | `projects/kwaai-compute/` |
 | **kwaai-storage** | kwaai-storage | vpk.rs | `projects/kwaai-storage/` |
 | **kwaai-knowledge** | kwaai-rag | rag_cmd.rs, rag_api.rs | `projects/kwaai-knowledge/` |

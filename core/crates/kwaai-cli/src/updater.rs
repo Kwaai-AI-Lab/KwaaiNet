@@ -327,18 +327,16 @@ impl UpdateChecker {
             let install_dir = dirs::home_dir()
                 .map(|h| h.join(".cargo/bin"))
                 .unwrap_or_default();
-            for bin in &["kwaainet", "p2pd"] {
-                let path = install_dir.join(bin);
-                if path.exists() {
-                    let _ = std::process::Command::new("xattr")
-                        .args(["-d", "com.apple.quarantine"])
-                        .arg(&path)
-                        .output();
-                    let _ = std::process::Command::new("codesign")
-                        .args(["-s", "-", "--force"])
-                        .arg(&path)
-                        .output();
-                }
+            let path = install_dir.join("kwaainet");
+            if path.exists() {
+                let _ = std::process::Command::new("xattr")
+                    .args(["-d", "com.apple.quarantine"])
+                    .arg(&path)
+                    .output();
+                let _ = std::process::Command::new("codesign")
+                    .args(["-s", "-", "--force"])
+                    .arg(&path)
+                    .output();
             }
         }
 
@@ -453,7 +451,7 @@ impl UpdateChecker {
             std::fs::copy(entry.path(), &tmp_dest)
                 .with_context(|| format!("Installing {} (staging)", name.to_string_lossy()))?;
             let name_str = name.to_string_lossy();
-            if name_str == "kwaainet" || name_str == "p2pd" {
+            if name_str == "kwaainet" {
                 std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))?;
             }
             // Unlink the destination first so rename() succeeds even when `dest`

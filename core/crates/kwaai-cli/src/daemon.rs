@@ -241,8 +241,6 @@ impl DaemonManager {
         }
 
         self.remove_pid();
-        // Kill any orphaned p2pd processes so they don't hold the port for the next start.
-        kill_orphaned_p2pd();
         Ok(())
     }
 
@@ -296,63 +294,6 @@ impl DaemonManager {
         // Don't wait – let it run
         std::mem::forget(child);
         Ok(pid)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Orphan cleanup
-// ---------------------------------------------------------------------------
-
-/// Kill any p2pd processes that may have been left behind when the daemon
-/// process was terminated by SIGTERM (which bypasses Rust destructors, so
-/// the kwaai-p2p-daemon Drop impl never fires to clean them up).
-/// Without this, a new daemon start fails because p2pd can't bind the port.
-///
-/// Scoped to this instance's control socket when `KWAAINET_SOCKET` names one:
-/// p2pd carries it in `-listen`, and without the filter a second node's stop
-/// SIGKILLs the first node's p2pd. With no override there is only one socket
-/// on the machine, so every p2pd is ours and the name alone is enough.
-pub fn kill_orphaned_p2pd() {
-    use sysinfo::ProcessRefreshKind;
-
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessRefreshKind::new());
-
-    let socket = std::env::var("KWAAINET_SOCKET")
-        .ok()
-        .filter(|s| !s.is_empty());
-
-    let mut found = false;
-    for (pid, process) in sys.processes() {
-        let name = process.name();
-        if name == "p2pd" || name == "p2pd.exe" {
-            if let Some(ref sock) = socket {
-                if !process.cmd().iter().any(|a| a.contains(sock.as_str())) {
-                    debug!("Leaving p2pd PID {} alone — not on {}", pid, sock);
-                    continue;
-                }
-            }
-            info!("Killing orphaned p2pd process (PID {})", pid);
-            found = true;
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid as NixPid;
-                // SIGKILL — no grace period, port released immediately.
-                let _ = kill(NixPid::from_raw(pid.as_u32() as i32), Signal::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.as_u32().to_string(), "/F"])
-                    .output();
-            }
-        }
-    }
-
-    // Give the OS a moment to release the port before the next p2pd starts.
-    if found {
-        std::thread::sleep(Duration::from_millis(500));
     }
 }
 

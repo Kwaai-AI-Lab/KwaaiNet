@@ -53,14 +53,10 @@ if [[ "$REPORT_ONLY" == "1" ]]; then
     exit 0
 fi
 
-# ── Step 1: Build (ensures p2pd binary is available for integration tests) ──
+# ── Step 1: Build ────────────────────────────────────────────────────────────
 info "Step 1/4  Build network crates"
 cd "$CORE"
-if [[ "$RUN_INTEGRATION" == "1" ]] || [[ "$RUN_NETWORK" == "1" ]]; then
-    cargo build -q -p kwaai-p2p -p kwaai-p2p-daemon -p kwaai-hivemind-dht -p kwaai-rpc -p kwaai-network-tests 2>&1 | tail -5
-else
-    cargo build -q -p kwaai-p2p -p kwaai-hivemind-dht -p kwaai-rpc -p kwaai-network-tests 2>&1 | tail -5
-fi
+cargo build -q -p kwaai-p2p -p kwaai-hivemind-dht -p kwaai-rpc -p kwaai-network-tests 2>&1 | tail -5
 ok "build complete"
 echo
 

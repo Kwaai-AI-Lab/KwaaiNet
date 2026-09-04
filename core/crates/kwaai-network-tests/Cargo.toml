@@ -9,7 +9,7 @@ description = "Integration and connectivity test suite for kwaai-network"
 
 # Three test tiers, all off by default:
 #   cargo test                              # unit only
-#   KWAAI_INTEGRATION_TESTS=1 cargo test   # + daemon spawn tests
+#   KWAAI_INTEGRATION_TESTS=1 cargo test   # + multi-node socket tests
 #   KWAAI_NETWORK_TESTS=1 cargo test       # + live bootstrap tests
 
 [dependencies]
@@ -32,7 +32,6 @@ hex       = "0.4"
 sha1      = "0.10"  # DHTID derivation in 13_native_node_assembly
 sha2      = "0.10"
 tempfile  = "3"
-unsigned-varint = { workspace = true }  # hand-built wire frames in 07_wire_interop
 
 [dev-dependencies]
 

@@ -66,8 +66,7 @@ Build artifacts accumulate quickly (`core/target/` can reach 20 GB+). Use the cl
 
 The script removes:
 - `core/target/` — Rust build artifacts
-- `/tmp/go-libp2p-daemon-*` — stale Go clone dirs from the p2pd build hook
-- `/usr/local/bin/kwaainet` + `p2pd` — manually copied binaries
+- `/usr/local/bin/kwaainet` — manually copied binaries
 - `~/.cargo/bin/kwaainet` — cargo-installed binary
 
 ### Development Workflow
@@ -304,7 +303,6 @@ This single command:
 
 The tag push triggers `.github/workflows/release.yml`, which:
 - Builds `kwaainet` for all 5 targets (macOS ARM/Intel, Linux x86_64/ARM64, Windows x86_64)
-- Builds `p2pd` (Go) for each platform via `scripts/build-p2pd.sh`
 - Generates SHA256-verified `.tar.xz` / `.zip` archives
 - Publishes `kwaainet-installer.sh` and `kwaainet-installer.ps1`
 - Pushes the Homebrew formula to `Kwaai-AI-Lab/homebrew-tap`

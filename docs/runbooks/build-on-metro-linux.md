@@ -25,7 +25,6 @@ Almost certainly already present from the last build; check rather than assume.
 
 ```bash
 rustc --version          # 1.75+
-go version               # kwaai-p2p-daemon's build.rs builds p2pd
 protoc --version         # optional: build.rs downloads it if absent
 nvcc --version           # only if you want the CUDA feature — see below
 ```

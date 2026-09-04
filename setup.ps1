@@ -25,7 +25,6 @@ if (-not $hasWinget) {
     Write-Host "Please install App Installer from Microsoft Store or install tools manually:" -ForegroundColor Yellow
     Write-Host "  - Git: https://git-scm.com/download/win" -ForegroundColor Yellow
     Write-Host "  - Rust: https://rustup.rs/" -ForegroundColor Yellow
-    Write-Host "  - Go: https://golang.org/dl/" -ForegroundColor Yellow
     exit 1
 }
 
@@ -84,30 +83,6 @@ try {
     Write-Host "[OK] Rust installed: $(cargo --version)" -ForegroundColor Green
 }
 
-# 4. Go toolchain
-try {
-    $goVersion = go version 2>$null
-    Write-Host "[OK] Go found: $goVersion" -ForegroundColor Green
-
-    # Check Go version - need 1.20+
-    if ($goVersion -match 'go(\d+)\.(\d+)') {
-        $goMajor = [int]$matches[1]
-        $goMinor = [int]$matches[2]
-
-        if ($goMajor -lt 1 -or ($goMajor -eq 1 -and $goMinor -lt 20)) {
-            Write-Host "[!] Go version is too old (need 1.20+)" -ForegroundColor Yellow
-            Write-Host "[=>] Installing Go 1.21..." -ForegroundColor Yellow
-            winget install --id GoLang.Go -e --source winget
-        }
-    }
-} catch {
-    Write-Host "[=>] Installing Go 1.21..." -ForegroundColor Yellow
-    winget install --id GoLang.Go -e --source winget
-
-    # Reload PATH
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-}
-
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "[OK] Setup complete!" -ForegroundColor Green
@@ -116,7 +91,6 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. Build the project: cargo build" -ForegroundColor White
 Write-Host "  2. Run tests: cargo test" -ForegroundColor White
-Write-Host "  3. Run example: cargo run --example petals_visible" -ForegroundColor White
 Write-Host ""
 Write-Host "Note: You may need to restart your terminal for PATH changes to take effect." -ForegroundColor Yellow
 Write-Host ""
