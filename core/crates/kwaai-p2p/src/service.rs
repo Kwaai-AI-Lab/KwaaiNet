@@ -643,6 +643,11 @@ impl NetworkService {
                 let _ = reply.send(addrs);
             }
 
+            Command::ExternalAddrs { reply } => {
+                let addrs = self.swarm.external_addresses().cloned().collect();
+                let _ = reply.send(addrs);
+            }
+
             Command::PeerProtocols { peer, reply } => {
                 let _ = reply.send(self.peer_protocols.get(&peer).cloned());
             }
