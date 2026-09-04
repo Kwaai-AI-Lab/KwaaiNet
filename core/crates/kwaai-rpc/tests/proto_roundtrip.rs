@@ -473,7 +473,7 @@ fn dht_record_roundtrip_dictionary_with_subkeys() {
                 value_bytes: 206,
                 value: Some(DhtValueView {
                     msgpack_type: "ext".to_string(),
-                    rendered: "ext(64)[2, 1.5, {\"start_block\": 0}]".to_string(),
+                    rendered: r#"{"$ext":64,"value":[2,1.5,{"start_block":0}]}"#.to_string(),
                     raw_bytes: 206,
                     ext_code: Some(64),
                     decoded: true,

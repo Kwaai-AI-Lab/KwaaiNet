@@ -153,7 +153,7 @@ pub fn render_value(bytes: &[u8]) -> DhtValueView {
 
     DhtValueView {
         msgpack_type: type_name(&value).to_string(),
-        rendered: render(&value),
+        rendered: to_json(&value).to_string(),
         raw_bytes: bytes.len() as u64,
         ext_code: match &value {
             rmpv::Value::Ext(code, _) => Some(*code as i32),
@@ -183,7 +183,7 @@ fn decode_full(bytes: &[u8]) -> Option<rmpv::Value> {
 
 /// Walk one msgpack value from `at`, returning the offset just past it, or
 /// `None` if the bytes are malformed or carry the reserved marker. Ext payloads
-/// are opaque here; [`render`] scans a body it re-decodes.
+/// are opaque here; [`to_json`] scans a body it re-decodes.
 fn scan(bytes: &[u8], at: usize, depth: u32) -> Option<usize> {
     use rmp::Marker::*;
 
@@ -278,43 +278,70 @@ fn type_name(v: &rmpv::Value) -> &'static str {
     }
 }
 
-/// One-line JSON-ish rendering of a decoded msgpack value.
+/// Encode a decoded msgpack value as JSON.
 ///
-/// An Ext body that is itself msgpack is re-decoded — Python's tuple encoding
-/// — so a `ServerInfo` shows its contents without this knowing its field
-/// names. A body that is not msgpack stays hex.
-fn render(v: &rmpv::Value) -> String {
+/// Everything JSON cannot say directly is wrapped in a one-key object with a
+/// `$`-prefixed tag: `{"$hex": …}` for bytes that are not UTF-8, `{"$float": …}`
+/// for NaN/±inf, `{"$ext": code, "value": …}` for an Ext whose body is itself
+/// msgpack (Python's tuple encoding) and `{"$ext": code, "$hex": …}` otherwise.
+fn to_json(v: &rmpv::Value) -> serde_json::Value {
     use rmpv::Value;
+    use serde_json::{json, Value as J};
     match v {
-        Value::Nil => "null".to_string(),
-        Value::Boolean(b) => b.to_string(),
-        Value::Integer(i) => i.to_string(),
-        Value::F32(f) => f.to_string(),
-        Value::F64(f) => f.to_string(),
+        Value::Nil => J::Null,
+        Value::Boolean(b) => J::Bool(*b),
+        Value::Integer(i) => match (i.as_i64(), i.as_u64()) {
+            (Some(n), _) => json!(n),
+            (None, Some(n)) => json!(n),
+            (None, None) => json!({ "$float": i.as_f64() }),
+        },
+        Value::F32(f) => float_json(f64::from(*f)),
+        Value::F64(f) => float_json(*f),
         Value::String(s) => match s.as_str() {
-            Some(s) => format!("{s:?}"),
-            None => format!("hex:{}", hex::encode(s.as_bytes())),
+            Some(text) => J::String(text.to_string()),
+            None => hex_json(s.as_bytes()),
         },
         Value::Binary(b) => match std::str::from_utf8(b) {
-            Ok(s) => format!("{s:?}"),
-            Err(_) => format!("hex:{}", hex::encode(b)),
+            Ok(text) => J::String(text.to_string()),
+            Err(_) => hex_json(b),
         },
-        Value::Array(items) => {
-            let inner: Vec<String> = items.iter().map(render).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        Value::Map(pairs) => {
-            let inner: Vec<String> = pairs
+        Value::Array(items) => J::Array(items.iter().map(to_json).collect()),
+        // A non-string key becomes its compact JSON text; duplicates after that
+        // collapse, last wins.
+        Value::Map(pairs) => J::Object(
+            pairs
                 .iter()
-                .map(|(k, v)| format!("{}: {}", render(k), render(v)))
-                .collect();
-            format!("{{{}}}", inner.join(", "))
-        }
+                .map(|(k, v)| {
+                    let key = match to_json(k) {
+                        J::String(text) => text,
+                        other => other.to_string(),
+                    };
+                    (key, to_json(v))
+                })
+                .collect(),
+        ),
         Value::Ext(code, body) => match decode_full(body) {
-            Some(inner) => format!("ext({code}){}", render(&inner)),
-            None => format!("ext({code})hex:{}", hex::encode(body)),
+            Some(inner) => json!({ "$ext": code, "value": to_json(&inner) }),
+            None => json!({ "$ext": code, "$hex": hex::encode(body) }),
         },
     }
+}
+
+fn float_json(f: f64) -> serde_json::Value {
+    use serde_json::json;
+    if f.is_finite() {
+        json!(f)
+    } else if f.is_nan() {
+        json!({ "$float": "nan" })
+    } else if f > 0.0 {
+        json!({ "$float": "inf" })
+    } else {
+        json!({ "$float": "-inf" })
+    }
+}
+
+fn hex_json(bytes: &[u8]) -> serde_json::Value {
+    serde_json::json!({ "$hex": hex::encode(bytes) })
 }
 
 #[cfg(test)]
@@ -344,7 +371,72 @@ mod tests {
         assert_eq!(view.msgpack_type, "ext");
         assert_eq!(view.ext_code, Some(64));
         assert!(view.decoded);
-        assert_eq!(view.rendered, r#"ext(64)[2, 1.5, {"start_block": 0}]"#);
+        assert_eq!(
+            view.rendered,
+            r#"{"$ext":64,"value":[2,1.5,{"start_block":0}]}"#
+        );
+        assert_json(&view);
+    }
+
+    /// Every `decoded` rendering must parse as JSON — that is the contract a
+    /// client's `jsonDecode` relies on.
+    fn assert_json(view: &DhtValueView) -> serde_json::Value {
+        assert!(view.decoded);
+        serde_json::from_str(&view.rendered)
+            .unwrap_or_else(|e| panic!("not JSON: {e}: {}", view.rendered))
+    }
+
+    /// Everything JSON cannot say directly, each in its tagged form.
+    #[test]
+    fn json_escape_hatches_are_tagged_objects() {
+        use rmpv::Value;
+        let enc = |v: &Value| {
+            let mut b = Vec::new();
+            rmpv::encode::write_value(&mut b, v).unwrap();
+            b
+        };
+
+        // A non-string map key becomes its compact JSON text.
+        let map = Value::Map(vec![
+            (Value::Integer(1.into()), Value::Boolean(true)),
+            (
+                Value::Array(vec![Value::Integer(1.into()), Value::Integer(2.into())]),
+                Value::Nil,
+            ),
+        ]);
+        let view = render_value(&enc(&map));
+        assert_eq!(view.rendered, r#"{"1":true,"[1,2]":null}"#);
+        assert_json(&view);
+
+        // A msgpack str that is not UTF-8, and a NaN.
+        let mut bad_str = vec![0xa2, 0xff, 0xfe];
+        bad_str.extend(enc(&Value::F64(f64::NAN)));
+        let arr = [0x92].into_iter().chain(bad_str).collect::<Vec<u8>>();
+        let view = render_value(&arr);
+        assert_eq!(view.rendered, r#"[{"$hex":"fffe"},{"$float":"nan"}]"#);
+        assert_json(&view);
+
+        let inf = render_value(&enc(&Value::Array(vec![
+            Value::F64(f64::INFINITY),
+            Value::F64(f64::NEG_INFINITY),
+            Value::F32(0.5),
+        ])));
+        assert_eq!(inf.rendered, r#"[{"$float":"inf"},{"$float":"-inf"},0.5]"#);
+        assert_json(&inf);
+
+        // A nested ext inside an array, and one with a non-msgpack body.
+        let nested = Value::Array(vec![
+            Value::Ext(64, enc(&Value::Integer(7.into()))),
+            Value::Ext(99, vec![0x92, 0x01]),
+        ]);
+        let view = render_value(&enc(&nested));
+        assert_eq!(
+            view.rendered,
+            r#"[{"$ext":64,"value":7},{"$ext":99,"$hex":"9201"}]"#
+        );
+        assert_eq!(view.msgpack_type, "array");
+        assert_eq!(view.ext_code, None);
+        assert_json(&view);
     }
 
     /// An Ext body that is not msgpack must stay opaque — guessing would turn
@@ -358,7 +450,8 @@ mod tests {
 
         let view = render_value(&bytes);
         assert_eq!(view.ext_code, Some(99));
-        assert_eq!(view.rendered, "ext(99)hex:9201");
+        assert_eq!(view.rendered, r#"{"$ext":99,"$hex":"9201"}"#);
+        assert_json(&view);
     }
 
     /// The reserved marker 0xc1, at every position it can hide in.
@@ -384,7 +477,7 @@ mod tests {
         // And inside an Ext body, which `render` re-decodes separately.
         let mut ext = Vec::new();
         rmpv::encode::write_value(&mut ext, &rmpv::Value::Ext(64, vec![0xc1])).unwrap();
-        assert_eq!(render_value(&ext).rendered, "ext(64)hex:c1");
+        assert_eq!(render_value(&ext).rendered, r#"{"$ext":64,"$hex":"c1"}"#);
     }
 
     /// 0xc1 inside a str or bin *payload* is data, not a marker. A byte scan
@@ -396,7 +489,8 @@ mod tests {
         rmpv::encode::write_value(&mut bin, &Value::Binary(vec![0xc1, 0xc1])).unwrap();
         let view = render_value(&bin);
         assert!(view.decoded, "0xc1 in a bin payload is a legitimate byte");
-        assert_eq!(view.rendered, "hex:c1c1");
+        assert_eq!(view.rendered, r#"{"$hex":"c1c1"}"#);
+        assert_json(&view);
 
         // The shape every announce actually uses, for good measure.
         let packed = rmp_serde::to_vec("12D3KooWExample").unwrap();
@@ -443,13 +537,15 @@ mod tests {
             b
         };
         assert_eq!(render_value(&text).rendered, r#""12D3KooW""#);
+        assert_json(&render_value(&text));
 
         let raw = {
             let mut b = Vec::new();
             rmpv::encode::write_value(&mut b, &Value::Binary(vec![0xff, 0xfe])).unwrap();
             b
         };
-        assert_eq!(render_value(&raw).rendered, "hex:fffe");
+        assert_eq!(render_value(&raw).rendered, r#"{"$hex":"fffe"}"#);
+        assert_json(&render_value(&raw));
     }
 
     /// A remote dictionary arrives as opaque bytes — `FindResult` carries no
