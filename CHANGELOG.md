@@ -6,7 +6,7 @@ All notable changes to KwaaiNet are documented here.
 
 ### Added
 - **IPv6 support**, behind a new `ipv6: auto | true | false` config key (default `auto`). `auto` binds `/ip6/::` when the host has an IPv6 loopback and runs IPv4-only otherwise; `true` makes a missing v6 stack or a refused bind a startup error, so a dual-stack deployment cannot silently come up serving half the network; `false` opens no v6 listener and drops v6 addresses from the dial and announce sets. Also a cargo feature, on by default in `kwaai-p2p` and `kwaainet` — compiled out, the key still parses and reads as `false`.
-- `is_routable_v6` / `is_globally_routable_v6` mirror the IPv4 classifiers, including the carve-out: unique-local `fc00::/7` and the documentation and benchmarking prefixes are announceable unless `require_global_ips` is set. IPv4-mapped addresses are classified as the IPv4 address they carry.
+- `is_routable_v6` / `is_globally_routable_v6` mirror the IPv4 classifiers, without the IPv4 carve-out: unique-local `fc00::/7`, the documentation and benchmarking prefixes and the transition ranges (Teredo, 6to4, ORCHID) are never announceable. IPv4-mapped addresses are classified as the IPv4 address they carry.
 - `SelfStatus.ipv6` on the gRPC network snapshot (`"off"`, `"active"` or `"unavailable"`), so a v6 bind the host refused is visible rather than merely absent. `kwaainet p2p info` prints the configured mode.
 
 ### Changed
