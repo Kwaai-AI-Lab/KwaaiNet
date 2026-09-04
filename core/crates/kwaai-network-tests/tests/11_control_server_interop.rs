@@ -32,14 +32,13 @@ const PROTO: &str = "DHTProtocol.rpc_ping";
 /// hanging the suite.
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A native node: `NetworkService` behind a `ControlServer`, the thing this
-/// tier is proving is indistinguishable from a p2pd.
+/// A native node: `NetworkService` behind a `ControlServer`.
 struct NativeNode {
     handle: NetworkHandle,
     peer_id: PeerId,
     /// Control-socket multiaddr, for `P2PClient::connect`.
     socket: String,
-    /// libp2p listen address including `/p2p/<id>`, dialable by a p2pd.
+    /// libp2p listen address including `/p2p/<id>`, dialable by another node.
     addr: String,
     service_task: tokio::task::JoinHandle<()>,
     server_task: tokio::task::JoinHandle<()>,

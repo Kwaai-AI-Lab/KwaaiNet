@@ -1762,27 +1762,25 @@ async fn main() -> Result<()> {
             if args.get_deps {
                 print_info("p2pd is no longer required; nothing to download");
             }
-            {
-                print_box_header("🔧 KwaaiNet Setup");
-                let cfg = KwaaiNetConfig::load_or_create()?;
+            print_box_header("🔧 KwaaiNet Setup");
+            let cfg = KwaaiNetConfig::load_or_create()?;
 
-                // Create all required directories
-                std::fs::create_dir_all(config::run_dir())?;
-                std::fs::create_dir_all(config::log_dir())?;
+            // Create all required directories
+            std::fs::create_dir_all(config::run_dir())?;
+            std::fs::create_dir_all(config::log_dir())?;
 
-                print_success("Directories created");
-                print_success(&format!(
-                    "Config written to {}",
-                    config::config_file().display()
-                ));
-                println!();
-                println!("  Model:  {}", cfg.model);
-                println!("  Blocks: {}", cfg.blocks);
-                println!("  Port:   {}", cfg.port);
-                println!();
-                print_info("Start the node with: kwaainet start --daemon");
-                print_separator();
-            }
+            print_success("Directories created");
+            print_success(&format!(
+                "Config written to {}",
+                config::config_file().display()
+            ));
+            println!();
+            println!("  Model:  {}", cfg.model);
+            println!("  Blocks: {}", cfg.blocks);
+            println!("  Port:   {}", cfg.port);
+            println!();
+            print_info("Start the node with: kwaainet start --daemon");
+            print_separator();
         }
     }
 

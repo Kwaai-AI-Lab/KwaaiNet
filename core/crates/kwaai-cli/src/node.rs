@@ -131,7 +131,7 @@ pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result
     };
 
     if config.native_p2p == Some(false) {
-        warn!("native_p2p is set in the config; it is ignored — the node always runs the in-process p2p stack");
+        warn!("`native_p2p: false` in config.yaml is ignored — the Go p2pd path was removed; delete the key");
     }
 
     // The node's whole lifecycle lives in `node_native`.

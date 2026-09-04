@@ -186,7 +186,7 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_force_private")]
     pub force_private: bool,
 
-    /// Deprecated tombstone, ignored since v0.7: the node always runs the
+    /// Deprecated and ignored: the node always runs the
     /// in-process rust-libp2p stack. Kept only so an existing `config.yaml`
     /// carrying the key still parses.
     #[serde(default, skip_serializing_if = "Option::is_none")]

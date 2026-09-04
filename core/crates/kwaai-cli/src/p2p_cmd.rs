@@ -1,8 +1,8 @@
-//! `kwaainet p2p` — live diagnostics for the local p2pd
+//! `kwaainet p2p` — live diagnostics for the local node
 //!
-//! All commands talk only to the local p2pd over its IPC socket. `info` and
-//! `peers list` return p2pd's in-memory view; `peers find` issues an active
-//! Kademlia lookup via p2pd.
+//! All commands talk only to the local node over its control socket. `info` and
+//! `peers list` return the node's in-memory view; `peers find` issues an active
+//! Kademlia lookup through it.
 
 use anyhow::{Context, Result};
 use kwaai_p2p_daemon::P2PClient;
@@ -59,7 +59,7 @@ async fn peers(args: PeersArgs) -> Result<()> {
 // helpers
 // ---------------------------------------------------------------------------
 
-/// Connect to the local p2pd, or print the standard "node not running" message
+/// Connect to the local node's control socket, or print the standard "node not running" message
 /// and return `Ok(None)` so the caller exits cleanly with status 0.
 async fn connect_node() -> Result<Option<P2PClient>> {
     let addr = daemon_socket();
