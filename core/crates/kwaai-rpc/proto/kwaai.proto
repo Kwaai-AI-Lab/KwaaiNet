@@ -589,6 +589,10 @@ message SelfStatus {
     // *do* for a peer, which is what a reader comparing it against a
     // peer's protocol list wants to know.
     repeated string local_protocols = 9;
+
+    // What IPv6 ended up doing: "off" | "active" | "unavailable". Empty
+    // from a daemon predating the field.
+    string ipv6 = 10;
 }
 
 // Snapshot of local p2p state.

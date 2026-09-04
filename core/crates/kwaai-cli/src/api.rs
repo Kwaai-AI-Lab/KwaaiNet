@@ -436,8 +436,9 @@ pub async fn run_api_server(
         .route("/v1/completions", post(completions))
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let ipv6 = crate::net::configured_ipv6_mode();
+    let listeners =
+        crate::net::bind_dual_stack(crate::net::Scope::Any, port, ipv6)?.into_tokio()?;
 
     info!(
         "KwaaiNet OpenAI API server ready — http://localhost:{}/v1  (model: {})",
@@ -454,6 +455,22 @@ pub async fn run_api_server(
     println!("      -d '{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"Hello!\"}}]}}'", model_id);
     println!();
 
-    axum::serve(listener, app).await?;
+    serve_all(listeners, app).await?;
     Ok(())
+}
+
+/// Run one `axum::serve` per bound listener. Any listener erroring ends the
+/// server, which is what a single `axum::serve` did.
+pub(crate) async fn serve_all(
+    listeners: Vec<tokio::net::TcpListener>,
+    app: axum::Router,
+) -> std::io::Result<()> {
+    use std::future::IntoFuture;
+    futures::future::try_join_all(
+        listeners
+            .into_iter()
+            .map(|l| axum::serve(l, app.clone()).into_future()),
+    )
+    .await
+    .map(|_| ())
 }

@@ -193,6 +193,17 @@ jobs:
         working-directory: core
         run: cargo test -p kwaai-p2p --features kad-multi-protocol
 
+      # The `ipv6` feature is on by default, so nothing else ever compiles it
+      # out — and the config key has to keep parsing on a build that cannot
+      # honour it, which is exactly what a v4-only target would ship.
+      - name: Test kwaai-p2p without ipv6
+        working-directory: core
+        run: cargo test -p kwaai-p2p --no-default-features --features tcp
+
+      - name: Build kwaainet without ipv6
+        working-directory: core
+        run: cargo build -p kwaainet --no-default-features --features storage,rag
+
   # ── 3b. Windows type check (#146) ──────────────────────────────────────────
   # `main` did not compile on Windows for five days between #130 and #142: a
   # field added to a struct was populated only in the `#[cfg(unix)]` arm, and

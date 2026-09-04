@@ -666,13 +666,10 @@ impl StorageApiManager {
     }
 }
 
-/// Returns true if something is already listening on `0.0.0.0:<port>`.
-/// Use this before `TcpListener::bind()` to give a friendly error instead of an OS crash.
+/// Returns true if something is already listening on `<port>`, on either family.
+/// Use this before binding to give a friendly error instead of an OS crash.
 pub fn port_in_use(port: u16) -> bool {
-    match std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port))) {
-        Ok(_) => false,
-        Err(e) => e.kind() == std::io::ErrorKind::AddrInUse,
-    }
+    !crate::net::port_is_free(port, kwaai_p2p::Ipv6Mode::Auto)
 }
 
 #[cfg(unix)]
