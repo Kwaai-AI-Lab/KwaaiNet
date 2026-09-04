@@ -123,8 +123,10 @@ async fn main() -> Result<()> {
 
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
-    // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_));
+    // Skipped for `update` (redundant), `run-node` (internal daemon process),
+    // and packaged installs, which cannot act on the hint anyway.
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_))
+        || updater::packaged_install().is_some();
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
@@ -898,6 +900,12 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Update(args) => {
             print_box_header("🔄 KwaaiNet Update");
+            if let Some(cmd) = updater::packaged_upgrade_command() {
+                print_info("This kwaainet was installed from a system package.");
+                println!("  Upgrade it with: {cmd}");
+                print_separator();
+                return Ok(());
+            }
             let checker = updater::UpdateChecker::new();
             println!("  Current version: v{}", checker.current_version);
             println!("  Checking for updates…");
