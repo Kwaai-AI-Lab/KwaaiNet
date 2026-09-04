@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unpack a cargo-dist kwaainet-<triple>.tar.xz into a flat payload directory
-# holding kwaainet + p2pd. Usage: stage-payload.sh <archive.tar.xz> <outdir>
+# holding kwaainet. Usage: stage-payload.sh <archive.tar.xz> <outdir>
 set -euo pipefail
 
 ARCHIVE="${1:?usage: stage-payload.sh <archive.tar.xz> <outdir>}"
@@ -17,12 +17,12 @@ tar -xJf "${ARCHIVE}" -C "${TMP}"
 TOP="$(find "${TMP}" -mindepth 1 -maxdepth 1 -type d)"
 [ -d "${TOP}" ] || { echo "stage-payload: expected one top-level dir in ${ARCHIVE}" >&2; exit 1; }
 
-for f in kwaainet p2pd; do
-    [ -f "${TOP}/${f}" ] || { echo "stage-payload: ${f} missing from ${ARCHIVE}" >&2; exit 1; }
-done
+[ -f "${TOP}/kwaainet" ] || { echo "stage-payload: kwaainet missing from ${ARCHIVE}" >&2; exit 1; }
 
+# p2pd is deliberately not staged. Current archives still carry it; ignoring
+# rather than rejecting it keeps this working across its removal upstream.
 mkdir -p "${OUTDIR}"
-cp "${TOP}/kwaainet" "${TOP}/p2pd" "${OUTDIR}/"
-chmod 0755 "${OUTDIR}/kwaainet" "${OUTDIR}/p2pd"
+cp "${TOP}/kwaainet" "${OUTDIR}/"
+chmod 0755 "${OUTDIR}/kwaainet"
 
-echo "stage-payload: staged kwaainet and p2pd into ${OUTDIR}"
+echo "stage-payload: staged kwaainet into ${OUTDIR}"

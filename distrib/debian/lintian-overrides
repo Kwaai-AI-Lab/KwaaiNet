@@ -1,12 +1,8 @@
-# p2pd is Go, built CGO_ENABLED=0 (scripts/build-p2pd.sh) — static by design.
-kwaainet: statically-linked-binary [usr/bin/p2pd]
 # Symbols are kept deliberately: Rust panic backtraces in user bug reports are
 # worth more than the saved size.
 kwaainet: unstripped-binary-or-object
 # libyaml is vendored by a Rust -sys crate. Unbundling means rebuilding, and
 # this package deliberately ships the released binary byte-for-byte.
 kwaainet: embedded-library
-# p2pd is an internal helper the node spawns, not a user-facing command.
-kwaainet: no-manual-page [usr/bin/p2pd]
 # Not distributed through the Debian archive, so there is no BTS to close.
 kwaainet: initial-upload-closes-no-bugs

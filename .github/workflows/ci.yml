@@ -415,8 +415,7 @@ jobs:
         run: |
           mkdir -p stub
           printf '#!/bin/sh\necho "kwaainet 0.0.0-stub"\n' > stub/kwaainet
-          printf '#!/bin/sh\necho "p2pd 0.0.0-stub"\n' > stub/p2pd
-          chmod +x stub/kwaainet stub/p2pd
+          chmod +x stub/kwaainet
           docker run --rm -v "$PWD:/src:ro" debian:bookworm bash -c '
             set -e
             apt-get update -qq >/dev/null
