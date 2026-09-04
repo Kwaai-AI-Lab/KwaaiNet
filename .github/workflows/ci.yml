@@ -59,7 +59,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # drift detection reads commit dates
-      - name: Check CLAUDE.md and glossary references resolve
+      - name: Self-test the integrity checker
+        run: python3 scripts/check_memory_integrity.py --self-test
+      - name: Check CLAUDE.md, glossary and plan references resolve
         run: python3 scripts/check_memory_integrity.py
 
   # ── 2. Clippy (default features — CUDA/Metal checked only in release.yml) ──

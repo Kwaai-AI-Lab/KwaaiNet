@@ -1,8 +1,11 @@
 # Ontology for the D6 KB — "District Six: Lest We Forget", Yousuf (Joe) Rassool.
 # Subtitle: "Recapturing Subjugated Cultural Histories of Cape Town (1897–1956)".
 #
-# Version 3, 2026-08-25 — built from scratch by reading the book, after two
-# earlier attempts were written from genre priors and had to be withdrawn.
+# Third authored derivation, 2026-08-25 — built from scratch by reading the
+# book, after two earlier attempts were written from genre priors and had to be
+# withdrawn. Not to be confused with `ontology.version` below, which counts
+# revisions of this file and is the number the plans and A/B results cite: the
+# three derivations produced v1-v9, and v9 is what is committed here.
 #
 # METHOD. Every type below carries the measured share of the corpus's 1152
 # chunks that contains its lexical evidence. Types that failed that test were
