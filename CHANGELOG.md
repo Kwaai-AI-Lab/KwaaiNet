@@ -20,6 +20,28 @@ their releases and have not been edited.
 
 ---
 
+## [Unreleased]
+
+### Removed
+
+- The Go `p2pd` daemon. Every node runs the in-process rust-libp2p stack, which has
+  been the default since v0.6.0; the child process, its build hook and its release
+  plumbing are gone.
+- Go is no longer a build dependency of KwaaiNet.
+- Release archives and the generated installers no longer ship a `p2pd` binary beside
+  `kwaainet`. An upgraded install keeps the old file until `kwaainet uninstall` removes it.
+
+### Changed
+
+- `native_p2p` in `config.yaml` is ignored; setting it to `false` logs a warning and the
+  node starts natively anyway. `kwaainet config set native_p2p` is rejected.
+- `kwaainet setup --get-deps` is a hidden no-op kept for one release — there is nothing
+  left to download.
+
+The historical record up to v0.3.7 follows.
+
+---
+
 ## [v0.3.7] - 2026-03-04
 
 ### Fixed
