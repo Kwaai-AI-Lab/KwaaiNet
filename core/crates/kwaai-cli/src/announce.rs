@@ -492,7 +492,15 @@ pub const MAX_DIAL_ADDRS: usize = 4;
 /// Direct addresses sort ahead of circuits so a dialer that can reach one
 /// never pays for a relay, and a `declared` announce address — an operator
 /// saying "I forwarded this port" — sorts ahead of everything, since it is the
-/// one address the swarm cannot observe for itself.
+/// one address the swarm cannot observe for itself. Circuits nonetheless
+/// claim their slots first: a NATed host with several global v6 addresses or a
+/// VPN interface would otherwise fill the record with direct addresses that
+/// only work from its own network and lose the one address that works from
+/// anywhere.
+///
+/// Listeners are read alongside the swarm's confirmed external addresses. A
+/// UPnP mapping is not a listener, and a node that got one has released its
+/// relay reservations — without it that node would publish nothing at all.
 ///
 /// The result is signed with the node's own identity key, the same key the
 /// peer id is derived from — see [`DHTServerInfo::signed_addrs`] for why an
@@ -502,8 +510,9 @@ pub async fn signed_dial_addrs(
     keypair: &libp2p::identity::Keypair,
     declared: Option<&str>,
 ) -> Vec<u8> {
+    let external = handle.external_addrs().await.unwrap_or_default();
     let listeners = handle.listen_addrs().await.unwrap_or_default();
-    let addrs = select_dial_addrs(listeners, declared);
+    let addrs = select_dial_addrs(external.into_iter().chain(listeners).collect(), declared);
     if addrs.is_empty() {
         return Vec::new();
     }
@@ -543,7 +552,8 @@ fn select_dial_addrs(
     // declared address stays ahead of the listeners it was chained onto.
     sorted.sort_by_key(is_circuit);
 
-    let mut out: Vec<libp2p::Multiaddr> = Vec::new();
+    let mut direct: Vec<libp2p::Multiaddr> = Vec::new();
+    let mut circuits: Vec<libp2p::Multiaddr> = Vec::new();
     let mut seen_hops: HashSet<String> = HashSet::new();
     for addr in sorted {
         // A circuit is keyed on the relay itself, so its TCP and QUIC forms
@@ -557,12 +567,18 @@ fn select_dial_addrs(
         if !seen_hops.insert(key) {
             continue;
         }
-        out.push(strip_dest_p2p(&addr));
-        if out.len() == MAX_DIAL_ADDRS {
-            break;
+        if is_circuit(&addr) {
+            circuits.push(strip_dest_p2p(&addr));
+        } else {
+            direct.push(strip_dest_p2p(&addr));
         }
     }
-    out
+    // Circuits take their slots first; direct addresses get what is left and
+    // still lead the output. See the function docs for why.
+    circuits.truncate(MAX_DIAL_ADDRS);
+    direct.truncate(MAX_DIAL_ADDRS - circuits.len());
+    direct.extend(circuits);
+    direct
 }
 
 /// Model info stored in the `_petals.models` DHT registry.
@@ -1239,6 +1255,29 @@ mod tests {
         let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"));
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
+    }
+
+    /// A host with many interfaces — several global v6 addresses, a VPN —
+    /// must not crowd its circuit out of the record: for a NATed node the
+    /// circuit is the only entry that works from outside its own network.
+    #[test]
+    fn select_dial_addrs_reserves_room_for_a_circuit() {
+        let mut listeners: Vec<String> = (1..=MAX_DIAL_ADDRS + 2)
+            .map(|i| format!("/ip6/2001:db8::{i}/tcp/4001"))
+            .collect();
+        listeners.push(format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        ));
+
+        let out = select_dial_addrs(addrs(&listeners), None);
+        assert_eq!(out.len(), MAX_DIAL_ADDRS);
+        assert!(
+            kwaai_p2p::is_circuit(out.last().expect("non-empty")),
+            "the circuit survives, last because direct is cheaper to try"
+        );
+        assert!(!kwaai_p2p::is_circuit(&out[0]));
     }
 
     /// The same value is stored under every block key, so the list is capped.

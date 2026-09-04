@@ -252,6 +252,12 @@ pub enum Command {
     ListenAddrs {
         reply: oneshot::Sender<Vec<Multiaddr>>,
     },
+    /// Addresses confirmed reachable from outside — a UPnP mapping, or a
+    /// candidate AutoNAT confirmed. Not listeners: a mapped port is one the
+    /// gateway binds, not the swarm.
+    ExternalAddrs {
+        reply: oneshot::Sender<Vec<Multiaddr>>,
+    },
     /// The protocol list a connected peer advertised over identify.
     PeerProtocols {
         peer: PeerId,
@@ -493,6 +499,11 @@ impl NetworkHandle {
     /// `/tcp/0` shows the real port).
     pub async fn listen_addrs(&self) -> P2PResult<Vec<Multiaddr>> {
         self.call(|reply| Command::ListenAddrs { reply }).await
+    }
+
+    /// Addresses confirmed reachable from outside (see [`Command::ExternalAddrs`]).
+    pub async fn external_addrs(&self) -> P2PResult<Vec<Multiaddr>> {
+        self.call(|reply| Command::ExternalAddrs { reply }).await
     }
 
     /// The protocols `peer` advertised in its most recent identify response, or
