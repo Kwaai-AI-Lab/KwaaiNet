@@ -148,9 +148,6 @@ jobs:
           fi
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
-      # Go is required by the kwaai-p2p-daemon build.rs which clones and
-      # compiles go-libp2p-daemon.  The old handwritten workflow had an
-      # explicit setup-go step; cargo-dist doesn't know about it.
       - name: Install sccache
         if: ${{ !matrix.container }}
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -160,18 +157,6 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-      - name: Install Go (required by kwaai-p2p-daemon build script)
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-      # build.rs writes p2pd to target/release/ (hardcoded) regardless of
-      # --target.  Cargo only creates target/<triple>/release/ when --target
-      # is given, so target/release/ must be created manually.
-      - name: Create target/release for kwaai-p2p-daemon build script
-        shell: bash
-        run: mkdir -p core/target/release
       # OpenSSL headers are needed by openssl-sys (transitive via reqwest/libp2p).
       - name: Install OpenSSL (Linux)
         if: runner.os == 'Linux'
@@ -202,80 +187,6 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
-      # cargo-dist publishes extra-artifacts (p2pd) as separate top-level release
-      # assets, not bundled in the per-platform .tar.xz/.zip archives.  Inject
-      # p2pd into each archive so the installer places both binaries side-by-side
-      # in ~/.cargo/bin/ and kwaainet can find p2pd at runtime.
-      - name: Inject p2pd into platform archive (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        working-directory: core
-        run: |
-          P2PD=$(find . -name "p2pd" -type f 2>/dev/null \
-            | grep -v "\.dSYM" | grep -v "/go-libp2p-daemon/" | head -1)
-          if [ -z "${P2PD}" ]; then
-            echo "p2pd not found — skipping injection"
-            exit 0
-          fi
-          echo "Found p2pd at: ${P2PD}"
-          for TARGET in ${{ join(matrix.targets, ' ') }}; do
-            ARCHIVE=$(find . -name "kwaainet-${TARGET}.tar.xz" 2>/dev/null | head -1)
-            [ -n "${ARCHIVE}" ] || { echo "Archive for ${TARGET} not found"; continue; }
-            OLD_HASH=$(openssl dgst -sha256 -hex "${ARCHIVE}" | awk '{print $NF}')
-            echo "Injecting p2pd into ${ARCHIVE} (old hash: ${OLD_HASH})..."
-            LABEL="kwaainet-${TARGET}"
-            TMP=$(mktemp -d)
-            tar -xJf "${ARCHIVE}" -C "${TMP}"
-            cp "${P2PD}" "${TMP}/${LABEL}/p2pd"
-            chmod +x "${TMP}/${LABEL}/p2pd"
-            tar -cJf "${ARCHIVE}" -C "${TMP}" "${LABEL}"
-            rm -rf "${TMP}"
-            NEW_HASH=$(openssl dgst -sha256 -hex "${ARCHIVE}" | awk '{print $NF}')
-            echo "${NEW_HASH} *$(basename ${ARCHIVE})" > "${ARCHIVE}.sha256"
-            # Patch dist-manifest.json so the global step embeds the correct
-            # post-injection checksum in the generated installer script.
-            if [ -f "dist-manifest.json" ]; then
-              python3 -c "c=open('dist-manifest.json').read();open('dist-manifest.json','w').write(c.replace('${OLD_HASH}','${NEW_HASH}'))"
-              echo "Patched manifest: ${OLD_HASH} -> ${NEW_HASH}"
-            fi
-            echo "Done: $(ls -lh ${ARCHIVE})"
-          done
-
-      - name: Inject p2pd into platform archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: core
-        run: |
-          $p2pd = Get-ChildItem -Recurse -Filter "p2pd.exe" -ErrorAction SilentlyContinue `
-            | Where-Object { $_.FullName -notmatch "go-libp2p-daemon" } `
-            | Select-Object -First 1
-          if (-not $p2pd) {
-            Write-Host "p2pd.exe not found — skipping injection"; exit 0
-          }
-          Write-Host "Found p2pd.exe at: $($p2pd.FullName)"
-          foreach ($TARGET in "${{ join(matrix.targets, ' ') }}".Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)) {
-            $archive = Get-ChildItem -Recurse -Filter "kwaainet-${TARGET}.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $archive) { Write-Host "Archive for ${TARGET} not found"; continue }
-            $oldHash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLower()
-            Write-Host "Injecting p2pd.exe into $($archive.FullName) (old hash: $oldHash)..."
-            $tmp = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName()))
-            Expand-Archive -Path $archive.FullName -DestinationPath $tmp.FullName -Force
-            Copy-Item $p2pd.FullName (Join-Path $tmp.FullName "p2pd.exe")
-            Remove-Item $archive.FullName -Force
-            Compress-Archive -Path (Join-Path $tmp.FullName "*") -DestinationPath $archive.FullName
-            $newHash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLower()
-            Set-Content "$($archive.FullName).sha256" "$newHash *kwaainet-${TARGET}.zip"
-            Remove-Item $tmp.FullName -Recurse -Force
-            # Patch dist-manifest.json with the post-injection checksum
-            if (Test-Path "dist-manifest.json") {
-              $c = Get-Content "dist-manifest.json" -Raw
-              $c = $c -replace $oldHash, $newHash
-              Set-Content "dist-manifest.json" $c
-              Write-Host "Patched manifest: $oldHash -> $newHash"
-            }
-            Write-Host "Done."
-          }
-
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
@@ -316,14 +227,12 @@ jobs:
             container: quay.io/pypa/manylinux_2_28_x86_64
             ext: tar.xz
             bin: kwaainet
-            p2pd: p2pd
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             label: kwaainet-x86_64-pc-windows-msvc-cuda
             container: null
             ext: zip
             bin: kwaainet.exe
-            p2pd: p2pd.exe
     name: build-cuda-artifacts (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     continue-on-error: true
@@ -342,12 +251,9 @@ jobs:
         if: matrix.container
         shell: bash
         run: |
-          # manylinux_2_28 is AlmaLinux 8 — install Rust, Go, CUDA, OpenSSL
+          # manylinux_2_28 is AlmaLinux 8 — install Rust, CUDA, OpenSSL
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          # Go
-          curl -sSfL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz | tar -C /usr/local -xzf -
-          echo "/usr/local/go/bin" >> $GITHUB_PATH
           # GCC 12 — manylinux ships GCC 14 but CUDA 12.6 nvcc only supports up to GCC 13
           dnf install -y -q gcc-toolset-12-gcc gcc-toolset-12-gcc-c++
           echo "NVCC_CCBIN=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
@@ -406,13 +312,6 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-      - name: Install Go (required by kwaai-p2p-daemon build script)
-        if: ${{ !matrix.container }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: '**/go.sum'
       - name: Install CUDA toolkit (Linux, no container)
         if: runner.os == 'Linux' && !matrix.container
         run: |
@@ -421,9 +320,6 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q cuda-toolkit-12-6 libssl-dev pkg-config
           echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
-      - name: Create target/release for p2pd build script
-        run: mkdir -p core/target/release
-        shell: bash
       - name: Cache candle CUDA kernel build artifacts (Linux)
         if: runner.os == 'Linux'
         uses: actions/cache@v4
@@ -468,8 +364,6 @@ jobs:
           $label = "${{ matrix.label }}"
           New-Item -ItemType Directory -Path $label -Force | Out-Null
           Copy-Item "target\release\kwaainet.exe" "$label\"
-          $p2pd = Get-ChildItem "target\release\p2pd.exe" -ErrorAction SilentlyContinue
-          if ($p2pd) { Copy-Item $p2pd.FullName "$label\"; Write-Host "Included p2pd.exe" }
 
           # Lean zip — binary only, used for fast incremental updates when CUDA
           # runtime DLLs are already present on the machine (~30 MB).
@@ -518,7 +412,6 @@ jobs:
           LABEL="${{ matrix.label }}"
           mkdir -p "${LABEL}"
           cp target/release/${{ matrix.bin }} "${LABEL}/"
-          [ -f target/release/${{ matrix.p2pd }} ] && cp target/release/${{ matrix.p2pd }} "${LABEL}/"
           # Bundle CUDA runtime libraries so end users don't need the toolkit
           CUDA_LIB="/usr/local/cuda-12.6/lib64"
           for lib in libcudart.so* libcublas.so* libcublasLt.so* libcurand.so* libcusolver.so* libcusparse.so* libcufft.so* libnvrtc.so* libnvrtc-builtins.so*; do
@@ -619,25 +512,13 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
 
-          # Patch installers to also install p2pd alongside kwaainet.
-          # dist outputs installers to target/distrib/ (the artifact staging dir).
-          # The shell installer iterates space-separated $_bins; add p2pd for all Unix targets.
-          # The PS1 installer uses a PowerShell array; add p2pd.exe for Windows.
+          # Add NVIDIA GPU detection to the shell installer — it auto-selects
+          # the CUDA archive when nvidia-smi is present on the target machine.
           if [ -f "target/distrib/kwaainet-installer.sh" ]; then
-            sed -i 's/_bins="kwaainet"/_bins="kwaainet p2pd"/g' target/distrib/kwaainet-installer.sh
-            echo "Patched kwaainet-installer.sh: p2pd added to _bins"
-            # Add NVIDIA GPU detection — auto-selects CUDA archive when nvidia-smi is present
             bash ../scripts/patch-installer-cuda.sh target/distrib/kwaainet-installer.sh
           else
             echo "WARNING: kwaainet-installer.sh not found at target/distrib/"
             find . -name "kwaainet-installer.sh" 2>/dev/null
-          fi
-          if [ -f "target/distrib/kwaainet-installer.ps1" ]; then
-            sed -i 's/"bins" = @("kwaainet.exe")/"bins" = @("kwaainet.exe", "p2pd.exe")/g' target/distrib/kwaainet-installer.ps1
-            echo "Patched kwaainet-installer.ps1: p2pd.exe added to bins array"
-          else
-            echo "WARNING: kwaainet-installer.ps1 not found at target/distrib/"
-            find . -name "kwaainet-installer.ps1" 2>/dev/null
           fi
 
           # Parse out what we just built and upload it to scratch storage

@@ -22,8 +22,6 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          curl -sSfL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz | tar -C /usr/local -xzf -
-          echo "/usr/local/go/bin" >> $GITHUB_PATH
           dnf install -y -q gcc-toolset-12-gcc gcc-toolset-12-gcc-c++
           echo "NVCC_CCBIN=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
           echo "CC=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
