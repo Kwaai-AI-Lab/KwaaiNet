@@ -21,7 +21,6 @@ Description: node CLI for the KwaaiNet decentralized inference network
  in distributed inference. Nodes behind NAT are reached by hole punching or
  relay circuits, so port forwarding is not normally required.
  .
- Also included is p2pd, the libp2p daemon the node runs alongside itself. No
- service is installed: run "kwaainet start" to bring up a node. It runs as you,
- with its configuration and identity key under ~/.kwaainet, so each user on a
- machine has their own node.
+ No service is installed: run "kwaainet start" to bring up a node. It runs as
+ you, with its configuration and identity key under ~/.kwaainet, so each user
+ on a machine has their own node.

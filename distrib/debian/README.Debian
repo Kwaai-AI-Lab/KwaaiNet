@@ -1,0 +1,33 @@
+kwaainet for Debian
+===================
+
+Installed from a package
+------------------------
+This copy of kwaainet was installed by the package manager, so self-update is
+turned off: /usr/lib/kwaainet/packaged marks the install as "deb". Do not run
+"kwaainet update" or "kwaainet uninstall" — they would replace or delete files
+dpkg owns, leaving the package database disagreeing with the filesystem. Both
+commands refuse and point at apt. Upgrade and remove with apt instead.
+
+Running a node
+--------------
+This package installs no service. Start a node the same way you would from a
+tarball install:
+
+    kwaainet start
+
+The node runs as you, and its configuration, logs and identity key live in
+~/.kwaainet — so each user on a machine has their own node.
+
+"kwaainet service install" writes a systemd *user* unit to
+~/.config/systemd/user/kwaainet.service if you want the node to start at login.
+Note that a user unit stops when your session ends unless you enable lingering
+("loginctl enable-linger $USER"), so it is not a substitute for a system
+service on a headless machine. A packaged system service is planned but
+deliberately not shipped yet: it needs a system user, state under /var/lib and
+configuration under /etc, none of which the current config layout supports.
+
+Your data is never removed
+--------------------------
+Removing or purging this package does not touch ~/.kwaainet. It holds the node
+identity key — deleting it means losing the node's identity on the network.

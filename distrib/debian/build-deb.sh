@@ -31,9 +31,7 @@ done
 
 [ -n "${PAYLOAD}" ] || { echo "build-deb: --payload is required" >&2; exit 1; }
 [ -d "${PAYLOAD}" ] || { echo "build-deb: no such payload dir: ${PAYLOAD}" >&2; exit 1; }
-for f in kwaainet p2pd; do
-    [ -f "${PAYLOAD}/${f}" ] || { echo "build-deb: ${PAYLOAD}/${f} missing" >&2; exit 1; }
-done
+[ -f "${PAYLOAD}/kwaainet" ] || { echo "build-deb: ${PAYLOAD}/kwaainet missing" >&2; exit 1; }
 
 [ -n "${ARCH}" ] || ARCH="$(dpkg --print-architecture)"
 
@@ -53,9 +51,6 @@ install -d -m 0755 "${STAGE}/usr/share/lintian/overrides"
 install -d -m 0755 "${STAGE}/usr/lib/kwaainet"
 
 install -m 0755 "${PAYLOAD}/kwaainet" "${STAGE}/usr/bin/kwaainet"
-# /usr/bin, not a private libexec: find_p2pd_binary() searches only next to
-# the exe, a cargo target dir, and $PATH.
-install -m 0755 "${PAYLOAD}/p2pd" "${STAGE}/usr/bin/p2pd"
 
 install -m 0644 "${PACKAGING}/copyright" "${STAGE}/usr/share/doc/kwaainet/copyright"
 install -m 0644 "${HERE}/lintian-overrides" "${STAGE}/usr/share/lintian/overrides/kwaainet"
@@ -75,51 +70,9 @@ sed -e "s|@VERSION@|${DEB_VERSION}|g" \
     | gzip -9nc > "${STAGE}/usr/share/doc/kwaainet/changelog.Debian.gz"
 chmod 0644 "${STAGE}/usr/share/doc/kwaainet/changelog.Debian.gz"
 
-cat > "${STAGE}/usr/share/doc/kwaainet/README.Debian" <<'README'
-kwaainet for Debian
-===================
+install -m 0644 "${HERE}/README.Debian" "${STAGE}/usr/share/doc/kwaainet/README.Debian"
 
-Installed from a package
-------------------------
-This copy of kwaainet was installed by the package manager, so self-update is
-turned off: /usr/lib/kwaainet/packaged marks the install as "deb". Do not run
-"kwaainet update" or "kwaainet uninstall" — they would replace or delete files
-dpkg owns, leaving the package database disagreeing with the filesystem. Both
-commands refuse and point at apt. Upgrade and remove with apt instead.
-
-Running a node
---------------
-This package installs no service. Start a node the same way you would from a
-tarball install:
-
-    kwaainet start
-
-The node runs as you, and its configuration, logs and identity key live in
-~/.kwaainet — so each user on a machine has their own node.
-
-"kwaainet service install" writes a systemd *user* unit to
-~/.config/systemd/user/kwaainet.service if you want the node to start at login.
-Note that a user unit stops when your session ends unless you enable lingering
-("loginctl enable-linger $USER"), so it is not a substitute for a system
-service on a headless machine. A packaged system service is planned but
-deliberately not shipped yet: it needs a system user, state under /var/lib and
-configuration under /etc, none of which the current config layout supports.
-
-Your data is never removed
---------------------------
-Removing or purging this package does not touch ~/.kwaainet. It holds the node
-identity key — deleting it means losing the node's identity on the network.
-
-p2pd
-----
-/usr/bin/p2pd is the libp2p daemon the node runs alongside itself. It is on
-PATH because that is where kwaainet looks for it; it is not meant to be run
-by hand.
-README
-chmod 0644 "${STAGE}/usr/share/doc/kwaainet/README.Debian"
-
-# Derived, never hand-written. Only kwaainet is passed: p2pd is a static ELF
-# and dpkg-shlibdeps errors on it. dpkg-shlibdeps insists on a debian/control
+# Derived, never hand-written. dpkg-shlibdeps insists on a debian/control
 # relative to its cwd, so give it an empty one to read.
 if [ -n "${DEPENDS_OVERRIDE}" ]; then
     # Only the CI stub payload uses this: shell scripts have no ELF to analyze.

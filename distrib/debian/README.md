@@ -4,17 +4,15 @@ Builds `kwaainet_<version>_<arch>.deb` for amd64 and arm64.
 
 The package **does not build the Rust code**. It repackages the
 `kwaainet-<triple>.tar.xz` that `release.yml`'s `build-local-artifacts` job has
-already produced, with `p2pd` already injected. The binaries in the `.deb` are
-therefore byte-identical to what tarball and installer users get — the package
-is a different delivery mechanism for the same artifact, not a second build of
-it.
+already produced. The binary in the `.deb` is therefore byte-identical to what
+tarball and installer users get — the package is a different delivery mechanism
+for the same artifact, not a second build of it.
 
 ## Layout
 
 | Path | Mode | Notes |
 | --- | --- | --- |
 | `/usr/bin/kwaainet` | 0755 | |
-| `/usr/bin/p2pd` | 0755 | On `PATH` deliberately — see below |
 | `/usr/share/man/man1/kwaainet.1.gz` | 0644 | |
 | `/usr/share/doc/kwaainet/copyright` | 0644 | DEP-5, MIT |
 | `/usr/share/doc/kwaainet/changelog.Debian.gz` | 0644 | |
@@ -25,14 +23,14 @@ it.
 `~/.kwaainet` is never touched on remove or purge. It holds the node identity
 key; deleting it loses the node's identity on the network.
 
-## Why `p2pd` is in `/usr/bin`, not a private libexec dir
+## No p2pd
 
-`find_p2pd_binary()` (`core/crates/kwaai-cli/src/node.rs`) searches exactly
-three places: next to `current_exe()`, a cargo target dir, and `$PATH`. A
-private `/usr/libexec/kwaainet/` would be invisible to all three, and
-`kwaainet start` would fall through to *downloading* p2pd into `/usr/bin` as a
-non-root user. `/usr/bin/p2pd` is the only layout the existing lookup supports
-without a code change.
+`p2pd` is not packaged. The Go libp2p daemon is being removed upstream — nodes
+run rust-libp2p in process — so shipping it would package something on its way
+out. The payload archives still contain it today, so `stage-payload.sh`
+*ignores* it rather than rejecting it; that keeps the build working on both
+sides of the upstream removal. `test-install.sh` asserts the package ships no
+`p2pd`, so it cannot come back by accident.
 
 ## The packaged marker
 
@@ -74,9 +72,7 @@ start-at-login, and that path is unchanged by this package.
 ## Depends is derived, never written
 
 `build-deb.sh` runs `dpkg-shlibdeps` against `usr/bin/kwaainet` inside
-`debian:bookworm`. Only `kwaainet` is passed: `p2pd` is Go built
-`CGO_ENABLED=0` (`scripts/build-p2pd.sh`), so it is a static ELF and
-`dpkg-shlibdeps` errors on it.
+`debian:bookworm`.
 
 Currently derived, for both amd64 and arm64:
 
@@ -130,10 +126,8 @@ and correct:
 
 | Tag | Why it is overridden |
 | --- | --- |
-| `statically-linked-binary [usr/bin/p2pd]` | Go, `CGO_ENABLED=0`, static by design |
 | `unstripped-binary-or-object` | Symbols kept: Rust panic backtraces in user bug reports beat the saved size |
 | `embedded-library` | `libyaml`, vendored by a Rust `-sys` crate; unbundling means rebuilding, which this design excludes |
-| `no-manual-page [usr/bin/p2pd]` | Internal helper the node spawns, not a user-facing command |
 | `initial-upload-closes-no-bugs` | Not distributed via the Debian archive; there is no BTS to close |
 
 If a *new* tag appears, that is a real change — read it rather than adding an

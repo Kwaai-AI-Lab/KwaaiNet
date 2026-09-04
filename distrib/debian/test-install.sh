@@ -23,9 +23,11 @@ echo "identity-key-stand-in" > "${HOME}/.kwaainet/identity.key"
 command -v kwaainet >/dev/null || fail "kwaainet not on PATH"
 ok "kwaainet on PATH at $(command -v kwaainet)"
 
-# find_p2pd_binary() searches $PATH, so this is the property that matters.
-command -v p2pd >/dev/null || fail "p2pd not on PATH"
-ok "p2pd on PATH at $(command -v p2pd)"
+# p2pd is being removed upstream; the package must never resurrect it.
+if p2pd_path="$(dpkg -L kwaainet | grep -E '/p2pd$')"; then
+    fail "package ships p2pd: ${p2pd_path}"
+fi
+ok "ships no p2pd, as intended"
 
 kwaainet --version || fail "kwaainet --version failed"
 ok "kwaainet --version ran"
@@ -83,7 +85,6 @@ fi
 
 apt-get remove -y -qq kwaainet >/dev/null
 [ ! -e /usr/bin/kwaainet ] || fail "/usr/bin/kwaainet survived remove"
-[ ! -e /usr/bin/p2pd ] || fail "/usr/bin/p2pd survived remove"
 [ ! -e /usr/lib/kwaainet ] || fail "/usr/lib/kwaainet survived remove"
 ok "clean remove"
 
