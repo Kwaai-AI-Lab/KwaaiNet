@@ -15,9 +15,10 @@
 //! peer's subkey are whatever the last writer put there; verification is the
 //! only thing that makes them safe to follow.
 
+use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 
-use crate::addresses::strip_dest_p2p;
+use crate::addresses::{is_announceable, is_circuit, strip_dest_p2p, uses_dialable_transport};
 
 /// How many addresses one record may contribute.
 ///
@@ -56,6 +57,16 @@ pub const MAX_RECORD_ADDRS: usize = 4;
 /// empty vec. That costs the peer nothing worse than the bare-PeerId dial it
 /// would have got before the field existed.
 ///
+/// # The signature is not a sanity check
+///
+/// It proves who wrote the list, not that the list is worth following. A
+/// peer's own key can vouch for `/ip4/127.0.0.1/tcp/25`, and every reader
+/// would then dial its own port 25 on that peer's say-so. So the publisher's
+/// address-class rule is applied again here, by [`worth_dialing`]. This is the
+/// place for it: the daemon's dial path deliberately keeps loopback and LAN
+/// (two nodes on one host reach each other that way), and cannot tell an
+/// address it learned from a live connection from one a remote record named.
+///
 /// # Shape of what comes back
 ///
 /// Addresses are returned **bare**, each run through
@@ -77,10 +88,31 @@ pub fn verified_addrs(envelope: &[u8], claimed: PeerId) -> Vec<Multiaddr> {
     record
         .addresses()
         .iter()
-        .take(MAX_RECORD_ADDRS)
         .map(strip_dest_p2p)
-        .filter(|a| !a.is_empty())
+        .filter(|a| !a.is_empty() && worth_dialing(a))
+        .take(MAX_RECORD_ADDRS)
         .collect()
+}
+
+/// The publisher's filter, re-run on the reader: a direct address must be
+/// announceable and on a transport this build dials; a circuit's relay hop
+/// must not carry an unroutable IP. A relay named by DNS — how the bootstraps
+/// are addressed — has no IP to judge and passes, as it does when published.
+fn worth_dialing(addr: &Multiaddr) -> bool {
+    if !uses_dialable_transport(addr) {
+        return false;
+    }
+    if !is_circuit(addr) {
+        return is_announceable(addr);
+    }
+    let hop: Multiaddr = addr
+        .iter()
+        .take_while(|p| !matches!(p, Protocol::P2pCircuit))
+        .collect();
+    let has_ip = hop
+        .iter()
+        .any(|p| matches!(p, Protocol::Ip4(_) | Protocol::Ip6(_)));
+    !has_ip || is_announceable(&hop)
 }
 
 #[cfg(test)]
@@ -163,6 +195,47 @@ mod tests {
             verified_addrs(&envelope(&key, &[&qualified]), peer),
             expected,
             "the two publishing conventions must decode identically"
+        );
+    }
+
+    /// A valid signature over a loopback or LAN address is still a request to
+    /// dial something no remote peer should: the address class is checked
+    /// after the signature, and a circuit is judged by its relay hop.
+    #[test]
+    fn drops_addresses_no_remote_reader_should_dial() {
+        let key = Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let relay = PeerId::random();
+        let via_loopback = format!("/ip4/127.0.0.1/tcp/25/p2p/{relay}/p2p-circuit");
+        let bytes = envelope(
+            &key,
+            &[
+                "/ip4/127.0.0.1/tcp/25",
+                "/ip4/10.0.0.1/tcp/22",
+                "/ip6/::1/tcp/22",
+                &via_loopback,
+                "/ip4/203.0.113.7/tcp/4001",
+            ],
+        );
+
+        assert_eq!(
+            verified_addrs(&bytes, peer),
+            vec!["/ip4/203.0.113.7/tcp/4001".parse::<Multiaddr>().unwrap()]
+        );
+    }
+
+    /// The bootstraps are reached by name, so a circuit through one carries
+    /// no IP at all. That is not a reason to refuse it.
+    #[test]
+    fn keeps_a_circuit_through_a_relay_named_by_dns() {
+        let key = Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let relay = PeerId::random();
+        let addr = format!("/dns4/bootstrap1/tcp/8000/p2p/{relay}/p2p-circuit");
+
+        assert_eq!(
+            verified_addrs(&envelope(&key, &[&addr]), peer),
+            vec![addr.parse::<Multiaddr>().unwrap()]
         );
     }
 
