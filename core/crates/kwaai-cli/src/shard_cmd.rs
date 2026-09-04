@@ -2385,7 +2385,8 @@ pub async fn discover_inference_peer(
     let mut req_bytes = Vec::new();
     find_req.encode(&mut req_bytes).ok()?;
 
-    let mut candidates: Vec<(f64, PeerId, String)> = Vec::new(); // (throughput, peer_id, name)
+    // (throughput, peer_id, name, the addresses the peer signed for itself)
+    let mut candidates: Vec<(f64, PeerId, String, Vec<libp2p::Multiaddr>)> = Vec::new();
 
     let query_peers = resolve_query_peers(client, bootstrap_peers).await;
 
@@ -2421,7 +2422,12 @@ pub async fn discover_inference_peer(
                 if let Some(info) = decode_server_info_ext(&result.value) {
                     if info.state == 2 && version_meets_minimum(&info.version) {
                         if let Ok(pid) = info.peer_id_b58.parse::<PeerId>() {
-                            candidates.push((info.throughput, pid, info.public_name));
+                            candidates.push((
+                                info.throughput,
+                                pid,
+                                info.public_name,
+                                info.dial_addrs,
+                            ));
                         }
                     }
                 }
@@ -2429,7 +2435,7 @@ pub async fn discover_inference_peer(
                 let mut tmp: HashMap<String, BlockServerEntry> = HashMap::new();
                 decode_server_info_dictionary(&result.value, &mut tmp);
                 for (_, e) in tmp {
-                    candidates.push((e.throughput, e.peer_id, e.public_name));
+                    candidates.push((e.throughput, e.peer_id, e.public_name, e.dial_addrs));
                 }
             }
         }
@@ -2440,14 +2446,14 @@ pub async fn discover_inference_peer(
         if let (Some(prefix), Some(total)) = (dht_prefix, total_blocks) {
             let chain = discover_chain(client, our_peer_id, prefix, total, bootstrap_peers).await;
             for e in chain {
-                candidates.push((e.throughput, e.peer_id, e.public_name));
+                candidates.push((e.throughput, e.peer_id, e.public_name, e.dial_addrs));
             }
         }
     }
 
     // Remove ourselves — dialling self via p2p proxy always fails.
     let our_b58 = our_peer_id.to_base58();
-    candidates.retain(|(_, pid, _)| pid.to_base58() != our_b58);
+    candidates.retain(|(_, pid, _, _)| pid.to_base58() != our_b58);
 
     if candidates.is_empty() {
         return None;
@@ -2459,13 +2465,18 @@ pub async fn discover_inference_peer(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.2.cmp(&b.2))
     });
-    let (tps, best_peer, name) = &candidates[0];
+    let (tps, best_peer, name, dial_addrs) = &candidates[0];
     tracing::info!(
         "p2p://auto → {} ({}, {:.1} tok/s)",
         best_peer.to_base58(),
         name,
         tps
     );
+    // The URL names the peer alone; the daemon keeps the addresses so the dial
+    // it leads to is seeded, not bare. Best effort — the URL is still good.
+    if !dial_addrs.is_empty() {
+        let _ = client.connect_peer_with_addrs(best_peer, dial_addrs).await;
+    }
     Some(format!("p2p://{}", best_peer.to_base58()))
 }
 
