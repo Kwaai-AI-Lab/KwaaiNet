@@ -20,7 +20,7 @@ From an app's point of view, KwaaiNet looks like a familiar chat-completion styl
 **As of v0.6.8.** Two things are worth knowing before you set up a node.
 
 **The networking stack is native.** Every node runs the in-process rust-libp2p stack;
-the Go `p2pd` child process was removed in v0.7. A `native_p2p: false` line in an
+the Go `p2pd` child process has been removed. A `native_p2p: false` line in an
 existing `~/.kwaainet/config.yaml` is ignored with a warning.
 
 **Two ways to contribute compute, and Apple Silicon is the one platform split.** Block sharding —
@@ -373,7 +373,7 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 
 ### Networking
 
-- **Native rust-libp2p stack** — default since v0.6.0, the only path since v0.7. Same PeerId, same control socket, same NAT traversal (AutoNAT, circuit relay, DCUtR, UPnP) in-process.
+- **Native rust-libp2p stack** — default since v0.6.0 and now the only path. Same PeerId, same control socket, same NAT traversal (AutoNAT, circuit relay, DCUtR, UPnP) in-process.
 - libp2p + Kademlia DHT swarm, Petals/Hivemind-compatible, with live diagnostics (`p2p info`, `p2p peers list/find`) and direct peer messaging (`p2p peers send`).
 - **IDENTIFY-based public-IP detection** — auto-confirms and announces a node's public address with no manual config.
 - **Trusted relays** and **stable bootstrap identities** (`start --identity-key`) so NATed and bootstrap nodes keep consistent routing and `PeerId` across restarts.
