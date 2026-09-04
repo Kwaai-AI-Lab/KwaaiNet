@@ -2,8 +2,8 @@
 
 ## Project scope
 
-kwaai-storage owns Virtual Private Knowledge (VPK): multi-tenant homomorphic-encrypted vector
-storage bound to node identity, cross-node shard placement (planned), and DHT-backed knowledge
+kwaai-storage owns Virtual Private Knowledge (VPK): multi-tenant vector storage bound to node
+identity (vectors are plaintext f32 today — encryption is planned, see roadmap.md), cross-node shard placement (planned), and DHT-backed knowledge
 base resolution (planned). It does **not** own the RAG/knowledge pipeline (kwaai-knowledge)
 or P2P transport (kwaai-network) — VPK uses both.
 
@@ -11,7 +11,7 @@ or P2P transport (kwaai-network) — VPK uses both.
 
 | Crate | Path | Description |
 |-------|------|-------------|
-| `kwaai-storage` | `core/crates/kwaai-storage/` | VPK: multi-tenant vectors, homomorphic search |
+| `kwaai-storage` | `core/crates/kwaai-storage/` | VPK: multi-tenant vectors (plaintext today) |
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `vpk.rs` — `kwaainet vpk enable/disable/status/discover/shard/resolve`
@@ -54,7 +54,7 @@ VPK health endpoint: `GET /api/health` → `{status, version, peer_id, tenant_co
 
 **Shipped:**
 - VPK process binds to node `PeerId`
-- Multi-tenant vector tables with homomorphic-encrypted search
+- Multi-tenant vector tables (plaintext f32 vectors today)
 - DHT advertising: `_kwaai.vpk.nodes` record
 - `kwaainet vpk enable/disable/status` commands
 - `vpk_info` field in `DHTServerInfo` wire format
@@ -80,7 +80,7 @@ VPK health endpoint: `GET /api/health` → `{status, version, peer_id, tenant_co
 | `kwaai-storage/src/api.rs` | VPK HTTP API handlers |
 | `kwaai-storage/src/db.rs` | SQLite database layer |
 | `kwaai-storage/src/tenant.rs` | Multi-tenant isolation |
-| `kwaai-storage/src/vectors.rs` | Homomorphic vector search |
+| `kwaai-storage/src/vectors.rs` | Cosine vector search (plaintext) |
 | `kwaai-cli/src/vpk.rs` | `kwaainet vpk` command handlers |
 | `kwaai-cli/src/node.rs` | `VpkInfo`, `check_vpk_health()`, DHT announcement |
 
