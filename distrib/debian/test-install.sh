@@ -34,19 +34,13 @@ MARKER="$(cat /usr/lib/kwaainet/packaged)"
 [ "${MARKER}" = "deb" ] || fail "marker is '${MARKER}', expected 'deb'"
 ok "marker /usr/lib/kwaainet/packaged is 'deb'"
 
-[ -f /etc/default/kwaainet ] || fail "/etc/default/kwaainet missing"
-grep -q '^KWAAINET_NO_AUTO_UPDATE=1$' /etc/default/kwaainet \
-    || fail "KWAAINET_NO_AUTO_UPDATE=1 not set in /etc/default/kwaainet"
-ok "/etc/default/kwaainet present with KWAAINET_NO_AUTO_UPDATE=1"
-
-dpkg-query -W -f='${Conffiles}\n' kwaainet | grep -q '/etc/default/kwaainet' \
-    || fail "/etc/default/kwaainet is not registered as a conffile"
-ok "/etc/default/kwaainet registered as a conffile"
-
-[ -f /usr/lib/systemd/user/kwaainet.service ] || fail "user unit missing"
-grep -q '^ExecStart=/usr/bin/kwaainet run-node$' /usr/lib/systemd/user/kwaainet.service \
-    || fail "unit ExecStart is not /usr/bin/kwaainet run-node"
-ok "systemd user unit installed with the expected ExecStart"
+# No service is shipped yet: a system daemon needs a system user, /var/lib
+# state and /etc config, none of which the current config layout supports.
+# Ask what the package owns — /usr/lib/systemd exists on any Debian system.
+if owned="$(dpkg -L kwaainet | grep -E '^/(usr/lib/systemd|etc)/')"; then
+    fail "package ships a unit or /etc config: ${owned}"
+fi
+ok "ships no service and no /etc config, as intended"
 
 # Minimized images (ubuntu:22.04) tell dpkg to drop man pages and most docs,
 # so those files are legitimately absent there.
@@ -90,21 +84,21 @@ fi
 apt-get remove -y -qq kwaainet >/dev/null
 [ ! -e /usr/bin/kwaainet ] || fail "/usr/bin/kwaainet survived remove"
 [ ! -e /usr/bin/p2pd ] || fail "/usr/bin/p2pd survived remove"
+[ ! -e /usr/lib/kwaainet ] || fail "/usr/lib/kwaainet survived remove"
 ok "clean remove"
-
-# remove keeps conffiles by design; purge is what must clear them.
-[ -f /etc/default/kwaainet ] || fail "remove deleted the conffile (should keep it)"
-ok "conffile retained by remove"
 
 [ -f "${HOME}/.kwaainet/identity.key" ] || fail "remove deleted ${HOME}/.kwaainet"
 ok "${HOME}/.kwaainet survived remove"
 
+# Purge is the stronger claim: it is where a package would plausibly delete
+# the identity key. The package ships no conffiles, so remove already leaves
+# nothing on disk and purge must be run against the installed package.
+apt-get install -y -qq "${DEB}" >/dev/null
 apt-get purge -y -qq kwaainet >/dev/null
-[ ! -f /etc/default/kwaainet ] || fail "purge left the conffile behind"
-[ ! -e /usr/lib/kwaainet ] || fail "purge left /usr/lib/kwaainet behind"
+[ ! -e /usr/bin/kwaainet ] || fail "/usr/bin/kwaainet survived purge"
+[ ! -e /usr/lib/kwaainet ] || fail "/usr/lib/kwaainet survived purge"
 ok "clean purge"
 
-# The identity key must outlive even a purge: losing it loses the node.
 [ -f "${HOME}/.kwaainet/identity.key" ] || fail "purge deleted ${HOME}/.kwaainet"
 ok "${HOME}/.kwaainet survived purge"
 
