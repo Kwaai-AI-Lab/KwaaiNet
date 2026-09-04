@@ -991,17 +991,24 @@ message DhtValueView {
     // are not msgpack at all, in which case `rendered` is their hex.
     string msgpack_type = 1;
 
-    // JSON-like rendering, one line. Binary that is valid UTF-8 renders
-    // as a quoted string; binary that is not renders as `hex:…`, so the
-    // two are never confused. Ext renders as `ext(<code>)<contents>`.
+    // The value as compact JSON — valid for `jsonDecode` whenever
+    // `decoded` is true; when false it is the raw hex and must not be
+    // parsed. What JSON cannot say is a one-key tagged object:
+    //   str/bin that is not UTF-8   {"$hex": "<lowercase hex>"}
+    //   NaN / ±inf                  {"$float": "nan" | "inf" | "-inf"}
+    //   ext with a msgpack body     {"$ext": <code>, "value": <body>}
+    //   ext with any other body     {"$ext": <code>, "$hex": "…"}
+    // Bin that is valid UTF-8 renders as a string. A non-string map key
+    // becomes its compact JSON text as the object key; keys that collide
+    // after that collapse, last one wins.
     string rendered = 2;
 
     // Size of the value as stored, before any decoding.
     uint64 raw_bytes = 3;
 
-    // The ext type code, when the top level is an Ext. 0x40 (64) is
-    // hivemind's Python-tuple code and 0x50 (80) its dictionary code;
-    // anything else came from a peer we do not have a decoder for.
+    // The ext type code when the top level is an Ext, for out-of-band
+    // display; `rendered` carries it too. 0x40 (64) is hivemind's
+    // Python-tuple code and 0x50 (80) its dictionary code.
     optional int32 ext_code = 4;
 
     // True when `rendered` was produced by decoding, false when the
