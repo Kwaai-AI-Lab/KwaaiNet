@@ -479,7 +479,8 @@ pub const MAX_DIAL_ADDRS: usize = 4;
 /// of the form `<relay-addr>/p2p/<relay>/p2p-circuit/p2p/<us>`, already carrying
 /// both hops a dialer needs. Three filters apply:
 ///
-/// - [`is_announceable`](kwaai_p2p::is_announceable) drops the loopback and
+/// - [`is_announceable_with`](kwaai_p2p::is_announceable_with) under the
+///   node's policy (`strict` is `require_global_ips`) drops the loopback and
 ///   RFC1918 listeners that every node has and no remote peer can use, while
 ///   passing circuits unconditionally (the relay's address is the routable
 ///   half).
@@ -509,10 +510,15 @@ pub async fn signed_dial_addrs(
     handle: &NetworkHandle,
     keypair: &libp2p::identity::Keypair,
     declared: Option<&str>,
+    strict: bool,
 ) -> Vec<u8> {
     let external = handle.external_addrs().await.unwrap_or_default();
     let listeners = handle.listen_addrs().await.unwrap_or_default();
-    let addrs = select_dial_addrs(external.into_iter().chain(listeners).collect(), declared);
+    let addrs = select_dial_addrs(
+        external.into_iter().chain(listeners).collect(),
+        declared,
+        strict,
+    );
     if addrs.is_empty() {
         return Vec::new();
     }
@@ -538,15 +544,16 @@ pub async fn signed_dial_addrs(
 fn select_dial_addrs(
     listeners: Vec<libp2p::Multiaddr>,
     declared: Option<&str>,
+    strict: bool,
 ) -> Vec<libp2p::Multiaddr> {
-    use kwaai_p2p::addresses::{peer_id_from_multiaddr, strip_dest_p2p};
-    use kwaai_p2p::{is_announceable, is_circuit, uses_dialable_transport};
+    use kwaai_p2p::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p};
+    use kwaai_p2p::{is_circuit, uses_dialable_transport};
 
     let mut sorted: Vec<libp2p::Multiaddr> = declared
         .and_then(|d| d.parse().ok())
         .into_iter()
         .chain(listeners)
-        .filter(|a| is_announceable(a) && uses_dialable_transport(a))
+        .filter(|a| is_announceable_with(a, strict) && uses_dialable_transport(a))
         .collect();
     // Direct before circuit (`false` sorts before `true`), stably, so the
     // declared address stays ahead of the listeners it was chained onto.
@@ -1196,7 +1203,10 @@ mod tests {
             "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
             relay().to_base58()
         );
-        assert_eq!(select_dial_addrs(listeners, None), addrs(&[expected]));
+        assert_eq!(
+            select_dial_addrs(listeners, None, false),
+            addrs(&[expected])
+        );
     }
 
     /// Both circuits cross the same relay, so publishing both spends two of
@@ -1214,7 +1224,7 @@ mod tests {
             peer().to_base58()
         );
 
-        let out = select_dial_addrs(addrs(&[tcp, quic]), None);
+        let out = select_dial_addrs(addrs(&[tcp, quic]), None, false);
         let expected = format!(
             "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
             relay().to_base58()
@@ -1231,14 +1241,18 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        assert!(select_dial_addrs(addrs(&[wt]), None).is_empty());
+        assert!(select_dial_addrs(addrs(&[wt]), None, false).is_empty());
     }
 
     /// The peer id belongs in the record, under the signature, not repeated on
     /// every address — a reader re-attaches it when it dials.
     #[test]
     fn select_dial_addrs_leaves_the_peer_id_to_the_record() {
-        let out = select_dial_addrs(addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]), None);
+        let out = select_dial_addrs(
+            addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]),
+            None,
+            false,
+        );
         assert_eq!(out, addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]));
     }
 
@@ -1252,7 +1266,7 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"));
+        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"), false);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
     }
@@ -1271,13 +1285,22 @@ mod tests {
             peer().to_base58()
         ));
 
-        let out = select_dial_addrs(addrs(&listeners), None);
+        let out = select_dial_addrs(addrs(&listeners), None, false);
         assert_eq!(out.len(), MAX_DIAL_ADDRS);
         assert!(
             kwaai_p2p::is_circuit(out.last().expect("non-empty")),
             "the circuit survives, last because direct is cheaper to try"
         );
         assert!(!kwaai_p2p::is_circuit(&out[0]));
+    }
+
+    /// The record follows the node's policy: a reserved-range listener is
+    /// published only by a node whose operator declared that range routable.
+    #[test]
+    fn select_dial_addrs_follows_the_address_policy() {
+        let reserved = addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]);
+        assert_eq!(select_dial_addrs(reserved.clone(), None, false), reserved);
+        assert!(select_dial_addrs(reserved, None, true).is_empty());
     }
 
     /// The same value is stored under every block key, so the list is capped.
@@ -1287,7 +1310,7 @@ mod tests {
             .map(|i| format!("/ip4/203.0.113.{i}/tcp/4001"))
             .collect();
         assert_eq!(
-            select_dial_addrs(addrs(&listeners), None).len(),
+            select_dial_addrs(addrs(&listeners), None, false).len(),
             MAX_DIAL_ADDRS
         );
     }

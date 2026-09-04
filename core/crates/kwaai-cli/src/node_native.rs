@@ -114,6 +114,9 @@ pub struct NativeNode {
     /// announce carries. The same key the swarm authenticates connections
     /// with, which is what makes the signature checkable against the peer id.
     identity: libp2p::identity::Keypair,
+    /// `require_global_ips`, as handed to the swarm: the dial-address record
+    /// is selected under the same policy the daemon dials by.
+    require_global_ips: bool,
 }
 
 impl NativeNode {
@@ -188,6 +191,7 @@ impl NativeNode {
             ..NetworkConfig::default()
         };
 
+        let require_global_ips = net_config.require_global_ips;
         // Cloned, not moved: the same key signs the dial-address record on
         // every announce, which is what lets a reader bind those addresses to
         // this peer id.
@@ -299,6 +303,7 @@ impl NativeNode {
             replication: config.dht_replication,
             announce_addr: configured_announce_addr(config),
             identity: keypair,
+            require_global_ips,
         })
     }
 
@@ -350,6 +355,7 @@ impl NativeNode {
             &self.handle,
             &self.identity,
             self.announce_addr.as_deref(),
+            self.require_global_ips,
         )
         .await;
         let records = build_announce_records(ctx, server_info)?;
