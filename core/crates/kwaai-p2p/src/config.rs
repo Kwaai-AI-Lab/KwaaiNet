@@ -193,8 +193,8 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub external_addr: Option<String>,
 
-    /// Require addresses to be globally routable, rejecting the IANA-reserved
-    /// ranges — RFC2544 and RFC5737 on v4, unique-local and the documentation
+    /// The `only_global_ips` config key. Require addresses to be globally
+    /// routable, rejecting the IANA-reserved ranges — RFC2544 and RFC5737 on v4, unique-local and the documentation
     /// and benchmarking prefixes on v6 — as well as the private ones.
     ///
     /// **Default true.** It also drives `autonat::Config::only_global_ips`, so

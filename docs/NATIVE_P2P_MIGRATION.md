@@ -633,7 +633,7 @@ implementation slicing.
 ### Design decisions
 
 - **Behaviour additions**: `autonat` (client+server; `only_global_ips` from new
-  `require_global_ips` config, default false; boot_delay 5s, retry 30s, refresh 5min,
+  `only_global_ips` config, default false; boot_delay 5s, retry 30s, refresh 5min,
   keep `confidence_max 3` as the flap damper), `relay_client` (via
   `SwarmBuilder::with_relay_client` — the `with_behaviour` closure becomes two-arg),
   `Toggle<relay::Behaviour>` hop server (default on, parity with `!no_relay`),
@@ -665,7 +665,7 @@ implementation slicing.
 - **`addresses.rs` classifier**: port of node.rs `is_announceable_addr` /
   `is_globally_routable_v4` (which already deliberately accept 198.18/15 and the
   RFC5737 doc ranges for the test beds) into kwaai-p2p, with a golden test pinning
-  `198.18.0.20` as routable. `require_global_ips` opt-in tightens.
+  `198.18.0.20` as routable. `only_global_ips` opt-in tightens.
 - **Follow-up closure for free**: with reachability in hand, `dht_service`'s `rpc_ping`
   can answer `available = is Public` instead of hardcoded false (open item above), via a
   new `NetworkHandle::reachability()`.

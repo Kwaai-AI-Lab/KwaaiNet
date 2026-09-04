@@ -143,7 +143,7 @@ pub struct NetworkService {
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
     /// Which addresses this node will announce and dial. Mirrors
-    /// `require_global_ips` and the IPv6 mode; held here because
+    /// `only_global_ips` and the IPv6 mode; held here because
     /// identify-learned addresses are filtered before they reach kad, and that
     /// decision has to match the one the reachability state makes.
     policy: AddrPolicy,

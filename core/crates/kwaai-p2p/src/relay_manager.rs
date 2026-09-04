@@ -129,7 +129,7 @@ pub struct RelayManager {
     max_slots: usize,
     /// Whether we currently want reservations at all — driven by reachability.
     enabled: bool,
-    /// `require_global_ips`: which addresses a relay may be reached at.
+    /// `only_global_ips`: which addresses a relay may be reached at.
     strict: bool,
 }
 

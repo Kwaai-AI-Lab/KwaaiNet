@@ -251,7 +251,7 @@ pub struct KwaaiNetConfig {
     /// built on reserved space, where those addresses are the routable ones.
     /// Applied at startup, so changing it needs a restart.
     #[serde(default = "default_true")]
-    pub require_global_ips: bool,
+    pub only_global_ips: bool,
     /// Ceiling on simultaneously established connections, inbound and
     /// outbound, enforced by the swarm's connection-limits behaviour.
     ///
@@ -933,7 +933,7 @@ impl Default for KwaaiNetConfig {
             enable_upnp: default_enable_upnp(),
             enable_quic: false,
             ipv6: kwaai_p2p::Ipv6Mode::Auto,
-            require_global_ips: true,
+            only_global_ips: true,
             max_connections: default_max_connections(),
             announce_self: true,
             decentralized_dht: false,
@@ -1292,7 +1292,7 @@ impl KwaaiNetConfig {
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "enable_quic" => self.enable_quic = parse_bool(value)?,
             "ipv6" => self.ipv6 = value.parse().map_err(|e| anyhow::anyhow!("ipv6: {e}"))?,
-            "require_global_ips" => self.require_global_ips = parse_bool(value)?,
+            "only_global_ips" => self.only_global_ips = parse_bool(value)?,
             "max_connections" => {
                 let n: usize = value
                     .parse()
@@ -1670,7 +1670,7 @@ mod tests {
         );
         assert!(c.enable_upnp, "likewise for enable_upnp");
         assert!(
-            c.require_global_ips,
+            c.only_global_ips,
             "and a node on the internet must not start announcing reserved space"
         );
         assert_eq!(
@@ -1691,15 +1691,15 @@ mod tests {
         c.set_key("enable_upnp", "false")
             .expect("enable_upnp is a valid key");
         c.set_key("ipv6", "false").expect("ipv6 is a valid key");
-        c.set_key("require_global_ips", "false")
-            .expect("require_global_ips is a valid key");
+        c.set_key("only_global_ips", "false")
+            .expect("only_global_ips is a valid key");
 
         let yaml = serde_yaml::to_string(&c).expect("serialise");
         let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
         assert!(!reloaded.announce_self);
         assert!(!reloaded.enable_upnp);
         assert_eq!(reloaded.ipv6, kwaai_p2p::Ipv6Mode::Off);
-        assert!(!reloaded.require_global_ips);
+        assert!(!reloaded.only_global_ips);
 
         // And back again, so neither direction is a one-way door.
         let mut c = reloaded;

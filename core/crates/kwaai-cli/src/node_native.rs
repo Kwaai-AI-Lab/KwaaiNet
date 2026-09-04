@@ -173,7 +173,7 @@ impl NativeNode {
             external_addr: configured_announce_addr(config),
             // Address classes: reject IANA-reserved space unless the operator
             // says their network is built on it.
-            require_global_ips: config.require_global_ips,
+            require_global_ips: config.only_global_ips,
 
             // The only bound on connection growth, and so on the memory the
             // swarm holds: idle connections live for ten minutes.

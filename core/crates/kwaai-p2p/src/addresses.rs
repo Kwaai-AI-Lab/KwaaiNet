@@ -14,7 +14,7 @@
 //!    "reach me through this relay", and the relay's own address is the part
 //!    that has to be routable. Classifying the circuit by the IP in front of it
 //!    would reject every reservation held on a relay we reached over a LAN.
-//! 2. **The IANA-reserved ranges are governed by `require_global_ips`.**
+//! 2. **The IANA-reserved ranges are governed by `only_global_ips`.**
 //!    RFC5737 (`192.0.2/24`, `198.51.100/24`, `203.0.113/24`), RFC2544
 //!    (`198.18/15`), IPv6 unique-local `fc00::/7` and the v6 documentation and
 //!    benchmarking prefixes are not on the internet, and with the key on — the
@@ -39,7 +39,7 @@ use libp2p::swarm::FromSwarm;
 use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
 
 /// Whether `addr` is worth advertising to other peers, under the default
-/// (`require_global_ips: true`) policy. Code that has a configured
+/// (`only_global_ips: true`) policy. Code that has a configured
 /// [`AddrPolicy`] should ask it instead.
 pub fn is_announceable(addr: &Multiaddr) -> bool {
     is_announceable_with(addr, true)
@@ -83,7 +83,7 @@ fn is_announceable_lenient(addr: &Multiaddr) -> bool {
     routable_ip && !bad_ip
 }
 
-/// The lenient v4 tier, selected by `require_global_ips: false`.
+/// The lenient v4 tier, selected by `only_global_ips: false`.
 ///
 /// Rejects unspecified, loopback, link-local, broadcast, multicast, the RFC1918
 /// private ranges and RFC6598 carrier-grade NAT (`100.64/10`).
@@ -109,7 +109,7 @@ pub fn is_routable_v4(a: Ipv4Addr) -> bool {
     true
 }
 
-/// The default v4 classification (`require_global_ips: true`).
+/// The default v4 classification (`only_global_ips: true`).
 ///
 /// Adds the reserved ranges [`is_routable_v4`] permits back onto the reject
 /// list, matching what `autonat::Config::only_global_ips` enforces internally.
@@ -175,7 +175,7 @@ pub fn is_routable_v6(a: Ipv6Addr) -> bool {
     true
 }
 
-/// The default v6 classification (`require_global_ips: true`), the counterpart
+/// The default v6 classification (`only_global_ips: true`), the counterpart
 /// of [`is_globally_routable_v4`].
 ///
 /// Drops what [`is_routable_v6`] permits: unique-local `fc00::/7`,
@@ -228,7 +228,7 @@ pub fn ipv6_loopback_available() -> bool {
 /// the identify filter drifted apart before.
 #[derive(Clone, Copy, Debug)]
 pub struct AddrPolicy {
-    /// `require_global_ips`: the default. Off selects the lenient tier, which
+    /// `only_global_ips`: the default. Off selects the lenient tier, which
     /// admits the IANA-reserved ranges (rule 2 in the module docs).
     pub strict: bool,
     /// Whether IPv6 addresses are usable at all on this node.
@@ -256,9 +256,9 @@ impl AddrPolicy {
 }
 
 /// Whether `addr` is worth advertising, with the reserved ranges rejected when
-/// `strict` (`require_global_ips`).
+/// `strict` (`only_global_ips`).
 ///
-/// The one entry point callers should use, so the `require_global_ips` decision
+/// The one entry point callers should use, so the `only_global_ips` decision
 /// lives in one place rather than being re-derived at each call site.
 pub fn is_announceable_with(addr: &Multiaddr, strict: bool) -> bool {
     if !is_announceable_lenient(addr) {
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn rfc2544_benchmarking_addresses_are_lenient_only() {
         // Reserved but not LAN-private: admitted by the lenient tier an
-        // operator selects with `require_global_ips: false`, and by nothing
+        // operator selects with `only_global_ips: false`, and by nothing
         // else. `is_announceable` is the default, so it says no.
         assert!(is_routable_v4(v4("198.18.0.20")));
         assert!(is_routable_v4(v4("198.19.255.254")));
