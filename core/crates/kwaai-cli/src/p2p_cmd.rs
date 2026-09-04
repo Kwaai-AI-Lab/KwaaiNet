@@ -61,7 +61,7 @@ async fn peers(args: PeersArgs) -> Result<()> {
 
 /// Connect to the local p2pd, or print the standard "node not running" message
 /// and return `Ok(None)` so the caller exits cleanly with status 0.
-async fn connect_p2pd() -> Result<Option<P2PClient>> {
+async fn connect_node() -> Result<Option<P2PClient>> {
     let addr = daemon_socket();
     match P2PClient::connect(&addr).await {
         Ok(c) => Ok(Some(c)),
@@ -104,7 +104,7 @@ fn fmt_kind(k: ConnKind) -> &'static str {
 // ---------------------------------------------------------------------------
 
 async fn info() -> Result<()> {
-    let Some(mut client) = connect_p2pd().await? else {
+    let Some(mut client) = connect_node().await? else {
         return Ok(());
     };
 
@@ -169,7 +169,7 @@ async fn info() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn peers_list() -> Result<()> {
-    let Some(mut client) = connect_p2pd().await? else {
+    let Some(mut client) = connect_node().await? else {
         return Ok(());
     };
 
@@ -305,7 +305,7 @@ async fn peers_find(peer_id_str: String, timeout: i64) -> Result<()> {
         .parse()
         .context("invalid peer ID (expected base58, e.g. 12D3KooW…)")?;
 
-    let Some(mut client) = connect_p2pd().await? else {
+    let Some(mut client) = connect_node().await? else {
         return Ok(());
     };
 
@@ -360,7 +360,7 @@ async fn peers_connect(
     peer: Option<String>,
     message: Option<String>,
 ) -> Result<()> {
-    let Some(mut client) = connect_p2pd().await? else {
+    let Some(mut client) = connect_node().await? else {
         return Ok(());
     };
 
@@ -558,7 +558,7 @@ async fn peers_send(
         }
     };
 
-    let Some(client) = connect_p2pd().await? else {
+    let Some(client) = connect_node().await? else {
         return Ok(());
     };
 
@@ -798,7 +798,7 @@ async fn probe(args: ProbeArgs) -> Result<()> {
         return Ok(());
     }
 
-    let Some(client) = connect_p2pd().await? else {
+    let Some(client) = connect_node().await? else {
         return Ok(());
     };
 

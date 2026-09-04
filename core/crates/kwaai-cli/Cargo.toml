@@ -55,7 +55,6 @@ chrono = { version = "0.4", features = ["serde"] }
 libp2p = { workspace = true }
 prost = { workspace = true }
 rmp-serde = { workspace = true }
-unsigned-varint = { workspace = true }
 
 # gRPC IPC surface — used by `kwaainet start` to host the in-process
 # KwaaiNet service that the GUI / future CLI subcommands talk to.

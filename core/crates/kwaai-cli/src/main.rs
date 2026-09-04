@@ -37,7 +37,6 @@ mod rebalancer;
 mod reputation;
 mod reputation_cmd;
 mod service;
-mod setup;
 mod shard_api;
 mod shard_cmd;
 #[cfg(feature = "storage")]
@@ -310,7 +309,7 @@ async fn main() -> Result<()> {
                 println!();
                 print_success(&format!("KwaaiNet daemon started (PID {})", child_pid));
 
-                // Wait for p2pd socket to be ready before spawning children.
+                // Wait for the control socket to be ready before spawning children.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                 let policy = cfg.contribute_policy(args.no_contribute);
@@ -433,11 +432,6 @@ async fn main() -> Result<()> {
             if mgr.is_running() {
                 mgr.stop_process()?;
             }
-
-            // Kill any orphaned p2pd processes unconditionally — even if the
-            // kwaainet daemon was already dead, p2pd may still be running and
-            // would prevent the new daemon from binding the socket.
-            daemon::kill_orphaned_p2pd();
 
             let child_pid = DaemonManager::spawn_daemon_child(&[])?;
             print_success(&format!("KwaaiNet daemon restarted (PID {})", child_pid));
@@ -702,25 +696,26 @@ async fn main() -> Result<()> {
                 }
             );
 
-            // p2pd — try to connect and identify
-            let p2pd_status = async {
+            // p2p node — try to connect and identify
+            let p2p_status = async {
                 use kwaai_p2p_daemon::P2PClient;
-                let sock = std::env::var("KWAAINET_SOCKET")
-                    .unwrap_or_else(|_| kwaai_p2p_daemon::DEFAULT_SOCKET_NAME.to_string());
-                let addr = format!("/unix/{sock}");
+                let addr = match std::env::var("KWAAINET_SOCKET") {
+                    Ok(sock) if !sock.is_empty() => format!("/unix/{sock}"),
+                    _ => kwaai_p2p_daemon::default_socket_addr(),
+                };
                 let mut c = P2PClient::connect(&addr).await?;
                 let peer_id = c.identify().await?;
                 let peers = c.list_peers().await.unwrap_or_default();
                 anyhow::Ok((peer_id, peers.len()))
             }
             .await;
-            match p2pd_status {
+            match p2p_status {
                 Ok((peer_id, peer_count)) => {
-                    println!("  p2pd            : ✅ running");
+                    println!("  p2p node        : ✅ running");
                     println!("  peer ID         : {}", peer_id);
                     println!("  connected peers : {}", peer_count);
                 }
-                Err(_) => println!("  p2pd            : ❌ unreachable"),
+                Err(_) => println!("  p2p node        : ❌ unreachable"),
             }
 
             // Ollama
@@ -1765,8 +1760,9 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Setup(args) => {
             if args.get_deps {
-                setup::get_dependencies().await?;
-            } else {
+                print_info("p2pd is no longer required; nothing to download");
+            }
+            {
                 print_box_header("🔧 KwaaiNet Setup");
                 let cfg = KwaaiNetConfig::load_or_create()?;
 
@@ -1784,7 +1780,6 @@ async fn main() -> Result<()> {
                 println!("  Blocks: {}", cfg.blocks);
                 println!("  Port:   {}", cfg.port);
                 println!();
-                print_info("Run `kwaainet setup --get-deps` to download p2pd if missing");
                 print_info("Start the node with: kwaainet start --daemon");
                 print_separator();
             }
