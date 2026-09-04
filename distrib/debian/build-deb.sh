@@ -50,17 +50,13 @@ install -d -m 0755 "${STAGE}/usr/bin"
 install -d -m 0755 "${STAGE}/usr/share/man/man1"
 install -d -m 0755 "${STAGE}/usr/share/doc/kwaainet"
 install -d -m 0755 "${STAGE}/usr/share/lintian/overrides"
-install -d -m 0755 "${STAGE}/usr/lib/systemd/user"
 install -d -m 0755 "${STAGE}/usr/lib/kwaainet"
-install -d -m 0755 "${STAGE}/etc/default"
 
 install -m 0755 "${PAYLOAD}/kwaainet" "${STAGE}/usr/bin/kwaainet"
 # /usr/bin, not a private libexec: find_p2pd_binary() searches only next to
 # the exe, a cargo target dir, and $PATH.
 install -m 0755 "${PAYLOAD}/p2pd" "${STAGE}/usr/bin/p2pd"
 
-install -m 0644 "${PACKAGING}/kwaainet.service" "${STAGE}/usr/lib/systemd/user/kwaainet.service"
-install -m 0644 "${PACKAGING}/kwaainet.env" "${STAGE}/etc/default/kwaainet"
 install -m 0644 "${PACKAGING}/copyright" "${STAGE}/usr/share/doc/kwaainet/copyright"
 install -m 0644 "${HERE}/lintian-overrides" "${STAGE}/usr/share/lintian/overrides/kwaainet"
 
@@ -86,36 +82,28 @@ kwaainet for Debian
 Installed from a package
 ------------------------
 This copy of kwaainet was installed by the package manager, so self-update is
-turned off: /usr/lib/kwaainet/packaged marks the install as "deb", and
-/etc/default/kwaainet sets KWAAINET_NO_AUTO_UPDATE=1. Do not run
+turned off: /usr/lib/kwaainet/packaged marks the install as "deb". Do not run
 "kwaainet update" or "kwaainet uninstall" — they would replace or delete files
-dpkg owns, leaving the package database disagreeing with the filesystem.
-Upgrade and remove with apt instead.
+dpkg owns, leaving the package database disagreeing with the filesystem. Both
+commands refuse and point at apt. Upgrade and remove with apt instead.
 
 Running a node
 --------------
-A systemd *user* unit is installed at /usr/lib/systemd/user/kwaainet.service.
-It is deliberately NOT enabled. To run a node as your own user:
+This package installs no service. Start a node the same way you would from a
+tarball install:
 
-    systemctl --user enable --now kwaainet
-    systemctl --user status kwaainet
-    journalctl --user -u kwaainet -f
+    kwaainet start
 
-A user unit, not a system one, because configuration, logs and the node
-identity key all live in ~/.kwaainet.
+The node runs as you, and its configuration, logs and identity key live in
+~/.kwaainet — so each user on a machine has their own node.
 
-Note that "kwaainet service install" writes its own unit to
-~/.config/systemd/user/kwaainet.service, and systemd gives a unit in the user's
-own directory precedence over one in /usr/lib/systemd/user. So if you have ever
-run that command, your own unit keeps winning and edits to the packaged one
-have no effect. Remove ~/.config/systemd/user/kwaainet.service (and run
-"systemctl --user daemon-reload") to fall back to the packaged unit.
-
-Configuration
--------------
-/etc/default/kwaainet is a conffile: your edits survive upgrades and dpkg will
-ask before overwriting it. Node configuration itself is per-user, in
-~/.kwaainet/config.yaml.
+"kwaainet service install" writes a systemd *user* unit to
+~/.config/systemd/user/kwaainet.service if you want the node to start at login.
+Note that a user unit stops when your session ends unless you enable lingering
+("loginctl enable-linger $USER"), so it is not a substitute for a system
+service on a headless machine. A packaged system service is planned but
+deliberately not shipped yet: it needs a system user, state under /var/lib and
+configuration under /etc, none of which the current config layout supports.
 
 Your data is never removed
 --------------------------
@@ -129,9 +117,6 @@ PATH because that is where kwaainet looks for it; it is not meant to be run
 by hand.
 README
 chmod 0644 "${STAGE}/usr/share/doc/kwaainet/README.Debian"
-
-printf '/etc/default/kwaainet\n' > "${STAGE}/DEBIAN/conffiles"
-chmod 0644 "${STAGE}/DEBIAN/conffiles"
 
 # Derived, never hand-written. Only kwaainet is passed: p2pd is a static ELF
 # and dpkg-shlibdeps errors on it. dpkg-shlibdeps insists on a debian/control

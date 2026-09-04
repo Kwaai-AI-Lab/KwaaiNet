@@ -19,8 +19,6 @@ it.
 | `/usr/share/doc/kwaainet/copyright` | 0644 | DEP-5, MIT |
 | `/usr/share/doc/kwaainet/changelog.Debian.gz` | 0644 | |
 | `/usr/share/doc/kwaainet/README.Debian` | 0644 | |
-| `/usr/lib/systemd/user/kwaainet.service` | 0644 | Installed, **not** enabled |
-| `/etc/default/kwaainet` | 0644 | dpkg conffile |
 | `/usr/lib/kwaainet/packaged` | 0644 | Contains `deb` |
 | `/usr/share/lintian/overrides/kwaainet` | 0644 | |
 
@@ -41,29 +39,37 @@ without a code change.
 `/usr/lib/kwaainet/packaged` contains `deb`. The Rust updater reads it and
 refuses to self-update, because a self-update would overwrite files dpkg owns
 and leave the package database disagreeing with the filesystem.
-`/etc/default/kwaainet` additionally sets `KWAAINET_NO_AUTO_UPDATE=1`.
+The marker is the whole mechanism: there is no `/etc` file to keep in step
+with it, and `KWAAINET_NO_AUTO_UPDATE` remains purely a developer escape hatch.
 
-## systemd: a user unit, not a system one
+## No service, deliberately
 
-Configuration, logs and the identity key all live in `~/.kwaainet`, and
-`core/crates/kwaai-cli/src/service.rs` already installs a *user* unit. The
-packaged unit matches it, with two deliberate differences:
+This package installs **no systemd unit and no `/etc` configuration**. Run
+`kwaainet start` exactly as with a tarball install. The node runs as the
+invoking user, with config, logs and identity key under `~/.kwaainet`, so each
+user on a machine has their own node — which is also what the KwaaiNetGUI
+package needs, since the GUI's daemon runs as the desktop user and writes that
+directory.
 
-- `ExecStart=/usr/bin/kwaainet run-node` — a fixed path, where `service.rs`
-  uses `current_exe()`.
-- `EnvironmentFile=-/etc/default/kwaainet` and `-/etc/sysconfig/kwaainet`, both
-  `-`-prefixed, so the identical unit file also serves the future RPM.
+A packaged **system** service is the right end state for headless installs, but
+it is a bigger change than packaging and is deliberately deferred:
 
-Nothing enables it: starting a node is the admin's decision, and a user unit
-has no meaningful system-wide enable anyway. The package ships no maintainer
-scripts at all — man-db has its own dpkg trigger, and conffile handling is
-dpkg-internal, so there is nothing for a postinst to do.
+- it needs a `kwaainet` system user, state under `/var/lib/kwaainet` and
+  configuration under `/etc/kwaainet`;
+- `kwaainet_dir()` in `core/crates/kwaai-cli/src/config.rs` is a *single* root —
+  `config_file()`, `run_dir()`, `log_dir()`, `identity.key`, `rag/` and
+  `storage/` all hang off it, so there is no config/state split to package
+  against;
+- `config.yaml` is read-**write** at runtime. 19 call sites invoke `save()`,
+  including the first-run create, the `initial_peers` migration, and a
+  mid-startup write in `main.rs` that persists map-derived model settings.
+  Several are `let _ = cfg.save()`, so against a root-owned `/etc` file they
+  would fail *silently*.
 
-**`kwaainet service install` keeps winning.** It writes
-`~/.config/systemd/user/kwaainet.service`, and systemd gives a unit in the
-user's own directory precedence over `/usr/lib/systemd/user/`. Anyone who has
-ever run that command keeps their own unit, and edits to the packaged one have
-no effect until they remove it. `README.Debian` says so to the user.
+A user unit is not a workaround: systemd stops user units when the session ends
+unless `loginctl enable-linger` is set, so it would not survive logout on a
+server. `kwaainet service install` still writes one for desktop users who want
+start-at-login, and that path is unchanged by this package.
 
 ## Depends is derived, never written
 
@@ -193,5 +199,5 @@ Two safety properties are deliberate:
 
 `ci.yml`'s `package-smoke` builds from a stub payload (two shell scripts) on
 every PR, in roughly 25 seconds. It validates control generation, layout,
-permissions, conffiles, lintian and a full install/remove cycle — everything
+permissions, lintian and a full install/remove/purge cycle — everything
 except the parts that need a real binary, which `package-linux` covers.

@@ -402,8 +402,8 @@ jobs:
   # for the binaries — so this stays seconds, not a release build.  ci.yml
   # deliberately has no release build (see the header); the real payload is
   # packaged by release.yml's package-linux job.  What this proves: control
-  # generation, install layout, permissions, conffiles, lintian, and a full
-  # install/remove cycle.
+  # generation, install layout, permissions, lintian, and a full
+  # install/remove/purge cycle.
   package-smoke:
     name: Package smoke (.deb)
     runs-on: ubuntu-latest
