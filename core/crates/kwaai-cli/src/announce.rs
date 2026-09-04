@@ -1263,7 +1263,7 @@ mod tests {
     #[test]
     fn select_dial_addrs_reserves_room_for_a_circuit() {
         let mut listeners: Vec<String> = (1..=MAX_DIAL_ADDRS + 2)
-            .map(|i| format!("/ip6/2001:db8::{i}/tcp/4001"))
+            .map(|i| format!("/ip6/2606:4700::{i}/tcp/4001"))
             .collect();
         listeners.push(format!(
             "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
