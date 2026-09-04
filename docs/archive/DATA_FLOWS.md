@@ -1,10 +1,14 @@
+> **Historical document.** Describes KwaaiNet as of 2026-02-19. Retained for context;
+> it is not maintained and does not describe the current release. See
+> [docs/README.md](../README.md) for current documentation.
+
 # Data Flows & Authentication Architecture
 ## Progressive Authentication, Personal Data Integration, and Privacy Patterns
 
 **Version**: 2.0
 **Date**: February 4, 2026
 **Status**: Technical Specification
-**Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [VERIDA_INTEGRATION.md](../VERIDA_INTEGRATION.md), [CHALLENGE_ARCHITECTURES.md](./CHALLENGE_ARCHITECTURES.md)
+**Related Documents**: [ARCHITECTURE.md](../ARCHITECTURE.md), [VERIDA_INTEGRATION.md](./VERIDA_INTEGRATION.md), [CHALLENGE_ARCHITECTURES.md](./CHALLENGE_ARCHITECTURES.md)
 
 ---
 
@@ -841,7 +845,7 @@ graph TB
 - [Challenge Architectures](./CHALLENGE_ARCHITECTURES.md) - Detailed component diagrams
 - [Verida Architecture](./VERIDA_ARCHITECTURE.md) - Deep dive into Verida integration
 - [Deployment Architecture](./DEPLOYMENT_ARCHITECTURE.md) - Platform deployment patterns
-- [Verida Integration Documentation](../docs/VERIDA_INTEGRATION.md) - Complete integration guide
+- [Verida Integration Documentation](./VERIDA_INTEGRATION.md) - Complete integration guide
 
 ---
 

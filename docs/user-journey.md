@@ -214,7 +214,7 @@ only             identity         network          inference        operator    
 - GliaNet Fiduciary Pledge signed.
 
 ### Experience
-- Node serves as a **VPK Eve**: stores encrypted vector knowledge for Bob nodes across the network.
+- Node serves as a **VPK Eve**: stores opaque vectors for Bob nodes across the network, and never receives their documents. (Sealing those vectors client-side so the host cannot read them is designed but not yet wired in.)
 - Appears on map with a **purple Guardian badge** and a shield icon (Fiduciary Pledge).
 - Eligible for HIPAA and GDPR-classified workloads.
 - `FiduciaryPledgeVC` issued by the GliaNet Foundation (+0.30 trust weight — the single highest-weight VC in the system).

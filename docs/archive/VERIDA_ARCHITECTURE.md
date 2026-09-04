@@ -1,3 +1,7 @@
+> **Historical document.** Describes KwaaiNet as of 2026-02-19. Retained for context;
+> it is not maintained and does not describe the current release. See
+> [docs/README.md](../README.md) for current documentation.
+
 # Verida Integration Architecture (Optional)
 ## Detailed Architecture for KwaaiNet + Verida Data Sovereignty
 

@@ -57,8 +57,14 @@ pandoc docs/FOO.md -o rendered/docs/FOO.docx --toc --toc-depth=3
 
 `rendered/` is gitignored. These are build outputs, never committed and never
 the thing to edit — a fix goes in the `.md` and the rendering is regenerated.
-(The handful of `.docx` files tracked under `docs/` and `projects/*/plans/` are
-authored in Word, not generated from markdown; they are not part of this.)
+
+**No `.docx` is tracked.** A binary snapshot cannot be reviewed in a diff and
+goes stale silently: `DreamRAG-doc.docx` had drifted to 36% of its `.md`'s word
+count, missing two whole sections, and `WHITEPAPER.docx` still asserted security
+properties the `.md` no longer claims. If someone wants a Word copy, regenerate
+it into `rendered/`. The one thing that may legitimately be tracked is a pandoc
+*reference template* — a `.docx` that is an input to a build, not an output of
+one.
 
 ## Tests
 

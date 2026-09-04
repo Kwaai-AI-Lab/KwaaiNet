@@ -1,7 +1,10 @@
 //! kwaai-storage — Multi-tenant vector storage fabric for KwaaiNet
 //!
-//! Each KwaaiNet node can act as an Eve (storage host), holding encrypted
-//! vectors for multiple Bobs (data owners). This crate provides:
+//! Each KwaaiNet node can act as an Eve (storage host), holding vectors for
+//! multiple Bobs (data owners). The crate deliberately knows nothing about
+//! encryption: vectors are opaque `Vec<f32>` of the tenant's declared dimension,
+//! so a client that seals them before upload gets a host that cannot tell the
+//! difference. This crate provides:
 //!
 //! - **Embedded HNSW storage** via hnsw_rs (pure Rust, no Docker/Postgres)
 //! - **Persistent metadata** via SQLite in WAL mode (multi-process safe)

@@ -288,7 +288,7 @@ Use **accent blue** for links and key info (e.g. "Open map"), **accent purple** 
 - Config: `~/.kwaainet/config.yaml` ([config.rs](../core/crates/kwaai-cli/src/config.rs)); [KwaaiNetConfig](https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/main/core/crates/kwaai-cli/src/config.rs) schema.
 - Status: [NodeStatus](https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/main/core/crates/kwaai-cli/src/daemon.rs) in daemon.rs; `kwaainet status` output.
 - Map API: e.g. `curl -s https://map.kwaai.ai/api/v1/state` (see [DEBUGGING_MAP_VISIBILITY.md](./DEBUGGING_MAP_VISIBILITY.md)).
-- Deployment diagram (TUI mention): [DEPLOYMENT_ARCHITECTURE.md](./DEPLOYMENT_ARCHITECTURE.md).
+- Deployment diagram (TUI mention): [archive/DEPLOYMENT_ARCHITECTURE.md](archive/DEPLOYMENT_ARCHITECTURE.md).
 
 ---
 

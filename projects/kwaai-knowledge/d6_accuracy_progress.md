@@ -435,7 +435,7 @@ Two other improvements shipped alongside the embedder work: the context window p
 
 Dense retrieval has a fundamental weakness with proper-name questions: "Who was J.M.H. Gool?" yields a query embedding that clusters near general biographical text, not specifically near the chapter about that person. The gap between abbreviations/acronyms and their canonical descriptions is invisible to cosine similarity.
 
-A knowledge graph layer was built on top of the chunk store. During ingestion, an LLM extracts entities (Person, Organization, Location, Event, …) and directed relations from each chunk, assigns deterministic IDs via SHA-256(name + type), and persists them to a per-tenant redb database. At query time, entity embeddings are searched first; matching entities' BFS neighborhoods (2 hops) contribute chunk IDs that are RRF-fused with the dense vector results.
+A knowledge graph layer was built on top of the chunk store. During ingestion, an LLM extracts entities (Person, Organization, Location, Event, …) and directed relations from each chunk, assigns deterministic IDs via SHA-256(name + type), and persists them to a per-tenant database (redb at the time of writing; SQLite since July 2026). At query time, entity embeddings are searched first; matching entities' BFS neighborhoods (2 hops) contribute chunk IDs that are RRF-fused with the dense vector results.
 
 Graph mode alone scored **43.1%** — trailing hybrid vector retrieval. The reason is clear in hindsight: graph retrieval pulls in all chunks that mention related entities, which adds noise when those entities appear in tangential contexts. The router mode (`--mode auto`) solves this by detecting entity-heavy queries and blending graph and vector results. Auto mode reached **46.6%**.
 

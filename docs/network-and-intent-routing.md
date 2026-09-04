@@ -10,19 +10,35 @@ KwaaiNet's network layer provides a credibly neutral **Layer 8 business protocol
 
 ---
 
-## 1. P2P transport layer _(to be expanded)_
+## 1. P2P transport layer
 
-KwaaiNet uses **libp2p** with:
+KwaaiNet uses **libp2p**, in-process via rust-libp2p (the default since v0.6.0), with:
 
-- **Kademlia DHT** (Hivemind-compatible) for node discovery and distributed record storage.
+- **Kademlia DHT** (Hivemind-compatible) for node discovery and record storage.
 - **Circuit relay** for residential NAT traversal.
 - **Yamux** for stream multiplexing.
+- **Noise** for transport encryption.
+
+### Defaults worth knowing
+
+Three defaults shape how decentralized a stock node actually is. All are in
+`~/.kwaainet/config.yaml`.
+
+| Key | Default | What it means |
+|---|---|---|
+| `force_private` | `true` | The node declares itself NAT-private and reaches peers through a relay, **even if it has a public address**. It also vetoes AutoNAT, so the node can never be promoted to public while this is set. It is not settable via `kwaainet config set` — edit the YAML. |
+| `decentralized_dht` | `false` | Announcements are written to every entry in `initial_peers` and read back from the same list, rather than being placed across the DHT. Correct, but it makes those few bootstrap addresses load-bearing. |
+| `enable_quic` | `false` | TCP only. QUIC is compiled in but off, because some networks block or throttle UDP. |
+
+The relay default trades latency for working out of the box. For a lower-latency direct
+connection, set `public_ip` and `announce_addr`, forward the TCP port, and check
+`kwaainet status` reports `using_relay: false`.
 
 ---
 
 ## 2. DHT records and node announcement _(to be expanded)_
 
-Each node announces itself and its capabilities to the DHT on startup and re-announces every 120 seconds. Records include:
+Each node announces itself and its capabilities to the DHT on startup and re-announces every 300 seconds (± 30 s of jitter), with a 360 s record TTL. Records include:
 
 - Model identity, block range, and throughput.
 - Trust attestations (VC summaries).
@@ -30,9 +46,13 @@ Each node announces itself and its capabilities to the DHT on startup and re-ann
 
 ---
 
-## 3. Trust-gated routing _(to be expanded)_
+## 3. Trust-weighted routing
 
-When routing inference requests, nodes filter shard chain candidates by local trust score and declared capability. An intent like "model X, minimum trust tier Verified, max latency Y ms" resolves only to nodes that satisfy all three constraints simultaneously.
+**Today.** Nodes rank shard-chain candidates by block coverage first and local trust score second — trust breaks ties, it does not exclude (`shard_cmd.rs:3149`). The only filters applied are block range and peers that have already failed in this session. There is no minimum-trust setting, no latency bound, and no intent object.
+
+This is deliberate at the current network size. Most peers carry `Unknown` because they have fewer than five recorded observations, so a hard trust filter would today reduce the candidate set below full block coverage and fail the request outright.
+
+**Intended.** An intent such as "model X, minimum trust tier Verified, max latency Y ms" resolving only to nodes that satisfy every constraint. That needs a configurable minimum tier, latency in the candidate set, and enough of the fleet earning a tier for filtering to still leave a viable chain.
 
 ---
 

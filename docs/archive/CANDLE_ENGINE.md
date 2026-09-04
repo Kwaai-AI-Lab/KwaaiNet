@@ -1,3 +1,7 @@
+> **Historical document.** Describes KwaaiNet as of 2026-02-19. Retained for context;
+> it is not maintained and does not describe the current release. See
+> [docs/README.md](../README.md) for current documentation.
+
 # Candle Engine: Technical Foundation for KwaaiNet
 ## Rust-Native ML Framework for Sovereign AI Infrastructure
 

@@ -1,6 +1,6 @@
 # Sharded LLM processing in KwaaiNet
 
-KwaaiNet's CandelEngine turns a large transformer model into a network of cooperating nodes by sharding the model into blocks and forwarding activations (and, when needed, KV cache segments) between them. From the app's view it looks like a normal chat-completion API; under the hood it is a trust-gated, block-sharded inference pipeline.
+KwaaiNet's CandelEngine turns a large transformer model into a network of cooperating nodes by sharding the model into blocks and forwarding activations (and, when needed, KV cache segments) between them. From the app's view it looks like a normal chat-completion API; under the hood it is a block-sharded inference pipeline in which peer selection is weighted by local trust.
 
 ---
 

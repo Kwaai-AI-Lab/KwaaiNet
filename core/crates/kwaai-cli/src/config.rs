@@ -433,8 +433,8 @@ pub struct ContributeConfig {
     /// never chosen — which now resolves to [`DEFAULT_CONTRIBUTE_SHARDS`],
     /// i.e. off.
     ///
-    /// This used to default to on. Block sharding is experimental: it does not
-    /// work on Apple Silicon at all (#117), where a node serving blocks runs
+    /// This used to default to on. Block sharding runs on CPU and CUDA, but not
+    /// on Apple Silicon (#117), where a node serving blocks runs
     /// ~20x slower than the same machine serving whole models through Ollama —
     /// so the opt-out default enrolled every Mac into the one path that makes
     /// the network worse. Turning contribution *off* by default would be the

@@ -16,7 +16,7 @@ KwaaiNet represents a **paradigm shift** from centralized AI infrastructure to a
 1. **User Sovereignty**: Users own and control all aspects of their participation
 2. **Universal Runtime**: Single codebase deploys across all platforms via Rust/WASM
 3. **Privacy by Design**: End-to-end encryption and regulatory compliance built-in
-4. **Environmental Accountability**: Carbon footprint tracking and renewable energy monitoring
+4. **Environmental Accountability**: Carbon footprint tracking and renewable energy monitoring *(design principle; not yet implemented)*
 5. **Modular Architecture**: Optional integrations for storage, identity, and other services
 6. **Decentralized Trust**: Node reputation earned through Verifiable Credentials and peer endorsements — no central authority, portable across infrastructure changes
 
@@ -100,7 +100,7 @@ graph TB
 
 **Primary Objective**: Universal AI inference engine with distributed deep learning capabilities, inspired by [Hivemind](https://github.com/learning-at-home/hivemind) patterns, that runs everywhere
 
-> **Reference**: See [HIVEMIND_RUST_ARCHITECTURE.md](docs/HIVEMIND_RUST_ARCHITECTURE.md) for complete technical specifications on replicating Hivemind's distributed deep learning in Rust/WASM.
+> **Reference**: See [archive/HIVEMIND_RUST_ARCHITECTURE.md](archive/HIVEMIND_RUST_ARCHITECTURE.md) for complete technical specifications on replicating Hivemind's distributed deep learning in Rust/WASM.
 
 **Core Components**:
 ```rust
@@ -111,7 +111,7 @@ pub struct KwaaiNetCore {
     pub resource_manager: ResourceManager,
 
     // P2P Networking (Hivemind-compatible DHT)
-    pub network_layer: P2PNetwork,         // libp2p with WebRTC
+    pub network_layer: P2PNetwork,         // libp2p: TCP, optionally QUIC
     pub dht: KademliaDHT,                  // Peer discovery & model registry
 
     // Distributed ML (Hivemind patterns)
@@ -180,8 +180,8 @@ graph TB
 
 **Technical Specifications**:
 - **Framework**: Rust with `candle-core` for ML operations
-- **WASM Target**: `wasm32-unknown-unknown` with WebRTC support
-- **P2P Networking**: `rust-libp2p` (native, not go-libp2p-daemon) with WebRTC transport
+- **WASM Target**: `wasm32-unknown-unknown`. The `kwaai-wasm` crate is scaffold; WebRTC support is planned
+- **P2P Networking**: `rust-libp2p`, in-process by default since v0.6.0. TCP transport, with QUIC behind `enable_quic` (off by default). WebRTC is planned, not built
 - **DHT**: Kademlia for peer discovery and expert registry
 - **Model Loading**: GGUF format with IPFS/HTTP fallback
 - **Memory Management**: Efficient model sharding for low-resource devices
@@ -205,7 +205,7 @@ graph TB
 5. Documentation and API specification
 
 *P2P Networking*:
-6. libp2p networking with WebRTC transport (browser-native)
+6. libp2p networking over TCP (WebRTC, for browser-native peers, is planned)
 7. Kademlia DHT for peer discovery and model registry
 8. NAT traversal (hole punching, relay circuits)
 
@@ -257,7 +257,7 @@ pub struct CustomIdentity;     // Custom provider
 - **GDPR Compliance**: Right to deletion, data portability, consent management
 
 **Example Integration: Verida Network**:
-See [docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md) for a complete reference implementation using Verida Network as one optional backend.
+See [archive/VERIDA_INTEGRATION.md](archive/VERIDA_INTEGRATION.md) for a complete reference implementation using Verida Network as one optional backend.
 
 **Key Deliverables**:
 1. Storage provider trait and plugin system
@@ -299,13 +299,13 @@ kwaainet.on('environmentalImpact', (metrics) => updateGreenStats(metrics));
 **Core Features**:
 - **Distributed Services**: AI compute + optional storage + optional identity
 - **Privacy-First Analytics**: Zero tracking, GDPR compliant by design
-- **Environmental Tracking**: Carbon footprint monitoring and renewable energy detection
+- **Environmental Tracking**: Carbon footprint monitoring and renewable energy detection *(planned)*
 - **Contribution Tracking**: Monitor and display resource contributions
 - **Progressive Disclosure**: Anonymous usage → authenticated participation
 
 **Technical Implementation**:
 - **WASM Integration**: Seamless loading of Rust/WASM core engine
-- **WebRTC Networking**: Browser-native P2P communication
+- **WebRTC Networking**: Browser-native P2P communication *(planned)*
 - **Service Workers**: Background processing for better user experience
 - **Consent Management**: Built-in privacy controls without external banners
 - **Performance Monitoring**: Real-time resource usage and optimization
@@ -428,6 +428,10 @@ class SovereignAIForegroundService: Service() {
 ---
 
 ## Component 6: Environmental Tracking
+
+> **Not implemented.** No carbon, energy or renewable-source measurement code exists in
+> `core/` today — `grep -riE "carbon|renewable" core/ --include=*.rs` returns nothing. The
+> section below is a design for a component that has not been built.
 
 ### Technical Requirements
 
@@ -655,7 +659,7 @@ core/crates/kwaai-trust/src/
 
 ### Storage Systems
 Multiple distributed storage networks can be integrated:
-- **Verida Network**: Decentralized storage with built-in identity (reference implementation - see docs/VERIDA_INTEGRATION.md)
+- **Verida Network**: Decentralized storage with built-in identity (reference implementation - see archive/VERIDA_INTEGRATION.md)
 - **Solid Protocol**: Tim Berners-Lee's personal data pods with linked data standards
 - **IPFS**: Content-addressed storage for models and data
 - **Filecoin**: Persistent storage with cryptographic proofs and economic incentives
@@ -728,7 +732,7 @@ If the community desires payment or reward mechanisms, these can be added as opt
 For comprehensive architectural diagrams and detailed technical specifications, see the following documentation:
 
 ### Component Architectures
-**[docs/CHALLENGE_ARCHITECTURES.md](docs/CHALLENGE_ARCHITECTURES.md)**
+**[archive/CHALLENGE_ARCHITECTURES.md](archive/CHALLENGE_ARCHITECTURES.md)**
 
 Detailed Mermaid diagrams for all core components:
 - Component 1: Rust/WASM Core Engine architecture, model loading flows, platform compilation targets
@@ -739,7 +743,7 @@ Detailed Mermaid diagrams for all core components:
 - Component 6: Environmental Tracking system, renewable energy detection, carbon calculation
 
 ### Data Flows & Authentication
-**[docs/DATA_FLOWS.md](docs/DATA_FLOWS.md)**
+**[archive/DATA_FLOWS.md](archive/DATA_FLOWS.md)**
 
 Comprehensive data flow and authentication diagrams:
 - Progressive Authentication: Anonymous → Email → Biometric → Full Identity flows
@@ -748,7 +752,7 @@ Comprehensive data flow and authentication diagrams:
 - Optional Identity Systems: Cross-platform verification and data portability
 
 ### Deployment Architecture
-**[docs/DEPLOYMENT_ARCHITECTURE.md](docs/DEPLOYMENT_ARCHITECTURE.md)**
+**[archive/DEPLOYMENT_ARCHITECTURE.md](archive/DEPLOYMENT_ARCHITECTURE.md)**
 
 Platform-specific deployment patterns:
 - Browser Deployment: WASM loading, WebRTC mesh, service worker architecture
@@ -758,7 +762,7 @@ Platform-specific deployment patterns:
 - Enterprise/Server Deployment: Kubernetes, compliance integration, high availability
 
 ### Verida Integration Architecture (Optional Example)
-**[docs/VERIDA_ARCHITECTURE.md](docs/VERIDA_ARCHITECTURE.md)**
+**[archive/VERIDA_ARCHITECTURE.md](archive/VERIDA_ARCHITECTURE.md)**
 
 Deep dive into Verida Network integration as one optional backend:
 - Protocol Bridge Design: Message translation, state synchronization
@@ -767,7 +771,7 @@ Deep dive into Verida Network integration as one optional backend:
 - Security Architecture: E2E encryption, zero-knowledge auth, threat model
 
 ### Distributed Deep Learning (Hivemind Patterns)
-**[docs/HIVEMIND_RUST_ARCHITECTURE.md](docs/HIVEMIND_RUST_ARCHITECTURE.md)**
+**[archive/HIVEMIND_RUST_ARCHITECTURE.md](archive/HIVEMIND_RUST_ARCHITECTURE.md)**
 
 Comprehensive plan for replicating Hivemind's distributed deep learning in Rust/WASM:
 - Component Mapping: Python → Rust translation for all Hivemind modules
@@ -779,8 +783,8 @@ Comprehensive plan for replicating Hivemind's distributed deep learning in Rust/
 
 ### Supporting Documentation
 - **[INTEGRATIONS.md](INTEGRATIONS.md)** - Optional integration framework and examples
-- **[docs/CANDLE_ENGINE.md](docs/CANDLE_ENGINE.md)** - Candle framework technical details (includes distributed inference patterns)
-- **[docs/VERIDA_INTEGRATION.md](docs/VERIDA_INTEGRATION.md)** - Optional Verida integration example
+- **[archive/CANDLE_ENGINE.md](archive/CANDLE_ENGINE.md)** - Candle framework technical details (includes distributed inference patterns)
+- **[archive/VERIDA_INTEGRATION.md](archive/VERIDA_INTEGRATION.md)** - Optional Verida integration example
 - **`core/crates/kwaai-trust/`** - Decentralized trust graph implementation (credential types, DID utilities, storage, verification, trust scoring)
 
 ---

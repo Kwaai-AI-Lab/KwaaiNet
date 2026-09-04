@@ -56,7 +56,7 @@ Node distribution: 3 nodes at 24–31 ms, 2 at 53–57 ms, **7 at 95–105 ms**
 ### Baselines
 | Backend | Description |
 |---------|-------------|
-| **KwaaiNet local** | In-process redb + hnsw_rs (this machine) |
+| **KwaaiNet local** | In-process SQLite + hnsw_rs (this machine) |
 | **KwaaiNet WAN K=2** | Fan-out over `/kwaai/storage/1.0.0` to 2 metro Eves |
 | **KwaaiNet WAN K=11** | Fan-out to 11 geographically diverse Eves |
 | **Qdrant local Docker** | Qdrant 1.15.5 at `localhost:6333` |
