@@ -139,7 +139,7 @@ Or enter a development shell with all dependencies pinned:
 nix develop github:Kwaai-AI-Lab/KwaaiNet
 ```
 
-See **[nix/README.md](nix/README.md)** for the full Nix guide.
+See **[distrib/nix/README.md](distrib/nix/README.md)** for the full Nix guide.
 
 **RISC-V (cross-compile via Nix):**
 
@@ -149,7 +149,7 @@ file result-kwaainet-riscv64-linux-gnu/bin/kwaainet
 # → ELF 64-bit LSB pie executable, UCB RISC-V
 ```
 
-Copy the binary to your RISC-V board and run. See **[nix/README.md](nix/README.md)** for all cross-compilation targets (aarch64-musl, x86_64-musl, riscv64-gnu).
+Copy the binary to your RISC-V board and run. See **[distrib/nix/README.md](distrib/nix/README.md)** for all cross-compilation targets (aarch64-musl, x86_64-musl, riscv64-gnu).
 
 **Build from source:**
 
@@ -863,7 +863,7 @@ Learn more at [kwaai.ai](https://www.kwaai.ai) and the [Kwaai-AI-Lab GitHub orga
 | [docs/WHITEPAPER.md](docs/WHITEPAPER.md) | Layer 8: The Decentralized AI Trust Layer (whitepaper) |
 | [docs/vpk-shard-bench/README.md](docs/vpk-shard-bench/README.md) | VPK shard benchmark — sharded Eve vs local HNSW vs Qdrant, with chart and analysis |
 | [docs/hnsw_vs_brute_force.md](docs/hnsw_vs_brute_force.md) | HNSW parameter study — ef_search, ef_construction, and m sweeps for dim=768 RAG workloads |
-| [nix/README.md](nix/README.md) | Nix build, dev shell, and test infrastructure |
+| [distrib/nix/README.md](distrib/nix/README.md) | Nix build, dev shell, and test infrastructure |
 | [docs/contributor-guide.md](docs/contributor-guide.md) | How to contribute — 1 hour / 1 day / 1 week paths |
 | [docs/NODE_UI_PLANNING.md](docs/NODE_UI_PLANNING.md) | Node dashboard UI plan — status, config, logs, identity |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow and code contribution guidelines |
