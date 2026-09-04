@@ -2074,9 +2074,12 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     // contain whatever in-flight feature work is being tested). Setting
     // KWAAINET_NO_AUTO_UPDATE=1 disables every code path that would
     // download or install an update from inside the running node.
-    if std::env::var("KWAAINET_NO_AUTO_UPDATE")
-        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
-        .unwrap_or(false)
+    // A packaged install is upgraded by the distro package manager: installing
+    // into ~/.cargo/bin here would shadow /usr/bin/kwaainet on PATH.
+    if crate::updater::packaged_install().is_some()
+        || std::env::var("KWAAINET_NO_AUTO_UPDATE")
+            .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false)
     {
         return None;
     }

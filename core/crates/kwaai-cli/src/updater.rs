@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tracing::debug;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/releases/latest";
@@ -597,6 +598,57 @@ fn backup_path(install_dir: &std::path::Path) -> Result<std::path::PathBuf> {
     )
 }
 
+/// Some("deb")/Some("rpm") when this binary came from a distro package. Such
+/// an install must not self-update (the cargo-dist installer writes to
+/// `~/.cargo/bin`, shadowing `/usr/bin/kwaainet`) nor self-uninstall.
+pub fn packaged_install() -> Option<&'static str> {
+    static PACKAGED: OnceLock<Option<&'static str>> = OnceLock::new();
+    *PACKAGED.get_or_init(detect_packaged_install)
+}
+
+/// Both the exe path and the marker must agree, so a tarball install on a
+/// machine that also has the .deb cannot misfire.
+#[cfg(unix)]
+fn detect_packaged_install() -> Option<&'static str> {
+    if std::env::current_exe().ok()? != std::path::Path::new("/usr/bin/kwaainet") {
+        return None;
+    }
+    parse_marker(&std::fs::read_to_string("/usr/lib/kwaainet/packaged").ok()?)
+}
+
+#[cfg(not(unix))]
+fn detect_packaged_install() -> Option<&'static str> {
+    None
+}
+
+/// Case-sensitive: anything but `deb`/`rpm` is not a package we know.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn parse_marker(s: &str) -> Option<&'static str> {
+    match s.trim() {
+        "deb" => Some("deb"),
+        "rpm" => Some("rpm"),
+        _ => None,
+    }
+}
+
+/// The upgrade command for a packaged install, or `None` when unpackaged.
+pub fn packaged_upgrade_command() -> Option<&'static str> {
+    match packaged_install()? {
+        "deb" => Some("sudo apt update && sudo apt install --only-upgrade kwaainet"),
+        "rpm" => Some("sudo dnf upgrade kwaainet"),
+        _ => None,
+    }
+}
+
+/// The removal command for a packaged install, or `None` when unpackaged.
+pub fn packaged_remove_command() -> Option<&'static str> {
+    match packaged_install()? {
+        "deb" => Some("sudo apt remove kwaainet"),
+        "rpm" => Some("sudo dnf remove kwaainet"),
+        _ => None,
+    }
+}
+
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
     // `(major, minor, patch, is_release)`. The fourth field orders a release
@@ -626,6 +678,30 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_marker_accepts_known_formats_only() {
+        for (input, want) in [
+            ("deb", Some("deb")),
+            ("rpm", Some("rpm")),
+            ("deb\n", Some("deb")),
+            (" rpm ", Some("rpm")),
+            ("", None),
+            ("apt", None),
+            ("DEB", None),
+        ] {
+            assert_eq!(parse_marker(input), want, "marker {input:?}");
+        }
+    }
+
+    /// current_exe() is never /usr/bin/kwaainet under a test harness, so the
+    /// detection must decline regardless of what is on the filesystem.
+    #[test]
+    fn packaged_install_is_none_when_not_running_from_usr_bin() {
+        assert_eq!(packaged_install(), None);
+        assert_eq!(packaged_upgrade_command(), None);
+        assert_eq!(packaged_remove_command(), None);
+    }
 
     #[test]
     fn is_newer_ordering() {

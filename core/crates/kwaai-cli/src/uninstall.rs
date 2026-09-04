@@ -27,7 +27,12 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
             println!("    • All KwaaiNet data and configuration (~/.kwaainet/)");
         }
         println!("    • Auto-start service (if installed)");
-        println!("    • kwaainet binary (and p2pd if present in the same directory)");
+        if let Some(cmd) = crate::updater::packaged_remove_command() {
+            println!("  The binaries belong to a system package — remove them with:");
+            println!("    {cmd}");
+        } else {
+            println!("    • kwaainet binary (and p2pd if present in the same directory)");
+        }
         println!();
         print!("  Proceed? [y/N] ");
         io::stdout().flush().ok();
@@ -93,6 +98,17 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn remove_binaries() {
+    // dpkg/rpm own /usr/bin/kwaainet and /usr/bin/p2pd; deleting them here
+    // would leave the package manager tracking files that no longer exist.
+    if let Some(cmd) = crate::updater::packaged_remove_command() {
+        println!();
+        print_warning(
+            "Binaries are managed by your system package manager — leaving them in place.",
+        );
+        println!("    Remove them with: {cmd}");
+        return;
+    }
+
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
