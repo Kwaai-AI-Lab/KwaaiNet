@@ -3,11 +3,11 @@ name = "kwaai-p2p-daemon"
 version = "0.6.8"
 edition = "2021"
 authors = ["KwaaiNet Contributors"]
-description = "Rust wrapper for go-libp2p-daemon providing Hivemind DHT compatibility"
+description = "The p2pd control-socket protocol: client and node-hosted server"
 license = "MIT"
 
 [dependencies]
-tokio = { version = "1.35", features = ["process", "net", "io-util", "sync", "rt", "macros", "time"] }
+tokio = { version = "1.35", features = ["net", "io-util", "sync", "rt", "macros", "time"] }
 # `compat` bridges libp2p's `futures::io` streams onto tokio's traits, so pipe
 # mode can relay both ends with a single `tokio::io::copy_bidirectional`.
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -31,10 +31,6 @@ kwaai-p2p = { workspace = true }
 # Windows named pipe support
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1.35", features = ["net", "io-util"] }
-
-# Unix process management (for libc::kill)
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [build-dependencies]
 prost-build = "0.13"
