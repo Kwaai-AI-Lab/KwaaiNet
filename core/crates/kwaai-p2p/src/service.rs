@@ -259,6 +259,9 @@ struct RoutedAttempt {
     dial: Option<RoutedDial>,
     /// Whether the attempt's one lookup has been used.
     lookup_spent: bool,
+    /// Whether the attempt's one extra dial on addresses learned mid-burst
+    /// has been used.
+    learned_retry_spent: bool,
     /// Routing-table entries [`NetworkService::forget_exhausted_entry`] took
     /// out, put back if the lookup finds nothing better.
     evicted: Vec<Multiaddr>,
@@ -1264,6 +1267,30 @@ impl NetworkService {
         true
     }
 
+    /// Dial `peer` once more if addresses were learned since the dial that
+    /// just failed with `error`, and this burst has not already done so.
+    /// Bounded twice over: once per burst, and only on addresses the failed
+    /// dial did not try.
+    fn retry_on_learned(&mut self, peer: PeerId, error: &DialError) -> bool {
+        let failed = failed_addresses(error);
+        let attempt = self.routed_attempts.entry(peer).or_default();
+        if attempt.learned_retry_spent || failed.is_empty() {
+            return false;
+        }
+        // Same normalisation as `LearnedAddrs::forget`: a dial reports the
+        // fully-qualified address it tried.
+        let fresh = self
+            .learned_addrs
+            .get(&peer)
+            .iter()
+            .any(|a| !failed.contains(&strip_p2p(a)));
+        if !fresh {
+            return false;
+        }
+        attempt.learned_retry_spent = true;
+        self.dial_routed(peer)
+    }
+
     /// Whether `connection_id` is the dial `peer`'s parked requests were
     /// waiting on, clearing it when it is.
     fn routed_dial_ended(&mut self, peer: &PeerId, connection_id: ConnectionId) -> bool {
@@ -1847,7 +1874,14 @@ impl NetworkService {
                             .get(&peer)
                             .is_some_and(|attempt| attempt.lookup_spent);
                         if spent {
-                            self.fail_routed(peer, dial_error(&error, Some(peer)).to_string());
+                            // A request parked mid-dial may have brought addresses this
+                            // dial never tried; spend one more dial on those before
+                            // failing the burst with an error that predates them.
+                            if self.retry_on_learned(peer, &error) {
+                                debug!(%peer, "routed dial failed — retrying on addresses learned since");
+                            } else {
+                                self.fail_routed(peer, dial_error(&error, Some(peer)).to_string());
+                            }
                         } else {
                             debug!(%peer, error = %error, "routed dial failed — falling back to a DHT lookup");
                             self.forget_exhausted_entry(&peer, &error);
