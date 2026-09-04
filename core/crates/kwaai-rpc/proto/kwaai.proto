@@ -1508,10 +1508,10 @@ message DhtValueView {
     // The value as compact JSON — valid for `jsonDecode` whenever
     // `decoded` is true; when false it is the raw hex and must not be
     // parsed. What JSON cannot say is a one-key tagged object:
-    //   str/bin that is not UTF-8   {"$hex": "<lowercase hex>"}
+    //   str/bin that is not UTF-8   {"$hex": "lowercase hex"}
     //   NaN / ±inf                  {"$float": "nan" | "inf" | "-inf"}
-    //   ext with a msgpack body     {"$ext": <code>, "value": <body>}
-    //   ext with any other body     {"$ext": <code>, "$hex": "…"}
+    //   ext with a msgpack body     {"$ext": code, "value": body}
+    //   ext with any other body     {"$ext": code, "$hex": "…"}
     // Bin that is valid UTF-8 renders as a string. A non-string map key
     // becomes its compact JSON text as the object key; keys that collide
     // after that collapse, last one wins.
@@ -1541,7 +1541,7 @@ enum DhtRecordKind {
 // known, since the id is SHA1(msgpack(name)).
 message DhtLookupRequest {
     // The plaintext key name — `_petals.models`, `_kwaai.vpk.nodes`,
-    // `_kwaai.inference.nodes`, `<prefix>.<block>`, or anything else.
+    // `_kwaai.inference.nodes`, `prefix.N`, or anything else.
     // Hashed to its DHT id here.
     string key = 1;
 
