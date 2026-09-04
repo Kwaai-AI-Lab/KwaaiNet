@@ -101,9 +101,7 @@ pub struct KwaaiNetService {
     ///
     /// Late-bound because `spawn` runs before the node starts — deliberately,
     /// so ping/status/generate answer while p2p is still coming up. Empty
-    /// therefore means one of two things, and the Network op distinguishes
-    /// them: the node has not started yet (transient), or this daemon is
-    /// running the Go p2p path and never will (permanent).
+    /// therefore means the node has not started yet.
     net: Arc<RwLock<Option<NetworkHandle>>>,
     /// Captured at service construction so StatusReply.uptime_secs can
     /// report a process-level uptime without a separate clock.
@@ -254,9 +252,7 @@ impl KwaaiNet for KwaaiNetService {
                     client_frame::Body::Status(_) => {
                         // peer_count is the routing-table size, matching the
                         // field's documented meaning. All three are 0 when the
-                        // swarm is not up yet, or on the Go p2p path where
-                        // there is no handle to ask — the same value this
-                        // reported unconditionally before.
+                        // swarm is not up yet and there is no handle to ask.
                         let (peer_count, bootstrap_total, bootstrap_reachable) =
                             match net_slot.read().await.clone() {
                                 Some(handle) => match handle.network_snapshot().await {
@@ -336,7 +332,6 @@ impl KwaaiNet for KwaaiNetService {
                             id,
                             req,
                             net_slot.clone(),
-                            cfg.clone(),
                             out_tx.clone(),
                             cancels.clone(),
                         )
@@ -1408,7 +1403,6 @@ async fn spawn_session_network(
     id: u64,
     req: NetworkRequest,
     net: Arc<RwLock<Option<NetworkHandle>>>,
-    cfg: Arc<KwaaiNetConfig>,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
     cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
 ) {
@@ -1427,26 +1421,11 @@ async fn spawn_session_network(
         let handle = match net.read().await.clone() {
             Some(h) => h,
             None => {
-                // Two very different situations, and the client acts on them
-                // differently: on the Go p2p path the slot is never filled, so
-                // retrying is pointless; during native startup it is about to
-                // be, so retrying is exactly right.
-                let (code, msg) = if cfg.native_p2p() {
-                    (
-                        ErrorCode::Unavailable,
-                        "p2p node is still starting; retry shortly",
-                    )
-                } else {
-                    // UNIMPLEMENTED, not UNAVAILABLE: on the Go p2p path this
-                    // operation is not merely down, it is absent, and the slot
-                    // will never fill. A client that retries UNAVAILABLE would
-                    // do so forever.
-                    (
-                        ErrorCode::Unimplemented,
-                        "network view requires the native p2p stack \
-                         (`kwaainet config set native_p2p true`)",
-                    )
-                };
+                // The slot fills as the node starts, so retrying is right.
+                let (code, msg) = (
+                    ErrorCode::Unavailable,
+                    "p2p node is still starting; retry shortly",
+                );
                 let _ = out_tx.send(Ok(error_frame(id, code, msg))).await;
                 cancels_for_cleanup.lock().await.remove(&id);
                 return;
