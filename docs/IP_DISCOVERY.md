@@ -202,26 +202,21 @@ refused".
 
 ### The classifier, and why it accepts ULAs
 
-`is_routable_v6` mirrors `is_routable_v4`, including its deliberate carve-out.
-Rejected: unspecified, loopback, multicast, link-local `fe80::/10`, the
-deprecated site-local `fec0::/10` and IPv4-compatible `::a.b.c.d` forms, and the
-discard-only `100::/64`. An IPv4-mapped `::ffff:a.b.c.d` is classified as the v4
-address it carries, so the v4 filters cannot be walked past by respelling an
-address.
+`is_routable_v6` mirrors `is_routable_v4` without its carve-out. Rejected:
+unspecified, loopback, multicast, link-local `fe80::/10`, unique-local
+`fc00::/7`, the deprecated site-local `fec0::/10` and IPv4-compatible
+`::a.b.c.d` forms, the discard-only `100::/64`, documentation `2001:db8::/32`
+and `3fff::/20`, benchmarking `2001:2::/48`, and the ranges that name a v4
+endpoint or an overlay rather than a host on the v6 internet — Teredo
+`2001::/32`, 6to4 `2002::/16`, ORCHID `2001:10::/28` and `2001:20::/28`. An
+IPv4-mapped `::ffff:a.b.c.d` is classified as the v4 address it carries, so the
+v4 filters cannot be walked past by respelling an address.
 
-**Accepted:** unique-local `fc00::/7`, documentation `2001:db8::/32` and
-`3fff::/20`, and benchmarking `2001:2::/48`. This is the same decision as
-accepting RFC2544 `198.18/15` on the v4 side, and for the same reason: a docker
-bridge hands out ULAs unless it is given a delegated global prefix, so the v6
-test bed lives on `fdc6:1200::/64` and would classify itself unreachable
-otherwise.
-
-`is_globally_routable_v6` is the strict form, reached by `require_global_ips`.
-It rejects all of the above plus the ranges that name a v4 endpoint or an
-overlay rather than a host on the v6 internet: Teredo `2001::/32`, 6to4
-`2002::/16`, and ORCHID `2001:10::/28` and `2001:20::/28`. Turn it on for a node
-on the real internet, where a documentation-range address in the announce set
-could only ever be a misconfiguration.
+Unique-local is the v6 private range, and it is treated exactly as RFC1918 is
+on the v4 side: a peer at `fd00::…` cannot be dialed from outside its own
+network, so the address is never announced. There is no v6 equivalent of the
+RFC2544 allowance — a v6 address is announceable only when it is globally
+routable, and `is_globally_routable_v6` is the same set under the strict name.
 
 ### Rolling v6 out to the fleet
 
