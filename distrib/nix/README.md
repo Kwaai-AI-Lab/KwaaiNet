@@ -14,7 +14,7 @@ The goals of using Nix in this repository are to:
   mismatches; a single `nix build` or `nix develop` is all you need
 
 Feedback and pull requests are welcome.  If we're missing a tool, please open
-an issue or PR.  See `nix/packages.nix` for package definitions.
+an issue or PR.  See `distrib/nix/packages.nix` for package definitions.
 
 ---
 
@@ -189,19 +189,19 @@ See also: [Development environment with nix-shell](https://nixos.wiki/wiki/Devel
 ### What this repository provides
 
 The Nix setup consists of `flake.nix`, `flake.lock`, and modular files in
-`nix/`:
+`distrib/nix/`:
 
 - **`flake.nix`** — main entry point; wires up builds, containers, tests,
   cross-compilation, and the dev shell
 - **`flake.lock`** — pins exact versions so all developers use identical inputs
-- **`nix/packages.nix`** — shared dependency lists (DRY across build + devshell)
-- **`nix/crane.nix`** — two-phase Rust build (cached deps + source)
-- **`nix/p2pd.nix`** — go-libp2p-daemon Hivemind fork
-- **`nix/proto.nix`** — protobuf codegen derivation
-- **`nix/containers.nix`** — OCI container images
-- **`nix/cross.nix`** — cross-compilation module
-- **`nix/devshell.nix`** — development shell configuration
-- **`nix/tests/`** — test infrastructure (smoke, two-node, containers, cross)
+- **`distrib/nix/packages.nix`** — shared dependency lists (DRY across build + devshell)
+- **`distrib/nix/crane.nix`** — two-phase Rust build (cached deps + source)
+- **`distrib/nix/p2pd.nix`** — go-libp2p-daemon Hivemind fork
+- **`distrib/nix/proto.nix`** — protobuf codegen derivation
+- **`distrib/nix/containers.nix`** — OCI container images
+- **`distrib/nix/cross.nix`** — cross-compilation module
+- **`distrib/nix/devshell.nix`** — development shell configuration
+- **`distrib/nix/tests/`** — test infrastructure (smoke, two-node, containers, cross)
 - **`Makefile`** — convenience targets wrapping nix commands
 
 All Nix packages are sourced from [nixpkgs](https://github.com/NixOS/nixpkgs/)
@@ -214,7 +214,7 @@ and are searchable at [search.nixos.org](https://search.nixos.org/packages?chann
 ```
 flake.nix                 orchestrator — wires modules together
 Makefile                  build targets with dedicated output symlinks
-nix/
+distrib/nix/
   packages.nix            shared dependency lists (DRY across build + devshell)
   p2pd.nix                go-libp2p-daemon Hivemind fork (buildGoModule)
   proto.nix               protobuf codegen derivation (protoc + protoc-gen-prost)
@@ -247,7 +247,7 @@ nix/
   coreutils — minimal attack surface.  Built with `streamLayeredImage` so
   there is no intermediate tarball; the output is a script that streams
   directly to `docker load` or `podman load`.
-- **Modular `nix/` layout** — the flake delegates to single-purpose modules
+- **Modular `distrib/nix/` layout** — the flake delegates to single-purpose modules
   (following the pattern used by the redpanda and xdp2 Nix setups).
 - **Separate p2pd derivation** — the upstream `build.rs` clones a Git repo and
   runs `go build` at Rust compile time.  Nix builds are sandboxed (no network),
@@ -275,7 +275,7 @@ nix/
 Nix requires content hashes for reproducibility.  On the first build, only the
 p2pd Go module hashes need to be set:
 
-1. **`nix/p2pd.nix` → `vendorHash`** — run `nix build .#p2pd` and copy the
+1. **`distrib/nix/p2pd.nix` → `vendorHash`** — run `nix build .#p2pd` and copy the
    expected hash from the error message.
 
 The Rust build uses crane, which reads `Cargo.lock` directly — no hash to
@@ -324,7 +324,7 @@ flake.nix
   │   └─ crane.nix → kwaainet
   │
   └─ cross builds (x86_64-linux only)
-      └─ nix/cross.nix (for each crossSystem)
+      └─ distrib/nix/cross.nix (for each crossSystem)
           ├─ pkgsCross = import nixpkgs { localSystem; crossSystem; overlays; }
           ├─ crane.nix  (reused — craneLib built from pkgsCross)
           ├─ p2pd.nix   (reused — buildGoModule sets GOOS/GOARCH via pkgsCross)
@@ -344,7 +344,7 @@ Each language toolchain picks up the cross configuration differently:
 - **OCI containers** — `dockerTools.streamLayeredImage` from `pkgsCross` produces
   images with the correct architecture metadata (e.g., `linux/arm64`).
 
-The `nix/overlays/cross-fixes.nix` overlay disables test suites for a few
+The `distrib/nix/overlays/cross-fixes.nix` overlay disables test suites for a few
 nixpkgs packages (`boehmgc`, `libuv`) that fail under cross-compilation because
 they try to execute target-architecture binaries on the build host.
 
@@ -568,7 +568,7 @@ make all
 
 If the go-libp2p-daemon fork bumps its version or Go module dependencies:
 
-1. Update `version`, `rev`, and `hash` in `nix/p2pd.nix`.
+1. Update `version`, `rev`, and `hash` in `distrib/nix/p2pd.nix`.
    - To get the new source `hash`, temporarily set it to `""` and run
      `nix build .#p2pd` — Nix prints the correct hash.
 2. Update `vendorHash` the same way — set to `""`, build, copy the hash.
@@ -593,6 +593,6 @@ ls result-proto/
 |---|---|---|
 | `flake.lock` inputs | (auto via `nix flake update`) | — |
 | `core/Cargo.lock` | (automatic — crane reads Cargo.lock) | — |
-| p2pd Go source | `nix/p2pd.nix` | `hash` |
-| p2pd Go modules | `nix/p2pd.nix` | `vendorHash` |
+| p2pd Go source | `distrib/nix/p2pd.nix` | `hash` |
+| p2pd Go modules | `distrib/nix/p2pd.nix` | `vendorHash` |
 | `p2pd.proto` | (automatic — no hash to update) | — |
