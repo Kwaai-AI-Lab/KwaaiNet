@@ -30,6 +30,7 @@ use std::{
 };
 use tokio::sync::RwLock;
 
+use crate::announce::decode_server_info_ext;
 use crate::block_rpc::{
     call_block_forward, f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes,
     InferenceRequest, PayloadType, ShardCell,
@@ -1406,11 +1407,12 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     println!("  Max tokens:   {}", max_tokens);
     print_separator();
 
-    // Connect to all block-server peers
+    // Connect to all block-server peers — best effort, handing the daemon the
+    // addresses each one published so that later dials can reuse them too.
     for entry in &chain {
-        let multiaddr_hint = format!("/p2p/{}", entry.peer_id.to_base58());
-        let _ = client.connect_peer(&multiaddr_hint).await;
-        // best effort — may already be connected
+        let _ = client
+            .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
+            .await;
     }
 
     // ── Inference loop ────────────────────────────────────────────────────────
@@ -1882,7 +1884,7 @@ async fn run_streaming_inner(
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {
         let _ = client
-            .connect_peer(&format!("/p2p/{}", entry.peer_id.to_base58()))
+            .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await;
     }
 
@@ -2155,6 +2157,16 @@ pub struct BlockServerEntry {
     /// the shard-chain integration phase without another decoder pass.
     #[allow(dead_code)]
     pub lease_v1: bool,
+    /// Bare multiaddrs from the peer's own signed record — the destination
+    /// `/p2p/<its-peer-id>` stripped, a circuit's relay hop kept — as
+    /// [`kwaai_p2p::peer_record::verified_addrs`] returns them.
+    ///
+    /// They are handed straight to the daemon, which keeps them in its
+    /// learned-address map, so every later dial to the peer benefits and not
+    /// just the pre-connect that supplied them. Empty for a peer running a
+    /// binary that predates the field, and for one whose record failed
+    /// verification.
+    pub dial_addrs: Vec<libp2p::Multiaddr>,
 }
 
 /// The peers a DHT read should query, given the configured list.
@@ -2373,7 +2385,8 @@ pub async fn discover_inference_peer(
     let mut req_bytes = Vec::new();
     find_req.encode(&mut req_bytes).ok()?;
 
-    let mut candidates: Vec<(f64, PeerId, String)> = Vec::new(); // (throughput, peer_id, name)
+    // (throughput, peer_id, name, the addresses the peer signed for itself)
+    let mut candidates: Vec<(f64, PeerId, String, Vec<libp2p::Multiaddr>)> = Vec::new();
 
     let query_peers = resolve_query_peers(client, bootstrap_peers).await;
 
@@ -2406,12 +2419,15 @@ pub async fn discover_inference_peer(
             // Values stored under _kwaai.inference.nodes use the same
             // DHTServerInfo msgpack encoding as block records.
             if result.result_type == 1 {
-                if let Some((state, _, _, name, peer_id_b58, version, tps, _lease_v1)) =
-                    decode_server_info_ext(&result.value)
-                {
-                    if state == 2 && version_meets_minimum(&version) {
-                        if let Ok(pid) = peer_id_b58.parse::<PeerId>() {
-                            candidates.push((tps, pid, name));
+                if let Some(info) = decode_server_info_ext(&result.value) {
+                    if info.state == 2 && version_meets_minimum(&info.version) {
+                        if let Ok(pid) = info.peer_id_b58.parse::<PeerId>() {
+                            candidates.push((
+                                info.throughput,
+                                pid,
+                                info.public_name,
+                                info.dial_addrs,
+                            ));
                         }
                     }
                 }
@@ -2419,7 +2435,7 @@ pub async fn discover_inference_peer(
                 let mut tmp: HashMap<String, BlockServerEntry> = HashMap::new();
                 decode_server_info_dictionary(&result.value, &mut tmp);
                 for (_, e) in tmp {
-                    candidates.push((e.throughput, e.peer_id, e.public_name));
+                    candidates.push((e.throughput, e.peer_id, e.public_name, e.dial_addrs));
                 }
             }
         }
@@ -2430,14 +2446,14 @@ pub async fn discover_inference_peer(
         if let (Some(prefix), Some(total)) = (dht_prefix, total_blocks) {
             let chain = discover_chain(client, our_peer_id, prefix, total, bootstrap_peers).await;
             for e in chain {
-                candidates.push((e.throughput, e.peer_id, e.public_name));
+                candidates.push((e.throughput, e.peer_id, e.public_name, e.dial_addrs));
             }
         }
     }
 
     // Remove ourselves — dialling self via p2p proxy always fails.
     let our_b58 = our_peer_id.to_base58();
-    candidates.retain(|(_, pid, _)| pid.to_base58() != our_b58);
+    candidates.retain(|(_, pid, _, _)| pid.to_base58() != our_b58);
 
     if candidates.is_empty() {
         return None;
@@ -2449,13 +2465,18 @@ pub async fn discover_inference_peer(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.2.cmp(&b.2))
     });
-    let (tps, best_peer, name) = &candidates[0];
+    let (tps, best_peer, name, dial_addrs) = &candidates[0];
     tracing::info!(
         "p2p://auto → {} ({}, {:.1} tok/s)",
         best_peer.to_base58(),
         name,
         tps
     );
+    // The URL names the peer alone; the daemon keeps the addresses so the dial
+    // it leads to is seeded, not bare. Best effort — the URL is still good.
+    if !dial_addrs.is_empty() {
+        let _ = client.connect_peer_with_addrs(best_peer, dial_addrs).await;
+    }
     Some(format!("p2p://{}", best_peer.to_base58()))
 }
 
@@ -2540,7 +2561,12 @@ async fn pick_gap_blocks(
     Ok((start, end))
 }
 
-// ── Server info decoding ──────────────────────────────────────────────────────
+// ── Sharding's reading of an announcement ────────────────────────────────────
+//
+// `announce::decode_server_info_ext` turns bytes into fields; these two turn
+// fields into a `BlockServerEntry`, applying the policy only a chain builder
+// has an opinion about — ONLINE-only, a version floor — and so belong with the
+// consumer rather than with the wire format.
 
 /// Parse `Ext(64, [state, throughput, {start_block, end_block, peer_id, …}])`
 /// from a FoundRegular value.
@@ -2549,19 +2575,18 @@ async fn pick_gap_blocks(
 /// synthesise a stable key from `public_name:start_block` so they still count
 /// for gap detection even though they cannot be routed to directly.
 fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)> {
-    let (state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1) =
-        decode_server_info_ext(bytes)?;
+    let info = decode_server_info_ext(bytes)?;
     // Only include ONLINE nodes (state=2); skip JOINING (1) and OFFLINE (0/-1).
-    if state != 2 {
+    if info.state != 2 {
         return None;
     }
-    if !version_meets_minimum(&version) {
+    if !version_meets_minimum(&info.version) {
         return None;
     }
-    let (dedup_key, peer_id) = match peer_id_b58.parse::<PeerId>() {
+    let (dedup_key, peer_id) = match info.peer_id_b58.parse::<PeerId>() {
         Ok(pid) => (pid.to_base58(), pid),
         Err(_) => {
-            let key = format!("legacy:{}:{}", public_name, start_block);
+            let key = format!("legacy:{}:{}", info.public_name, info.start_block);
             (key, PeerId::random())
         }
     };
@@ -2569,12 +2594,13 @@ fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)
         dedup_key,
         BlockServerEntry {
             peer_id,
-            start_block,
-            end_block,
-            public_name,
-            throughput,
+            start_block: info.start_block,
+            end_block: info.end_block,
+            public_name: info.public_name,
+            throughput: info.throughput,
             trust_score: None,
-            lease_v1,
+            lease_v1: info.lease_v1,
+            dial_addrs: info.dial_addrs,
         },
     ))
 }
@@ -2636,32 +2662,33 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             Err(_) => continue,
         };
 
-        if let Some((
-            state,
-            start_block,
-            end_block,
-            public_name,
-            _,
-            version,
-            throughput,
-            lease_v1,
-        )) = decode_server_info_ext(value_bytes)
-        {
-            if state != 2 {
+        if let Some(info) = decode_server_info_ext(value_bytes) {
+            if info.state != 2 {
                 continue;
             }
-            if !version_meets_minimum(&version) {
+            if !version_meets_minimum(&info.version) {
+                continue;
+            }
+            // The entry is identified by its *subkey*, but the signature was
+            // checked against the `peer_id` inside the value — and one writer
+            // controls both. A value naming a different peer than the subkey
+            // it sits under would hand this entry `peer_id` from the subkey
+            // and addresses belonging to whoever the value names. Legacy
+            // records omit `peer_id` entirely, so only a present-and-different
+            // one is a contradiction.
+            if !info.peer_id_b58.is_empty() && info.peer_id_b58 != peer_id_b58 {
                 continue;
             }
             let key = peer_id_b58.clone();
             out.entry(key).or_insert(BlockServerEntry {
                 peer_id,
-                start_block,
-                end_block,
-                public_name,
-                throughput,
+                start_block: info.start_block,
+                end_block: info.end_block,
+                public_name: info.public_name,
+                throughput: info.throughput,
                 trust_score: None,
-                lease_v1,
+                lease_v1: info.lease_v1,
+                dial_addrs: info.dial_addrs,
             });
         }
     }
@@ -2717,64 +2744,6 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
         .iter()
         .min_by_key(|&&v| (v as i64 - n as i64).unsigned_abs())
         .unwrap_or(&4)
-}
-
-/// Core decoder: `Ext(64, msgpack([state, throughput, {start_block, end_block, …}]))`
-/// Returns `(state, start_block, end_block, public_name, peer_id_b58, version, throughput, lease_v1)`.
-#[allow(clippy::type_complexity)]
-fn decode_server_info_ext(
-    bytes: &[u8],
-) -> Option<(i32, usize, usize, String, String, String, f64, bool)> {
-    let val = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
-    let inner_bytes = match &val {
-        rmpv::Value::Ext(64, b) => b.as_slice(),
-        _ => return None,
-    };
-    let inner = rmpv::decode::read_value(&mut &inner_bytes[..]).ok()?;
-    let arr = inner.as_array()?;
-    if arr.len() < 3 {
-        return None;
-    }
-    let map = arr[2].as_map()?;
-
-    let get_i = |k: &str| -> Option<i64> {
-        map.iter()
-            .find(|(ky, _)| ky.as_str() == Some(k))
-            .and_then(|(_, v)| v.as_i64())
-    };
-    let get_s = |k: &str| -> String {
-        map.iter()
-            .find(|(ky, _)| ky.as_str() == Some(k))
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-
-    let state = arr[0].as_i64().unwrap_or(0) as i32;
-    let throughput = arr[1].as_f64().unwrap_or(0.0);
-    let start_block = get_i("start_block")? as usize;
-    let end_block = get_i("end_block")? as usize;
-    let public_name = get_s("public_name");
-    let peer_id_b58 = get_s("peer_id");
-    let version = get_s("version");
-    // Absent key (a peer built before Capacity Lease existed) defaults to
-    // false — the exact "legacy peer" signal a requester falls back on.
-    let lease_v1 = map
-        .iter()
-        .find(|(ky, _)| ky.as_str() == Some("lease_v1"))
-        .and_then(|(_, v)| v.as_bool())
-        .unwrap_or(false);
-
-    Some((
-        state,
-        start_block,
-        end_block,
-        public_name,
-        peer_id_b58,
-        version,
-        throughput,
-        lease_v1,
-    ))
 }
 
 // ── Pinned path ──────────────────────────────────────────────────────────────
@@ -2862,6 +2831,10 @@ impl SerializableEntry {
             // Capacity Lease — conservatively unknown/false, same as any
             // other legacy-shaped record with the key absent.
             lease_v1: false,
+            // Likewise no addresses: a saved circuit is a list of peers, and
+            // where they were reachable months ago is not worth replaying.
+            // Rediscovery refills these from the live record.
+            dial_addrs: Vec::new(),
         })
     }
 }
@@ -3785,6 +3758,8 @@ mod assigned_range_is_persisted_whole {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::announce::DHTServerInfo;
+    use libp2p::Multiaddr;
 
     #[test]
     fn test_version_meets_minimum() {
@@ -3797,64 +3772,6 @@ mod tests {
         assert!(version_meets_minimum("kwaai-0.3.16"));
         assert!(version_meets_minimum("kwaai-0.4.0"));
         assert!(version_meets_minimum("kwaai-1.0.0"));
-    }
-
-    /// Build a minimal `Ext(64, [state, throughput, {fields}])` blob matching
-    /// `DHTServerInfo::to_msgpack()`'s shape, with `lease_v1` present or
-    /// absent — mirrors what a real (or legacy, pre-Capacity-Lease) peer's
-    /// DHT announcement decodes from.
-    fn make_server_info_ext_bytes(lease_v1: Option<bool>) -> Vec<u8> {
-        let mut fields = vec![
-            (rmpv::Value::from("start_block"), rmpv::Value::from(0i64)),
-            (rmpv::Value::from("end_block"), rmpv::Value::from(32i64)),
-            (
-                rmpv::Value::from("public_name"),
-                rmpv::Value::from("test-node"),
-            ),
-            (
-                rmpv::Value::from("peer_id"),
-                rmpv::Value::from(PeerId::random().to_base58().as_str()),
-            ),
-            (
-                rmpv::Value::from("version"),
-                rmpv::Value::from("kwaai-0.5.4"),
-            ),
-        ];
-        if let Some(v) = lease_v1 {
-            fields.push((rmpv::Value::from("lease_v1"), rmpv::Value::from(v)));
-        }
-        let inner = rmpv::Value::Array(vec![
-            rmpv::Value::from(2i32), // state = ONLINE
-            rmpv::Value::from(10.0), // throughput
-            rmpv::Value::Map(fields),
-        ]);
-        let mut inner_bytes = Vec::new();
-        rmpv::encode::write_value(&mut inner_bytes, &inner).unwrap();
-        let ext = rmpv::Value::Ext(64, inner_bytes);
-        let mut out = Vec::new();
-        rmpv::encode::write_value(&mut out, &ext).unwrap();
-        out
-    }
-
-    #[test]
-    fn decode_server_info_ext_reads_lease_v1_when_present() {
-        let bytes = make_server_info_ext_bytes(Some(true));
-        let (_, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
-        assert!(lease_v1);
-    }
-
-    #[test]
-    fn decode_server_info_ext_defaults_lease_v1_false_for_legacy_bytes() {
-        // No lease_v1 key at all — exactly what a pre-Capacity-Lease peer's
-        // announcement looks like. Must decode successfully (not error) and
-        // default to false, not panic or silently drop the record.
-        let bytes = make_server_info_ext_bytes(None);
-        let (state, _, _, _, _, _, _, lease_v1) = decode_server_info_ext(&bytes).expect("decodes");
-        assert_eq!(
-            state, 2,
-            "pre-existing fields must still decode alongside the new one"
-        );
-        assert!(!lease_v1);
     }
 
     #[test]
@@ -3872,6 +3789,105 @@ mod tests {
         assert_eq!(snap_to_valid_blocks(25), 32);
         assert_eq!(snap_to_valid_blocks(32), 32);
         assert_eq!(snap_to_valid_blocks(64), 32);
+    }
+
+    // ── The consumer's half of the announcement decode ──────────────────────
+
+    /// Helper: a signed envelope for `key` naming `addrs`, exactly as the
+    /// publisher emits one.
+    fn signed_envelope(key: &libp2p::identity::Keypair, addrs: &[&str]) -> Vec<u8> {
+        let addrs = addrs
+            .iter()
+            .map(|a| a.parse().expect("a valid addr"))
+            .collect();
+        libp2p::core::PeerRecord::new_interop(key, addrs)
+            .expect("signs")
+            .into_signed_envelope()
+            .into_protobuf_encoding()
+    }
+
+    /// Helper: one entry wrapped in the `Ext(80, [expiry, created, [[subkey,
+    /// value, expiry]]])` shape a FoundDictionary response carries.
+    fn dictionary_bytes(subkey_peer_b58: &str, value: &[u8]) -> Vec<u8> {
+        let subkey = rmp_serde::to_vec(&subkey_peer_b58).expect("msgpack subkey");
+        let entry = rmpv::Value::Array(vec![
+            rmpv::Value::Binary(subkey),
+            rmpv::Value::Binary(value.to_vec()),
+            rmpv::Value::from(0.0),
+        ]);
+        let inner = rmpv::Value::Array(vec![
+            rmpv::Value::from(0.0),
+            rmpv::Value::from(0.0),
+            rmpv::Value::Array(vec![entry]),
+        ]);
+        let mut inner_bytes = Vec::new();
+        rmpv::encode::write_value(&mut inner_bytes, &inner).expect("encodes");
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &rmpv::Value::Ext(80, inner_bytes)).expect("encodes");
+        out
+    }
+
+    /// The dictionary path keys an entry by its *subkey* but verified the
+    /// signature against the value's `peer_id`, and one writer controls both.
+    /// A value naming a different peer must be dropped, or the entry would
+    /// carry the victim's peer id beside a stranger's addresses.
+    #[test]
+    fn decode_server_info_dictionary_drops_a_value_naming_another_peer() {
+        let victim = PeerId::random();
+        let attacker = libp2p::identity::Keypair::generate_ed25519();
+        let mut forged = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            attacker.public().to_peer_id().to_base58(),
+        );
+        forged.state = 2;
+        forged.signed_addrs = signed_envelope(&attacker, &["/ip4/198.51.100.9/tcp/4001"]);
+
+        let mut out = HashMap::new();
+        decode_server_info_dictionary(
+            &dictionary_bytes(&victim.to_base58(), &forged.to_msgpack().expect("encodes")),
+            &mut out,
+        );
+        assert!(
+            out.is_empty(),
+            "an entry whose value names a peer other than its subkey must not be used"
+        );
+    }
+
+    /// The same shape, honestly published, still decodes — so the check above
+    /// rejects the contradiction rather than the dictionary path itself.
+    #[test]
+    fn decode_server_info_dictionary_keeps_a_value_matching_its_subkey() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let mut honest = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        honest.state = 2;
+        honest.signed_addrs = signed_envelope(&key, &["/ip4/203.0.113.7/tcp/4001"]);
+
+        let mut out = HashMap::new();
+        decode_server_info_dictionary(
+            &dictionary_bytes(&peer.to_base58(), &honest.to_msgpack().expect("encodes")),
+            &mut out,
+        );
+        let entry = out.get(&peer.to_base58()).expect("the entry decodes");
+        assert_eq!(
+            entry.dial_addrs,
+            vec!["/ip4/203.0.113.7/tcp/4001".parse::<Multiaddr>().unwrap()]
+        );
     }
 }
 

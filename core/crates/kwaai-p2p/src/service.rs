@@ -43,6 +43,7 @@ use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
     KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
 };
+use crate::learned_addrs::LearnedAddrs;
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
 use crate::relay_manager::{RelayAction, RelayManager};
@@ -130,6 +131,11 @@ pub struct NetworkService {
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
+    /// Addresses we were told about peers — the peerstore rust-libp2p does not
+    /// have. Consulted ahead of the routing table by
+    /// [`Self::candidate_addresses`]; see [`crate::learned_addrs`] for why a
+    /// k-bucket cannot do this job.
+    learned_addrs: LearnedAddrs,
     /// When each peer last *established* a connection to us, in either
     /// direction. Unlike `connections` this survives the close, which is what
     /// makes bootstrap health readable: kad seeds its routing table with the
@@ -253,6 +259,9 @@ struct RoutedAttempt {
     dial: Option<RoutedDial>,
     /// Whether the attempt's one lookup has been used.
     lookup_spent: bool,
+    /// Whether the attempt's one extra dial on addresses learned mid-burst
+    /// has been used.
+    learned_retry_spent: bool,
     /// Routing-table entries [`NetworkService::forget_exhausted_entry`] took
     /// out, put back if the lookup finds nothing better.
     evicted: Vec<Multiaddr>,
@@ -429,6 +438,7 @@ impl NetworkService {
             pending_routed: HashMap::new(),
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
+            learned_addrs: LearnedAddrs::new(local_peer_id),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
@@ -569,6 +579,17 @@ impl NetworkService {
                 }
             }
 
+            // Seed, then dial exactly as a bare-PeerId connect does. The
+            // seeding is the point: `dispatch_routed` reads its candidates
+            // through `candidate_addresses`, which puts learned addresses
+            // first, so the supplied ones are tried before the routing table
+            // and the DHT walk stays available behind them.
+            Command::ConnectPeerWithAddrs { peer, addrs, reply } => {
+                let added = self.learned_addrs.insert(peer, addrs);
+                debug!(%peer, added, "connect with supplied addresses");
+                self.dispatch_routed(peer, RoutedRequest::Connect { reply });
+            }
+
             Command::DisconnectPeer { peer, reply } => {
                 let result = match self.swarm.disconnect_peer_id(peer) {
                     Ok(()) => Ok(()),
@@ -622,6 +643,11 @@ impl NetworkService {
 
             Command::ListenAddrs { reply } => {
                 let addrs = self.swarm.listeners().cloned().collect();
+                let _ = reply.send(addrs);
+            }
+
+            Command::ExternalAddrs { reply } => {
+                let addrs = self.swarm.external_addresses().cloned().collect();
                 let _ = reply.send(addrs);
             }
 
@@ -1097,12 +1123,25 @@ impl NetworkService {
 
     /// `table_filter` decides which routing-table entries qualify; a live
     /// connection's address always does, since we are on it.
+    ///
+    /// Learned addresses come **first**. They arrive from a record the peer
+    /// signed about itself, or from a caller that supplied them with a connect
+    /// request, so they are both fresher and more specific than a table entry
+    /// — which may be anything a remote reported during a walk, and for a
+    /// NATed peer is usually a LAN address or a stale NAT port. The filter
+    /// applies to them too: they are a remote claim like any other.
     fn candidate_addresses(
         &mut self,
         peer: &PeerId,
         table_filter: impl Fn(&Multiaddr) -> bool,
     ) -> Vec<Multiaddr> {
-        let mut addrs: Vec<Multiaddr> = Vec::new();
+        let mut addrs: Vec<Multiaddr> = self
+            .learned_addrs
+            .get(peer)
+            .iter()
+            .filter(|a| table_filter(a))
+            .cloned()
+            .collect();
 
         if let Some(bucket) = self.swarm.behaviour_mut().kad.kbucket(*peer) {
             for entry in bucket.iter() {
@@ -1150,7 +1189,11 @@ impl NetworkService {
         let own = self.own_addrs();
         addrs.retain(|a| !own.is_ours(a));
 
-        addrs.dedup();
+        // Order-preserving, not `dedup()`: with learned addresses ahead of the
+        // table the same address arriving from both sources is no longer
+        // adjacent, and `Vec::dedup` only collapses neighbours.
+        let mut seen: HashSet<Multiaddr> = HashSet::new();
+        addrs.retain(|a| seen.insert(a.clone()));
 
         addrs
     }
@@ -1224,6 +1267,30 @@ impl NetworkService {
         true
     }
 
+    /// Dial `peer` once more if addresses were learned since the dial that
+    /// just failed with `error`, and this burst has not already done so.
+    /// Bounded twice over: once per burst, and only on addresses the failed
+    /// dial did not try.
+    fn retry_on_learned(&mut self, peer: PeerId, error: &DialError) -> bool {
+        let failed = failed_addresses(error);
+        let attempt = self.routed_attempts.entry(peer).or_default();
+        if attempt.learned_retry_spent || failed.is_empty() {
+            return false;
+        }
+        // Same normalisation as `LearnedAddrs::forget`: a dial reports the
+        // fully-qualified address it tried.
+        let fresh = self
+            .learned_addrs
+            .get(&peer)
+            .iter()
+            .any(|a| !failed.contains(&strip_p2p(a)));
+        if !fresh {
+            return false;
+        }
+        attempt.learned_retry_spent = true;
+        self.dial_routed(peer)
+    }
+
     /// Whether `connection_id` is the dial `peer`'s parked requests were
     /// waiting on, clearing it when it is.
     fn routed_dial_ended(&mut self, peer: &PeerId, connection_id: ConnectionId) -> bool {
@@ -1244,11 +1311,10 @@ impl NetworkService {
     /// kad never re-dials a tabled peer, so a walk can only re-route one it treats
     /// as new. The entry is stashed in [`RoutedAttempt::evicted`] for `fail_routed`.
     fn forget_exhausted_entry(&mut self, peer: &PeerId, error: &DialError) {
-        let failed: Vec<Multiaddr> = match error {
-            DialError::Transport(attempts) => attempts.iter().map(|(a, _)| strip_p2p(a)).collect(),
-            DialError::WrongPeerId { address, .. } => vec![strip_p2p(address)],
-            _ => return,
-        };
+        let failed = failed_addresses(error);
+        if failed.is_empty() {
+            return;
+        }
         let remaining: Vec<Multiaddr> = self
             .swarm
             .behaviour_mut()
@@ -1782,6 +1848,21 @@ impl NetworkService {
                     self.swarm.behaviour_mut().kad.remove_address(&peer, &addr);
                 }
 
+                // Same evidence, applied to the learned map: an address that
+                // failed to connect is stale, and a peer whose reservation
+                // rotated would otherwise be dialed at the relay it left until
+                // it republishes. Unconditional rather than routed-only —
+                // every dial is evidence about the address it used.
+                if let Some(peer) = peer_id {
+                    let failed = failed_addresses(&error);
+                    if !failed.is_empty() {
+                        let dropped = self.learned_addrs.forget(&peer, &failed);
+                        if dropped > 0 {
+                            debug!(%peer, dropped, "dropping learned addresses that failed to dial");
+                        }
+                    }
+                }
+
                 // A routed dial's first failure buys one DHT walk. Must follow the
                 // WrongPeerId eviction above so that address is never stashed and restored.
                 if let Some(peer) = peer_id {
@@ -1793,7 +1874,14 @@ impl NetworkService {
                             .get(&peer)
                             .is_some_and(|attempt| attempt.lookup_spent);
                         if spent {
-                            self.fail_routed(peer, dial_error(&error, Some(peer)).to_string());
+                            // A request parked mid-dial may have brought addresses this
+                            // dial never tried; spend one more dial on those before
+                            // failing the burst with an error that predates them.
+                            if self.retry_on_learned(peer, &error) {
+                                debug!(%peer, "routed dial failed — retrying on addresses learned since");
+                            } else {
+                                self.fail_routed(peer, dial_error(&error, Some(peer)).to_string());
+                            }
                         } else {
                             debug!(%peer, error = %error, "routed dial failed — falling back to a DHT lookup");
                             self.forget_exhausted_entry(&peer, &error);
@@ -1956,16 +2044,17 @@ impl NetworkService {
     /// Recompute the announce state and publish it if anything a consumer acts
     /// on changed.
     ///
-    /// The equality gate is the whole point. A node's addresses churn
-    /// constantly — identify pushes, a reservation moving between relays, a
-    /// re-NAT — and none of that belongs in a DHT record that carries no
-    /// addresses (see [`AnnounceState`]). Only a change in *how reachable the
-    /// node is* wakes the announce loop.
+    /// The equality gate is the whole point. Direct addresses churn constantly
+    /// — identify pushes, a re-NAT — and none of that belongs in the DHT
+    /// record. What does is the *circuit* set (see [`AnnounceState`]): the
+    /// record publishes those addresses, so a reservation moving between
+    /// relays has to wake the announce loop or the record names a relay the
+    /// node has left.
     fn publish_announce_state(&mut self) {
         let current = self.reachability.current().clone();
-        let has_circuit = self.relays.has_circuit();
+        let circuits = self.relays.confirmed_addrs();
         self.announce_tx.send_if_modified(|state| {
-            let next = AnnounceState::derive(&current, has_circuit, state.epoch);
+            let next = AnnounceState::derive(&current, &circuits, state.epoch);
             if !next.differs(state) {
                 return false;
             }
@@ -2289,6 +2378,21 @@ impl NetworkService {
 
             other => trace!(?other, "kad event"),
         }
+    }
+}
+
+/// The addresses a failed dial actually tried, bare, or nothing.
+///
+/// Only two `DialError` variants name addresses at all, and only those two are
+/// evidence *about an address*: `Transport` is "this address did not answer",
+/// `WrongPeerId` is "somebody else answered at it". Everything else — the dial
+/// conditions, a local error, no addresses at all — says nothing about the
+/// addresses we hold and must not evict any.
+fn failed_addresses(error: &DialError) -> Vec<Multiaddr> {
+    match error {
+        DialError::Transport(attempts) => attempts.iter().map(|(a, _)| strip_p2p(a)).collect(),
+        DialError::WrongPeerId { address, .. } => vec![strip_p2p(address)],
+        _ => Vec::new(),
     }
 }
 

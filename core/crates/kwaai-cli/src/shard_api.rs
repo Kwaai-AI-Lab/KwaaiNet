@@ -873,8 +873,9 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
 
     // Pre-connect to all block-server peers
     for entry in &chain {
-        let hint = format!("/p2p/{}", entry.peer_id.to_base58());
-        let _ = client.connect_peer(&hint).await;
+        let _ = client
+            .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
+            .await;
     }
 
     // Detect llama.cpp fast path (full model on this node + GGUF available)

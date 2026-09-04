@@ -84,16 +84,19 @@ pub enum ReachabilityKind {
 
 /// What the announce loop needs to know, and nothing else.
 ///
-/// Notably **no addresses**. The DHT record (`DHTServerInfo`) carries no
-/// multiaddr field at all — peers resolve addresses through Kademlia and
-/// identify — so address publication is `Swarm::add_external_address` plus an
-/// identify push, entirely separate from announcing. The only address-derived
-/// fact the record contains is the `using_relay` boolean.
+/// The DHT record (`DHTServerInfo`) carries the node's *circuit* addresses —
+/// a dialer cannot reconstruct which relay a peer holds a reservation on, so
+/// the record has to say — but no direct ones: those still travel by
+/// `Swarm::add_external_address` plus an identify push, entirely separate from
+/// announcing. So this struct tracks exactly what the record depends on: the
+/// reachability verdict, and a fingerprint of the confirmed circuit set.
 ///
-/// That is what makes this channel quiet: an address can change, a reservation
-/// can move from one relay to another, identify can push a dozen times, and
-/// none of it alters this struct. Only a genuine change in *how reachable the
-/// node is* does.
+/// That keeps the channel quiet on everything else. Identify can push a dozen
+/// times and a direct address can churn without waking the announce loop. What
+/// *does* wake it is a reservation moving between relays: the published
+/// circuit is then wrong until the next tick, up to a full TTL of dials at a
+/// relay that answers `no reservation for destination`, so the record follows
+/// the reservation rather than waiting for the clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnnounceState {
     /// Public, Private, or not yet known.
@@ -105,9 +108,28 @@ pub struct AnnounceState {
     /// is Unknown — a node that does not know where it stands should not be
     /// telling the network it is Direct.
     pub announceable: bool,
+    /// Order-independent fingerprint of the confirmed circuit addresses, `0`
+    /// when there are none. A hash rather than the list so the state stays
+    /// `Copy` and cheap to compare; the record reads the addresses themselves
+    /// from the swarm at announce time.
+    pub circuits: u64,
     /// Increments on every published change, so a consumer can tell "no change"
     /// from "changed back to what it was".
     pub epoch: u64,
+}
+
+/// Fingerprint a circuit set so that the same relays in any order compare
+/// equal and any addition, removal or swap does not.
+pub fn circuit_fingerprint(circuits: &[Multiaddr]) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    if circuits.is_empty() {
+        return 0;
+    }
+    let mut keys: Vec<String> = circuits.iter().map(ToString::to_string).collect();
+    keys.sort_unstable();
+    let mut h = DefaultHasher::new();
+    keys.hash(&mut h);
+    h.finish()
 }
 
 impl AnnounceState {
@@ -117,13 +139,14 @@ impl AnnounceState {
             reachability: ReachabilityKind::Unknown,
             using_relay: false,
             announceable: false,
+            circuits: 0,
             epoch: 0,
         }
     }
 
-    /// Derive the state from a reachability verdict and whether a circuit is
-    /// live, preserving `epoch` (the sender bumps it only on a real change).
-    pub fn derive(reachability: &Reachability, has_circuit: bool, epoch: u64) -> Self {
+    /// Derive the state from a reachability verdict and the confirmed circuit
+    /// set, preserving `epoch` (the sender bumps it only on a real change).
+    pub fn derive(reachability: &Reachability, circuits: &[Multiaddr], epoch: u64) -> Self {
         let kind = reachability.kind();
         Self {
             reachability: kind,
@@ -131,8 +154,9 @@ impl AnnounceState {
             // one is not a way for anybody to reach us, and announcing
             // `using_relay` on the strength of one would tell the map a node is
             // reachable when it is not.
-            using_relay: has_circuit,
+            using_relay: !circuits.is_empty(),
             announceable: kind != ReachabilityKind::Unknown,
+            circuits: circuit_fingerprint(circuits),
             epoch,
         }
     }
@@ -143,6 +167,7 @@ impl AnnounceState {
         self.reachability != other.reachability
             || self.using_relay != other.using_relay
             || self.announceable != other.announceable
+            || self.circuits != other.circuits
     }
 }
 
@@ -494,6 +519,59 @@ mod tests {
 
     fn ma(s: &str) -> Multiaddr {
         s.parse().unwrap()
+    }
+
+    fn circuit(relay: u8) -> Multiaddr {
+        ma(&format!(
+            "/ip4/198.18.0.{relay}/tcp/4001/p2p/{}/p2p-circuit",
+            peer(relay)
+        ))
+    }
+
+    /// The case the fingerprint exists for: a reservation moving from one relay
+    /// to another leaves `using_relay` true throughout, so before this only the
+    /// clock would have republished the record — with the old relay in it.
+    #[test]
+    fn a_rotation_between_relays_is_a_change_worth_announcing() {
+        let before = AnnounceState::derive(&Reachability::Private, &[circuit(1)], 0);
+        let after = AnnounceState::derive(&Reachability::Private, &[circuit(2)], 0);
+        assert!(
+            before.using_relay && after.using_relay,
+            "the flag alone cannot see it"
+        );
+        assert!(before.differs(&after));
+    }
+
+    /// Gaining or losing one of several also counts — the record lists them all.
+    #[test]
+    fn adding_or_dropping_a_circuit_is_a_change() {
+        let one = AnnounceState::derive(&Reachability::Private, &[circuit(1)], 0);
+        let two = AnnounceState::derive(&Reachability::Private, &[circuit(1), circuit(2)], 0);
+        assert!(one.differs(&two));
+        assert!(two.differs(&one));
+    }
+
+    /// The relay manager hands the set back from a map, so order is arbitrary
+    /// and must not look like churn.
+    #[test]
+    fn the_same_circuits_in_another_order_are_not_a_change() {
+        let a = AnnounceState::derive(&Reachability::Private, &[circuit(1), circuit(2)], 0);
+        let b = AnnounceState::derive(&Reachability::Private, &[circuit(2), circuit(1)], 0);
+        assert!(!a.differs(&b));
+        assert_eq!(a.circuits, b.circuits);
+    }
+
+    /// No circuits is the zero fingerprint and `using_relay` false, so the
+    /// initial state and a node that never reserved compare equal.
+    #[test]
+    fn no_circuits_matches_the_initial_state() {
+        let none = AnnounceState::derive(&Reachability::Private, &[], 0);
+        assert_eq!(none.circuits, 0);
+        assert!(!none.using_relay);
+        let mut initial = AnnounceState::initial();
+        initial.reachability = ReachabilityKind::Private;
+        initial.announceable = true;
+        assert!(!none.differs(&initial));
     }
 
     fn peer(n: u8) -> PeerId {

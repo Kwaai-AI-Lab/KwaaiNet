@@ -1057,6 +1057,9 @@ async fn unannounce(
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
         shard_loading: false,
+        // A tombstone says "stop using me"; where to reach the node is
+        // exactly the thing it is withdrawing.
+        signed_addrs: Vec::new(),
     };
     // Use the same 360 s TTL as a regular announcement — Hivemind bootstrap
     // peers reject updates with a shorter TTL than the existing record.
@@ -2609,7 +2612,7 @@ mod capacity_lease_dht_tests {
     use super::*;
 
     /// Decode `to_msgpack()`'s `Ext(64, ...)` wrapper down to the inner
-    /// fields map, mirroring what `shard_cmd.rs`'s `decode_server_info_ext`
+    /// fields map, mirroring what `announce.rs`'s `decode_server_info_ext`
     /// does on the read side.
     fn decode_fields_map(bytes: &[u8]) -> rmpv::Value {
         let ext = rmpv::decode::read_value(&mut &bytes[..]).expect("valid outer msgpack");

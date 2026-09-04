@@ -23,9 +23,10 @@ use anyhow::Result;
 use kwaai_hivemind_dht::protocol::{NodeInfo, RequestAuthInfo, StoreRequest, StoreResponse};
 use kwaai_hivemind_dht::value::get_dht_time;
 use kwaai_p2p::{NetworkHandle, PeerId};
+use libp2p::Multiaddr;
 use prost::Message;
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 use crate::config::KwaaiNetConfig;
@@ -158,6 +159,66 @@ pub struct DHTServerInfo {
     /// nothing to load. Only meaningful while `state` is JOINING; encoded only
     /// when true, so a node that is merely idle says nothing extra.
     pub shard_loading: bool,
+
+    /// A signed RFC 0003 peer record naming the multiaddrs a peer can dial us
+    /// on, protobuf-encoded as a `SignedEnvelope`. Empty for a node with no
+    /// reachable address yet, and for every path that does not fill it in —
+    /// see [`crate::node_native::NativeNode::announce`], which populates it.
+    ///
+    /// # Why the record has to carry this
+    ///
+    /// Discovery hands dispatch a bare PeerId, and dialing by PeerId resolves
+    /// through kad — which cannot answer. rust-libp2p serves `FIND_NODE` from
+    /// its k-buckets alone (`find_closest_local_peers`), where the kad-DHT spec
+    /// §6.1.1 says a server MUST answer for a requested peer it holds in its
+    /// *peerstore* "even if the target node isn't a DHT Server or only
+    /// advertises private addresses", and where go-libp2p's `handleFindPeer`
+    /// does exactly that. So a peer is findable only while it occupies one of
+    /// the twenty slots in the right bucket on a peer the walk happens to
+    /// reach, and a disconnected entry is the first one replaced. That is the
+    /// half the Go p2pd bootstrap used to supply; on the native stack it made
+    /// dispatch fail fleet-wide with `peer not found in DHT (no addresses)` —
+    /// ~2000 of them in one node's log.
+    ///
+    /// Note this is *not* about kad's mode: `dht_server` is true on every
+    /// native node (`node_native.rs`), so kad is pinned to `Mode::Server`
+    /// whether the node is reachable or not.
+    ///
+    /// The relay path works fine once the address is known; what is missing is
+    /// only the address. Nothing else carries it — a circuit address names the
+    /// relay a node happens to hold a reservation on, reservations rotate
+    /// (`kwaai_p2p::relay_manager`), and a dialer cannot guess which relay that
+    /// is: dialing a peer through a bootstrap it has not reserved on returns
+    /// `Relay has no reservation for destination`.
+    ///
+    /// # Why it is signed rather than a plain list
+    ///
+    /// `kwaai-hivemind-dht` implements no record validators, so any peer can
+    /// `STORE` under another node's subkey with a later expiration. A plain
+    /// address list would therefore be an instruction, from anyone, about
+    /// where to send a victim's traffic: black-hole a node by pointing its
+    /// addresses at a dead host, or aim dials at a third party. Impersonation
+    /// is already caught at the Noise handshake, but neither of those needs
+    /// the attacker to complete a handshake.
+    ///
+    /// The envelope closes *that*, and only that.
+    /// [`kwaai_p2p::peer_record::verified_addrs`] is the reader:
+    /// `PeerRecord::from_signed_envelope_interop` verifies the signature and
+    /// binds the record's peer id to the signing key, and the caller's
+    /// comparison against the announced peer ties it to the peer being dialed
+    /// — so an address list the announced peer did not sign is one the reader
+    /// drops. The interop format (`libp2p-peer-record`) is used rather than
+    /// rust-libp2p's legacy domain because this record is a published wire
+    /// format that a Go or JS reader may one day verify.
+    ///
+    /// What it does **not** close, because the signature covers the address
+    /// list rather than the record: an attacker can still overwrite a peer's
+    /// announcement with one that omits this field — dropping it back to the
+    /// bare-PeerId dial that fails — tombstone it with `state = -1`, or replay
+    /// an older genuine list of addresses the peer has since moved off. All
+    /// three are plain overwrites, which is what a record validator in the DHT
+    /// store would answer; none of them need a forged signature.
+    pub signed_addrs: Vec<u8>,
 }
 
 impl DHTServerInfo {
@@ -189,6 +250,10 @@ impl DHTServerInfo {
             peer_id_b58,
             lease_v1: true,
             shard_loading: KwaaiNetConfig::announce_shard_loading(),
+            // Filled in per-announce from the live swarm rather than here: the
+            // set changes as reservations rotate, and a value captured at
+            // startup would be wrong by the first re-announce.
+            signed_addrs: Vec::new(),
         }
     }
 
@@ -256,6 +321,19 @@ impl DHTServerInfo {
             fields.push((rmpv::Value::from("shard_loading"), rmpv::Value::from(true)));
         }
 
+        // Dial addresses, omitted entirely when empty so a node with nothing
+        // reachable to say adds no bytes. Same unknown-key tolerance as the
+        // fields above: a legacy client ignores `addrs_signed` and keeps
+        // dialing by PeerId exactly as it does today. Binary, not a string
+        // list — the value is the signed envelope, and only what the node's
+        // own key signed is worth publishing.
+        if !self.signed_addrs.is_empty() {
+            fields.push((
+                rmpv::Value::from("addrs_signed"),
+                rmpv::Value::Binary(self.signed_addrs.clone()),
+            ));
+        }
+
         // Include VPK capability when enabled and reachable.
         // Unknown map keys are silently ignored by legacy Hivemind clients
         // and old map viewers — no backward-compatibility risk.
@@ -278,6 +356,236 @@ impl DHTServerInfo {
         rmpv::encode::write_value(&mut out, &ext)?;
         Ok(out)
     }
+}
+
+// ── Reading one back ─────────────────────────────────────────────────────────
+//
+// The decoder sits beside `DHTServerInfo::to_msgpack` deliberately. The two
+// halves are one published wire format, and every bug this code has had was a
+// disagreement between them — a key spelled differently, a field the encoder
+// gained and the reader never learned. Side by side they can be tested by
+// round trip through the real producer rather than against a hand-built map,
+// and a field added to one is visibly missing from the other.
+//
+// Bytes to fields is all that lives here. What a reader then *does* with those
+// fields — which states count as usable, which versions are too old to trust,
+// what struct they become — is the consumer's policy, and putting it here
+// would make the wire format depend on the sharding layer that reads it. So
+// `decode_server_info_regular` / `_dictionary` sit in `shard_cmd.rs` instead,
+// on top of `decode_server_info_ext`.
+
+/// One decoded announcement, as a struct rather than the positional tuple this
+/// used to return: nine fields where three call sites want different subsets is
+/// exactly the shape where `_`-holes drift out of alignment with the producer.
+pub struct ServerInfoFields {
+    pub state: i32,
+    pub start_block: usize,
+    pub end_block: usize,
+    pub public_name: String,
+    pub peer_id_b58: String,
+    pub version: String,
+    pub throughput: f64,
+    pub lease_v1: bool,
+    /// Verified multiaddrs the peer can be dialed on, **bare** — the
+    /// destination `/p2p/<peer>` stripped and a circuit's relay hop kept,
+    /// exactly as [`kwaai_p2p::peer_record::verified_addrs`] returns them.
+    /// Empty for a peer that published none, and for one whose record did not
+    /// verify.
+    pub dial_addrs: Vec<Multiaddr>,
+}
+
+pub fn decode_server_info_ext(bytes: &[u8]) -> Option<ServerInfoFields> {
+    let val = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
+    let inner_bytes = match &val {
+        rmpv::Value::Ext(64, b) => b.as_slice(),
+        _ => return None,
+    };
+    let inner = rmpv::decode::read_value(&mut &inner_bytes[..]).ok()?;
+    let arr = inner.as_array()?;
+    if arr.len() < 3 {
+        return None;
+    }
+    let map = arr[2].as_map()?;
+
+    let get_i = |k: &str| -> Option<i64> {
+        map.iter()
+            .find(|(ky, _)| ky.as_str() == Some(k))
+            .and_then(|(_, v)| v.as_i64())
+    };
+    let get_s = |k: &str| -> String {
+        map.iter()
+            .find(|(ky, _)| ky.as_str() == Some(k))
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let state = arr[0].as_i64().unwrap_or(0) as i32;
+    let throughput = arr[1].as_f64().unwrap_or(0.0);
+    let start_block = get_i("start_block")? as usize;
+    let end_block = get_i("end_block")? as usize;
+    let public_name = get_s("public_name");
+    let peer_id_b58 = get_s("peer_id");
+    let version = get_s("version");
+    // Absent key (a peer built before Capacity Lease existed) defaults to
+    // false — the exact "legacy peer" signal a requester falls back on.
+    let lease_v1 = map
+        .iter()
+        .find(|(ky, _)| ky.as_str() == Some("lease_v1"))
+        .and_then(|(_, v)| v.as_bool())
+        .unwrap_or(false);
+
+    // The record is only worth reading against the peer it claims to be, and
+    // that binding is the whole of the check — see `verified_addrs`. A record
+    // whose `peer_id` does not parse has nothing to bind to, so it yields no
+    // addresses rather than unverified ones.
+    let dial_addrs = map
+        .iter()
+        .find(|(ky, _)| ky.as_str() == Some("addrs_signed"))
+        .and_then(|(_, v)| v.as_slice())
+        .zip(peer_id_b58.parse::<PeerId>().ok())
+        .map(|(envelope, claimed)| kwaai_p2p::peer_record::verified_addrs(envelope, claimed))
+        .unwrap_or_default();
+
+    Some(ServerInfoFields {
+        state,
+        start_block,
+        end_block,
+        public_name,
+        peer_id_b58,
+        version,
+        throughput,
+        lease_v1,
+        dial_addrs,
+    })
+}
+
+/// How many dial addresses one announcement may carry.
+///
+/// The same value is stored under every block key the node serves — 32 keys
+/// for an 8B model — so an address costs its own length times the block count
+/// in DHT bytes. Four is enough for the shapes that occur: a direct address
+/// plus the circuits from the two or three reservations `relay_manager` holds
+/// at once, or one address per transport on a public node.
+pub const MAX_DIAL_ADDRS: usize = 4;
+
+/// A signed peer record naming the addresses other peers can dial this node
+/// on — most useful first, at most [`MAX_DIAL_ADDRS`] of them — protobuf
+/// encoded and ready to publish. Empty when the node has no address worth
+/// announcing, or when signing fails.
+///
+/// Sourced from the swarm's live listeners, which is where a relay reservation
+/// shows up: `libp2p-relay` turns an accepted reservation into a listen address
+/// of the form `<relay-addr>/p2p/<relay>/p2p-circuit/p2p/<us>`, already carrying
+/// both hops a dialer needs. Three filters apply:
+///
+/// - [`is_announceable_with`](kwaai_p2p::is_announceable_with) under the
+///   node's policy (`strict` is `require_global_ips`) drops the loopback and
+///   RFC1918 listeners that every node has and no remote peer can use, while
+///   passing circuits unconditionally (the relay's address is the routable
+///   half).
+/// - [`uses_dialable_transport`](kwaai_p2p::uses_dialable_transport) drops
+///   webtransport/websocket forms this build has no transport for.
+/// - One address per relay. A relay that offers TCP *and* QUIC produces a
+///   circuit on each, and both traverse the same hop: keeping the second
+///   spends a scarce slot on a path that fails with the first.
+///
+/// Direct addresses sort ahead of circuits so a dialer that can reach one
+/// never pays for a relay, and a `declared` announce address — an operator
+/// saying "I forwarded this port" — sorts ahead of everything, since it is the
+/// one address the swarm cannot observe for itself. Circuits nonetheless
+/// claim their slots first: a NATed host with several global v6 addresses or a
+/// VPN interface would otherwise fill the record with direct addresses that
+/// only work from its own network and lose the one address that works from
+/// anywhere.
+///
+/// Listeners are read alongside the swarm's confirmed external addresses. A
+/// UPnP mapping is not a listener, and a node that got one has released its
+/// relay reservations — without it that node would publish nothing at all.
+///
+/// The result is signed with the node's own identity key, the same key the
+/// peer id is derived from — see [`DHTServerInfo::signed_addrs`] for why an
+/// unsigned list would be a standing invitation to redirect a node's traffic.
+pub async fn signed_dial_addrs(
+    handle: &NetworkHandle,
+    keypair: &libp2p::identity::Keypair,
+    declared: Option<&str>,
+    strict: bool,
+) -> Vec<u8> {
+    let external = handle.external_addrs().await.unwrap_or_default();
+    let listeners = handle.listen_addrs().await.unwrap_or_default();
+    let addrs = select_dial_addrs(
+        external.into_iter().chain(listeners).collect(),
+        declared,
+        strict,
+    );
+    if addrs.is_empty() {
+        return Vec::new();
+    }
+    match libp2p::core::PeerRecord::new_interop(keypair, addrs) {
+        Ok(record) => record.into_signed_envelope().into_protobuf_encoding(),
+        Err(e) => {
+            // Signing failing means the identity key is unusable, which the
+            // swarm would already have died on. Publish nothing rather than
+            // an unsigned list a reader would be right to refuse.
+            warn!("could not sign the dial-address record: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// The selection itself, split from the swarm call and the signing so it can
+/// be tested against a fixed address list rather than a live node.
+///
+/// Addresses come back **without** a trailing `/p2p/<us>`: the peer record
+/// names the peer once, in a field the signature covers, and a reader
+/// re-attaches it when it dials. `strip_dest_p2p` is what does that, and it
+/// keeps a circuit's relay hop — the half a dialer cannot reconstruct.
+fn select_dial_addrs(
+    listeners: Vec<libp2p::Multiaddr>,
+    declared: Option<&str>,
+    strict: bool,
+) -> Vec<libp2p::Multiaddr> {
+    use kwaai_p2p::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p};
+    use kwaai_p2p::{is_circuit, uses_dialable_transport};
+
+    let mut sorted: Vec<libp2p::Multiaddr> = declared
+        .and_then(|d| d.parse().ok())
+        .into_iter()
+        .chain(listeners)
+        .filter(|a| is_announceable_with(a, strict) && uses_dialable_transport(a))
+        .collect();
+    // Direct before circuit (`false` sorts before `true`), stably, so the
+    // declared address stays ahead of the listeners it was chained onto.
+    sorted.sort_by_key(is_circuit);
+
+    let mut direct: Vec<libp2p::Multiaddr> = Vec::new();
+    let mut circuits: Vec<libp2p::Multiaddr> = Vec::new();
+    let mut seen_hops: HashSet<String> = HashSet::new();
+    for addr in sorted {
+        // A circuit is keyed on the relay itself, so its TCP and QUIC forms
+        // collapse to one entry — both cross the same hop, and if that hop is
+        // down neither works. A direct address is keyed on the address, where
+        // TCP and QUIC are genuinely separate chances.
+        let key = match (is_circuit(&addr), peer_id_from_multiaddr(&addr)) {
+            (true, Some(relay)) => relay.to_base58(),
+            _ => strip_dest_p2p(&addr).to_string(),
+        };
+        if !seen_hops.insert(key) {
+            continue;
+        }
+        if is_circuit(&addr) {
+            circuits.push(strip_dest_p2p(&addr));
+        } else {
+            direct.push(strip_dest_p2p(&addr));
+        }
+    }
+    // Circuits take their slots first; direct addresses get what is left and
+    // still lead the output. See the function docs for why.
+    circuits.truncate(MAX_DIAL_ADDRS);
+    direct.truncate(MAX_DIAL_ADDRS - circuits.len());
+    direct.extend(circuits);
+    direct
 }
 
 /// Model info stored in the `_petals.models` DHT registry.
@@ -456,6 +764,9 @@ pub fn build_unannounce_records(
         peer_id_b58: server_info.peer_id_b58.clone(),
         lease_v1: server_info.lease_v1,
         shard_loading: false,
+        // A tombstone says "stop using me"; where to reach the node is
+        // exactly the thing it is withdrawing.
+        signed_addrs: Vec::new(),
     };
 
     let info_bytes = offline_info.to_msgpack()?;
@@ -853,7 +1164,193 @@ mod tests {
             peer_id_b58: peer().to_base58(),
             lease_v1: true,
             shard_loading: false,
+            signed_addrs: vec![],
         }
+    }
+
+    /// A relay's peer id, distinct from [`peer`] — the node being announced.
+    fn relay() -> PeerId {
+        "12D3KooWF7ckKo2HQojbtueQNuLYRT2XC2yzbvBbh4NK2rbi2Azg"
+            .parse()
+            .expect("a valid peer id")
+    }
+
+    fn addrs(list: &[String]) -> Vec<libp2p::Multiaddr> {
+        list.iter()
+            .map(|a| a.parse().expect("a valid addr"))
+            .collect()
+    }
+
+    /// The listener set a NATed node actually has: loopback, two LAN
+    /// interfaces, and the circuit its reservation produced.
+    #[test]
+    fn select_dial_addrs_keeps_only_the_circuit_for_a_natted_node() {
+        let circuit = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let listeners = addrs(&[
+            "/ip4/127.0.0.1/tcp/54428".to_string(),
+            "/ip4/192.168.68.135/tcp/54428".to_string(),
+            "/ip6/::1/udp/54428/quic-v1".to_string(),
+            circuit,
+        ]);
+
+        // The destination hop is stripped — the record names the peer itself —
+        // but the relay hop, which a dialer cannot reconstruct, is kept.
+        let expected = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
+            relay().to_base58()
+        );
+        assert_eq!(
+            select_dial_addrs(listeners, None, false),
+            addrs(&[expected])
+        );
+    }
+
+    /// Both circuits cross the same relay, so publishing both spends two of
+    /// four slots on one hop.
+    #[test]
+    fn select_dial_addrs_collapses_two_transports_on_one_relay() {
+        let tcp = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let quic = format!(
+            "/ip4/76.13.5.74/udp/4001/quic-v1/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+
+        let out = select_dial_addrs(addrs(&[tcp, quic]), None, false);
+        let expected = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
+            relay().to_base58()
+        );
+        assert_eq!(out, addrs(&[expected]), "one address per relay, first wins");
+    }
+
+    /// This build has no webtransport transport, and the certhash form is the
+    /// longest address a relay offers — publishing it is pure cost.
+    #[test]
+    fn select_dial_addrs_drops_transports_this_build_cannot_dial() {
+        let wt = format!(
+            "/ip4/76.13.5.74/udp/4001/quic-v1/webtransport/certhash/uEiBIeyYi7BYMq_u71nPi3WJna-9kL5yAURJ5HYy0qXW3YQ/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        assert!(select_dial_addrs(addrs(&[wt]), None, false).is_empty());
+    }
+
+    /// The peer id belongs in the record, under the signature, not repeated on
+    /// every address — a reader re-attaches it when it dials.
+    #[test]
+    fn select_dial_addrs_leaves_the_peer_id_to_the_record() {
+        let out = select_dial_addrs(
+            addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]),
+            None,
+            false,
+        );
+        assert_eq!(out, addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]));
+    }
+
+    /// A declared address is the operator saying "I forwarded this port" — the
+    /// one address the swarm cannot observe for itself, and the cheapest hop
+    /// for a dialer, so it leads.
+    #[test]
+    fn select_dial_addrs_puts_a_declared_address_first() {
+        let circuit = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"), false);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
+    }
+
+    /// A host with many interfaces — several global v6 addresses, a VPN —
+    /// must not crowd its circuit out of the record: for a NATed node the
+    /// circuit is the only entry that works from outside its own network.
+    #[test]
+    fn select_dial_addrs_reserves_room_for_a_circuit() {
+        let mut listeners: Vec<String> = (1..=MAX_DIAL_ADDRS + 2)
+            .map(|i| format!("/ip6/2606:4700::{i}/tcp/4001"))
+            .collect();
+        listeners.push(format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        ));
+
+        let out = select_dial_addrs(addrs(&listeners), None, false);
+        assert_eq!(out.len(), MAX_DIAL_ADDRS);
+        assert!(
+            kwaai_p2p::is_circuit(out.last().expect("non-empty")),
+            "the circuit survives, last because direct is cheaper to try"
+        );
+        assert!(!kwaai_p2p::is_circuit(&out[0]));
+    }
+
+    /// The record follows the node's policy: a reserved-range listener is
+    /// published only by a node whose operator declared that range routable.
+    #[test]
+    fn select_dial_addrs_follows_the_address_policy() {
+        let reserved = addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]);
+        assert_eq!(select_dial_addrs(reserved.clone(), None, false), reserved);
+        assert!(select_dial_addrs(reserved, None, true).is_empty());
+    }
+
+    /// The same value is stored under every block key, so the list is capped.
+    #[test]
+    fn select_dial_addrs_stops_at_the_cap() {
+        let listeners: Vec<String> = (1..=MAX_DIAL_ADDRS + 3)
+            .map(|i| format!("/ip4/203.0.113.{i}/tcp/4001"))
+            .collect();
+        assert_eq!(
+            select_dial_addrs(addrs(&listeners), None, false).len(),
+            MAX_DIAL_ADDRS
+        );
+    }
+
+    /// A node with nothing reachable to say must add no bytes to the record,
+    /// so that `addrs` is absent rather than an empty array.
+    #[test]
+    fn to_msgpack_omits_addrs_when_there_are_none() {
+        let bytes = server_info(None).to_msgpack().expect("encodes");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("addrs"));
+    }
+
+    #[test]
+    fn to_msgpack_carries_addrs_when_present() {
+        let mut info = server_info(None);
+        info.signed_addrs = vec![1, 2, 3];
+        let bytes = info.to_msgpack().expect("encodes");
+        assert!(String::from_utf8_lossy(&bytes).contains("addrs_signed"));
+    }
+
+    /// The whole point of the field: what is published is signed by the key
+    /// the peer id is derived from, so a reader can bind the two.
+    #[test]
+    fn a_signed_record_verifies_and_names_the_signer() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let me = key.public().to_peer_id();
+        let addr: libp2p::Multiaddr = "/ip4/203.0.113.7/tcp/4001".parse().expect("parses");
+
+        let bytes = libp2p::core::PeerRecord::new_interop(&key, vec![addr.clone()])
+            .expect("signs")
+            .into_signed_envelope()
+            .into_protobuf_encoding();
+
+        let envelope =
+            libp2p::core::SignedEnvelope::from_protobuf_encoding(&bytes).expect("decodes");
+        let record =
+            libp2p::core::PeerRecord::from_signed_envelope_interop(envelope).expect("verifies");
+        assert_eq!(record.peer_id(), me);
+        assert_eq!(record.addresses(), &[addr]);
     }
 
     fn vpk_info() -> VpkInfo {
@@ -1343,5 +1840,201 @@ mod tests {
 
         let _ = handle.shutdown().await;
         let _ = task.await;
+    }
+
+    /// Build a minimal `Ext(64, [state, throughput, {fields}])` blob matching
+    /// `DHTServerInfo::to_msgpack()`'s shape, with `lease_v1` present or
+    /// absent — mirrors what a real (or legacy, pre-Capacity-Lease) peer's
+    /// DHT announcement decodes from.
+    fn make_server_info_ext_bytes(lease_v1: Option<bool>) -> Vec<u8> {
+        let mut fields = vec![
+            (rmpv::Value::from("start_block"), rmpv::Value::from(0i64)),
+            (rmpv::Value::from("end_block"), rmpv::Value::from(32i64)),
+            (
+                rmpv::Value::from("public_name"),
+                rmpv::Value::from("test-node"),
+            ),
+            (
+                rmpv::Value::from("peer_id"),
+                rmpv::Value::from(PeerId::random().to_base58().as_str()),
+            ),
+            (
+                rmpv::Value::from("version"),
+                rmpv::Value::from("kwaai-0.5.4"),
+            ),
+        ];
+        if let Some(v) = lease_v1 {
+            fields.push((rmpv::Value::from("lease_v1"), rmpv::Value::from(v)));
+        }
+        let inner = rmpv::Value::Array(vec![
+            rmpv::Value::from(2i32), // state = ONLINE
+            rmpv::Value::from(10.0), // throughput
+            rmpv::Value::Map(fields),
+        ]);
+        let mut inner_bytes = Vec::new();
+        rmpv::encode::write_value(&mut inner_bytes, &inner).unwrap();
+        let ext = rmpv::Value::Ext(64, inner_bytes);
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &ext).unwrap();
+        out
+    }
+
+    #[test]
+    fn decode_server_info_ext_reads_lease_v1_when_present() {
+        let bytes = make_server_info_ext_bytes(Some(true));
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        assert!(info.lease_v1);
+    }
+
+    /// Helper: a signed envelope for `key` naming `addrs`, exactly as the
+    /// publisher emits one.
+    fn signed_envelope(key: &libp2p::identity::Keypair, addrs: &[&str]) -> Vec<u8> {
+        let addrs = addrs
+            .iter()
+            .map(|a| a.parse().expect("a valid addr"))
+            .collect();
+        libp2p::core::PeerRecord::new_interop(key, addrs)
+            .expect("signs")
+            .into_signed_envelope()
+            .into_protobuf_encoding()
+    }
+
+    /// The publisher's own encoder is the producer of record, so the decoder is
+    /// tested against what it emits rather than against a hand-built map. The
+    /// address comes back bare, the form the daemon takes and keeps in its
+    /// learned-address map.
+    #[test]
+    fn decode_server_info_ext_round_trips_a_signed_address() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let mut published = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        published.signed_addrs = signed_envelope(&key, &["/ip4/203.0.113.7/tcp/4001"]);
+
+        let info =
+            decode_server_info_ext(&published.to_msgpack().expect("encodes")).expect("decodes");
+        assert_eq!(
+            info.dial_addrs,
+            vec!["/ip4/203.0.113.7/tcp/4001".parse::<Multiaddr>().unwrap()]
+        );
+    }
+
+    /// The attack the signature exists to stop: anyone may write under any
+    /// subkey, so a record whose addresses were signed by a different key must
+    /// yield nothing — the peer falls back to a bare-PeerId dial rather than
+    /// being steered at an address its own key never vouched for.
+    #[test]
+    fn decode_server_info_ext_rejects_addresses_signed_by_another_key() {
+        let victim = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let attacker = libp2p::identity::Keypair::generate_ed25519();
+        let mut forged = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            victim.to_base58(),
+        );
+        forged.signed_addrs = signed_envelope(&attacker, &["/ip4/198.51.100.9/tcp/4001"]);
+
+        let info = decode_server_info_ext(&forged.to_msgpack().expect("encodes")).expect("decodes");
+        assert!(
+            info.dial_addrs.is_empty(),
+            "an address list the announced peer did not sign must not be dialed"
+        );
+        assert_eq!(
+            info.public_name, "test-node",
+            "the rest of the record still decodes"
+        );
+    }
+
+    /// Garbage in the field costs the addresses, not the record.
+    #[test]
+    fn decode_server_info_ext_ignores_an_unparseable_envelope() {
+        let peer = PeerId::random();
+        let mut info = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        info.signed_addrs = vec![0xde, 0xad, 0xbe, 0xef];
+
+        let decoded =
+            decode_server_info_ext(&info.to_msgpack().expect("encodes")).expect("decodes");
+        assert!(decoded.dial_addrs.is_empty());
+        assert_eq!(
+            decoded.end_block, 32,
+            "the rest of the record still decodes"
+        );
+    }
+
+    /// Circuits are the whole motivation, and their shape is the one a dialer
+    /// cannot reconstruct: the relay hop must survive the round trip, and only
+    /// the destination `/p2p` is stripped.
+    #[test]
+    fn decode_server_info_ext_round_trips_a_circuit_address() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let relay = PeerId::random();
+        let circuit = format!("/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit", relay);
+
+        let mut published = DHTServerInfo::new(
+            0,
+            32,
+            "test-node",
+            true,
+            10.0,
+            Vec::new(),
+            None,
+            peer.to_base58(),
+        );
+        published.signed_addrs = signed_envelope(&key, &[&circuit]);
+
+        let info =
+            decode_server_info_ext(&published.to_msgpack().expect("encodes")).expect("decodes");
+        assert_eq!(info.dial_addrs, vec![circuit.parse::<Multiaddr>().unwrap()]);
+    }
+
+    /// A peer on a binary that predates the field decodes to an empty list,
+    /// not a dropped record — it is still dialable by PeerId if it happens to
+    /// be in the routing table.
+    #[test]
+    fn decode_server_info_ext_defaults_addrs_empty_for_legacy_bytes() {
+        let bytes = make_server_info_ext_bytes(None);
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        assert_eq!(info.state, 2, "the rest of the record must still decode");
+        assert!(info.dial_addrs.is_empty());
+    }
+
+    #[test]
+    fn decode_server_info_ext_defaults_lease_v1_false_for_legacy_bytes() {
+        // No lease_v1 key at all — exactly what a pre-Capacity-Lease peer's
+        // announcement looks like. Must decode successfully (not error) and
+        // default to false, not panic or silently drop the record.
+        let bytes = make_server_info_ext_bytes(None);
+        let info = decode_server_info_ext(&bytes).expect("decodes");
+        let (state, lease_v1) = (info.state, info.lease_v1);
+        assert_eq!(
+            state, 2,
+            "pre-existing fields must still decode alongside the new one"
+        );
+        assert!(!lease_v1);
     }
 }
