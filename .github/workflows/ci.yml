@@ -396,3 +396,58 @@ jobs:
           name: kwaainet-dev-${{ github.sha }}-${{ matrix.target }}
           path: core/target/release/kwaainet
           retention-days: 30
+
+  # ── 8. Packaging smoke test (.deb) ────────────────────────────────────────
+  # Builds the package from a *stub* payload — two shell scripts standing in
+  # for the binaries — so this stays seconds, not a release build.  ci.yml
+  # deliberately has no release build (see the header); the real payload is
+  # packaged by release.yml's package-linux job.  What this proves: control
+  # generation, install layout, permissions, lintian, and a full
+  # install/remove/purge cycle.
+  package-smoke:
+    name: Package smoke (.deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No `fetch patched deps` step: this job never builds Rust.
+
+      - name: Build .deb from a stub payload and install it
+        run: |
+          mkdir -p stub
+          printf '#!/bin/sh\necho "kwaainet 0.0.0-stub"\n' > stub/kwaainet
+          chmod +x stub/kwaainet
+          docker run --rm -v "$PWD:/src:ro" debian:bookworm bash -c '
+            set -e
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq dpkg-dev lintian >/dev/null
+            cp -r /src /work && cd /work
+            # Stub scripts have no ELF for dpkg-shlibdeps; the real Depends is
+            # derived and diffed in release.yml, against the real binary.
+            bash distrib/debian/build-deb.sh \
+              --payload /work/stub --arch amd64 --outdir /tmp/out \
+              --depends "$(cat distrib/debian/expected-depends.amd64)" --lintian
+            bash distrib/debian/test-install.sh /tmp/out/kwaainet_*_amd64.deb
+          '
+
+  # ── 8b. Packaging guard ───────────────────────────────────────────────────
+  # release.yml's packaging jobs are hand-added to a cargo-dist-generated file.
+  # Regenerating it without `--allow-dirty ci` deletes them silently, and
+  # nothing else would notice until a release shipped with no packages.
+  packaging-guard:
+    name: Packaging guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: release.yml still builds packages
+        run: |
+          for marker in "package-linux:" "upload-packages-to-release:" \
+                        "END hand-added"; do
+            grep -qF "$marker" .github/workflows/release.yml || {
+              echo "::error file=.github/workflows/release.yml::'$marker' is gone."
+              echo "The hand-added packaging jobs were most likely wiped by"
+              echo "'dist init'/'dist generate' run without '--allow-dirty ci'."
+              echo "Restore them from git history rather than re-deriving them."
+              exit 1
+            }
+          done
+          echo "packaging jobs present"

@@ -1,0 +1,7 @@
+kwaainet (@VERSION@) stable; urgency=medium
+
+  * Package KwaaiNet @UPSTREAM_VERSION@ for Debian and derivatives.
+    Upstream changes are listed at
+    https://github.com/Kwaai-AI-Lab/KwaaiNet/releases
+
+ -- Kwaai AI Lab <dev@kwaai.ai>  @DATE@
