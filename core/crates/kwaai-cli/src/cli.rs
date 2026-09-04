@@ -298,7 +298,8 @@ pub enum ConfigAction {
     /// Valid keys:
     ///   model, blocks, start_block, port, use_gpu, log_level,
     ///   public_name, public_ip, announce_addr, no_relay, native_p2p,
-    ///   announce_self, enable_upnp, enable_quic, ipv6, max_connections,
+    ///   announce_self, enable_upnp, enable_quic, ipv6, only_global_ips,
+    ///   max_connections,
     ///   announce_online_without_shard,
     ///   decentralized_dht, dht_replication,
     ///   vpk_enabled, vpk_mode, vpk_local_port,

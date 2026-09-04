@@ -6,10 +6,12 @@ All notable changes to KwaaiNet are documented here.
 
 ### Added
 - **IPv6 support**, behind a new `ipv6: auto | true | false` config key (default `auto`). `auto` binds `/ip6/::` when the host has an IPv6 loopback and runs IPv4-only otherwise; `true` makes a missing v6 stack or a refused bind a startup error, so a dual-stack deployment cannot silently come up serving half the network; `false` opens no v6 listener and drops v6 addresses from the dial and announce sets. Also a cargo feature, on by default in `kwaai-p2p` and `kwaainet` — compiled out, the key still parses and reads as `false`.
-- `is_routable_v6` / `is_globally_routable_v6` mirror the IPv4 classifiers, without the IPv4 carve-out: unique-local `fc00::/7`, the documentation and benchmarking prefixes and the transition ranges (Teredo, 6to4, ORCHID) are never announceable. IPv4-mapped addresses are classified as the IPv4 address they carry.
+- `is_routable_v6` / `is_globally_routable_v6` mirror the IPv4 classifiers. The transition ranges (Teredo, 6to4, ORCHID) are never announceable; unique-local `fc00::/7` and the documentation and benchmarking prefixes follow `only_global_ips`, as RFC2544 and RFC5737 do on the IPv4 side. IPv4-mapped addresses are classified as the IPv4 address they carry.
+- A `only_global_ips` config key (default `true`), wired through to the daemon's address policy and to AutoNAT's `only_global_ips`. Set `false` only on a network deliberately built on IANA-reserved space.
 - `SelfStatus.ipv6` on the gRPC network snapshot (`"off"`, `"active"` or `"unavailable"`), so a v6 bind the host refused is visible rather than merely absent. `kwaainet p2p info` prints the configured mode.
 
 ### Changed
+- **IANA-reserved address space is rejected by default.** RFC2544 `198.18/15`, the RFC5737 documentation ranges and IPv6 unique-local were previously announceable on every node because the internal `only_global_ips` switch defaulted off and was not reachable from config. A deployment that relies on such addresses must now set `only_global_ips: false`.
 - The node's own local servers — the gRPC control port, the OpenAI-compatible HTTP APIs and the storage health endpoint — now bind IPv6 alongside IPv4 on the same port. A client whose `localhost` resolves to `::1` first, which is the default on Windows and most modern Linux distributions, previously got connection refused from a daemon that was running.
 - A v6 `public_ip` is announced as `/ip6/…` instead of being formatted into an `/ip4/` multiaddr that does not parse, which left a correctly configured node announcing nothing.
 - `port_in_use` probes both address families, so the "already running" message is not defeated by a squatter holding only the v6 half.

@@ -193,15 +193,15 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub external_addr: Option<String>,
 
-    /// Require addresses to be globally routable, rejecting the IANA-reserved
-    /// documentation and benchmarking ranges as well as the private ones.
+    /// The `only_global_ips` config key. Require addresses to be globally
+    /// routable, rejecting the IANA-reserved ranges — RFC2544 and RFC5737 on v4, unique-local and the documentation
+    /// and benchmarking prefixes on v6 — as well as the private ones.
     ///
-    /// **Default false.** This drives `autonat::Config::only_global_ips`, whose
-    /// own default (`true`) is the single place in rust-libp2p 0.53 that would
-    /// classify the docker nat-test bed's `198.18/15` addresses unreachable.
-    /// Turn it on for a node on the real internet, where a documentation-range
-    /// address could only ever be a misconfiguration.
-    #[serde(default)]
+    /// **Default true.** It also drives `autonat::Config::only_global_ips`, so
+    /// the swarm's one address-class check agrees with the classifier. Turn
+    /// it off only for a network deliberately built on reserved space, where
+    /// those addresses are the routable ones.
+    #[serde(default = "default_true")]
     pub require_global_ips: bool,
 
     /// How many circuit reservations to hold at once.
@@ -438,7 +438,7 @@ impl Default for NetworkConfig {
             enable_upnp: true,
             force_private: false,
             external_addr: None,
-            require_global_ips: false,
+            require_global_ips: true,
             max_relay_reservations: default_max_relay_reservations(),
             identify_min_confirmations: default_identify_min_confirmations(),
         }
@@ -480,6 +480,9 @@ impl NetworkConfig {
             dht_server: true,
             relay_server: false,
             enable_upnp: false,
+            // Loopback fixtures are tabled through AutoNAT's dial-back, which
+            // the strict setting refuses to make to 127.0.0.1.
+            require_global_ips: false,
             ..Self::default()
         }
     }

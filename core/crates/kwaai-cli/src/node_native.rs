@@ -51,7 +51,7 @@
 //! | — | `-natPortMap` | UPnP, always on |
 //!
 //! What is *not* in reach in-process is real hole punching, which needs actual
-//! NATs — that is docker nat-test topology work.
+//! NATs between two nodes.
 
 use anyhow::{Context, Result};
 use kwaai_hivemind_dht::DHTStorage;
@@ -171,10 +171,9 @@ impl NativeNode {
             // `-announceAddrs`. An operator declaration, so it outranks
             // `force_private` and AutoNAT cannot demote it.
             external_addr: configured_announce_addr(config),
-            // Deliberately permissive: this is the only address-class filter in
-            // rust-libp2p 0.53, and turning it on would classify the docker
-            // nat-test topology's `198.18/15` addresses unreachable.
-            require_global_ips: false,
+            // Address classes: reject IANA-reserved space unless the operator
+            // says their network is built on it.
+            require_global_ips: config.only_global_ips,
 
             // The only bound on connection growth, and so on the memory the
             // swarm holds: idle connections live for ten minutes.
