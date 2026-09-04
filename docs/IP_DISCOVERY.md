@@ -211,7 +211,7 @@ v6 internet — Teredo `2001::/32`, 6to4 `2002::/16`, ORCHID `2001:10::/28` and
 it carries, so the v4 filters cannot be walked past by respelling an address.
 
 Unique-local `fc00::/7`, documentation `2001:db8::/32` and `3fff::/20`, and
-benchmarking `2001:2::/48` are governed by `require_global_ips`, exactly as
+benchmarking `2001:2::/48` are governed by `only_global_ips`, exactly as
 RFC2544 and RFC5737 are on the v4 side. With the key on — the default — they are
 rejected like any private range; `is_globally_routable_v6` is that tier. An
 operator whose network is deliberately built on reserved space sets the key to

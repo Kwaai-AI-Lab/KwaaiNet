@@ -340,7 +340,7 @@ of their absence:
   monopolise leases or deny inference capacity to others is unexamined.
 - **Trust/VC integration** (`kwaai-trust`) was not in scope of any of these PRs
   and its interaction with the native path is unreviewed.
-- **`require_global_ips` defaults to `true`** (`kwaai-p2p/src/config.rs`), so
+- **`only_global_ips` defaults to `true`** (`kwaai-p2p/src/config.rs`), so
   IANA-reserved space is rejected like private space. A node that sets it
   `false` announces such addresses; that is a per-deployment decision and not
   examined further here.
