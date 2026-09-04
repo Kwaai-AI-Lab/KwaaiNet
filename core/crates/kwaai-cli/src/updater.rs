@@ -327,18 +327,16 @@ impl UpdateChecker {
             let install_dir = dirs::home_dir()
                 .map(|h| h.join(".cargo/bin"))
                 .unwrap_or_default();
-            for bin in &["kwaainet"] {
-                let path = install_dir.join(bin);
-                if path.exists() {
-                    let _ = std::process::Command::new("xattr")
-                        .args(["-d", "com.apple.quarantine"])
-                        .arg(&path)
-                        .output();
-                    let _ = std::process::Command::new("codesign")
-                        .args(["-s", "-", "--force"])
-                        .arg(&path)
-                        .output();
-                }
+            let path = install_dir.join("kwaainet");
+            if path.exists() {
+                let _ = std::process::Command::new("xattr")
+                    .args(["-d", "com.apple.quarantine"])
+                    .arg(&path)
+                    .output();
+                let _ = std::process::Command::new("codesign")
+                    .args(["-s", "-", "--force"])
+                    .arg(&path)
+                    .output();
             }
         }
 
