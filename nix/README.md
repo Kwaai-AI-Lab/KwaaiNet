@@ -332,7 +332,7 @@ they try to execute target-architecture binaries on the build host.
 All cross-compiled outputs have been built and verified from an x86_64-linux
 host:
 
-**Binaries** (4 per target, 16 total):
+**Binaries** (1 per target, 4 total):
 
 | Binary | aarch64-gnu | aarch64-musl | x86_64-musl | riscv64-gnu |
 |--------|:-----------:|:------------:|:-----------:|:-----------:|
