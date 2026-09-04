@@ -1397,7 +1397,10 @@ mod native_p2p_tombstone {
     #[test]
     fn the_default_config_does_not_write_the_key() {
         let y = serde_yaml::to_string(&KwaaiNetConfig::default()).expect("serialise");
-        assert!(!y.contains("native_p2p"), "dead key must not be written:\n{y}");
+        assert!(
+            !y.contains("native_p2p"),
+            "dead key must not be written:\n{y}"
+        );
     }
 }
 

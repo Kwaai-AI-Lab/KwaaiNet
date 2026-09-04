@@ -2969,7 +2969,6 @@ dependencies = [
  "kwaai-hivemind-dht",
  "kwaai-inference",
  "kwaai-p2p",
- "kwaai-p2p-daemon",
  "libp2p",
  "prost 0.12.6",
  "reqwest",
@@ -3075,7 +3074,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "unsigned-varint 0.7.2",
 ]
 
 [[package]]
