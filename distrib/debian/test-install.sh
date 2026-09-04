@@ -92,7 +92,20 @@ apt-get remove -y -qq kwaainet >/dev/null
 [ ! -e /usr/bin/p2pd ] || fail "/usr/bin/p2pd survived remove"
 ok "clean remove"
 
+# remove keeps conffiles by design; purge is what must clear them.
+[ -f /etc/default/kwaainet ] || fail "remove deleted the conffile (should keep it)"
+ok "conffile retained by remove"
+
 [ -f "${HOME}/.kwaainet/identity.key" ] || fail "remove deleted ${HOME}/.kwaainet"
 ok "${HOME}/.kwaainet survived remove"
+
+apt-get purge -y -qq kwaainet >/dev/null
+[ ! -f /etc/default/kwaainet ] || fail "purge left the conffile behind"
+[ ! -e /usr/lib/kwaainet ] || fail "purge left /usr/lib/kwaainet behind"
+ok "clean purge"
+
+# The identity key must outlive even a purge: losing it loses the node.
+[ -f "${HOME}/.kwaainet/identity.key" ] || fail "purge deleted ${HOME}/.kwaainet"
+ok "${HOME}/.kwaainet survived purge"
 
 echo "ALL CHECKS PASSED"
