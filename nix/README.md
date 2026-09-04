@@ -69,7 +69,7 @@ See also: [Nix Flakes Wiki](https://nixos.wiki/wiki/flakes)
 # Build kwaainet (produces ./result/bin/kwaainet)
 nix build
 
-# Or enter a development shell with Rust, Go, protobuf, and formatters
+# Or enter a development shell with Rust, protobuf, and formatters
 nix develop
 ```
 
@@ -90,7 +90,7 @@ development shell.
 By default, `nix build` writes every output to a single `./result` symlink —
 building a different package overwrites the previous one.  A root `Makefile`
 solves this by passing `-o result-<name>` to each build, giving every package
-its own symlink (`result-kwaainet`, `result-p2pd`, etc.) so multiple
+its own symlink (`result-kwaainet`, `result-proto`, etc.) so multiple
 outputs coexist.  Use `make -j` for parallel builds.
 
 ### Binaries
@@ -99,7 +99,6 @@ outputs coexist.  Use `make -j` for parallel builds.
 |-------------|---------------|--------|
 | `make` | build the kwaainet binary | `result-kwaainet` |
 | `make kwaainet` | `nix build .#kwaainet` | `result-kwaainet` |
-| `make p2pd` | `nix build .#p2pd` | `result-p2pd` |
 | `make proto` | `nix build .#protoRs` | `result-proto` |
 
 ### OCI containers (Linux only)
@@ -135,12 +134,11 @@ These have no Makefile wrapper — call `nix` directly:
 ## Outputs
 
 ```
-packages.default                kwaainet CLI + bundled p2pd
+packages.default                kwaainet CLI
 packages.kwaainet               (same as default)
 packages.cargoArtifacts         cached workspace dependency artifacts (crane)
-packages.p2pd                   go-libp2p-daemon (Hivemind fork)
 packages.protoRs                pre-generated prost Rust code from p2pd.proto
-packages.kwaainet-container     OCI image stream script — kwaainet + p2pd (Linux only)
+packages.kwaainet-container     OCI image stream script — kwaainet (Linux only)
 packages.kwaainet-all-container OCI image — all binaries in one image (Linux only)
 packages.test-two-node          two-node integration test script
 packages.test-containers        container image test suite (Linux only)
@@ -149,11 +147,10 @@ packages.test-containers        container image test suite (Linux only)
 packages.kwaainet-aarch64-linux-gnu         ARM64 dynamic binary
 packages.kwaainet-aarch64-linux-musl        ARM64 static binary
 packages.kwaainet-x86_64-linux-musl         x86_64 static binary
-packages.p2pd-<target>                      cross-compiled p2pd
 packages.*-container-<target>               cross-arch OCI images
 packages.test-cross-smoke-<target>          QEMU smoke tests
 
-devShells.default               full dev environment (Rust, Go, protobuf, etc.)
+devShells.default               full dev environment (Rust, protobuf, etc.)
 
 checks.clippy                   workspace-wide clippy (--deny warnings)
 checks.cargoTest                workspace-wide cargo test
@@ -196,7 +193,6 @@ The Nix setup consists of `flake.nix`, `flake.lock`, and modular files in
 - **`flake.lock`** — pins exact versions so all developers use identical inputs
 - **`nix/packages.nix`** — shared dependency lists (DRY across build + devshell)
 - **`nix/crane.nix`** — two-phase Rust build (cached deps + source)
-- **`nix/p2pd.nix`** — go-libp2p-daemon Hivemind fork
 - **`nix/proto.nix`** — protobuf codegen derivation
 - **`nix/containers.nix`** — OCI container images
 - **`nix/cross.nix`** — cross-compilation module
@@ -216,10 +212,9 @@ flake.nix                 orchestrator — wires modules together
 Makefile                  build targets with dedicated output symlinks
 nix/
   packages.nix            shared dependency lists (DRY across build + devshell)
-  p2pd.nix                go-libp2p-daemon Hivemind fork (buildGoModule)
   proto.nix               protobuf codegen derivation (protoc + protoc-gen-prost)
   crane.nix               two-phase Rust build (crane: buildDepsOnly + buildPackage)
-  cross.nix               cross-compilation module (reuses crane/p2pd/containers with cross pkgs)
+  cross.nix               cross-compilation module (reuses crane/containers with cross pkgs)
   containers.nix          OCI container images (streamLayeredImage)
   devshell.nix            nix develop environment
   overlays/
@@ -240,8 +235,6 @@ nix/
   (keyed on `Cargo.lock`) and cached.  Source-only changes skip dependency
   compilation entirely, cutting rebuild times from ~5-10 min to ~1-2 min.
   Crane reads `Cargo.lock` directly — no `cargoHash` to maintain.
-- **Per-binary packages** — the workspace binaries (kwaainet, p2pd) are
-  separate derivations so changes to one don't rebuild the other.
 - **Minimal OCI containers** — each container includes only the binary, CA
   certificates (`cacert`), and timezone data (`tzdata`).  No shell, no
   coreutils — minimal attack surface.  Built with `streamLayeredImage` so
@@ -249,10 +242,6 @@ nix/
   directly to `docker load` or `podman load`.
 - **Modular `nix/` layout** — the flake delegates to single-purpose modules
   (following the pattern used by the redpanda and xdp2 Nix setups).
-- **Separate p2pd derivation** — the upstream `build.rs` clones a Git repo and
-  runs `go build` at Rust compile time.  Nix builds are sandboxed (no network),
-  so we build p2pd as an independent `buildGoModule` and patch `build.rs` to
-  point at it.  This also means `p2pd` is cached independently.
 - **Protobuf codegen as a separate derivation** — the upstream `build.rs` runs
   `protoc` via `prost_build` to generate Rust types from `p2pd.proto`.  The
   `proto.nix` derivation runs `protoc` + `protoc-gen-prost` (both from nixpkgs)
@@ -270,16 +259,11 @@ nix/
 - **Version from Cargo.toml** — `crane.nix` reads the workspace version via
   `builtins.fromTOML`, so the Nix package version stays in sync automatically.
 
-## First build — filling in hashes
+## Hashes
 
-Nix requires content hashes for reproducibility.  On the first build, only the
-p2pd Go module hashes need to be set:
-
-1. **`nix/p2pd.nix` → `vendorHash`** — run `nix build .#p2pd` and copy the
-   expected hash from the error message.
-
-The Rust build uses crane, which reads `Cargo.lock` directly — no hash to
-maintain.  When Cargo dependencies change, rebuild is automatic.
+There are none to fill in.  The Rust build uses crane, which reads `Cargo.lock`
+directly, and the protobuf derivation is hashed from its source directory.
+When Cargo dependencies change, rebuild is automatic.
 
 ## Multi-architecture support
 
@@ -327,7 +311,6 @@ flake.nix
       └─ nix/cross.nix (for each crossSystem)
           ├─ pkgsCross = import nixpkgs { localSystem; crossSystem; overlays; }
           ├─ crane.nix  (reused — craneLib built from pkgsCross)
-          ├─ p2pd.nix   (reused — buildGoModule sets GOOS/GOARCH via pkgsCross)
           └─ containers.nix (reused — streamLayeredImage for target arch, Linux only)
 ```
 
@@ -337,10 +320,6 @@ Each language toolchain picks up the cross configuration differently:
   the cross Rust toolchain.  `CARGO_BUILD_TARGET` is set to the Rust target
   triple (e.g., `aarch64-unknown-linux-gnu`).  Cargo reads per-target rustflags
   from `core/.cargo/config.toml` automatically (e.g., fp16 flags for aarch64).
-- **Go (p2pd)** — `pkgsCross.callPackage ./p2pd.nix {}` invokes `buildGoModule`
-  from the cross package set, which automatically sets `GOOS=linux` and
-  `GOARCH=arm64` (or the appropriate values).  p2pd uses `CGO_ENABLED=0` so
-  there are no C dependencies to cross-compile.
 - **OCI containers** — `dockerTools.streamLayeredImage` from `pkgsCross` produces
   images with the correct architecture metadata (e.g., `linux/arm64`).
 
@@ -358,7 +337,6 @@ host:
 | Binary | aarch64-gnu | aarch64-musl | x86_64-musl | riscv64-gnu |
 |--------|:-----------:|:------------:|:-----------:|:-----------:|
 | kwaainet | PASS | PASS | PASS | PASS |
-| p2pd | PASS | PASS | PASS | PASS |
 
 **OCI container images** (3 per target, 12 total):
 
@@ -471,8 +449,8 @@ Container images are tagged with the workspace version from `core/Cargo.toml`
 
 | Container | Exposed port | Contents |
 |-----------|-------------|----------|
-| `kwaainet` | — | kwaainet binary + bundled p2pd |
-| `kwaainet-all` | — | all binaries (kwaainet + p2pd) |
+| `kwaainet` | — | kwaainet binary |
+| `kwaainet-all` | — | all binaries |
 
 All containers include `SSL_CERT_FILE` and `TZDIR` environment variables
 pre-configured for TLS and log timestamps.
@@ -480,7 +458,7 @@ pre-configured for TLS and log timestamps.
 ## Development workflow
 
 ```bash
-# Enter dev shell with Rust, Go, protobuf, and formatters
+# Enter dev shell with Rust, protobuf, and formatters
 nix develop
 
 # Build from source (inside dev shell, same as non-Nix workflow)
@@ -564,16 +542,6 @@ cd core && cargo update && cd ..
 make all
 ```
 
-### Updating the p2pd (Go) dependency
-
-If the go-libp2p-daemon fork bumps its version or Go module dependencies:
-
-1. Update `version`, `rev`, and `hash` in `nix/p2pd.nix`.
-   - To get the new source `hash`, temporarily set it to `""` and run
-     `nix build .#p2pd` — Nix prints the correct hash.
-2. Update `vendorHash` the same way — set to `""`, build, copy the hash.
-3. Rebuild: `make all`
-
 ### Updating protobuf definitions
 
 When `core/crates/kwaai-p2p-daemon/proto/p2pd.proto` changes, no manual action
@@ -593,6 +561,4 @@ ls result-proto/
 |---|---|---|
 | `flake.lock` inputs | (auto via `nix flake update`) | — |
 | `core/Cargo.lock` | (automatic — crane reads Cargo.lock) | — |
-| p2pd Go source | `nix/p2pd.nix` | `hash` |
-| p2pd Go modules | `nix/p2pd.nix` | `vendorHash` |
 | `p2pd.proto` | (automatic — no hash to update) | — |
