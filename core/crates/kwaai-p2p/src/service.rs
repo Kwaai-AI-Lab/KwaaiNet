@@ -506,7 +506,11 @@ impl NetworkService {
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             reachability,
-            relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations),
+            relays: RelayManager::new(
+                &config.trusted_relays,
+                config.max_relay_reservations,
+                config.require_global_ips,
+            ),
             announce_tx,
             bootstrap_addrs: config
                 .effective_initial_peers()

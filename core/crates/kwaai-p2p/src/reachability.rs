@@ -280,9 +280,9 @@ impl ReachabilityState {
             info!(%addr, "autonat says public, but force_private is set — staying private");
             return Vec::new();
         }
-        // With `only_global_ips: false` (the default, so the RFC2544 test beds
-        // work) autonat itself does no address-class filtering, and a dialback
-        // from a peer on our own LAN can "confirm" an RFC1918 address. Promoting
+        // With `require_global_ips` off, autonat itself does no address-class
+        // filtering, and a dialback from a peer on our own LAN can "confirm"
+        // an RFC1918 address — the policy still rejects it. Promoting
         // it would advertise a LAN address to the whole network and tear down
         // relay circuits — the Direct-but-unreachable failure mode.
         if !self.policy.announceable(&addr) {
@@ -555,8 +555,8 @@ mod tests {
 
     #[test]
     fn autonat_public_at_a_lan_address_is_ignored() {
-        // With `only_global_ips: false` (our default, for the RFC2544 beds)
-        // autonat does no address filtering of its own: a dialback from a peer
+        // With `require_global_ips` off autonat does no address filtering of
+        // its own: a dialback from a peer
         // on our LAN can "confirm" an RFC1918 address. Promoting it would
         // advertise a LAN address fleet-wide and tear down relay circuits.
         let mut state = plain();
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn require_global_ips_excludes_the_reserved_ranges_from_consensus() {
-        // Permissive: the RFC2544 test-bed address is a valid candidate.
+        // Lenient: a reserved-range address is a valid candidate.
         let mut state = plain();
         state.on_grace_elapsed(&observed(&[("/ip4/198.18.0.30/tcp/8080", &[1, 2])]));
         assert!(state.current().is_public());
