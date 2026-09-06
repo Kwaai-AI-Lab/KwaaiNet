@@ -343,22 +343,22 @@ impl NetworkService {
                             // - `kad`: `on_fully_negotiated_outbound` marks the
                             //   protocol supported on the first negotiated
                             //   substream, which now fires before the remote
-                            //   confirms anything. A query to a connected
-                            //   non-kad peer can insert it into the routing
-                            //   table until identify corrects it. This is net
-                            //   new versus p2pd, where go-libp2p-kad-dht admits
-                            //   peers only from identify plus a live FIND_NODE
-                            //   probe.
+                            //   confirms anything, so a query to a non-kad
+                            //   peer inserts it. Identify does NOT correct
+                            //   that on its own — the later
+                            //   ProtocolNotSupported only marks the entry
+                            //   Disconnected, never removes it — so
+                            //   `handle_identify_event` evicts any tabled peer
+                            //   whose protocols lack our kad name. Measured on
+                            //   the 2026-09-06 probe: 160 kubo peers tabled
+                            //   and served to the fleet, from one query.
+                            //   Not `BucketInserts::Manual`: routed dials rely
+                            //   on the walk depositing its target in the table.
                             //
-                            //   Which build you are in decides how much of
-                            //   that caveat applies. A stock (single-name)
-                            //   build takes the 0-RTT shortcut on every kad
-                            //   substream, so the paragraph above is fully in
-                            //   force: during the migration window a routing
-                            //   table can fill with peers that never confirmed
-                            //   kad, and the connection-manager work (#174)
-                            //   plus gating laziness on identify's protocol
-                            //   set are the follow-ups that close it. The
+                            //   Which build you are in decides how far the
+                            //   shortcut reaches. A stock (single-name) build
+                            //   takes it on every kad substream — the false
+                            //   confirm above fires for every foreign peer. The
                             //   `kad-multi-protocol` (bootstrap) build offers
                             //   two names, V1Lazy only shortcuts the *last*
                             //   offer (see `dialer_select.rs`), so its
@@ -367,9 +367,9 @@ impl NetworkService {
                             //   legacy-only peer). Accepted for the migration
                             //   window on the handful of hosts that run it.
                             //
-                            // Closing both at the source means gating laziness
-                            // on identify's known-protocol set, as go does.
-                            // Tracked as a follow-up, not done here.
+                            // Gating laziness itself on identify's known-protocol
+                            // set, as go does, would also fix `ping`; swarm 0.47
+                            // has no per-behaviour override, so that remains open.
                             //
                             // Raw streams opt out via a trailing sentinel
                             // protocol, so their refusals stay eager — see
@@ -2327,6 +2327,17 @@ impl NetworkService {
                         }
                         self.add_routing_address(&peer_id, addr.clone());
                     }
+                } else if self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .remove_peer(&peer_id)
+                    .is_some()
+                {
+                    // Tabled by the V1Lazy false confirm (or `dial()`) before
+                    // identify could say no; left in place it is served to every
+                    // FIND_NODE caller.
+                    debug!(peer = %peer_id, agent = %info.agent_version, "dropped non-kad peer from the routing table");
                 }
 
                 // (b) Record what this peer observed our address to be. Counting

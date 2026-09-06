@@ -194,10 +194,9 @@ async fn kad_resolves_a_peer_two_hops_away() {
 // Kad protocol migration: legacy-only ↔ dual-default ↔ kwaai-only
 // ---------------------------------------------------------------------------
 
-/// Like [`spawn_test_swarm`] but with an explicit kad protocol list.
-/// Needs the patched setter: a single-name build cannot construct the
-/// bridging node this topology tests.
-#[cfg(feature = "kad-multi-protocol")]
+/// Like [`spawn_test_swarm`] but with an explicit kad protocol list. A
+/// single foreign name works on every build; the multi-name bridging node
+/// needs the patched setter and the `kad-multi-protocol` feature.
 fn spawn_swarm_with_kad_protocols(
     protocols: &[&str],
 ) -> (NetworkHandle, tokio::task::JoinHandle<()>, PeerId) {
@@ -300,6 +299,89 @@ async fn a_legacy_only_bridge_cannot_resolve_across_the_protocol_boundary() {
              short-circuited: {addrs:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Foreign kad names must never enter the routing table
+// ---------------------------------------------------------------------------
+
+/// Wait until A has completed identify with `peer`, so the protocol set is
+/// known and any purge it triggers has run in the same handler.
+async fn identified(a: &NetworkHandle, peer: PeerId) {
+    eventually("identify to land", || async {
+        a.list_peers()
+            .await
+            .ok()?
+            .into_iter()
+            .find(|p| p.peer_id == peer && p.agent_version.is_some())
+            .map(|_| ())
+    })
+    .await;
+}
+
+/// `dial()` seeds the routing table for every dialled peer, before anything
+/// is known about it. A peer that then turns out to speak only a foreign kad
+/// name (`/ipfs/kad/1.0.0` here — kubo's) must be removed once identify says
+/// so, or it sits there Disconnected forever and is served to every
+/// FIND_NODE caller. Fails without the purge in `handle_identify_event`.
+#[tokio::test]
+async fn a_dialled_peer_with_a_foreign_kad_name_is_purged_on_identify() {
+    // A is pinned to the kwaai name: the dual-default build would otherwise
+    // share the legacy name with B, and B would be a legitimate kad peer.
+    let (a, _a_task, _a_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (b, _b_task, b_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+
+    let b_addr = dialable_addr(&b, b_id).await;
+    a.connect_peer(&b_addr.to_string()).await.expect("A → B");
+    identified(&a, b_id).await;
+
+    let table = a.routing_peers().await.expect("routing peers");
+    assert!(
+        !table.contains(&b_id),
+        "B speaks only {} and must not be in A's routing table: {table:?}",
+        kwaai_p2p::LEGACY_KAD_PROTOCOL
+    );
+}
+
+/// The production shape (2026-09-06 probe): a neighbour serves an address for
+/// a peer it never identified, the walk dials it, and V1Lazy reports the kad
+/// substream negotiated before the remote has said anything — so kad tables
+/// it. That false confirm tabled every kubo peer a bootstrap handed out, and
+/// nothing removed them. Here C holds B by operator fiat and never connects
+/// to it, so C cannot purge it; once A has identified B, B must be gone.
+#[tokio::test]
+async fn a_foreign_kad_peer_served_by_a_neighbour_is_never_tabled() {
+    // Pinned to the kwaai name for the same reason as the test above.
+    let (a, _a_task, _a_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (c, _c_task, c_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (b, _b_task, b_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+
+    let c_addr = dialable_addr(&c, c_id).await;
+    let b_listen = eventually("B to report a listen address", || async {
+        b.listen_addrs().await.ok()?.into_iter().next()
+    })
+    .await;
+
+    a.connect_peer(&c_addr.to_string()).await.expect("A → C");
+    identified(&a, c_id).await;
+    c.add_kad_address(b_id, b_listen)
+        .await
+        .expect("C learns B by fiat");
+
+    // The walk reaches C, is handed B, and dials B to continue.
+    let _ = tokio::time::timeout(SETTLE_TIMEOUT, a.dht_find_peer(b_id)).await;
+    identified(&a, b_id).await;
+
+    let table = a.routing_peers().await.expect("routing peers");
+    assert!(
+        table.contains(&c_id),
+        "the kwaai neighbour C must still be tabled: {table:?}"
+    );
+    assert!(
+        !table.contains(&b_id),
+        "B was handed to A by C and dialled, but speaks only {} — it must not be tabled: {table:?}",
+        kwaai_p2p::LEGACY_KAD_PROTOCOL
+    );
 }
 
 // ---------------------------------------------------------------------------
