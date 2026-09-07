@@ -1424,6 +1424,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await;
     }
+    let unreached = unreached_peers(&mut client, &chain).await;
 
     // ── Inference loop ────────────────────────────────────────────────────────
     let mut generated_ids: Vec<u32> = Vec::new();
@@ -1433,7 +1434,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     // Pin the peer path for this session — same peers handle the same blocks
     // on every token so their KV-caches stay coherent.
-    let mut pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+    let mut pinned_path =
+        build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
 
     println!("  Pinned path:");
     for (i, entry) in pinned_path.iter().enumerate() {
@@ -1498,7 +1500,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 print_warning(&format!(
                     "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
                 ));
-                pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+                pinned_path =
+                    build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
                 token_hops.clear();
                 // Retry this token with the new path
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
@@ -1908,10 +1911,12 @@ async fn run_streaming_inner(
             .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await;
     }
+    let unreached = unreached_peers(&mut client, &chain).await;
 
     // Pin the path for this session.
     let mut failed_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
-    let mut pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+    let mut pinned_path =
+        build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
 
     let mut generated_ids: Vec<u32> = Vec::new();
     let mut seq_pos: usize = 0;
@@ -1945,7 +1950,8 @@ async fn run_streaming_inner(
             Err(_) => {
                 // Rebuild path on transient failure and retry once,
                 // matching cmd_shard_run's recovery behaviour.
-                pinned_path = build_pinned_path(&chain, total_blocks, &failed_peers)?;
+                pinned_path =
+                    build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
                     session_id,
@@ -2807,10 +2813,39 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
 /// candidate (largest `end_block`) not in `failed_peers`, then advance to
 /// that candidate's `end_block`.  Returns an ordered list of entries that
 /// together cover `[0, total_blocks)`.
-pub fn build_pinned_path(
+/// Chain peers the daemon holds no connection to after the pre-connect —
+/// read back from the daemon rather than from the dial results, so a peer
+/// reached by any route counts.
+async fn unreached_peers(
+    client: &mut P2PClient,
+    chain: &[BlockServerEntry],
+) -> std::collections::HashSet<PeerId> {
+    let connected: std::collections::HashSet<PeerId> = client
+        .list_peers()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| PeerId::from_bytes(&p.id).ok())
+        .collect();
+    chain
+        .iter()
+        .map(|e| e.peer_id)
+        .filter(|p| !connected.contains(p))
+        .collect()
+}
+
+/// Pin a path: skip `failed_peers` outright and, at each position, prefer a
+/// peer the daemon is connected to over one it is not, then the longer span.
+/// An unreached peer is a strong hint rather than proof — the hop's own
+/// routed dial may yet get through — so it stays a candidate of last resort
+/// rather than being excluded, but it never outranks a connected one. That
+/// ranking held by span alone is how a session spent hop after hop on peers
+/// it had just failed to dial while connected servers sat idle.
+pub fn build_pinned_path_ranked(
     chain: &[BlockServerEntry],
     total_blocks: usize,
     failed_peers: &std::collections::HashSet<PeerId>,
+    unreached: &std::collections::HashSet<PeerId>,
 ) -> Result<Vec<BlockServerEntry>> {
     let mut path = Vec::new();
     let mut pos = 0;
@@ -2819,7 +2854,7 @@ pub fn build_pinned_path(
             .iter()
             .filter(|e| e.start_block <= pos && e.end_block > pos)
             .filter(|e| !failed_peers.contains(&e.peer_id))
-            .max_by_key(|e| e.end_block);
+            .max_by_key(|e| (!unreached.contains(&e.peer_id), e.end_block));
         match best {
             Some(entry) => {
                 pos = entry.end_block;
@@ -2837,10 +2872,20 @@ pub fn build_pinned_path(
     Ok(path)
 }
 
-// ── Circuits ─────────────────────────────────────────────────────────────────
+/// [`build_pinned_path_ranked`] with nothing known about reachability.
+pub fn build_pinned_path(
+    chain: &[BlockServerEntry],
+    total_blocks: usize,
+    failed_peers: &std::collections::HashSet<PeerId>,
+) -> Result<Vec<BlockServerEntry>> {
+    build_pinned_path_ranked(
+        chain,
+        total_blocks,
+        failed_peers,
+        &std::collections::HashSet::new(),
+    )
+}
 
-/// A long-lived peer path that can serve multiple chat completions.
-/// Created once (chain discovery + path pinning), reused across invocations.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Circuit {
     pub id: String,
@@ -3853,6 +3898,68 @@ mod tests {
     use super::*;
     use crate::announce::DHTServerInfo;
     use libp2p::Multiaddr;
+
+    fn server(peer_id: PeerId, start: usize, end: usize) -> BlockServerEntry {
+        BlockServerEntry {
+            peer_id,
+            start_block: start,
+            end_block: end,
+            public_name: String::new(),
+            throughput: 1.0,
+            trust_score: None,
+            lease_v1: false,
+            dial_addrs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pinning_ranks_reached_peers_first_and_unreached_last() {
+        let reached = PeerId::random();
+        let unreached = PeerId::random();
+        let failed = PeerId::random();
+        let none = std::collections::HashSet::new();
+        let skip: std::collections::HashSet<PeerId> = [unreached].into_iter().collect();
+        let ids = |path: Vec<BlockServerEntry>| path.iter().map(|e| e.peer_id).collect::<Vec<_>>();
+
+        // Equal spans: the connected peer wins, whatever order the chain is in.
+        let chain = vec![server(unreached, 0, 32), server(reached, 0, 32)];
+        assert_eq!(
+            ids(build_pinned_path_ranked(&chain, 32, &none, &skip).unwrap()),
+            [reached]
+        );
+
+        // A longer span does not beat reachability…
+        let chain = vec![
+            server(unreached, 0, 32),
+            server(reached, 0, 16),
+            server(reached, 16, 32),
+        ];
+        assert_eq!(
+            ids(build_pinned_path_ranked(&chain, 32, &none, &skip).unwrap()),
+            [reached, reached]
+        );
+
+        // …but an unreached peer is still used where nothing else covers.
+        let chain = vec![server(reached, 0, 16), server(unreached, 16, 32)];
+        assert_eq!(
+            ids(build_pinned_path_ranked(&chain, 32, &none, &skip).unwrap()),
+            [reached, unreached]
+        );
+
+        // A failed hop is excluded outright; the rebuild then prefers the
+        // connected peer over the unreached one — the case that sent a
+        // rebuild to a peer with no address at all.
+        let chain = vec![
+            server(failed, 0, 32),
+            server(unreached, 0, 32),
+            server(reached, 0, 32),
+        ];
+        let failed_set: std::collections::HashSet<PeerId> = [failed].into_iter().collect();
+        assert_eq!(
+            ids(build_pinned_path_ranked(&chain, 32, &failed_set, &skip).unwrap()),
+            [reached]
+        );
+    }
 
     #[test]
     fn test_version_meets_minimum() {
