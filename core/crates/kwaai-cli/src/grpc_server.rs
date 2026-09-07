@@ -46,9 +46,10 @@ use kwaai_rpc::v1::{
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
     ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, Done, Error as RpcError,
-    GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest,
-    RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest,
-    StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
+    GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind, PeerName, PeerNamesReply,
+    PeerNamesRequest, PingReply, PingRequest, RoutingPeer, SelfStatus, ServerFrame,
+    ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer, StorageReachability,
+    StorageUpdate, UpdateReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -345,6 +346,10 @@ impl KwaaiNet for KwaaiNetService {
 
                     client_frame::Body::Connect(req) => {
                         spawn_session_connect(id, req, net_slot.clone(), out_tx.clone()).await;
+                    }
+
+                    client_frame::Body::PeerNames(req) => {
+                        spawn_session_peer_names(id, req, cfg.clone(), out_tx.clone()).await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
@@ -1635,6 +1640,85 @@ async fn spawn_session_connect(
 /// bootstrap ages out after missing two-plus cycles. The routing table is
 /// deliberately not consulted: kad seeds it with the configured addresses
 /// before any dial succeeds, so membership proves nothing.
+/// Serve a `peer_names` op: one crawl of the records the map reads, and
+/// every announced name in them.
+async fn spawn_session_peer_names(
+    id: u64,
+    _req: PeerNamesRequest,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+) {
+    tokio::spawn(async move {
+        let reply = match run_peer_names(&cfg).await {
+            Ok(reply) => reply,
+            Err(msg) => {
+                let _ = out_tx
+                    .send(Ok(error_frame(id, ErrorCode::Unavailable, &msg)))
+                    .await;
+                return;
+            }
+        };
+        let _ = out_tx
+            .send(Ok(ServerFrame {
+                id,
+                body: Some(server_frame::Body::PeerNames(reply)),
+            }))
+            .await;
+        let _ = out_tx.send(Ok(done_frame(id))).await;
+    });
+}
+
+async fn run_peer_names(cfg: &KwaaiNetConfig) -> Result<PeerNamesReply, String> {
+    let (mut client, our_peer_id, bootstrap_peers) = crate::shard_cmd::connect_for_discovery(cfg)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let chain = crate::shard_cmd::discover_chain(
+        &mut client,
+        &our_peer_id,
+        &cfg.effective_dht_prefix(),
+        cfg.model_total_blocks().max(1) as usize,
+        &bootstrap_peers,
+    )
+    .await;
+    // The registry names VPK nodes that serve no blocks; a failure here
+    // costs those names, not the reply.
+    let vpk = crate::vpk::discover_nodes(&mut client, &our_peer_id, &bootstrap_peers)
+        .await
+        .unwrap_or_default();
+    Ok(PeerNamesReply {
+        server_time: now_rfc3339(),
+        names: peer_names_from(&chain, &vpk),
+    })
+}
+
+/// Merge the names two record kinds carry, one entry per peer, none empty.
+/// A peer in both is named by its block record.
+fn peer_names_from(
+    chain: &[crate::shard_cmd::BlockServerEntry],
+    vpk: &[crate::vpk::VpkNodeEntry],
+) -> Vec<PeerName> {
+    let mut names: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let pairs = chain
+        .iter()
+        .map(|e| (e.peer_id.to_base58(), e.public_name.as_str()))
+        .chain(
+            vpk.iter()
+                .map(|e| (e.peer_id.clone(), e.public_name.as_str())),
+        );
+    for (peer_id, name) in pairs {
+        if !name.is_empty() {
+            names.entry(peer_id).or_insert_with(|| name.to_string());
+        }
+    }
+    names
+        .into_iter()
+        .map(|(peer_id, public_name)| PeerName {
+            peer_id,
+            public_name,
+        })
+        .collect()
+}
+
 const BOOTSTRAP_CONTACT_WINDOW: std::time::Duration = std::time::Duration::from_secs(900);
 
 /// `(bootstrap_total, bootstrap_reachable)` for the configured bootstrap
@@ -2619,6 +2703,47 @@ mod tests {
         wait_for_close(port).await.unwrap_or_else(|()| {
             panic!("port still not bindable {LISTENER_CLOSE_BUDGET:?} after handle drop")
         });
+    }
+
+    #[test]
+    fn peer_names_merge_both_record_kinds_and_drop_the_unnamed() {
+        let named = libp2p::PeerId::random();
+        let unnamed = libp2p::PeerId::random();
+        let block = |peer_id, name: &str| crate::shard_cmd::BlockServerEntry {
+            peer_id,
+            start_block: 0,
+            end_block: 1,
+            public_name: name.into(),
+            throughput: 1.0,
+            trust_score: None,
+            lease_v1: false,
+        };
+        let vpk = |peer: &str, name: &str| crate::vpk::VpkNodeEntry {
+            peer_id: peer.into(),
+            mode: "eve".into(),
+            capacity_gb: 1.0,
+            tenant_count: 0,
+            vpk_version: "0.5.0".into(),
+            public_name: name.into(),
+        };
+        let chain = [block(named, "alice"), block(unnamed, "")];
+        // The same peer again from the registry, plus a registry-only one.
+        let registry = [
+            vpk(&named.to_base58(), "alice-registry"),
+            vpk("12D3KooWEveOnly", "eve"),
+        ];
+
+        let names = peer_names_from(&chain, &registry);
+        let got: Vec<(String, String)> = names
+            .into_iter()
+            .map(|n| (n.peer_id, n.public_name))
+            .collect();
+        let mut want = vec![
+            (named.to_base58(), "alice".to_string()),
+            ("12D3KooWEveOnly".to_string(), "eve".to_string()),
+        ];
+        want.sort();
+        assert_eq!(got, want);
     }
 
     #[test]

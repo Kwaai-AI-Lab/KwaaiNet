@@ -95,6 +95,11 @@ message ClientFrame {
         // Dial a peer by id. One ConnectReply, then Done.
         ConnectRequest connect = 18;
 
+        // Names of every peer that has announced a DHT record. One crawl
+        // per request — the same records the map reads. One PeerNamesReply,
+        // then Done.
+        PeerNamesRequest peer_names = 28;
+
 
 
         // VPK storage-node discovery. Like block_coverage, but for the
@@ -140,6 +145,9 @@ message ServerFrame {
 
         // Reply to a ConnectRequest.
         ConnectReply connect = 18;
+
+        // Reply to a PeerNamesRequest.
+        PeerNamesReply peer_names = 28;
 
 
 
@@ -761,6 +769,30 @@ message ConnectReply {
 
     // Failure detail, empty on success.
     string error = 2;
+}
+
+// Which peers call themselves what. Identify carries no name, so the only
+// source is the `public_name` in a peer's own DHT records: the daemon reads
+// the block records and the VPK registry from its configured bootstraps and
+// returns every name it found, one entry per peer. A peer absent from the
+// reply has not announced, or its record has expired — a kubo peer, a
+// client-only node, or one that has been gone longer than the record TTL.
+message PeerNamesRequest {}
+
+message PeerNamesReply {
+    // Daemon wall-clock time of the crawl, RFC 3339.
+    string server_time = 1;
+
+    // One per named peer, sorted by peer id. Never carries an empty name.
+    repeated PeerName names = 2;
+}
+
+message PeerName {
+    // libp2p peer id, base58.
+    string peer_id = 1;
+
+    // The name the peer announced.
+    string public_name = 2;
 }
 
 // =====================================================================
