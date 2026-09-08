@@ -821,6 +821,11 @@ pub struct ShardServeArgs {
     #[arg(long)]
     pub force_blocks: bool,
 
+    /// Serve the blocks with MLX on Apple Silicon (needs a binary built with
+    /// `--features mlx`, and its `mlx.metallib` beside it). Implies --force-blocks.
+    #[arg(long)]
+    pub mlx: bool,
+
     /// HuggingFace access token for downloading private or gated models.
     /// Can also be set via the HF_TOKEN environment variable.
     #[arg(long, value_name = "TOKEN")]
