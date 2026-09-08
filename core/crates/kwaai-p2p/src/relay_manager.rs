@@ -55,6 +55,13 @@ const BACKOFF_RESET_AFTER: Duration = Duration::from_secs(60);
 /// The swarm reports success or failure in practice, but a permanent slot leak
 /// in a process expected to run for months needs more than "in practice".
 const PENDING_DIAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a free slot waits for a configured relay in backoff before a
+/// discovered relay may take it. Two first-tier backoffs, jitter included: a
+/// bootstrap that dropped a reservation gets two tries before whichever peer
+/// last advertised hop inherits its slot. Without this the slot went to the
+/// next candidate within 200 ms of every "reservation ended", and a node
+/// drifted onto foreign relays in seconds (measured 2026-09-07).
+const CONFIGURED_HOLD: Duration = Duration::from_secs(90);
 /// Cap on identify-discovered candidates. The list is a convenience, not a
 /// routing table, and an unbounded one is a slow memory leak on a busy node.
 const MAX_DISCOVERED: usize = 16;
@@ -126,6 +133,11 @@ pub struct RelayManager {
     /// be exceeded.
     pending: HashMap<PeerId, Instant>,
     backoff: HashMap<PeerId, Backoff>,
+    /// When a configured relay last started holding a slot through its
+    /// backoff. One hold per relay per outage: a relay that keeps failing
+    /// gets its two tries and then yields to a discovered relay, rather than
+    /// holding the slot forever because each failure is "recent".
+    holds: HashMap<PeerId, Instant>,
     max_slots: usize,
     /// Whether we currently want reservations at all — driven by reachability.
     enabled: bool,
@@ -136,21 +148,7 @@ impl RelayManager {
     /// no `/p2p/<peer-id>` are dropped with a warning rather than failing the
     /// node: a typo in one relay should not stop the other from working.
     pub fn new(trusted_relays: &[String], max_slots: usize) -> Self {
-        let mut configured = Vec::new();
-        for entry in trusted_relays {
-            match entry.parse::<Multiaddr>() {
-                Ok(addr) => match crate::addresses::peer_id_from_multiaddr(&addr) {
-                    Some(peer) => configured.push((peer, strip_p2p(&addr))),
-                    None => warn!(
-                        %entry,
-                        "trusted relay has no /p2p/<peer-id> component; a reservation needs to \
-                         know which peer it is asking, so this entry is unusable"
-                    ),
-                },
-                Err(e) => warn!(%entry, error = %e, "unparseable trusted relay address"),
-            }
-        }
-
+        let configured = Self::parse_configured(trusted_relays, "trusted relay");
         Self {
             configured,
             discovered: Vec::new(),
@@ -158,11 +156,45 @@ impl RelayManager {
             slots: HashMap::new(),
             pending: HashMap::new(),
             backoff: HashMap::new(),
+            holds: HashMap::new(),
             // Zero slots would silently disable relaying; one is a single point
             // of failure. Treat 0 as "the config meant 1".
             max_slots: max_slots.max(1),
             enabled: false,
         }
+    }
+
+    /// The initial peers are configured relays too. A bootstrap is dialed
+    /// first, is always on, and runs a relay with limits sized for inference,
+    /// so it belongs in the tier that is never evicted from the candidate
+    /// list — which the identify-discovered list is not, being oldest-out
+    /// and sixteen long. kubo's `Swarm.RelayClient.StaticRelays` is the same
+    /// idea: operator-named relays are a class apart from discovered ones.
+    pub fn with_initial_peers(mut self, initial_peers: &[String]) -> Self {
+        for (peer, addr) in Self::parse_configured(initial_peers, "initial peer") {
+            if !self.configured.iter().any(|(p, _)| *p == peer) {
+                self.configured.push((peer, addr));
+            }
+        }
+        self
+    }
+
+    fn parse_configured(entries: &[String], what: &str) -> Vec<(PeerId, Multiaddr)> {
+        let mut configured = Vec::new();
+        for entry in entries {
+            match entry.parse::<Multiaddr>() {
+                Ok(addr) => match crate::addresses::peer_id_from_multiaddr(&addr) {
+                    Some(peer) => configured.push((peer, strip_p2p(&addr))),
+                    None => warn!(
+                        %entry, what,
+                        "no /p2p/<peer-id> component; a reservation needs to know which \
+                         peer it is asking, so this entry is not a relay candidate"
+                    ),
+                },
+                Err(e) => warn!(%entry, what, error = %e, "unparseable address"),
+            }
+        }
+        configured
     }
 
     /// Whether we currently want reservations.
@@ -329,6 +361,9 @@ impl RelayManager {
         }
         info!(relay = %slot.relay, %addr, "relay reservation confirmed");
         slot.state = SlotState::Confirmed(addr.clone());
+        // A confirmed reservation ends the outage: the next failure starts a
+        // fresh hold.
+        self.holds.remove(&slot.relay);
         true
     }
 
@@ -402,6 +437,11 @@ impl RelayManager {
         entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
         let delay = backoff_delay(entry.consecutive_failures);
         entry.not_before = now + delay;
+        // A configured relay's first failure in a while starts a hold on its
+        // slot; failures inside that hold do not extend it.
+        if self.configured.iter().any(|(p, _)| *p == relay) {
+            self.holds.entry(relay).or_insert(now);
+        }
         // Move on to a different candidate. Rotation is independent of backoff:
         // refusal should advance us, not stall us on the same relay.
         self.cursor = self.cursor.wrapping_add(1);
@@ -508,10 +548,24 @@ impl RelayManager {
         if candidates.is_empty() {
             return None;
         }
+        // A configured relay that failed recently keeps its claim on a free
+        // slot for CONFIGURED_HOLD; discovered relays wait behind it.
+        let held_for_configured = self.configured.iter().any(|(peer, _)| {
+            !self.slots.values().any(|slot| slot.relay == *peer)
+                && !self.pending.contains_key(peer)
+                && self.backoff.get(peer).is_some_and(|b| b.not_before > now)
+                && self
+                    .holds
+                    .get(peer)
+                    .is_some_and(|started| now.duration_since(*started) <= CONFIGURED_HOLD)
+        });
 
         for offset in 0..candidates.len() {
             let index = (self.cursor + offset) % candidates.len();
             let (peer, addr) = &candidates[index];
+            if held_for_configured && index >= self.configured.len() {
+                continue;
+            }
 
             if self.slots.values().any(|slot| slot.relay == *peer) {
                 continue;
@@ -722,6 +776,80 @@ mod tests {
             peer(2),
             "a refusal must move us on, not retry the same relay"
         );
+    }
+
+    #[test]
+    fn initial_peers_are_configured_candidates() {
+        let mgr = RelayManager::new(&[relay_entry(1)], 2).with_initial_peers(&[
+            relay_entry(2),
+            relay_entry(1),
+            "/ip4/198.51.100.9/tcp/1".into(),
+        ]);
+        let configured: Vec<PeerId> = mgr.configured.iter().map(|(p, _)| *p).collect();
+        assert_eq!(
+            configured,
+            [peer(1), peer(2)],
+            "deduplicated, trusted first, entry without a peer id dropped"
+        );
+    }
+
+    #[test]
+    fn a_configured_relays_slot_waits_out_its_backoff() {
+        // One slot, a configured relay and a discovered one.
+        let (mut mgr, now) = enabled(&[relay_entry(1)], 1);
+        let discovered_addr: Multiaddr = "/ip4/198.51.100.2/tcp/8080".parse().unwrap();
+        let id = connect_and_listen(&mut mgr, peer(1), now);
+        let _ = mgr.note_identify(
+            peer(2),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            std::slice::from_ref(&discovered_addr),
+            now,
+        );
+
+        // The configured relay's reservation ends: the slot is NOT handed to
+        // the discovered relay …
+        let (actions, _) = mgr.on_listener_closed(id, Ok(()), now);
+        assert!(
+            actions.is_empty(),
+            "the slot must wait for the configured relay: {actions:?}"
+        );
+        assert!(mgr.on_tick(now + Duration::from_secs(10)).is_empty());
+        // … it goes back to the configured relay once its backoff expires.
+        let actions = mgr.on_tick(now + Duration::from_secs(40));
+        assert_eq!(actions.len(), 1);
+        assert_eq!(dial_target(&actions[0]), peer(1));
+    }
+
+    #[test]
+    fn a_configured_relay_that_keeps_failing_yields_its_slot() {
+        let (mut mgr, now) = enabled(&[relay_entry(1)], 1);
+        let discovered_addr: Multiaddr = "/ip4/198.51.100.2/tcp/8080".parse().unwrap();
+        let _ = mgr.note_identify(
+            peer(2),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            std::slice::from_ref(&discovered_addr),
+            now,
+        );
+        // Three failures in a row: 30 s, 60 s, then a 120 s backoff that is
+        // longer than the hold — the discovered relay may have the slot now.
+        let mut t = now;
+        for round in 0..3 {
+            let id = connect_and_listen(&mut mgr, peer(1), t);
+            let (actions, _) = mgr.on_listener_closed(id, Err("refused"), t);
+            if round < 2 {
+                assert!(
+                    actions.is_empty(),
+                    "round {round}: held for the configured relay: {actions:?}"
+                );
+                t += Duration::from_secs(if round == 0 { 40 } else { 80 });
+                let retry = mgr.on_tick(t);
+                assert_eq!(retry.len(), 1, "round {round}: {retry:?}");
+                assert_eq!(dial_target(&retry[0]), peer(1));
+            } else {
+                assert_eq!(actions.len(), 1, "round {round}: the hold is over");
+                assert_eq!(dial_target(&actions[0]), peer(2));
+            }
+        }
     }
 
     #[test]
