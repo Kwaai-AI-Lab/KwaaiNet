@@ -1032,6 +1032,18 @@ impl KwaaiNetConfig {
     }
 
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
+    /// `log_level` from the config file, without creating the file or
+    /// parsing the rest of it. Read before logging is initialised, so it
+    /// must not fail, create or log anything.
+    pub fn peek_log_level() -> Option<String> {
+        #[derive(Deserialize)]
+        struct LogLevelOnly {
+            log_level: Option<String>,
+        }
+        let text = std::fs::read_to_string(config_file()).ok()?;
+        serde_yaml::from_str::<LogLevelOnly>(&text).ok()?.log_level
+    }
+
     pub fn load_or_create() -> Result<Self> {
         let cfg_file = config_file();
         std::fs::create_dir_all(cfg_file.parent().unwrap())?;

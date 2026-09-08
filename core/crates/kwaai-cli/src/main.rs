@@ -106,13 +106,9 @@ async fn main() -> Result<()> {
     setup_cuda_library_path();
     let cli = Cli::parse();
 
-    // Initialise logging (RUST_LOG overrides config default).
-    // hnsw_rs and kwaai_storage are silenced at INFO — they emit noisy
-    // index-load messages that are implementation detail, not user-facing.
-    let default_filter = format!(
-        "info,hnsw_rs=warn,kwaai_storage=warn,tantivy=warn,{}=info",
-        env!("CARGO_PKG_NAME")
-    );
+    // Initialise logging: RUST_LOG wins, then `log_level` from config.yaml,
+    // then info. The config key used to be read only to print it back.
+    let default_filter = default_log_filter(config::KwaaiNetConfig::peek_log_level().as_deref());
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -1905,5 +1901,33 @@ fn print_last_lines(path: &std::path::Path, n: usize) {
             }
         }
         Err(e) => eprintln!("Error reading log: {}", e),
+    }
+}
+
+/// The log filter when RUST_LOG is unset: the configured level for kwaainet
+/// itself, with the noisy index crates held at warn regardless.
+fn default_log_filter(level: Option<&str>) -> String {
+    let level = match level.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(l) => l.to_ascii_lowercase(),
+        None => "info".to_string(),
+    };
+    format!(
+        "{level},hnsw_rs=warn,kwaai_storage=warn,tantivy=warn,{}={level}",
+        env!("CARGO_PKG_NAME")
+    )
+}
+
+#[cfg(test)]
+mod log_filter_tests {
+    use super::default_log_filter;
+
+    #[test]
+    fn the_configured_level_drives_the_filter() {
+        assert!(default_log_filter(Some("debug")).starts_with("debug,"));
+        assert!(default_log_filter(Some("DEBUG")).ends_with("=debug"));
+        assert!(default_log_filter(None).starts_with("info,"));
+        assert!(default_log_filter(Some("  ")).starts_with("info,"));
+        // The index crates stay quiet whatever the level.
+        assert!(default_log_filter(Some("trace")).contains("hnsw_rs=warn"));
     }
 }
