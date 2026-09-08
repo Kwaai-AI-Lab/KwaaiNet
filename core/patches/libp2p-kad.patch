@@ -1,6 +1,22 @@
 --- a/src/behaviour.rs
 +++ b/src/behaviour.rs
-@@ -238,6 +238,13 @@
+@@ -86,6 +86,15 @@
+     /// This is a superset of the connected peers currently in the routing table.
+     connected_peers: FnvHashSet<PeerId>,
+ 
++    /// KWAAI PATCH: addresses of peers this node can vouch for but that hold
++    /// no k-bucket slot — the peerstore half of FIND_NODE. go-libp2p's
++    /// `handleFindPeer` always includes the target "if present in peerstore,
++    /// even if it is self, the requester, or not a DHT server"; upstream
++    /// rust-libp2p serves the k-buckets alone, so a peer squeezed out of a
++    /// full bucket is unfindable while it sits connected. Fed by the owner
++    /// via `set_peerstore_addresses`.
++    peerstore: HashMap<PeerId, Vec<Multiaddr>>,
++
+     /// Periodic job for re-publication of provider records for keys
+     /// provided by the local node.
+     add_provider_job: Option<AddProviderJob>,
+@@ -238,6 +247,13 @@
          }
      }
  
@@ -14,6 +30,65 @@
      /// Sets the timeout for a single query.
      ///
      /// > **Note**: A single query usually comprises at least as many requests
+@@ -503,6 +519,7 @@
+             listen_addresses: Default::default(),
+             queries: QueryPool::new(config.query_config),
+             connected_peers: Default::default(),
++            peerstore: HashMap::new(),
+             add_provider_job,
+             put_record_job,
+             record_ttl: config.record_ttl,
+@@ -779,6 +796,16 @@
+     ///
+     /// Takes peers from local routing table only. Only returns number of peers equal to configured
+     /// replication factor.
++    /// KWAAI PATCH: remember `addrs` for `peer` so an inbound FIND_NODE for
++    /// it is answered even when it holds no k-bucket slot. Empty removes.
++    pub fn set_peerstore_addresses(&mut self, peer: PeerId, addrs: Vec<Multiaddr>) {
++        if addrs.is_empty() {
++            self.peerstore.remove(&peer);
++        } else {
++            self.peerstore.insert(peer, addrs);
++        }
++    }
++
+     pub fn find_closest_local_peers<'a, K: Clone>(
+         &'a mut self,
+         key: &'a kbucket::Key<K>,
+@@ -2306,9 +2333,32 @@
+             }
+ 
+             HandlerEvent::FindNodeReq { key, request_id } => {
+-                let closer_peers = self
++                let target = PeerId::from_bytes(&key).ok();
++                let mut closer_peers = self
+                     .find_closest_local_peers(&kbucket::Key::new(key), &source)
+                     .collect::<Vec<_>>();
++                // KWAAI PATCH: the target itself comes first when this node
++                // can vouch for it, tabled or not (see `peerstore`).
++                if let Some(target) = target {
++                    if closer_peers.first().map(|p| p.node_id) != Some(target) {
++                        if let Some(addrs) = self.peerstore.get(&target) {
++                            closer_peers.retain(|p| p.node_id != target);
++                            let connection_ty = if self.connected_peers.contains(&target) {
++                                ConnectionType::Connected
++                            } else {
++                                ConnectionType::CanConnect
++                            };
++                            closer_peers.insert(
++                                0,
++                                KadPeer {
++                                    node_id: target,
++                                    multiaddrs: addrs.clone(),
++                                    connection_ty,
++                                },
++                            );
++                        }
++                    }
++                }
+ 
+                 self.queued_events
+                     .push_back(ToSwarm::GenerateEvent(Event::InboundRequest {
 --- a/src/protocol.rs
 +++ b/src/protocol.rs
 @@ -166,6 +166,18 @@

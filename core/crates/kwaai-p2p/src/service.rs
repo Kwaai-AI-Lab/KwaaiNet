@@ -162,6 +162,13 @@ pub struct NetworkService {
     /// here. Dropped when the last connection to a peer closes, so an entry
     /// always describes a peer we can act on.
     peer_protocols: HashMap<PeerId, Vec<String>>,
+    /// Each connected peer's announceable listen addresses from identify,
+    /// kept whether or not the peer got a k-bucket slot: this is what kad's
+    /// peerstore answer (KWAAI PATCH in libp2p-kad) is fed from.
+    peer_listen_addrs: HashMap<PeerId, Vec<Multiaddr>>,
+    /// Peers holding a relay reservation on this node — answerable with a
+    /// circuit through us.
+    relay_reservations: HashSet<PeerId>,
     /// Most recent ping round-trip time per peer. Sampled: overwritten on every
     /// ping event rather than accumulated, so this is "latency now", not an
     /// average. Same lifetime as `peer_protocols` — dropped with the last
@@ -448,6 +455,8 @@ impl NetworkService {
             require_global_ips: config.require_global_ips,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
+            peer_listen_addrs: HashMap::new(),
+            relay_reservations: HashSet::new(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
             unary_handlers: HashMap::new(),
@@ -1120,6 +1129,86 @@ impl NetworkService {
 
     /// Announceable addresses we know for `peer`: routing-table entries first,
     /// then any live connection's address.
+    /// Feed kad's peerstore answer for `peer`: its announceable listen
+    /// addresses, plus a circuit through this node when it reserved here.
+    /// This is the go-libp2p `handleFindPeer` behaviour the Go bootstraps
+    /// had — a connected peer is findable whether or not a bucket has room
+    /// for it — restored via the KWAAI PATCH in libp2p-kad.
+    fn refresh_peerstore(&mut self, peer: PeerId) {
+        let mut addrs = self
+            .peer_listen_addrs
+            .get(&peer)
+            .cloned()
+            .unwrap_or_default();
+        // Then whatever the table and live connections hold: with port reuse
+        // the address a peer dialed in from is its listen port, and for a
+        // NATed peer that is the mapped port a hole punch needs.
+        for addr in self.dial_candidates(&peer) {
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        }
+        if self.relay_reservations.contains(&peer) {
+            let local = *self.swarm.local_peer_id();
+            let ours: Vec<Multiaddr> = self
+                .swarm
+                .listeners()
+                .chain(self.swarm.external_addresses())
+                .filter(|a| !is_circuit(a) && crate::addresses::is_announceable(a))
+                .cloned()
+                .collect();
+            for addr in ours {
+                let circuit = strip_p2p(&addr)
+                    .with(libp2p::multiaddr::Protocol::P2p(local))
+                    .with(libp2p::multiaddr::Protocol::P2pCircuit);
+                if !addrs.contains(&circuit) {
+                    addrs.push(circuit);
+                }
+            }
+        }
+        // A nested circuit (a relay reached through a relay) is undialable.
+        addrs.retain(|a| {
+            a.iter()
+                .filter(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit))
+                .count()
+                <= 1
+        });
+        self.swarm
+            .behaviour_mut()
+            .kad
+            .set_peerstore_addresses(peer, addrs);
+    }
+
+    /// Keep what a walk learned about `target`. kad hands back each closer
+    /// peer's addresses with the result but only tables the ones it managed
+    /// to connect to, so a peer answered from a bootstrap's peerstore — the
+    /// one case a walk exists for — would be reported found and then dialed
+    /// with nothing. Returns whether the walk found the target at all.
+    fn seed_walk_addrs(
+        &mut self,
+        target: PeerId,
+        result: &Result<kad::GetClosestPeersOk, kad::GetClosestPeersError>,
+    ) -> bool {
+        let peers = match result {
+            Ok(ok) => &ok.peers,
+            Err(kad::GetClosestPeersError::Timeout { peers, .. }) => peers,
+        };
+        let mut found = false;
+        for info in peers.iter().filter(|p| p.peer_id == target) {
+            found = true;
+            for addr in &info.addrs {
+                let stripped = strip_dest_p2p(addr);
+                if !stripped.is_empty() {
+                    self.swarm
+                        .behaviour_mut()
+                        .kad
+                        .add_address(&target, stripped);
+                }
+            }
+        }
+        found
+    }
+
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
         let strict = self.require_global_ips;
         self.candidate_addresses(peer, |a| is_announceable_with(a, strict))
@@ -1848,6 +1937,12 @@ impl NetworkService {
                     // The capability list describes a peer we can act on; a
                     // disconnected peer's is stale by definition.
                     self.peer_protocols.remove(&peer_id);
+                    self.peer_listen_addrs.remove(&peer_id);
+                    self.relay_reservations.remove(&peer_id);
+                    self.swarm
+                        .behaviour_mut()
+                        .kad
+                        .set_peerstore_addresses(peer_id, Vec::new());
                     // Latency and build version are properties of a live
                     // connection too. Keeping them would let a reconnected peer
                     // briefly report the *previous* session's RTT.
@@ -2026,9 +2121,19 @@ impl NetworkService {
                 }
             },
 
-            KwaaiBehaviourEvent::RelayServer(event) => {
-                trace!(?event, "relay hop server event")
-            }
+            KwaaiBehaviourEvent::RelayServer(event) => match event {
+                relay::Event::ReservationReqAccepted { src_peer_id, .. } => {
+                    self.relay_reservations.insert(src_peer_id);
+                    self.refresh_peerstore(src_peer_id);
+                    trace!(peer = %src_peer_id, "relay reservation granted");
+                }
+                relay::Event::ReservationTimedOut { src_peer_id } => {
+                    self.relay_reservations.remove(&src_peer_id);
+                    self.refresh_peerstore(src_peer_id);
+                    trace!(peer = %src_peer_id, "relay reservation timed out");
+                }
+                other => trace!(?other, "relay hop server event"),
+            },
 
             KwaaiBehaviourEvent::Dcutr(dcutr::Event {
                 remote_peer_id,
@@ -2343,6 +2448,15 @@ impl NetworkService {
                 // it), but it is what makes a peer table diagnosable when one
                 // build in the mesh misbehaves.
                 self.peer_agent.insert(peer_id, info.agent_version.clone());
+                self.peer_listen_addrs.insert(
+                    peer_id,
+                    info.listen_addrs
+                        .iter()
+                        .filter(|a| crate::addresses::is_announceable(a))
+                        .cloned()
+                        .collect(),
+                );
+                self.refresh_peerstore(peer_id);
                 let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
                 // Recorded *before* the relay manager runs: `apply_relay_actions`
                 // reads this map to decide whether a reservation can be
@@ -2386,12 +2500,7 @@ impl NetworkService {
                         // Since libp2p 0.54 a closest-peers result carries
                         // `PeerInfo { peer_id, addrs }` rather than a bare
                         // `PeerId`, so match on the id field.
-                        let found = match &result {
-                            Ok(ok) => ok.peers.iter().any(|p| p.peer_id == target),
-                            Err(kad::GetClosestPeersError::Timeout { peers, .. }) => {
-                                peers.iter().any(|p| p.peer_id == target)
-                            }
-                        };
+                        let found = self.seed_walk_addrs(target, &result);
                         let addrs = self.known_addresses(&target);
                         debug!(peer = %target, found, addrs = addrs.len(), "dht find_peer complete");
                         let _ = reply.send(Ok(addrs));
@@ -2405,7 +2514,10 @@ impl NetworkService {
                     // Whatever the walk's own outcome, it has populated the
                     // routing table with everything it found — flush decides
                     // between forwarding and failing from there.
-                    (Some(PendingKad::RoutedDial { target }), _) => {
+                    (Some(PendingKad::RoutedDial { target }), result) => {
+                        if let kad::QueryResult::GetClosestPeers(result) = result {
+                            self.seed_walk_addrs(target, &result);
+                        }
                         self.flush_routed(target);
                     }
                     (Some(PendingKad::Bootstrap), kad::QueryResult::Bootstrap(result)) => {

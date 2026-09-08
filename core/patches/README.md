@@ -93,6 +93,19 @@ The entire delta is `multistream-select.patch` (~23 changed lines, one file).
 
 [rust-libp2p]: https://github.com/libp2p/rust-libp2p
 
+### libp2p-kad: FIND_NODE answers from a peerstore
+
+Upstream serves an inbound FIND_NODE from its k-buckets alone, so a peer
+that never got a bucket slot — every fleet peer, once the buckets filled
+with Amino entries — is unfindable while it sits connected to the node being
+asked. go-libp2p's `handleFindPeer` includes the target "if present in
+peerstore, even if it is self, the requester, or not a DHT server". The patch
+adds `Behaviour::set_peerstore_addresses` and prepends the target to the
+reply when the owner has vouched for it; kwaai-p2p feeds it each connected
+peer's identify addresses and a circuit through itself for peers holding a
+relay reservation here. Same `libp2p-kad.patch`, regenerated with
+`diff -u` against the pristine crate.
+
 ## cudarc (sync-allocation opt-out)
 
 `cudarc 0.19.7` (from [cudarc], MIT/Apache-2.0) with one four-line change:
