@@ -92,3 +92,19 @@ The entire delta is `multistream-select.patch` (~23 changed lines, one file).
   `[patch.crates-io]` entry.
 
 [rust-libp2p]: https://github.com/libp2p/rust-libp2p
+
+## cudarc (sync-allocation opt-out)
+
+`cudarc 0.19.7` (from [cudarc], MIT/Apache-2.0) with one four-line change:
+the runtime choice between `cuMemAllocAsync` and `cuMemAlloc` also honours the
+environment variable `CUDARC_DISABLE_ASYNC_ALLOC`. Upstream picks the async,
+stream-ordered allocator whenever the device reports memory-pool support and
+offers no way to say no. On Jetson Orin (L4T r36 / CUDA 12.6) that pool
+hard-caps at roughly a third of system memory — 2.5 GB on a 7 GB Orin Nano,
+~20 GB on a 64 GB AGX Orin (NVIDIA/TensorRT-LLM#10894) — while plain
+`cuMemAlloc` reaches nearly all of it, so an 8-block f16 shard (4.5 GB) fails
+to load with `CUDA_ERROR_OUT_OF_MEMORY`. With the variable set, allocation is
+synchronous and the shard loads. Unset, the build is byte-for-byte upstream
+behaviour on every platform. Only pulled in by the CUDA features.
+
+[cudarc]: https://github.com/coreylowman/cudarc

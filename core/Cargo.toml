@@ -29,6 +29,8 @@ default-members = ["crates/kwaai-cli"]
 [patch.crates-io]
 multistream-select = { path = "patches/multistream-select" }
 libp2p-kad = { path = "patches/libp2p-kad" }
+# Behaves exactly as upstream unless CUDARC_DISABLE_ASYNC_ALLOC is set; see patches/README.md.
+cudarc = { path = "patches/cudarc" }
 
 # Root package for examples
 [package]
