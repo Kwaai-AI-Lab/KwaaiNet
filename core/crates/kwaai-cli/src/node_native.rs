@@ -497,9 +497,14 @@ pub async fn run_native_node(
     // already serving comes up ONLINE instead of sitting at JOINING until the
     // first re-announce tick.
     crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
+    let (start_block, end_block) = announced_range(
+        &config,
+        ShardManager::shard_is_ready(),
+        ShardManager::whole_model_is_ready(),
+    );
     let mut server_info = DHTServerInfo::new(
-        config.start_block() as i32,
-        config.effective_end_block() as i32,
+        start_block,
+        end_block,
         public_name,
         using_relay,
         throughput,
@@ -809,9 +814,34 @@ fn reload_block_range(config: &mut KwaaiNetConfig) {
 }
 
 /// Sync the announced block range and readiness state from the live config.
+/// The block range this node announces.
+///
+/// A node serving the whole model through Ollama has no blocks a chain can
+/// route through, so it announces none: its `_kwaai.inference.nodes` entry
+/// still says it serves whole-model inference. Announcing the configured
+/// range made every macOS node a 0–32 block server in every chain build,
+/// where it refused `/kwaai/inference/1.0.0` on the first hop.
+fn announced_range(
+    config: &KwaaiNetConfig,
+    shard_ready: bool,
+    whole_model_ready: bool,
+) -> (i32, i32) {
+    let start = config.start_block() as i32;
+    if whole_model_ready && !shard_ready {
+        (start, start)
+    } else {
+        (start, config.effective_end_block() as i32)
+    }
+}
+
 fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
-    server_info.start_block = config.start_block() as i32;
-    server_info.end_block = config.effective_end_block() as i32;
+    let (start_block, end_block) = announced_range(
+        config,
+        ShardManager::shard_is_ready(),
+        ShardManager::whole_model_is_ready(),
+    );
+    server_info.start_block = start_block;
+    server_info.end_block = end_block;
     server_info.state = KwaaiNetConfig::announce_state();
     server_info.shard_loading = KwaaiNetConfig::announce_shard_loading();
 }
@@ -1047,5 +1077,36 @@ mod tests {
 
         node.shutdown().await;
         std::env::remove_var("KWAAINET_SOCKET");
+    }
+}
+
+#[cfg(test)]
+mod announced_range_tests {
+    use super::*;
+
+    fn config() -> KwaaiNetConfig {
+        KwaaiNetConfig {
+            start_block: Some(4),
+            blocks: 8,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_block_shard_announces_its_range() {
+        assert_eq!(announced_range(&config(), true, false), (4, 12));
+        // Both ready: the shard is what a chain can use.
+        assert_eq!(announced_range(&config(), true, true), (4, 12));
+    }
+
+    #[test]
+    fn a_whole_model_node_announces_no_blocks() {
+        assert_eq!(announced_range(&config(), false, true), (4, 4));
+    }
+
+    #[test]
+    fn a_node_with_neither_keeps_the_configured_range() {
+        // Announces JOINING for it, as before; the range is what it intends.
+        assert_eq!(announced_range(&config(), false, false), (4, 12));
     }
 }

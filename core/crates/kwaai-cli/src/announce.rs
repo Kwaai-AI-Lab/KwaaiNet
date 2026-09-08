@@ -680,15 +680,18 @@ pub fn build_announce_records(
         expirations.push(expiration);
         in_cache.push(false);
     }
-    records.push(StoreRequest {
-        auth: Some(RequestAuthInfo::new()),
-        keys,
-        subkeys,
-        values,
-        expiration_time: expirations,
-        in_cache,
-        peer: Some(node_info.clone()),
-    });
+    // An empty range (a whole-model node) has no per-block record to send.
+    if !keys.is_empty() {
+        records.push(StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys,
+            subkeys,
+            values,
+            expiration_time: expirations,
+            in_cache,
+            peer: Some(node_info.clone()),
+        });
+    }
 
     // 2. Model registry — subkeyed by *prefix*, not by peer, so one entry per
     //    model rather than one per server.
