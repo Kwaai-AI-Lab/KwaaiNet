@@ -1172,6 +1172,10 @@ impl NetworkService {
     /// first when we have none — Go's routed-host semantics (see
     /// [`RoutedRequest`]). With a live connection, dispatch is immediate.
     fn dispatch_routed(&mut self, peer: PeerId, request: RoutedRequest) {
+        if peer == *self.swarm.local_peer_id() {
+            self.dispatch_local(request);
+            return;
+        }
         if self.swarm.is_connected(&peer) {
             self.forward_routed(peer, request);
             return;
@@ -1188,6 +1192,50 @@ impl NetworkService {
 
         if !self.dial_routed(peer) {
             self.start_routed_lookup(peer);
+        }
+    }
+
+    /// A routed request addressed to ourselves: the swarm refuses to dial its
+    /// own peer id, but we are trivially connected and our unary handlers are
+    /// right here. A raw stream has no loopback transport and is refused.
+    fn dispatch_local(&mut self, request: RoutedRequest) {
+        let local = *self.swarm.local_peer_id();
+        match request {
+            RoutedRequest::Connect { reply } => {
+                let _ = reply.send(Ok(local));
+            }
+            RoutedRequest::Unary { proto, data, reply } => {
+                // The same refusal a remote gives during negotiation.
+                if !self.unary_handlers.contains_key(&proto) {
+                    let _ = reply.send(Err(unary::UnaryError::UnsupportedProtocol(proto)));
+                    return;
+                }
+                let (responder, result) = oneshot::channel();
+                self.dispatch_unary(
+                    local,
+                    unary::InboundRequest {
+                        proto: UnaryProtocol::new(proto),
+                        data,
+                        responder,
+                    },
+                );
+                tokio::spawn(async move {
+                    let outcome = match result.await {
+                        Ok(Ok(data)) => Ok(data),
+                        Ok(Err(e)) => Err(unary::UnaryError::Remote(e)),
+                        Err(_) => Err(unary::UnaryError::Wire(
+                            "local handler dropped the call".to_string(),
+                        )),
+                    };
+                    let _ = reply.send(outcome);
+                });
+            }
+            RoutedRequest::RawStream { protos, reply } => {
+                let _ = reply.send(Err(raw_stream::RawStreamError::Io(format!(
+                    "no loopback transport for a stream to self ({})",
+                    protos.join(", ")
+                ))));
+            }
         }
     }
 

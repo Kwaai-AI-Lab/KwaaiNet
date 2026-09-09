@@ -835,3 +835,64 @@ async fn an_evicted_entry_is_restored_when_the_lookup_finds_nothing_better() {
         "the failed lookup must hand the old entry back, not leave the peer forgotten",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Calls to self
+// ---------------------------------------------------------------------------
+
+/// The swarm refuses to dial its own peer id, which used to make a node the
+/// one peer it could not call. A unary call to self must loop back to the
+/// local handler exactly as an inbound call would.
+#[tokio::test]
+async fn a_unary_call_to_self_loops_back_to_the_local_handler() {
+    let (node, _task, node_id) = spawn_service();
+
+    node.add_unary_handler(PROTO, |data: Vec<u8>| async move {
+        let mut out = b"self:".to_vec();
+        out.extend_from_slice(&data);
+        Ok(out)
+    })
+    .await
+    .expect("register handler");
+
+    let response = within(
+        "the loopback round trip",
+        node.call_unary_handler(node_id, PROTO, b"hello"),
+    )
+    .await
+    .expect("our own handler must answer");
+    assert_eq!(response, b"self:hello");
+}
+
+/// No handler for the protocol on this node is the same clean refusal a
+/// remote gives during negotiation — not a dial failure.
+#[tokio::test]
+async fn a_unary_call_to_self_without_a_handler_is_a_protocol_refusal() {
+    let (node, _task, node_id) = spawn_service();
+
+    let err = within(
+        "the refused loopback call",
+        node.call_unary_handler(node_id, PROTO, b"hello"),
+    )
+    .await
+    .expect_err("no handler must refuse");
+    assert!(
+        matches!(err, P2PError::Protocol(_)),
+        "expected a protocol refusal, got {err:?}"
+    );
+}
+
+/// Connecting to self succeeds: a chain builder that pre-dials every server,
+/// itself included, must not be told its own node is unreachable.
+#[tokio::test]
+async fn connecting_to_self_succeeds() {
+    let (node, _task, node_id) = spawn_service();
+
+    let connected = within(
+        "the self connect",
+        node.connect_peer(&format!("/p2p/{node_id}")),
+    )
+    .await
+    .expect("connect to self must succeed");
+    assert_eq!(connected, node_id);
+}
