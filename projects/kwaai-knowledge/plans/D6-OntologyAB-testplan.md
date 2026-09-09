@@ -1,21 +1,35 @@
 # D6 ontology A/B — test plan
 
-Status: **for review, not yet run.** Written 2026-08-25.
+Status: **run, and superseded by its own results.** Written 2026-08-25;
+executed 2026-08-26/27. Read
+[`D6-FullAB-results.md`](./D6-FullAB-results.md) for the outcome and
+[`OntologySession-assessment.md`](./OntologySession-assessment.md) §4b/§4d for
+the three smoke runs that preceded it.
+
+The headline: the ontology arm scored **−3.8pp** and the twelve questions the
+vocabulary was built to reach did not separate from the other twenty-eight.
+Predictions 1, 2 and 4 passed; **3 and 5 failed**. Apart from the resolution
+note in §1, the document below is kept as written before the run — it is the
+record of what was predicted, and §4 is only worth anything because it was
+written first.
 
 Tests whether a per-corpus ontology changes what extraction produces, on the one
 KB where the ontology was built from a full reading of the text.
 
 ---
 
-## 1. Prerequisite: the ontology does not drive extraction yet
+## 1. Prerequisite: the ontology does not drive extraction yet — resolved
 
-`ontology.rs` is committed and its consumers are wired and tested, but the two
-call sites that matter still take the compiled path:
+**Done on `feat/per-kb-ontology` before the run, merged as #150 on 2026-08-31.**
+Both call sites now take the ontology path: `classify_candidates_with_ontology`
+is called from `ingestion.rs`, and `validate_relation_axioms_with_ontology` from
+`rag_cmd.rs`. `extract_from_text` reads the ontology's entity and relation
+lists. The table below is what was outstanding when the plan was written:
 
-| site | today | needed |
+| site | then | needed |
 |---|---|---|
-| `ingestion.rs:617` | `classify_candidates_axiomatic(...)` | `classify_candidates_with_ontology(..., ont)` |
-| `rag_cmd.rs:9521` | `validate_relation_axioms(...)` | `validate_relation_axioms_with_ontology(..., ont)` |
+| `ingestion.rs` | `classify_candidates_axiomatic(...)` | `classify_candidates_with_ontology(..., ont)` |
+| `rag_cmd.rs` | `validate_relation_axioms(...)` | `validate_relation_axioms_with_ontology(..., ont)` |
 
 Plus `extract_from_text` needs the ontology's entity and relation lists, and the
 Phase-4 verify prompt needs `in_scope_relation_types(ont)`.
@@ -34,6 +48,12 @@ local Ollama for both — a flaky peer would confound the comparison.
 |---|---|---|
 | control | `D6_ctl` | today's global 17 entity types / 35 predicates |
 | ontology | `D6_narr` | D6 v6: 17 types, 27 predicates, 187 triggers, 5 axioms |
+
+The full run reported in [`D6-FullAB-results.md`](./D6-FullAB-results.md)
+actually used **v8**, and the version committed to
+`ontologies/D6.yaml` is **v9** (18 types, 33 predicates, 240 triggers, 4 axioms)
+— the aliases and the `opposed_by` inverse that [`D6-FullAB-results.md`](./D6-FullAB-results.md)
+§3 identified were added after this plan was written.
 
 Note the type *counts* are nearly identical; the vocabularies are not. That is
 the point — this is not a test of "more types".

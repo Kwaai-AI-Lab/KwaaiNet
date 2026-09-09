@@ -40,14 +40,14 @@ Run after `graph build`, before `dream`. Can be re-run incrementally.
 
 | Component | File:line | Reuse |
 |-----------|-----------|-------|
-| `ner::resolve_pronouns(text, gender_context)` | `src/ner.rs:186` | Extend to accept graph candidates instead of global gender snapshot |
-| `refine_low_confidence_entities()` | `src/ingestion.rs:1118` | Template for LLM tier: one entity, constrained JSON question |
-| `GraphStore::link_chunk(chunk_id, entity_ids)` | `src/graph.rs:892` | Write pronoun-resolved links — already deduplicates |
+| `ner::resolve_pronouns(text, gender_context)` | `src/ner.rs:267` | Extend to accept graph candidates instead of global gender snapshot |
+| `refine_low_confidence_entities()` | `src/ingestion.rs:1890` | Template for LLM tier: one entity, constrained JSON question |
+| `GraphStore::link_chunk(chunk_id, entity_ids)` | `src/graph.rs:1461` | Write pronoun-resolved links — already deduplicates |
 | `EntityNode.gender` | `src/graph.rs:220` | Gender-matching in rule tier |
 | `EntityNode.aliases` | `src/graph.rs:212` | Match "Grandpa", "narrator", "the author" |
-| `MetaStore::all_chunks()` | `src/meta_store.rs:132` | Iterate all chunks with text + section_name |
-| `GraphStore::all_chunk_entity_pairs()` | `src/graph.rs:3187` | Candidate antecedents per chunk |
-| `FAMILY_TRIGGERS` constant | `src/rag_cmd.rs:3884` | Possessive-kinship detection |
+| `MetaStore::all_chunks()` | `src/meta_store.rs:177` | Iterate all chunks with text + section_name |
+| `GraphStore::all_chunk_entity_pairs()` | `src/graph.rs:4832` | Candidate antecedents per chunk |
+| `FAMILY_TRIGGERS` constant | `src/rag_cmd.rs:5891` | Possessive-kinship detection |
 
 No new DB tables. No schema changes to `EntityNode`.
 

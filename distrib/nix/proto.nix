@@ -10,7 +10,7 @@
 }:
 
 let
-  protoSrc = ../core/crates/kwaai-p2p-daemon/proto;
+  protoSrc = ../../core/crates/kwaai-p2p-daemon/proto;
 in
 stdenvNoCC.mkDerivation {
   name = "p2pd-proto-rs";

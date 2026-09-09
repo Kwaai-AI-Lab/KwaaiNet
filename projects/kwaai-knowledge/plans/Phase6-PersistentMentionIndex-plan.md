@@ -88,7 +88,7 @@ extraction (new caller) and relation extraction (existing caller, now reading in
 ### 3. Wire into entity extraction (`core/crates/kwaai-rag/src/ingestion.rs`)
 
 Both `extract_and_store_entities_pub` (`ingestion.rs:423`) and `extract_entity_centric`
-(`ingestion.rs:1021`) call `graph.link_chunk(chunk_id, &entity_ids_for_chunk)` right after committing a
+(`ingestion.rs:1633`) call `graph.link_chunk(chunk_id, &entity_ids_for_chunk)` right after committing a
 chunk's entities — `entity_ids_for_chunk` is already fully resolved at that point. Add immediately after:
 resolve those IDs to `(id, name, aliases)` triples (same shape `known_entities` already takes elsewhere),
 build `person_candidates`/`narrator` the same way `extract_relations_axiomatic` already does in

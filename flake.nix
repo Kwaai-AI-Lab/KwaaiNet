@@ -20,9 +20,9 @@
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
         craneLib = crane.mkLib pkgs;
-        packages = import ./nix/packages.nix { inherit pkgs; };
-        protoRs = pkgs.callPackage ./nix/proto.nix { };
-        cranePkgs = import ./nix/crane.nix {
+        packages = import ./distrib/nix/packages.nix { inherit pkgs; };
+        protoRs = pkgs.callPackage ./distrib/nix/proto.nix { };
+        cranePkgs = import ./distrib/nix/crane.nix {
           inherit
             craneLib
             protoRs
@@ -32,7 +32,7 @@
           inherit (pkgs) lib makeWrapper;
         };
         containers = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
-          import ./nix/containers.nix {
+          import ./distrib/nix/containers.nix {
             inherit pkgs;
             inherit (cranePkgs) kwaainet;
           }
@@ -40,7 +40,7 @@
 
         # --- Cross-compilation (x86_64-linux only) ---
         crossTargets = lib.optionalAttrs (system == "x86_64-linux") {
-          aarch64-linux-gnu = import ./nix/cross.nix {
+          aarch64-linux-gnu = import ./distrib/nix/cross.nix {
             inherit
               nixpkgs
               crane
@@ -53,7 +53,7 @@
             };
             cargoTarget = "aarch64-unknown-linux-gnu";
           };
-          aarch64-linux-musl = import ./nix/cross.nix {
+          aarch64-linux-musl = import ./distrib/nix/cross.nix {
             inherit
               nixpkgs
               crane
@@ -66,7 +66,7 @@
             };
             cargoTarget = "aarch64-unknown-linux-musl";
           };
-          x86_64-linux-musl = import ./nix/cross.nix {
+          x86_64-linux-musl = import ./distrib/nix/cross.nix {
             inherit
               nixpkgs
               crane
@@ -79,7 +79,7 @@
             };
             cargoTarget = "x86_64-unknown-linux-musl";
           };
-          riscv64-linux-gnu = import ./nix/cross.nix {
+          riscv64-linux-gnu = import ./distrib/nix/cross.nix {
             inherit
               nixpkgs
               crane
@@ -110,7 +110,7 @@
             isMusl = lib.hasSuffix "musl" targetName;
           in
           {
-            "test-cross-smoke-${targetName}" = import ./nix/tests/cross-smoke.nix {
+            "test-cross-smoke-${targetName}" = import ./distrib/nix/tests/cross-smoke.nix {
               inherit pkgs arch;
               kwaainet = cross.kwaainet;
               isStatic = isMusl;
@@ -118,7 +118,7 @@
           }
         ) crossTargets;
 
-        tests = import ./nix/tests {
+        tests = import ./distrib/nix/tests {
           inherit pkgs containers crossTests;
           kwaainet = cranePkgs.kwaainet;
         };
@@ -136,7 +136,7 @@
         // crossPackages
         // tests.packages;
 
-        devShells.default = import ./nix/devshell.nix { inherit pkgs packages; };
+        devShells.default = import ./distrib/nix/devshell.nix { inherit pkgs packages; };
 
         checks = {
           inherit (cranePkgs) clippy cargoTest;

@@ -94,7 +94,7 @@ prevents silent drift between the seed file and corpus text.
 - Yousuf (Joe) Rassool `spouse_of` Nazima Rassool → fixes q07
 - Yousuf (Joe) Rassool `grandchild_of` Joosub Maulvi Hamid Gooli → fixes q09
 - Alias `"Grandfather"` on J.M.H. Gool's entry (Pass 1 of `resolve_author_relative()` at
-  `retriever.rs:331` checks aliases before needing graph edges)
+  `retriever.rs:450` checks aliases before needing graph edges)
 - Canonical names + descriptions for Cissie Gool, Abdul Hamid Gool, key Rassool children
 
 **Framing**: Eval questions answerable only via gold-seed data are still valid. The YAML is the

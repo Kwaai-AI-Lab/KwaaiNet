@@ -205,7 +205,7 @@ Post-rebuild step: `rag graph coref --kb D6 --no-llm --commit` to add chunk-enti
 **Why this matters for auto-derivation**: The memoir is ~70% pronoun-heavy narrative. "My grandfather's house" should link to JMH Gool. Without coreference, relation extraction sees "my brother Fazil" and picks wrong endpoints.
 
 **Changes**:
-1. Tier 0: `coref_candidates_for_chunk()` already exists in `graph.rs:1434` — extend to return (pronoun, candidate_entity_id, confidence) triples
+1. Tier 0: `coref_candidates_for_chunk()` already exists in `graph.rs:1912` — extend to return (pronoun, candidate_entity_id, confidence) triples
 2. Tier 1 (rule-based): kinship phrases ("my grandfather", "his wife", "their son") resolved by walking the known graph from narrator entity; store as chunk-entity links
 3. Tier 2 (LLM): for unresolved pronouns, call inference with a focused disambiguation prompt: "In this passage, 'he' refers to which of: [candidate list]?"
 4. New CLI: `kwaainet rag graph coref --kb D6 --narrator "Yousuf Rassool" [--commit]`; dry-run shows proposed resolutions, `--commit` writes them
