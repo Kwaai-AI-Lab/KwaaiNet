@@ -242,7 +242,9 @@ async fn run_inference(
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
-    let mut unreached = crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain).await;
+    let mut unreached =
+        crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain, &state.our_peer_id)
+            .await;
 
     // Pin peer path for this request so KV-caches stay coherent.
     let mut pinned_path = match crate::shard_cmd::build_pinned_path_ranked(
@@ -286,8 +288,12 @@ async fn run_inference(
             Ok(r) => r,
             Err(e) => {
                 // Try rebuilding path excluding failed peer
-                unreached =
-                    crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain).await;
+                unreached = crate::shard_cmd::unreached_peers(
+                    &mut client_guard,
+                    &state.chain,
+                    &state.our_peer_id,
+                )
+                .await;
                 match crate::shard_cmd::build_pinned_path_ranked(
                     &state.chain,
                     state.total_blocks,
