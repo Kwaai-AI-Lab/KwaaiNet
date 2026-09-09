@@ -23,7 +23,7 @@ parse failure with nothing pointing back at the patch step. They warn about
 this when invoked directly.
 
 Nix does not run these scripts: a flake build reads the git tree and their
-output is gitignored, so `nix/crane.nix` materializes each patched crate from
+output is gitignored, so `distrib/nix/crane.nix` materializes each patched crate from
 the same pinned tarball and patch file. Adding a patched crate means adding it
 there too.
 

@@ -1,4 +1,4 @@
-# nix/shell-functions/ascii-art.nix
+# distrib/nix/shell-functions/ascii-art.nix
 #
 # ASCII art logo display for KwaaiNet development shell.
 #

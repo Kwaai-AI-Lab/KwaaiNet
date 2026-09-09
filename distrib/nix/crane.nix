@@ -19,7 +19,7 @@
 
 let
   # Read version from Cargo.toml so it stays in sync automatically.
-  cargoToml = builtins.fromTOML (builtins.readFile (./.. + "/core/Cargo.toml"));
+  cargoToml = builtins.fromTOML (builtins.readFile (./../.. + "/core/Cargo.toml"));
   version = cargoToml.package.version;
 
   # The patched dependencies, materialized the way core/patches/*.sh do it:
@@ -40,7 +40,7 @@ let
         tar -xzf "$crate"
         mv multistream-select-0.13.0 $out
         cd $out
-        patch -p1 < ${./.. + "/core/patches/multistream-select.patch"}
+        patch -p1 < ${./../.. + "/core/patches/multistream-select.patch"}
       '';
 
   # libp2p-kad with `set_protocol_names` restored, for the kad protocol
@@ -58,7 +58,7 @@ let
         tar -xzf "$crate"
         mv libp2p-kad-0.48.0 $out
         cd $out
-        patch -p1 < ${./.. + "/core/patches/libp2p-kad.patch"}
+        patch -p1 < ${./../.. + "/core/patches/libp2p-kad.patch"}
       '';
 
   # Source filter: keep .rs, .toml, .lock, .proto, and non-code assets
@@ -69,7 +69,7 @@ let
       sourceFilter = path: type: (extraFilter path type) || (craneLib.filterCargoSources path type);
     in
     lib.cleanSourceWith {
-      src = craneLib.path (./.. + "/core");
+      src = craneLib.path (./../.. + "/core");
       filter = sourceFilter;
     };
 
