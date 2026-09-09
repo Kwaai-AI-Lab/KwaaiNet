@@ -9,7 +9,7 @@
 #
 # Inputs:
 #   pkgs             — nixpkgs package set
-#   kwaainet         — kwaainet binary derivation (includes bundled p2pd)
+#   kwaainet         — kwaainet binary derivation
 {
   pkgs,
   kwaainet,

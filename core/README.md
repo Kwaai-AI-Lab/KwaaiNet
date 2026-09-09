@@ -18,7 +18,7 @@ Rust core for KwaaiNet sovereign AI infrastructure — P2P inference, distribute
 ## Install
 
 ```bash
-# macOS / Linux — installs kwaainet + p2pd to ~/.cargo/bin
+# macOS / Linux — installs kwaainet to ~/.cargo/bin
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh
 
 # Homebrew
@@ -125,7 +125,7 @@ core/
 │   ├── kwaai-rag/           # RAG: chunking, retrieval, knowledge graph, dream cycle
 │   ├── kwaai-trust/         # Identity, Verifiable Credentials, trust scoring
 │   ├── kwaai-p2p/           # P2P networking (libp2p, Kademlia DHT)
-│   ├── kwaai-p2p-daemon/    # go-libp2p-daemon wrapper (p2pd) — legacy path
+│   ├── kwaai-p2p-daemon/    # control-socket protocol: P2PClient + node-hosted ControlServer
 │   ├── kwaai-hivemind-dht/  # Hivemind/Petals DHT protocol
 │   ├── kwaai-rpc/           # Shared RPC types
 │   ├── kwaai-inference/     # ML inference engine (Candle, block sharding)

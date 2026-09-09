@@ -13,7 +13,6 @@ different slashes.
 ```powershell
 rustc --version          # 1.75+, MSVC toolchain (not GNU)
 nvcc --version           # CUDA toolkit
-go version               # kwaai-p2p-daemon's build.rs builds p2pd
 ```
 
 Confirm the MSVC toolchain specifically — a `x86_64-pc-windows-gnu` default

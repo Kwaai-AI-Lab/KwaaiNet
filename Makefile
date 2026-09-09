@@ -9,7 +9,7 @@
 #   make -j cross        cross-compile all targets in parallel
 #   make -j all containers cross   build everything in parallel
 
-.PHONY: all kwaainet p2pd proto \
+.PHONY: all kwaainet proto \
         containers kwaainet-container kwaainet-all-container \
         cross cross-aarch64-gnu cross-aarch64-musl cross-x86_64-musl cross-riscv64-gnu \
         cross-containers cross-containers-aarch64-gnu cross-containers-aarch64-musl cross-containers-x86_64-musl cross-containers-riscv64-gnu \
@@ -22,9 +22,6 @@ all: kwaainet
 
 kwaainet:
 	nix build .#kwaainet -o result-kwaainet
-
-p2pd:
-	nix build .#p2pd -o result-p2pd
 
 proto:
 	nix build .#protoRs -o result-proto
@@ -45,19 +42,15 @@ cross: cross-aarch64-gnu cross-aarch64-musl cross-x86_64-musl cross-riscv64-gnu
 
 cross-aarch64-gnu:
 	nix build .#kwaainet-aarch64-linux-gnu -o result-kwaainet-aarch64-linux-gnu
-	nix build .#p2pd-aarch64-linux-gnu -o result-p2pd-aarch64-linux-gnu
 
 cross-aarch64-musl:
 	nix build .#kwaainet-aarch64-linux-musl -o result-kwaainet-aarch64-linux-musl
-	nix build .#p2pd-aarch64-linux-musl -o result-p2pd-aarch64-linux-musl
 
 cross-x86_64-musl:
 	nix build .#kwaainet-x86_64-linux-musl -o result-kwaainet-x86_64-linux-musl
-	nix build .#p2pd-x86_64-linux-musl -o result-p2pd-x86_64-linux-musl
 
 cross-riscv64-gnu:
 	nix build .#kwaainet-riscv64-linux-gnu -o result-kwaainet-riscv64-linux-gnu
-	nix build .#p2pd-riscv64-linux-gnu -o result-p2pd-riscv64-linux-gnu
 
 # --- Cross OCI Containers ---
 
@@ -133,14 +126,14 @@ develop:
 
 clean:
 	rm -f result result-kwaainet \
-	      result-p2pd result-proto \
+	      result-proto \
 	      result-kwaainet-container result-kwaainet-all-container \
-	      result-kwaainet-aarch64-linux-gnu result-p2pd-aarch64-linux-gnu \
-	      result-kwaainet-aarch64-linux-musl result-p2pd-aarch64-linux-musl \
-	      result-kwaainet-x86_64-linux-musl result-p2pd-x86_64-linux-musl \
+	      result-kwaainet-aarch64-linux-gnu \
+	      result-kwaainet-aarch64-linux-musl \
+	      result-kwaainet-x86_64-linux-musl \
 	      result-kwaainet-container-aarch64-linux-gnu result-kwaainet-all-container-aarch64-linux-gnu \
 	      result-kwaainet-container-aarch64-linux-musl result-kwaainet-all-container-aarch64-linux-musl \
 	      result-kwaainet-container-x86_64-linux-musl result-kwaainet-all-container-x86_64-linux-musl \
-	      result-kwaainet-riscv64-linux-gnu result-p2pd-riscv64-linux-gnu \
+	      result-kwaainet-riscv64-linux-gnu \
 	      result-kwaainet-container-riscv64-linux-gnu result-kwaainet-all-container-riscv64-linux-gnu \
 	      result-test-cross-aarch64-gnu result-test-cross-aarch64-musl result-test-cross-x86_64-musl result-test-cross-riscv64-gnu

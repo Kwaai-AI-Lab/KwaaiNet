@@ -9,7 +9,6 @@
 {
   lib,
   craneLib,
-  p2pd,
   protoRs,
   packages,
   makeWrapper,
@@ -97,10 +96,9 @@ let
     inherit (packages) buildInputs;
 
     # Environment variables consumed by the patched build.rs.
-    P2PD_BIN = "${p2pd}/bin/p2pd";
     P2PD_PROTO_RS = "${protoRs}/p2pd.pb.rs";
 
-    # Replace build.rs: skip Go clone/build AND protoc/prost_build.
+    # Replace build.rs: skip protoc/prost_build, use the pre-generated code.
     postPatch = ''
       cat > crates/kwaai-p2p-daemon/build.rs << 'BUILDRS'
       fn main() {
@@ -112,12 +110,6 @@ let
               .expect("P2PD_PROTO_RS must point to pre-generated p2pd.pb.rs");
           std::fs::copy(&pre_gen, std::path::Path::new(&out_dir).join("p2pd.pb.rs"))
               .expect("failed to copy pre-generated p2pd.pb.rs");
-
-          // p2pd is provided by Nix — bake the store path into the binary.
-          let p2pd_bin = std::env::var("P2PD_BIN")
-              .unwrap_or_else(|_| "p2pd".to_string());
-          println!("cargo:rustc-env=P2PD_PATH={}", p2pd_bin);
-          println!("cargo:rustc-env=P2PD_REPO=nix-provided");
       }
       BUILDRS
     '';
@@ -152,12 +144,7 @@ in
 {
   inherit cargoArtifacts;
 
-  kwaainet = mkBin "kwaainet" {
-    postInstall = ''
-      # Bundle p2pd next to kwaainet so find_p2pd_binary() finds it.
-      ln -sf ${p2pd}/bin/p2pd $out/bin/p2pd
-    '';
-  };
+  kwaainet = mkBin "kwaainet" { };
 
   # Clippy lint check — run via `nix flake check`.
   clippy = craneLib.cargoClippy (

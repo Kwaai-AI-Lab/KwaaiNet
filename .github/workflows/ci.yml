@@ -4,9 +4,7 @@ name: CI
 # Target wall-clock: ~12-15 min on a warm cache, ~20-25 min cold.
 #
 # What changed vs the old ci.yml:
-#   - build.rs skips `go build` when binary already exists (cached target/)
 #   - protoc installed via apt instead of downloaded at runtime by build.rs
-#   - Go module cache enabled on all jobs that need Go
 #   - Single unified cargo cache key shared by clippy + test (same artifacts)
 #   - clippy uses default features only (was --all-features; CUDA/Metal are
 #     only needed for the release build, not the lint gate)
@@ -85,13 +83,6 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-
       - name: Install protoc
         run: sudo apt-get install -y protobuf-compiler
 
@@ -140,13 +131,6 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: '**/go.sum'
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
@@ -239,13 +223,6 @@ jobs:
       #
       # The actions/cache step below still carries target/ between runs, so the
       # cost is a slower cold run, not an uncached one.
-
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: '**/go.sum'
 
       # openssl-sys arrives transitively via reqwest/libp2p and needs pointing
       # at the runner's pre-installed OpenSSL.
@@ -358,13 +335,6 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: '**/go.sum'
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'

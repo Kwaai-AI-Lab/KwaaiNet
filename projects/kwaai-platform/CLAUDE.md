@@ -19,8 +19,7 @@ Primary CLI files in `core/crates/kwaai-cli/src/`:
 - `config.rs` — `KwaaiNetConfig` (YAML at `~/.kwaainet/config.yaml`)
 - `display.rs` — `print_box_header`, `print_success`, `print_error`, `print_info`, `print_warning`, `print_separator`
 - `service.rs` — auto-start service management (launchd / systemd / Windows service)
-- `updater.rs` — `kwaainet setup --get-deps`, platform-aware p2pd download
-- `setup.rs` — dependency setup, p2pd install
+- `updater.rs` — self-update: release lookup, download, binary swap
 
 ## Build & release
 
@@ -45,8 +44,7 @@ cargo dist build
 - Targets: aarch64/x86_64 apple-darwin, x86_64/aarch64 linux-gnu, x86_64-pc-windows-msvc
 - Installers: shell + PowerShell + Homebrew tap (Kwaai-AI-Lab/homebrew-tap)
 - `HOMEBREW_TAP_TOKEN` secret required on repo
-- p2pd injected into archives via `build-local-artifacts` job (post-dist repack)
-- Shell installer patched: `_bins="kwaainet p2pd"` via sed in `build-global-artifacts`
+- Shell installer patched for NVIDIA detection in `build-global-artifacts`
 
 **Tag trigger pattern**: `v[0-9]*.[0-9]*.[0-9]*` — supports two-digit patch (v0.1.10+)
 
@@ -70,7 +68,7 @@ silent tag-event failures. Always write python3 patches as one-liners in release
 | `kwaai-cli/src/config.rs` | `KwaaiNetConfig`, YAML persistence |
 | `kwaai-cli/src/display.rs` | All terminal output helpers |
 | `kwaai-cli/src/service.rs` | Daemon / service management |
-| `kwaai-cli/src/updater.rs` | `kwaainet setup --get-deps` |
+| `kwaai-cli/src/updater.rs` | Self-update |
 | `.github/workflows/release.yml` | cargo-dist release pipeline |
 
 ## Config fields pattern

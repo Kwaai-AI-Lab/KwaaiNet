@@ -28,7 +28,6 @@ in
     rustfmt
     clippy
     rust-analyzer
-    go
     jp2a
     nixfmt
   ];

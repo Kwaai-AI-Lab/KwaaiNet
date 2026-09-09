@@ -48,7 +48,7 @@ if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
 Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
 
 Write-Host "Stopping kwaainet..."
-Stop-Process -Name kwaainet,p2pd -Force -ErrorAction SilentlyContinue
+Stop-Process -Name kwaainet -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # For CUDA zips include *.dll so bundled CUDA runtime DLLs are installed.

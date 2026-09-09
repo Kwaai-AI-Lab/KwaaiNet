@@ -61,14 +61,6 @@ pass "kwaainet binary: $KWAAINET_BIN"
 KWAAINET_VERSION=$("$KWAAINET_BIN" --version 2>/dev/null || echo "unknown")
 info "version: $KWAAINET_VERSION"
 
-P2PD_BIN="$(dirname "$KWAAINET_BIN")/p2pd"
-if [[ -x "$P2PD_BIN" ]]; then
-    pass "p2pd binary: $P2PD_BIN"
-else
-    fail "p2pd not found at $P2PD_BIN — run: kwaainet setup --get-deps"
-    exit 1
-fi
-
 CONFIG_FILE="$HOME/.kwaainet/config.yaml"
 if [[ -f "$CONFIG_FILE" ]]; then
     pass "config file: $CONFIG_FILE"

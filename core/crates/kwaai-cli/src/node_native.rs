@@ -1,7 +1,7 @@
 //! The native (in-process rust-libp2p) node runner.
 //!
-//! Selected by `native_p2p = true` in the node config. Assembles the pieces
-//! Phases 1–3 built into the same node `run_node` produces with the Go daemon:
+//! The node `run_node` produces. Assembles the control server, the node
+//! handlers and the DHT service around one in-process swarm:
 //!
 //! ```text
 //!                       ┌──────────────── kwaainet run-node ────────────────┐
@@ -13,20 +13,14 @@
 //!                       └───────────────────────────────────────────────────┘
 //! ```
 //!
-//! # What differs from the p2pd path
+//! # Shape
 //!
-//! * **No child process**, so no watchdog, no crash restart, no
-//!   `restart_p2pd*`, and no `find_p2pd_binary` — a native node runs with no
-//!   `p2pd` binary installed at all.
-//! * **The RPC listener is gone.** The p2pd path binds a loopback TCP listener
-//!   and registers it as a *stream handler* for the three `DHTProtocol.rpc_*`
-//!   names, so p2pd forwards each inbound DHT request over TCP with a
-//!   `StreamInfo` prologue and a `PersistentConnectionRequest` wrapper around
-//!   the payload. Natively, `spawn_dht_service` registers them as unary
-//!   handlers directly on the swarm — same protocol IDs, same `DHTStorage`,
-//!   two fewer hops and no wrapper to unwrap.
-//! * **No IDENTIFY-driven restart cycle.** Reachability changes arrive on a
-//!   watch channel and the record is re-published in place.
+//! * **No child process**: no watchdog, no crash restart, no `p2pd` binary.
+//! * **DHT requests arrive as unary handlers.** `spawn_dht_service` registers
+//!   the three `DHTProtocol.rpc_*` names directly on the swarm, backed by the
+//!   same `DHTStorage`.
+//! * **Reachability changes** arrive on a watch channel and the announce record
+//!   is re-published in place.
 //!
 //! # What is deliberately identical
 //!
@@ -39,19 +33,15 @@
 //!
 //! # NAT traversal
 //!
-//! AutoNAT, circuit relay, DCUtR and UPnP all run natively now, each mapped
-//! from the config field that drove the corresponding p2pd flag:
+//! AutoNAT, circuit relay, DCUtR and UPnP all run in-process:
 //!
-//! | config | p2pd flag | native |
-//! | --- | --- | --- |
-//! | `force_private` | `-forceReachabilityPrivate` | reachability starts Private, so reservations begin at t=0 |
-//! | `no_relay` | `-relay` | toggles the circuit **hop server** |
-//! | `trusted_relays` | `-trustedRelays` | operator override; the real supply is identify hop discovery |
-//! | `announce_addr` / `public_ip` | `-announceAddrs` | declared external address, outranking AutoNAT |
-//! | — | `-natPortMap` | UPnP, always on |
-//!
-//! What is *not* in reach in-process is real hole punching, which needs actual
-//! NATs — that is docker nat-test topology work.
+//! | config | effect |
+//! | --- | --- |
+//! | `force_private` | reachability starts Private, so reservations begin at t=0 |
+//! | `no_relay` | toggles the circuit **hop server** |
+//! | `trusted_relays` | operator override; the real supply is identify hop discovery |
+//! | `announce_addr` / `public_ip` | declared external address, outranking AutoNAT |
+//! | — | UPnP, always on |
 
 use anyhow::{Context, Result};
 use kwaai_hivemind_dht::DHTStorage;
@@ -71,8 +61,7 @@ use crate::node::SigHup;
 
 /// Per-request budget on outbound unary calls.
 ///
-/// Matches the `tokio::time::timeout(30s, …)` the p2pd path wraps every
-/// `call_unary_handler` in. The native handle enforces it itself
+/// A 30 s cap on every `call_unary_handler`. The native handle enforces it itself
 /// (`NetworkConfig::request_timeout`), so `send_records_via_handle` needs no
 /// timeout of its own.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -917,7 +906,6 @@ mod tests {
     /// neither collides with a developer's real node on 8080.
     fn seed_like_config(announce_self: bool, home: &std::path::Path) -> KwaaiNetConfig {
         KwaaiNetConfig {
-            native_p2p: Some(true),
             announce_self,
             enable_upnp: false,
             port: 0,

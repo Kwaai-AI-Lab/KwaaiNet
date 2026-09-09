@@ -21,12 +21,10 @@
         lib = pkgs.lib;
         craneLib = crane.mkLib pkgs;
         packages = import ./distrib/nix/packages.nix { inherit pkgs; };
-        p2pd = pkgs.callPackage ./distrib/nix/p2pd.nix { };
         protoRs = pkgs.callPackage ./distrib/nix/proto.nix { };
         cranePkgs = import ./distrib/nix/crane.nix {
           inherit
             craneLib
-            p2pd
             protoRs
             packages
             pkgs
@@ -99,7 +97,6 @@
         # Flatten cross targets into suffixed package names.
         crossPackages = lib.concatMapAttrs (targetName: cross: {
           "kwaainet-${targetName}" = cross.kwaainet;
-          "p2pd-${targetName}" = cross.p2pd;
           "kwaainet-container-${targetName}" = cross.kwaainet-container;
           "kwaainet-all-container-${targetName}" = cross.kwaainet-all-container;
         }) crossTargets;
@@ -133,7 +130,7 @@
             kwaainet
             cargoArtifacts
             ;
-          inherit p2pd protoRs;
+          inherit protoRs;
         }
         // containers
         // crossPackages

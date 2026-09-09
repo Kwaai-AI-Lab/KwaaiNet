@@ -6,7 +6,7 @@
 # Verifies that `kwaainet uninstall --yes` removes:
 #   1. ~/.kwaainet/ data directory
 #   2. The kwaainet binary
-#   3. The p2pd binary (when present alongside kwaainet)
+#   3. A legacy p2pd binary (when present alongside kwaainet)
 #
 # The test installs both binaries into a scratch directory added to PATH so
 # the binary can unlink itself without touching the source build output.
@@ -81,7 +81,7 @@ info "Seeding fake installation..."
 
 # Copy binaries into the scratch bin dir
 cp "$KWAAINET_BIN" "$SCRATCH_BIN/kwaainet${EXE}"
-# Fake p2pd (an empty executable is enough; use .exe on Windows)
+# Fake legacy p2pd (an empty executable is enough; use .exe on Windows)
 printf '#!/bin/sh\necho "p2pd fake"\n' > "$SCRATCH_BIN/p2pd${EXE}"
 chmod +x "$SCRATCH_BIN/kwaainet${EXE}" "$SCRATCH_BIN/p2pd${EXE}"
 
@@ -126,9 +126,9 @@ else
     fail "kwaainet binary still exists at $SCRATCH_BIN/kwaainet${EXE}"
 fi
 
-# 3. p2pd binary removed
+# 3. legacy p2pd binary removed
 if [[ ! -f "$SCRATCH_BIN/p2pd${EXE}" ]]; then
-    pass "p2pd binary removed"
+    pass "legacy p2pd binary removed"
 else
     fail "p2pd binary still exists at $SCRATCH_BIN/p2pd${EXE}"
 fi

@@ -10,7 +10,6 @@ use clap::{Args, Parser, Subcommand};
 
 ─── Install & first run ──────────────────────────────────────────────
   kwaainet setup                         create config dirs and identity
-  kwaainet setup --get-deps              download p2pd (if not bundled)
   kwaainet benchmark                     measure GPU/CPU throughput
 
 ─── Join the network ─────────────────────────────────────────────────
@@ -95,7 +94,7 @@ pub enum Command {
     /// Disable health monitoring
     HealthDisable,
 
-    /// Live health check: p2pd, Ollama, and relay circuit status
+    /// Live health check: p2p node, Ollama, and relay circuit status
     NodeHealth,
 
     /// Manage the auto-start service
@@ -131,7 +130,7 @@ pub enum Command {
     /// Manage node identity and verifiable credentials
     Identity(IdentityArgs),
 
-    /// Inspect live p2p state (identity, connected peers) via the local p2pd
+    /// Inspect live p2p state (identity, connected peers) via the local node
     P2p(P2pArgs),
 
     /// Manage VPK (Virtual Private Knowledge) vector database integration
@@ -297,7 +296,7 @@ pub enum ConfigAction {
     ///
     /// Valid keys:
     ///   model, blocks, start_block, port, use_gpu, log_level,
-    ///   public_name, public_ip, announce_addr, no_relay, native_p2p,
+    ///   public_name, public_ip, announce_addr, no_relay,
     ///   announce_self, enable_upnp, max_connections,
     ///   announce_online_without_shard,
     ///   decentralized_dht, dht_replication,
@@ -1010,8 +1009,8 @@ pub struct CalibrateArgs {
 
 #[derive(Args)]
 pub struct SetupArgs {
-    /// Download and install missing dependencies (e.g. p2pd)
-    #[arg(long)]
+    /// Deprecated: nothing is downloaded any more.
+    #[arg(long, hide = true)]
     pub get_deps: bool,
 }
 

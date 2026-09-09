@@ -2,7 +2,7 @@
 //!
 //! This is the mirror image of [`crate::client`]: the same protobuf control
 //! protocol, served by the node itself and translated into
-//! [`kwaai_p2p::NetworkHandle`] calls instead of into a Go process. External
+//! [`kwaai_p2p::NetworkHandle`] calls. External
 //! processes (the map's DHT crawler, `shard serve`, `storage serve`, `rag`,
 //! `p2p`/`status`, inference-mux, …) attach to the socket and keep acting as
 //! the node's peer identity.
@@ -12,10 +12,9 @@
 //! The socket is a multi-process service bus with ~15 client call sites across
 //! several binaries, some of which (`shard serve`, `storage serve`) register
 //! *inbound* handlers and therefore serve network traffic on the node's behalf.
-//! Changing the protocol would mean changing all of them atomically. Keeping it
-//! means the daemon can be removed underneath them without a single client edit.
+//! Changing the protocol would mean changing all of them atomically.
 //!
-//! The authoritative reference for every response shape here is the Go daemon
+//! The authoritative reference for every response shape here was the Go daemon
 //! (`conn.go` / `persistent_stream.go` in `go-libp2p-daemon@v0.5.0.hivemind1`),
 //! not the proto file: several behaviours are load-bearing but invisible in the
 //! schema. In particular:

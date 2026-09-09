@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # KwaaiNet contributor cleanup script.
 #
-# Removes build artifacts, leftover Go clone dirs, and stale installed
+# Removes build artifacts and stale installed
 # binaries so contributors start from a known-clean state.
 #
 # Usage:
@@ -72,28 +72,10 @@ else
     echo "    nothing to remove"
 fi
 
-# ── 2. Stale Go clone dirs in /tmp ───────────────────────────────────────────
-bold "==> Stale go-libp2p-daemon clone dirs  (/tmp/go-libp2p-daemon-*)"
-# shellcheck disable=SC2086
-GO_CLONES=$(ls -d /tmp/go-libp2p-daemon-* 2>/dev/null || true)
-if [ -n "$GO_CLONES" ]; then
-    echo "$GO_CLONES"
-    if confirm "    Remove these dirs?"; then
-        # Use eval-free loop to handle each path
-        while IFS= read -r dir; do
-            remove "$dir"
-        done <<< "$GO_CLONES"
-    else
-        yellow "    skipped"
-    fi
-else
-    echo "    nothing to remove"
-fi
-
-# ── 3. Manually installed binaries ───────────────────────────────────────────
+# ── 2. Manually installed binaries ───────────────────────────────────────────
 bold "==> Manually installed binaries  (/usr/local/bin)"
 MANUAL_BINS=()
-for bin in /usr/local/bin/kwaainet /usr/local/bin/p2pd; do
+for bin in /usr/local/bin/kwaainet; do
     [ -f "$bin" ] && MANUAL_BINS+=("$bin")
 done
 if [ ${#MANUAL_BINS[@]} -gt 0 ]; then
@@ -107,7 +89,7 @@ else
     echo "    nothing to remove"
 fi
 
-# ── 4. cargo-installed binary ─────────────────────────────────────────────────
+# ── 3. cargo-installed binary ─────────────────────────────────────────────────
 bold "==> cargo-installed binary  (~/.cargo/bin/kwaainet)"
 CARGO_BIN="${HOME}/.cargo/bin/kwaainet"
 if [ -f "$CARGO_BIN" ]; then

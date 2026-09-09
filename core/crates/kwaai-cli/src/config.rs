@@ -186,34 +186,12 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_force_private")]
     pub force_private: bool,
 
-    /// Run the node on the in-process rust-libp2p stack instead of spawning the
-    /// Go `p2pd` child process.
-    ///
-    /// The native path reuses every other setting on this struct — `port`,
-    /// `initial_peers`, `identity_key` (so the PeerId is identical either way)
-    /// and `KWAAINET_SOCKET` — and serves the same p2pd control socket, so
-    /// external clients (the GUI, `kwaainet p2p …`, `shard serve`) cannot tell
-    /// the two apart. NAT traversal is included: AutoNAT, circuit relay, DCUtR
-    /// and UPnP all run in-process, and `no_relay`, `force_private`,
-    /// `trusted_relays`, `announce_addr` and `public_ip` all take effect on
-    /// this path (see `node_native`'s module docs for the flag-by-flag mapping
-    /// against p2pd).
-    ///
-    /// **Three states, deliberately.** `Some(true)` runs native, `Some(false)`
-    /// is an explicit opt-out, and `None` means "never chosen" and takes
-    /// [`DEFAULT_NATIVE_P2P`].
-    ///
-    /// It is an `Option` so the cutover can flip the default without overriding
-    /// anyone who has already said no. A plain `bool` could not distinguish the
-    /// two: `load()` only writes the config file when it is absent, so an
-    /// existing `config.yaml` is never rewritten on upgrade, and whether the key
-    /// is present at all depends on which version first created that file.
-    /// Flipping a `bool` default would therefore have flipped some nodes and not
-    /// others, decided by config vintage rather than by anyone's intent.
-    ///
-    /// Read it through [`KwaaiNetConfig::native_p2p`], never directly.
+    /// Deprecated and ignored: the node always runs the
+    /// in-process rust-libp2p stack. Kept only so an existing `config.yaml`
+    /// carrying the key still parses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_p2p: Option<bool>,
+
     /// Ask the local gateway to map our listen port via UPnP/IGD
     /// (`-natPortMap`).
     ///
@@ -282,8 +260,6 @@ pub struct KwaaiNetConfig {
     /// Also gates the peer cache (`peer_cache.rs`), so an established node
     /// rejoins from remembered peers even when every configured peer is gone.
     ///
-    /// **Native path only** (`native_p2p = true`). The p2pd path ignores this
-    /// and keeps the bootstrap fan-out regardless.
     #[serde(default)]
     pub decentralized_dht: bool,
 
@@ -442,8 +418,8 @@ pub struct ContributeConfig {
     /// `/kwaai/ollama-proxy/1.0.0` is registered by the node itself and is
     /// unaffected, so a node with `shards: None` still contributes inference.
     ///
-    /// It is an `Option` for the same reason `native_p2p` is: flipping a plain
-    /// `bool` default cannot distinguish "never chosen" from "explicitly set",
+    /// It is an `Option` because flipping a plain `bool` default cannot
+    /// distinguish "never chosen" from "explicitly set",
     /// so it would silently override operators who deliberately asked for
     /// sharding. Read it through [`ContributeConfig::shards`], never directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -973,14 +949,6 @@ impl Default for ReconnectionConfig {
 // Load / save
 // ---------------------------------------------------------------------------
 
-/// What `native_p2p` means when the user has never chosen.
-///
-/// **This is the 0.6 cutover, flipped in v0.6.0.** Every node that has not
-/// explicitly opted out runs the native stack; nodes with `native_p2p: false`
-/// written in their config keep the p2pd path regardless. No config file is
-/// rewritten, and rolling back is the same one-line change.
-pub const DEFAULT_NATIVE_P2P: bool = true;
-
 impl KwaaiNetConfig {
     /// The block this node starts serving at — the pinned value if there is
     /// one, otherwise 0.
@@ -1005,23 +973,6 @@ impl KwaaiNetConfig {
     /// every assignment.
     pub fn start_block_user_pinned(&self) -> bool {
         self.start_block.is_some() && !self.start_block_auto
-    }
-
-    /// Whether to run the native stack: the explicit choice if there is one,
-    /// otherwise [`DEFAULT_NATIVE_P2P`].
-    ///
-    /// Always read the flag through this — `self.native_p2p` is three-state and
-    /// `Some(false)` must keep beating a flipped default.
-    pub fn native_p2p(&self) -> bool {
-        self.native_p2p.unwrap_or(DEFAULT_NATIVE_P2P)
-    }
-
-    /// True when the user has explicitly opted out of the native stack, as
-    /// opposed to simply never having chosen. Callers that want to say
-    /// something about the cutover need the distinction; callers that just want
-    /// the behaviour want [`Self::native_p2p`].
-    pub fn opted_out_of_native_p2p(&self) -> bool {
-        self.native_p2p == Some(false)
     }
 
     /// The `state` field for a DHT announcement: `2` ONLINE, `1` JOINING.
@@ -1054,8 +1005,8 @@ impl KwaaiNetConfig {
     /// tests, which serve no inference and would otherwise show every node as
     /// offline on the map — hiding the connectivity they exist to exercise.
     ///
-    /// Lives beside the flag it reads, and reachable from both the p2pd and the
-    /// native announce paths, so the two cannot drift on what ONLINE means.
+    /// Lives beside the flag it reads, so every announce path agrees on what
+    /// ONLINE means.
     pub fn announce_state() -> i32 {
         if ShardManager::shard_is_ready() || ShardManager::whole_model_is_ready() {
             return 2;
@@ -1258,7 +1209,9 @@ impl KwaaiNetConfig {
             }
             "announce_addr" => self.announce_addr = Some(value.to_string()),
             "no_relay" => self.no_relay = parse_bool(value)?,
-            "native_p2p" => self.native_p2p = Some(parse_bool(value)?),
+            "native_p2p" => {
+                anyhow::bail!("native_p2p is no longer configurable — the node always runs the in-process p2p stack")
+            }
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
             "enable_quic" => self.enable_quic = parse_bool(value)?,
@@ -1431,100 +1384,23 @@ mod start_block_pinning {
 }
 
 #[cfg(test)]
-mod native_p2p_tri_state {
+mod native_p2p_tombstone {
     use super::*;
 
-    // The whole reason the field is an `Option`: the cutover must be able to
-    // flip the default without overriding anyone who already said no.
-
     #[test]
-    fn unset_takes_the_default() {
-        let cfg = KwaaiNetConfig::default();
-        assert_eq!(cfg.native_p2p, None, "a fresh config records no choice");
-        assert_eq!(cfg.native_p2p(), DEFAULT_NATIVE_P2P);
-    }
-
-    #[test]
-    fn an_explicit_choice_beats_the_default_both_ways() {
-        let on = KwaaiNetConfig {
-            native_p2p: Some(true),
-            ..Default::default()
-        };
-        assert!(on.native_p2p());
-        let off = KwaaiNetConfig {
-            native_p2p: Some(false),
-            ..Default::default()
-        };
-        assert!(!off.native_p2p());
-    }
-
-    #[test]
-    fn opting_out_survives_a_flipped_default() {
-        // Simulates the cutover: whatever DEFAULT_NATIVE_P2P becomes, an
-        // explicit `false` must still mean the p2pd path. Expressed without
-        // reading the constant so the test keeps its meaning after the flip.
-        let off = KwaaiNetConfig {
-            native_p2p: Some(false),
-            ..Default::default()
-        };
-        assert!(!off.native_p2p(), "an explicit opt-out is never overridden");
-        assert!(off.opted_out_of_native_p2p());
-
-        let unset = KwaaiNetConfig {
-            native_p2p: None,
-            ..Default::default()
-        };
-        assert!(
-            !unset.opted_out_of_native_p2p(),
-            "never having chosen is not the same as opting out"
-        );
-    }
-
-    #[test]
-    fn set_records_an_explicit_choice() {
-        // `config set native_p2p false` must write `Some(false)`, not leave the
-        // field unset — otherwise the opt-out evaporates at the cutover.
-        let mut cfg = KwaaiNetConfig::default();
-        cfg.set_key("native_p2p", "false").expect("set");
+    fn a_config_carrying_the_dead_key_still_parses() {
+        let cfg: KwaaiNetConfig =
+            serde_yaml::from_str("port: 8080\nnative_p2p: false\n").expect("legacy config parses");
         assert_eq!(cfg.native_p2p, Some(false));
-        cfg.set_key("native_p2p", "true").expect("set");
-        assert_eq!(cfg.native_p2p, Some(true));
     }
 
     #[test]
-    fn an_unset_flag_is_not_serialised() {
-        // Absent must stay absent on save, or every node that has merely
-        // started once would acquire a pinned choice it never made.
-        let cfg = KwaaiNetConfig::default();
-        let y = serde_yaml::to_string(&cfg).expect("serialise");
+    fn the_default_config_does_not_write_the_key() {
+        let y = serde_yaml::to_string(&KwaaiNetConfig::default()).expect("serialise");
         assert!(
             !y.contains("native_p2p"),
-            "an unmade choice must not be written to disk:\n{y}"
+            "dead key must not be written:\n{y}"
         );
-    }
-
-    #[test]
-    fn a_legacy_config_without_the_key_loads_as_unset() {
-        // Configs written before the flag existed have no key at all.
-        let y = "port: 8080\nnative_p2p_absent_marker: true\n";
-        let cfg: KwaaiNetConfig = serde_yaml::from_str(y).expect("legacy config parses");
-        assert_eq!(cfg.native_p2p, None);
-        assert_eq!(cfg.native_p2p(), DEFAULT_NATIVE_P2P);
-    }
-
-    #[test]
-    fn an_explicit_false_round_trips_through_yaml() {
-        let cfg = KwaaiNetConfig {
-            native_p2p: Some(false),
-            ..Default::default()
-        };
-        let y = serde_yaml::to_string(&cfg).expect("serialise");
-        assert!(
-            y.contains("native_p2p: false"),
-            "opt-out must persist:\n{y}"
-        );
-        let back: KwaaiNetConfig = serde_yaml::from_str(&y).expect("round trip");
-        assert_eq!(back.native_p2p, Some(false));
     }
 }
 

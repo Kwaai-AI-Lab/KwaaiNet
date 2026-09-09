@@ -1,6 +1,6 @@
 # Cross-compilation support — builds KwaaiNet binaries for foreign architectures.
 #
-# Called once per target from flake.nix.  Reuses crane.nix, p2pd.nix, and
+# Called once per target from flake.nix.  Reuses crane.nix and
 # containers.nix unchanged — cross-compilation is handled by the cross pkgs.
 {
   nixpkgs,
@@ -23,12 +23,9 @@ let
 
   packages = import ./packages.nix { pkgs = pkgsCross; };
 
-  p2pd = pkgsCross.callPackage ./p2pd.nix { };
-
   cranePkgs = import ./crane.nix {
     inherit
       craneLib
-      p2pd
       protoRs
       packages
       cargoTarget
@@ -49,6 +46,5 @@ in
     kwaainet
     cargoArtifacts
     ;
-  inherit p2pd;
   inherit (containers) kwaainet-container kwaainet-all-container;
 }

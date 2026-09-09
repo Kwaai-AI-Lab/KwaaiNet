@@ -5,7 +5,7 @@
 //! | Tier        | Gate env var               | What runs                          |
 //! |-------------|----------------------------|------------------------------------|
 //! | unit        | (always)                   | codec, value, storage, protocol    |
-//! | integration | `KWAAI_INTEGRATION_TESTS=1`| daemon spawn, DHT, relay topology  |
+//! | integration | `KWAAI_INTEGRATION_TESTS=1`| control socket, node assembly      |
 //! | network     | `KWAAI_NETWORK_TESTS=1`    | real bootstrap, peer count metrics |
 //!
 //! # Running
@@ -24,10 +24,9 @@
 //! cd core && cargo run -p kwaai-network-tests --bin metrics-report
 //! ```
 
-pub mod harness;
 pub mod metrics;
 
-/// Returns true when integration (daemon-spawn) tests should run.
+/// Returns true when integration (multi-node) tests should run.
 pub fn integration_enabled() -> bool {
     std::env::var("KWAAI_INTEGRATION_TESTS").is_ok()
 }

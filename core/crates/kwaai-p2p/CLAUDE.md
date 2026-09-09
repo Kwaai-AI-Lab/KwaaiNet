@@ -1,7 +1,7 @@
 # kwaai-p2p crate
 
 This crate implements the P2P transport: libp2p Kademlia DHT (Hivemind-compatible), circuit relay
-for NAT traversal, Yamux stream multiplexing, and the p2pd daemon.
+for NAT traversal, and Yamux stream multiplexing.
 
 **Full project context:** `projects/kwaai-network/` — CLAUDE.md, requirements, design, roadmap, TODO.
 

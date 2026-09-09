@@ -47,7 +47,6 @@ kwaai-inference = { path = "crates/kwaai-inference" }
 kwaai-distributed = { path = "crates/kwaai-distributed" }
 kwaai-compression = { path = "crates/kwaai-compression" }
 kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht" }
-kwaai-p2p-daemon = { path = "crates/kwaai-p2p-daemon" }
 tokio = { version = "1.35", features = ["full"] }
 libp2p = { version = "0.56", features = ["tokio", "kad", "identify", "noise", "tcp", "quic", "yamux", "macros", "request-response", "rsa", "relay", "autonat", "dcutr", "upnp"] }
 futures = "0.3"
@@ -113,30 +112,6 @@ path = "examples/petals_bootstrap.rs"
 [[example]]
 name = "petals_dht"
 path = "examples/petals_dht.rs"
-
-[[example]]
-name = "petals_visible"
-path = "examples/petals_visible.rs"
-
-[[example]]
-name = "daemon_test"
-path = "examples/daemon_test.rs"
-
-[[example]]
-name = "dht_test"
-path = "examples/dht_test.rs"
-
-[[example]]
-name = "petals_dht_connect"
-path = "examples/petals_dht_connect.rs"
-
-[[example]]
-name = "query_dht"
-path = "examples/query_dht.rs"
-
-[[example]]
-name = "query_dht_state"
-path = "examples/query_dht_state.rs"
 
 [workspace.package]
 version = "0.6.8"
@@ -243,11 +218,6 @@ targets = [
     "x86_64-unknown-linux-musl",   # Linux x64 static (Alpine, containers)
     "aarch64-unknown-linux-musl",  # Linux ARM64 static
 ]
-# Build p2pd (Go binary) alongside kwaainet and bundle it in the same archive
-extra-artifacts = [
-    { build = ["../scripts/build-p2pd.sh"], artifacts = ["p2pd"] },
-]
-
 [profile.dist]
 inherits = "release"
 

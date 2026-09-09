@@ -4,7 +4,7 @@
 //!   1. Stop the running daemon (SIGTERM → SIGKILL after timeout)
 //!   2. Uninstall the auto-start service (launchd / systemd)
 //!   3. Remove the data directory (~/.kwaainet/)
-//!   4. Remove the kwaainet binary and the co-installed p2pd binary
+//!   4. Remove the kwaainet binary and a legacy p2pd binary, if present
 
 use anyhow::Result;
 use std::io::{self, BufRead, Write as _};
@@ -27,7 +27,7 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
             println!("    • All KwaaiNet data and configuration (~/.kwaainet/)");
         }
         println!("    • Auto-start service (if installed)");
-        println!("    • kwaainet binary (and p2pd if present in the same directory)");
+        println!("    • kwaainet binary (and a legacy p2pd if present in the same directory)");
         println!();
         print!("  Proceed? [y/N] ");
         io::stdout().flush().ok();
