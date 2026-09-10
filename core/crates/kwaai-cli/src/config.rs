@@ -209,8 +209,12 @@ pub struct KwaaiNetConfig {
     /// Listen on and dial QUIC as well as TCP. Turn it off for a network that
     /// blocks or throttles UDP. Bound at startup, so changing it needs a
     /// restart.
-    #[serde(default = "default_true")]
-    pub enable_quic: bool,
+    ///
+    /// `None` until set explicitly, and never written while unset, so a
+    /// change to the default reaches an existing `config.yaml`; read it
+    /// through [`KwaaiNetConfig::quic`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_quic: Option<bool>,
 
     /// Whether to open IPv6 listeners: `auto`, `true` or `false`.
     ///
@@ -907,7 +911,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
-            enable_quic: true,
+            enable_quic: None,
             ipv6: kwaai_p2p::Ipv6Mode::Auto,
             only_global_ips: true,
             max_connections: default_max_connections(),
@@ -1056,6 +1060,12 @@ impl KwaaiNetConfig {
 
     /// Re-read config.yaml before a save so writes by other processes are kept;
     /// falls back to `self` if the file cannot be read.
+    /// Effective `enable_quic`: the explicit setting, else the swarm default.
+    pub fn quic(&self) -> bool {
+        self.enable_quic
+            .unwrap_or(kwaai_p2p::config::DEFAULT_ENABLE_QUIC)
+    }
+
     pub fn reloaded(&self) -> Self {
         Self::load_or_create().unwrap_or_else(|_| self.clone())
     }
@@ -1265,7 +1275,7 @@ impl KwaaiNetConfig {
             }
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
-            "enable_quic" => self.enable_quic = parse_bool(value)?,
+            "enable_quic" => self.enable_quic = Some(parse_bool(value)?),
             "ipv6" => self.ipv6 = value.parse().map_err(|e| anyhow::anyhow!("ipv6: {e}"))?,
             "only_global_ips" => self.only_global_ips = parse_bool(value)?,
             "max_connections" => {
@@ -1445,6 +1455,51 @@ mod start_block_pinning {
             ..Default::default()
         };
         assert_eq!(unpinned.effective_end_block(), 8, "unset starts at 0");
+    }
+}
+
+#[cfg(test)]
+mod enable_quic_default {
+    use super::*;
+
+    /// A v0.6.8 install wrote the key with the old default; an explicit
+    /// value stays explicit rather than being second-guessed.
+    #[test]
+    fn a_config_that_pinned_quic_off_stays_off() {
+        let cfg: KwaaiNetConfig =
+            serde_yaml::from_str("port: 8080\nenable_quic: false\n").expect("0.6.8 config parses");
+        assert_eq!(cfg.enable_quic, Some(false));
+        assert!(!cfg.quic());
+    }
+
+    /// A config that never set the key follows the current default.
+    #[test]
+    fn a_config_without_the_key_takes_the_swarm_default() {
+        let cfg: KwaaiNetConfig = serde_yaml::from_str("port: 8080\n").expect("config parses");
+        assert_eq!(cfg.enable_quic, None);
+        assert_eq!(cfg.quic(), kwaai_p2p::config::DEFAULT_ENABLE_QUIC);
+        assert_eq!(cfg.quic(), kwaai_p2p::NetworkConfig::default().enable_quic);
+    }
+
+    /// `save()` must not pin the default, or the next flip is a no-op again.
+    #[test]
+    fn the_default_config_does_not_write_the_key() {
+        let y = serde_yaml::to_string(&KwaaiNetConfig::default()).expect("serialise");
+        assert!(
+            !y.contains("enable_quic"),
+            "unset key must not be written:\n{y}"
+        );
+    }
+
+    /// `config set` pins it, and the pinned value survives a round trip.
+    #[test]
+    fn set_key_pins_it_and_it_round_trips() {
+        let mut c = KwaaiNetConfig::default();
+        c.set_key("enable_quic", "false").expect("valid key");
+        let y = serde_yaml::to_string(&c).expect("serialise");
+        assert!(y.contains("enable_quic: false"), "{y}");
+        let back: KwaaiNetConfig = serde_yaml::from_str(&y).expect("reload");
+        assert!(!back.quic());
     }
 }
 

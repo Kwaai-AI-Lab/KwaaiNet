@@ -181,7 +181,7 @@ graph TB
 **Technical Specifications**:
 - **Framework**: Rust with `candle-core` for ML operations
 - **WASM Target**: `wasm32-unknown-unknown`. The `kwaai-wasm` crate is scaffold; WebRTC support is planned
-- **P2P Networking**: `rust-libp2p`, in-process by default since v0.6.0. TCP transport, with QUIC behind `enable_quic` (off by default). WebRTC is planned, not built
+- **P2P Networking**: `rust-libp2p`, in-process by default since v0.6.0. TCP and QUIC transports, the latter switchable via `enable_quic` (on by default). WebRTC is planned, not built
 - **DHT**: Kademlia for peer discovery and expert registry
 - **Model Loading**: GGUF format with IPFS/HTTP fallback
 - **Memory Management**: Efficient model sharding for low-resource devices
