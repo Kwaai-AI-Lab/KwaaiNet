@@ -38,10 +38,10 @@
              add_provider_job,
              put_record_job,
              record_ttl: config.record_ttl,
-@@ -779,6 +796,16 @@
-     ///
-     /// Takes peers from local routing table only. Only returns number of peers equal to configured
-     /// replication factor.
+@@ -791,6 +808,16 @@
+             .map(KadPeer::from)
+     }
+ 
 +    /// KWAAI PATCH: remember `addrs` for `peer` so an inbound FIND_NODE for
 +    /// it is answered even when it holds no k-bucket slot. Empty removes.
 +    pub fn set_peerstore_addresses(&mut self, peer: PeerId, addrs: Vec<Multiaddr>) {
@@ -52,9 +52,9 @@
 +        }
 +    }
 +
-     pub fn find_closest_local_peers<'a, K: Clone>(
-         &'a mut self,
-         key: &'a kbucket::Key<K>,
+     /// Performs a lookup for a record in the DHT.
+     ///
+     /// The result of this operation is delivered in a
 @@ -2306,9 +2333,32 @@
              }
  

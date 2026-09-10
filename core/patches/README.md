@@ -27,10 +27,11 @@ output is gitignored, so `distrib/nix/crane.nix` materializes each patched crate
 the same pinned tarball and patch file. Adding a patched crate means adding it
 there too.
 
-## libp2p-kad (multi-protocol names)
+## libp2p-kad (multi-protocol names, peerstore FIND_NODE answers)
 
-`libp2p-kad 0.48.0` (from [rust-libp2p], MIT) with **one API restoration**,
-applied via `[patch.crates-io]` in `core/Cargo.toml`:
+`libp2p-kad 0.48.0` (from [rust-libp2p], MIT) with **two changes** — an API
+restoration and one behavioural change to the FIND_NODE handler — applied via
+`[patch.crates-io]` in `core/Cargo.toml`:
 
 Kad's negotiation machinery holds a `Vec<StreamProtocol>` and offers every
 entry on both inbound and outbound streams, but upstream removed the public
@@ -54,7 +55,23 @@ rollout order). The rename ends recruitment as a *DHT server* — the
 routing-table/OOM vector — but foreign peers still connect below kad, so
 connection tables fill regardless; that half belongs to KwaaiNet#174.
 
-The entire delta is `libp2p-kad.patch` (two added methods, two files).
+The entire delta is `libp2p-kad.patch` (two files): the two `set_protocol_names`
+setters above, and for the peerstore answer below a `Behaviour` field,
+`set_peerstore_addresses`, and the changed `FindNodeReq` handler.
+
+### FIND_NODE answers from a peerstore
+
+Upstream serves an inbound FIND_NODE from its k-buckets alone, so a peer
+that never got a bucket slot — every fleet peer, once the buckets filled
+with Amino entries — is unfindable while it sits connected to the node being
+asked. go-libp2p's `handleFindPeer` includes the target "if present in
+peerstore, even if it is self, the requester, or not a DHT server". The patch
+adds `Behaviour::set_peerstore_addresses` and prepends the target to the
+reply when the owner has vouched for it. kwaai-p2p feeds it only for peers
+that speak our kad, with the same address admission as the routing table
+(`is_announceable_with`, dialable shape, capped), plus a circuit through
+itself for peers holding a relay reservation here — tracked per connection,
+as libp2p-relay does. Regenerate with `diff -u` against the pristine crate.
 
 ### Upgrading / removing the kad patch
 
@@ -92,19 +109,6 @@ The entire delta is `multistream-select.patch` (~23 changed lines, one file).
   `[patch.crates-io]` entry.
 
 [rust-libp2p]: https://github.com/libp2p/rust-libp2p
-
-### libp2p-kad: FIND_NODE answers from a peerstore
-
-Upstream serves an inbound FIND_NODE from its k-buckets alone, so a peer
-that never got a bucket slot — every fleet peer, once the buckets filled
-with Amino entries — is unfindable while it sits connected to the node being
-asked. go-libp2p's `handleFindPeer` includes the target "if present in
-peerstore, even if it is self, the requester, or not a DHT server". The patch
-adds `Behaviour::set_peerstore_addresses` and prepends the target to the
-reply when the owner has vouched for it; kwaai-p2p feeds it each connected
-peer's identify addresses and a circuit through itself for peers holding a
-relay reservation here. Same `libp2p-kad.patch`, regenerated with
-`diff -u` against the pristine crate.
 
 ## cudarc (sync-allocation opt-out)
 
