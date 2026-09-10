@@ -68,6 +68,10 @@ const LAST_CONNECTED_CAP: usize = 1024;
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Upper bound on `pinned_addrs` peers. Explicit dials only, so a memory
+/// bound rather than a policy; oldest pin evicted, same shape as `last_connected`.
+const PINNED_PEERS_CAP: usize = 1024;
+
 /// Cap on routing-table addresses per peer.
 ///
 /// kad's own `Addresses` is an unbounded `SmallVec`: `insert` appends whatever
@@ -145,6 +149,13 @@ pub struct NetworkService {
     /// recently" is the signal that distinguishes the two. Recency cache, not
     /// a ledger — capped at [`LAST_CONNECTED_CAP`], oldest evicted.
     last_connected: HashMap<PeerId, Instant>,
+    /// Addresses we were *told* to dial — `dial()` and `AddKadAddress`, the
+    /// two uncapped seeds — stored bare, with when the peer was first pinned.
+    /// The routing table is the only other address book for dial-by-PeerId,
+    /// and the non-kad purge in `handle_identify_event` empties it for a
+    /// peer that speaks a foreign kad name. Consulted by
+    /// [`Self::candidate_addresses`] so such a peer stays reachable by id.
+    pinned_addrs: HashMap<PeerId, (Instant, Vec<Multiaddr>)>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
@@ -443,6 +454,7 @@ impl NetworkService {
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
             learned_addrs: LearnedAddrs::new(local_peer_id),
+            pinned_addrs: HashMap::new(),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
@@ -750,11 +762,13 @@ impl NetworkService {
                 // the operator naming an address, not a peer claiming one. A
                 // symmetric-NAT peer flooding identify must never be able to
                 // evict a bootstrap address someone configured by hand.
+                self.pin_address(peer, strip_dest_p2p(&addr));
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
                 let _ = reply.send(());
             }
 
             Command::RemoveKadPeer { peer, reply } => {
+                self.pinned_addrs.remove(&peer);
                 let existed = self.swarm.behaviour_mut().kad.remove_peer(&peer).is_some();
                 let _ = reply.send(existed);
             }
@@ -978,6 +992,7 @@ impl NetworkService {
                 // Uncapped for the same reason as `AddKadAddress`: an address
                 // we are actively dialing is our own intent, not a remote
                 // claim, and is the one entry least worth evicting.
+                self.pin_address(peer, stripped.clone());
                 self.swarm.behaviour_mut().kad.add_address(&peer, stripped);
             }
         }
@@ -1170,6 +1185,15 @@ impl NetworkService {
             }
         }
 
+        if let Some((_, pinned)) = self.pinned_addrs.get(peer) {
+            let fresh: Vec<Multiaddr> = pinned
+                .iter()
+                .filter(|a| !addrs.contains(a) && table_filter(a))
+                .cloned()
+                .collect();
+            addrs.extend(fresh);
+        }
+
         if let Some(conns) = self.connections.get(peer) {
             for conn in conns.values() {
                 if !addrs.contains(&conn.addr) {
@@ -1206,6 +1230,35 @@ impl NetworkService {
         addrs.retain(|a| seen.insert(a.clone()));
 
         addrs
+    }
+
+    /// Remember an address the operator supplied for `peer`; see `pinned_addrs`.
+    /// Bounded like the routing table: six per peer, oldest out.
+    fn pin_address(&mut self, peer: PeerId, addr: Multiaddr) {
+        if addr.is_empty() {
+            return;
+        }
+        if self.pinned_addrs.len() >= PINNED_PEERS_CAP && !self.pinned_addrs.contains_key(&peer) {
+            if let Some(oldest) = self
+                .pinned_addrs
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(p, _)| *p)
+            {
+                self.pinned_addrs.remove(&oldest);
+            }
+        }
+        let (_, addrs) = self
+            .pinned_addrs
+            .entry(peer)
+            .or_insert_with(|| (Instant::now(), Vec::new()));
+        if addrs.contains(&addr) {
+            return;
+        }
+        if addrs.len() >= MAX_ADDRESSES_PER_PEER {
+            addrs.remove(0);
+        }
+        addrs.push(addr);
     }
 
     /// Our own listen and confirmed-external addresses, snapshotted from the
@@ -2336,7 +2389,8 @@ impl NetworkService {
                 {
                     // Tabled by the V1Lazy false confirm (or `dial()`) before
                     // identify could say no; left in place it is served to every
-                    // FIND_NODE caller.
+                    // FIND_NODE caller. Table membership only: an address the
+                    // operator supplied survives in `pinned_addrs`.
                     debug!(peer = %peer_id, agent = %info.agent_version, "dropped non-kad peer from the routing table");
                 }
 

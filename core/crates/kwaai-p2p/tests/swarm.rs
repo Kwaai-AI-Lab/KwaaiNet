@@ -384,6 +384,52 @@ async fn a_foreign_kad_peer_served_by_a_neighbour_is_never_tabled() {
     );
 }
 
+/// The purge drops table membership, not the operator's address. `connect
+/// --addr` is the documented way to reach a legacy-only peer; if the purge
+/// discarded that address it would survive only as long as the live
+/// connection, and every later call by PeerId would fall to a DHT lookup
+/// that cannot find a peer nobody tables. Fails without `pinned_addrs`.
+#[tokio::test]
+async fn an_operator_supplied_address_outlives_the_purge() {
+    const PROTO: &str = "/kwaai/test/echo/1.0.0";
+    let (a, _a_task, a_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (b, _b_task, b_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+    b.add_unary_handler(PROTO, |data: Vec<u8>| async move { Ok(data) })
+        .await
+        .expect("B serves echo");
+
+    let b_addr = dialable_addr(&b, b_id).await;
+    a.connect_peer(&b_addr.to_string()).await.expect("A → B");
+    identified(&a, b_id).await;
+    assert!(
+        !a.routing_peers()
+            .await
+            .expect("routing peers")
+            .contains(&b_id),
+        "B must have been purged"
+    );
+
+    // Drop the connection so the only way back to B is an address book. B
+    // hangs up, not A: the re-dial reuses A's listen port as its source, and
+    // the closer's TIME_WAIT on that 4-tuple would refuse it (EADDRINUSE).
+    b.disconnect_peer(a_id).await.expect("disconnect");
+    eventually("B to leave A's peer list", || async {
+        a.list_peers()
+            .await
+            .ok()?
+            .iter()
+            .all(|p| p.peer_id != b_id)
+            .then_some(())
+    })
+    .await;
+
+    let reply = tokio::time::timeout(SETTLE_TIMEOUT, a.call_unary_handler(b_id, PROTO, b"ping"))
+        .await
+        .expect("routed call to settle")
+        .expect("B reachable by PeerId from the address the operator gave");
+    assert_eq!(reply, b"ping");
+}
+
 // ---------------------------------------------------------------------------
 // Handle semantics
 // ---------------------------------------------------------------------------
