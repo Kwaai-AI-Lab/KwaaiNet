@@ -107,4 +107,9 @@ to load with `CUDA_ERROR_OUT_OF_MEMORY`. With the variable set, allocation is
 synchronous and the shard loads. Unset, the build is byte-for-byte upstream
 behaviour on every platform. Only pulled in by the CUDA features.
 
+`kwaai-inference` sets the variable itself on a Jetson (Linux aarch64 with
+`/etc/nv_tegra_release`) when it is unset, so a service-managed Orin needs no
+unit-file edit. CI checks that the patch is still what cargo resolves, so a
+candle bump past cudarc 0.19 fails there instead of silently dropping it.
+
 [cudarc]: https://github.com/coreylowman/cudarc

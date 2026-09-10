@@ -1,7 +1,7 @@
 # Serving on a Jetson Orin
 
 Measured 2026-09-08 on a Jetson Orin Nano (8 GB variant, 7 GB usable, L4T
-r36.5 / JetPack 6, CUDA 12.6), serving blocks 0–8 of Llama-3.1-8B-Instruct
+r36.5 / JetPack 6, CUDA 12.6), serving blocks 0–7 of Llama-3.1-8B-Instruct
 in f16 inside a three-node chain.
 
 ## Build
@@ -9,7 +9,7 @@ in f16 inside a three-node chain.
 ```bash
 cd core
 export PATH=/usr/local/cuda/bin:$HOME/.cargo/bin:$PATH   # nvcc is not on PATH for non-interactive shells
-core/patches/fetch-patches.sh                            # once; fetches the patched crates, cudarc included
+bash patches/fetch-patches.sh                            # once; fetches the patched crates, cudarc included
 CUDA_COMPUTE_CAP=87 cargo build --release -p kwaainet --bin kwaainet --features cuda-no-flash -j 4
 ```
 
@@ -21,12 +21,14 @@ CUDA_COMPUTE_CAP=87 cargo build --release -p kwaainet --bin kwaainet --features 
 ## Run
 
 ```bash
-CUDARC_DISABLE_ASYNC_ALLOC=1 kwaainet shard serve --use-gpu --start-block 0 --blocks 8 --model-path <snapshot>
+kwaainet shard serve --use-gpu --start-block 0 --blocks 8 --model-path <snapshot>
 ```
 
-- The variable is required: without it the stream-ordered allocator caps at
-  ~2.5 GB on this board and the load dies at block 3 (see
-  `core/patches/README.md`).
+- On a Jetson (Linux aarch64 with `/etc/nv_tegra_release`) the binary sets
+  `CUDARC_DISABLE_ASYNC_ALLOC=1` itself before the first CUDA call and logs
+  one INFO line saying so; a value already in the environment is left alone.
+  Without it the stream-ordered allocator caps at ~2.5 GB on this board and
+  the load dies at block 3 (see `core/patches/README.md`).
 - The first request after a fresh binary spends 15–40 s JIT-compiling PTX
   into `~/.nv/ComputeCache`; later requests are normal. A client with a 30 s
   call timeout may fail that first request.
