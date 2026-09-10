@@ -242,12 +242,14 @@ async fn run_inference(
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
+    let mut unreached = crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain).await;
 
     // Pin peer path for this request so KV-caches stay coherent.
-    let mut pinned_path = match crate::shard_cmd::build_pinned_path(
+    let mut pinned_path = match crate::shard_cmd::build_pinned_path_ranked(
         &state.chain,
         state.total_blocks,
         &failed_peers,
+        &unreached,
     ) {
         Ok(p) => p,
         Err(e) => {
@@ -275,6 +277,7 @@ async fn run_inference(
             request,
             Some(&state.our_peer_id),
             &mut failed_peers,
+            &unreached,
             None,
             None,
         )
@@ -283,10 +286,13 @@ async fn run_inference(
             Ok(r) => r,
             Err(e) => {
                 // Try rebuilding path excluding failed peer
-                match crate::shard_cmd::build_pinned_path(
+                unreached =
+                    crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain).await;
+                match crate::shard_cmd::build_pinned_path_ranked(
                     &state.chain,
                     state.total_blocks,
                     &failed_peers,
+                    &unreached,
                 ) {
                     Ok(new_path) => {
                         pinned_path = new_path;
@@ -308,6 +314,7 @@ async fn run_inference(
                             retry,
                             Some(&state.our_peer_id),
                             &mut failed_peers,
+                            &unreached,
                             None,
                             None,
                         )
@@ -674,12 +681,15 @@ fn detect_gguf_path(
         }
     }
 
-    // For auto-detection, require all blocks to be hosted by our peer
+    // For auto-detection, require our own entries alone to cover every block.
+    let ours: Vec<BlockServerEntry> = chain
+        .iter()
+        .filter(|e| e.peer_id == *our_peer_id)
+        .cloned()
+        .collect();
+    let none = std::collections::HashSet::new();
     let covers_all =
-        crate::shard_cmd::build_pinned_path(chain, total_blocks, &std::collections::HashSet::new())
-            .ok()
-            .map(|path| path.iter().all(|e| e.peer_id == *our_peer_id))
-            .unwrap_or(false);
+        crate::shard_cmd::build_pinned_path_ranked(&ours, total_blocks, &none, &none).is_ok();
 
     if !covers_all {
         return None;
