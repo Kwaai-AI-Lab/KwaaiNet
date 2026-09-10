@@ -537,7 +537,7 @@ impl NetworkService {
             relays: RelayManager::new(
                 &config.trusted_relays,
                 config.max_relay_reservations,
-                config.require_global_ips,
+                policy,
             )
             .with_initial_peers(&config.effective_initial_peers()),
             announce_tx,

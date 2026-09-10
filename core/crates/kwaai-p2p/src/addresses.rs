@@ -28,8 +28,8 @@
 //!
 //! rust-libp2p 0.53 does its own filtering in exactly one place that matters:
 //! `autonat::Config::only_global_ips`, whose `is_benchmarking` check rejects
-//! RFC2544. It is driven from the same key, so the swarm and the classifier
-//! cannot disagree; kad, identify, dcutr and the swarm itself do no
+//! RFC2544. It is driven from the same key, so neither can be tightened
+//! without the other; kad, identify, dcutr and the swarm itself do no
 //! address-class filtering whatsoever.
 
 use std::collections::HashSet;
@@ -248,8 +248,26 @@ impl AddrPolicy {
         self.ipv6 || !has_ip6(addr)
     }
 
-    /// Whether a peer at `addr` can serve as *our* relay; see
-    /// [`is_relay_candidate_addr`].
+    /// Whether a peer reachable at `addr` can serve as *our* relay.
+    ///
+    /// Deliberately **not** [`Self::announceable`], which answers a different
+    /// question. That one says "is this address worth telling the world about"
+    /// and returns true for any circuit address unconditionally (rule 1 in the
+    /// module docs) — correct for advertising our own reserved address, wrong
+    /// for picking a relay.
+    ///
+    /// A relay has to be **directly dialable, by us**. A peer that is itself
+    /// only reachable through someone else's circuit cannot host our
+    /// reservation: asking for one builds `<their-circuit>/p2p/<them>/p2p-circuit`,
+    /// a doubly-nested address that `Swarm::listen_on` rejects outright. And a
+    /// v6 address on a v4-only host is just as undialable: pinning it means
+    /// every reservation attempt fails, forever, on backoff.
+    ///
+    /// Observed on metro-win 2026-08-11: its one good reservation lapsed, the
+    /// relay manager rotated onto identify-discovered candidates that were
+    /// themselves relay-only, and it never obtained another circuit — 2350
+    /// `listen_on refused` failures across ~12 candidates, while the node still
+    /// reported healthy because DHT re-announce kept succeeding.
     pub fn relay_candidate(&self, addr: &Multiaddr) -> bool {
         self.announceable(addr) && !is_circuit(addr)
     }
@@ -310,28 +328,6 @@ pub fn uses_dialable_transport(addr: &Multiaddr, quic: bool) -> bool {
                 | Protocol::Certhash(_)
         ) || (!quic && matches!(p, Protocol::Quic | Protocol::QuicV1))
     })
-}
-
-/// Whether a peer reachable at `addr` can serve as *our* relay.
-///
-/// Deliberately **not** [`is_announceable`], which answers a different question.
-/// That one says "is this address worth telling the world about" and returns
-/// true for any circuit address unconditionally (rule 1 in the module docs) —
-/// correct for advertising our own reserved address, wrong for picking a relay.
-///
-/// A relay has to be **directly dialable**. A peer that is itself only reachable
-/// through someone else's circuit cannot host our reservation: asking for one
-/// builds `<their-circuit>/p2p/<them>/p2p-circuit`, a doubly-nested address that
-/// `Swarm::listen_on` rejects outright. Every reservation attempt against such a
-/// candidate fails, forever, on backoff.
-///
-/// Observed on metro-win 2026-08-11: its one good reservation lapsed, the relay
-/// manager rotated onto identify-discovered candidates that were themselves
-/// relay-only, and it never obtained another circuit — 2350 `listen_on refused`
-/// failures across ~12 candidates, while the node still reported healthy because
-/// DHT re-announce kept succeeding.
-pub fn is_relay_candidate_addr(addr: &Multiaddr, strict: bool) -> bool {
-    is_announceable_with(addr, strict) && !is_circuit(addr)
 }
 
 /// Drop a trailing `/p2p/<peer-id>` component.
@@ -425,8 +421,8 @@ pub fn circuit_listen_addr(relay_addr: &Multiaddr, relay: PeerId) -> Option<Mult
     // appending to its circuit address silently produces
     // `<their-circuit>/p2p/<them>/p2p-circuit` — nested, undialable, and
     // rejected by `listen_on` on every retry. Refuse to build it at all;
-    // `is_relay_candidate_addr` should have filtered this out upstream, and a
-    // `None` here means it did not.
+    // `AddrPolicy::relay_candidate` should have filtered this out upstream,
+    // and a `None` here means it did not.
     if is_circuit(relay_addr) {
         return None;
     }
@@ -823,16 +819,39 @@ mod tests {
             "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
         ));
         assert!(is_announceable(&circuit), "still announceable as our own");
+        let lenient = AddrPolicy {
+            strict: false,
+            ipv6: true,
+        };
         assert!(
-            !is_relay_candidate_addr(&circuit, false),
+            !lenient.relay_candidate(&circuit),
             "but useless as a relay we reserve on"
         );
         let direct = ma("/ip4/198.51.100.7/tcp/8080");
-        assert!(is_relay_candidate_addr(&direct, false));
+        assert!(lenient.relay_candidate(&direct));
         assert!(
-            !is_relay_candidate_addr(&ma("/ip4/192.168.1.7/tcp/8080"), false),
+            !lenient.relay_candidate(&ma("/ip4/192.168.1.7/tcp/8080")),
             "LAN-only relays are still rejected"
         );
+    }
+
+    #[test]
+    fn a_v4_only_host_never_picks_a_v6_relay_address() {
+        // The relay is fine; *we* cannot dial v6. Pinning its v6 address would
+        // fail every reservation attempt, forever, on backoff.
+        let v6 = ma("/ip6/2606:4700::1/tcp/8080");
+        let v4 = ma("/ip4/1.1.1.1/tcp/8080");
+        let v4_only = AddrPolicy {
+            strict: true,
+            ipv6: false,
+        };
+        assert!(!v4_only.relay_candidate(&v6));
+        assert!(v4_only.relay_candidate(&v4));
+        let dual = AddrPolicy {
+            strict: true,
+            ipv6: true,
+        };
+        assert!(dual.relay_candidate(&v6));
     }
 
     #[test]
