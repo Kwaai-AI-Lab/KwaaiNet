@@ -529,8 +529,11 @@ jobs:
           bash distrib/packaging/stage-payload.sh "$ARCHIVE" payload/
       - name: Build .deb
         run: |
+          # GITHUB_REF_NAME is version.sh's primary source; the container has
+          # no git, so without it every .deb would silently fall back to
+          # core/Cargo.toml and a tag/workspace mismatch would go unnoticed.
           docker run --rm --platform ${{ matrix.platform }} \
-            -v "$PWD:/src:ro" -v "$PWD/packages:/out" \
+            -e GITHUB_REF_NAME -v "$PWD:/src:ro" -v "$PWD/packages:/out" \
             debian:bookworm bash -c '
               set -e
               apt-get update -qq >/dev/null

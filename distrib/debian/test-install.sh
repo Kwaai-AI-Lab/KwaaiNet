@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # Install/verify/remove smoke test for the kwaainet .deb. Runs INSIDE a
 # Debian-family container.
-# Usage: test-install.sh <path-to.deb> [--expect-update-gate]
+# Usage: test-install.sh [--expect-update-gate] <path-to.deb>
 set -euo pipefail
 
-DEB="${1:?usage: test-install.sh <kwaainet_*.deb> [--expect-update-gate]}"
-[ -f "${DEB}" ] || { echo "test-install: no such file: ${DEB}" >&2; exit 1; }
+usage="usage: test-install.sh [--expect-update-gate] <kwaainet_*.deb>"
+DEB=""
 EXPECT_UPDATE_GATE=0
-if [ "${2:-}" = "--expect-update-gate" ]; then EXPECT_UPDATE_GATE=1; fi
+# Flags anywhere, and exactly one .deb: CI passes an unexpanded glob, so a
+# second match must fail loudly rather than push the flag into $3.
+for arg in "$@"; do
+    case "${arg}" in
+        --expect-update-gate) EXPECT_UPDATE_GATE=1 ;;
+        --*) echo "test-install: unknown flag ${arg}" >&2; echo "${usage}" >&2; exit 1 ;;
+        *)
+            [ -z "${DEB}" ] || { echo "test-install: more than one .deb given: ${DEB} ${arg}" >&2; exit 1; }
+            DEB="${arg}"
+            ;;
+    esac
+done
+[ -n "${DEB}" ] || { echo "${usage}" >&2; exit 1; }
+[ -f "${DEB}" ] || { echo "test-install: no such file: ${DEB}" >&2; exit 1; }
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "ok: $*"; }
@@ -23,7 +36,7 @@ echo "identity-key-stand-in" > "${HOME}/.kwaainet/identity.key"
 command -v kwaainet >/dev/null || fail "kwaainet not on PATH"
 ok "kwaainet on PATH at $(command -v kwaainet)"
 
-# p2pd is being removed upstream; the package must never resurrect it.
+# The Go p2pd daemon is gone upstream; the package must never resurrect it.
 if p2pd_path="$(dpkg -L kwaainet | grep -E '/p2pd$')"; then
     fail "package ships p2pd: ${p2pd_path}"
 fi
@@ -68,20 +81,44 @@ else
     ok "doc files present"
 fi
 
+# dpkg-deb writes no md5sums itself; without them `dpkg -V` verifies nothing.
+grep -q ' usr/bin/kwaainet$' /var/lib/dpkg/info/kwaainet.md5sums 2>/dev/null \
+    || fail "package ships no md5sums entry for usr/bin/kwaainet"
+dpkg -V kwaainet || fail "dpkg -V kwaainet failed on a fresh install"
+ok "md5sums shipped and dpkg -V passes"
+
 # The marker is a filesystem contract between these scripts and
 # updater::packaged_install(). If either side moves, a packaged install
 # silently starts self-updating again — so assert the behaviour, not the file.
 if [ "${EXPECT_UPDATE_GATE}" = 1 ]; then
-    OUT="$(kwaainet update 2>&1)" || fail "kwaainet update exited non-zero"
-    grep -q 'apt install --only-upgrade kwaainet' <<<"${OUT}" \
-        || fail "kwaainet update did not defer to apt; got: ${OUT}"
-    ok "kwaainet update defers to apt"
+    BEFORE="$(md5sum < /usr/bin/kwaainet)"
+    for flags in "--check" ""; do
+        # shellcheck disable=SC2086
+        OUT="$(kwaainet update ${flags} 2>&1)" || fail "kwaainet update ${flags} exited non-zero: ${OUT}"
+        grep -q 'Installing v' <<<"${OUT}" && fail "kwaainet update ${flags} tried to self-install: ${OUT}"
+        # Only reachable when GitHub knows a newer release than this payload.
+        if grep -q 'New version available' <<<"${OUT}"; then
+            grep -q 'sudo dpkg -i kwaainet_' <<<"${OUT}" \
+                || fail "kwaainet update ${flags} did not print the dpkg command; got: ${OUT}"
+            ok "kwaainet update ${flags} points at dpkg"
+        else
+            ok "kwaainet update ${flags} ran (no newer release to gate)"
+        fi
+    done
+    [ "$(md5sum < /usr/bin/kwaainet)" = "${BEFORE}" ] || fail "kwaainet update replaced /usr/bin/kwaainet"
+    [ ! -e "${HOME}/.cargo/bin/kwaainet" ] || fail "kwaainet update installed into ~/.cargo/bin"
+    ok "kwaainet update left the packaged binary alone"
     grep -q 'apt remove kwaainet' <<<"$(yes n | kwaainet uninstall 2>&1 || true)" \
         || fail "kwaainet uninstall did not defer to apt"
     ok "kwaainet uninstall defers to apt"
 else
     ok "update-gate assertions skipped (--expect-update-gate not given)"
 fi
+
+# Tamper last, so nothing above ran against a corrupted binary.
+echo tamper >> /usr/bin/kwaainet
+if dpkg -V kwaainet 2>/dev/null; then fail "dpkg -V did not notice a tampered /usr/bin/kwaainet"; fi
+ok "dpkg -V catches a tampered binary"
 
 apt-get remove -y -qq kwaainet >/dev/null
 [ ! -e /usr/bin/kwaainet ] || fail "/usr/bin/kwaainet survived remove"

@@ -19,11 +19,18 @@ if [ -z "${UPSTREAM_VERSION}" ]; then
     esac
 fi
 
+WORKSPACE_VERSION="$(
+    awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[" ]/,"");sub(/^version=/,"");print;exit}' \
+        "${REPO_ROOT}/core/Cargo.toml"
+)"
+
 if [ -z "${UPSTREAM_VERSION}" ]; then
-    UPSTREAM_VERSION="$(
-        awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[" ]/,"");sub(/^version=/,"");print;exit}' \
-            "${REPO_ROOT}/core/Cargo.toml"
-    )"
+    UPSTREAM_VERSION="${WORKSPACE_VERSION}"
+elif [ -z "${KWAAINET_VERSION:-}" ] && [ "${UPSTREAM_VERSION}" != "${WORKSPACE_VERSION}" ]; then
+    # A tag that disagrees with the workspace would attach a mis-versioned
+    # .deb to the release; cargo-dist refuses the same mismatch for tarballs.
+    echo "version.sh: tag ${TAG} says ${UPSTREAM_VERSION} but core/Cargo.toml says ${WORKSPACE_VERSION}" >&2
+    exit 1
 fi
 
 [ -n "${UPSTREAM_VERSION}" ] || { echo "version.sh: could not determine version" >&2; exit 1; }
