@@ -1237,6 +1237,12 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let our_peer_id =
         PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
 
+    let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
+        NetworkConfig::with_petals_bootstrap().bootstrap_peers
+    } else {
+        cfg.initial_peers.clone()
+    };
+
     // ── Resolve chain: from circuit or fresh DHT discovery ─────────────────
     let (chain, using_circuit) = if let Some(ref circuit_id) = args.circuit {
         // Load pre-formed circuit — skip DHT discovery
@@ -1250,19 +1256,23 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         }
         let _ = save_circuits(&all);
 
-        let entries: Vec<BlockServerEntry> =
+        let mut entries: Vec<BlockServerEntry> =
             circuit.chain.iter().filter_map(|e| e.to_entry()).collect();
+        refresh_circuit_addrs(
+            &mut entries,
+            &mut client,
+            &our_peer_id,
+            &dht_prefix,
+            total_blocks,
+            &bootstrap_peers,
+        )
+        .await;
         println!("  Circuit:      {}", circuit.id);
         println!("  Nodes:        {} (from circuit)", entries.len());
         (entries, true)
     } else {
         // Fresh DHT discovery
         print!("  Discovering block circuit from DHT…");
-        let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
-            NetworkConfig::with_petals_bootstrap().bootstrap_peers
-        } else {
-            cfg.initial_peers.clone()
-        };
 
         let chain = discover_chain(
             &mut client,
@@ -1794,6 +1804,12 @@ async fn run_streaming_inner(
     let our_peer_id =
         PeerId::from_bytes(&hex::decode(&peer_id_hex)?).context("parse our peer ID")?;
 
+    let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
+        NetworkConfig::with_petals_bootstrap().bootstrap_peers
+    } else {
+        cfg.initial_peers.clone()
+    };
+
     // ── Resolve chain (circuit or fresh DHT discovery + 30 s wait) ──
     let chain: Vec<BlockServerEntry> = if let Some(ref cid) = opts.circuit_id {
         let mut circuit = load_circuit_by_id(cid)?;
@@ -1803,14 +1819,19 @@ async fn run_streaming_inner(
             c.last_used_epoch = circuit.last_used_epoch;
         }
         let _ = save_circuits(&all);
-        circuit.chain.iter().filter_map(|e| e.to_entry()).collect()
+        let mut entries: Vec<BlockServerEntry> =
+            circuit.chain.iter().filter_map(|e| e.to_entry()).collect();
+        refresh_circuit_addrs(
+            &mut entries,
+            &mut client,
+            &our_peer_id,
+            &dht_prefix,
+            total_blocks,
+            &bootstrap_peers,
+        )
+        .await;
+        entries
     } else {
-        let bootstrap_peers: Vec<String> = if cfg.initial_peers.is_empty() {
-            NetworkConfig::with_petals_bootstrap().bootstrap_peers
-        } else {
-            cfg.initial_peers.clone()
-        };
-
         // Poll DHT up to 30 s for peers serving this model.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut chain = discover_chain(
@@ -2838,6 +2859,10 @@ pub struct SerializableEntry {
     pub start_block: usize,
     pub end_block: usize,
     pub public_name: String,
+    /// The peer's dial addresses as discovered when the circuit was made.
+    /// Absent from files written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dial_addrs: Vec<String>,
 }
 
 impl SerializableEntry {
@@ -2847,6 +2872,7 @@ impl SerializableEntry {
             start_block: e.start_block,
             end_block: e.end_block,
             public_name: e.public_name.clone(),
+            dial_addrs: e.dial_addrs.iter().map(|a| a.to_string()).collect(),
         }
     }
 
@@ -2863,11 +2889,46 @@ impl SerializableEntry {
             // Capacity Lease — conservatively unknown/false, same as any
             // other legacy-shaped record with the key absent.
             lease_v1: false,
-            // Likewise no addresses: a saved circuit is a list of peers, and
-            // where they were reachable months ago is not worth replaying.
-            // Rediscovery refills these from the live record.
-            dial_addrs: Vec::new(),
+            dial_addrs: self
+                .dial_addrs
+                .iter()
+                .filter_map(|a| a.parse().ok())
+                .collect(),
         })
+    }
+}
+
+/// A circuit loaded without addresses — saved before they were persisted,
+/// or made when its peers announced none — would pre-connect by bare
+/// PeerId, which is the failure circuits exist to skip. One DHT read fills
+/// in what the live records say; a peer not found keeps its empty list.
+pub async fn refresh_circuit_addrs(
+    entries: &mut [BlockServerEntry],
+    client: &mut P2PClient,
+    our_peer_id: &PeerId,
+    dht_prefix: &str,
+    total_blocks: usize,
+    bootstrap_peers: &[String],
+) {
+    if entries.iter().all(|e| !e.dial_addrs.is_empty()) {
+        return;
+    }
+    let live = discover_chain(
+        client,
+        our_peer_id,
+        dht_prefix,
+        total_blocks,
+        bootstrap_peers,
+    )
+    .await;
+    fill_missing_addrs(entries, &live);
+}
+
+fn fill_missing_addrs(entries: &mut [BlockServerEntry], live: &[BlockServerEntry]) {
+    for entry in entries.iter_mut().filter(|e| e.dial_addrs.is_empty()) {
+        if let Some(found) = live.iter().find(|l| l.peer_id == entry.peer_id) {
+            entry.dial_addrs = found.dial_addrs.clone();
+        }
     }
 }
 
@@ -3924,6 +3985,76 @@ mod tests {
             entry.dial_addrs,
             vec!["/ip4/203.0.113.7/tcp/4001".parse::<Multiaddr>().unwrap()]
         );
+    }
+
+    fn entry_with(peer_id: PeerId, addrs: &[&str]) -> BlockServerEntry {
+        BlockServerEntry {
+            peer_id,
+            start_block: 0,
+            end_block: 8,
+            public_name: "test-node".into(),
+            throughput: 0.0,
+            trust_score: None,
+            lease_v1: false,
+            dial_addrs: addrs.iter().map(|a| a.parse().unwrap()).collect(),
+        }
+    }
+
+    /// A saved circuit carries its peers' addresses through the file, so
+    /// loading one does not fall back to a bare-PeerId dial.
+    #[test]
+    fn serializable_entry_round_trips_dial_addrs() {
+        let peer = PeerId::random();
+        let circuit = "/ip4/198.51.100.1/tcp/4001/p2p/12D3KooWF7ckKo2HQojbtueQNuLYRT2XC2yzbvBbh4NK2rbi2Azg/p2p-circuit";
+        let saved = SerializableEntry::from_entry(&entry_with(peer, &[circuit]));
+        let json = serde_json::to_string(&saved).expect("serialises");
+        let loaded: SerializableEntry = serde_json::from_str(&json).expect("parses");
+        let entry = loaded.to_entry().expect("a valid entry");
+        assert_eq!(entry.peer_id, peer);
+        assert_eq!(
+            entry.dial_addrs,
+            vec![circuit.parse::<Multiaddr>().unwrap()]
+        );
+    }
+
+    /// A file written before the field existed still loads, with no addresses.
+    #[test]
+    fn serializable_entry_loads_a_file_without_dial_addrs() {
+        let peer = PeerId::random();
+        let json = format!(
+            r#"{{"peer_id_b58":"{}","start_block":0,"end_block":8,"public_name":"old"}}"#,
+            peer.to_base58()
+        );
+        let loaded: SerializableEntry = serde_json::from_str(&json).expect("parses");
+        let entry = loaded.to_entry().expect("a valid entry");
+        assert_eq!(entry.peer_id, peer);
+        assert!(entry.dial_addrs.is_empty());
+    }
+
+    /// The DHT fills only the entries that arrived empty; a peer the read
+    /// did not find keeps its empty list rather than blocking the circuit.
+    #[test]
+    fn fill_missing_addrs_touches_only_the_empty_entries() {
+        let (a, b, c) = (PeerId::random(), PeerId::random(), PeerId::random());
+        let mut entries = vec![
+            entry_with(a, &["/ip4/198.51.100.1/tcp/4001"]),
+            entry_with(b, &[]),
+            entry_with(c, &[]),
+        ];
+        let live = vec![
+            entry_with(a, &["/ip4/198.51.100.9/tcp/4001"]),
+            entry_with(b, &["/ip4/198.51.100.2/tcp/4001"]),
+        ];
+        fill_missing_addrs(&mut entries, &live);
+        assert_eq!(
+            entries[0].dial_addrs,
+            vec!["/ip4/198.51.100.1/tcp/4001".parse::<Multiaddr>().unwrap()]
+        );
+        assert_eq!(
+            entries[1].dial_addrs,
+            vec!["/ip4/198.51.100.2/tcp/4001".parse::<Multiaddr>().unwrap()]
+        );
+        assert!(entries[2].dial_addrs.is_empty());
     }
 
     /// Every bootstrap and block key hands back its own copy of a peer's
