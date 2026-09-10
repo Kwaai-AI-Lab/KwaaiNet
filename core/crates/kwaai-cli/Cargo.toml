@@ -83,7 +83,9 @@ axum = { version = "0.7", features = ["json", "multipart"] }
 candle-core = { workspace = true }
 
 # KwaaiNet crates
-kwaai-p2p = { workspace = true }
+# No default features from either (set at the workspace level): our own `ipv6`
+# feature is the only thing that turns kwaai-p2p's on.
+kwaai-p2p = { workspace = true, features = ["tcp"] }
 kwaai-hivemind-dht = { workspace = true }
 kwaai-p2p-daemon = { workspace = true }
 kwaai-inference = { workspace = true }
@@ -136,7 +138,7 @@ mlx = ["kwaai-inference/mlx"]
 storage = ["kwaai-storage", "uuid"]
 # Listen on and dial IPv6. On by default; off makes the `ipv6` config key read
 # as `false` whatever it says.
-ipv6 = ["kwaai-p2p/ipv6"]
+ipv6 = ["kwaai-p2p/ipv6", "kwaai-p2p-daemon/ipv6"]
 rag = ["kwaai-rag", "uuid"]
 # Bootstrap-grade build: also serve the legacy /ipfs/kad/1.0.0 so peers that
 # predate /kwaai/kad/1.0.0 are not cut off during the migration. Needs the

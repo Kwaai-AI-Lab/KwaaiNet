@@ -203,9 +203,12 @@ jobs:
         working-directory: core
         run: cargo test -p kwaai-p2p --no-default-features --features tcp
 
-      - name: Build kwaainet without ipv6
+      # A test, not a build: the build passes whatever the feature resolves to.
+      # The test asserts `IPV6_BUILD` is actually false, which fails if any
+      # dependency turns kwaai-p2p's default features back on.
+      - name: Test kwaainet without ipv6
         working-directory: core
-        run: cargo build -p kwaainet --no-default-features --features storage,rag
+        run: cargo test -p kwaainet --no-default-features --features storage,rag --bin kwaainet -- ipv6
 
       # Same trap for cudarc, which no CI job compiles (CUDA is release-only):
       # `[patch.crates-io]` only applies when the patched version satisfies

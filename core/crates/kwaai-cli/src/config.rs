@@ -1601,6 +1601,21 @@ mod tests {
         );
     }
 
+    /// The `ipv6` cargo feature has to be able to turn IPv6 *off*: a kwaainet
+    /// built without it must not get it back through a dependency's default
+    /// features. CI runs this with `--no-default-features`.
+    #[test]
+    fn the_ipv6_feature_reaches_kwaai_p2p() {
+        use kwaai_p2p::Ipv6Mode;
+        assert_eq!(kwaai_p2p::IPV6_BUILD, cfg!(feature = "ipv6"));
+        let want = if cfg!(feature = "ipv6") {
+            Ipv6Mode::Auto
+        } else {
+            Ipv6Mode::Off
+        };
+        assert_eq!(KwaaiNetConfig::default().ipv6(), want);
+    }
+
     /// The key is three-valued and written the way an operator writes it, so
     /// both the string and the boolean forms have to survive `config set` and
     /// a YAML round-trip.
