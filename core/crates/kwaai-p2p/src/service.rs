@@ -1202,6 +1202,8 @@ impl NetworkService {
         let local = *self.swarm.local_peer_id();
         match request {
             RoutedRequest::Connect { reply } => {
+                // Nothing is recorded in `connections`: self is deliberately
+                // not a peer in `list_peers`, there is no connection to close.
                 let _ = reply.send(Ok(local));
             }
             RoutedRequest::Unary { proto, data, reply } => {
@@ -1219,13 +1221,17 @@ impl NetworkService {
                         responder,
                     },
                 );
+                // Same budget as a remote call: callers rely on the handle
+                // to bound every request and carry no timeout of their own.
+                let timeout = self.swarm.behaviour().unary.request_timeout();
                 tokio::spawn(async move {
-                    let outcome = match result.await {
-                        Ok(Ok(data)) => Ok(data),
-                        Ok(Err(e)) => Err(unary::UnaryError::Remote(e)),
-                        Err(_) => Err(unary::UnaryError::Wire(
+                    let outcome = match tokio::time::timeout(timeout, result).await {
+                        Ok(Ok(Ok(data))) => Ok(data),
+                        Ok(Ok(Err(e))) => Err(unary::UnaryError::Remote(e)),
+                        Ok(Err(_)) => Err(unary::UnaryError::Wire(
                             "local handler dropped the call".to_string(),
                         )),
+                        Err(_) => Err(unary::UnaryError::Timeout),
                     };
                     let _ = reply.send(outcome);
                 });

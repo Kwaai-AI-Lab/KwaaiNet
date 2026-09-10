@@ -882,6 +882,38 @@ async fn a_unary_call_to_self_without_a_handler_is_a_protocol_refusal() {
     );
 }
 
+/// The loopback path is bounded by the same `request_timeout` as a remote
+/// call. Callers rely on the handle for that and carry no timeout of their
+/// own, so a hung local handler must surface as `Timeout`, not hang forever.
+#[tokio::test]
+async fn a_unary_call_to_self_times_out_like_a_remote_call() {
+    let keypair = Keypair::generate_ed25519();
+    let node_id = keypair.public().to_peer_id();
+    let config = NetworkConfig {
+        request_timeout: Duration::from_millis(200),
+        ..NetworkConfig::for_tests()
+    };
+    let (node, _task) = NetworkService::spawn(config, keypair).expect("service should start");
+
+    node.add_unary_handler(PROTO, |_data: Vec<u8>| async move {
+        std::future::pending::<()>().await;
+        Ok(Vec::new())
+    })
+    .await
+    .expect("register handler");
+
+    let err = within(
+        "the hung loopback call",
+        node.call_unary_handler(node_id, PROTO, b"hello"),
+    )
+    .await
+    .expect_err("a hung local handler must time out");
+    assert!(
+        matches!(err, P2PError::Timeout(_)),
+        "expected a timeout, got {err:?}"
+    );
+}
+
 /// Connecting to self succeeds: a chain builder that pre-dials every server,
 /// itself included, must not be told its own node is unreachable.
 #[tokio::test]
