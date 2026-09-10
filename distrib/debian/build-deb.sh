@@ -100,6 +100,14 @@ sed -e "s|@VERSION@|${DEB_VERSION}|g" \
     "${HERE}/control.in" > "${STAGE}/DEBIAN/control"
 chmod 0644 "${STAGE}/DEBIAN/control"
 
+# dpkg-deb does not write md5sums (dh_md5sums does); without it `dpkg -V`
+# and debsums verify nothing. Last, so every payload file is listed.
+( cd "${STAGE}" \
+    && find . -type f ! -path './DEBIAN/*' -printf '%P\0' | LC_ALL=C sort -z \
+    | xargs -0 md5sum > DEBIAN/md5sums )
+chmod 0644 "${STAGE}/DEBIAN/md5sums"
+[ -s "${STAGE}/DEBIAN/md5sums" ] || { echo "build-deb: md5sums is empty" >&2; exit 1; }
+
 mkdir -p "${OUTDIR}"
 DEB="${OUTDIR}/kwaainet_${DEB_VERSION}_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "${STAGE}" "${DEB}"
@@ -108,7 +116,9 @@ dpkg-deb --build --root-owner-group "${STAGE}" "${DEB}"
 
 if [ "${RUN_LINTIAN}" = "1" ]; then
     echo "build-deb: lintian ---------------------------------------------"
-    lintian --no-tag-display-limit "${DEB}" || true
+    # Errors fail the build; warnings and info still print. README.md lists
+    # the overrides and why each is expected.
+    lintian --no-tag-display-limit --fail-on error "${DEB}"
 fi
 
 echo "build-deb: built ${DEB}"
