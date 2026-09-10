@@ -576,8 +576,8 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     print_info("Loading model in background. Requests return 'warming up' until ready.");
     print_separator();
 
-    // Start local TCP bypass server so `shard run` on the same machine can
-    // call us without triggering libp2p's "dial to self" rejection.
+    // Local TCP bypass server for `shard local`, which runs without a daemon
+    // and reuses this loaded model. `shard run` reaches us through the daemon.
     let _ = std::fs::create_dir_all(crate::config::run_dir());
     match start_local_inference_server(shard_cell.clone(), device.clone()).await {
         Ok(port) => {
@@ -1755,8 +1755,8 @@ pub enum ShardRunEvent {
 ///   peer errors) are unchanged — they're acceptable in the daemon context
 ///   today and out of scope for this refactor.
 /// - The local node is honoured as a hop when it appears in the discovered
-///   chain — `forward_through_chain` already calls into the local TCP bypass
-///   server for `our_peer_id`, just like the CLI path.
+///   chain — `forward_through_chain` calls it through the daemon like any
+///   other peer, just like the CLI path.
 /// - On an empty chain (no peers serving the model) we poll every 2 s for up
 ///   to 30 s before yielding
 ///   `Error(anyhow!("no peers serving model …"))`.
