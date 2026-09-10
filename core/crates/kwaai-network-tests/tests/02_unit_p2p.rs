@@ -27,7 +27,7 @@ fn config_default_has_sane_values() {
     assert!(cfg.enable_nat_traversal);
     assert_eq!(cfg.max_connections, 100);
     assert_eq!(cfg.dht_replication, 20);
-    assert!(!cfg.listen_addrs.is_empty());
+    assert!(!cfg.swarm_listen_addrs().is_empty());
     rec.finish(true);
 }
 
