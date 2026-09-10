@@ -759,6 +759,61 @@ pub fn build_unannounce_records(
     ctx: &AnnounceContext<'_>,
     server_info: &DHTServerInfo,
 ) -> Result<Vec<StoreRequest>> {
+    let subkey = rmp_serde::to_vec(&ctx.peer_id.to_base58())?;
+    let node_info = NodeInfo::from_peer_id(ctx.peer_id);
+    let expiration = get_dht_time() + ANNOUNCE_TTL_SECS;
+
+    let mut records = Vec::with_capacity(2);
+    records.extend(tombstone_blocks(
+        ctx,
+        server_info,
+        server_info.start_block..server_info.end_block,
+    )?);
+
+    // The VPK record is withdrawn with the *live* VPK value, not the offline
+    // ServerInfo — it has no state field to flip, so the only signal available
+    // is that it stops being refreshed.
+    if let Some(ref vpk) = server_info.vpk_info {
+        records.push(StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys: vec![dht_id(VPK_NODES_KEY)],
+            subkeys: vec![subkey],
+            values: vec![vpk.to_msgpack_bytes()?],
+            expiration_time: vec![expiration],
+            in_cache: vec![false],
+            peer: Some(node_info),
+        });
+    }
+
+    Ok(records)
+}
+
+/// Tombstone the block records a previous announce wrote under
+/// `previous.0..previous.1` that the current range no longer refreshes, so
+/// a node whose range shrank — or collapsed to nothing — stops reading ONLINE
+/// for those blocks until the 360 s TTL runs out.
+///
+/// Blocks still in the current range are left alone: the fresh ONLINE record
+/// carries the same expiration and would be rejected as not strictly newer.
+pub fn build_dropped_block_records(
+    ctx: &AnnounceContext<'_>,
+    server_info: &DHTServerInfo,
+    previous: (i32, i32),
+) -> Result<Vec<StoreRequest>> {
+    let current = server_info.start_block..server_info.end_block;
+    let dropped = (previous.0..previous.1).filter(|b| !current.contains(b));
+    Ok(tombstone_blocks(ctx, server_info, dropped)?
+        .into_iter()
+        .collect())
+}
+
+/// One STORE request writing the `state = -1` tombstone under each of `blocks`;
+/// `None` when there is nothing to write, so no all-empty request goes out.
+fn tombstone_blocks(
+    ctx: &AnnounceContext<'_>,
+    server_info: &DHTServerInfo,
+    blocks: impl Iterator<Item = i32>,
+) -> Result<Option<StoreRequest>> {
     let offline_info = DHTServerInfo {
         state: -1, // OFFLINE — tells map.kwaai.ai to remove the node immediately
         throughput: 0.0,
@@ -783,49 +838,32 @@ pub fn build_unannounce_records(
 
     let info_bytes = offline_info.to_msgpack()?;
     let subkey = rmp_serde::to_vec(&ctx.peer_id.to_base58())?;
-    let node_info = NodeInfo::from_peer_id(ctx.peer_id);
     let expiration = get_dht_time() + ANNOUNCE_TTL_SECS;
-
-    let mut records = Vec::with_capacity(2);
 
     let mut keys = Vec::new();
     let mut subkeys = Vec::new();
     let mut values = Vec::new();
     let mut expirations = Vec::new();
     let mut in_cache = Vec::new();
-    for block in server_info.start_block..server_info.end_block {
+    for block in blocks {
         keys.push(dht_id(&format!("{}.{}", ctx.prefix, block)));
         subkeys.push(subkey.clone());
         values.push(info_bytes.clone());
         expirations.push(expiration);
         in_cache.push(false);
     }
-    records.push(StoreRequest {
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(StoreRequest {
         auth: Some(RequestAuthInfo::new()),
         keys,
         subkeys,
         values,
         expiration_time: expirations,
         in_cache,
-        peer: Some(node_info.clone()),
-    });
-
-    // The VPK record is withdrawn with the *live* VPK value, not the offline
-    // ServerInfo — it has no state field to flip, so the only signal available
-    // is that it stops being refreshed.
-    if let Some(ref vpk) = server_info.vpk_info {
-        records.push(StoreRequest {
-            auth: Some(RequestAuthInfo::new()),
-            keys: vec![dht_id(VPK_NODES_KEY)],
-            subkeys: vec![subkey],
-            values: vec![vpk.to_msgpack_bytes()?],
-            expiration_time: vec![expiration],
-            in_cache: vec![false],
-            peer: Some(node_info),
-        });
-    }
-
-    Ok(records)
+        peer: Some(NodeInfo::from_peer_id(ctx.peer_id)),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1625,6 +1663,82 @@ mod tests {
         };
         assert_eq!(parts[0].as_i64(), Some(-1), "state = -1 (offline)");
         assert_eq!(parts[1].as_f64(), Some(0.0), "throughput zeroed");
+    }
+
+    /// The regression guard for #183: an empty range writes no per-block
+    /// record at all — not a StoreRequest with zero keys — so a whole-model
+    /// node is never discovered as a block server.
+    #[test]
+    fn an_empty_range_announces_no_block_records() {
+        let p = peer();
+        let mut info = server_info(Some(vpk_info()));
+        info.start_block = 3;
+        info.end_block = 3;
+
+        let records = build_announce_records(&ctx(p), &info).unwrap();
+        assert_eq!(records.len(), 3, "models, inference nodes, vpk — no blocks");
+        assert_eq!(records[0].keys, vec![dht_id(PETALS_MODELS_KEY)]);
+        assert!(records.iter().all(|r| !r.keys.is_empty()));
+
+        let withdrawn = build_unannounce_records(&ctx(p), &info).unwrap();
+        assert_eq!(withdrawn.len(), 1, "only the VPK record is withdrawn");
+        assert_eq!(withdrawn[0].keys, vec![dht_id(VPK_NODES_KEY)]);
+        assert!(
+            build_unannounce_records(&ctx(p), &server_info_with_range(3, 3))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn server_info_with_range(start: i32, end: i32) -> DHTServerInfo {
+        let mut info = server_info(None);
+        info.start_block = start;
+        info.end_block = end;
+        info
+    }
+
+    /// Blocks that fall out of the announced range are tombstoned, and only
+    /// those: a block still in the range gets its fresh ONLINE record instead,
+    /// which the store would reject behind a same-expiration tombstone.
+    #[test]
+    fn a_shrunken_range_tombstones_only_the_dropped_blocks() {
+        let p = peer();
+        let block_key = |b: i32| dht_id(&format!("{}.{}", ctx(p).prefix, b));
+
+        // Collapsed to nothing: every previously announced block is withdrawn.
+        let collapsed =
+            build_dropped_block_records(&ctx(p), &server_info_with_range(3, 3), (0, 3)).unwrap();
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(
+            collapsed[0].keys,
+            vec![block_key(0), block_key(1), block_key(2)]
+        );
+        let value = rmpv::decode::read_value(&mut &collapsed[0].values[0][..]).unwrap();
+        let rmpv::Value::Ext(64, inner) = value else {
+            panic!("tombstone must be an Ext(64) ServerInfo");
+        };
+        let rmpv::Value::Array(parts) = rmpv::decode::read_value(&mut &inner[..]).unwrap() else {
+            panic!("Ext payload must be an array");
+        };
+        assert_eq!(parts[0].as_i64(), Some(-1), "state = -1 (offline)");
+
+        // Moved: only the block no longer covered.
+        let moved =
+            build_dropped_block_records(&ctx(p), &server_info_with_range(1, 4), (0, 3)).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].keys, vec![block_key(0)]);
+
+        // Unchanged or grown: nothing to withdraw, and no empty request.
+        assert!(
+            build_dropped_block_records(&ctx(p), &server_info_with_range(0, 3), (0, 3))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            build_dropped_block_records(&ctx(p), &server_info_with_range(0, 5), (0, 3))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// The load-bearing correction: the tombstone's expiration is in the
