@@ -1031,7 +1031,6 @@ impl KwaaiNetConfig {
         Self::load_or_create().unwrap_or_else(|_| self.clone())
     }
 
-    /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
     /// `log_level` from the config file, without creating the file or
     /// parsing the rest of it. Read before logging is initialised, so it
     /// must not fail, create or log anything.
@@ -1044,6 +1043,7 @@ impl KwaaiNetConfig {
         serde_yaml::from_str::<LogLevelOnly>(&text).ok()?.log_level
     }
 
+    /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
     pub fn load_or_create() -> Result<Self> {
         let cfg_file = config_file();
         std::fs::create_dir_all(cfg_file.parent().unwrap())?;
@@ -1211,7 +1211,17 @@ impl KwaaiNetConfig {
             "blocks" => self.blocks = value.parse().context("blocks must be a number")?,
             "port" => self.port = value.parse().context("port must be a number")?,
             "use_gpu" => self.use_gpu = parse_bool(value)?,
-            "log_level" => self.log_level = value.to_string(),
+            "log_level" => {
+                self.log_level = parse_log_level(value)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "log_level must be one of {}, got '{}'",
+                            LOG_LEVELS.join(", "),
+                            value
+                        )
+                    })?
+                    .to_string()
+            }
             "public_name" => self.public_name = Some(value.to_string()),
             "public_ip" => self.public_ip = Some(value.to_string()),
             "public_port" => {
@@ -1291,6 +1301,18 @@ impl KwaaiNetConfig {
         }
         Ok(())
     }
+}
+
+/// Accepted `log_level` values, least to most verbose.
+pub const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
+
+/// The canonical name for a `log_level` value, or None if it is not one.
+pub fn parse_log_level(s: &str) -> Option<&'static str> {
+    let s = s.trim();
+    LOG_LEVELS
+        .iter()
+        .copied()
+        .find(|l| l.eq_ignore_ascii_case(s))
 }
 
 fn parse_bool(s: &str) -> Result<bool> {
@@ -1690,6 +1712,22 @@ mod start_block_provenance {
 }
 
 /// `cargo test` must not be able to touch the developer's real config.
+#[cfg(test)]
+mod log_level_values {
+    use super::*;
+
+    #[test]
+    fn set_key_rejects_a_level_the_filter_would_not_understand() {
+        let mut cfg = KwaaiNetConfig::default();
+        for typo in ["warning", "verbose", ""] {
+            assert!(cfg.set_key("log_level", typo).is_err(), "{typo:?}");
+        }
+        cfg.set_key("log_level", " Debug ").expect("set");
+        assert_eq!(cfg.log_level, "debug");
+        assert_eq!(parse_log_level("OFF"), Some("off"));
+    }
+}
+
 #[cfg(test)]
 mod test_isolation {
     use super::*;
