@@ -193,7 +193,7 @@ async fn serve() -> Result<()> {
     let capacity_gb = storage.capacity_gb;
 
     let mgr = crate::daemon::StorageApiManager::new();
-    if mgr.is_running() || crate::daemon::port_in_use(vpk_port) {
+    if mgr.is_running() || crate::daemon::port_in_use(vpk_port, cfg.ipv6()) {
         print_warning(&format!(
             "Storage API is already running on port {}.",
             vpk_port

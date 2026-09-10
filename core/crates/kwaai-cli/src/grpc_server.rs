@@ -2013,6 +2013,11 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
     // visible here, and it is what resolves port 0 to a real number.
     let bound = match crate::net::bind_dual_stack(crate::net::Scope::Loopback, tcp_port, ipv6) {
         Ok(b) => Some(b),
+        // `ipv6: true` is a promise; v4 was free, so keeping quiet here would
+        // be a daemon that runs half of it.
+        Err(e @ crate::net::BindError::V6Required(_)) => {
+            return Err(anyhow::anyhow!("binding gRPC TCP port {tcp_port}: {e}"));
+        }
         Err(e) if explicit => {
             return Err(anyhow::anyhow!("binding gRPC TCP port {tcp_port}: {e}"));
         }

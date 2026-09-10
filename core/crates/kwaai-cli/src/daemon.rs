@@ -607,10 +607,11 @@ impl StorageApiManager {
     }
 }
 
-/// Returns true if something is already listening on `<port>`, on either family.
-/// Use this before binding to give a friendly error instead of an OS crash.
-pub fn port_in_use(port: u16) -> bool {
-    !crate::net::port_is_free(port, kwaai_p2p::Ipv6Mode::Auto)
+/// Returns true if something is already listening on `<port>`, on every
+/// family `mode` would bind. Use this before binding to give a friendly error
+/// instead of an OS crash.
+pub fn port_in_use(port: u16, mode: kwaai_p2p::Ipv6Mode) -> bool {
+    !crate::net::port_is_free(port, mode)
 }
 
 #[cfg(unix)]

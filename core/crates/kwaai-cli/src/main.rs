@@ -1798,7 +1798,7 @@ async fn serve_command(args: ServeArgs) -> Result<()> {
     println!("  Port:   {}", args.port);
     println!();
 
-    if crate::daemon::port_in_use(args.port) {
+    if crate::daemon::port_in_use(args.port, crate::net::configured_ipv6_mode()) {
         print_warning(&format!(
             "Port {} is already in use — API server may already be running.",
             args.port

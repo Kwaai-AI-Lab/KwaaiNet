@@ -426,18 +426,34 @@ impl NetworkService {
         };
 
         let ipv6_mode = config.ipv6.effective();
+        let listen_addrs = config
+            .swarm_listen_addrs()
+            .iter()
+            .map(|a| {
+                a.parse::<Multiaddr>()
+                    .with_context(|| format!("parsing listen address {a}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // A config error, checked before the host is: an explicit v4-only
+        // listen set can never satisfy `ipv6: true`.
+        if ipv6_mode == Ipv6Mode::On && !listen_addrs.iter().any(has_ip6) {
+            anyhow::bail!("ipv6 is required but listen_addrs has no IPv6 address");
+        }
         // Probe before listening, not by listening: see `resolve_ipv6`.
         let open_v6 = resolve_ipv6(ipv6_mode, ipv6_loopback_available())?;
         if ipv6_mode != Ipv6Mode::Off && !open_v6 {
             warn!("IPv6 unavailable on this host, running IPv4-only");
         }
+        // What the host can do, not what the mode asked for: a node that fell
+        // back to v4-only under `auto` must not dial or announce v6.
+        let policy = AddrPolicy {
+            strict: config.require_global_ips,
+            ipv6: open_v6,
+        };
 
         let mut ipv6_listening = false;
         let mut ipv6_warned = false;
-        for addr in config.swarm_listen_addrs() {
-            let addr: Multiaddr = addr
-                .parse()
-                .with_context(|| format!("parsing listen address {addr}"))?;
+        for addr in listen_addrs {
             let v6 = has_ip6(&addr);
             if v6 && !open_v6 {
                 debug!(%addr, "skipping IPv6 listen address");
@@ -493,7 +509,7 @@ impl NetworkService {
             declared,
             config.identify_min_confirmations,
             config.require_global_ips,
-            !ipv6_mode.is_off(),
+            policy.ipv6,
         );
 
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
@@ -509,10 +525,7 @@ impl NetworkService {
             learned_addrs: LearnedAddrs::new(local_peer_id),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
-            policy: AddrPolicy {
-                strict: config.require_global_ips,
-                ipv6: !ipv6_mode.is_off(),
-            },
+            policy,
             ipv6_status,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
@@ -1251,7 +1264,7 @@ impl NetworkService {
 
         if let Some(conns) = self.connections.get(peer) {
             for conn in conns.values() {
-                if self.policy.dialable(&conn.addr) && !addrs.contains(&conn.addr) {
+                if !addrs.contains(&conn.addr) {
                     addrs.push(conn.addr.clone());
                 }
             }
@@ -2709,6 +2722,22 @@ mod ipv6_resolution {
                 }
             }
         }
+    }
+
+    /// The address policy follows the host, not the mode: `auto` on a v4-only
+    /// box must drop v6 from the dial and announce sets, or the node keeps
+    /// addresses it can never use.
+    #[test]
+    fn the_policy_follows_what_opened_not_what_was_asked() {
+        let policy = |mode, loopback_ok| AddrPolicy {
+            strict: false,
+            ipv6: resolve_ipv6(mode, loopback_ok).unwrap(),
+        };
+        let v6: Multiaddr = "/ip6/2606:4700::1111/tcp/8080".parse().unwrap();
+        assert!(!policy(Ipv6Mode::Auto, false).dialable(&v6));
+        assert!(!policy(Ipv6Mode::Auto, false).announceable(&v6));
+        assert!(policy(Ipv6Mode::Auto, true).dialable(&v6));
+        assert!(policy(Ipv6Mode::Auto, true).announceable(&v6));
     }
 
     /// `off` never consults the host: a node told not to use IPv6 must not

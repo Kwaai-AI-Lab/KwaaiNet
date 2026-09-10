@@ -5,11 +5,18 @@
 //! keeps v6 addresses out of the dial set, and that `true` refuses to fall
 //! back to IPv4-only in silence.
 
+use std::net::TcpListener;
+
 use kwaai_p2p::{Ipv6Mode, NetworkConfig, NetworkService};
 use libp2p::{identity::Keypair, multiaddr::Protocol, Multiaddr, PeerId};
 
 fn is_v6(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::Ip6(_)))
+}
+
+/// CI hosts without an IPv6 stack must skip rather than fail.
+fn v6_loopback_works() -> bool {
+    TcpListener::bind("[::1]:0").is_ok()
 }
 
 /// The nat-test nodes and production configure `port`, not `listen_addrs`, so
@@ -67,9 +74,14 @@ async fn off_filters_v6_dial_candidates() {
     let v6: Multiaddr = "/ip6/2606:4700::1111/tcp/8080".parse().unwrap();
 
     async fn addrs_known_for(mode: Ipv6Mode, peer: PeerId, seed: &[Multiaddr]) -> Vec<Multiaddr> {
+        let mut listen_addrs = vec!["/ip4/127.0.0.1/tcp/0".to_string()];
+        if mode != Ipv6Mode::Off {
+            listen_addrs.push("/ip6/::1/tcp/0".to_string());
+        }
         let (handle, _task) = NetworkService::spawn(
             NetworkConfig {
                 ipv6: mode,
+                listen_addrs,
                 ..NetworkConfig::for_tests()
             },
             Keypair::generate_ed25519(),
@@ -96,9 +108,35 @@ async fn off_filters_v6_dial_candidates() {
         "ipv6: false must drop v6 candidates: {off:?}"
     );
 
-    if kwaai_p2p::IPV6_BUILD {
+    // `On` refuses to start on a v4-only host, which is not what this asserts.
+    if kwaai_p2p::IPV6_BUILD && v6_loopback_works() {
         let on = addrs_known_for(Ipv6Mode::On, peer, &seed).await;
         assert!(on.iter().any(is_v6), "v6 must survive when on: {on:?}");
+    }
+}
+
+/// `true` with a listen set that has no v6 address is a contradiction the
+/// config should refuse, before the host is even consulted.
+#[tokio::test]
+async fn on_with_a_v4_only_listen_set_is_a_config_error() {
+    let err = NetworkService::spawn(
+        NetworkConfig {
+            listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
+            ipv6: Ipv6Mode::On,
+            ..NetworkConfig::for_tests()
+        },
+        Keypair::generate_ed25519(),
+    )
+    .err()
+    .map(|e| e.to_string());
+    if kwaai_p2p::IPV6_BUILD {
+        let err = err.expect("ipv6: true with no v6 listener must not start");
+        assert!(err.contains("no IPv6 address"), "unhelpful error: {err}");
+    } else {
+        assert!(
+            err.is_none(),
+            "without the feature `true` reads as off: {err:?}"
+        );
     }
 }
 
@@ -204,6 +242,51 @@ mod with_v6_listeners {
 
         let snapshot = bob.network_snapshot().await.expect("snapshot");
         assert_eq!(snapshot.ipv6, Ipv6Status::Active);
+    }
+
+    /// A connection we are on is evidence whatever the mode says: with
+    /// `ipv6: false`, an explicit `p2p connect /ip6/…` still succeeds, and
+    /// the peer must then be listed at that address rather than vanish.
+    #[tokio::test]
+    async fn a_live_v6_connection_is_listed_even_when_ipv6_is_off() {
+        if !v6_loopback_works() {
+            println!("skipping: no IPv6 loopback on this host");
+            return;
+        }
+
+        let (alice, _alice_task, alice_id) = spawn_v6_only(Ipv6Mode::On);
+        let alice_addr = eventually("alice to report a v6 listen address", || async {
+            alice.listen_addrs().await.ok()?.into_iter().find(is_v6)
+        })
+        .await
+        .with(Protocol::P2p(alice_id));
+
+        let (bob, _bob_task) = NetworkService::spawn(
+            NetworkConfig {
+                ipv6: Ipv6Mode::Off,
+                ..NetworkConfig::for_tests()
+            },
+            Keypair::generate_ed25519(),
+        )
+        .expect("bob should start");
+        bob.connect_peer(&alice_addr.to_string())
+            .await
+            .expect("an explicit dial is not filtered");
+
+        let known = eventually("bob to list alice among known peers", || async {
+            bob.known_peers()
+                .await
+                .ok()?
+                .into_iter()
+                .find(|k| k.peer_id == alice_id)
+        })
+        .await;
+        assert!(known.connected);
+        assert!(
+            known.addrs.iter().any(is_v6),
+            "the live v6 connection is the evidence: {:?}",
+            known.addrs
+        );
     }
 
     /// `auto` and `true` differ only when the bind fails, which is the whole

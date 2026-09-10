@@ -729,7 +729,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     use kwaai_inference::tokenizer::Tokenizer as _;
 
     // Guard before any expensive work (DHT discovery, tokenizer load)
-    if crate::daemon::port_in_use(args.port) {
+    if crate::daemon::port_in_use(args.port, crate::net::configured_ipv6_mode()) {
         print_warning(&format!(
             "Port {} is already in use — shard API may already be running.",
             args.port

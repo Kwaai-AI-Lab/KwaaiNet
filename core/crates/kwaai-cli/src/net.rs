@@ -12,6 +12,7 @@
 //! Binding both explicitly is the same shape libp2p-tcp uses, and it is why
 //! both sockets can share one port number.
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
 
 use anyhow::{Context, Result};
@@ -57,14 +58,38 @@ pub struct Bound {
     pub port: u16,
 }
 
+/// Why [`bind_dual_stack`] failed. The two are handled differently: a v4
+/// clash on a default port is survivable, a broken `ipv6: true` promise is not.
+#[derive(Debug)]
+pub enum BindError {
+    /// The IPv4 bind itself failed; the v6 twin was never attempted.
+    V4(std::io::Error),
+    /// `ipv6: true`, and the v6 twin could not be bound. v4 was free.
+    V6Required(anyhow::Error),
+}
+
+impl fmt::Display for BindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::V4(e) => write!(f, "{e}"),
+            Self::V6Required(e) => write!(f, "ipv6 is required but {e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for BindError {}
+
 /// Bind IPv4 and, unless disabled, its IPv6 twin on the same port.
 ///
 /// The v4 bind happens first and its failure is the caller's error verbatim —
 /// that is the behaviour every one of these servers already had. The v6 twin is
-/// built on the *resolved* port, so `port: 0` still yields one number for both.
-pub fn bind_dual_stack(scope: Scope, port: u16, mode: Ipv6Mode) -> Result<Bound> {
-    let v4 = TcpListener::bind(SocketAddr::new(IpAddr::V4(scope.v4()), port))?;
-    let port = v4.local_addr().context("reading the bound v4 port")?.port();
+/// built on the *resolved* port, so `port: 0` still yields one number for both,
+/// and its failure never costs the v4 listener: under `auto` it is a warning,
+/// under `true` it is [`BindError::V6Required`].
+pub fn bind_dual_stack(scope: Scope, port: u16, mode: Ipv6Mode) -> Result<Bound, BindError> {
+    let v4 =
+        TcpListener::bind(SocketAddr::new(IpAddr::V4(scope.v4()), port)).map_err(BindError::V4)?;
+    let port = v4.local_addr().map_err(BindError::V4)?.port();
 
     if mode.is_off() {
         return Ok(Bound { v4, v6: None, port });
@@ -72,24 +97,18 @@ pub fn bind_dual_stack(scope: Scope, port: u16, mode: Ipv6Mode) -> Result<Bound>
 
     // Binding the unspecified `[::]` succeeds on Linux even with IPv6 disabled
     // at the kernel, so it proves nothing; ask about a concrete address first.
-    if !kwaai_p2p::ipv6_loopback_available() {
-        if mode == Ipv6Mode::On {
-            anyhow::bail!("ipv6 is required but this host has no IPv6 loopback");
-        }
-        warn!("IPv6 unavailable on this host; serving IPv4 only on port {port}");
-        return Ok(Bound { v4, v6: None, port });
-    }
-
-    match bind_v6(scope, port) {
+    let v6 = if kwaai_p2p::ipv6_loopback_available() {
+        bind_v6(scope, port)
+    } else {
+        Err(anyhow::anyhow!("this host has no IPv6 loopback"))
+    };
+    match v6 {
         Ok(v6) => Ok(Bound {
             v4,
             v6: Some(v6),
             port,
         }),
-        Err(e) if mode == Ipv6Mode::On => Err(e.context(format!(
-            "ipv6 is required but binding [{}]:{port} failed",
-            scope.v6()
-        ))),
+        Err(e) if mode == Ipv6Mode::On => Err(BindError::V6Required(e)),
         Err(e) => {
             warn!("IPv6 unavailable on port {port} ({e:#}); serving IPv4 only");
             Ok(Bound { v4, v6: None, port })
@@ -211,6 +230,38 @@ mod tests {
     fn the_v6_twin_tracks_the_host_probe() {
         let bound = bind_dual_stack(Scope::Loopback, 0, Ipv6Mode::Auto).expect("v4 must bind");
         assert_eq!(bound.v6.is_some(), kwaai_p2p::ipv6_loopback_available());
+    }
+
+    /// A v6-only squatter must not cost the v4 listener: under `auto` the pair
+    /// comes up v4-only, and under `true` the error names the v6 half so the
+    /// caller can refuse loudly instead of running half a promise.
+    #[test]
+    fn a_v6_only_clash_keeps_v4_and_is_loud_under_on() {
+        if !kwaai_p2p::ipv6_loopback_available() {
+            println!("skipping: no IPv6 loopback on this host");
+            return;
+        }
+        // `Any` on both sides: BSD lets `[::1]` and `[::]` share a port under
+        // SO_REUSEADDR, so a loopback squatter would not clash with the probe.
+        let probe = bind_dual_stack(Scope::Any, 0, Ipv6Mode::Off).expect("bind");
+        let port = probe.port;
+        drop(probe);
+        let _squatter = bind_v6(Scope::Any, port).expect("v6-only squatter");
+
+        let auto = bind_dual_stack(Scope::Any, port, Ipv6Mode::Auto).expect("v4 still binds");
+        assert_eq!(auto.port, port);
+        assert!(auto.v6.is_none(), "the v6 twin is taken");
+        drop(auto);
+
+        match bind_dual_stack(Scope::Any, port, Ipv6Mode::On) {
+            Err(BindError::V6Required(_)) => {}
+            Err(other) => panic!("ipv6: true must report the v6 half: {other}"),
+            Ok(_) => panic!("ipv6: true must not bind past a v6-only squatter"),
+        }
+
+        // And the mode decides whether the squatter counts as "in use" at all.
+        assert!(port_is_free(port, Ipv6Mode::Off));
+        assert!(!port_is_free(port, Ipv6Mode::Auto));
     }
 
     #[test]
