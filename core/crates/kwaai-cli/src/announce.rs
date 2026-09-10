@@ -1276,7 +1276,12 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"), false, true);
+        let out = select_dial_addrs(
+            addrs(&[circuit]),
+            Some("/ip4/203.0.113.7/tcp/4001"),
+            false,
+            true,
+        );
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
     }
@@ -1334,7 +1339,10 @@ mod tests {
     #[test]
     fn select_dial_addrs_follows_the_address_policy() {
         let reserved = addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]);
-        assert_eq!(select_dial_addrs(reserved.clone(), None, false, true), reserved);
+        assert_eq!(
+            select_dial_addrs(reserved.clone(), None, false, true),
+            reserved
+        );
         assert!(select_dial_addrs(reserved, None, true, true).is_empty());
     }
 

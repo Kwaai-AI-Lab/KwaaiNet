@@ -2271,7 +2271,7 @@ pub async fn discover_chain(
         return vec![];
     }
 
-    let mut servers: HashMap<String, BlockServerEntry> = HashMap::new();
+    let mut servers: HashMap<String, Discovered> = HashMap::new();
 
     let query_peers = resolve_query_peers(client, bootstrap_peers).await;
 
@@ -2308,7 +2308,7 @@ pub async fn discover_chain(
             if rt == 1 {
                 // FoundRegular — single value, peer_id embedded in map
                 if let Some((key, entry)) = decode_server_info_regular(&result.value) {
-                    servers.entry(key).or_insert(entry);
+                    merge_record(&mut servers, key, result.expiration_time, entry);
                 }
             } else if rt == 2 {
                 // FoundDictionary — multiple subkeys (Python Hivemind)
@@ -2317,9 +2317,35 @@ pub async fn discover_chain(
         }
     }
 
-    let mut chain: Vec<BlockServerEntry> = servers.into_values().collect();
+    let mut chain: Vec<BlockServerEntry> = servers.into_values().map(|d| d.entry).collect();
     chain.sort_by_key(|e| e.start_block);
     chain
+}
+
+/// One peer's record as discovery holds it, with the DHT expiry it came with.
+struct Discovered {
+    expiry: f64,
+    entry: BlockServerEntry,
+}
+
+/// The same peer is read under every block key and from every bootstrap, and
+/// those copies disagree after it re-announces — most usefully about where it
+/// is reachable. A record with addresses beats one without; between two with
+/// the same standing, the later expiry is the later announcement.
+fn merge_record(
+    out: &mut HashMap<String, Discovered>,
+    key: String,
+    expiry: f64,
+    entry: BlockServerEntry,
+) {
+    let rank = |d: &Discovered| (!d.entry.dial_addrs.is_empty(), d.expiry);
+    let candidate = Discovered { expiry, entry };
+    match out.get(&key) {
+        Some(held) if rank(held) >= rank(&candidate) => {}
+        _ => {
+            out.insert(key, candidate);
+        }
+    }
 }
 
 /// Connect to the local p2pd and resolve everything [`discover_chain`]
@@ -2432,9 +2458,10 @@ pub async fn discover_inference_peer(
                     }
                 }
             } else if result.result_type == 2 {
-                let mut tmp: HashMap<String, BlockServerEntry> = HashMap::new();
+                let mut tmp: HashMap<String, Discovered> = HashMap::new();
                 decode_server_info_dictionary(&result.value, &mut tmp);
-                for (_, e) in tmp {
+                for d in tmp.into_values() {
+                    let e = d.entry;
                     candidates.push((e.throughput, e.peer_id, e.public_name, e.dial_addrs));
                 }
             }
@@ -2606,8 +2633,9 @@ fn decode_server_info_regular(bytes: &[u8]) -> Option<(String, BlockServerEntry)
 }
 
 /// Parse `Ext(80, [expiry, created, [[subkey_bytes, value_bytes, expiry], …]])`
-/// from a FoundDictionary value. Appends into `out` (deduplicates by peer_id).
-fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockServerEntry>) {
+/// from a FoundDictionary value. Merges into `out` by peer id — see
+/// [`merge_record`] for which copy of a peer wins.
+fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, Discovered>) {
     let outer = match rmpv::decode::read_value(&mut &bytes[..]) {
         Ok(v) => v,
         Err(_) => return,
@@ -2652,6 +2680,7 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             rmpv::Value::Binary(b) => b.as_slice(),
             _ => continue,
         };
+        let expiry = arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
 
         if peer_id_b58.is_empty() {
             continue;
@@ -2682,8 +2711,7 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             {
                 continue;
             }
-            let key = peer_id_b58.clone();
-            out.entry(key).or_insert(BlockServerEntry {
+            let entry = BlockServerEntry {
                 peer_id,
                 start_block: info.start_block,
                 end_block: info.end_block,
@@ -2692,7 +2720,8 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
                 trust_score: None,
                 lease_v1: info.lease_v1,
                 dial_addrs: info.dial_addrs,
-            });
+            };
+            merge_record(out, peer_id_b58.clone(), expiry, entry);
         }
     }
 }
@@ -3812,11 +3841,15 @@ mod tests {
     /// Helper: one entry wrapped in the `Ext(80, [expiry, created, [[subkey,
     /// value, expiry]]])` shape a FoundDictionary response carries.
     fn dictionary_bytes(subkey_peer_b58: &str, value: &[u8]) -> Vec<u8> {
+        dictionary_bytes_expiring(subkey_peer_b58, value, 0.0)
+    }
+
+    fn dictionary_bytes_expiring(subkey_peer_b58: &str, value: &[u8], expiry: f64) -> Vec<u8> {
         let subkey = rmp_serde::to_vec(&subkey_peer_b58).expect("msgpack subkey");
         let entry = rmpv::Value::Array(vec![
             rmpv::Value::Binary(subkey),
             rmpv::Value::Binary(value.to_vec()),
-            rmpv::Value::from(0.0),
+            rmpv::Value::from(expiry),
         ]);
         let inner = rmpv::Value::Array(vec![
             rmpv::Value::from(0.0),
@@ -3886,13 +3919,88 @@ mod tests {
             &dictionary_bytes(&peer.to_base58(), &honest.to_msgpack().expect("encodes")),
             &mut out,
         );
-        let entry = out.get(&peer.to_base58()).expect("the entry decodes");
+        let entry = &out.get(&peer.to_base58()).expect("the entry decodes").entry;
         assert_eq!(
             entry.dial_addrs,
             vec!["/ip4/203.0.113.7/tcp/4001".parse::<Multiaddr>().unwrap()]
         );
     }
 
+    /// Every bootstrap and block key hands back its own copy of a peer's
+    /// record. After the peer moves relay, the copy that names the old one is
+    /// still around; the later announcement must win, whichever is read
+    /// first — and a copy with no addresses never displaces one with.
+    #[test]
+    fn discovery_prefers_the_fresher_record_with_addresses() {
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let record = |addr: Option<&str>| {
+            let mut info = DHTServerInfo::new(
+                0,
+                32,
+                "test-node",
+                true,
+                10.0,
+                Vec::new(),
+                None,
+                peer.to_base58(),
+            );
+            info.state = 2;
+            if let Some(addr) = addr {
+                info.signed_addrs = signed_envelope(&key, &[addr]);
+            }
+            info.to_msgpack().expect("encodes")
+        };
+        let old_relay = "/ip4/198.51.100.1/tcp/4001/p2p/12D3KooWF7ckKo2HQojbtueQNuLYRT2XC2yzbvBbh4NK2rbi2Azg/p2p-circuit";
+        let new_relay = "/ip4/198.51.100.2/tcp/4001/p2p/12D3KooWF7ckKo2HQojbtueQNuLYRT2XC2yzbvBbh4NK2rbi2Azg/p2p-circuit";
+        let addrs_of = |out: &HashMap<String, Discovered>| {
+            out.get(&peer.to_base58())
+                .expect("decodes")
+                .entry
+                .dial_addrs
+                .clone()
+        };
+
+        // Stale copy read first, fresher copy second: the fresher wins.
+        let mut out = HashMap::new();
+        decode_server_info_dictionary(
+            &dictionary_bytes_expiring(&peer.to_base58(), &record(Some(old_relay)), 100.0),
+            &mut out,
+        );
+        decode_server_info_dictionary(
+            &dictionary_bytes_expiring(&peer.to_base58(), &record(Some(new_relay)), 200.0),
+            &mut out,
+        );
+        assert_eq!(
+            addrs_of(&out),
+            vec![new_relay.parse::<Multiaddr>().unwrap()]
+        );
+
+        // Same two, read the other way round: still the fresher.
+        let mut out = HashMap::new();
+        decode_server_info_dictionary(
+            &dictionary_bytes_expiring(&peer.to_base58(), &record(Some(new_relay)), 200.0),
+            &mut out,
+        );
+        decode_server_info_dictionary(
+            &dictionary_bytes_expiring(&peer.to_base58(), &record(Some(old_relay)), 100.0),
+            &mut out,
+        );
+        assert_eq!(
+            addrs_of(&out),
+            vec![new_relay.parse::<Multiaddr>().unwrap()]
+        );
+
+        // A fresher copy with no addresses does not displace one that has them.
+        decode_server_info_dictionary(
+            &dictionary_bytes_expiring(&peer.to_base58(), &record(None), 300.0),
+            &mut out,
+        );
+        assert_eq!(
+            addrs_of(&out),
+            vec![new_relay.parse::<Multiaddr>().unwrap()]
+        );
+    }
 }
 
 /// The rebalance gate. Regression for two bugs: `auto_rebalance` in config
