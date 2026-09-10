@@ -4,6 +4,7 @@
 //! generated key — no shared sockets, no on-disk identity, nothing that can
 //! collide with a node running on the same machine.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kwaai_p2p::{Direction, NetworkConfig, NetworkHandle, NetworkService};
@@ -660,6 +661,33 @@ async fn re_dialing_a_connected_peer_does_not_open_a_second_connection() {
 // AutoNAT dial-back
 // ---------------------------------------------------------------------------
 
+/// `io::Write` into a shared buffer, for [`capture_logs`].
+#[derive(Clone)]
+struct LogSink(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Capture this thread's `debug!` output. `#[tokio::test]` is a current-thread
+/// runtime, so the swarms spawned on it log here too — and a thread-local
+/// default cannot see, or be seen by, the other tests.
+fn capture_logs() -> (tracing::subscriber::DefaultGuard, LogSink) {
+    let sink = LogSink(Arc::new(Mutex::new(Vec::new())));
+    let writer = sink.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    (tracing::subscriber::set_default(subscriber), sink)
+}
+
 /// An AutoNAT dial-back must not be left open beside the connection it
 /// duplicates.
 ///
@@ -671,8 +699,13 @@ async fn re_dialing_a_connected_peer_does_not_open_a_second_connection() {
 /// held two byte-identical direct connections to each peer that had probed it.
 #[tokio::test]
 async fn an_autonat_dial_back_does_not_leave_a_duplicate_connection() {
-    let (alice, _alice_task, alice_id) = spawn_test_swarm();
+    let (_guard, logs) = capture_logs();
     let (bob, _bob_task, bob_id) = spawn_test_swarm();
+    // Stagger the two `boot_delay`s. Fired together, one side's probe request
+    // can be routed over the other's millisecond-long dial-back and die with
+    // it; autonat then retries only after 30 s, past `SETTLE_TIMEOUT`.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (alice, _alice_task, alice_id) = spawn_test_swarm();
 
     // Alice's listen address is what she asks bob to dial back, so she must be
     // listening before she probes.
@@ -683,21 +716,55 @@ async fn an_autonat_dial_back_does_not_leave_a_duplicate_connection() {
         .await
         .expect("dial");
 
-    // Nothing observable marks the probe: a closed dial-back leaves no trace,
-    // and loopback is never announceable, so no reachability verdict follows
-    // either. Waiting out AutoNAT's 5 s `boot_delay` is the only gate there is
-    // — drop the close in the `ConnectionEstablished` arm and this fails.
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    // A closed dial-back never reaches `list_peers`, so the count cannot be
+    // seen rising; the close is logged instead, and that is the evidence the
+    // probe ran at all. Both sides probe each other, and bob does hold alice's
+    // dial-back to *him* until she closes it, so wait for both.
+    let closed_dialback = |peer: PeerId| {
+        let logs = logs.clone();
+        move || {
+            let logs = logs.clone();
+            async move {
+                let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+                text.lines()
+                    .any(|l| {
+                        l.contains("closing autonat dial-back") && l.contains(&peer.to_string())
+                    })
+                    .then_some(())
+            }
+        }
+    };
+    eventually(
+        "bob to close his dial-back to alice",
+        closed_dialback(alice_id),
+    )
+    .await;
+    eventually(
+        "alice to close her dial-back to bob",
+        closed_dialback(bob_id),
+    )
+    .await;
 
-    let connections = bob
-        .list_peers()
-        .await
-        .expect("bob lists peers")
-        .into_iter()
-        .filter(|p| p.peer_id == alice_id)
-        .count();
+    let connections_to_alice = || async {
+        let peers = bob.list_peers().await.ok()?;
+        Some(peers.into_iter().filter(|p| p.peer_id == alice_id).count())
+    };
+    eventually("bob to hold exactly one connection to alice", || async {
+        (connections_to_alice().await? == 1).then_some(())
+    })
+    .await;
+    // Nothing else is in flight now, so a second sample must agree.
+    tokio::time::sleep(POLL_INTERVAL * 4).await;
     assert_eq!(
-        connections, 1,
+        connections_to_alice().await,
+        Some(1),
         "the dial-back must be closed, not held beside the connection it duplicates",
+    );
+
+    // The dial-back address is a remote claim like any other: loopback is not
+    // announceable, so it must not have seeded bob's routing table.
+    assert!(
+        !bob.routing_peers().await.unwrap().contains(&alice_id),
+        "a loopback dial-back address must not enter the routing table"
     );
 }
