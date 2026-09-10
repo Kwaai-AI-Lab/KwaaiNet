@@ -60,6 +60,25 @@ jobs:
       - name: Check CLAUDE.md and glossary references resolve
         run: python3 scripts/check_memory_integrity.py
 
+  # ── Orphaned doc comments (diff-only, no cargo). PRs only: it needs a base ──
+  # `///` attaches to the next item, so a function inserted between an existing
+  # doc block and the function it described silently steals that doc. Invisible
+  # to rustc, clippy and rustdoc; reached review five times in Sept 2026.
+  # The self-test runs first so a broken checker fails loudly instead of
+  # passing every diff.
+  orphaned-docs:
+    name: Orphaned doc comments
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the check diffs against the base branch
+      - name: Self-test the checker against known positives and negatives
+        run: python3 scripts/check_orphaned_docs.py --self-test
+      - name: No Rust item inserted into an existing doc block
+        run: python3 scripts/check_orphaned_docs.py --base "origin/${{ github.base_ref }}"
+
   # ── 2. Clippy (default features — CUDA/Metal checked only in release.yml) ──
   clippy:
     name: Clippy
