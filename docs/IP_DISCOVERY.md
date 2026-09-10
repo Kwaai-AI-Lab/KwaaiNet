@@ -200,7 +200,7 @@ the network snapshot's `ipv6` field — `off`, `active` or `unavailable` — whi
 is the one that distinguishes "v6 is disabled" from "v6 was wanted and the host
 refused".
 
-### The classifier, and why it rejects ULAs
+### The classifier, and why it rejects ULAs by default
 
 `is_routable_v6` mirrors `is_routable_v4`. Rejected in both tiers: unspecified,
 loopback, multicast, link-local `fe80::/10`, the deprecated site-local

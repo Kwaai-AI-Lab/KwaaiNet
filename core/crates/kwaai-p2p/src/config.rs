@@ -198,9 +198,9 @@ pub struct NetworkConfig {
     /// and benchmarking prefixes on v6 — as well as the private ones.
     ///
     /// **Default true.** It also drives `autonat::Config::only_global_ips`, so
-    /// the swarm's one address-class check agrees with the classifier. Turn
-    /// it off only for a network deliberately built on reserved space, where
-    /// those addresses are the routable ones.
+    /// neither the swarm's one address-class check nor the classifier can be
+    /// tightened without the other. Turn it off only for a network deliberately
+    /// built on reserved space, where those addresses are the routable ones.
     #[serde(default = "default_true")]
     pub require_global_ips: bool,
 

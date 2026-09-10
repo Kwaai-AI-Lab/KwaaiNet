@@ -55,6 +55,7 @@ The historical record up to v0.3.7 follows.
 - The node's own local servers — the gRPC control port, the OpenAI-compatible HTTP APIs and the storage health endpoint — now bind IPv6 alongside IPv4 on the same port. A client whose `localhost` resolves to `::1` first, which is the default on Windows and most modern Linux distributions, previously got connection refused from a daemon that was running.
 - A v6 `public_ip` is announced as `/ip6/…` instead of being formatted into an `/ip4/` multiaddr that does not parse, which left a correctly configured node announcing nothing.
 - `port_in_use` probes both address families, so the "already running" message is not defeated by a squatter holding only the v6 half.
+- `kwaai-p2p`: `is_announceable` now applies the strict (`only_global_ips: true`) tier, with no signature change — a caller outside this repo that relied on it admitting reserved space should switch to `is_announceable_with(addr, false)`.
 
 ## [v0.3.7] - 2026-03-04
 
