@@ -28,7 +28,7 @@ Three defaults shape how decentralized a stock node actually is. All are in
 |---|---|---|
 | `force_private` | `true` | The node declares itself NAT-private and reaches peers through a relay, **even if it has a public address**. It also vetoes AutoNAT, so the node can never be promoted to public while this is set. It is not settable via `kwaainet config set` — edit the YAML. |
 | `decentralized_dht` | `false` | Announcements are written to every entry in `initial_peers` and read back from the same list, rather than being placed across the DHT. Correct, but it makes those few bootstrap addresses load-bearing. |
-| `enable_quic` | `false` | TCP only. QUIC is compiled in but off, because some networks block or throttle UDP. |
+| `enable_quic` | `true` | QUIC alongside TCP. Set `false` on a network that blocks or throttles UDP. |
 
 The relay default trades latency for working out of the box. For a lower-latency direct
 connection, set `public_ip` and `announce_addr`, forward the TCP port, and check

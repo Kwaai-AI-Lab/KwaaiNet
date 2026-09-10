@@ -163,7 +163,7 @@ impl NativeNode {
             // `-natPortMap`. On by default; off for a node deployed at a known
             // address (a bootstrap node), which has no gateway to ask.
             enable_upnp: config.enable_upnp,
-            enable_quic: config.enable_quic,
+            enable_quic: config.quic(),
             // `-forceReachabilityPrivate`. Defaults true, so relay reservations
             // start immediately rather than after an AutoNAT round.
             force_private: config.force_private,
