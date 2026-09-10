@@ -511,6 +511,7 @@ pub async fn signed_dial_addrs(
     keypair: &libp2p::identity::Keypair,
     declared: Option<&str>,
     strict: bool,
+    quic: bool,
 ) -> Vec<u8> {
     let external = handle.external_addrs().await.unwrap_or_default();
     let listeners = handle.listen_addrs().await.unwrap_or_default();
@@ -518,6 +519,7 @@ pub async fn signed_dial_addrs(
         external.into_iter().chain(listeners).collect(),
         declared,
         strict,
+        quic,
     );
     if addrs.is_empty() {
         return Vec::new();
@@ -545,6 +547,7 @@ fn select_dial_addrs(
     listeners: Vec<libp2p::Multiaddr>,
     declared: Option<&str>,
     strict: bool,
+    quic: bool,
 ) -> Vec<libp2p::Multiaddr> {
     use kwaai_p2p::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p};
     use kwaai_p2p::{is_circuit, uses_dialable_transport};
@@ -553,7 +556,7 @@ fn select_dial_addrs(
         .and_then(|d| d.parse().ok())
         .into_iter()
         .chain(listeners)
-        .filter(|a| is_announceable_with(a, strict) && uses_dialable_transport(a))
+        .filter(|a| is_announceable_with(a, strict) && uses_dialable_transport(a, quic))
         .collect();
     // Direct before circuit (`false` sorts before `true`), stably, so the
     // declared address stays ahead of the listeners it was chained onto.
@@ -1204,7 +1207,7 @@ mod tests {
             relay().to_base58()
         );
         assert_eq!(
-            select_dial_addrs(listeners, None, false),
+            select_dial_addrs(listeners, None, false, true),
             addrs(&[expected])
         );
     }
@@ -1224,7 +1227,7 @@ mod tests {
             peer().to_base58()
         );
 
-        let out = select_dial_addrs(addrs(&[tcp, quic]), None, false);
+        let out = select_dial_addrs(addrs(&[tcp, quic]), None, false, true);
         let expected = format!(
             "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
             relay().to_base58()
@@ -1241,7 +1244,7 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        assert!(select_dial_addrs(addrs(&[wt]), None, false).is_empty());
+        assert!(select_dial_addrs(addrs(&[wt]), None, false, true).is_empty());
     }
 
     /// The peer id belongs in the record, under the signature, not repeated on
@@ -1252,6 +1255,7 @@ mod tests {
             addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]),
             None,
             false,
+            true,
         );
         assert_eq!(out, addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]));
     }
@@ -1266,7 +1270,7 @@ mod tests {
             relay().to_base58(),
             peer().to_base58()
         );
-        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"), false);
+        let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"), false, true);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
     }
@@ -1285,7 +1289,7 @@ mod tests {
             peer().to_base58()
         ));
 
-        let out = select_dial_addrs(addrs(&listeners), None, false);
+        let out = select_dial_addrs(addrs(&listeners), None, false, true);
         assert_eq!(out.len(), MAX_DIAL_ADDRS);
         assert!(
             kwaai_p2p::is_circuit(out.last().expect("non-empty")),
@@ -1299,8 +1303,8 @@ mod tests {
     #[test]
     fn select_dial_addrs_follows_the_address_policy() {
         let reserved = addrs(&["/ip4/198.18.0.40/tcp/8080".to_string()]);
-        assert_eq!(select_dial_addrs(reserved.clone(), None, false), reserved);
-        assert!(select_dial_addrs(reserved, None, true).is_empty());
+        assert_eq!(select_dial_addrs(reserved.clone(), None, false, true), reserved);
+        assert!(select_dial_addrs(reserved, None, true, true).is_empty());
     }
 
     /// The same value is stored under every block key, so the list is capped.
@@ -1310,7 +1314,7 @@ mod tests {
             .map(|i| format!("/ip4/203.0.113.{i}/tcp/4001"))
             .collect();
         assert_eq!(
-            select_dial_addrs(addrs(&listeners), None, false).len(),
+            select_dial_addrs(addrs(&listeners), None, false, true).len(),
             MAX_DIAL_ADDRS
         );
     }

@@ -104,7 +104,9 @@ pub fn verified_addrs(envelope: &[u8], claimed: PeerId) -> Vec<Multiaddr> {
 /// — how the bootstraps are addressed — has no IP to judge and passes, as it
 /// does when published.
 fn worth_dialing(addr: &Multiaddr) -> bool {
-    if !uses_dialable_transport(addr) {
+    // QUIC passes here: this decoder has no config, and the daemon drops a
+    // `/quic` address at ingestion when its own swarm was built without it.
+    if !uses_dialable_transport(addr, true) {
         return false;
     }
     if !is_circuit(addr) {

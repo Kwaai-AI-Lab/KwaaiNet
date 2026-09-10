@@ -34,7 +34,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
     dest_peer_id, is_announceable_with, is_circuit, peer_id_from_multiaddr, strip_dest_p2p,
-    strip_p2p, OwnAddresses,
+    strip_p2p, uses_dialable_transport, OwnAddresses,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::NetworkConfig;
@@ -153,6 +153,10 @@ pub struct NetworkService {
     /// because identify-learned addresses are filtered before they reach kad,
     /// and that decision has to match the one the reachability state makes.
     require_global_ips: bool,
+    /// Whether the swarm was built with a QUIC transport. Mirrors
+    /// `NetworkConfig::enable_quic`; a supplied `/quic` address is dropped
+    /// at ingestion when it was not, rather than failing every dial.
+    dials_quic: bool,
     /// The protocol list each connected peer advertised over identify. This is
     /// the capability feed: relay-hop support, AutoNAT and dcutr all show up
     /// here. Dropped when the last connection to a peer closes, so an entry
@@ -442,6 +446,7 @@ impl NetworkService {
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
             require_global_ips: config.require_global_ips,
+            dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
@@ -585,6 +590,10 @@ impl NetworkService {
             // first, so the supplied ones are tried before the routing table
             // and the DHT walk stays available behind them.
             Command::ConnectPeerWithAddrs { peer, addrs, reply } => {
+                let quic = self.dials_quic;
+                let addrs = addrs
+                    .into_iter()
+                    .filter(|a| uses_dialable_transport(a, quic));
                 let added = self.learned_addrs.insert(peer, addrs);
                 debug!(%peer, added, "connect with supplied addresses");
                 self.dispatch_routed(peer, RoutedRequest::Connect { reply });
