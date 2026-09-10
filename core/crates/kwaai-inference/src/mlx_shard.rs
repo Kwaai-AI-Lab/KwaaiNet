@@ -10,9 +10,10 @@ use crate::tokenizer::BpeTokenizer;
 use mlx_rs::module::Module;
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::{nn, Array};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
 
@@ -23,42 +24,58 @@ fn load_err(msg: impl std::fmt::Display) -> InferenceError {
     InferenceError::ModelLoadError(msg.to_string())
 }
 
-fn load_tensor(shards: &[safetensors::SafeTensors<'_>], name: &str) -> InferenceResult<Array> {
-    for st in shards {
-        if let Ok(view) = st.tensor(name) {
-            // Convert SafeTensors data to Float16 via Rust Vec copy.
-            // Array::try_from(TensorView) creates arrays with a memory layout
-            // that causes 1000x slower matmul on Metal. Copying through from_slice
-            // ensures proper GPU-friendly contiguous layout.
-            let arr = Array::try_from(view).map_err(|e| load_err(format!("{name}: {e}")))?;
-            let arr = if arr.dtype() != mlx_rs::Dtype::Float16 {
-                arr.as_dtype(mlx_rs::Dtype::Float16)
-                    .map_err(|e| load_err(format!("{name} dtype: {e}")))?
-            } else {
-                arr
-            };
-            arr.eval()
-                .map_err(|e| load_err(format!("{name} eval: {e}")))?;
-            // Force contiguous GPU copy: convert to F32, rebuild from slice, convert back.
-            // This ensures the MLX array has proper GPU-friendly contiguous layout.
-            let f32_arr = arr
-                .as_dtype(mlx_rs::Dtype::Float32)
-                .map_err(|e| load_err(format!("{name} to_f32: {e}")))?;
-            f32_arr
-                .eval()
-                .map_err(|e| load_err(format!("{name} eval_f32: {e}")))?;
-            let shape: Vec<i32> = f32_arr.shape().to_vec();
-            let data: &[f32] = f32_arr.as_slice::<f32>();
-            let fresh = Array::from_slice::<f32>(data, &shape)
-                .as_dtype(mlx_rs::Dtype::Float16)
-                .map_err(|e| load_err(format!("{name} back_f16: {e}")))?;
-            fresh
-                .eval()
-                .map_err(|e| load_err(format!("{name} fresh_eval: {e}")))?;
-            return Ok(fresh);
-        }
+/// View little-endian bytes as `T`s in place; copies only if unaligned or big-endian.
+fn le_elems<T: Copy, const N: usize>(bytes: &[u8], from_le: fn([u8; N]) -> T) -> Cow<'_, [T]> {
+    if cfg!(target_endian = "little") && bytes.as_ptr().align_offset(std::mem::align_of::<T>()) == 0
+    {
+        // SAFETY: aligned, in bounds, and T is a plain numeric type with no invalid bit patterns.
+        let n = bytes.len() / N;
+        return Cow::Borrowed(unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), n) });
     }
-    Err(load_err(format!("tensor '{name}' not found")))
+    Cow::Owned(
+        bytes
+            .chunks_exact(N)
+            .map(|c| from_le(c.try_into().unwrap()))
+            .collect(),
+    )
+}
+
+/// One safetensors view into a fresh, contiguous MLX f16 array.
+///
+/// The file is mmapped, so the only CPU copy is the one MLX makes from the
+/// element slice — no whole-file read and no f32 detour.
+fn load_tensor(shards: &[safetensors::SafeTensors<'_>], name: &str) -> InferenceResult<Array> {
+    let view = shards
+        .iter()
+        .find_map(|st| st.tensor(name).ok())
+        .ok_or_else(|| load_err(format!("tensor '{name}' not found")))?;
+    let shape: Vec<i32> = view
+        .shape()
+        .iter()
+        .map(|&d| i32::try_from(d).map_err(|_| load_err(format!("{name}: dim {d} exceeds i32"))))
+        .collect::<InferenceResult<_>>()?;
+    let bytes = view.data();
+    let to_f16 = |a: Array| {
+        a.as_dtype(mlx_rs::Dtype::Float16)
+            .map_err(|e| load_err(format!("{name} to f16: {e}")))
+    };
+    let arr = match view.dtype() {
+        safetensors::Dtype::F16 => {
+            Array::from_slice(&le_elems(bytes, half::f16::from_le_bytes), &shape)
+        }
+        safetensors::Dtype::BF16 => to_f16(Array::from_slice(
+            &le_elems(bytes, half::bf16::from_le_bytes),
+            &shape,
+        ))?,
+        safetensors::Dtype::F32 => to_f16(Array::from_slice(
+            &le_elems(bytes, f32::from_le_bytes),
+            &shape,
+        ))?,
+        other => return Err(load_err(format!("{name}: unsupported dtype {other:?}"))),
+    };
+    arr.eval()
+        .map_err(|e| load_err(format!("{name} eval: {e}")))?;
+    Ok(arr)
 }
 fn set_linear(
     l: &mut nn::Linear,
@@ -132,7 +149,10 @@ impl MlxAttention {
         set_linear(&mut self.k_proj, s, &format!("{p}.k_proj"))?;
         set_linear(&mut self.v_proj, s, &format!("{p}.v_proj"))?;
         set_linear(&mut self.o_proj, s, &format!("{p}.o_proj"))?;
-        // Pre-transpose and materialize — eliminates lazy .t() per forward call
+        self.pretranspose()
+    }
+    /// Pre-transpose and materialize — eliminates lazy .t() per forward call.
+    fn pretranspose(&mut self) -> InferenceResult<()> {
         self.q_wt = self.q_proj.weight.as_ref().t();
         self.q_wt.eval().map_err(load_err)?;
         self.k_wt = self.k_proj.weight.as_ref().t();
@@ -408,8 +428,28 @@ pub struct MlxTransformerShard {
     pub start_block: usize,
     pub end_block: usize,
     pub cfg: MlxShardConfig,
-    sessions: Mutex<HashMap<u64, MlxSession>>,
+    sessions: Arc<Mutex<HashMap<u64, MlxSession>>>,
 }
+
+/// Handle on a shard's session table that outlives any lock on the shard itself.
+#[derive(Clone)]
+pub struct MlxSessions(Arc<Mutex<HashMap<u64, MlxSession>>>);
+impl MlxSessions {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, MlxSession>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+    /// Evict sessions idle for 10 minutes. Never contends with a forward:
+    /// `run_blocks` takes its session out of the table while it runs.
+    pub fn gc(&self) {
+        let mut s = self.lock();
+        let b = s.len();
+        s.retain(|_, v| v.last_access.elapsed().as_secs() < 600);
+        if b > s.len() {
+            info!("MLX GC: {}", b - s.len());
+        }
+    }
+}
+
 impl MlxTransformerShard {
     pub fn load(
         st_paths: &[&Path],
@@ -449,11 +489,18 @@ impl MlxTransformerShard {
             "MLX: Loading [{start}..{end}) of {}: h={} heads={}({} kv)",
             c.num_total_blocks, c.hidden_dim, c.num_heads, c.num_kv_heads
         );
-        let sd: Vec<Vec<u8>> = st_paths
+        // mmap, as candle does: a 16-block shard must not page in every file.
+        let maps: Vec<memmap2::Mmap> = st_paths
             .iter()
-            .map(|p| std::fs::read(p).map_err(load_err))
+            .map(|p| {
+                let f = std::fs::File::open(p)
+                    .map_err(|e| load_err(format!("{}: {e}", p.display())))?;
+                // SAFETY: the snapshot is read-only for the life of the mapping.
+                unsafe { memmap2::Mmap::map(&f) }
+                    .map_err(|e| load_err(format!("{}: {e}", p.display())))
+            })
             .collect::<InferenceResult<_>>()?;
-        let shards: Vec<safetensors::SafeTensors<'_>> = sd
+        let shards: Vec<safetensors::SafeTensors<'_>> = maps
             .iter()
             .map(|d| safetensors::SafeTensors::deserialize(d).map_err(load_err))
             .collect::<InferenceResult<_>>()?;
@@ -561,7 +608,7 @@ impl MlxTransformerShard {
             start_block: start,
             end_block: end,
             cfg: c,
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     pub fn is_first(&self) -> bool {
@@ -570,28 +617,37 @@ impl MlxTransformerShard {
     pub fn is_last(&self) -> bool {
         self.end_block == self.cfg.num_total_blocks
     }
+    pub fn sessions(&self) -> MlxSessions {
+        MlxSessions(self.sessions.clone())
+    }
     pub fn gc_sessions(&self) {
-        let mut s = self.sessions.lock().unwrap();
-        let b = s.len();
-        s.retain(|_, v| v.last_access.elapsed().as_secs() < 600);
-        if b > s.len() {
-            info!("MLX GC: {}", b - s.len());
-        }
+        self.sessions().gc()
+    }
+    /// Take the session out of the table for the forward. A forward that fails
+    /// drops it: its KV cache is half-appended and cannot be resumed.
+    fn take_session(&self, sid: u64) -> MlxSession {
+        let mut sess = self
+            .sessions()
+            .lock()
+            .remove(&sid)
+            .unwrap_or_else(|| MlxSession::new(self.blocks.len()));
+        sess.last_access = Instant::now();
+        sess
+    }
+    fn put_session(&self, sid: u64, sess: MlxSession) {
+        self.sessions().lock().insert(sid, sess);
     }
     fn run_blocks(&mut self, mut x: Array, sp: usize, sid: u64) -> InferenceResult<Array> {
         // `compiled_block_forward` cannot read a traced scalar, so it ropes every
         // decode step at offset 0. The uncompiled path is the default;
         // KWAAINET_MLX_COMPILE=1 opts back in for A/B timing.
         if std::env::var("KWAAINET_MLX_COMPILE").as_deref() != Ok("1") {
-            let mut ss = self.sessions.lock().unwrap();
-            let sess = ss
-                .entry(sid)
-                .or_insert_with(|| MlxSession::new(self.blocks.len()));
-            sess.last_access = Instant::now();
+            let mut sess = self.take_session(sid);
             for (i, b) in self.blocks.iter_mut().enumerate() {
                 x = b.forward(&x, &mut sess.kv[i], sp)?;
             }
             x.eval().map_err(err)?;
+            self.put_session(sid, sess);
             return Ok(x);
         }
 
@@ -622,11 +678,7 @@ impl MlxTransformerShard {
             .lock()
             .unwrap();
 
-        let mut ss = self.sessions.lock().unwrap();
-        let s = ss
-            .entry(sid)
-            .or_insert_with(|| MlxSession::new(self.blocks.len()));
-        s.last_access = Instant::now();
+        let mut s = self.take_session(sid);
 
         let empty_kv = Array::from_slice::<f32>(&[0.0], &[1]);
 
@@ -657,6 +709,7 @@ impl MlxTransformerShard {
         }
 
         x.eval().map_err(err)?;
+        self.put_session(sid, s);
         Ok(x)
     }
     /// **First node**: embed token IDs, run this shard's blocks, return hidden
@@ -772,25 +825,72 @@ mod tests {
         eprintln!("[OK] raw_matmul [1,{h}]x[{inter},{h}]^T = {ms:.1}ms (expect <5ms on Metal)");
     }
 
+    /// Half-split RoPE (HF Llama / candle `RopeCache` convention) on one head vector.
+    fn rope_ref(x: &[f32], pos: usize, base: f32) -> Vec<f32> {
+        let (d, half) = (x.len(), x.len() / 2);
+        let mut out = vec![0.0; d];
+        for i in 0..half {
+            let freq = base.powf(-(2.0 * i as f32) / d as f32);
+            let (sin, cos) = (pos as f32 * freq).sin_cos();
+            out[i] = x[i] * cos - x[i + half] * sin;
+            out[i + half] = x[i] * sin + x[i + half] * cos;
+        }
+        out
+    }
+
+    /// `y = x · Wᵀ` with `w` in mlx `nn::Linear` layout `[n_out, n_in]`.
+    fn linear_ref(x: &[f32], w: &[f32], n_in: usize, n_out: usize) -> Vec<f32> {
+        let rows = x.len() / n_in;
+        let mut y = vec![0.0; rows * n_out];
+        for r in 0..rows {
+            for o in 0..n_out {
+                y[r * n_out + o] = (0..n_in).map(|i| x[r * n_in + i] * w[o * n_in + i]).sum();
+            }
+        }
+        y
+    }
+
+    fn find_model_dir() -> Option<std::path::PathBuf> {
+        if let Ok(d) = std::env::var("KWAAI_TEST_MODEL") {
+            return Some(d.into());
+        }
+        let home = dirs::home_dir()?;
+        [
+            ".cache/huggingface/models--unsloth--Llama-3.1-8B-Instruct/snapshots",
+            ".cache/huggingface/hub/models--unsloth--Llama-3.1-8B-Instruct/snapshots",
+        ]
+        .iter()
+        .map(|b| home.join(b))
+        .filter(|d| d.exists())
+        .find_map(|d| {
+            std::fs::read_dir(&d)
+                .ok()?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| p.join("config.json").exists())
+        })
+    }
+
     /// Bisect MLX against candle on identical weights and inputs.
     ///
     /// Both load blocks [0, 1) from the same SafeTensors file and run the same
     /// token IDs through `forward_first`, so any divergence is MLX's block math
-    /// — not the tokenizer, the sampler, the head, or the shard chain.
-    /// Ignored by default: needs the real model on disk.
+    /// — not the tokenizer, the sampler, the head, or the shard chain. A RoPE
+    /// axis fault shows as cosine falling off with position; f16 rounding does
+    /// not. Skips when the model is not on disk.
     #[test]
-    #[ignore]
     fn test_mlx_vs_candle_block0() {
-        let dir = std::path::PathBuf::from(
-            std::env::var("KWAAI_TEST_MODEL").expect("set KWAAI_TEST_MODEL to a HF snapshot dir"),
-        );
+        let Some(dir) = find_model_dir() else {
+            eprintln!("[SKIP] test_mlx_vs_candle_block0 — no model");
+            return;
+        };
         let f1 = dir.join("model-00001-of-00004.safetensors");
         let cfgp = dir.join("config.json");
         let ids: Vec<u32> = vec![128000, 3923, 374, 279, 6864];
 
         // ── raw weight load: does BF16 -> F16 survive? ───────────────────────
-        let data = std::fs::read(&f1).unwrap();
-        let st = safetensors::SafeTensors::deserialize(&data).unwrap();
+        let map = unsafe { memmap2::Mmap::map(&std::fs::File::open(&f1).unwrap()).unwrap() };
+        let st = safetensors::SafeTensors::deserialize(&map).unwrap();
         let mlx_w = super::load_tensor(&[st], "model.layers.0.self_attn.q_proj.weight").unwrap();
         let mlx_w32 = mlx_w.as_dtype(mlx_rs::Dtype::Float32).unwrap();
         mlx_w32.eval().unwrap();
@@ -811,6 +911,12 @@ mod tests {
         let cwv: Vec<f32> = cw.flatten_all().unwrap().to_vec1().unwrap()[..8].to_vec();
         println!("q_proj[0..8] mlx    = {:?}", mw);
         println!("q_proj[0..8] candle = {:?}", cwv);
+        for (a, b) in mw.iter().zip(&cwv) {
+            assert!(
+                (a - b).abs() <= 1e-3 * a.abs().max(1.0),
+                "weight load: {a} vs {b}"
+            );
+        }
 
         // ── one block through both engines ──────────────────────────────────
         let cshard = crate::TransformerShard::load(&[f1.as_path()], &cfgp, &dev, 0, 1).unwrap();
@@ -836,76 +942,147 @@ mod tests {
             mh.shape()
         );
         assert_eq!(cv.len(), mv.len(), "hidden state length mismatch");
+        assert_eq!(cv.len(), ids.len() * 4096);
 
-        let max_abs = cv
-            .iter()
-            .zip(mv.iter())
-            .map(|(a, b): (&f32, &f32)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        let dot: f32 = cv.iter().zip(&mv).map(|(a, b)| a * b).sum();
-        let na: f32 = cv.iter().map(|a| a * a).sum::<f32>().sqrt();
-        let nb: f32 = mv.iter().map(|b| b * b).sum::<f32>().sqrt();
-        println!(
-            "max_abs_diff = {max_abs:.5}   cosine = {:.6}",
-            dot / (na * nb)
-        );
-        // Per-position cosine: a RoPE fault grows with position; an f16
-        // rounding difference does not.
+        let cosine = |a: &[f32], b: &[f32]| -> f32 {
+            let d: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na: f32 = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let nb: f32 = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+            d / (na * nb)
+        };
         for t in 0..ids.len() {
-            let a = &cv[t * 4096..(t + 1) * 4096];
-            let b = &mv[t * 4096..(t + 1) * 4096];
-            let d: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-            let x: f32 = a.iter().map(|v| v * v).sum::<f32>().sqrt();
-            let y: f32 = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let (a, b) = (&cv[t * 4096..(t + 1) * 4096], &mv[t * 4096..(t + 1) * 4096]);
+            let c = cosine(a, b);
             let m = a
                 .iter()
-                .zip(b.iter())
-                .map(|(p, q): (&f32, &f32)| (p - q).abs())
+                .zip(b)
+                .map(|(p, q)| (p - q).abs())
                 .fold(0.0f32, f32::max);
-            println!("  pos {t}: cosine = {:.6}  max_abs = {m:.5}", d / (x * y));
+            println!("  pos {t}: cosine = {c:.6}  max_abs = {m:.5}");
+            assert!(c > 0.999, "pos {t}: candle/MLX cosine {c}");
         }
-        println!("candle[0..6] = {:?}", &cv[..6]);
-        println!("mlx   [0..6] = {:?}", &mv[..6]);
-        // last token's hidden state is what the next block actually consumes
-        let off = cv.len() - 4096;
-        let lmax = cv[off..]
-            .iter()
-            .zip(mv[off..].iter())
-            .map(|(a, b): (&f32, &f32)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        println!("last-token max_abs_diff = {lmax:.5}");
     }
 
-    /// Which axis does `fast::rope` treat as the sequence position?
+    /// `fast::rope` takes axis -2 as the sequence position — the fact the
+    /// attention layout in `MlxAttention::forward` rests on.
     ///
-    /// Position 0 is the identity rotation (cos 0 = 1, sin 0 = 0), so with an
-    /// all-ones input the slice that comes back unchanged marks the position
-    /// axis. Shape [1, 2, 3, 4]: if axis -2 (len 3) is the sequence, the c=0
-    /// row of every a is untouched; if axis 1 (len 2) is, the whole a=0 block is.
+    /// Every [a, c, :] row must equal the reference rotation at position c.
+    /// If the position were axis 1 the row would be rotated by a instead,
+    /// which differs wherever a != c.
     #[test]
     fn test_rope_position_axis() {
-        let x = Array::ones::<f32>(&[1, 2, 3, 4]).unwrap();
+        let xs: Vec<f32> = (0..24).map(|i| 0.5 + 0.1 * i as f32).collect();
+        let x = Array::from_slice::<f32>(&xs, &[1, 2, 3, 4]);
         let r = mlx_rs::fast::rope(&x, 4, false, Some(10000.0), 1.0, 0, None).unwrap();
         r.eval().unwrap();
         let v = r.as_slice::<f32>();
-        let at = |a: usize, c: usize| -> Vec<f32> {
-            let base = (a * 3 + c) * 4;
-            v[base..base + 4].to_vec()
-        };
+        let mut differs = 0;
         for a in 0..2 {
             for c in 0..3 {
-                println!("a={a} c={c} -> {:?}", at(a, c));
+                let base = (a * 3 + c) * 4;
+                let got = &v[base..base + 4];
+                let want = rope_ref(&xs[base..base + 4], c, 10000.0);
+                let wrong = rope_ref(&xs[base..base + 4], a, 10000.0);
+                for i in 0..4 {
+                    assert!(
+                        (got[i] - want[i]).abs() < 1e-4,
+                        "a={a} c={c}: {got:?} vs {want:?}"
+                    );
+                }
+                if got.iter().zip(&wrong).any(|(g, w)| (g - w).abs() > 1e-3) {
+                    differs += 1;
+                }
             }
         }
-        let unchanged = |w: &[f32]| w.iter().all(|&z| (z - 1.0).abs() < 1e-3);
-        println!(
-            "axis -2 is sequence: {}",
-            unchanged(&at(0, 0)) && unchanged(&at(1, 0)) && !unchanged(&at(0, 1))
+        assert!(differs >= 4, "rows rotated by axis 1 would look the same");
+    }
+
+    /// One attention layer against a scalar reference: q/k/v projections,
+    /// half-split RoPE at the *token* position, causal softmax, GQA, o_proj.
+    /// Rotating before the [0,2,1,3] transpose (the pre-fix layout) ropes each
+    /// token by its head index and fails here at every position past 0.
+    #[test]
+    fn test_attention_matches_reference() {
+        let (hid, nh, nkv, hd, seq) = (8usize, 2usize, 1usize, 4usize, 3usize);
+        let cfg = super::MlxShardConfig {
+            num_total_blocks: 1,
+            hidden_dim: hid,
+            num_heads: nh,
+            num_kv_heads: nkv,
+            head_dim: hd,
+            intermediate_dim: 16,
+            vocab_size: 16,
+            rope_theta: 10000.0,
+            rms_norm_eps: 1e-5,
+        };
+        let w = |n_out: usize, n_in: usize, seed: usize| -> Vec<f32> {
+            (0..n_out * n_in)
+                .map(|i| ((i * 7 + seed * 3) % 11) as f32 / 11.0 - 0.5)
+                .collect()
+        };
+        let (wq, wk, wv, wo) = (
+            w(hid, hid, 1),
+            w(nkv * hd, hid, 2),
+            w(nkv * hd, hid, 3),
+            w(hid, hid, 4),
         );
-        println!(
-            "axis  1 is sequence: {}",
-            unchanged(&at(0, 0)) && unchanged(&at(0, 1)) && !unchanged(&at(1, 0))
-        );
+        let xs: Vec<f32> = (0..seq * hid)
+            .map(|i| ((i * 5) % 7) as f32 / 7.0 - 0.3)
+            .collect();
+
+        let mut attn = super::MlxAttention::new(&cfg).unwrap();
+        *attn.q_proj.weight = Array::from_slice(&wq, &[hid as i32, hid as i32]);
+        *attn.k_proj.weight = Array::from_slice(&wk, &[(nkv * hd) as i32, hid as i32]);
+        *attn.v_proj.weight = Array::from_slice(&wv, &[(nkv * hd) as i32, hid as i32]);
+        *attn.o_proj.weight = Array::from_slice(&wo, &[hid as i32, hid as i32]);
+        attn.pretranspose().unwrap();
+        let x = Array::from_slice(&xs, &[1, seq as i32, hid as i32]);
+        let mut kv = None;
+        let y = attn.forward(&x, &mut kv, 0).unwrap();
+        y.eval().unwrap();
+        let got = y.as_slice::<f32>();
+
+        // reference
+        let q = linear_ref(&xs, &wq, hid, hid);
+        let k = linear_ref(&xs, &wk, hid, nkv * hd);
+        let v = linear_ref(&xs, &wv, hid, nkv * hd);
+        let scale = (hd as f32).sqrt().recip();
+        let mut ao = vec![0.0f32; seq * hid];
+        for t in 0..seq {
+            for h in 0..nh {
+                let g = h / (nh / nkv);
+                let qr = rope_ref(&q[t * hid + h * hd..t * hid + (h + 1) * hd], t, 10000.0);
+                let kr: Vec<Vec<f32>> = (0..=t)
+                    .map(|j| {
+                        rope_ref(
+                            &k[j * nkv * hd + g * hd..j * nkv * hd + (g + 1) * hd],
+                            j,
+                            10000.0,
+                        )
+                    })
+                    .collect();
+                let sc: Vec<f32> = kr
+                    .iter()
+                    .map(|kj| qr.iter().zip(kj).map(|(a, b)| a * b).sum::<f32>() * scale)
+                    .collect();
+                let mx = sc.iter().cloned().fold(f32::MIN, f32::max);
+                let ex: Vec<f32> = sc.iter().map(|s| (s - mx).exp()).collect();
+                let z: f32 = ex.iter().sum();
+                for (j, e) in ex.iter().enumerate() {
+                    for d in 0..hd {
+                        ao[t * hid + h * hd + d] += e / z * v[j * nkv * hd + g * hd + d];
+                    }
+                }
+            }
+        }
+        let want = linear_ref(&ao, &wo, hid, hid);
+        assert_eq!(got.len(), want.len());
+        for t in 0..seq {
+            let (g, w) = (&got[t * hid..(t + 1) * hid], &want[t * hid..(t + 1) * hid]);
+            for i in 0..hid {
+                assert!((g[i] - w[i]).abs() < 1e-3, "pos {t}: {g:?} vs {w:?}");
+            }
+        }
     }
 
     #[test]

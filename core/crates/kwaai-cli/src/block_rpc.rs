@@ -40,42 +40,63 @@ pub type ShardCell = Arc<RwLock<Option<Arc<LoadedShard>>>>;
 
 /// The engine behind one `shard serve`: candle everywhere, MLX when built for it.
 /// MLX forwards take `&mut self`, hence the mutex — one request at a time per shard.
+/// The block range is copied out at load so no async context ever waits on it.
 pub enum LoadedShard {
     Candle(TransformerShard),
     #[cfg(feature = "mlx")]
-    Mlx(std::sync::Mutex<kwaai_inference::mlx_shard::MlxTransformerShard>),
+    Mlx {
+        blocks: (usize, usize),
+        is_first: bool,
+        is_last: bool,
+        sessions: kwaai_inference::mlx_shard::MlxSessions,
+        shard: std::sync::Mutex<kwaai_inference::mlx_shard::MlxTransformerShard>,
+    },
+}
+
+/// Lock, recovering from poison: a forward that panicked leaves the weights
+/// untouched and its session dropped, so the shard is still usable.
+#[cfg_attr(not(feature = "mlx"), allow(dead_code))]
+fn lock_recover<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl LoadedShard {
+    #[cfg(feature = "mlx")]
+    pub fn mlx(shard: kwaai_inference::mlx_shard::MlxTransformerShard) -> Self {
+        Self::Mlx {
+            blocks: (shard.start_block, shard.end_block),
+            is_first: shard.is_first(),
+            is_last: shard.is_last(),
+            sessions: shard.sessions(),
+            shard: std::sync::Mutex::new(shard),
+        }
+    }
     pub fn blocks(&self) -> (usize, usize) {
         match self {
             Self::Candle(s) => (s.start_block, s.end_block),
             #[cfg(feature = "mlx")]
-            Self::Mlx(m) => {
-                let m = m.lock().unwrap();
-                (m.start_block, m.end_block)
-            }
+            Self::Mlx { blocks, .. } => *blocks,
         }
     }
     pub fn is_first(&self) -> bool {
         match self {
             Self::Candle(s) => s.is_first(),
             #[cfg(feature = "mlx")]
-            Self::Mlx(m) => m.lock().unwrap().is_first(),
+            Self::Mlx { is_first, .. } => *is_first,
         }
     }
     pub fn is_last(&self) -> bool {
         match self {
             Self::Candle(s) => s.is_last(),
             #[cfg(feature = "mlx")]
-            Self::Mlx(m) => m.lock().unwrap().is_last(),
+            Self::Mlx { is_last, .. } => *is_last,
         }
     }
     pub fn gc_sessions(&self) {
         match self {
             Self::Candle(s) => s.gc_sessions(),
             #[cfg(feature = "mlx")]
-            Self::Mlx(m) => m.lock().unwrap().gc_sessions(),
+            Self::Mlx { sessions, .. } => sessions.gc(),
         }
     }
 }
@@ -168,6 +189,14 @@ pub fn f16_bytes_to_tensor(bytes: &[u8], shape: &[u32], device: &Device) -> Resu
         .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
         .collect();
     let shape_usize: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+    // `Tensor::from_vec` does not check this: a short buffer would back an oversized tensor.
+    let n: usize = shape_usize.iter().product();
+    if n != f16_vec.len() {
+        bail!(
+            "shape {shape:?} needs {n} f16 elements, got {}",
+            f16_vec.len()
+        );
+    }
     Tensor::from_vec(f16_vec, shape_usize.as_slice(), device).context("Tensor::from_vec f16")
 }
 
@@ -201,7 +230,18 @@ pub fn f16_bytes_to_array(bytes: &[u8], shape: &[u32]) -> Result<kwaai_inference
         .chunks_exact(2)
         .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let shape: Vec<i32> = shape.iter().map(|&d| d as i32).collect();
+    // `Array::from_slice` asserts on a length/shape mismatch; fail like the candle twin instead.
+    let shape: Vec<i32> = shape
+        .iter()
+        .map(|&d| i32::try_from(d).with_context(|| format!("dim {d} exceeds i32")))
+        .collect::<Result<_>>()?;
+    let n: usize = shape.iter().map(|&d| d as usize).product();
+    if n != f16_vec.len() {
+        bail!(
+            "shape {shape:?} needs {n} f16 elements, got {}",
+            f16_vec.len()
+        );
+    }
     Ok(kwaai_inference::mlx_rs::Array::from_slice(&f16_vec, &shape))
 }
 
@@ -439,8 +479,8 @@ pub async fn handle_inference_request(
                     (shape, data, is_logits)
                 }
                 #[cfg(feature = "mlx")]
-                LoadedShard::Mlx(m) => {
-                    let mut m = m.lock().unwrap();
+                LoadedShard::Mlx { shard: m, .. } => {
+                    let mut m = lock_recover(m);
                     let (out, is_logits) = match req.payload_type {
                         PayloadType::TokenIds => {
                             let ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
@@ -609,6 +649,40 @@ mod tests {
             let decoded: ResponseType = rmp_serde::from_slice(&bytes).unwrap();
             assert_eq!(&decoded, v);
         }
+    }
+
+    #[test]
+    fn f16_bytes_shape_mismatch_errs() {
+        let bytes = vec![0u8; 8]; // four f16
+        assert!(f16_bytes_to_tensor(&bytes, &[1, 5], &Device::Cpu).is_err());
+        assert!(f16_bytes_to_tensor(&bytes, &[2, 2], &Device::Cpu).is_ok());
+    }
+
+    #[cfg(feature = "mlx")]
+    #[test]
+    fn f16_bytes_to_array_shape_mismatch_errs() {
+        let bytes = vec![0u8; 8]; // four f16
+        assert!(f16_bytes_to_array(&bytes, &[1, 5]).is_err());
+        assert!(f16_bytes_to_array(&bytes, &[u32::MAX]).is_err());
+        assert!(f16_bytes_to_array(&bytes, &[7]).is_err());
+        assert_eq!(
+            f16_bytes_to_array(&bytes, &[2, 2]).unwrap().shape(),
+            &[2, 2]
+        );
+    }
+
+    #[test]
+    fn lock_recover_survives_poison() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(1u32));
+        let m2 = m.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = m2.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        *lock_recover(&m) += 1;
+        assert_eq!(*lock_recover(&m), 2);
     }
 
     #[test]

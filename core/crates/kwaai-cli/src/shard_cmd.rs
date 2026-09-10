@@ -3487,7 +3487,7 @@ fn load_serving_shard(
     if mlx {
         let shard =
             kwaai_inference::mlx_shard::MlxTransformerShard::load(paths, config_path, start, end)?;
-        return Ok(LoadedShard::Mlx(std::sync::Mutex::new(shard)));
+        return Ok(LoadedShard::mlx(shard));
     }
     #[cfg(not(feature = "mlx"))]
     if mlx {

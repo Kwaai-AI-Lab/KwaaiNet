@@ -46,6 +46,7 @@ harness = false
 [target.'cfg(target_os = "macos")'.dependencies]
 mlx-rs = { version = "0.25", optional = true, features = ["safetensors"] }
 safetensors = { version = "0.6", optional = true }
+memmap2 = { version = "0.9", optional = true }
 
 [features]
 default = ["cpu"]
@@ -53,4 +54,4 @@ cpu = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 flash-attn = ["cuda", "candle-flash-attn"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
-mlx = ["mlx-rs", "safetensors"]
+mlx = ["mlx-rs", "safetensors", "memmap2"]
