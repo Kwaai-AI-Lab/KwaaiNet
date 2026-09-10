@@ -584,8 +584,14 @@ fn select_dial_addrs(
         }
     }
     // Circuits take their slots first; direct addresses get what is left and
-    // still lead the output. See the function docs for why.
-    circuits.truncate(MAX_DIAL_ADDRS);
+    // still lead the output. See the function docs for why. The declared
+    // address, if it survived the filter, is `direct[0]` and keeps one slot
+    // regardless — it is the one address no circuit can substitute for.
+    let declared_kept = declared
+        .and_then(|d| d.parse::<libp2p::Multiaddr>().ok())
+        .map(|d| strip_dest_p2p(&d))
+        .is_some_and(|d| direct.first() == Some(&d));
+    circuits.truncate(MAX_DIAL_ADDRS - usize::from(declared_kept));
     direct.truncate(MAX_DIAL_ADDRS - circuits.len());
     direct.extend(circuits);
     direct
@@ -1273,6 +1279,31 @@ mod tests {
         let out = select_dial_addrs(addrs(&[circuit]), Some("/ip4/203.0.113.7/tcp/4001"), false, true);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
+    }
+
+    /// Enough reservations to fill the record must not push the declared
+    /// address out: it is the operator's forwarded port, which no circuit
+    /// stands in for.
+    #[test]
+    fn select_dial_addrs_keeps_the_declared_address_beside_full_circuits() {
+        let circuits: Vec<String> = (0..MAX_DIAL_ADDRS + 1)
+            .map(|i| {
+                format!(
+                    "/ip4/76.13.5.{i}/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+                    PeerId::random().to_base58(),
+                    peer().to_base58()
+                )
+            })
+            .collect();
+        let out = select_dial_addrs(
+            addrs(&circuits),
+            Some("/ip4/203.0.113.7/tcp/4001"),
+            false,
+            true,
+        );
+        assert_eq!(out.len(), MAX_DIAL_ADDRS);
+        assert_eq!(out[0].to_string(), "/ip4/203.0.113.7/tcp/4001");
+        assert!(out[1..].iter().all(kwaai_p2p::is_circuit));
     }
 
     /// A host with many interfaces — several global v6 addresses, a VPN —

@@ -2675,8 +2675,11 @@ fn decode_server_info_dictionary(bytes: &[u8], out: &mut HashMap<String, BlockSe
             // it sits under would hand this entry `peer_id` from the subkey
             // and addresses belonging to whoever the value names. Legacy
             // records omit `peer_id` entirely, so only a present-and-different
-            // one is a contradiction.
-            if !info.peer_id_b58.is_empty() && info.peer_id_b58 != peer_id_b58 {
+            // one is a contradiction. Compared as ids so an alternative
+            // spelling of the same peer, should one ever parse, is agreement.
+            if !info.peer_id_b58.is_empty()
+                && info.peer_id_b58.parse::<PeerId>().ok() != Some(peer_id)
+            {
                 continue;
             }
             let key = peer_id_b58.clone();
@@ -3889,6 +3892,7 @@ mod tests {
             vec!["/ip4/203.0.113.7/tcp/4001".parse::<Multiaddr>().unwrap()]
         );
     }
+
 }
 
 /// The rebalance gate. Regression for two bugs: `auto_rebalance` in config
