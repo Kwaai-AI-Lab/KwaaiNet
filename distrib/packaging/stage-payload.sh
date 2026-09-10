@@ -19,8 +19,8 @@ TOP="$(find "${TMP}" -mindepth 1 -maxdepth 1 -type d)"
 
 [ -f "${TOP}/kwaainet" ] || { echo "stage-payload: kwaainet missing from ${ARCHIVE}" >&2; exit 1; }
 
-# p2pd is deliberately not staged. Current archives still carry it; ignoring
-# rather than rejecting it keeps this working across its removal upstream.
+# Only kwaainet is staged; anything else in the archive (README, a p2pd from
+# a pre-0.6.9 archive) is ignored rather than rejected.
 mkdir -p "${OUTDIR}"
 cp "${TOP}/kwaainet" "${OUTDIR}/"
 chmod 0755 "${OUTDIR}/kwaainet"

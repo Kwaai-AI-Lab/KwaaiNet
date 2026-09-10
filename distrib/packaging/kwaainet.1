@@ -1,4 +1,4 @@
-.TH KWAAINET 1 "2026-09-04" "KwaaiNet" "User Commands"
+.TH KWAAINET 1 "2026-09-09" "KwaaiNet" "User Commands"
 .SH NAME
 kwaainet \- KwaaiNet node CLI for decentralized inference and training
 .SH SYNOPSIS
@@ -17,10 +17,8 @@ can serve, and discovers other nodes over a distributed hash table. Nodes behind
 NAT connect via hole punching or relay circuits, so no port forwarding is
 required in the common case.
 .PP
-The node process is backed by
-.BR p2pd (1),
-a libp2p daemon shipped alongside this binary. Configuration and state, including
-the node identity key, live under
+The p2p stack runs inside the node process; there is no separate daemon to
+install. Configuration and state, including the node identity key, live under
 .IR ~/.kwaainet .
 .SH COMMANDS
 .TP
@@ -34,8 +32,8 @@ Stop the KwaaiNet daemon.
 Restart the KwaaiNet daemon.
 .TP
 .B run\-node
-Run the node in the foreground. This is the entry point used by the systemd
-service unit; prefer
+Run the node in the foreground. This is the entry point the auto\-start
+service uses; prefer
 .B start
 interactively.
 .TP
@@ -49,10 +47,13 @@ Show daemon logs.
 View or modify configuration.
 .TP
 .B node\-health
-Live health check: p2pd, Ollama, and relay circuit status.
+Live health check: Ollama and relay circuit status.
 .TP
 .B service
-Manage the auto\-start service.
+Manage the auto\-start service. This package installs no service;
+.B service install
+writes a systemd user unit under
+.IR ~/.config/systemd/user .
 .TP
 .B p2p
 Inspect live p2p state, such as identity and connected peers.
@@ -71,9 +72,14 @@ Manage the local storage fabric.
 Manage VPK (Virtual Private Knowledge) vector database integration.
 .TP
 .B update
-Check or install updates. Disabled in packaged installs; see
+Check for a newer release. On a packaged install it prints the command that
+upgrades the package instead of installing anything; see
 .B NOTES
 below.
+.TP
+.B uninstall
+Stop the node and remove its data. On a packaged install the binary itself is
+left to the package manager.
 .PP
 This is not the full command set. Run
 .B kwaainet \-\-help
@@ -92,8 +98,9 @@ Print version.
 .B KWAAINET_NO_AUTO_UPDATE
 When set to
 .BR 1 ,
-the node does not check for or install updates. Set by default in
-.IR /etc/default/kwaainet .
+a running node never downloads or installs an update in the background. A
+packaged install already behaves this way; the variable is a developer
+escape hatch for unpackaged builds.
 .TP
 .B RUST_LOG
 Log filter, e.g.
@@ -109,21 +116,31 @@ Node identity key. Never removed by package upgrade or removal.
 .I ~/.kwaainet/logs/kwaainet.log
 Node log.
 .TP
-.I /etc/default/kwaainet
-Environment for the packaged systemd user unit.
-.TP
-.I /usr/lib/systemd/user/kwaainet.service
-Packaged systemd user unit. Not enabled on install.
+.I /usr/lib/kwaainet/packaged
+Marker, containing
+.BR deb ,
+that tells
+.B kwaainet
+it was installed from a package. While it is present, and the binary is
+.IR /usr/bin/kwaainet ,
+self\-update and self\-uninstall are disabled.
 .SH NOTES
 This package installs KwaaiNet from a distribution package. Self\-update is
-disabled, because it would replace files the package manager owns. Upgrade with
-.B apt
-instead. See
+disabled, because it would replace files the package manager owns.
+.B kwaainet update
+still reports a newer release and prints the
+.BR dpkg (1)
+command that installs it; remove with
+.BR apt (8).
+See
 .I /usr/share/doc/kwaainet/README.Debian
 for details.
 .SH SEE ALSO
+.BR apt (8),
+.BR dpkg (1),
 .BR systemctl (1)
 .PP
 Project home:
 .UR https://kwaai.ai
+kwaai.ai
 .UE

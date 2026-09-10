@@ -4,10 +4,11 @@ kwaainet for Debian
 Installed from a package
 ------------------------
 This copy of kwaainet was installed by the package manager, so self-update is
-turned off: /usr/lib/kwaainet/packaged marks the install as "deb". Do not run
-"kwaainet update" or "kwaainet uninstall" — they would replace or delete files
-dpkg owns, leaving the package database disagreeing with the filesystem. Both
-commands refuse and point at apt. Upgrade and remove with apt instead.
+turned off: /usr/lib/kwaainet/packaged marks the install as "deb". A self-update
+would replace files dpkg owns, leaving the package database disagreeing with
+the filesystem, so "kwaainet update" only reports a newer release and prints
+the dpkg command that installs it, and "kwaainet uninstall" leaves
+/usr/bin/kwaainet for "apt remove kwaainet".
 
 Running a node
 --------------
