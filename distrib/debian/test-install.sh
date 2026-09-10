@@ -84,7 +84,9 @@ fi
 # dpkg-deb writes no md5sums itself; without them `dpkg -V` verifies nothing.
 grep -q ' usr/bin/kwaainet$' /var/lib/dpkg/info/kwaainet.md5sums 2>/dev/null \
     || fail "package ships no md5sums entry for usr/bin/kwaainet"
-dpkg -V kwaainet || fail "dpkg -V kwaainet failed on a fresh install"
+# `dpkg -V` reports mismatches on stdout but exits 0 either way, so judge
+# the output, not the exit status.
+[ -z "$(dpkg -V kwaainet 2>&1)" ] || fail "dpkg -V kwaainet reported a mismatch on a fresh install"
 ok "md5sums shipped and dpkg -V passes"
 
 # The marker is a filesystem contract between these scripts and
@@ -117,7 +119,8 @@ fi
 
 # Tamper last, so nothing above ran against a corrupted binary.
 echo tamper >> /usr/bin/kwaainet
-if dpkg -V kwaainet 2>/dev/null; then fail "dpkg -V did not notice a tampered /usr/bin/kwaainet"; fi
+dpkg -V kwaainet 2>&1 | grep -q '^..5.* /usr/bin/kwaainet$' \
+    || fail "dpkg -V did not notice a tampered /usr/bin/kwaainet"
 ok "dpkg -V catches a tampered binary"
 
 apt-get remove -y -qq kwaainet >/dev/null
