@@ -746,6 +746,11 @@ impl Behaviour {
         }
     }
 
+    /// The per-call budget, so a loopback call can be bounded like a remote one.
+    pub fn request_timeout(&self) -> Duration {
+        self.config.request_timeout
+    }
+
     /// Start advertising `proto` on inbound negotiation. Idempotent. Takes
     /// effect for every subsequent inbound stream, including on connections
     /// that already exist.
