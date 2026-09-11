@@ -1031,14 +1031,14 @@ impl KwaaiNetConfig {
 
     /// Re-read config.yaml before a save so writes by other processes are kept;
     /// falls back to `self` if the file cannot be read.
+    pub fn reloaded(&self) -> Self {
+        Self::load_or_create().unwrap_or_else(|_| self.clone())
+    }
+
     /// Effective `enable_quic`: the explicit setting, else the swarm default.
     pub fn quic(&self) -> bool {
         self.enable_quic
             .unwrap_or(kwaai_p2p::config::DEFAULT_ENABLE_QUIC)
-    }
-
-    pub fn reloaded(&self) -> Self {
-        Self::load_or_create().unwrap_or_else(|_| self.clone())
     }
 
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
