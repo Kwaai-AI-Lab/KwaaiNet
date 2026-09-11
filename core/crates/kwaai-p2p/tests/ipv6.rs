@@ -289,6 +289,55 @@ mod with_v6_listeners {
         );
     }
 
+    /// A v6 address a peer published about itself lands in the learned-address
+    /// map ahead of the routing table, and is a remote claim like any other:
+    /// `ipv6: false` must not dial it, even when it is the only one that works.
+    #[tokio::test]
+    async fn a_learned_v6_address_is_not_dialed_when_ipv6_is_off() {
+        if !v6_loopback_works() {
+            println!("skipping: no IPv6 loopback on this host");
+            return;
+        }
+
+        let (alice, _alice_task, alice_id) = spawn_v6_only(Ipv6Mode::On);
+        let alice_v6 = eventually("alice to report a v6 listen address", || async {
+            alice.listen_addrs().await.ok()?.into_iter().find(is_v6)
+        })
+        .await;
+        // Refused on the spot: nothing listens on port 1 unless we are root.
+        let dead_v4: Multiaddr = "/ip4/127.0.0.1/tcp/1".parse().unwrap();
+        let learned = vec![dead_v4, alice_v6];
+
+        let bob = |ipv6| {
+            NetworkService::spawn(
+                NetworkConfig {
+                    ipv6,
+                    ..NetworkConfig::for_tests()
+                },
+                Keypair::generate_ed25519(),
+            )
+            .expect("bob should start")
+        };
+
+        let (off, _off_task) = bob(Ipv6Mode::Off);
+        let err = off
+            .connect_peer_with_addrs(alice_id, learned.clone())
+            .await
+            .expect_err("ipv6: false must not dial the learned v6 address");
+        assert!(
+            !err.to_string().contains("/ip6/"),
+            "the v6 address must never have been tried: {err}"
+        );
+
+        // Control: the same list reaches alice once v6 is allowed.
+        let (auto, _auto_task) = bob(Ipv6Mode::Auto);
+        let connected = auto
+            .connect_peer_with_addrs(alice_id, learned)
+            .await
+            .expect("the learned v6 address is dialable when ipv6 is on");
+        assert_eq!(connected, alice_id);
+    }
+
     /// `auto` and `true` differ only when the bind fails, which is the whole
     /// reason `true` exists.
     #[tokio::test]
