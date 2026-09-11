@@ -32,8 +32,8 @@ use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::shard_cmd::{
-    daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id, sample_token,
-    BlockServerEntry,
+    daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id,
+    refresh_circuit_addrs, sample_token, BlockServerEntry,
 };
 
 // ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
@@ -787,8 +787,17 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     // Acquire chain: from a saved circuit (skips DHT) or fresh discovery.
     let chain = if let Some(ref circuit_id) = args.circuit {
         let circuit = load_circuit_by_id(circuit_id)?;
-        let entries: Vec<BlockServerEntry> =
+        let mut entries: Vec<BlockServerEntry> =
             circuit.chain.iter().filter_map(|e| e.to_entry()).collect();
+        refresh_circuit_addrs(
+            &mut entries,
+            &mut client,
+            &our_peer_id,
+            &dht_prefix,
+            total_blocks,
+            &bootstrap_peers,
+        )
+        .await;
         if entries.is_empty() {
             return Err(anyhow::anyhow!(
                 "Circuit '{}' loaded but contains no usable entries",
@@ -873,8 +882,9 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
 
     // Pre-connect to all block-server peers
     for entry in &chain {
-        let hint = format!("/p2p/{}", entry.peer_id.to_base58());
-        let _ = client.connect_peer(&hint).await;
+        let _ = client
+            .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
+            .await;
     }
 
     // Detect llama.cpp fast path (full model on this node + GGUF available)

@@ -42,6 +42,8 @@ pub mod dht_service;
 pub mod error;
 pub mod handle;
 pub mod identity;
+pub mod learned_addrs;
+pub mod peer_record;
 pub mod raw_stream;
 pub mod reachability;
 pub mod relay_manager;
@@ -49,7 +51,7 @@ pub mod service;
 pub mod transport;
 pub mod unary;
 
-pub use addresses::{is_announceable, is_circuit, is_routable_v4};
+pub use addresses::{is_announceable, is_circuit, is_routable_v4, uses_dialable_transport};
 pub use behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 pub use config::{
     kad_protocols, NetworkConfig, KAD_MULTI_PROTOCOL_BUILD, KWAAI_BOOTSTRAP_SERVERS,
@@ -60,6 +62,8 @@ pub use error::{P2PError, P2PResult};
 pub use handle::{
     Direction, InboundUnaryCall, KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, UnaryHandler,
 };
+pub use learned_addrs::LearnedAddrs;
+pub use peer_record::verified_addrs;
 pub use raw_stream::{InboundStream, RawStream, RawStreamError};
 pub use reachability::{
     AnnounceState, Reachability, ReachabilityKind, Source as ReachabilitySource,

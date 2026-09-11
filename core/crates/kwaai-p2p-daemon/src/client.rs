@@ -432,6 +432,54 @@ impl P2PClient {
         Ok(())
     }
 
+    /// Connect to `peer`, supplying the addresses it can be reached at.
+    ///
+    /// The split form Go's `doConnect` took — `peer.AddrInfo{ID, Addrs}` — and
+    /// the one a signed peer record produces, where the id appears once inside
+    /// the record and the addresses are bare. Unlike [`Self::connect_peer`] the
+    /// daemon *keeps* these: they go into its learned-address map, so a later
+    /// routed request to the same peer re-dials from them rather than needing
+    /// the peer to be in the routing table.
+    ///
+    /// Addresses are sent bare deliberately; that is what tells the daemon this
+    /// is the split form rather than the classic one-full-multiaddr dial.
+    ///
+    /// An **empty** slice is valid and means "dial by id, from whatever you
+    /// already know" — the daemon takes its routed path, exactly as Go's
+    /// routed host does for an `AddrInfo` with no addresses. A caller holding a
+    /// peer that published none therefore needs no fallback of its own.
+    pub async fn connect_peer_with_addrs(
+        &mut self,
+        peer: &libp2p::PeerId,
+        addrs: &[libp2p::Multiaddr],
+    ) -> Result<()> {
+        let request = Request {
+            r#type: request::Type::Connect as i32,
+            connect: Some(ConnectRequest {
+                peer: peer.to_bytes(),
+                addrs: addrs
+                    .iter()
+                    .map(|a| kwaai_p2p::addresses::strip_dest_p2p(a).to_vec())
+                    .collect(),
+                timeout: Some(60),
+            }),
+            stream_open: None,
+            stream_handler: None,
+            remove_stream_handler: None,
+            dht: None,
+            conn_manager: None,
+            disconnect: None,
+            pubsub: None,
+        };
+
+        debug!(
+            "Connecting to peer {peer} with {} supplied address(es)",
+            addrs.len()
+        );
+        let _response = self.send_request(request).await?;
+        Ok(())
+    }
+
     /// Disconnect from a peer
     pub async fn disconnect_peer(&mut self, peer_id: &[u8]) -> Result<()> {
         let request = Request {
