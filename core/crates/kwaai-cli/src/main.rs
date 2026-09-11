@@ -921,7 +921,14 @@ async fn main() -> Result<()> {
                         }
                     }
                     println!();
-                    if args.check {
+                    let step =
+                        updater::next_step(updater::packaged_install(), args.check, &info.version);
+                    if let updater::NextStep::PackageManager(cmd) = step {
+                        print_info(
+                            "This kwaainet came from a system package, so it is upgraded there:",
+                        );
+                        println!("    {cmd}");
+                    } else if step == updater::NextStep::CheckOnly {
                         print_info("Run 'kwaainet update' (without --check) to install");
                     } else {
                         // Gracefully stop tracked services so the daemon can
@@ -960,24 +967,6 @@ async fn main() -> Result<()> {
                             }
                             running
                         };
-                        #[cfg(not(windows))]
-                        if let Err(e) = checker.install_update(&info.version).await {
-                            // Install failed — restart the daemon we stopped so the
-                            // node stays reachable even though the update didn't land.
-                            if daemon_was_running {
-                                let _ = std::process::Command::new(
-                                    std::env::current_exe().unwrap_or_else(|_| "kwaainet".into()),
-                                )
-                                .args(["start", "--daemon"])
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                            }
-                            print_error(&format!("Update failed: {e:#}"));
-                            print_separator();
-                            return Ok(());
-                        }
                         #[cfg(windows)]
                         {
                             let install_dir = std::env::current_exe()
@@ -1031,16 +1020,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         #[cfg(not(windows))]
-                        let current_bin = std::env::current_exe()
-                            .ok()
-                            .map(|p| {
-                                let s = p.to_string_lossy().into_owned();
-                                if let Some(clean) = s.strip_suffix(" (deleted)") {
-                                    std::path::PathBuf::from(clean)
-                                } else {
-                                    p
-                                }
-                            })
+                        let current_bin = updater::current_exe_path()
                             .unwrap_or_else(|| std::path::PathBuf::from("kwaainet"));
 
                         #[cfg(not(windows))]
@@ -1793,9 +1773,9 @@ async fn main() -> Result<()> {
             // Only show the hint when the cached version is actually newer than what's running.
             if updater::is_newer(&info.version, updater::CURRENT_VERSION) {
                 println!();
-                print_info(&format!(
-                    "kwaainet v{} is available — run 'kwaainet update' to upgrade",
-                    info.version
+                print_info(&updater::update_hint(
+                    updater::packaged_install(),
+                    &info.version,
                 ));
             }
         }

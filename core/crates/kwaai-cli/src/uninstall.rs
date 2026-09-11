@@ -27,7 +27,12 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
             println!("    • All KwaaiNet data and configuration (~/.kwaainet/)");
         }
         println!("    • Auto-start service (if installed)");
-        println!("    • kwaainet binary (and a legacy p2pd if present in the same directory)");
+        if let Some(cmd) = crate::updater::packaged_remove_command() {
+            println!("    • stray kwaainet copies in ~/.cargo/bin and ~/.local/bin");
+            println!("  The packaged binary itself is left for: {cmd}");
+        } else {
+            println!("    • kwaainet binary (and a legacy p2pd if present in the same directory)");
+        }
         println!();
         print!("  Proceed? [y/N] ");
         io::stdout().flush().ok();
@@ -93,42 +98,42 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn remove_binaries() {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            print_warning(&format!("Could not determine binary path: {e}"));
-            return;
-        }
-    };
-
-    let bin_dir = match exe.parent() {
-        Some(d) => d.to_path_buf(),
+    let exe = match crate::updater::current_exe_path() {
+        Some(p) => p,
         None => {
-            print_warning("Could not determine binary directory");
+            print_warning("Could not determine binary path");
             return;
         }
     };
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    remove_binaries_from(
+        &exe,
+        crate::updater::packaged_remove_command(),
+        home.as_deref(),
+    );
+}
 
+/// `exe` (and a legacy p2pd beside it) is left to the package manager when
+/// `packaged` names one; stray ~/.cargo/bin and ~/.local/bin copies go either way.
+fn remove_binaries_from(exe: &Path, packaged: Option<&str>, home: Option<&Path>) {
     #[cfg(windows)]
     let (kwaainet_name, p2pd_name) = ("kwaainet.exe", "p2pd.exe");
     #[cfg(not(windows))]
     let (kwaainet_name, p2pd_name) = ("kwaainet", "p2pd");
 
-    let p2pd = bin_dir.join(p2pd_name);
-
-    #[cfg(windows)]
-    {
-        remove_binary_windows(&exe);
-        if p2pd.exists() {
-            remove_binary_windows(&p2pd);
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        remove_binary_file(&exe);
-        if p2pd.exists() {
-            remove_binary_file(&p2pd);
+    if let Some(cmd) = packaged {
+        println!();
+        print_warning(&format!(
+            "{} belongs to your system package manager — leaving it in place.",
+            exe.display()
+        ));
+        println!("    Remove it with: {cmd}");
+    } else {
+        remove_binary(exe);
+        if let Some(p2pd) = exe.parent().map(|d| d.join(p2pd_name)) {
+            if p2pd.exists() {
+                remove_binary(&p2pd);
+            }
         }
     }
 
@@ -136,21 +141,24 @@ fn remove_binaries() {
     // currently-running binary:
     //   ~/.cargo/bin/  — cargo-dist installer default
     //   ~/.local/bin/  — original pre-v0.1.5 install.sh
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = std::path::PathBuf::from(home);
+    if let Some(home) = home {
         let extra_locations = [
             home.join(".cargo").join("bin").join(kwaainet_name),
             home.join(".local").join("bin").join(kwaainet_name),
         ];
         for alt_bin in &extra_locations {
-            if alt_bin.exists() && alt_bin != &exe {
-                #[cfg(not(windows))]
-                remove_binary_file(alt_bin);
-                #[cfg(windows)]
-                remove_binary_windows(alt_bin);
+            if alt_bin.exists() && alt_bin != exe {
+                remove_binary(alt_bin);
             }
         }
     }
+}
+
+fn remove_binary(path: &Path) {
+    #[cfg(not(windows))]
+    remove_binary_file(path);
+    #[cfg(windows)]
+    remove_binary_windows(path);
 }
 
 /// On Unix: unlink the file at `path`.  If permission is denied, print the
@@ -241,5 +249,44 @@ fn remove_binary_windows(path: &Path) {
         println!("done");
     } else {
         println!("done (cleanup: delete {} manually)", del_path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_install(home: &Path, exe: &Path) {
+        let cargo = home.join(".cargo").join("bin");
+        std::fs::create_dir_all(&cargo).unwrap();
+        std::fs::write(cargo.join("kwaainet"), b"stale").unwrap();
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(exe, b"exe").unwrap();
+    }
+
+    /// A packaged uninstall keeps the package's binary but still clears the
+    /// PATH-shadowing copies no package manager tracks.
+    #[test]
+    fn packaged_uninstall_keeps_exe_and_clears_stray_copies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("usr").join("bin").join("kwaainet");
+        fake_install(tmp.path(), &exe);
+
+        remove_binaries_from(&exe, Some("sudo apt remove kwaainet"), Some(tmp.path()));
+
+        assert!(exe.exists(), "packaged exe must survive");
+        assert!(!tmp.path().join(".cargo/bin/kwaainet").exists());
+    }
+
+    #[test]
+    fn unpackaged_uninstall_removes_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("opt").join("kwaainet");
+        fake_install(tmp.path(), &exe);
+
+        remove_binaries_from(&exe, None, Some(tmp.path()));
+
+        assert!(!exe.exists());
+        assert!(!tmp.path().join(".cargo/bin/kwaainet").exists());
     }
 }

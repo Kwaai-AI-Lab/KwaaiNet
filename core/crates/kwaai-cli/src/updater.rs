@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tracing::debug;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/releases/latest";
@@ -381,16 +382,8 @@ impl UpdateChecker {
         self.download_to(&cuda_url, &archive).await?;
         println!(" done.");
 
-        // Derive install dir from the running binary's path. Strip " (deleted)"
-        // that Linux appends to /proc/self/exe after a previous in-place swap.
-        let exe_path = std::env::current_exe().ok().map(|p| {
-            let s = p.to_string_lossy().into_owned();
-            if let Some(clean) = s.strip_suffix(" (deleted)") {
-                std::path::PathBuf::from(clean)
-            } else {
-                p
-            }
-        });
+        // Derive install dir from the running binary's path.
+        let exe_path = current_exe_path();
         let install_dir_candidate = exe_path
             .as_deref()
             .and_then(|p| p.parent())
@@ -595,6 +588,130 @@ fn backup_path(install_dir: &std::path::Path) -> Result<std::path::PathBuf> {
     )
 }
 
+/// `current_exe()` minus the " (deleted)" Linux appends to /proc/self/exe once
+/// the file has been replaced underneath a running process.
+pub fn current_exe_path() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?;
+    Some(strip_deleted_suffix(p))
+}
+
+fn strip_deleted_suffix(p: PathBuf) -> PathBuf {
+    match p.to_string_lossy().strip_suffix(" (deleted)") {
+        Some(clean) => PathBuf::from(clean),
+        None => p,
+    }
+}
+
+/// Some("deb")/Some("rpm") when this binary came from a distro package. Such
+/// an install must not self-update (the cargo-dist installer writes to
+/// `~/.cargo/bin`, shadowing `/usr/bin/kwaainet`) nor self-uninstall.
+pub fn packaged_install() -> Option<&'static str> {
+    static PACKAGED: OnceLock<Option<&'static str>> = OnceLock::new();
+    *PACKAGED.get_or_init(detect_packaged_install)
+}
+
+/// Both the exe path and the marker must agree, so a tarball install on a
+/// machine that also has the .deb cannot misfire.
+#[cfg(unix)]
+fn detect_packaged_install() -> Option<&'static str> {
+    if !is_packaged_exe_path(&current_exe_path()?) {
+        return None;
+    }
+    parse_marker(&std::fs::read_to_string("/usr/lib/kwaainet/packaged").ok()?)
+}
+
+#[cfg(not(unix))]
+fn detect_packaged_install() -> Option<&'static str> {
+    None
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+fn is_packaged_exe_path(exe: &std::path::Path) -> bool {
+    exe == std::path::Path::new("/usr/bin/kwaainet")
+}
+
+/// Case-sensitive: anything but `deb`/`rpm` is not a package we know.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn parse_marker(s: &str) -> Option<&'static str> {
+    match s.trim() {
+        "deb" => Some("deb"),
+        "rpm" => Some("rpm"),
+        _ => None,
+    }
+}
+
+/// What `kwaainet update` does once a newer `version` is known.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NextStep {
+    /// Packaged install: print this command instead of installing.
+    PackageManager(String),
+    /// `--check`: report only.
+    CheckOnly,
+    Install,
+}
+
+/// The package gate comes before `--check` so a packaged install still learns
+/// of new versions, but never self-installs one.
+pub fn next_step(packaged: Option<&str>, check_only: bool, version: &str) -> NextStep {
+    match packaged_upgrade_command_for(packaged, version) {
+        Some(cmd) => NextStep::PackageManager(cmd),
+        None if check_only => NextStep::CheckOnly,
+        None => NextStep::Install,
+    }
+}
+
+/// The one-line background hint printed after any command.
+pub fn update_hint(packaged: Option<&str>, version: &str) -> String {
+    let action = if packaged.is_some() {
+        "run 'kwaainet update' for the upgrade command"
+    } else {
+        "run 'kwaainet update' to upgrade"
+    };
+    format!("kwaainet v{version} is available — {action}")
+}
+
+/// No apt/dnf repository publishes kwaainet, so the command has to fetch the
+/// package from the GitHub release and install that file.
+fn packaged_upgrade_command_for(packaged: Option<&str>, version: &str) -> Option<String> {
+    match packaged? {
+        "deb" => {
+            let file = deb_file_name(version, deb_arch());
+            Some(format!(
+                "curl -fLO {RELEASE_DOWNLOAD}/v{version}/{file} && sudo dpkg -i {file}"
+            ))
+        }
+        "rpm" => Some(format!(
+            "sudo rpm -U <the .rpm for v{version} from {RELEASE_PAGE}/v{version}>"
+        )),
+        _ => None,
+    }
+}
+
+const RELEASE_DOWNLOAD: &str = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download";
+const RELEASE_PAGE: &str = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/tag";
+
+/// Mirrors distrib/packaging/version.sh: `-` becomes `~`, revision `-1`.
+fn deb_file_name(version: &str, arch: &str) -> String {
+    format!("kwaainet_{}-1_{arch}.deb", version.replace('-', "~"))
+}
+
+fn deb_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+/// The removal command for a packaged install, or `None` when unpackaged.
+pub fn packaged_remove_command() -> Option<&'static str> {
+    match packaged_install()? {
+        "deb" => Some("sudo apt remove kwaainet"),
+        "rpm" => Some("sudo dnf remove kwaainet"),
+        _ => None,
+    }
+}
+
 /// Returns true if `latest` is strictly greater than `current` (simple semver compare).
 pub fn is_newer(latest: &str, current: &str) -> bool {
     // `(major, minor, patch, is_release)`. The fourth field orders a release
@@ -624,6 +741,100 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_marker_accepts_known_formats_only() {
+        for (input, want) in [
+            ("deb", Some("deb")),
+            ("rpm", Some("rpm")),
+            ("deb\n", Some("deb")),
+            (" rpm ", Some("rpm")),
+            ("", None),
+            ("apt", None),
+            ("DEB", None),
+        ] {
+            assert_eq!(parse_marker(input), want, "marker {input:?}");
+        }
+    }
+
+    /// current_exe() is never /usr/bin/kwaainet under a test harness, so the
+    /// detection must decline regardless of what is on the filesystem.
+    #[test]
+    fn packaged_install_is_none_when_not_running_from_usr_bin() {
+        assert_eq!(packaged_install(), None);
+        assert_eq!(
+            next_step(packaged_install(), false, "0.7.0"),
+            NextStep::Install
+        );
+        assert_eq!(packaged_remove_command(), None);
+    }
+
+    /// A dpkg upgrade renames over the running binary, so /proc/self/exe reads
+    /// "/usr/bin/kwaainet (deleted)" — still a packaged install.
+    #[test]
+    fn deleted_suffix_is_stripped() {
+        let p = strip_deleted_suffix(PathBuf::from("/usr/bin/kwaainet (deleted)"));
+        assert_eq!(p, PathBuf::from("/usr/bin/kwaainet"));
+        assert_eq!(
+            strip_deleted_suffix(PathBuf::from("/usr/bin/kwaainet")),
+            PathBuf::from("/usr/bin/kwaainet")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn packaged_exe_path_survives_replacement() {
+        assert!(is_packaged_exe_path(&strip_deleted_suffix(PathBuf::from(
+            "/usr/bin/kwaainet (deleted)"
+        ))));
+        assert!(!is_packaged_exe_path(std::path::Path::new(
+            "/usr/bin/kwaainet (deleted)"
+        )));
+        assert!(!is_packaged_exe_path(std::path::Path::new(
+            "/home/u/.cargo/bin/kwaainet"
+        )));
+    }
+
+    /// The package gate must sit after the version check and before `--check`.
+    #[test]
+    fn next_step_gates_packaged_installs_only() {
+        assert_eq!(next_step(None, true, "0.7.0"), NextStep::CheckOnly);
+        assert_eq!(next_step(None, false, "0.7.0"), NextStep::Install);
+        for check in [true, false] {
+            match next_step(Some("deb"), check, "0.7.0") {
+                NextStep::PackageManager(cmd) => {
+                    assert!(cmd.contains("sudo dpkg -i "), "{cmd}");
+                    assert!(cmd.contains("releases/download/v0.7.0/"), "{cmd}");
+                    assert!(!cmd.contains("apt install"), "{cmd}");
+                }
+                other => panic!("packaged deb, check={check}: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            next_step(Some("rpm"), true, "0.7.0"),
+            NextStep::PackageManager(_)
+        ));
+    }
+
+    #[test]
+    fn deb_file_name_matches_version_sh() {
+        assert_eq!(
+            deb_file_name("0.6.8", "amd64"),
+            "kwaainet_0.6.8-1_amd64.deb"
+        );
+        assert_eq!(
+            deb_file_name("0.7.0-rc.1", "arm64"),
+            "kwaainet_0.7.0~rc.1-1_arm64.deb"
+        );
+    }
+
+    #[test]
+    fn update_hint_never_promises_a_self_update_to_a_package() {
+        assert!(update_hint(None, "0.7.0").contains("'kwaainet update' to upgrade"));
+        let hint = update_hint(Some("deb"), "0.7.0");
+        assert!(hint.contains("v0.7.0"), "{hint}");
+        assert!(!hint.contains("to upgrade"), "{hint}");
+    }
 
     #[test]
     fn is_newer_ordering() {
