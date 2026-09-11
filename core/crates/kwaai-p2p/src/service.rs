@@ -151,10 +151,11 @@ pub struct NetworkService {
     last_connected: HashMap<PeerId, Instant>,
     /// Addresses we were *told* to dial — `dial()` and `AddKadAddress`, the
     /// two uncapped seeds — stored bare, with when the peer was first pinned.
-    /// The routing table is the only other address book for dial-by-PeerId,
-    /// and the non-kad purge in `handle_identify_event` empties it for a
-    /// peer that speaks a foreign kad name. Consulted by
-    /// [`Self::candidate_addresses`] so such a peer stays reachable by id.
+    /// Neither seed reaches `learned_addrs` (only `ConnectPeerWithAddrs`
+    /// does), and a learned address is forgotten on a failed dial while an
+    /// operator's must not be; the routing table is the seeds' only other
+    /// home, and the non-kad purge in `handle_identify_event` empties it.
+    /// Consulted by [`Self::candidate_addresses`], which dedupes both stores.
     pinned_addrs: HashMap<PeerId, (Instant, Vec<Multiaddr>)>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
