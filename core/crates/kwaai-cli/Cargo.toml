@@ -128,6 +128,8 @@ cuda = ["kwaai-inference/flash-attn"]
 cuda-no-flash = ["kwaai-inference/cuda"]
 cuda-windows = ["cuda-no-flash"]
 llama-cpp = ["llama-cpp-2"]
+# mlx: serve blocks with MLX on Apple Silicon. Needs Xcode's Metal Toolchain to build.
+mlx = ["kwaai-inference/mlx"]
 storage = ["kwaai-storage", "uuid"]
 rag = ["kwaai-rag", "uuid"]
 # Bootstrap-grade build: also serve the legacy /ipfs/kad/1.0.0 so peers that

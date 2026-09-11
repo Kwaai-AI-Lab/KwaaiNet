@@ -33,7 +33,7 @@ use tokio::sync::RwLock;
 use crate::announce::decode_server_info_ext;
 use crate::block_rpc::{
     call_block_forward, f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes,
-    InferenceRequest, PayloadType, ShardCell,
+    InferenceRequest, LoadedShard, PayloadType, ShardCell,
 };
 use crate::cli::{
     CircuitAction, CircuitCloseArgs, CircuitCreateArgs, ShardAction, ShardArgs, ShardChainArgs,
@@ -337,8 +337,11 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // (`mlx_shard.rs`) already implements sharding and failed only on graph
     // recompilation, and `llama_local.rs` wraps the same llama.cpp engine Ollama
     // uses. See `projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`.
-    if cfg!(target_os = "macos") && !args.force_blocks {
+    if cfg!(target_os = "macos") && !args.force_blocks && !args.mlx {
         return serve_whole_model_via_ollama(&cfg).await;
+    }
+    if args.mlx && !cfg!(feature = "mlx") {
+        bail!("--mlx needs a binary built with `cargo build -p kwaainet --features mlx`");
     }
 
     let target_blocks = snap_to_valid_blocks(args.blocks.unwrap_or(cfg.blocks) as usize);
@@ -559,7 +562,11 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
     print_box_header("🧩 KwaaiNet Shard Server");
     println!("  Blocks:      [{}, {})", start_block, end_block);
-    println!("  Device:      {}", device_type);
+    if args.mlx {
+        println!("  Device:      MLX (Apple Silicon)");
+    } else {
+        println!("  Device:      {}", device_type);
+    }
     println!("  Model:       {}", cfg.model);
     println!();
     print_success(&format!(
@@ -589,6 +596,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     let model_path_bg = args.model_path.clone();
     let hf_token_bg = args.hf_token.clone();
     let device_bg = device.clone();
+    let mlx_bg = args.mlx;
     let total_blocks_bg = cfg.model_total_blocks() as usize;
 
     tokio::spawn(async move {
@@ -641,8 +649,15 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
                 end_block
             ));
             let shard = Arc::new(
-                TransformerShard::load(&paths, &config_path, &device_bg, start_block, end_block)
-                    .context("Failed to load transformer shard")?,
+                load_serving_shard(
+                    &paths,
+                    &config_path,
+                    &device_bg,
+                    start_block,
+                    end_block,
+                    mlx_bg,
+                )
+                .context("Failed to load transformer shard")?,
             );
 
             print_success(&format!(
@@ -3525,6 +3540,34 @@ pub fn shard_api_port_file() -> std::path::PathBuf {
     crate::config::run_dir().join("shard_api.port")
 }
 
+/// Load the block range on the engine `shard serve` was asked for.
+fn load_serving_shard(
+    paths: &[&Path],
+    config_path: &Path,
+    device: &candle_core::Device,
+    start: usize,
+    end: usize,
+    mlx: bool,
+) -> Result<LoadedShard> {
+    #[cfg(feature = "mlx")]
+    if mlx {
+        let shard =
+            kwaai_inference::mlx_shard::MlxTransformerShard::load(paths, config_path, start, end)?;
+        return Ok(LoadedShard::mlx(shard));
+    }
+    #[cfg(not(feature = "mlx"))]
+    if mlx {
+        bail!("this binary was built without MLX support");
+    }
+    Ok(LoadedShard::Candle(TransformerShard::load(
+        paths,
+        config_path,
+        device,
+        start,
+        end,
+    )?))
+}
+
 /// Spawn a local TCP server on `127.0.0.1:0` that serves the same
 /// msgpack inference protocol as the p2pd handler, without going through p2pd.
 /// Returns the bound port.  Called by `cmd_shard_serve`.
@@ -3563,7 +3606,7 @@ async fn start_local_inference_server(
                 }
 
                 // Grab the shard (if loaded) without holding the lock during inference.
-                let shard_arc: Option<Arc<TransformerShard>> = {
+                let shard_arc: Option<Arc<LoadedShard>> = {
                     let guard = shard.read().await;
                     guard.as_ref().cloned()
                 };

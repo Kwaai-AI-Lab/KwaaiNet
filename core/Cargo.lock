@@ -3037,6 +3037,7 @@ dependencies = [
  "criterion",
  "dirs",
  "half",
+ "memmap2",
  "mlx-rs",
  "safetensors 0.6.2",
  "serde",

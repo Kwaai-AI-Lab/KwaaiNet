@@ -36,7 +36,70 @@ use tracing::{debug, error, info, warn};
 /// serving inference).  The background load task writes `Some(shard)` when
 /// model weights have been fully loaded.  Inference handlers read this cell
 /// without blocking the load task.
-pub type ShardCell = Arc<RwLock<Option<Arc<TransformerShard>>>>;
+pub type ShardCell = Arc<RwLock<Option<Arc<LoadedShard>>>>;
+
+/// The engine behind one `shard serve`: candle everywhere, MLX when built for it.
+/// MLX forwards take `&mut self`, hence the mutex — one request at a time per shard.
+/// The block range is copied out at load so no async context ever waits on it.
+pub enum LoadedShard {
+    Candle(TransformerShard),
+    #[cfg(feature = "mlx")]
+    Mlx {
+        blocks: (usize, usize),
+        is_first: bool,
+        is_last: bool,
+        sessions: kwaai_inference::mlx_shard::MlxSessions,
+        shard: std::sync::Mutex<kwaai_inference::mlx_shard::MlxTransformerShard>,
+    },
+}
+
+/// Lock, recovering from poison: a forward that panicked leaves the weights
+/// untouched and its session dropped, so the shard is still usable.
+#[cfg_attr(not(feature = "mlx"), allow(dead_code))]
+fn lock_recover<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl LoadedShard {
+    #[cfg(feature = "mlx")]
+    pub fn mlx(shard: kwaai_inference::mlx_shard::MlxTransformerShard) -> Self {
+        Self::Mlx {
+            blocks: (shard.start_block, shard.end_block),
+            is_first: shard.is_first(),
+            is_last: shard.is_last(),
+            sessions: shard.sessions(),
+            shard: std::sync::Mutex::new(shard),
+        }
+    }
+    pub fn blocks(&self) -> (usize, usize) {
+        match self {
+            Self::Candle(s) => (s.start_block, s.end_block),
+            #[cfg(feature = "mlx")]
+            Self::Mlx { blocks, .. } => *blocks,
+        }
+    }
+    pub fn is_first(&self) -> bool {
+        match self {
+            Self::Candle(s) => s.is_first(),
+            #[cfg(feature = "mlx")]
+            Self::Mlx { is_first, .. } => *is_first,
+        }
+    }
+    pub fn is_last(&self) -> bool {
+        match self {
+            Self::Candle(s) => s.is_last(),
+            #[cfg(feature = "mlx")]
+            Self::Mlx { is_last, .. } => *is_last,
+        }
+    }
+    pub fn gc_sessions(&self) {
+        match self {
+            Self::Candle(s) => s.gc_sessions(),
+            #[cfg(feature = "mlx")]
+            Self::Mlx { sessions, .. } => sessions.gc(),
+        }
+    }
+}
 
 // ── Protocol constant ─────────────────────────────────────────────────────────
 
@@ -126,7 +189,60 @@ pub fn f16_bytes_to_tensor(bytes: &[u8], shape: &[u32], device: &Device) -> Resu
         .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
         .collect();
     let shape_usize: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+    // `Tensor::from_vec` does not check this: a short buffer would back an oversized tensor.
+    let n: usize = shape_usize.iter().product();
+    if n != f16_vec.len() {
+        bail!(
+            "shape {shape:?} needs {n} f16 elements, got {}",
+            f16_vec.len()
+        );
+    }
     Tensor::from_vec(f16_vec, shape_usize.as_slice(), device).context("Tensor::from_vec f16")
+}
+
+/// Same wire format as [`tensor_to_f16_bytes`], for an MLX array.
+#[cfg(feature = "mlx")]
+pub fn array_to_f16_bytes(a: &kwaai_inference::mlx_rs::Array) -> Result<(Vec<u32>, Vec<u8>)> {
+    use kwaai_inference::mlx_rs::Dtype;
+    let a = a
+        .as_dtype(Dtype::Float16)
+        .map_err(|e| anyhow::anyhow!("as_dtype F16: {e}"))?;
+    a.eval().map_err(|e| anyhow::anyhow!("eval: {e}"))?;
+    let shape: Vec<u32> = a.shape().iter().map(|&d| d as u32).collect();
+    let bytes: Vec<u8> = a
+        .as_slice::<half::f16>()
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    Ok((shape, bytes))
+}
+
+/// Same wire format as [`f16_bytes_to_tensor`], into an MLX array.
+#[cfg(feature = "mlx")]
+pub fn f16_bytes_to_array(bytes: &[u8], shape: &[u32]) -> Result<kwaai_inference::mlx_rs::Array> {
+    if !bytes.len().is_multiple_of(2) {
+        bail!(
+            "f16 byte buffer length {} is not a multiple of 2",
+            bytes.len()
+        );
+    }
+    let f16_vec: Vec<half::f16> = bytes
+        .chunks_exact(2)
+        .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    // `Array::from_slice` asserts on a length/shape mismatch; fail like the candle twin instead.
+    let shape: Vec<i32> = shape
+        .iter()
+        .map(|&d| i32::try_from(d).with_context(|| format!("dim {d} exceeds i32")))
+        .collect::<Result<_>>()?;
+    let n: usize = shape.iter().map(|&d| d as usize).product();
+    if n != f16_vec.len() {
+        bail!(
+            "shape {shape:?} needs {n} f16 elements, got {}",
+            f16_vec.len()
+        );
+    }
+    Ok(kwaai_inference::mlx_rs::Array::from_slice(&f16_vec, &shape))
 }
 
 /// Serialise token IDs to raw `u32-LE` bytes.
@@ -252,7 +368,7 @@ pub fn make_block_rpc_handler(
         let device = device.clone();
         Box::pin(async move {
             // Read the shard cell and clone the Arc (drops the read lock immediately).
-            let shard_arc: Option<Arc<TransformerShard>> = {
+            let shard_arc: Option<Arc<LoadedShard>> = {
                 let guard = shard.read().await;
                 guard.as_ref().cloned()
             };
@@ -308,7 +424,7 @@ pub fn make_block_rpc_handler(
 /// async tasks (announcements, spinner updates, etc.) make progress while the GPU/CPU
 /// is crunching.
 pub async fn handle_inference_request(
-    shard: Arc<TransformerShard>,
+    shard: Arc<LoadedShard>,
     device: Device,
     raw: Vec<u8>,
 ) -> Result<InferenceResponse> {
@@ -319,8 +435,7 @@ pub async fn handle_inference_request(
     let seq_pos = req.seq_pos as usize;
     let is_first = shard.is_first();
     let is_last = shard.is_last();
-    let start_blk = shard.start_block;
-    let end_blk = shard.end_block;
+    let (start_blk, end_blk) = shard.blocks();
 
     debug!(
         session = session_id,
@@ -329,36 +444,65 @@ pub async fn handle_inference_request(
 
     // Run the synchronous forward pass on the blocking thread pool so the
     // tokio runtime stays responsive to other tasks during compute.
-    let (output, is_logits) =
-        tokio::task::spawn_blocking(move || -> Result<(candle_core::Tensor, bool)> {
+    let (shape, data, is_logits) =
+        tokio::task::spawn_blocking(move || -> Result<(Vec<u32>, Vec<u8>, bool)> {
             let fwd_start = std::time::Instant::now();
-            let result = match req.payload_type {
-                PayloadType::TokenIds => {
-                    if !is_first {
-                        bail!(
-                            "Received TokenIds payload but this shard starts at block {} (not 0)",
-                            start_blk
-                        );
-                    }
-                    let token_ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
-                    if is_last {
-                        let logits = shard.forward_full(session_id, &token_ids, seq_pos)?;
-                        (logits, true)
-                    } else {
-                        let hidden = shard.forward_first(session_id, &token_ids, seq_pos)?;
-                        (hidden, false)
-                    }
+            if req.payload_type == PayloadType::TokenIds && !is_first {
+                bail!(
+                    "Received TokenIds payload but this shard starts at block {} (not 0)",
+                    start_blk
+                );
+            }
+            let result = match &*shard {
+                LoadedShard::Candle(s) => {
+                    let (out, is_logits) = match req.payload_type {
+                        PayloadType::TokenIds => {
+                            let ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
+                            if is_last {
+                                (s.forward_full(session_id, &ids, seq_pos)?, true)
+                            } else {
+                                (s.forward_first(session_id, &ids, seq_pos)?, false)
+                            }
+                        }
+                        PayloadType::HiddenStates => {
+                            let hidden = f16_bytes_to_tensor(&req.data, &req.shape, &device)
+                                .context("decode hidden states")?;
+                            if is_last {
+                                (s.forward_last(session_id, hidden, seq_pos)?, true)
+                            } else {
+                                (s.forward_middle(session_id, hidden, seq_pos)?, false)
+                            }
+                        }
+                    };
+                    let (shape, data) =
+                        tensor_to_f16_bytes(&out).context("serialise output tensor")?;
+                    (shape, data, is_logits)
                 }
-                PayloadType::HiddenStates => {
-                    let hidden = f16_bytes_to_tensor(&req.data, &req.shape, &device)
-                        .context("decode hidden states")?;
-                    if is_last {
-                        let logits = shard.forward_last(session_id, hidden, seq_pos)?;
-                        (logits, true)
-                    } else {
-                        let out = shard.forward_middle(session_id, hidden, seq_pos)?;
-                        (out, false)
-                    }
+                #[cfg(feature = "mlx")]
+                LoadedShard::Mlx { shard: m, .. } => {
+                    let mut m = lock_recover(m);
+                    let (out, is_logits) = match req.payload_type {
+                        PayloadType::TokenIds => {
+                            let ids = bytes_to_token_ids(&req.data).context("decode token IDs")?;
+                            if is_last {
+                                (m.forward_full(session_id, &ids, seq_pos)?, true)
+                            } else {
+                                (m.forward_first(session_id, &ids, seq_pos)?, false)
+                            }
+                        }
+                        PayloadType::HiddenStates => {
+                            let hidden = f16_bytes_to_array(&req.data, &req.shape)
+                                .context("decode hidden states")?;
+                            if is_last {
+                                (m.forward_last(session_id, hidden, seq_pos)?, true)
+                            } else {
+                                (m.forward_middle(session_id, hidden, seq_pos)?, false)
+                            }
+                        }
+                    };
+                    let (shape, data) =
+                        array_to_f16_bytes(&out).context("serialise output array")?;
+                    (shape, data, is_logits)
                 }
             };
             let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
@@ -372,12 +516,6 @@ pub async fn handle_inference_request(
         })
         .await
         .map_err(|e| anyhow::anyhow!("forward pass panicked: {e}"))??;
-
-    // Serialise output tensor to f16 bytes
-    let ser_start = std::time::Instant::now();
-    let (shape, data) = tensor_to_f16_bytes(&output).context("serialise output tensor")?;
-    let ser_ms = ser_start.elapsed().as_secs_f64() * 1000.0;
-    debug!(ser_ms = format!("{ser_ms:.1}"), "response serialization");
 
     Ok(InferenceResponse {
         session_id,
@@ -511,6 +649,40 @@ mod tests {
             let decoded: ResponseType = rmp_serde::from_slice(&bytes).unwrap();
             assert_eq!(&decoded, v);
         }
+    }
+
+    #[test]
+    fn f16_bytes_shape_mismatch_errs() {
+        let bytes = vec![0u8; 8]; // four f16
+        assert!(f16_bytes_to_tensor(&bytes, &[1, 5], &Device::Cpu).is_err());
+        assert!(f16_bytes_to_tensor(&bytes, &[2, 2], &Device::Cpu).is_ok());
+    }
+
+    #[cfg(feature = "mlx")]
+    #[test]
+    fn f16_bytes_to_array_shape_mismatch_errs() {
+        let bytes = vec![0u8; 8]; // four f16
+        assert!(f16_bytes_to_array(&bytes, &[1, 5]).is_err());
+        assert!(f16_bytes_to_array(&bytes, &[u32::MAX]).is_err());
+        assert!(f16_bytes_to_array(&bytes, &[7]).is_err());
+        assert_eq!(
+            f16_bytes_to_array(&bytes, &[2, 2]).unwrap().shape(),
+            &[2, 2]
+        );
+    }
+
+    #[test]
+    fn lock_recover_survives_poison() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(1u32));
+        let m2 = m.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = m2.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        *lock_recover(&m) += 1;
+        assert_eq!(*lock_recover(&m), 2);
     }
 
     #[test]

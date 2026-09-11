@@ -40,6 +40,11 @@ pub mod tokenizer;
 #[cfg(feature = "mlx")]
 pub mod mlx_shard;
 
+/// Re-exported so downstream crates can handle MLX arrays without taking a
+/// direct mlx-rs dependency (and without it drifting from the version we link).
+#[cfg(feature = "mlx")]
+pub use mlx_rs;
+
 pub use config::EngineConfig;
 pub use engine::InferenceEngine;
 pub use error::{InferenceError, InferenceResult};
