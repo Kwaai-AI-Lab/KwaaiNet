@@ -68,6 +68,8 @@ Each page will label its primary audience at the top to make navigation easier.
   Gap-based roadmap: aspirational Layer 8 architecture vs. current Rust implementation vs. planned work.
 - [`contributor-guide.md`](contributor-guide.md)
   How to contribute code, docs, research, and operator feedback; "1 hour / 1 day / 1 week" paths.
+- [`REVIEW_INTEGRITY_RETROSPECTIVE.md`](REVIEW_INTEGRITY_RETROSPECTIVE.md)
+  What the September 2026 AI-assisted PR review pass got wrong, the four patterns underneath, and the verification rules proposed for `CLAUDE.md`.
 
 ---
 
