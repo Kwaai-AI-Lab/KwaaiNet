@@ -60,6 +60,24 @@ let
         patch -p1 < ${./../.. + "/core/patches/libp2p-kad.patch"}
       '';
 
+  # cudarc with the CUDARC_DISABLE_ASYNC_ALLOC opt-out (Jetson). Only the CUDA
+  # features pull it in, but `[patch.crates-io]` must resolve for every build.
+  # sha256 matches core/patches/fetch-cudarc.sh.
+  cudarcPatched =
+    pkgs.runCommand "cudarc-0.19.7-sync-alloc-opt-out"
+      {
+        crate = pkgs.fetchurl {
+          url = "https://static.crates.io/crates/cudarc/cudarc-0.19.7.crate";
+          sha256 = "1cea5f10a99e025c1b44ae2354c2d8326b25ddbd0baf76bde8e55cfd4018a2cc";
+        };
+      }
+      ''
+        tar -xzf "$crate"
+        mv cudarc-0.19.7 $out
+        cd $out
+        patch -p1 < ${./../.. + "/core/patches/cudarc.patch"}
+      '';
+
   # Source filter: keep .rs, .toml, .lock, .proto, and non-code assets
   # that are embedded at compile time via include_str!() (.html, .sql).
   filteredSrc =
@@ -84,6 +102,8 @@ let
     cp -r ${multistreamSelectPatched} $out/patches/multistream-select
     rm -rf $out/patches/libp2p-kad
     cp -r ${libp2pKadPatched} $out/patches/libp2p-kad
+    rm -rf $out/patches/cudarc
+    cp -r ${cudarcPatched} $out/patches/cudarc
   '';
 
   commonArgs = {

@@ -196,6 +196,15 @@ jobs:
         working-directory: core
         run: cargo test -p kwaai-p2p --features kad-multi-protocol
 
+      # Same trap for cudarc, which no CI job compiles (CUDA is release-only):
+      # `[patch.crates-io]` only applies when the patched version satisfies
+      # what candle asks for, and a candle bump past cudarc 0.19 turns the
+      # Jetson fix into a cargo *warning*. Assert the patch is what resolves.
+      - name: Check the cudarc patch is still in the graph
+        if: runner.os == 'Linux'
+        working-directory: core
+        run: bash patches/check-cudarc-patch.sh
+
   # ── 3b. Windows type check (#146) ──────────────────────────────────────────
   # `main` did not compile on Windows for five days between #130 and #142: a
   # field added to a struct was populated only in the `#[cfg(unix)]` arm, and

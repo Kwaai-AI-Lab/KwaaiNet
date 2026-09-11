@@ -276,6 +276,7 @@ impl DeviceType {
             DeviceType::Cpu => Ok(candle_core::Device::Cpu),
             #[cfg(feature = "cuda")]
             DeviceType::Cuda(ordinal) => {
+                jetson_default_sync_alloc();
                 candle_core::Device::new_cuda(*ordinal).map_err(InferenceError::from)
             }
             #[cfg(feature = "metal")]
@@ -295,6 +296,38 @@ impl DeviceType {
     }
 }
 
+/// Env var the patched cudarc honours (core/patches/README.md): any value
+/// makes CUDA allocation synchronous instead of stream-ordered.
+pub const CUDARC_DISABLE_ASYNC_ALLOC: &str = "CUDARC_DISABLE_ASYNC_ALLOC";
+
+/// L4T's stream-ordered allocator caps at ~1/3 of memory, so a Jetson with the
+/// variable unset gets it set before the first CUDA call. Fires only on Linux
+/// aarch64 with the Tegra release file present.
+#[cfg(feature = "cuda")]
+fn jetson_default_sync_alloc() {
+    if jetson_needs_sync_alloc(
+        cfg!(all(target_os = "linux", target_arch = "aarch64")),
+        std::path::Path::new("/etc/nv_tegra_release"),
+        std::env::var_os(CUDARC_DISABLE_ASYNC_ALLOC).is_some(),
+    ) {
+        std::env::set_var(CUDARC_DISABLE_ASYNC_ALLOC, "1");
+        tracing::info!(
+            "Jetson detected: set {CUDARC_DISABLE_ASYNC_ALLOC}=1 (L4T's async allocator caps at ~1/3 of memory)"
+        );
+    }
+}
+
+/// The decision behind `jetson_default_sync_alloc`, kept pure so it can be
+/// tested without CUDA or a Jetson.
+#[cfg(any(feature = "cuda", test))]
+fn jetson_needs_sync_alloc(
+    linux_aarch64: bool,
+    tegra_release: &std::path::Path,
+    already_set: bool,
+) -> bool {
+    linux_aarch64 && !already_set && tegra_release.exists()
+}
+
 impl std::fmt::Display for DeviceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -303,5 +336,41 @@ impl std::fmt::Display for DeviceType {
             DeviceType::Metal(ord) => write!(f, "Metal (GPU {ord})"),
             DeviceType::Mlx => write!(f, "MLX (Apple Silicon)"),
         }
+    }
+}
+
+#[cfg(test)]
+mod jetson_tests {
+    use super::jetson_needs_sync_alloc;
+    use std::path::Path;
+
+    #[test]
+    fn sets_only_on_tegra_linux_aarch64_when_unset() {
+        let dir = std::env::temp_dir().join(format!("kwaai-tegra-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tegra = dir.join("nv_tegra_release");
+        std::fs::write(&tegra, "# R36 (release)\n").unwrap();
+        let absent = dir.join("missing");
+
+        assert!(jetson_needs_sync_alloc(true, &tegra, false));
+        assert!(
+            !jetson_needs_sync_alloc(true, &tegra, true),
+            "operator's value wins"
+        );
+        assert!(
+            !jetson_needs_sync_alloc(true, &absent, false),
+            "not a Jetson"
+        );
+        assert!(
+            !jetson_needs_sync_alloc(false, &tegra, false),
+            "wrong platform"
+        );
+        assert!(!jetson_needs_sync_alloc(
+            false,
+            Path::new("/etc/nv_tegra_release"),
+            false
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

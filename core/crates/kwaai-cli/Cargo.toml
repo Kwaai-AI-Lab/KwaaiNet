@@ -123,8 +123,10 @@ sha2 = "0.10"
 [features]
 default = ["storage", "rag"]
 cuda = ["kwaai-inference/flash-attn"]
-# cuda-windows: CUDA without flash-attn (flash-attn requires Linux nvcc and cannot build on Windows)
-cuda-windows = ["kwaai-inference/cuda"]
+# CUDA without flash-attn: what a Jetson builds (docs/JETSON.md), and the only
+# CUDA Windows can build (flash-attn needs Linux nvcc).
+cuda-no-flash = ["kwaai-inference/cuda"]
+cuda-windows = ["cuda-no-flash"]
 llama-cpp = ["llama-cpp-2"]
 storage = ["kwaai-storage", "uuid"]
 rag = ["kwaai-rag", "uuid"]

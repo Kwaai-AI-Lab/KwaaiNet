@@ -1,0 +1,38 @@
+--- a/src/driver/safe/core.rs
++++ b/src/driver/safe/core.rs
+@@ -80,7 +80,7 @@
+                 cu_device,
+                 sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED,
+             )?;
+-            memory_pools_supported > 0
++            memory_pools_supported > 0 && std::env::var_os("CUDARC_DISABLE_ASYNC_ALLOC").is_none()
+         };
+         let ctx = Arc::new(CudaContext {
+             cu_device,
+@@ -152,7 +152,7 @@
+                 cu_device,
+                 sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED,
+             )?;
+-            memory_pools_supported > 0
++            memory_pools_supported > 0 && std::env::var_os("CUDARC_DISABLE_ASYNC_ALLOC").is_none()
+         };
+         let ctx = Arc::new(CudaContext {
+             cu_device,
+@@ -203,7 +203,7 @@
+                 cu_device,
+                 sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED,
+             )?;
+-            memory_pools_supported > 0
++            memory_pools_supported > 0 && std::env::var_os("CUDARC_DISABLE_ASYNC_ALLOC").is_none()
+         };
+         let ctx = Arc::new(CudaContext {
+             cu_device,
+@@ -240,7 +240,7 @@
+                 cu_device,
+                 sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED,
+             )?;
+-            memory_pools_supported > 0
++            memory_pools_supported > 0 && std::env::var_os("CUDARC_DISABLE_ASYNC_ALLOC").is_none()
+         };
+         let ctx = Arc::new(CudaContext {
+             cu_device,
