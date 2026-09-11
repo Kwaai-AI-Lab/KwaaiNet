@@ -3,7 +3,8 @@
 ## What it solves
 
 Personal knowledge should be queryable without exposing it to untrusted parties.
-kwaai-storage provides VPK: a multi-tenant vector store where vectors are homomorphically encrypted
+kwaai-storage provides VPK: a multi-tenant vector store. Vectors are plaintext f32 today; encrypting
+them on the host is planned (see roadmap.md)
 so search can run on untrusted nodes without leaking the underlying documents.
 
 ## How it fits the whitepaper architecture
@@ -21,7 +22,7 @@ graph TD
         API[api.rs\nVPK HTTP handlers]
         DB[db.rs\nSQLite database]
         Tenant[tenant.rs\nmulti-tenant isolation]
-        Vectors[vectors.rs\nhomomorphic vector search]
+        Vectors[vectors.rs\ncosine vector search]
 
         API --> DB
         API --> Tenant

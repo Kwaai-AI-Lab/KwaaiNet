@@ -47,7 +47,7 @@ sequenceDiagram
 
     RAG->>VPK: POST /api/query\n{tenant_id, query_embedding, top_k}
     VPK->>VPK: encrypt query with tenant key
-    VPK->>DB: homomorphic cosine search\n(encrypted space)
+    VPK->>DB: cosine search\n(plaintext today)
     DB-->>VPK: top-k encrypted doc IDs + scores
     VPK->>VPK: decrypt scores for tenant
     VPK-->>RAG: [{doc_id, score, text}]
