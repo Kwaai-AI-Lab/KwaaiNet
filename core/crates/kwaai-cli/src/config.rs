@@ -1711,7 +1711,10 @@ mod start_block_provenance {
     }
 }
 
-/// `cargo test` must not be able to touch the developer's real config.
+/// A `log_level` the filter cannot parse must be refused at the boundary.
+/// `set_key` used to take any string: an unparseable level then silently
+/// disabled every log line including ERROR, because the bare word parsed as
+/// a target and left the filter with no directive for us at all.
 #[cfg(test)]
 mod log_level_values {
     use super::*;
@@ -1728,6 +1731,7 @@ mod log_level_values {
     }
 }
 
+/// `cargo test` must not be able to touch the developer's real config.
 #[cfg(test)]
 mod test_isolation {
     use super::*;
