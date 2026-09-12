@@ -33,11 +33,11 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
-    dest_peer_id, is_announceable_with, is_circuit, peer_id_from_multiaddr, strip_dest_p2p,
-    strip_p2p, uses_dialable_transport, OwnAddresses,
+    dest_peer_id, has_ip6, ipv6_loopback_available, is_circuit, peer_id_from_multiaddr,
+    strip_dest_p2p, strip_p2p, uses_dialable_transport, AddrPolicy, OwnAddresses,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
-use crate::config::NetworkConfig;
+use crate::config::{Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD};
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
@@ -148,11 +148,13 @@ pub struct NetworkService {
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
-    /// Whether the reserved documentation/benchmarking ranges count as
-    /// unroutable. Mirrors `NetworkConfig::require_global_ips`; held here
-    /// because identify-learned addresses are filtered before they reach kad,
-    /// and that decision has to match the one the reachability state makes.
-    require_global_ips: bool,
+    /// Which addresses this node will announce and dial. Mirrors
+    /// `require_global_ips` and the IPv6 mode; held here because
+    /// identify-learned addresses are filtered before they reach kad, and that
+    /// decision has to match the one the reachability state makes.
+    policy: AddrPolicy,
+    /// What IPv6 ended up doing once the listeners were opened.
+    ipv6_status: Ipv6Status,
     /// Whether the swarm was built with a QUIC transport. Mirrors
     /// `NetworkConfig::enable_quic`; a supplied `/quic` address is dropped
     /// at ingestion when it was not, rather than failing every dial.
@@ -279,6 +281,29 @@ enum RoutedDial {
     Shared,
 }
 
+/// Whether to open IPv6 listeners at all, given the mode and whether the host
+/// has a v6 stack.
+///
+/// Separate from the per-address bind because `listen_on("/ip6/::/tcp/P")` is
+/// not an availability test. Binding the *unspecified* address succeeds on
+/// Linux even with `net.ipv6.conf.all.disable_ipv6=1`, so a node with IPv6
+/// switched off at the kernel reported `ipv6_status = "active"` and advertised
+/// itself dual-stack, while every concrete v6 address on the host was
+/// unassignable. The loopback probe asks the question the bind does not.
+///
+/// A pure function so the six mode/host combinations are testable without a
+/// swarm; the caller does the logging and the listening.
+fn resolve_ipv6(mode: Ipv6Mode, loopback_ok: bool) -> Result<bool> {
+    match (mode, loopback_ok) {
+        (Ipv6Mode::Off, _) => Ok(false),
+        (_, true) => Ok(true),
+        (Ipv6Mode::On, false) => {
+            anyhow::bail!("ipv6 is required but this host has no IPv6 loopback")
+        }
+        (Ipv6Mode::Auto, false) => Ok(false),
+    }
+}
+
 impl NetworkService {
     /// Build the swarm, start listening, and spawn the event loop.
     ///
@@ -400,16 +425,70 @@ impl NetworkService {
             finish!(tcp.with_dns())
         };
 
-        for addr in config.swarm_listen_addrs() {
-            let addr: Multiaddr = addr
-                .parse()
-                .with_context(|| format!("parsing listen address {addr}"))?;
+        let ipv6_mode = config.ipv6.effective();
+        let listen_addrs = config
+            .swarm_listen_addrs()
+            .iter()
+            .map(|a| {
+                a.parse::<Multiaddr>()
+                    .with_context(|| format!("parsing listen address {a}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // A config error, checked before the host is: an explicit v4-only
+        // listen set can never satisfy `ipv6: true`.
+        if ipv6_mode == Ipv6Mode::On && !listen_addrs.iter().any(has_ip6) {
+            anyhow::bail!("ipv6 is required but listen_addrs has no IPv6 address");
+        }
+        // Probe before listening, not by listening: see `resolve_ipv6`.
+        let open_v6 = resolve_ipv6(ipv6_mode, ipv6_loopback_available())?;
+        if ipv6_mode != Ipv6Mode::Off && !open_v6 {
+            warn!("IPv6 unavailable on this host, running IPv4-only");
+        }
+        // What the host can do, not what the mode asked for: a node that fell
+        // back to v4-only under `auto` must not dial or announce v6.
+        let policy = AddrPolicy {
+            strict: config.require_global_ips,
+            ipv6: open_v6,
+        };
+
+        let mut ipv6_listening = false;
+        let mut ipv6_warned = false;
+        for addr in listen_addrs {
+            let v6 = has_ip6(&addr);
+            if v6 && !open_v6 {
+                debug!(%addr, "skipping IPv6 listen address");
+                continue;
+            }
             match swarm.listen_on(addr.clone()) {
-                Ok(_) => debug!(%addr, "listening"),
+                Ok(_) => {
+                    ipv6_listening |= v6;
+                    debug!(%addr, "listening");
+                }
+                // `ipv6: true` is an operator saying v6 is the point of this
+                // deployment, so a silent v4-only fallback is the failure.
+                Err(e) if v6 && ipv6_mode == Ipv6Mode::On => {
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("ipv6 is required but listening on {addr} failed")));
+                }
                 // One failed listener (commonly IPv6 on a v4-only host) must
                 // not sink the whole node.
+                Err(e) if v6 => {
+                    if !ipv6_warned {
+                        ipv6_warned = true;
+                        warn!(%addr, error = %e, "IPv6 unavailable on this host, running IPv4-only");
+                    }
+                }
                 Err(e) => warn!(%addr, error = %e, "failed to listen on address"),
             }
+        }
+
+        let ipv6_status = match (ipv6_mode, ipv6_listening) {
+            (Ipv6Mode::Off, _) => Ipv6Status::Off,
+            (_, true) => Ipv6Status::Active,
+            (_, false) => Ipv6Status::Unavailable,
+        };
+        if config.ipv6 != Ipv6Mode::Off && !IPV6_BUILD {
+            warn!("ipv6 requested but this build has no ipv6 support");
         }
 
         // A declared external address is an instruction, not a guess, so a
@@ -430,6 +509,7 @@ impl NetworkService {
             declared,
             config.identify_min_confirmations,
             config.require_global_ips,
+            policy.ipv6,
         );
 
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
@@ -445,7 +525,8 @@ impl NetworkService {
             learned_addrs: LearnedAddrs::new(local_peer_id),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
-            require_global_ips: config.require_global_ips,
+            policy,
+            ipv6_status,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
             peer_rtt: HashMap::new(),
@@ -481,7 +562,12 @@ impl NetworkService {
         service.publish_announce_state();
 
         let task = tokio::spawn(service.run());
-        info!(peer_id = %local_peer_id, "network service started");
+        info!(
+            peer_id = %local_peer_id,
+            ipv6 = %config.ipv6,
+            ipv6_status = ipv6_status.as_str(),
+            "network service started"
+        );
         Ok((
             NetworkHandle::new(local_peer_id, tx, config.request_timeout, announce_rx),
             task,
@@ -630,6 +716,7 @@ impl NetworkService {
                     relay_addrs: self.relays.confirmed_addrs(),
                     observed_addrs: observed,
                     listen_addrs: self.swarm.listeners().cloned().collect(),
+                    ipv6: self.ipv6_status,
                     local_protocols: self.collect_local_protocols(),
                     last_contact: self
                         .last_connected
@@ -1041,6 +1128,10 @@ impl NetworkService {
         let mut dialed = 0usize;
         let mut last_error = None;
         for addr in peers {
+            if !self.policy.dialable(&addr) {
+                debug!(%addr, "skipping bootstrap address: ipv6 is disabled");
+                continue;
+            }
             match self.dial(addr.clone()) {
                 // A skipped dial counts as reached: we are already connected
                 // to that bootstrap, which is what the dial was for. Counting
@@ -1121,14 +1212,15 @@ impl NetworkService {
     /// Announceable addresses we know for `peer`: routing-table entries first,
     /// then any live connection's address.
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
-        let strict = self.require_global_ips;
-        self.candidate_addresses(peer, |a| is_announceable_with(a, strict))
+        let policy = self.policy;
+        self.candidate_addresses(peer, move |a| policy.announceable(a))
     }
 
     /// Every address we could try for `peer`; unlike [`Self::known_addresses`]
     /// it keeps loopback and LAN, which is how two nodes on one host reach each other.
     fn dial_candidates(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
-        self.candidate_addresses(peer, |_| true)
+        let policy = self.policy;
+        self.candidate_addresses(peer, move |a| policy.dialable(a))
     }
 
     /// `table_filter` decides which routing-table entries qualify; a live
@@ -2317,7 +2409,7 @@ impl NetworkService {
                     .any(|p| self.swarm.behaviour().kad.protocol_names().contains(p));
                 if speaks_kad {
                     for addr in &info.listen_addrs {
-                        if !is_announceable_with(addr, self.require_global_ips) {
+                        if !self.policy.announceable(addr) {
                             trace!(
                                 peer = %peer_id,
                                 %addr,
@@ -2599,5 +2691,60 @@ mod tests {
         assert!(
             bootstraps_to_reseed(&[addr], &HashSet::new(), &HashMap::new(), now, TICK).is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod ipv6_resolution {
+    use super::*;
+
+    /// All six combinations. The row that matters is `(On, false)`: before the
+    /// loopback probe existed the unspecified bind succeeded on a host with
+    /// IPv6 disabled, so `ipv6: true` started happily and reported "active".
+    #[test]
+    fn the_mode_and_the_host_together_decide() {
+        for (mode, loopback_ok, want) in [
+            (Ipv6Mode::Off, true, Some(false)),
+            (Ipv6Mode::Off, false, Some(false)),
+            (Ipv6Mode::Auto, true, Some(true)),
+            (Ipv6Mode::Auto, false, Some(false)),
+            (Ipv6Mode::On, true, Some(true)),
+            (Ipv6Mode::On, false, None),
+        ] {
+            let got = resolve_ipv6(mode, loopback_ok);
+            match want {
+                Some(open) => assert_eq!(got.unwrap(), open, "{mode:?}/{loopback_ok}"),
+                None => {
+                    let e = got
+                        .expect_err("ipv6: true on a v4-only host must fail")
+                        .to_string();
+                    assert!(e.contains("no IPv6 loopback"), "unhelpful error: {e}");
+                }
+            }
+        }
+    }
+
+    /// The address policy follows the host, not the mode: `auto` on a v4-only
+    /// box must drop v6 from the dial and announce sets, or the node keeps
+    /// addresses it can never use.
+    #[test]
+    fn the_policy_follows_what_opened_not_what_was_asked() {
+        let policy = |mode, loopback_ok| AddrPolicy {
+            strict: false,
+            ipv6: resolve_ipv6(mode, loopback_ok).unwrap(),
+        };
+        let v6: Multiaddr = "/ip6/2606:4700::1111/tcp/8080".parse().unwrap();
+        assert!(!policy(Ipv6Mode::Auto, false).dialable(&v6));
+        assert!(!policy(Ipv6Mode::Auto, false).announceable(&v6));
+        assert!(policy(Ipv6Mode::Auto, true).dialable(&v6));
+        assert!(policy(Ipv6Mode::Auto, true).announceable(&v6));
+    }
+
+    /// `off` never consults the host: a node told not to use IPv6 must not
+    /// fail to start on a box that happens to lack it.
+    #[test]
+    fn off_ignores_the_host_entirely() {
+        assert!(!resolve_ipv6(Ipv6Mode::Off, false).unwrap());
+        assert!(!resolve_ipv6(Ipv6Mode::Off, true).unwrap());
     }
 }

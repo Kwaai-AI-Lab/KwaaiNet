@@ -52,17 +52,44 @@ pub fn build_app(db: StorageDb, capacity_gb: f64, peer_id: String) -> Router {
         .with_state(state)
 }
 
-/// Start the storage API server.
+/// Start the storage API server on `bind_addr`.
+///
+/// A thin wrapper over [`run_storage_api_on`] for callers that have a single
+/// address rather than listeners they bound themselves.
 pub async fn run_storage_api(
     db: StorageDb,
     bind_addr: &str,
     capacity_gb: f64,
     peer_id: String,
 ) -> anyhow::Result<()> {
-    let app = build_app(db, capacity_gb, peer_id);
     tracing::info!("storage API listening on {}", bind_addr);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(listener, app).await?;
+    run_storage_api_on(db, vec![listener], capacity_gb, peer_id).await
+}
+
+/// Serve the storage API on listeners the caller already bound.
+///
+/// Takes a list so one server can answer on both IPv4 and IPv6: `localhost`
+/// resolves to `::1` first on most modern hosts, and a v4-only listener leaves
+/// those clients with connection refused. Any listener failing ends the server,
+/// which is what a single `axum::serve` did.
+pub async fn run_storage_api_on(
+    db: StorageDb,
+    listeners: Vec<tokio::net::TcpListener>,
+    capacity_gb: f64,
+    peer_id: String,
+) -> anyhow::Result<()> {
+    let app = build_app(db, capacity_gb, peer_id);
+    let mut serving = tokio::task::JoinSet::new();
+    for listener in listeners {
+        let app = app.clone();
+        serving.spawn(async move { axum::serve(listener, app).await });
+    }
+    // Dropping the set on the first error aborts the others, so one dead
+    // listener does not leave the process half-serving.
+    while let Some(joined) = serving.join_next().await {
+        joined??;
+    }
     Ok(())
 }
 
@@ -288,4 +315,65 @@ async fn delete_vectors(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(DeleteResponse { deleted }))
+}
+
+#[cfg(test)]
+mod dual_stack {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A minimal HTTP/1.1 GET, so the test needs no client dependency.
+    async fn get_status_line(addr: &str) -> String {
+        let mut s = tokio::net::TcpStream::connect(addr)
+            .await
+            .unwrap_or_else(|e| panic!("connecting to {addr}: {e}"));
+        s.write_all(b"GET /api/health HTTP/1.1\r\nHost: storage\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).await.expect("read response");
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// One server, two listeners: a client that resolves `localhost` to `::1`
+    /// first must reach the same store as one that picks `127.0.0.1`.
+    #[tokio::test]
+    async fn one_server_answers_on_both_families() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = StorageDb::open(tmp.path()).expect("open store");
+
+        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("v4 must bind");
+        let port = v4.local_addr().unwrap().port();
+        // The port is already taken on v4, so a v6 bind failing here means the
+        // host has no v6 loopback rather than a clash.
+        let v6 = tokio::net::TcpListener::bind(format!("[::1]:{port}"))
+            .await
+            .ok();
+        let have_v6 = v6.is_some();
+
+        let listeners = std::iter::once(v4).chain(v6).collect();
+        let server = tokio::spawn(run_storage_api_on(db, listeners, 1.0, "peer".to_string()));
+
+        let v4_response = get_status_line(&format!("127.0.0.1:{port}")).await;
+        assert!(
+            v4_response.starts_with("HTTP/1.1 200 OK"),
+            "v4 health: {v4_response}"
+        );
+        assert!(v4_response.contains("\"status\":\"ok\""));
+
+        if have_v6 {
+            let v6_response = get_status_line(&format!("[::1]:{port}")).await;
+            assert!(
+                v6_response.starts_with("HTTP/1.1 200 OK"),
+                "v6 health: {v6_response}"
+            );
+            assert!(v6_response.contains("\"status\":\"ok\""));
+        } else {
+            println!("skipping the v6 half: no IPv6 loopback on this host");
+        }
+
+        server.abort();
+    }
 }

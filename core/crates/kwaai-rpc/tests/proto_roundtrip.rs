@@ -247,6 +247,8 @@ fn network_update_roundtrip_all_sections() {
                 "/ipfs/kad/1.0.0".to_string(),
                 "/kwaai/inference/1.0.0".to_string(),
             ],
+            // A node can be private on v4 and listening on v6 at once.
+            ipv6: "active".to_string(),
         }),
         connected: vec![ConnectedPeer {
             peer_id: "12D3KooWExamplePeerA".to_string(),

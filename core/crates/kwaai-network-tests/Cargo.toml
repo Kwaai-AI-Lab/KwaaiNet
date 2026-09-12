@@ -13,9 +13,9 @@ description = "Integration and connectivity test suite for kwaai-network"
 #   KWAAI_NETWORK_TESTS=1 cargo test       # + live bootstrap tests
 
 [dependencies]
-kwaai-p2p        = { workspace = true }
+kwaai-p2p        = { workspace = true, default-features = true }
 kwaai-hivemind-dht = { workspace = true }
-kwaai-p2p-daemon = { workspace = true }
+kwaai-p2p-daemon = { workspace = true, default-features = true }
 kwaai-rpc        = { workspace = true }
 tokio     = { workspace = true }
 serde     = { workspace = true }

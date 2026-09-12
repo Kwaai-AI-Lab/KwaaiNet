@@ -26,7 +26,13 @@ libp2p = { workspace = true }
 # The control-socket *server* (`server.rs`) translates the p2pd protocol into
 # NetworkHandle calls. The client half of this crate has no such dependency —
 # it talks to whatever serves the socket, Go daemon or native node alike.
-kwaai-p2p = { workspace = true }
+kwaai-p2p = { workspace = true, features = ["tcp"] }
+
+[features]
+default = ["ipv6"]
+# Forwarded so a `kwaainet` built without ipv6 does not get it back through
+# this crate's copy of kwaai-p2p.
+ipv6 = ["kwaai-p2p/ipv6"]
 
 # Windows named pipe support
 [target.'cfg(windows)'.dependencies]
