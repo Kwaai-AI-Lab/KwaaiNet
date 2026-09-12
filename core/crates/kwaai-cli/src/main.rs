@@ -106,19 +106,19 @@ async fn main() -> Result<()> {
     setup_cuda_library_path();
     let cli = Cli::parse();
 
-    // Initialise logging (RUST_LOG overrides config default).
-    // hnsw_rs and kwaai_storage are silenced at INFO — they emit noisy
-    // index-load messages that are implementation detail, not user-facing.
-    let default_filter = format!(
-        "info,hnsw_rs=warn,kwaai_storage=warn,tantivy=warn,{}=info",
-        env!("CARGO_PKG_NAME")
-    );
+    // Initialise logging: RUST_LOG wins, then `log_level` from config.yaml,
+    // then info. The config key used to be read only to print it back.
+    let (default_filter, level_warning) =
+        default_log_filter(config::KwaaiNetConfig::peek_log_level().as_deref());
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&default_filter)),
         )
         .init();
+    if let Some(msg) = level_warning {
+        tracing::warn!("{msg}");
+    }
 
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
@@ -1905,5 +1905,141 @@ fn print_last_lines(path: &std::path::Path, n: usize) {
             }
         }
         Err(e) => eprintln!("Error reading log: {}", e),
+    }
+}
+
+/// The log filter when RUST_LOG is unset: the configured level for kwaainet's
+/// own crates (`kwaainet`, `kwaai_*`), dependencies at info, and the noisy
+/// index crates no louder than warn. An unknown level falls back to info and
+/// returns a warning to log once the subscriber is up.
+fn default_log_filter(level: Option<&str>) -> (String, Option<String>) {
+    let (level, warning) = match level.map(str::trim).filter(|l| !l.is_empty()) {
+        None => ("info", None),
+        Some(l) => match config::parse_log_level(l) {
+            Some(l) => (l, None),
+            None => (
+                "info",
+                Some(format!(
+                    "config log_level '{l}' is not one of {}; using info",
+                    config::LOG_LEVELS.join(", ")
+                )),
+            ),
+        },
+    };
+    // min(level, warn): at error/off the index crates go quiet too.
+    let rank = |l: &str| config::LOG_LEVELS.iter().position(|x| *x == l).unwrap();
+    let pin = config::LOG_LEVELS[rank(level).min(rank("warn"))];
+    // `kwaai=` is a target prefix: it covers `kwaainet` and every `kwaai_*` crate.
+    let filter = format!("info,hnsw_rs={pin},kwaai_storage={pin},tantivy={pin},kwaai={level}");
+    (filter, warning)
+}
+
+#[cfg(test)]
+mod log_filter_tests {
+    use super::default_log_filter;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::EnvFilter;
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Whether one event at (target, level) gets through the filter: the
+    /// tests check what the subscriber does, not the string.
+    fn hits(filter: &str, target: &str, level: tracing::Level) -> bool {
+        let buf = Buf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(move || sink.clone())
+            .with_env_filter(EnvFilter::new(filter))
+            .finish();
+        tracing::subscriber::with_default(sub, || emit(target, level));
+        let written = !buf.0.lock().unwrap().is_empty();
+        written
+    }
+
+    macro_rules! emit_all {
+        ($target:expr, $level:expr, $($t:literal),*) => {
+            match $target {
+                $($t => match $level {
+                    tracing::Level::ERROR => tracing::error!(target: $t, "hit"),
+                    tracing::Level::WARN => tracing::warn!(target: $t, "hit"),
+                    tracing::Level::INFO => tracing::info!(target: $t, "hit"),
+                    tracing::Level::DEBUG => tracing::debug!(target: $t, "hit"),
+                    tracing::Level::TRACE => tracing::trace!(target: $t, "hit"),
+                },)*
+                other => panic!("no probe for target {other}"),
+            }
+        };
+    }
+
+    // `target:` must be a literal, so dispatch on the target string.
+    fn emit(target: &str, level: tracing::Level) {
+        emit_all!(
+            target,
+            level,
+            "kwaainet::node",
+            "kwaai_p2p::swarm",
+            "kwaai_storage::index",
+            "hnsw_rs::hnsw",
+            "libp2p_swarm",
+            "quinn::connection"
+        );
+    }
+
+    #[test]
+    fn the_configured_level_drives_the_filter() {
+        assert!(default_log_filter(Some("debug")).0.ends_with("kwaai=debug"));
+        assert!(default_log_filter(Some("DEBUG")).0.ends_with("kwaai=debug"));
+        assert!(default_log_filter(None).0.ends_with("kwaai=info"));
+        assert!(default_log_filter(Some("  ")).0.ends_with("kwaai=info"));
+    }
+
+    #[test]
+    fn unknown_levels_fall_back_to_info_with_a_warning() {
+        for typo in ["warning", "verbose"] {
+            let (filter, warning) = default_log_filter(Some(typo));
+            assert!(warning.unwrap().contains(typo));
+            // Not silently blind: kwaainet's own error and info still print.
+            assert!(hits(&filter, "kwaainet::node", tracing::Level::ERROR));
+            assert!(hits(&filter, "kwaainet::node", tracing::Level::INFO));
+            assert!(!hits(&filter, "kwaainet::node", tracing::Level::DEBUG));
+        }
+        assert!(default_log_filter(Some("debug")).1.is_none());
+    }
+
+    #[test]
+    fn off_is_really_off() {
+        let (filter, _) = default_log_filter(Some("off"));
+        for target in ["kwaainet::node", "kwaai_storage::index", "hnsw_rs::hnsw"] {
+            assert!(!hits(&filter, target, tracing::Level::ERROR), "{target}");
+        }
+        let (filter, _) = default_log_filter(Some("error"));
+        assert!(hits(&filter, "hnsw_rs::hnsw", tracing::Level::ERROR));
+        assert!(!hits(&filter, "hnsw_rs::hnsw", tracing::Level::WARN));
+    }
+
+    #[test]
+    fn the_level_applies_to_our_crates_and_not_to_dependencies() {
+        let (filter, _) = default_log_filter(Some("trace"));
+        assert!(hits(&filter, "kwaainet::node", tracing::Level::TRACE));
+        assert!(hits(&filter, "kwaai_p2p::swarm", tracing::Level::TRACE));
+        // The noisy index crates stay pinned at warn, even inside kwaai_*.
+        assert!(!hits(&filter, "kwaai_storage::index", tracing::Level::INFO));
+        assert!(hits(&filter, "kwaai_storage::index", tracing::Level::WARN));
+        // Dependencies keep the previous default of info.
+        for dep in ["libp2p_swarm", "quinn::connection"] {
+            assert!(hits(&filter, dep, tracing::Level::INFO), "{dep}");
+            assert!(!hits(&filter, dep, tracing::Level::DEBUG), "{dep}");
+        }
     }
 }
