@@ -196,7 +196,7 @@ pub struct NetworkService {
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
     /// Which addresses this node will announce and dial. Mirrors
-    /// `require_global_ips` and the IPv6 mode; held here because
+    /// `only_global_ips` and the IPv6 mode; held here because
     /// identify-learned addresses are filtered before they reach kad, and that
     /// decision has to match the one the reachability state makes.
     policy: AddrPolicy,
@@ -583,8 +583,12 @@ impl NetworkService {
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             reachability,
-            relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations)
-                .with_initial_peers(&config.effective_initial_peers()),
+            relays: RelayManager::new(
+                &config.trusted_relays,
+                config.max_relay_reservations,
+                policy,
+            )
+            .with_initial_peers(&config.effective_initial_peers()),
             announce_tx,
             bootstrap_addrs: config
                 .effective_initial_peers()

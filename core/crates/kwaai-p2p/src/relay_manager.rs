@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use libp2p::{core::transport::ListenerId, Multiaddr, PeerId};
 use tracing::{debug, info, warn};
 
-use crate::addresses::{circuit_listen_addr, is_relay_candidate_addr, strip_p2p};
+use crate::addresses::{circuit_listen_addr, strip_p2p, AddrPolicy};
 
 /// Base backoff after a relay fails us, doubling per consecutive failure.
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
@@ -152,13 +152,15 @@ pub struct RelayManager {
     max_slots: usize,
     /// Whether we currently want reservations at all — driven by reachability.
     enabled: bool,
+    /// Which addresses a relay may be reached at — by us, on this host.
+    policy: AddrPolicy,
 }
 
 impl RelayManager {
     /// Build from the configured relay list. Unparseable entries and those with
     /// no `/p2p/<peer-id>` are dropped with a warning rather than failing the
     /// node: a typo in one relay should not stop the other from working.
-    pub fn new(trusted_relays: &[String], max_slots: usize) -> Self {
+    pub fn new(trusted_relays: &[String], max_slots: usize, policy: AddrPolicy) -> Self {
         let configured = Self::parse_configured(trusted_relays, "trusted relay");
         Self {
             configured,
@@ -172,6 +174,7 @@ impl RelayManager {
             // of failure. Treat 0 as "the config meant 1".
             max_slots: max_slots.max(1),
             enabled: false,
+            policy,
         }
     }
 
@@ -287,6 +290,7 @@ impl RelayManager {
         if self.configured.iter().any(|(p, _)| *p == peer) {
             return self.on_relay_ready(peer, now);
         }
+        let policy = self.policy;
         if let Some(entry) = self.discovered.iter_mut().find(|(p, _)| *p == peer) {
             // Refresh the stored address only once the peer stops listening on
             // it: it was recorded at first sighting, so a relay that came back
@@ -297,7 +301,7 @@ impl RelayManager {
             // and replacing unconditionally would move us off one that works.
             let stored_still_listed = listen_addrs.iter().any(|a| strip_p2p(a) == entry.1);
             if !stored_still_listed {
-                if let Some(fresh) = listen_addrs.iter().find(|a| is_relay_candidate_addr(a)) {
+                if let Some(fresh) = listen_addrs.iter().find(|a| policy.relay_candidate(a)) {
                     debug!(%peer, from = %entry.1, to = %fresh, "relay candidate moved");
                     entry.1 = strip_p2p(fresh);
                 }
@@ -305,14 +309,11 @@ impl RelayManager {
             return self.on_relay_ready(peer, now);
         }
         // A relay we can only reach at a LAN address is no use to peers who are
-        // not on that LAN — and a relay we can only reach *through another
-        // relay* is no use to anyone, ourselves included. `is_relay_candidate_addr`
-        // is the second point: `is_announceable` passes any circuit address
-        // unconditionally, which is right for advertising our own reserved
-        // address and wrong here. Accepting one produced a nested
-        // `<their-circuit>/p2p/<them>/p2p-circuit` that `listen_on` rejected on
-        // every retry — see `is_relay_candidate_addr`.
-        let Some(addr) = listen_addrs.iter().find(|a| is_relay_candidate_addr(a)) else {
+        // not on that LAN; one we can only reach *through another relay*, or at
+        // a v6 address on a v4-only host, is no use to us. The policy answers
+        // all three — see `AddrPolicy::relay_candidate` for the nested-circuit
+        // failure that motivated it.
+        let Some(addr) = listen_addrs.iter().find(|a| policy.relay_candidate(a)) else {
             debug!(%peer, "peer offers relay hop but no directly-dialable address");
             return Vec::new();
         };
@@ -656,9 +657,17 @@ mod tests {
         ListenerId::next()
     }
 
+    /// The fixtures live in RFC5737 space, which only the lenient tier admits.
+    fn lenient() -> AddrPolicy {
+        AddrPolicy {
+            strict: false,
+            ipv6: true,
+        }
+    }
+
     fn enabled(trusted: &[String], max: usize) -> (RelayManager, Instant) {
         let now = Instant::now();
-        let mut mgr = RelayManager::new(trusted, max);
+        let mut mgr = RelayManager::new(trusted, max, lenient());
         mgr.set_enabled(true, now);
         (mgr, now)
     }
@@ -683,7 +692,7 @@ mod tests {
 
     #[test]
     fn no_reservations_are_sought_while_disabled() {
-        let mgr = RelayManager::new(&[relay_entry(1)], 2);
+        let mgr = RelayManager::new(&[relay_entry(1)], 2, lenient());
         assert!(!mgr.is_enabled());
         // A publicly reachable node holding circuits costs a relay real
         // resources for nothing.
@@ -696,7 +705,11 @@ mod tests {
         // `set_enabled` already returned the actions; re-enabling is a no-op.
         assert!(mgr.set_enabled(true, now).is_empty());
 
-        let mut mgr2 = RelayManager::new(&[relay_entry(1), relay_entry(2), relay_entry(3)], 2);
+        let mut mgr2 = RelayManager::new(
+            &[relay_entry(1), relay_entry(2), relay_entry(3)],
+            2,
+            lenient(),
+        );
         let actions = mgr2.set_enabled(true, now);
         assert_eq!(actions.len(), 2, "max_slots is 2, not 3: {actions:?}");
     }
@@ -706,7 +719,7 @@ mod tests {
         // A duplicated trusted_relays entry must not consume both slots on one
         // relay — that is two circuits with one point of failure.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[relay_entry(1), relay_entry(1)], 2);
+        let mut mgr = RelayManager::new(&[relay_entry(1), relay_entry(1)], 2, lenient());
         let actions = mgr.set_enabled(true, now);
         assert_eq!(actions.len(), 1, "one relay, one reservation: {actions:?}");
     }
@@ -798,7 +811,7 @@ mod tests {
 
     #[test]
     fn initial_peers_are_configured_candidates() {
-        let mgr = RelayManager::new(&[relay_entry(1)], 2).with_initial_peers(&[
+        let mgr = RelayManager::new(&[relay_entry(1)], 2, lenient()).with_initial_peers(&[
             relay_entry(2),
             relay_entry(1),
             "/ip4/198.51.100.9/tcp/1".into(),
@@ -1105,11 +1118,45 @@ mod tests {
     // -- identify discovery ---------------------------------------------
 
     #[test]
+    fn a_v4_only_host_does_not_pin_a_relay_at_its_v6_address() {
+        // A relay whose only public address is v6, met by a host with no v6:
+        // pinning that address fails every reservation attempt, forever.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(
+            &[],
+            1,
+            AddrPolicy {
+                strict: true,
+                ipv6: false,
+            },
+        );
+        mgr.set_enabled(true, now);
+        let hop = [RELAY_HOP_PROTOCOL.to_string()];
+        let lan: Multiaddr = "/ip4/192.168.1.7/tcp/8080".parse().unwrap();
+        let v6: Multiaddr = "/ip6/2606:4700::1/tcp/8080".parse().unwrap();
+        let v4: Multiaddr = "/ip4/1.1.1.1/tcp/8080".parse().unwrap();
+
+        let actions = mgr.note_identify(peer(7), &hop, &[lan, v6.clone()], now);
+        assert!(actions.is_empty(), "nothing we can dial: {actions:?}");
+
+        // The v6 address is listed first; the v4 one must still be the pick.
+        let actions = mgr.note_identify(peer(7), &hop, &[v6, v4.clone()], now);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            RelayAction::Dial { relay, relay_addr } => {
+                assert_eq!(*relay, peer(7));
+                assert_eq!(*relay_addr, v4);
+            }
+            other => panic!("expected a Dial, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn identify_supplies_candidates_when_nothing_is_configured() {
         // The real supply on the live network: `trusted_relays` defaults empty,
         // and the bootstraps advertise hop.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         assert!(mgr.set_enabled(true, now).is_empty(), "no candidates yet");
 
         let actions = mgr.note_identify(
@@ -1138,7 +1185,7 @@ mod tests {
         // after a fleet migration — was re-dialled at the stale address on
         // every backoff expiry, forever.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         mgr.set_enabled(true, now);
         let actions = mgr.note_identify(
             peer(7),
@@ -1178,7 +1225,7 @@ mod tests {
         // adds an address. Taking the first candidate unconditionally would
         // walk us off the address that works onto whichever one sorts first.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         mgr.set_enabled(true, now);
         let actions = mgr.note_identify(
             peer(7),
@@ -1213,7 +1260,7 @@ mod tests {
     #[test]
     fn a_peer_that_does_not_offer_hop_is_not_a_candidate() {
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         mgr.set_enabled(true, now);
         let actions = mgr.note_identify(
             peer(7),
@@ -1233,7 +1280,7 @@ mod tests {
         // every retry, so the node never regained a circuit after its one good
         // reservation lapsed.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         mgr.set_enabled(true, now);
         let actions = mgr.note_identify(
             peer(7),
@@ -1255,7 +1302,7 @@ mod tests {
     fn a_directly_dialable_relay_is_still_a_candidate() {
         // The guard above must not cost us ordinary relays.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         mgr.set_enabled(true, now);
         let actions = mgr.note_identify(
             peer(7),
@@ -1273,7 +1320,7 @@ mod tests {
     fn a_relay_reachable_only_on_a_lan_is_not_a_candidate() {
         // No use to peers who are not on that LAN.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         mgr.set_enabled(true, now);
         let actions = mgr.note_identify(
             peer(7),
@@ -1319,7 +1366,7 @@ mod tests {
     fn the_discovered_list_is_bounded() {
         let now = Instant::now();
         // max_slots 1 so discovery does not immediately consume candidates.
-        let mut mgr = RelayManager::new(&[], 1);
+        let mut mgr = RelayManager::new(&[], 1, lenient());
         for n in 1..=(MAX_DISCOVERED as u8 + 5) {
             mgr.note_identify(
                 peer(n),
@@ -1347,6 +1394,7 @@ mod tests {
                 relay_entry(1),
             ],
             2,
+            lenient(),
         );
         assert_eq!(mgr.configured.len(), 1);
         assert_eq!(mgr.configured[0].0, peer(1));
@@ -1362,7 +1410,7 @@ mod tests {
     fn zero_max_slots_is_read_as_one() {
         // Silently disabling relaying is never what a config meant.
         let now = Instant::now();
-        let mut mgr = RelayManager::new(&[relay_entry(1)], 0);
+        let mut mgr = RelayManager::new(&[relay_entry(1)], 0, lenient());
         assert_eq!(mgr.set_enabled(true, now).len(), 1);
     }
 }

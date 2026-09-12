@@ -340,10 +340,10 @@ of their absence:
   monopolise leases or deny inference capacity to others is unexamined.
 - **Trust/VC integration** (`kwaai-trust`) was not in scope of any of these PRs
   and its interaction with the native path is unreviewed.
-- **`require_global_ips` defaults to `false`** (`kwaai-p2p/src/config.rs:201`),
-  deliberately, so the RFC2544/RFC5737 ranges used by the docker nat-test bed are
-  treated as routable. Correct for testing; worth confirming nobody runs a
-  production node with an address in those ranges reachable.
+- **`only_global_ips` defaults to `true`** (`kwaai-p2p/src/config.rs`), so
+  IANA-reserved space is rejected like private space. A node that sets it
+  `false` announces such addresses; that is a per-deployment decision and not
+  examined further here.
 - **Licence and supply-chain policy** is unexamined: `cargo deny` was not run, so
   nothing here speaks to licence compatibility, banned crates, or source
   provenance beyond the one vendored dependency noted below. The advisory scan

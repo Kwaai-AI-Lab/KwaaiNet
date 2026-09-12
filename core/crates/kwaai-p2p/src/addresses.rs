@@ -14,28 +14,23 @@
 //!    "reach me through this relay", and the relay's own address is the part
 //!    that has to be routable. Classifying the circuit by the IP in front of it
 //!    would reject every reservation held on a relay we reached over a LAN.
-//! 2. **The reserved-for-documentation and benchmarking ranges are accepted.**
-//!    RFC5737 (`192.0.2/24`, `198.51.100/24`, `203.0.113/24`) and RFC2544
-//!    (`198.18/15`) are reserved by IANA but they are not LAN-private, and the
-//!    docker nat-test topology is built on them — `198.18.0.20` is a relay node
-//!    there. Treating them as unroutable would make the entire test bed
-//!    classify itself unreachable. `is_routable_v4` therefore permits them, and
-//!    the golden test at the bottom of this file pins that.
-//!
-//! IPv6 gets no such carve-out. `is_routable_v6` rejects unique-local
-//! `fc00::/7` — the v6 private range, no more dialable from outside than
-//! RFC1918 — along with the documentation and benchmarking prefixes and the
-//! transition ranges (Teredo, 6to4, ORCHID) that name a v4 endpoint or an
-//! overlay rather than a v6 host. A v6 address is announceable only when it
-//! is globally routable; `is_globally_routable_v6` is the same set, kept so
-//! both families present the same pair of names to [`is_announceable_with`].
+//! 2. **The IANA-reserved ranges are governed by `only_global_ips`.**
+//!    RFC5737 (`192.0.2/24`, `198.51.100/24`, `203.0.113/24`), RFC2544
+//!    (`198.18/15`), IPv6 unique-local `fc00::/7` and the v6 documentation and
+//!    benchmarking prefixes are not on the internet, and with the key on — the
+//!    default — they are rejected like any private range. But they are not
+//!    LAN-private either: a sealed network built on reserved space is a
+//!    legitimate deployment, and its operator declares that by turning the key
+//!    off, which selects the lenient tier ([`is_routable_v4`] /
+//!    [`is_routable_v6`]). Nothing here knows about any particular such
+//!    network. The transition ranges (Teredo, 6to4, ORCHID) name a v4 endpoint
+//!    or an overlay rather than a v6 host and are rejected in both tiers.
 //!
 //! rust-libp2p 0.53 does its own filtering in exactly one place that matters:
-//! `autonat::Config::only_global_ips` (default `true`) rejects RFC2544 via its
-//! `is_benchmarking` check. That is why [`crate::config::NetworkConfig`] carries
-//! `require_global_ips` and defaults it to **false** — kad, identify, dcutr and
-//! the swarm itself do no address-class filtering whatsoever, so AutoNAT's knob
-//! is the only lever, and it has to be off for the test bed to work.
+//! `autonat::Config::only_global_ips`, whose `is_benchmarking` check rejects
+//! RFC2544. It is driven from the same key, so neither can be tightened
+//! without the other; kad, identify, dcutr and the swarm itself do no
+//! address-class filtering whatsoever.
 
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -43,13 +38,20 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use libp2p::swarm::FromSwarm;
 use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
 
-/// Whether `addr` is worth advertising to other peers.
+/// Whether `addr` is worth advertising to other peers, under the default
+/// (`only_global_ips: true`) policy. Code that has a configured
+/// [`AddrPolicy`] should ask it instead.
+pub fn is_announceable(addr: &Multiaddr) -> bool {
+    is_announceable_with(addr, true)
+}
+
+/// The lenient tier of [`is_announceable_with`].
 ///
 /// True for any address carrying a `/p2p-circuit` segment (rule 1 above), and
 /// for direct addresses whose every IP component is routable. An address that
 /// mixes a routable and an unroutable IP is rejected: the unroutable one is
 /// almost always a local interface that leaked into the list.
-pub fn is_announceable(addr: &Multiaddr) -> bool {
+fn is_announceable_lenient(addr: &Multiaddr) -> bool {
     let mut has_circuit = false;
     let mut routable_ip = false;
     let mut bad_ip = false;
@@ -81,13 +83,13 @@ pub fn is_announceable(addr: &Multiaddr) -> bool {
     routable_ip && !bad_ip
 }
 
-/// Whether `a` is plausibly reachable from outside the local network.
+/// The lenient v4 tier, selected by `only_global_ips: false`.
 ///
 /// Rejects unspecified, loopback, link-local, broadcast, multicast, the RFC1918
 /// private ranges and RFC6598 carrier-grade NAT (`100.64/10`).
 ///
 /// **Accepts** the RFC5737 documentation ranges and RFC2544 benchmarking range
-/// — see the module docs for why that is deliberate and not an oversight.
+/// — rule 2 in the module docs.
 pub fn is_routable_v4(a: Ipv4Addr) -> bool {
     if a.is_unspecified()
         || a.is_loopback()
@@ -107,13 +109,12 @@ pub fn is_routable_v4(a: Ipv4Addr) -> bool {
     true
 }
 
-/// The stricter classification used when `require_global_ips` is set.
+/// The default v4 classification (`only_global_ips: true`).
 ///
-/// Adds the reserved ranges [`is_routable_v4`] deliberately permits back onto
-/// the reject list, matching what `autonat::Config::only_global_ips` enforces
-/// internally. An operator turns this on when the node is on the real internet
-/// and a documentation-range address in the announce set would only ever be a
-/// misconfiguration.
+/// Adds the reserved ranges [`is_routable_v4`] permits back onto the reject
+/// list, matching what `autonat::Config::only_global_ips` enforces internally.
+/// On the internet a documentation-range address in the announce set could
+/// only ever be a misconfiguration.
 pub fn is_globally_routable_v4(a: Ipv4Addr) -> bool {
     if !is_routable_v4(a) {
         return false;
@@ -133,25 +134,21 @@ pub fn is_globally_routable_v4(a: Ipv4Addr) -> bool {
     true
 }
 
-/// The IPv6 counterpart of [`is_routable_v4`], without its carve-out.
+/// The lenient v6 tier, the counterpart of [`is_routable_v4`].
 ///
-/// Rejects unspecified, loopback, multicast, link-local `fe80::/10`,
-/// unique-local `fc00::/7`, the deprecated site-local `fec0::/10` and
-/// IPv4-compatible `::a.b.c.d` forms, the discard-only `100::/64`, the
-/// documentation prefixes `2001:db8::/32` and `3fff::/20`, benchmarking
-/// `2001:2::/48`, and the transition and overlay ranges — Teredo `2001::/32`,
-/// 6to4 `2002::/16`, ORCHID `2001:10::/28` and `2001:20::/28`. An IPv4-mapped
-/// address is classified as the v4 address it carries.
+/// Rejects unspecified, loopback, multicast, link-local `fe80::/10`, the
+/// deprecated site-local `fec0::/10` and IPv4-compatible `::a.b.c.d` forms, the
+/// discard-only `100::/64`, and the transition and overlay ranges — Teredo
+/// `2001::/32`, 6to4 `2002::/16`, ORCHID `2001:10::/28` and `2001:20::/28`. An
+/// IPv4-mapped address is classified as the v4 address it carries.
+///
+/// **Accepts** unique-local `fc00::/7` and the documentation and benchmarking
+/// prefixes — rule 2 in the module docs.
 pub fn is_routable_v6(a: Ipv6Addr) -> bool {
     if let Some(v4) = a.to_ipv4_mapped() {
         return is_routable_v4(v4);
     }
-    if a.is_unspecified()
-        || a.is_loopback()
-        || a.is_multicast()
-        || a.is_unicast_link_local()
-        || a.is_unique_local()
-    {
+    if a.is_unspecified() || a.is_loopback() || a.is_multicast() || a.is_unicast_link_local() {
         return false;
     }
     let s = a.segments();
@@ -168,35 +165,38 @@ pub fn is_routable_v6(a: Ipv6Addr) -> bool {
     if s[..6].iter().all(|seg| *seg == 0) {
         return false;
     }
-    // Documentation: 2001:db8::/32 (RFC3849) and 3fff::/20 (RFC9637).
-    if (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x3fff && s[1] & 0xf000 == 0) {
-        return false;
-    }
-    // Benchmarking 2001:2::/48, Teredo 2001::/32, 6to4 2002::/16, and the
-    // ORCHID overlays 2001:10::/28 and 2001:20::/28.
+    // Teredo 2001::/32, 6to4 2002::/16, and the ORCHID overlays 2001:10::/28
+    // and 2001:20::/28.
     if s[0] == 0x2002
-        || (s[0] == 0x2001
-            && (s[1] == 0
-                || (s[1] == 0x0002 && s[2] == 0)
-                || s[1] & 0xfff0 == 0x0010
-                || s[1] & 0xfff0 == 0x0020))
+        || (s[0] == 0x2001 && (s[1] == 0 || s[1] & 0xfff0 == 0x0010 || s[1] & 0xfff0 == 0x0020))
     {
         return false;
     }
     true
 }
 
-/// The IPv6 counterpart of [`is_globally_routable_v4`].
+/// The default v6 classification (`only_global_ips: true`), the counterpart
+/// of [`is_globally_routable_v4`].
 ///
-/// The same set as [`is_routable_v6`], which already rejects everything the
-/// strict v4 check adds: v6 has no lenient tier. It exists so the two families
-/// present the same pair of names, and so an IPv4-mapped address is held to
-/// the strict v4 rule when the caller is strict.
+/// Drops what [`is_routable_v6`] permits: unique-local `fc00::/7`,
+/// documentation `2001:db8::/32` and `3fff::/20`, benchmarking `2001:2::/48`.
 pub fn is_globally_routable_v6(a: Ipv6Addr) -> bool {
     if let Some(v4) = a.to_ipv4_mapped() {
         return is_globally_routable_v4(v4);
     }
-    is_routable_v6(a)
+    if !is_routable_v6(a) || a.is_unique_local() {
+        return false;
+    }
+    let s = a.segments();
+    // Documentation: 2001:db8::/32 (RFC3849) and 3fff::/20 (RFC9637);
+    // benchmarking 2001:2::/48.
+    if (s[0] == 0x2001 && s[1] == 0x0db8)
+        || (s[0] == 0x3fff && s[1] & 0xf000 == 0)
+        || (s[0] == 0x2001 && s[1] == 0x0002 && s[2] == 0)
+    {
+        return false;
+    }
+    true
 }
 
 /// Whether `addr` names an IPv6 host.
@@ -228,7 +228,8 @@ pub fn ipv6_loopback_available() -> bool {
 /// the identify filter drifted apart before.
 #[derive(Clone, Copy, Debug)]
 pub struct AddrPolicy {
-    /// `require_global_ips`: reject the reserved ranges too.
+    /// `only_global_ips`: the default. Off selects the lenient tier, which
+    /// admits the IANA-reserved ranges (rule 2 in the module docs).
     pub strict: bool,
     /// Whether IPv6 addresses are usable at all on this node.
     pub ipv6: bool,
@@ -246,14 +247,39 @@ impl AddrPolicy {
     pub fn dialable(&self, addr: &Multiaddr) -> bool {
         self.ipv6 || !has_ip6(addr)
     }
+
+    /// Whether a peer reachable at `addr` can serve as *our* relay.
+    ///
+    /// Deliberately **not** [`Self::announceable`], which answers a different
+    /// question. That one says "is this address worth telling the world about"
+    /// and returns true for any circuit address unconditionally (rule 1 in the
+    /// module docs) — correct for advertising our own reserved address, wrong
+    /// for picking a relay.
+    ///
+    /// A relay has to be **directly dialable, by us**. A peer that is itself
+    /// only reachable through someone else's circuit cannot host our
+    /// reservation: asking for one builds `<their-circuit>/p2p/<them>/p2p-circuit`,
+    /// a doubly-nested address that `Swarm::listen_on` rejects outright. And a
+    /// v6 address on a v4-only host is just as undialable: pinning it means
+    /// every reservation attempt fails, forever, on backoff.
+    ///
+    /// Observed on metro-win 2026-08-11: its one good reservation lapsed, the
+    /// relay manager rotated onto identify-discovered candidates that were
+    /// themselves relay-only, and it never obtained another circuit — 2350
+    /// `listen_on refused` failures across ~12 candidates, while the node still
+    /// reported healthy because DHT re-announce kept succeeding.
+    pub fn relay_candidate(&self, addr: &Multiaddr) -> bool {
+        self.announceable(addr) && !is_circuit(addr)
+    }
 }
 
-/// [`is_announceable`], with the reserved ranges rejected when `strict`.
+/// Whether `addr` is worth advertising, with the reserved ranges rejected when
+/// `strict` (`only_global_ips`).
 ///
-/// The one entry point callers should use, so the `require_global_ips` decision
+/// The one entry point callers should use, so the `only_global_ips` decision
 /// lives in one place rather than being re-derived at each call site.
 pub fn is_announceable_with(addr: &Multiaddr, strict: bool) -> bool {
-    if !is_announceable(addr) {
+    if !is_announceable_lenient(addr) {
         return false;
     }
     if !strict {
@@ -302,28 +328,6 @@ pub fn uses_dialable_transport(addr: &Multiaddr, quic: bool) -> bool {
                 | Protocol::Certhash(_)
         ) || (!quic && matches!(p, Protocol::Quic | Protocol::QuicV1))
     })
-}
-
-/// Whether a peer reachable at `addr` can serve as *our* relay.
-///
-/// Deliberately **not** [`is_announceable`], which answers a different question.
-/// That one says "is this address worth telling the world about" and returns
-/// true for any circuit address unconditionally (rule 1 in the module docs) —
-/// correct for advertising our own reserved address, wrong for picking a relay.
-///
-/// A relay has to be **directly dialable**. A peer that is itself only reachable
-/// through someone else's circuit cannot host our reservation: asking for one
-/// builds `<their-circuit>/p2p/<them>/p2p-circuit`, a doubly-nested address that
-/// `Swarm::listen_on` rejects outright. Every reservation attempt against such a
-/// candidate fails, forever, on backoff.
-///
-/// Observed on metro-win 2026-08-11: its one good reservation lapsed, the relay
-/// manager rotated onto identify-discovered candidates that were themselves
-/// relay-only, and it never obtained another circuit — 2350 `listen_on refused`
-/// failures across ~12 candidates, while the node still reported healthy because
-/// DHT re-announce kept succeeding.
-pub fn is_relay_candidate_addr(addr: &Multiaddr) -> bool {
-    is_announceable(addr) && !is_circuit(addr)
 }
 
 /// Drop a trailing `/p2p/<peer-id>` component.
@@ -417,8 +421,8 @@ pub fn circuit_listen_addr(relay_addr: &Multiaddr, relay: PeerId) -> Option<Mult
     // appending to its circuit address silently produces
     // `<their-circuit>/p2p/<them>/p2p-circuit` — nested, undialable, and
     // rejected by `listen_on` on every retry. Refuse to build it at all;
-    // `is_relay_candidate_addr` should have filtered this out upstream, and a
-    // `None` here means it did not.
+    // `AddrPolicy::relay_candidate` should have filtered this out upstream,
+    // and a `None` here means it did not.
     if is_circuit(relay_addr) {
         return None;
     }
@@ -490,17 +494,19 @@ mod tests {
     // -- the golden case ------------------------------------------------
 
     #[test]
-    fn rfc2544_benchmarking_addresses_are_routable() {
-        // 198.18.0.0/15 is the docker nat-test topology's "public" network;
-        // 198.18.0.20 is node-a, the trusted relay every NATed node in that bed
-        // reserves against. If this ever flips to false, every node in the test
-        // bed classifies itself unreachable and the whole topology goes dark.
+    fn rfc2544_benchmarking_addresses_are_lenient_only() {
+        // Reserved but not LAN-private: admitted by the lenient tier an
+        // operator selects with `only_global_ips: false`, and by nothing
+        // else. `is_announceable` is the default, so it says no.
         assert!(is_routable_v4(v4("198.18.0.20")));
         assert!(is_routable_v4(v4("198.19.255.254")));
-        assert!(is_announceable(&ma("/ip4/198.18.0.20/tcp/8080")));
+        assert!(is_announceable_with(
+            &ma("/ip4/198.18.0.20/tcp/8080"),
+            false
+        ));
 
-        // …and `require_global_ips` is precisely the switch that rejects them.
         assert!(!is_globally_routable_v4(v4("198.18.0.20")));
+        assert!(!is_announceable(&ma("/ip4/198.18.0.20/tcp/8080")));
         assert!(!is_announceable_with(
             &ma("/ip4/198.18.0.20/tcp/8080"),
             true
@@ -508,12 +514,15 @@ mod tests {
     }
 
     #[test]
-    fn rfc5737_documentation_ranges_are_routable() {
+    fn rfc5737_documentation_ranges_are_lenient_only() {
         for addr in ["192.0.2.1", "198.51.100.7", "203.0.113.9"] {
-            assert!(is_routable_v4(v4(addr)), "{addr} should be routable");
+            assert!(
+                is_routable_v4(v4(addr)),
+                "{addr} should be lenient-routable"
+            );
             assert!(
                 !is_globally_routable_v4(v4(addr)),
-                "{addr} should fail the strict check"
+                "{addr} should fail the default check"
             );
         }
     }
@@ -568,26 +577,32 @@ mod tests {
 
     #[test]
     fn public_ipv6_is_announceable() {
-        // Unlike RFC5737 on the v4 side, 2001:db8::/32 gets no lenient tier.
+        // 2001:db8::/32 is documentation space: lenient-only, like RFC5737.
         assert!(!is_announceable(&ma("/ip6/2001:db8::1/tcp/8080")));
-        assert!(is_announceable(&ma("/ip6/2606:4700::1111/tcp/8080")));
         assert!(is_announceable_with(
-            &ma("/ip6/2606:4700::1111/tcp/8080"),
-            true
+            &ma("/ip6/2001:db8::1/tcp/8080"),
+            false
         ));
+        assert!(is_announceable(&ma("/ip6/2606:4700::1111/tcp/8080")));
     }
 
     // -- the IPv6 classifier ---------------------------------------------
 
-    /// ULA is the v6 private range: a peer at `fd00::…` is no more dialable
-    /// from outside its network than one at `10.…`, and unlike RFC2544 on the
-    /// v4 side it gets no lenient tier.
+    /// ULA is reserved, not LAN-private, and gets the same treatment as
+    /// RFC2544 on the v4 side: lenient tier only.
     #[test]
-    fn unique_local_addresses_are_not_routable() {
+    fn unique_local_addresses_are_lenient_only() {
         for addr in ["fd00::1", "fd7a:115c:a1e0::1", "fc00::1"] {
-            assert!(!is_routable_v6(v6(addr)), "{addr} should not be routable");
+            assert!(
+                is_routable_v6(v6(addr)),
+                "{addr} should be lenient-routable"
+            );
             assert!(!is_globally_routable_v6(v6(addr)));
             assert!(!is_announceable(&ma(&format!("/ip6/{addr}/tcp/8080"))));
+            assert!(is_announceable_with(
+                &ma(&format!("/ip6/{addr}/tcp/8080")),
+                false
+            ));
         }
     }
 
@@ -620,9 +635,12 @@ mod tests {
     }
 
     #[test]
-    fn documentation_and_benchmarking_ranges_are_not_routable() {
+    fn documentation_and_benchmarking_ranges_are_lenient_only() {
         for addr in ["2001:db8::1", "3fff::1", "2001:2::1"] {
-            assert!(!is_routable_v6(v6(addr)), "{addr} should not be routable");
+            assert!(
+                is_routable_v6(v6(addr)),
+                "{addr} should be lenient-routable"
+            );
             assert!(!is_globally_routable_v6(v6(addr)));
         }
     }
@@ -801,16 +819,39 @@ mod tests {
             "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
         ));
         assert!(is_announceable(&circuit), "still announceable as our own");
+        let lenient = AddrPolicy {
+            strict: false,
+            ipv6: true,
+        };
         assert!(
-            !is_relay_candidate_addr(&circuit),
+            !lenient.relay_candidate(&circuit),
             "but useless as a relay we reserve on"
         );
         let direct = ma("/ip4/198.51.100.7/tcp/8080");
-        assert!(is_relay_candidate_addr(&direct));
+        assert!(lenient.relay_candidate(&direct));
         assert!(
-            !is_relay_candidate_addr(&ma("/ip4/192.168.1.7/tcp/8080")),
+            !lenient.relay_candidate(&ma("/ip4/192.168.1.7/tcp/8080")),
             "LAN-only relays are still rejected"
         );
+    }
+
+    #[test]
+    fn a_v4_only_host_never_picks_a_v6_relay_address() {
+        // The relay is fine; *we* cannot dial v6. Pinning its v6 address would
+        // fail every reservation attempt, forever, on backoff.
+        let v6 = ma("/ip6/2606:4700::1/tcp/8080");
+        let v4 = ma("/ip4/1.1.1.1/tcp/8080");
+        let v4_only = AddrPolicy {
+            strict: true,
+            ipv6: false,
+        };
+        assert!(!v4_only.relay_candidate(&v6));
+        assert!(v4_only.relay_candidate(&v4));
+        let dual = AddrPolicy {
+            strict: true,
+            ipv6: true,
+        };
+        assert!(dual.relay_candidate(&v6));
     }
 
     #[test]
@@ -941,22 +982,13 @@ mod tests {
         assert!(is_announceable_with(&circuit, false));
     }
 
-    /// The nat-test topology runs on RFC2544 `198.18/15`, which is reserved but
-    /// not LAN-private. With `require_global_ips` off — the default, and what
-    /// the test bed needs — those addresses have to survive the filter, or
-    /// every node there classifies its peers as undialable and the topology
-    /// cannot form at all.
+    /// The identify filter follows the key: reserved space passes only when
+    /// the operator has declared it routable.
     #[test]
-    fn the_test_bed_range_survives_the_identify_filter() {
-        let nat_test = ma("/ip4/198.18.0.20/tcp/8080");
-        assert!(
-            is_announceable_with(&nat_test, false),
-            "RFC2544 must pass with require_global_ips off"
-        );
-        assert!(
-            !is_announceable_with(&nat_test, true),
-            "and must not pass once the operator declares a real-internet node"
-        );
+    fn reserved_ranges_pass_the_identify_filter_only_when_lenient() {
+        let reserved = ma("/ip4/198.18.0.20/tcp/8080");
+        assert!(is_announceable_with(&reserved, false));
+        assert!(!is_announceable_with(&reserved, true));
     }
 }
 
