@@ -37,7 +37,7 @@ use std::time::Duration;
 use libp2p::{Multiaddr, PeerId};
 use tracing::{debug, info, warn};
 
-use crate::addresses::is_announceable_with;
+use crate::addresses::AddrPolicy;
 
 /// How long to wait for real evidence before falling back to identify
 /// consensus. Long enough for AutoNAT's boot delay plus a probe round-trip
@@ -218,8 +218,10 @@ pub struct ReachabilityState {
     declared: Option<Multiaddr>,
     /// Distinct-observer threshold for the identify-consensus fallback.
     min_confirmations: usize,
-    /// Whether the reserved IPv4 ranges count as routable.
-    require_global_ips: bool,
+    /// Which addresses count as evidence. UPnP evidence is IPv4-only by
+    /// construction (IGD maps v4 ports), so a v6-only host reaches Public
+    /// through AutoNAT or the identify consensus.
+    policy: AddrPolicy,
     /// Whether the grace period has elapsed. Before it does, an absence of
     /// evidence is not evidence of absence.
     grace_elapsed: bool,
@@ -234,6 +236,7 @@ impl ReachabilityState {
         declared: Option<Multiaddr>,
         min_confirmations: usize,
         require_global_ips: bool,
+        ipv6: bool,
     ) -> (Self, Vec<Effect>) {
         if force_private && declared.is_some() {
             warn!(
@@ -267,7 +270,10 @@ impl ReachabilityState {
                 force_private,
                 declared,
                 min_confirmations: min_confirmations.max(1),
-                require_global_ips,
+                policy: AddrPolicy {
+                    strict: require_global_ips,
+                    ipv6,
+                },
                 grace_elapsed: false,
             },
             effects,
@@ -299,12 +305,12 @@ impl ReachabilityState {
             info!(%addr, "autonat says public, but force_private is set — staying private");
             return Vec::new();
         }
-        // With `only_global_ips: false` (the default, so the RFC2544 test beds
-        // work) autonat itself does no address-class filtering, and a dialback
-        // from a peer on our own LAN can "confirm" an RFC1918 address. Promoting
+        // With `only_global_ips` off, autonat itself does no address-class
+        // filtering, and a dialback from a peer on our own LAN can "confirm"
+        // an RFC1918 address — the policy still rejects it. Promoting
         // it would advertise a LAN address to the whole network and tear down
         // relay circuits — the Direct-but-unreachable failure mode.
-        if !is_announceable_with(&addr, self.require_global_ips) {
+        if !self.policy.announceable(&addr) {
             info!(%addr, "autonat says public at a non-announceable address; ignoring");
             return Vec::new();
         }
@@ -340,7 +346,7 @@ impl ReachabilityState {
         }
         // Same guard as the autonat path: a gateway can report an internal or
         // carrier-grade address, and standing on it would be worse than Unknown.
-        if !is_announceable_with(&addr, self.require_global_ips) {
+        if !self.policy.announceable(&addr) {
             info!(%addr, "upnp mapped a non-announceable external address; ignoring");
             return Vec::new();
         }
@@ -421,7 +427,7 @@ impl ReachabilityState {
     ) -> Option<(Multiaddr, usize)> {
         observed
             .iter()
-            .filter(|(addr, _)| is_announceable_with(addr, self.require_global_ips))
+            .filter(|(addr, _)| self.policy.announceable(addr))
             .map(|(addr, observers)| (addr.clone(), observers.len()))
             .filter(|(_, n)| *n >= self.min_confirmations)
             // Ties broken by address so the choice is deterministic — a
@@ -590,15 +596,21 @@ mod tests {
             .collect()
     }
 
+    /// The shipped default: strict, so the fixtures are real public addresses.
     fn plain() -> ReachabilityState {
-        ReachabilityState::new(false, None, 2, false).0
+        ReachabilityState::new(false, None, 2, true, true).0
+    }
+
+    /// `only_global_ips: false`, the tier that admits reserved space.
+    fn lenient() -> ReachabilityState {
+        ReachabilityState::new(false, None, 2, false, true).0
     }
 
     // -- force_private ---------------------------------------------------
 
     #[test]
     fn force_private_is_terminal_against_autonat_public() {
-        let (mut state, effects) = ReachabilityState::new(true, None, 2, false);
+        let (mut state, effects) = ReachabilityState::new(true, None, 2, true, true);
         assert!(effects.is_empty());
         // Private from t=0, not Unknown: reservations start immediately, which
         // is the entire reason the flag exists.
@@ -614,7 +626,7 @@ mod tests {
 
     #[test]
     fn force_private_also_refuses_upnp_and_identify_consensus() {
-        let (mut state, _) = ReachabilityState::new(true, None, 2, false);
+        let (mut state, _) = ReachabilityState::new(true, None, 2, true, true);
         assert!(state
             .on_upnp_external(ma("/ip4/1.2.3.4/tcp/8080"))
             .is_empty());
@@ -627,9 +639,9 @@ mod tests {
 
     #[test]
     fn autonat_public_at_a_lan_address_is_ignored() {
-        // With `only_global_ips: false` (our default, for the RFC2544 beds)
-        // autonat does no address filtering of its own: a dialback from a peer
-        // on our LAN can "confirm" an RFC1918 address. Promoting it would
+        // AutoNAT's own filter is a different ruleset, and under the lenient
+        // tier there is none: the policy is the guard. A dialback from a peer
+        // on our LAN can "confirm" an RFC1918 address, and promoting it would
         // advertise a LAN address fleet-wide and tear down relay circuits.
         let mut state = plain();
         let effects = state.on_autonat_public(ma("/ip4/192.168.1.50/tcp/8080"));
@@ -638,7 +650,7 @@ mod tests {
 
         // The same verdict at an announceable address still promotes — the
         // guard is the classifier, not autonat suppression.
-        let effects = state.on_autonat_public(ma("/ip4/198.18.0.40/tcp/8080"));
+        let effects = state.on_autonat_public(ma("/ip4/8.8.8.8/tcp/8080"));
         assert!(!effects.is_empty());
         assert!(matches!(
             state.current(),
@@ -663,8 +675,8 @@ mod tests {
 
     #[test]
     fn declared_external_addr_outranks_force_private_with_a_warning() {
-        let addr = ma("/ip4/203.0.113.7/tcp/8080");
-        let (mut state, effects) = ReachabilityState::new(true, Some(addr.clone()), 2, false);
+        let addr = ma("/ip4/8.8.8.8/tcp/8080");
+        let (mut state, effects) = ReachabilityState::new(true, Some(addr.clone()), 2, true, true);
         assert_eq!(effects, vec![Effect::ConfirmExternal(addr.clone())]);
         assert_eq!(state.current().source(), Some(Source::Declared));
 
@@ -685,19 +697,19 @@ mod tests {
     fn autonat_private_demotes_identify_consensus_but_not_declared() {
         // Consensus is demotable…
         let mut state = plain();
-        let obs = observed(&[("/ip4/203.0.113.7/tcp/8080", &[1, 2])]);
+        let obs = observed(&[("/ip4/8.8.8.8/tcp/8080", &[1, 2])]);
         state.on_grace_elapsed(&obs);
         assert_eq!(state.current().source(), Some(Source::IdentifyConsensus));
         let effects = state.on_autonat_private();
         assert_eq!(
             effects,
-            vec![Effect::RetractExternal(ma("/ip4/203.0.113.7/tcp/8080"))]
+            vec![Effect::RetractExternal(ma("/ip4/8.8.8.8/tcp/8080"))]
         );
         assert_eq!(*state.current(), Reachability::Private);
 
         // …declared is not.
-        let addr = ma("/ip4/203.0.113.7/tcp/8080");
-        let (mut declared, _) = ReachabilityState::new(false, Some(addr), 2, false);
+        let addr = ma("/ip4/8.8.8.8/tcp/8080");
+        let (mut declared, _) = ReachabilityState::new(false, Some(addr), 2, true, true);
         assert!(declared.on_autonat_private().is_empty());
         assert!(declared.current().is_public());
     }
@@ -705,12 +717,12 @@ mod tests {
     #[test]
     fn autonat_public_overrides_identify_consensus() {
         let mut state = plain();
-        state.on_grace_elapsed(&observed(&[("/ip4/203.0.113.7/tcp/8080", &[1, 2])]));
+        state.on_grace_elapsed(&observed(&[("/ip4/8.8.8.8/tcp/8080", &[1, 2])]));
         assert_eq!(state.current().source(), Some(Source::IdentifyConsensus));
 
         // Same address, better evidence: no churn in the swarm's address set,
         // but the source is upgraded so autonat now owns the verdict.
-        let effects = state.on_autonat_public(ma("/ip4/203.0.113.7/tcp/8080"));
+        let effects = state.on_autonat_public(ma("/ip4/8.8.8.8/tcp/8080"));
         assert!(effects.is_empty(), "same address, nothing to re-confirm");
         assert_eq!(state.current().source(), Some(Source::AutoNat));
     }
@@ -722,7 +734,7 @@ mod tests {
         // address would churn identify pushes and briefly drop kad out of
         // server mode, for nothing.
         let mut state = plain();
-        let addr = ma("/ip4/203.0.113.7/tcp/8080");
+        let addr = ma("/ip4/8.8.8.8/tcp/8080");
         assert_eq!(
             state.on_autonat_public(addr.clone()),
             vec![Effect::ConfirmExternal(addr.clone())]
@@ -735,10 +747,10 @@ mod tests {
     #[test]
     fn a_weaker_source_cannot_overwrite_a_stronger_one() {
         let mut state = plain();
-        state.on_autonat_public(ma("/ip4/203.0.113.7/tcp/8080"));
+        state.on_autonat_public(ma("/ip4/8.8.8.8/tcp/8080"));
         // upnp is weaker than autonat and must not steal the verdict.
         assert!(state
-            .on_upnp_external(ma("/ip4/198.51.100.1/tcp/8080"))
+            .on_upnp_external(ma("/ip4/1.1.1.1/tcp/8080"))
             .is_empty());
         assert_eq!(state.current().source(), Some(Source::AutoNat));
     }
@@ -746,15 +758,15 @@ mod tests {
     #[test]
     fn a_changed_address_from_the_same_source_retracts_the_old_one() {
         let mut state = plain();
-        state.on_autonat_public(ma("/ip4/203.0.113.7/tcp/8080"));
+        state.on_autonat_public(ma("/ip4/8.8.8.8/tcp/8080"));
         // A re-NAT or a changed port forward. Leaving the old address confirmed
         // would keep identify advertising somewhere we are not.
-        let effects = state.on_autonat_public(ma("/ip4/203.0.113.8/tcp/8080"));
+        let effects = state.on_autonat_public(ma("/ip4/8.8.4.4/tcp/8080"));
         assert_eq!(
             effects,
             vec![
-                Effect::RetractExternal(ma("/ip4/203.0.113.7/tcp/8080")),
-                Effect::ConfirmExternal(ma("/ip4/203.0.113.8/tcp/8080")),
+                Effect::RetractExternal(ma("/ip4/8.8.8.8/tcp/8080")),
+                Effect::ConfirmExternal(ma("/ip4/8.8.4.4/tcp/8080")),
             ]
         );
     }
@@ -764,7 +776,7 @@ mod tests {
     #[test]
     fn upnp_expiry_returns_to_unknown_not_private() {
         let mut state = plain();
-        let addr = ma("/ip4/203.0.113.7/tcp/8080");
+        let addr = ma("/ip4/8.8.8.8/tcp/8080");
         // upnp confirms its own address into the swarm, so no effect here.
         assert!(state.on_upnp_external(addr.clone()).is_empty());
         assert_eq!(state.current().source(), Some(Source::Upnp));
@@ -780,9 +792,9 @@ mod tests {
     #[test]
     fn upnp_expiry_for_an_address_we_are_not_using_is_ignored() {
         let mut state = plain();
-        state.on_upnp_external(ma("/ip4/203.0.113.7/tcp/8080"));
+        state.on_upnp_external(ma("/ip4/8.8.8.8/tcp/8080"));
         assert!(state
-            .on_upnp_expired(&ma("/ip4/198.51.100.1/tcp/8080"))
+            .on_upnp_expired(&ma("/ip4/1.1.1.1/tcp/8080"))
             .is_empty());
         assert_eq!(state.current().source(), Some(Source::Upnp));
     }
@@ -793,7 +805,7 @@ mod tests {
         // Retracting it from under upnp would leave its bookkeeping pointing at
         // an address the swarm no longer has.
         let mut state = plain();
-        state.on_upnp_external(ma("/ip4/203.0.113.7/tcp/8080"));
+        state.on_upnp_external(ma("/ip4/8.8.8.8/tcp/8080"));
         assert!(state.on_autonat_private().is_empty());
         assert_eq!(*state.current(), Reachability::Private);
     }
@@ -805,12 +817,12 @@ mod tests {
         let mut state = plain();
         // One observer is not consensus — it may be describing a NAT mapping
         // only that peer can use.
-        let effects = state.on_grace_elapsed(&observed(&[("/ip4/203.0.113.7/tcp/8080", &[1])]));
+        let effects = state.on_grace_elapsed(&observed(&[("/ip4/8.8.8.8/tcp/8080", &[1])]));
         assert!(effects.is_empty());
         assert_eq!(*state.current(), Reachability::Private);
 
         let mut state = plain();
-        state.on_grace_elapsed(&observed(&[("/ip4/203.0.113.7/tcp/8080", &[1, 2])]));
+        state.on_grace_elapsed(&observed(&[("/ip4/8.8.8.8/tcp/8080", &[1, 2])]));
         assert_eq!(state.current().source(), Some(Source::IdentifyConsensus));
     }
 
@@ -831,28 +843,29 @@ mod tests {
     fn identify_fallback_picks_the_most_observed_candidate() {
         let mut state = plain();
         state.on_grace_elapsed(&observed(&[
-            ("/ip4/203.0.113.7/tcp/8080", &[1, 2]),
-            ("/ip4/198.51.100.1/tcp/8080", &[3, 4, 5]),
+            ("/ip4/8.8.8.8/tcp/8080", &[1, 2]),
+            ("/ip4/1.1.1.1/tcp/8080", &[3, 4, 5]),
             ("/ip4/192.168.1.10/tcp/8080", &[1, 2, 3, 4, 5, 6]),
         ]));
         assert_eq!(
             *state.current(),
             Reachability::Public {
-                addr: ma("/ip4/198.51.100.1/tcp/8080"),
+                addr: ma("/ip4/1.1.1.1/tcp/8080"),
                 source: Source::IdentifyConsensus,
             }
         );
     }
 
     #[test]
-    fn require_global_ips_excludes_the_reserved_ranges_from_consensus() {
-        // Permissive: the RFC2544 test-bed address is a valid candidate.
-        let mut state = plain();
+    fn only_global_ips_excludes_the_reserved_ranges_from_consensus() {
+        // Lenient: a reserved-range address is a valid candidate.
+        let mut state = lenient();
         state.on_grace_elapsed(&observed(&[("/ip4/198.18.0.30/tcp/8080", &[1, 2])]));
         assert!(state.current().is_public());
 
-        // Strict: it is not, and with nothing else on offer we go Private.
-        let mut strict = ReachabilityState::new(false, None, 2, true).0;
+        // Strict, the default: it is not, and with nothing else on offer we go
+        // Private.
+        let mut strict = plain();
         strict.on_grace_elapsed(&observed(&[("/ip4/198.18.0.30/tcp/8080", &[1, 2])]));
         assert_eq!(*strict.current(), Reachability::Private);
     }
@@ -860,16 +873,15 @@ mod tests {
     #[test]
     fn evidence_during_the_grace_period_wins_over_the_fallback() {
         let mut state = plain();
-        state.on_autonat_public(ma("/ip4/203.0.113.7/tcp/8080"));
+        state.on_autonat_public(ma("/ip4/8.8.8.8/tcp/8080"));
         // The timer still fires; it must not overwrite a real verdict with a
         // consensus one, even where consensus disagrees.
-        let effects =
-            state.on_grace_elapsed(&observed(&[("/ip4/198.51.100.1/tcp/8080", &[1, 2, 3])]));
+        let effects = state.on_grace_elapsed(&observed(&[("/ip4/1.1.1.1/tcp/8080", &[1, 2, 3])]));
         assert!(effects.is_empty());
         assert_eq!(
             *state.current(),
             Reachability::Public {
-                addr: ma("/ip4/203.0.113.7/tcp/8080"),
+                addr: ma("/ip4/8.8.8.8/tcp/8080"),
                 source: Source::AutoNat,
             }
         );
@@ -882,13 +894,13 @@ mod tests {
         for _ in 0..16 {
             let mut state = plain();
             state.on_grace_elapsed(&observed(&[
-                ("/ip4/203.0.113.7/tcp/8080", &[1, 2]),
-                ("/ip4/198.51.100.1/tcp/8080", &[3, 4]),
+                ("/ip4/8.8.8.8/tcp/8080", &[1, 2]),
+                ("/ip4/1.1.1.1/tcp/8080", &[3, 4]),
             ]));
             assert_eq!(
                 *state.current(),
                 Reachability::Public {
-                    addr: ma("/ip4/198.51.100.1/tcp/8080"),
+                    addr: ma("/ip4/1.1.1.1/tcp/8080"),
                     source: Source::IdentifyConsensus,
                 }
             );

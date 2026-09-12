@@ -129,12 +129,15 @@ categories = ["network-programming", "wasm", "science"]
 [workspace.dependencies]
 kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.6.8" }
 kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.6.8" }
-kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.6.8" }
+# `default-features = false` here, or a member cannot turn them off: cargo
+# ignores a member's `default-features = false` unless the workspace entry
+# already says so. Members that want the defaults say `default-features = true`.
+kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.6.8", default-features = false }
 kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.6.8" }
 kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.6.8" }
 kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.6.8" }
 kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.6.8" }
-kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.6.8" }
+kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.6.8", default-features = false }
 kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.6.8" }
 kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.6.8" }
 kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.6.8" }

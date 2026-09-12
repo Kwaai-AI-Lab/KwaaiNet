@@ -142,6 +142,12 @@ async fn info() -> Result<()> {
         }
     }
 
+    // The configured mode, not the running state: this reads the on-disk
+    // config, and a v6 bind the OS refused shows up in `network` instead.
+    if let Ok(cfg) = crate::config::KwaaiNetConfig::load_or_create() {
+        println!("  IPv6 mode: {}", cfg.ipv6());
+    }
+
     println!();
     let direct_count = addrs.iter().filter(|a| !is_relayed(a)).count();
     let relay_count = addrs.len() - direct_count;

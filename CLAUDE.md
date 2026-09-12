@@ -66,10 +66,57 @@ and errors with `unknown revision`. Always brace and quote separately:
 git show "${ref}":"${path}"
 ```
 
+**Never read a ref through `FETCH_HEAD`.** Any later `git fetch` — including a bare
+`git fetch origin` in an unrelated command — silently repoints it. Reading a PR
+through a stale `FETCH_HEAD` returns `main`'s content under the PR's name, which
+looks like a real contradiction rather than a mistake. Pin the SHA once and reuse
+the literal:
+
+```bash
+H=$(gh pr view <n> --json headRefOid --jq .headRefOid)   # not FETCH_HEAD
+git show "${H}":"${path}"
+```
+
+This is the third trap of the same shape (with `:c` above and `|| echo 0`): a probe
+that fails or reads the wrong thing, and reports it as an ordinary negative.
+
 ## Merging PRs
 
-**Check scope against the merge base before merging** — confirm `git merge-base` is
-`origin/main` (nothing stale) and that git and the GitHub API agree on the file count.
+**Four checks before each merge**, in this order:
+
+1. **The head still matches the API** — `gh pr view <n> --json headRefOid`. A
+   contributor can push between your review and your merge, and often does.
+2. **git and the GitHub API agree on the file count** — diff against
+   `git merge-base <head> origin/main`. Disagreement means the scope is not what
+   either of you thinks it is.
+3. **`MERGEABLE/CLEAN`.** This is the gate, not a proxy for one: `MERGEABLE`
+   means no conflict, `CLEAN` means CI is green. `UNSTABLE` is CI still running or
+   failed; `UNKNOWN` is GitHub recomputing after an earlier merge — wait it out
+   rather than treating it as a refusal.
+4. **Nothing is stacked on the branch** if you intend to delete it.
+
+**Do not require the PR to be rebased onto the current `main`.** An earlier version
+of this rule demanded `merge-base == origin/main`; it stopped three mergeable PRs
+dead, and as written it forces a rebase and a full CI re-run after *every* merge.
+Being behind `main` is normal and GitHub merges it correctly.
+
+What being behind *does* mean is that CI validated the branch against an older
+`main`, so a **semantic** conflict — two PRs that each compile alone and break
+together — is possible where a textual one is not. Note how far behind each merge
+was, and **run `cargo check --workspace --all-targets` on `main` after a batch**.
+Ten PRs merged this way on 9-11 September produced none, but the check is what
+makes that a fact rather than an assumption.
+
+**Expect the queue to conflict as you go.** PRs touching one hot file — `service.rs`
+in the September queue — will conflict with each other the moment the first lands,
+and no merge order avoids it. Merge one at a time, re-check state between, and hand
+conflicts back to the author rather than resolving them yourself.
+
+**Squash merging breaks stacked branches in a way git cannot see.** A stacked PR
+carries its base's original commits; the base lands on `main` as one new SHA, so
+none of them is an ancestor of `main` and git reports a conflict over content that
+is already there. The fix is to retarget and drop what has landed
+(`git rebase --onto origin/main <last-landed-sha>`), never to merge `main` in.
 
 **`gh pr merge` refuses anything GitHub treats as a stack**, as does the plain REST
 merge endpoint. Use the asynchronous endpoint and poll the returned UUID:

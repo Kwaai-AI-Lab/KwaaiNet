@@ -456,6 +456,18 @@ async fn calls_after_shutdown_error_rather_than_hang() {
 // Routed dial: calling a peer we have no addresses for at all
 // ---------------------------------------------------------------------------
 
+/// Give `bootstrap` the address `peer` listens on. Loopback is never
+/// announceable, so nothing a peer *claims* — an identify listen address or an
+/// AutoNAT dial-back — enters a routing table here; this stands in for what a
+/// public address would have passed.
+async fn seed_routing(bootstrap: &NetworkHandle, peer: PeerId, handle: &NetworkHandle) {
+    let addr = dialable_addr(handle, peer).await;
+    bootstrap
+        .add_kad_address(peer, stripped(&addr))
+        .await
+        .expect("seed routing table");
+}
+
 /// Poll `handle.routing_peers()` until it contains `peer`.
 async fn wait_in_routing_table(handle: &NetworkHandle, peer: PeerId) {
     loop {
@@ -498,7 +510,8 @@ async fn call_to_unconnected_peer_resolves_through_the_dht() {
         .expect("caller dials bootstrap");
 
     // The walk can only find the responder once the bootstrap's routing table
-    // has it (fed by identify) and the caller's has the bootstrap.
+    // has it and the caller's has the bootstrap.
+    seed_routing(&bootstrap, responder_id, &responder).await;
     within(
         "the bootstrap to learn the responder",
         wait_in_routing_table(&bootstrap, responder_id),
@@ -598,6 +611,7 @@ async fn connect_by_bare_peer_id_resolves_through_the_dht() {
         .await
         .expect("caller dials bootstrap");
 
+    seed_routing(&bootstrap, responder_id, &responder).await;
     within(
         "the bootstrap to learn the responder",
         wait_in_routing_table(&bootstrap, responder_id),
@@ -664,6 +678,7 @@ async fn a_routed_call_falls_back_to_the_dht_when_the_known_address_is_dead() {
         .await
         .expect("caller dials bootstrap");
 
+    seed_routing(&bootstrap, responder_id, &responder).await;
     within(
         "the bootstrap to learn the responder",
         wait_in_routing_table(&bootstrap, responder_id),

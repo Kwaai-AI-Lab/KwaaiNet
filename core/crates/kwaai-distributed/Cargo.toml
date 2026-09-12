@@ -10,7 +10,7 @@ keywords = ["distributed", "moe", "mixture-of-experts", "federated", "averaging"
 
 [dependencies]
 # Internal crates
-kwaai-p2p = { workspace = true }
+kwaai-p2p = { workspace = true, default-features = true }
 kwaai-inference = { workspace = true }
 kwaai-compression = { workspace = true }
 

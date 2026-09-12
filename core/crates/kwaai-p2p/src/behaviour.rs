@@ -36,9 +36,9 @@
 //! - [`autonat`] — reachability probing. Always client **and** server in 0.12
 //!   (`ProtocolSupport::Full`), which is what we want: a directly-reachable node
 //!   answers dialbacks for the NATed ones. Its `only_global_ips` knob is the
-//!   single place in all of rust-libp2p 0.53 that would reject the RFC2544
-//!   `198.18/15` test-bed addresses, so it is driven from
-//!   [`NetworkConfig::require_global_ips`] and defaults to permissive.
+//!   single address-class check in all of rust-libp2p 0.53, so it is driven
+//!   from [`NetworkConfig::require_global_ips`] and cannot disagree with
+//!   `crate::addresses`.
 //! - `relay::client` — circuit reservations when we are unreachable. It cannot
 //!   be constructed here: only `SwarmBuilder::with_relay_client` can build the
 //!   transport and the behaviour as a matched pair, so it is *passed in*.
@@ -214,9 +214,8 @@ impl KwaaiBehaviour {
         let autonat = autonat::Behaviour::new(
             local_peer_id,
             autonat::Config {
-                // The one address-class lever in rust-libp2p 0.53. Default true
-                // rejects RFC2544/RFC5737, which is every address in the docker
-                // nat-test bed; see `crate::addresses`.
+                // The one address-class lever in rust-libp2p 0.53; kept in
+                // step with `crate::addresses` through the same key.
                 only_global_ips: config.require_global_ips,
                 // Defaults (15s / 90s / 15min) are tuned for a long-lived node
                 // on a stable network. A node that has just started wants to

@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use libp2p::{
     autonat,
-    core::ConnectedPoint,
+    core::{transport::PortUse, ConnectedPoint},
     dcutr, identify, identity, kad, noise, ping, relay,
     swarm::{ConnectionId, DialError, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
@@ -33,11 +33,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, trace, warn};
 
 use crate::addresses::{
-    circuit_relay, dest_peer_id, is_announceable_with, is_circuit, is_dialable_shape,
-    peer_id_from_multiaddr, strip_dest_p2p, strip_p2p, uses_dialable_transport, OwnAddresses,
+    circuit_relay, dest_peer_id, has_ip6, ipv6_loopback_available, is_announceable_with,
+    is_circuit, is_dialable_shape, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
+    uses_dialable_transport, AddrPolicy, OwnAddresses,
 };
 use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
-use crate::config::NetworkConfig;
+use crate::config::{Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD};
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
@@ -68,6 +69,10 @@ const LAST_CONNECTED_CAP: usize = 1024;
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Upper bound on `pinned_addrs` peers. Explicit dials only, so a memory
+/// bound rather than a policy; oldest pin evicted, same shape as `last_connected`.
+const PINNED_PEERS_CAP: usize = 1024;
+
 /// Cap on routing-table addresses per peer.
 ///
 /// kad's own `Addresses` is an unbounded `SmallVec`: `insert` appends whatever
@@ -95,6 +100,38 @@ const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 /// addresses out faster than listen addresses. rust-libp2p's kad has no TTL
 /// layer, so a count cap is the closest available approximation.
 const MAX_ADDRESSES_PER_PEER: usize = 6;
+
+/// How long an AutoNAT dial-back stays recognisable after its probe was
+/// requested. The probe's verdict is no guide: its 30 s request timeout fires
+/// while the dial may still be walking up to 16 addresses at the transport's
+/// 10 s each, and the late connection must still be closed.
+const AUTONAT_DIALBACK_TTL: Duration = Duration::from_secs(180);
+
+/// Addresses AutoNAT's server side is about to dial back, each with its expiry.
+///
+/// Keyed by the dial address (it carries `/p2p/<peer>`), so a match is exact.
+/// Entries age out on `AUTONAT_DIALBACK_TTL`, never on the probe's outcome —
+/// bounded by 16 addresses per probing peer. See `take_autonat_dialback`.
+#[derive(Debug, Default)]
+struct PendingDialBacks {
+    expires: HashMap<Multiaddr, Instant>,
+}
+
+impl PendingDialBacks {
+    /// Remember a probe's addresses, dropping whatever has aged out.
+    fn note_request(&mut self, addrs: &[Multiaddr], now: Instant) {
+        self.expires.retain(|_, expiry| now < *expiry);
+        for addr in addrs {
+            self.expires
+                .insert(addr.clone(), now + AUTONAT_DIALBACK_TTL);
+        }
+    }
+
+    /// Consume `addr` if a live probe named it.
+    fn take(&mut self, addr: &Multiaddr, now: Instant) -> bool {
+        self.expires.remove(addr).is_some_and(|expiry| now < expiry)
+    }
+}
 
 /// A connection we are tracking for `list_peers`.
 #[derive(Debug, Clone)]
@@ -131,6 +168,9 @@ pub struct NetworkService {
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
+    /// Addresses AutoNAT's server side has been asked to dial back. Consulted
+    /// once, when the dial-back connects; see `take_autonat_dialback`.
+    autonat_dialbacks: PendingDialBacks,
     /// Addresses we were told about peers — the peerstore rust-libp2p does not
     /// have. Consulted ahead of the routing table by
     /// [`Self::candidate_addresses`]; see [`crate::learned_addrs`] for why a
@@ -145,14 +185,24 @@ pub struct NetworkService {
     /// recently" is the signal that distinguishes the two. Recency cache, not
     /// a ledger — capped at [`LAST_CONNECTED_CAP`], oldest evicted.
     last_connected: HashMap<PeerId, Instant>,
+    /// Addresses we were *told* to dial — `dial()` and `AddKadAddress`, the
+    /// two uncapped seeds — stored bare, with when the peer was first pinned.
+    /// Neither seed reaches `learned_addrs` (only `ConnectPeerWithAddrs`
+    /// does), and a learned address is forgotten on a failed dial while an
+    /// operator's must not be; the routing table is the seeds' only other
+    /// home, and the non-kad purge in `handle_identify_event` empties it.
+    /// Consulted by [`Self::candidate_addresses`], which dedupes both stores.
+    pinned_addrs: HashMap<PeerId, (Instant, Vec<Multiaddr>)>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
-    /// Whether the reserved documentation/benchmarking ranges count as
-    /// unroutable. Mirrors `NetworkConfig::require_global_ips`; held here
-    /// because identify-learned addresses are filtered before they reach kad,
-    /// and that decision has to match the one the reachability state makes.
-    require_global_ips: bool,
+    /// Which addresses this node will announce and dial. Mirrors
+    /// `only_global_ips` and the IPv6 mode; held here because
+    /// identify-learned addresses are filtered before they reach kad, and that
+    /// decision has to match the one the reachability state makes.
+    policy: AddrPolicy,
+    /// What IPv6 ended up doing once the listeners were opened.
+    ipv6_status: Ipv6Status,
     /// Whether the swarm was built with a QUIC transport. Mirrors
     /// `NetworkConfig::enable_quic`; a supplied `/quic` address is dropped
     /// at ingestion when it was not, rather than failing every dial.
@@ -332,6 +382,29 @@ impl RelayReservations {
     /// The last connection to `peer` closed; nothing can survive that.
     fn forget(&mut self, peer: &PeerId) {
         self.held.remove(peer);
+}
+    }
+
+/// Whether to open IPv6 listeners at all, given the mode and whether the host
+/// has a v6 stack.
+///
+/// Separate from the per-address bind because `listen_on("/ip6/::/tcp/P")` is
+/// not an availability test. Binding the *unspecified* address succeeds on
+/// Linux even with `net.ipv6.conf.all.disable_ipv6=1`, so a node with IPv6
+/// switched off at the kernel reported `ipv6_status = "active"` and advertised
+/// itself dual-stack, while every concrete v6 address on the host was
+/// unassignable. The loopback probe asks the question the bind does not.
+///
+/// A pure function so the six mode/host combinations are testable without a
+/// swarm; the caller does the logging and the listening.
+fn resolve_ipv6(mode: Ipv6Mode, loopback_ok: bool) -> Result<bool> {
+    match (mode, loopback_ok) {
+        (Ipv6Mode::Off, _) => Ok(false),
+        (_, true) => Ok(true),
+        (Ipv6Mode::On, false) => {
+            anyhow::bail!("ipv6 is required but this host has no IPv6 loopback")
+        }
+        (Ipv6Mode::Auto, false) => Ok(false),
     }
 }
 
@@ -399,22 +472,22 @@ impl NetworkService {
                             // - `kad`: `on_fully_negotiated_outbound` marks the
                             //   protocol supported on the first negotiated
                             //   substream, which now fires before the remote
-                            //   confirms anything. A query to a connected
-                            //   non-kad peer can insert it into the routing
-                            //   table until identify corrects it. This is net
-                            //   new versus p2pd, where go-libp2p-kad-dht admits
-                            //   peers only from identify plus a live FIND_NODE
-                            //   probe.
+                            //   confirms anything, so a query to a non-kad
+                            //   peer inserts it. Identify does NOT correct
+                            //   that on its own — the later
+                            //   ProtocolNotSupported only marks the entry
+                            //   Disconnected, never removes it — so
+                            //   `handle_identify_event` evicts any tabled peer
+                            //   whose protocols lack our kad name. Measured on
+                            //   the 2026-09-06 probe: 160 kubo peers tabled
+                            //   and served to the fleet, from one query.
+                            //   Not `BucketInserts::Manual`: routed dials rely
+                            //   on the walk depositing its target in the table.
                             //
-                            //   Which build you are in decides how much of
-                            //   that caveat applies. A stock (single-name)
-                            //   build takes the 0-RTT shortcut on every kad
-                            //   substream, so the paragraph above is fully in
-                            //   force: during the migration window a routing
-                            //   table can fill with peers that never confirmed
-                            //   kad, and the connection-manager work (#174)
-                            //   plus gating laziness on identify's protocol
-                            //   set are the follow-ups that close it. The
+                            //   Which build you are in decides how far the
+                            //   shortcut reaches. A stock (single-name) build
+                            //   takes it on every kad substream — the false
+                            //   confirm above fires for every foreign peer. The
                             //   `kad-multi-protocol` (bootstrap) build offers
                             //   two names, V1Lazy only shortcuts the *last*
                             //   offer (see `dialer_select.rs`), so its
@@ -423,9 +496,9 @@ impl NetworkService {
                             //   legacy-only peer). Accepted for the migration
                             //   window on the handful of hosts that run it.
                             //
-                            // Closing both at the source means gating laziness
-                            // on identify's known-protocol set, as go does.
-                            // Tracked as a follow-up, not done here.
+                            // Gating laziness itself on identify's known-protocol
+                            // set, as go does, would also fix `ping`; swarm 0.47
+                            // has no per-behaviour override, so that remains open.
                             //
                             // Raw streams opt out via a trailing sentinel
                             // protocol, so their refusals stay eager — see
@@ -456,16 +529,70 @@ impl NetworkService {
             finish!(tcp.with_dns())
         };
 
-        for addr in config.swarm_listen_addrs() {
-            let addr: Multiaddr = addr
-                .parse()
-                .with_context(|| format!("parsing listen address {addr}"))?;
+        let ipv6_mode = config.ipv6.effective();
+        let listen_addrs = config
+            .swarm_listen_addrs()
+            .iter()
+            .map(|a| {
+                a.parse::<Multiaddr>()
+                    .with_context(|| format!("parsing listen address {a}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // A config error, checked before the host is: an explicit v4-only
+        // listen set can never satisfy `ipv6: true`.
+        if ipv6_mode == Ipv6Mode::On && !listen_addrs.iter().any(has_ip6) {
+            anyhow::bail!("ipv6 is required but listen_addrs has no IPv6 address");
+        }
+        // Probe before listening, not by listening: see `resolve_ipv6`.
+        let open_v6 = resolve_ipv6(ipv6_mode, ipv6_loopback_available())?;
+        if ipv6_mode != Ipv6Mode::Off && !open_v6 {
+            warn!("IPv6 unavailable on this host, running IPv4-only");
+        }
+        // What the host can do, not what the mode asked for: a node that fell
+        // back to v4-only under `auto` must not dial or announce v6.
+        let policy = AddrPolicy {
+            strict: config.require_global_ips,
+            ipv6: open_v6,
+        };
+
+        let mut ipv6_listening = false;
+        let mut ipv6_warned = false;
+        for addr in listen_addrs {
+            let v6 = has_ip6(&addr);
+            if v6 && !open_v6 {
+                debug!(%addr, "skipping IPv6 listen address");
+                continue;
+            }
             match swarm.listen_on(addr.clone()) {
-                Ok(_) => debug!(%addr, "listening"),
+                Ok(_) => {
+                    ipv6_listening |= v6;
+                    debug!(%addr, "listening");
+                }
+                // `ipv6: true` is an operator saying v6 is the point of this
+                // deployment, so a silent v4-only fallback is the failure.
+                Err(e) if v6 && ipv6_mode == Ipv6Mode::On => {
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("ipv6 is required but listening on {addr} failed")));
+                }
                 // One failed listener (commonly IPv6 on a v4-only host) must
                 // not sink the whole node.
+                Err(e) if v6 => {
+                    if !ipv6_warned {
+                        ipv6_warned = true;
+                        warn!(%addr, error = %e, "IPv6 unavailable on this host, running IPv4-only");
+                    }
+                }
                 Err(e) => warn!(%addr, error = %e, "failed to listen on address"),
             }
+        }
+
+        let ipv6_status = match (ipv6_mode, ipv6_listening) {
+            (Ipv6Mode::Off, _) => Ipv6Status::Off,
+            (_, true) => Ipv6Status::Active,
+            (_, false) => Ipv6Status::Unavailable,
+        };
+        if config.ipv6 != Ipv6Mode::Off && !IPV6_BUILD {
+            warn!("ipv6 requested but this build has no ipv6 support");
         }
 
         // A declared external address is an instruction, not a guess, so a
@@ -486,6 +613,7 @@ impl NetworkService {
             declared,
             config.identify_min_confirmations,
             config.require_global_ips,
+            policy.ipv6,
         );
 
         let (tx, rx) = mpsc::channel(COMMAND_CHANNEL_SIZE);
@@ -498,10 +626,13 @@ impl NetworkService {
             pending_routed: HashMap::new(),
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
+            autonat_dialbacks: PendingDialBacks::default(),
             learned_addrs: LearnedAddrs::new(local_peer_id),
+            pinned_addrs: HashMap::new(),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
-            require_global_ips: config.require_global_ips,
+            policy,
+            ipv6_status,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
             peer_listen_addrs: HashMap::new(),
@@ -511,8 +642,12 @@ impl NetworkService {
             unary_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             reachability,
-            relays: RelayManager::new(&config.trusted_relays, config.max_relay_reservations)
-                .with_initial_peers(&config.effective_initial_peers()),
+            relays: RelayManager::new(
+                &config.trusted_relays,
+                config.max_relay_reservations,
+                policy,
+            )
+            .with_initial_peers(&config.effective_initial_peers()),
             announce_tx,
             bootstrap_addrs: config
                 .effective_initial_peers()
@@ -539,7 +674,12 @@ impl NetworkService {
         service.publish_announce_state();
 
         let task = tokio::spawn(service.run());
-        info!(peer_id = %local_peer_id, "network service started");
+        info!(
+            peer_id = %local_peer_id,
+            ipv6 = %config.ipv6,
+            ipv6_status = ipv6_status.as_str(),
+            "network service started"
+        );
         Ok((
             NetworkHandle::new(local_peer_id, tx, config.request_timeout, announce_rx),
             task,
@@ -688,6 +828,7 @@ impl NetworkService {
                     relay_addrs: self.relays.confirmed_addrs(),
                     observed_addrs: observed,
                     listen_addrs: self.swarm.listeners().cloned().collect(),
+                    ipv6: self.ipv6_status,
                     local_protocols: self.collect_local_protocols(),
                     last_contact: self
                         .last_connected
@@ -808,11 +949,13 @@ impl NetworkService {
                 // the operator naming an address, not a peer claiming one. A
                 // symmetric-NAT peer flooding identify must never be able to
                 // evict a bootstrap address someone configured by hand.
+                self.pin_address(peer, strip_dest_p2p(&addr));
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
                 let _ = reply.send(());
             }
 
             Command::RemoveKadPeer { peer, reply } => {
+                self.pinned_addrs.remove(&peer);
                 let existed = self.swarm.behaviour_mut().kad.remove_peer(&peer).is_some();
                 let _ = reply.send(existed);
             }
@@ -1036,6 +1179,7 @@ impl NetworkService {
                 // Uncapped for the same reason as `AddKadAddress`: an address
                 // we are actively dialing is our own intent, not a remote
                 // claim, and is the one entry least worth evicting.
+                self.pin_address(peer, stripped.clone());
                 self.swarm.behaviour_mut().kad.add_address(&peer, stripped);
             }
         }
@@ -1099,6 +1243,10 @@ impl NetworkService {
         let mut dialed = 0usize;
         let mut last_error = None;
         for addr in peers {
+            if !self.policy.dialable(&addr) {
+                debug!(%addr, "skipping bootstrap address: ipv6 is disabled");
+                continue;
+            }
             match self.dial(addr.clone()) {
                 // A skipped dial counts as reached: we are already connected
                 // to that bootstrap, which is what the dial was for. Counting
@@ -1237,7 +1385,7 @@ impl NetworkService {
         let mut found = false;
         for info in peers.iter().filter(|p| p.peer_id == target) {
             found = true;
-            for addr in walk_addrs_to_seed(&info.addrs, &evicted, self.require_global_ips) {
+            for addr in walk_addrs_to_seed(&info.addrs, &evicted, self.policy.strict) {
                 self.add_routing_address(&target, addr);
             }
         }
@@ -1245,14 +1393,15 @@ impl NetworkService {
     }
 
     fn known_addresses(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
-        let strict = self.require_global_ips;
-        self.candidate_addresses(peer, |a| is_announceable_with(a, strict))
+        let policy = self.policy;
+        self.candidate_addresses(peer, move |a| policy.announceable(a))
     }
 
     /// Every address we could try for `peer`; unlike [`Self::known_addresses`]
     /// it keeps loopback and LAN, which is how two nodes on one host reach each other.
     fn dial_candidates(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
-        self.candidate_addresses(peer, |_| true)
+        let policy = self.policy;
+        self.candidate_addresses(peer, move |a| policy.dialable(a))
     }
 
     /// `table_filter` decides which routing-table entries qualify; a live
@@ -1294,6 +1443,15 @@ impl NetworkService {
             }
         }
 
+        if let Some((_, pinned)) = self.pinned_addrs.get(peer) {
+            let fresh: Vec<Multiaddr> = pinned
+                .iter()
+                .filter(|a| !addrs.contains(a) && table_filter(a))
+                .cloned()
+                .collect();
+            addrs.extend(fresh);
+        }
+
         if let Some(conns) = self.connections.get(peer) {
             for conn in conns.values() {
                 if !addrs.contains(&conn.addr) {
@@ -1330,6 +1488,35 @@ impl NetworkService {
         addrs.retain(|a| seen.insert(a.clone()));
 
         addrs
+    }
+
+    /// Remember an address the operator supplied for `peer`; see `pinned_addrs`.
+    /// Bounded like the routing table: six per peer, oldest out.
+    fn pin_address(&mut self, peer: PeerId, addr: Multiaddr) {
+        if addr.is_empty() {
+            return;
+        }
+        if self.pinned_addrs.len() >= PINNED_PEERS_CAP && !self.pinned_addrs.contains_key(&peer) {
+            if let Some(oldest) = self
+                .pinned_addrs
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(p, _)| *p)
+            {
+                self.pinned_addrs.remove(&oldest);
+            }
+        }
+        let (_, addrs) = self
+            .pinned_addrs
+            .entry(peer)
+            .or_insert_with(|| (Instant::now(), Vec::new()));
+        if addrs.contains(&addr) {
+            return;
+        }
+        if addrs.len() >= MAX_ADDRESSES_PER_PEER {
+            addrs.remove(0);
+        }
+        addrs.push(addr);
     }
 
     /// Our own listen and confirmed-external addresses, snapshotted from the
@@ -1907,6 +2094,23 @@ impl NetworkService {
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
+                // The probe was answered one layer down, inside `on_swarm_event`,
+                // so this connection is already spent — see `take_autonat_dialback`.
+                if self.take_autonat_dialback(&endpoint) && self.connections.contains_key(&peer_id)
+                {
+                    // Seed kad before closing: this is the one address our own
+                    // dial has proved. It is still a remote claim — AutoNAT
+                    // swaps in the observed IP, the peer chose the port — so it
+                    // takes the same gates as an identify listen address.
+                    let stripped = strip_dest_p2p(&addr);
+                    if self.speaks_kad(&peer_id) && self.policy.announceable(&stripped) {
+                        self.add_routing_address(&peer_id, stripped);
+                    }
+                    debug!(peer = %peer_id, ?connection_id, "closing autonat dial-back");
+                    self.swarm.close_connection(connection_id);
+                    return;
+                }
+
                 if self.last_connected.len() >= LAST_CONNECTED_CAP
                     && !self.last_connected.contains_key(&peer_id)
                 {
@@ -2364,6 +2568,47 @@ impl NetworkService {
         }
     }
 
+    /// Whether this connection is the one AutoNAT's server side opened purely
+    /// to dial a probing peer back, and is therefore ours to close. Consumes
+    /// the pending entry.
+    ///
+    /// A reachability probe is only meaningful if a *fresh* dial reaches the
+    /// peer, so AutoNAT dials with `PeerCondition::Always` and
+    /// `allocate_new_port()`, bypassing both the connection we already hold and
+    /// the port policy. It then never closes the result: `on_outbound_connection`
+    /// answers the probe over the *requester's* connection and drops the
+    /// dial-back for the idle timeout to reap. Ours never reaps it — identify's
+    /// 5-minute interval opens a stream on every connection at half the
+    /// 10-minute `idle_connection_timeout` — so each probe leaves a duplicate
+    /// connection behind for good, one per probing peer per refresh.
+    ///
+    /// `PortUse::New` is the discriminator: nothing else here allocates a new
+    /// port, DCUtR included. Narrowed to an address a probe actually named, so
+    /// a future behaviour reaching for the same port policy is not caught by it.
+    fn take_autonat_dialback(&mut self, endpoint: &ConnectedPoint) -> bool {
+        let ConnectedPoint::Dialer {
+            address,
+            port_use: PortUse::New,
+            ..
+        } = endpoint
+        else {
+            return false;
+        };
+        self.autonat_dialbacks.take(address, Instant::now())
+    }
+
+    /// Whether `peer` advertised one of our kad protocol names over identify.
+    /// No identify yet reads as no: a routing entry is only ever created for a
+    /// peer known to speak kad.
+    fn speaks_kad(&self, peer: &PeerId) -> bool {
+        let names = self.swarm.behaviour().kad.protocol_names();
+        self.peer_protocols.get(peer).is_some_and(|protocols| {
+            protocols
+                .iter()
+                .any(|p| names.iter().any(|name| name.as_ref() == p))
+        })
+    }
+
     /// AutoNAT status and probe outcomes.
     fn handle_autonat_event(&mut self, event: autonat::Event) {
         match event {
@@ -2385,6 +2630,15 @@ impl NetworkService {
             }
             autonat::Event::InboundProbe(probe) => {
                 trace!(?probe, "autonat inbound probe");
+                // Remembered only so the dial it is about to queue can be
+                // recognised when it connects. Not cleared on `Response` or
+                // `Error`: the probe times out at 30 s while its dial may still
+                // be walking, and a dial-back that lands late is no less a
+                // duplicate.
+                if let autonat::InboundProbeEvent::Request { addresses, .. } = &probe {
+                    self.autonat_dialbacks
+                        .note_request(addresses, Instant::now());
+                }
             }
         }
     }
@@ -2463,7 +2717,7 @@ impl NetworkService {
                     .any(|p| self.swarm.behaviour().kad.protocol_names().contains(p));
                 if speaks_kad {
                     for addr in &info.listen_addrs {
-                        if !is_announceable_with(addr, self.require_global_ips) {
+                        if !self.policy.announceable(addr) {
                             trace!(
                                 peer = %peer_id,
                                 %addr,
@@ -2473,6 +2727,18 @@ impl NetworkService {
                         }
                         self.add_routing_address(&peer_id, addr.clone());
                     }
+                } else if self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .remove_peer(&peer_id)
+                    .is_some()
+                {
+                    // Tabled by the V1Lazy false confirm (or `dial()`) before
+                    // identify could say no; left in place it is served to every
+                    // FIND_NODE caller. Table membership only: an address the
+                    // operator supplied survives in `pinned_addrs`.
+                    debug!(peer = %peer_id, agent = %info.agent_version, "dropped non-kad peer from the routing table");
                 }
 
                 // (b) Record what this peer observed our address to be. Counting
@@ -2494,7 +2760,7 @@ impl NetworkService {
                 if speaks_kad {
                     let local = *self.swarm.local_peer_id();
                     let listen =
-                        vouchable_listen_addrs(&info.listen_addrs, self.require_global_ips, local);
+                        vouchable_listen_addrs(&info.listen_addrs, self.policy.strict, local);
                     self.peer_listen_addrs.insert(peer_id, listen);
                     self.refresh_peerstore(peer_id);
                 }
@@ -2872,5 +3138,84 @@ mod tests {
             direct("192.168.1.10", 8080),
         ];
         assert_eq!(walk_addrs_to_seed(&answer, &evicted, false), vec![fresh]);
+    }
+
+    #[test]
+    fn a_dial_back_is_recognised_until_its_ttl_expires_not_until_the_probe_ends() {
+        let addr = addr_of(PeerId::random());
+        let now = base_instant();
+        let mut pending = PendingDialBacks::default();
+
+        pending.note_request(std::slice::from_ref(&addr), now);
+        // Past autonat's 30 s request timeout — the probe has already reported
+        // an error by now — the dial-back must still be recognised, once.
+        assert!(pending.take(&addr, now + Duration::from_secs(60)));
+        assert!(!pending.take(&addr, now + Duration::from_secs(60)));
+
+        pending.note_request(std::slice::from_ref(&addr), now);
+        assert!(!pending.take(&addr, now + AUTONAT_DIALBACK_TTL));
+    }
+
+    #[test]
+    fn a_dial_back_for_an_address_no_probe_named_is_not_recognised() {
+        let now = base_instant();
+        let mut pending = PendingDialBacks::default();
+        pending.note_request(&[addr_of(PeerId::random())], now);
+        assert!(!pending.take(&addr_of(PeerId::random()), now));
+    }
+}
+
+#[cfg(test)]
+mod ipv6_resolution {
+    use super::*;
+
+    /// All six combinations. The row that matters is `(On, false)`: before the
+    /// loopback probe existed the unspecified bind succeeded on a host with
+    /// IPv6 disabled, so `ipv6: true` started happily and reported "active".
+    #[test]
+    fn the_mode_and_the_host_together_decide() {
+        for (mode, loopback_ok, want) in [
+            (Ipv6Mode::Off, true, Some(false)),
+            (Ipv6Mode::Off, false, Some(false)),
+            (Ipv6Mode::Auto, true, Some(true)),
+            (Ipv6Mode::Auto, false, Some(false)),
+            (Ipv6Mode::On, true, Some(true)),
+            (Ipv6Mode::On, false, None),
+        ] {
+            let got = resolve_ipv6(mode, loopback_ok);
+            match want {
+                Some(open) => assert_eq!(got.unwrap(), open, "{mode:?}/{loopback_ok}"),
+                None => {
+                    let e = got
+                        .expect_err("ipv6: true on a v4-only host must fail")
+                        .to_string();
+                    assert!(e.contains("no IPv6 loopback"), "unhelpful error: {e}");
+                }
+            }
+        }
+    }
+
+    /// The address policy follows the host, not the mode: `auto` on a v4-only
+    /// box must drop v6 from the dial and announce sets, or the node keeps
+    /// addresses it can never use.
+    #[test]
+    fn the_policy_follows_what_opened_not_what_was_asked() {
+        let policy = |mode, loopback_ok| AddrPolicy {
+            strict: false,
+            ipv6: resolve_ipv6(mode, loopback_ok).unwrap(),
+        };
+        let v6: Multiaddr = "/ip6/2606:4700::1111/tcp/8080".parse().unwrap();
+        assert!(!policy(Ipv6Mode::Auto, false).dialable(&v6));
+        assert!(!policy(Ipv6Mode::Auto, false).announceable(&v6));
+        assert!(policy(Ipv6Mode::Auto, true).dialable(&v6));
+        assert!(policy(Ipv6Mode::Auto, true).announceable(&v6));
+    }
+
+    /// `off` never consults the host: a node told not to use IPv6 must not
+    /// fail to start on a box that happens to lack it.
+    #[test]
+    fn off_ignores_the_host_entirely() {
+        assert!(!resolve_ipv6(Ipv6Mode::Off, false).unwrap());
+        assert!(!resolve_ipv6(Ipv6Mode::Off, true).unwrap());
     }
 }

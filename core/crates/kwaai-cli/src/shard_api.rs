@@ -242,7 +242,9 @@ async fn run_inference(
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
-    let mut unreached = crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain).await;
+    let mut unreached =
+        crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain, &state.our_peer_id)
+            .await;
 
     // Pin peer path for this request so KV-caches stay coherent.
     let mut pinned_path = match crate::shard_cmd::build_pinned_path_ranked(
@@ -286,8 +288,12 @@ async fn run_inference(
             Ok(r) => r,
             Err(e) => {
                 // Try rebuilding path excluding failed peer
-                unreached =
-                    crate::shard_cmd::unreached_peers(&mut client_guard, &state.chain).await;
+                unreached = crate::shard_cmd::unreached_peers(
+                    &mut client_guard,
+                    &state.chain,
+                    &state.our_peer_id,
+                )
+                .await;
                 match crate::shard_cmd::build_pinned_path_ranked(
                     &state.chain,
                     state.total_blocks,
@@ -729,7 +735,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     use kwaai_inference::tokenizer::Tokenizer as _;
 
     // Guard before any expensive work (DHT discovery, tokenizer load)
-    if crate::daemon::port_in_use(args.port) {
+    if crate::daemon::port_in_use(args.port, crate::net::configured_ipv6_mode()) {
         print_warning(&format!(
             "Port {} is already in use — shard API may already be running.",
             args.port
@@ -943,8 +949,9 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         .route("/v1/completions", post(completions))
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", args.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let ipv6 = crate::net::configured_ipv6_mode();
+    let listeners =
+        crate::net::bind_dual_stack(crate::net::Scope::Any, args.port, ipv6)?.into_tokio()?;
 
     // Advertise our port so the shard-proxy P2P handler can find us.
     let _ = std::fs::create_dir_all(crate::config::run_dir());
@@ -974,7 +981,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     println!();
     print_separator();
 
-    axum::serve(listener, app).await?;
+    crate::api::serve_all(listeners, app).await?;
     let _ = std::fs::remove_file(crate::shard_cmd::shard_api_port_file());
     Ok(())
 }

@@ -146,6 +146,8 @@ pub struct NetworkSnapshot {
     pub observed_addrs: Vec<(Multiaddr, usize)>,
     /// The swarm's listen addresses.
     pub listen_addrs: Vec<Multiaddr>,
+    /// What IPv6 ended up doing: off, active, or wanted-but-refused.
+    pub ipv6: crate::config::Ipv6Status,
     /// Protocols this node serves to peers, sorted.
     ///
     /// The handlers actually registered — the unary and raw-stream namespaces
@@ -177,8 +179,8 @@ pub struct NetworkSnapshot {
 pub struct KnownPeer {
     /// The peer's ID.
     pub peer_id: PeerId,
-    /// Every address we hold for it, routing-table and connection addresses
-    /// merged, deduplicated, and filtered to the announceable set.
+    /// Every address we hold for it: routing-table entries filtered to the
+    /// announceable set, plus any live connection's address as it is.
     pub addrs: Vec<Multiaddr>,
     /// Whether there is a live connection to this peer right now. A caller may
     /// prefer connected peers on a tie, but an unconnected peer is still a

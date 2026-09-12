@@ -576,8 +576,8 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     print_info("Loading model in background. Requests return 'warming up' until ready.");
     print_separator();
 
-    // Start local TCP bypass server so `shard run` on the same machine can
-    // call us without triggering libp2p's "dial to self" rejection.
+    // Local TCP bypass server for `shard local`, which runs without a daemon
+    // and reuses this loaded model. `shard run` reaches us through the daemon.
     let _ = std::fs::create_dir_all(crate::config::run_dir());
     match start_local_inference_server(shard_cell.clone(), device.clone()).await {
         Ok(port) => {
@@ -1439,7 +1439,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await;
     }
-    let mut unreached = unreached_peers(&mut client, &chain).await;
+    let mut unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
 
     // ── Inference loop ────────────────────────────────────────────────────────
     let mut generated_ids: Vec<u32> = Vec::new();
@@ -1516,7 +1516,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 print_warning(&format!(
                     "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
                 ));
-                unreached = unreached_peers(&mut client, &chain).await;
+                unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
                     build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
                 token_hops.clear();
@@ -1755,8 +1755,8 @@ pub enum ShardRunEvent {
 ///   peer errors) are unchanged — they're acceptable in the daemon context
 ///   today and out of scope for this refactor.
 /// - The local node is honoured as a hop when it appears in the discovered
-///   chain — `forward_through_chain` already calls into the local TCP bypass
-///   server for `our_peer_id`, just like the CLI path.
+///   chain — `forward_through_chain` calls it through the daemon like any
+///   other peer, just like the CLI path.
 /// - On an empty chain (no peers serving the model) we poll every 2 s for up
 ///   to 30 s before yielding
 ///   `Error(anyhow!("no peers serving model …"))`.
@@ -1929,7 +1929,7 @@ async fn run_streaming_inner(
             .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await;
     }
-    let mut unreached = unreached_peers(&mut client, &chain).await;
+    let mut unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
 
     // Pin the path for this session.
     let mut failed_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
@@ -1969,7 +1969,7 @@ async fn run_streaming_inner(
             Err(_) => {
                 // Rebuild path on transient failure and retry once,
                 // matching cmd_shard_run's recovery behaviour.
-                unreached = unreached_peers(&mut client, &chain).await;
+                unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
                     build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
@@ -2835,6 +2835,7 @@ pub fn snap_to_valid_blocks(n: usize) -> usize {
 pub(crate) async fn unreached_peers(
     client: &mut P2PClient,
     chain: &[BlockServerEntry],
+    our_peer_id: &PeerId,
 ) -> std::collections::HashSet<PeerId> {
     let peers = match client.list_peers().await {
         Ok(peers) => peers,
@@ -2847,10 +2848,20 @@ pub(crate) async fn unreached_peers(
         .iter()
         .filter_map(|p| PeerId::from_bytes(&p.id).ok())
         .collect();
+    unreached_in(chain, &connected, our_peer_id)
+}
+
+/// `chain` minus `connected` and minus ourselves: the daemon never lists
+/// its own node as a connection, but our own shard is always reachable.
+fn unreached_in(
+    chain: &[BlockServerEntry],
+    connected: &std::collections::HashSet<PeerId>,
+    our_peer_id: &PeerId,
+) -> std::collections::HashSet<PeerId> {
     chain
         .iter()
         .map(|e| e.peer_id)
-        .filter(|p| !connected.contains(p))
+        .filter(|p| p != our_peer_id && !connected.contains(p))
         .collect()
 }
 
@@ -3154,7 +3165,7 @@ async fn cmd_circuit_create(args: CircuitCreateArgs) -> Result<()> {
             .connect_peer_with_addrs(&entry.peer_id, &entry.dial_addrs)
             .await;
     }
-    let unreached = unreached_peers(&mut client, &chain).await;
+    let unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
     let failed_peers = std::collections::HashSet::new();
     let pinned_path = build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
 
@@ -3282,7 +3293,6 @@ pub fn hop_candidates<'a>(
     failed_peers: &std::collections::HashSet<PeerId>,
     unreached: &std::collections::HashSet<PeerId>,
     our_peer_id: Option<&PeerId>,
-    self_dispatchable: bool,
 ) -> Vec<&'a BlockServerEntry> {
     let mut candidates: Vec<&BlockServerEntry> = chain
         .iter()
@@ -3300,9 +3310,6 @@ pub fn hop_candidates<'a>(
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| {
-                if !self_dispatchable {
-                    return std::cmp::Ordering::Equal;
-                }
                 let a_self = our_peer_id == Some(&a.peer_id);
                 let b_self = our_peer_id == Some(&b.peer_id);
                 b_self.cmp(&a_self)
@@ -3332,26 +3339,12 @@ pub async fn forward_through_chain(
 ) -> Result<crate::block_rpc::InferenceResponse> {
     use crate::block_rpc::InferenceResponse;
 
-    // Read local bypass port once (written by `shard serve` on this machine).
-    let local_port: Option<u16> = std::fs::read_to_string(local_server_port_file())
-        .ok()
-        .and_then(|s| s.trim().parse().ok());
-
     let mut request = first_request;
     let mut response: Option<InferenceResponse> = None;
     let mut pos = 0;
 
     while pos < total_blocks {
-        // Self ranks ahead only when the local bypass can actually take the
-        // hop; otherwise picking it just fails with "shard serve is not running".
-        let candidates = hop_candidates(
-            chain,
-            pos,
-            failed_peers,
-            unreached,
-            our_peer_id,
-            local_port.is_some(),
-        );
+        let candidates = hop_candidates(chain, pos, failed_peers, unreached, our_peer_id);
 
         if candidates.is_empty() {
             anyhow::bail!("No server covers block {} — chain has a gap (all candidates failed or blacklisted)", pos);
@@ -3363,20 +3356,11 @@ pub async fn forward_through_chain(
 
         let mut succeeded = false;
         for candidate in &candidates {
-            // Self-bypass: avoid libp2p "dial to self" by using the local TCP server.
-            let is_self = our_peer_id == Some(&candidate.peer_id);
+            // Our own shard is called like any other: the daemon loops a
+            // call to its own peer id back to the local handler.
             let hop_start = std::time::Instant::now();
             let result = tokio::time::timeout(HOP_TIMEOUT, async {
-                if is_self {
-                    match local_port {
-                        Some(port) => local_inference_call(port, &request).await,
-                        None => Err(anyhow::anyhow!(
-                            "shard serve is not running on this machine (no local port file)"
-                        )),
-                    }
-                } else {
-                    call_block_forward(client, &candidate.peer_id, &request).await
-                }
+                call_block_forward(client, &candidate.peer_id, &request).await
             })
             .await
             .unwrap_or_else(|_| {
@@ -4019,6 +4003,17 @@ mod tests {
     }
 
     #[test]
+    fn our_own_node_is_never_unreached() {
+        let us = PeerId::random();
+        let other = PeerId::random();
+        let chain = vec![server(us, 0, 16), server(other, 16, 32)];
+        // The daemon lists neither: it never lists itself, and `other` is down.
+        let connected = std::collections::HashSet::new();
+        let unreached = unreached_in(&chain, &connected, &us);
+        assert_eq!(unreached, [other].into_iter().collect());
+    }
+
+    #[test]
     fn pinning_ranks_reached_peers_first_and_unreached_last() {
         let reached = PeerId::random();
         let unreached = PeerId::random();
@@ -4121,33 +4116,18 @@ mod tests {
 
         // A pinned path yields exactly its planned entry at each hop.
         let path = vec![server(a, 0, 16), server(b, 16, 32)];
-        assert_eq!(
-            ids(hop_candidates(&path, 0, &none, &none, None, false)),
-            [a]
-        );
-        assert_eq!(
-            ids(hop_candidates(&path, 16, &none, &none, None, false)),
-            [b]
-        );
+        assert_eq!(ids(hop_candidates(&path, 0, &none, &none, None)), [a]);
+        assert_eq!(ids(hop_candidates(&path, 16, &none, &none, None)), [b]);
 
         // In a wider chain the reached peer is tried before the unreached
         // one even though the latter spans more, and an entry that started
         // before the hop is never offered.
         let chain = vec![server(u, 0, 32), server(a, 0, 16), server(b, 16, 32)];
-        assert_eq!(
-            ids(hop_candidates(&chain, 0, &none, &skip, None, false)),
-            [a, u]
-        );
-        assert_eq!(
-            ids(hop_candidates(&chain, 16, &none, &skip, None, false)),
-            [b]
-        );
+        assert_eq!(ids(hop_candidates(&chain, 0, &none, &skip, None)), [a, u]);
+        assert_eq!(ids(hop_candidates(&chain, 16, &none, &skip, None)), [b]);
 
         // Nothing known about reachability: span decides, as before.
-        assert_eq!(
-            ids(hop_candidates(&chain, 0, &none, &none, None, false)),
-            [u, a]
-        );
+        assert_eq!(ids(hop_candidates(&chain, 0, &none, &none, None)), [u, a]);
     }
 
     #[test]

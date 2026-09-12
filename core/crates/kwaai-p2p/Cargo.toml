@@ -37,12 +37,16 @@ tokio-test = "0.4"
 tracing-subscriber = { workspace = true }
 tempfile = "3"
 rmp-serde = { workspace = true }  # msgpack subkeys in the DHT service tests
+serde_yaml = { workspace = true } # the `ipv6` config key is written as YAML
 rmpv = "1.0"                      # msgpack record values in the live DHT test
 sha1 = "0.10"                     # DHTID derivation in the live DHT test
 
 [features]
-default = ["tcp"]
+default = ["tcp", "ipv6"]
 tcp = []
+# Listen on and dial IPv6. On by default; off strips the v6 listeners and makes
+# the `ipv6` config key read as `false` whatever it says.
+ipv6 = []
 # Serve /ipfs/kad/1.0.0 alongside /kwaai/kad/1.0.0 — the bootstrap-grade build
 # for the migration window. Needs the patched libp2p-kad in [patch.crates-io]
 # (patches/libp2p-kad.patch restores `set_protocol_names`, removed upstream in
