@@ -53,8 +53,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::announce::{
-    build_announce_records, build_unannounce_records, send_records_via_handle, AnnounceContext,
-    DHTServerInfo, StoreTiming,
+    build_announce_records, build_dropped_block_records, build_unannounce_records,
+    send_records_via_handle, AnnounceContext, DHTServerInfo, StoreTiming,
 };
 use crate::config::KwaaiNetConfig;
 use crate::daemon::ShardManager;
@@ -108,6 +108,9 @@ pub struct NativeNode {
     /// dial-address record is selected under the policy the daemon dials by.
     require_global_ips: bool,
     dials_quic: bool,
+    /// Block range of the last announce that reached the DHT, so a shrink can
+    /// tombstone the blocks it no longer refreshes.
+    announced_blocks: Option<(i32, i32)>,
 }
 
 impl NativeNode {
@@ -298,6 +301,7 @@ impl NativeNode {
             identity: keypair,
             require_global_ips,
             dials_quic,
+            announced_blocks: None,
         })
     }
 
@@ -337,7 +341,7 @@ impl NativeNode {
     /// store — the announce doubles as the reputation probe on both paths.
     ///
     pub async fn announce(
-        &self,
+        &mut self,
         ctx: &AnnounceContext<'_>,
         server_info: &mut DHTServerInfo,
         bootstrap_peers: &[String],
@@ -353,12 +357,19 @@ impl NativeNode {
             self.dials_quic,
         )
         .await;
-        let records = build_announce_records(ctx, server_info)?;
+        // Blocks the previous round published and this one will not refresh
+        // are tombstoned in the same round, rather than left ONLINE for a TTL.
+        let mut records = match self.announced_blocks {
+            Some(previous) => build_dropped_block_records(ctx, server_info, previous)?,
+            None => vec![],
+        };
+        records.extend(build_announce_records(ctx, server_info)?);
         for record in &records {
             self.storage.handle_store(record.clone());
         }
         let (ok, timings) = self.deliver(&records, bootstrap_peers).await;
         if ok {
+            self.announced_blocks = Some((server_info.start_block, server_info.end_block));
             info!(
                 "✅ Announced {} blocks",
                 server_info.end_block - server_info.start_block
@@ -436,7 +447,7 @@ pub async fn run_native_node(
     grpc: &crate::grpc_server::GrpcServerHandle,
 ) -> Result<Option<String>> {
     info!("[1/4] Starting the native p2p stack...");
-    let node = NativeNode::start(config, bootstrap_peers).await?;
+    let mut node = NativeNode::start(config, bootstrap_peers).await?;
     let peer_id = node.peer_id;
 
     // Hand the swarm to the gRPC surface, which bound before the node existed
@@ -499,9 +510,14 @@ pub async fn run_native_node(
     // already serving comes up ONLINE instead of sitting at JOINING until the
     // first re-announce tick.
     crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
+    let (start_block, end_block) = announced_range(
+        &config,
+        ShardManager::shard_is_ready(),
+        KwaaiNetConfig::announce_state(),
+    );
     let mut server_info = DHTServerInfo::new(
-        config.start_block() as i32,
-        config.effective_end_block() as i32,
+        start_block,
+        end_block,
         public_name,
         using_relay,
         throughput,
@@ -524,11 +540,14 @@ pub async fn run_native_node(
     if config.announce_self {
         info!("   Name    : {}", public_name);
         info!("   Model   : {}", config.model);
-        info!(
-            "   Blocks  : {}–{}",
-            config.start_block(),
-            config.effective_end_block()
-        );
+        if server_info.start_block == server_info.end_block {
+            info!("   Blocks  : none (no block shard to route through)");
+        } else {
+            info!(
+                "   Blocks  : {}–{}",
+                server_info.start_block, server_info.end_block
+            );
+        }
         info!("   Map     : https://map.kwaai.ai");
     }
 
@@ -568,7 +587,7 @@ pub async fn run_native_node(
             _ = sighup.recv() => {
                 info!("SIGHUP received — re-reading config");
                 reload_block_range(&mut config);
-                refresh_server_info(&mut server_info, &config);
+                refresh_server_info(&mut server_info, &config).await;
                 if config.announce_self {
                     if let Err(e) = node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                         warn!("Re-announce after SIGHUP failed: {e:#}");
@@ -612,11 +631,7 @@ pub async fn run_native_node(
                 }
 
                 if config.announce_self {
-                    // Re-derive whole-model readiness first: on a Mac this is what
-                    // makes the difference between ONLINE and JOINING, and Ollama
-                    // can come and go under a long-running node.
-                    crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
-                    refresh_server_info(&mut server_info, &config);
+                    refresh_server_info(&mut server_info, &config).await;
                     info!(
                         "Re-announcing to DHT (shard_ready={}, whole_model_ready={})...",
                         ShardManager::shard_is_ready(),
@@ -683,7 +698,7 @@ pub async fn run_native_node(
                 );
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 server_info.using_relay = using_relay;
-                refresh_server_info(&mut server_info, &config);
+                refresh_server_info(&mut server_info, &config).await;
                 match node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                     // Only a successful publish consumes the epoch; on failure
                     // the next settle window or the 300 s tick retries it.
@@ -696,7 +711,7 @@ pub async fn run_native_node(
             // host is usable again without waiting out the 300 s tick.
             Some(()) = ollama_recovery_rx.recv(), if config.announce_self => {
                 info!("Ollama recovered — triggering immediate re-announce");
-                refresh_server_info(&mut server_info, &config);
+                refresh_server_info(&mut server_info, &config).await;
                 if let Err(e) = node.announce(&ctx, &mut server_info, bootstrap_peers).await {
                     warn!("Re-announce after Ollama recovery failed: {e:#}");
                 }
@@ -817,11 +832,42 @@ fn reload_block_range(config: &mut KwaaiNetConfig) {
     config.blocks = fresh.blocks;
 }
 
+/// The block range this node announces, given the `state` it announces.
+///
+/// Only a ready block shard has blocks a chain can route through. A node
+/// announcing ONLINE without one — the whole model through Ollama, or
+/// `announce_online_without_shard` — announces an empty range, so no per-block
+/// record is written and it is never chosen as a hop; its
+/// `_kwaai.inference.nodes` entry still says what it serves. Announcing the
+/// configured range made every macOS node a 0–32 block server in every chain
+/// build, where it refused `/kwaai/inference/1.0.0` on the first hop.
+///
+/// JOINING keeps the configured range: it says what the node intends to
+/// serve, and no consumer routes through a node that is not ONLINE.
+fn announced_range(config: &KwaaiNetConfig, shard_ready: bool, state: i32) -> (i32, i32) {
+    let start = config.start_block() as i32;
+    if state == STATE_ONLINE && !shard_ready {
+        (start, start)
+    } else {
+        (start, config.effective_end_block() as i32)
+    }
+}
+
+/// petals' `ServerState.ONLINE`, as [`KwaaiNetConfig::announce_state`] reports it.
+const STATE_ONLINE: i32 = 2;
+
 /// Sync the announced block range and readiness state from the live config.
-fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
-    server_info.start_block = config.start_block() as i32;
-    server_info.end_block = config.effective_end_block() as i32;
-    server_info.state = KwaaiNetConfig::announce_state();
+///
+/// Whole-model readiness is re-derived here, not by the caller: on a Mac it is
+/// what separates ONLINE from JOINING, Ollama comes and goes under a long-running
+/// node, and an arm that skipped it re-announced from a stale sentinel.
+async fn refresh_server_info(server_info: &mut DHTServerInfo, config: &KwaaiNetConfig) {
+    crate::ollama::refresh_whole_model_ready(config.ollama_port).await;
+    let state = KwaaiNetConfig::announce_state();
+    let (start_block, end_block) = announced_range(config, ShardManager::shard_is_ready(), state);
+    server_info.start_block = start_block;
+    server_info.end_block = end_block;
+    server_info.state = state;
     server_info.shard_loading = KwaaiNetConfig::announce_shard_loading();
 }
 
@@ -1024,7 +1070,7 @@ mod tests {
         kwaai_p2p::identity::generate_keypair(config.identity_key.as_ref().unwrap())
             .expect("the fixture key must generate");
 
-        let node = NativeNode::start(&config, &[])
+        let mut node = NativeNode::start(&config, &[])
             .await
             .expect("an ordinary node must start");
 
@@ -1094,5 +1140,38 @@ mod tests {
             announce("node.example.com", kwaai_p2p::Ipv6Mode::Auto).as_deref(),
             Some("/ip4/node.example.com/tcp/8080")
         );
+    }
+}
+
+#[cfg(test)]
+mod announced_range_tests {
+    use super::*;
+
+    fn config() -> KwaaiNetConfig {
+        KwaaiNetConfig {
+            start_block: Some(4),
+            blocks: 8,
+            ..Default::default()
+        }
+    }
+
+    const JOINING: i32 = 1;
+
+    #[test]
+    fn a_block_shard_announces_its_range() {
+        assert_eq!(announced_range(&config(), true, STATE_ONLINE), (4, 12));
+    }
+
+    #[test]
+    fn online_without_a_shard_announces_no_blocks() {
+        // Whole model through Ollama, or `announce_online_without_shard`:
+        // ONLINE, but with nothing a chain can route through.
+        assert_eq!(announced_range(&config(), false, STATE_ONLINE), (4, 4));
+    }
+
+    #[test]
+    fn a_joining_node_keeps_the_configured_range() {
+        // Nothing routes through a JOINING node; the range is what it intends.
+        assert_eq!(announced_range(&config(), false, JOINING), (4, 12));
     }
 }
