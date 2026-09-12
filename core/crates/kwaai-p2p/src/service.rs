@@ -1978,9 +1978,7 @@ impl NetworkService {
                     // swaps in the observed IP, the peer chose the port — so it
                     // takes the same gates as an identify listen address.
                     let stripped = strip_dest_p2p(&addr);
-                    if self.speaks_kad(&peer_id)
-                        && is_announceable_with(&stripped, self.require_global_ips)
-                    {
+                    if self.speaks_kad(&peer_id) && self.policy.announceable(&stripped) {
                         self.add_routing_address(&peer_id, stripped);
                     }
                     debug!(peer = %peer_id, ?connection_id, "closing autonat dial-back");
