@@ -68,6 +68,10 @@ const LAST_CONNECTED_CAP: usize = 1024;
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Upper bound on `pinned_addrs` peers. Explicit dials only, so a memory
+/// bound rather than a policy; oldest pin evicted, same shape as `last_connected`.
+const PINNED_PEERS_CAP: usize = 1024;
+
 /// Cap on routing-table addresses per peer.
 ///
 /// kad's own `Addresses` is an unbounded `SmallVec`: `insert` appends whatever
@@ -180,6 +184,14 @@ pub struct NetworkService {
     /// recently" is the signal that distinguishes the two. Recency cache, not
     /// a ledger — capped at [`LAST_CONNECTED_CAP`], oldest evicted.
     last_connected: HashMap<PeerId, Instant>,
+    /// Addresses we were *told* to dial — `dial()` and `AddKadAddress`, the
+    /// two uncapped seeds — stored bare, with when the peer was first pinned.
+    /// Neither seed reaches `learned_addrs` (only `ConnectPeerWithAddrs`
+    /// does), and a learned address is forgotten on a failed dial while an
+    /// operator's must not be; the routing table is the seeds' only other
+    /// home, and the non-kad purge in `handle_identify_event` empties it.
+    /// Consulted by [`Self::candidate_addresses`], which dedupes both stores.
+    pinned_addrs: HashMap<PeerId, (Instant, Vec<Multiaddr>)>,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
@@ -403,22 +415,22 @@ impl NetworkService {
                             // - `kad`: `on_fully_negotiated_outbound` marks the
                             //   protocol supported on the first negotiated
                             //   substream, which now fires before the remote
-                            //   confirms anything. A query to a connected
-                            //   non-kad peer can insert it into the routing
-                            //   table until identify corrects it. This is net
-                            //   new versus p2pd, where go-libp2p-kad-dht admits
-                            //   peers only from identify plus a live FIND_NODE
-                            //   probe.
+                            //   confirms anything, so a query to a non-kad
+                            //   peer inserts it. Identify does NOT correct
+                            //   that on its own — the later
+                            //   ProtocolNotSupported only marks the entry
+                            //   Disconnected, never removes it — so
+                            //   `handle_identify_event` evicts any tabled peer
+                            //   whose protocols lack our kad name. Measured on
+                            //   the 2026-09-06 probe: 160 kubo peers tabled
+                            //   and served to the fleet, from one query.
+                            //   Not `BucketInserts::Manual`: routed dials rely
+                            //   on the walk depositing its target in the table.
                             //
-                            //   Which build you are in decides how much of
-                            //   that caveat applies. A stock (single-name)
-                            //   build takes the 0-RTT shortcut on every kad
-                            //   substream, so the paragraph above is fully in
-                            //   force: during the migration window a routing
-                            //   table can fill with peers that never confirmed
-                            //   kad, and the connection-manager work (#174)
-                            //   plus gating laziness on identify's protocol
-                            //   set are the follow-ups that close it. The
+                            //   Which build you are in decides how far the
+                            //   shortcut reaches. A stock (single-name) build
+                            //   takes it on every kad substream — the false
+                            //   confirm above fires for every foreign peer. The
                             //   `kad-multi-protocol` (bootstrap) build offers
                             //   two names, V1Lazy only shortcuts the *last*
                             //   offer (see `dialer_select.rs`), so its
@@ -427,9 +439,9 @@ impl NetworkService {
                             //   legacy-only peer). Accepted for the migration
                             //   window on the handful of hosts that run it.
                             //
-                            // Closing both at the source means gating laziness
-                            // on identify's known-protocol set, as go does.
-                            // Tracked as a follow-up, not done here.
+                            // Gating laziness itself on identify's known-protocol
+                            // set, as go does, would also fix `ping`; swarm 0.47
+                            // has no per-behaviour override, so that remains open.
                             //
                             // Raw streams opt out via a trailing sentinel
                             // protocol, so their refusals stay eager — see
@@ -559,6 +571,7 @@ impl NetworkService {
             connections: HashMap::new(),
             autonat_dialbacks: PendingDialBacks::default(),
             learned_addrs: LearnedAddrs::new(local_peer_id),
+            pinned_addrs: HashMap::new(),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
             policy,
@@ -873,11 +886,13 @@ impl NetworkService {
                 // the operator naming an address, not a peer claiming one. A
                 // symmetric-NAT peer flooding identify must never be able to
                 // evict a bootstrap address someone configured by hand.
+                self.pin_address(peer, strip_dest_p2p(&addr));
                 self.swarm.behaviour_mut().kad.add_address(&peer, addr);
                 let _ = reply.send(());
             }
 
             Command::RemoveKadPeer { peer, reply } => {
+                self.pinned_addrs.remove(&peer);
                 let existed = self.swarm.behaviour_mut().kad.remove_peer(&peer).is_some();
                 let _ = reply.send(existed);
             }
@@ -1101,6 +1116,7 @@ impl NetworkService {
                 // Uncapped for the same reason as `AddKadAddress`: an address
                 // we are actively dialing is our own intent, not a remote
                 // claim, and is the one entry least worth evicting.
+                self.pin_address(peer, stripped.clone());
                 self.swarm.behaviour_mut().kad.add_address(&peer, stripped);
             }
         }
@@ -1298,6 +1314,15 @@ impl NetworkService {
             }
         }
 
+        if let Some((_, pinned)) = self.pinned_addrs.get(peer) {
+            let fresh: Vec<Multiaddr> = pinned
+                .iter()
+                .filter(|a| !addrs.contains(a) && table_filter(a))
+                .cloned()
+                .collect();
+            addrs.extend(fresh);
+        }
+
         if let Some(conns) = self.connections.get(peer) {
             for conn in conns.values() {
                 if !addrs.contains(&conn.addr) {
@@ -1334,6 +1359,35 @@ impl NetworkService {
         addrs.retain(|a| seen.insert(a.clone()));
 
         addrs
+    }
+
+    /// Remember an address the operator supplied for `peer`; see `pinned_addrs`.
+    /// Bounded like the routing table: six per peer, oldest out.
+    fn pin_address(&mut self, peer: PeerId, addr: Multiaddr) {
+        if addr.is_empty() {
+            return;
+        }
+        if self.pinned_addrs.len() >= PINNED_PEERS_CAP && !self.pinned_addrs.contains_key(&peer) {
+            if let Some(oldest) = self
+                .pinned_addrs
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(p, _)| *p)
+            {
+                self.pinned_addrs.remove(&oldest);
+            }
+        }
+        let (_, addrs) = self
+            .pinned_addrs
+            .entry(peer)
+            .or_insert_with(|| (Instant::now(), Vec::new()));
+        if addrs.contains(&addr) {
+            return;
+        }
+        if addrs.len() >= MAX_ADDRESSES_PER_PEER {
+            addrs.remove(0);
+        }
+        addrs.push(addr);
     }
 
     /// Our own listen and confirmed-external addresses, snapshotted from the
@@ -2524,6 +2578,18 @@ impl NetworkService {
                         }
                         self.add_routing_address(&peer_id, addr.clone());
                     }
+                } else if self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .remove_peer(&peer_id)
+                    .is_some()
+                {
+                    // Tabled by the V1Lazy false confirm (or `dial()`) before
+                    // identify could say no; left in place it is served to every
+                    // FIND_NODE caller. Table membership only: an address the
+                    // operator supplied survives in `pinned_addrs`.
+                    debug!(peer = %peer_id, agent = %info.agent_version, "dropped non-kad peer from the routing table");
                 }
 
                 // (b) Record what this peer observed our address to be. Counting
