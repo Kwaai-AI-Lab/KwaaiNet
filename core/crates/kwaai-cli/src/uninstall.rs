@@ -256,10 +256,18 @@ fn remove_binary_windows(path: &Path) {
 mod tests {
     use super::*;
 
+    /// The binary name `remove_binaries_from` actually looks for. The fixture
+    /// has to match it: on Windows the cleanup scans for `kwaainet.exe`, so a
+    /// stray written as `kwaainet` is not the file under test.
+    #[cfg(windows)]
+    const STRAY: &str = "kwaainet.exe";
+    #[cfg(not(windows))]
+    const STRAY: &str = "kwaainet";
+
     fn fake_install(home: &Path, exe: &Path) {
         let cargo = home.join(".cargo").join("bin");
         std::fs::create_dir_all(&cargo).unwrap();
-        std::fs::write(cargo.join("kwaainet"), b"stale").unwrap();
+        std::fs::write(cargo.join(STRAY), b"stale").unwrap();
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::write(exe, b"exe").unwrap();
     }
@@ -275,7 +283,7 @@ mod tests {
         remove_binaries_from(&exe, Some("sudo apt remove kwaainet"), Some(tmp.path()));
 
         assert!(exe.exists(), "packaged exe must survive");
-        assert!(!tmp.path().join(".cargo/bin/kwaainet").exists());
+        assert!(!tmp.path().join(".cargo").join("bin").join(STRAY).exists());
     }
 
     #[test]
@@ -287,6 +295,6 @@ mod tests {
         remove_binaries_from(&exe, None, Some(tmp.path()));
 
         assert!(!exe.exists());
-        assert!(!tmp.path().join(".cargo/bin/kwaainet").exists());
+        assert!(!tmp.path().join(".cargo").join("bin").join(STRAY).exists());
     }
 }
