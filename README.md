@@ -108,6 +108,16 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+```
+
+The second line puts `kwaainet` on `PATH` in the *current* shell — the
+installer itself only updates `.bashrc`/`.profile`/`.zshrc` for future
+shells, so without it you'd need to open a new terminal first. Then
+confirm:
+
+```bash
+kwaainet --version
 ```
 
 **PowerShell installer (Windows):**
@@ -181,6 +191,13 @@ On Linux and Windows machines with an NVIDIA GPU, the installer automatically de
 ```bash
 kwaainet benchmark --gpu
 ```
+
+Only a glibc-linked CUDA build is published, so on a host whose glibc is
+too old for it (e.g. RHEL/EL9, Amazon Linux 2-family), the shell installer
+falls back to the CPU build instead of installing a binary that can't run.
+To get CUDA acceleration there anyway, use the Nix build above — it links
+against its own glibc and isn't affected by the host's system glibc at
+all.
 
 **Apple Silicon (Metal):**
 
