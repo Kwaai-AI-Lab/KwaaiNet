@@ -410,6 +410,33 @@ pub fn dest_peer_id(addr: &Multiaddr) -> Option<PeerId> {
     })
 }
 
+/// The relay a circuit address routes through: the `/p2p/<relay>` directly
+/// before its single `/p2p-circuit`. `None` for a direct address, for a
+/// circuit that names no relay (`/ip4/…/tcp/…/p2p-circuit`, which rust-libp2p
+/// refuses to dial — `Missing relay peer id.`) and for a nested circuit.
+pub fn circuit_relay(addr: &Multiaddr) -> Option<PeerId> {
+    let protos: Vec<Protocol> = addr.iter().collect();
+    let hops: Vec<usize> = protos
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| matches!(p, Protocol::P2pCircuit))
+        .map(|(i, _)| i)
+        .collect();
+    let [hop] = hops[..] else {
+        return None;
+    };
+    match protos.get(hop.checked_sub(1)?)? {
+        Protocol::P2p(relay) => Some(*relay),
+        _ => None,
+    }
+}
+
+/// Whether `addr` is a direct address or a circuit [`circuit_relay`] can
+/// name — the only two shapes a dial can act on.
+pub fn is_dialable_shape(addr: &Multiaddr) -> bool {
+    !is_circuit(addr) || circuit_relay(addr).is_some()
+}
+
 /// The circuit-listen address for a reservation on `relay` at `relay_addr`:
 /// `<relay_addr>/p2p/<relay>/p2p-circuit`.
 ///
@@ -800,6 +827,53 @@ mod tests {
             "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
         ));
         assert_eq!(dest_peer_id(&listen), None);
+    }
+
+    #[test]
+    fn circuit_relay_is_the_hop_before_the_single_circuit() {
+        let relay = PeerId::random();
+        let dest = PeerId::random();
+        let addr: Multiaddr =
+            format!("/ip4/198.51.100.1/tcp/4001/p2p/{relay}/p2p-circuit/p2p/{dest}")
+                .parse()
+                .unwrap();
+        assert_eq!(circuit_relay(&addr), Some(relay));
+        assert!(is_dialable_shape(&addr));
+    }
+
+    #[test]
+    fn a_circuit_naming_no_relay_is_not_dialable() {
+        // The go-libp2p shorthand seen live on metro-win: rust-libp2p refuses
+        // it with `Missing relay peer id.`, so it must never be served.
+        let dest = PeerId::random();
+        let addr: Multiaddr = format!("/ip4/198.51.100.1/tcp/4001/p2p-circuit/p2p/{dest}")
+            .parse()
+            .unwrap();
+        assert_eq!(circuit_relay(&addr), None);
+        assert!(!is_dialable_shape(&addr));
+        assert!(
+            is_announceable(&addr),
+            "the announceable check alone lets it through"
+        );
+    }
+
+    #[test]
+    fn a_nested_circuit_is_not_dialable() {
+        let a = PeerId::random();
+        let b = PeerId::random();
+        let addr: Multiaddr =
+            format!("/ip4/198.51.100.1/tcp/4001/p2p/{a}/p2p-circuit/p2p/{b}/p2p-circuit")
+                .parse()
+                .unwrap();
+        assert_eq!(circuit_relay(&addr), None);
+        assert!(!is_dialable_shape(&addr));
+    }
+
+    #[test]
+    fn a_direct_address_has_a_dialable_shape_and_no_relay() {
+        let addr: Multiaddr = "/ip4/198.51.100.1/tcp/4001".parse().unwrap();
+        assert_eq!(circuit_relay(&addr), None);
+        assert!(is_dialable_shape(&addr));
     }
 
     #[test]
