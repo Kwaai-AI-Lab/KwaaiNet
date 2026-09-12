@@ -382,8 +382,8 @@ impl RelayReservations {
     /// The last connection to `peer` closed; nothing can survive that.
     fn forget(&mut self, peer: &PeerId) {
         self.held.remove(peer);
-}
     }
+}
 
 /// Whether to open IPv6 listeners at all, given the mode and whether the host
 /// has a v6 stack.
