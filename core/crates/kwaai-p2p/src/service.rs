@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use libp2p::{
     autonat,
-    core::ConnectedPoint,
+    core::{transport::PortUse, ConnectedPoint},
     dcutr, identify, identity, kad, noise, ping, relay,
     swarm::{ConnectionId, DialError, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
@@ -96,6 +96,38 @@ const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
 /// layer, so a count cap is the closest available approximation.
 const MAX_ADDRESSES_PER_PEER: usize = 6;
 
+/// How long an AutoNAT dial-back stays recognisable after its probe was
+/// requested. The probe's verdict is no guide: its 30 s request timeout fires
+/// while the dial may still be walking up to 16 addresses at the transport's
+/// 10 s each, and the late connection must still be closed.
+const AUTONAT_DIALBACK_TTL: Duration = Duration::from_secs(180);
+
+/// Addresses AutoNAT's server side is about to dial back, each with its expiry.
+///
+/// Keyed by the dial address (it carries `/p2p/<peer>`), so a match is exact.
+/// Entries age out on `AUTONAT_DIALBACK_TTL`, never on the probe's outcome —
+/// bounded by 16 addresses per probing peer. See `take_autonat_dialback`.
+#[derive(Debug, Default)]
+struct PendingDialBacks {
+    expires: HashMap<Multiaddr, Instant>,
+}
+
+impl PendingDialBacks {
+    /// Remember a probe's addresses, dropping whatever has aged out.
+    fn note_request(&mut self, addrs: &[Multiaddr], now: Instant) {
+        self.expires.retain(|_, expiry| now < *expiry);
+        for addr in addrs {
+            self.expires
+                .insert(addr.clone(), now + AUTONAT_DIALBACK_TTL);
+        }
+    }
+
+    /// Consume `addr` if a live probe named it.
+    fn take(&mut self, addr: &Multiaddr, now: Instant) -> bool {
+        self.expires.remove(addr).is_some_and(|expiry| now < expiry)
+    }
+}
+
 /// A connection we are tracking for `list_peers`.
 #[derive(Debug, Clone)]
 struct Connection {
@@ -131,6 +163,9 @@ pub struct NetworkService {
     /// Live connections, per peer, keyed by connection so multiple connections
     /// to one peer are tracked independently.
     connections: HashMap<PeerId, HashMap<ConnectionId, Connection>>,
+    /// Addresses AutoNAT's server side has been asked to dial back. Consulted
+    /// once, when the dial-back connects; see `take_autonat_dialback`.
+    autonat_dialbacks: PendingDialBacks,
     /// Addresses we were told about peers — the peerstore rust-libp2p does not
     /// have. Consulted ahead of the routing table by
     /// [`Self::candidate_addresses`]; see [`crate::learned_addrs`] for why a
@@ -522,6 +557,7 @@ impl NetworkService {
             pending_routed: HashMap::new(),
             routed_attempts: HashMap::new(),
             connections: HashMap::new(),
+            autonat_dialbacks: PendingDialBacks::default(),
             learned_addrs: LearnedAddrs::new(local_peer_id),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
@@ -1875,6 +1911,25 @@ impl NetworkService {
                 };
                 debug!(peer = %peer_id, %addr, direction = direction.as_str(), "connection established");
 
+                // The probe was answered one layer down, inside `on_swarm_event`,
+                // so this connection is already spent — see `take_autonat_dialback`.
+                if self.take_autonat_dialback(&endpoint) && self.connections.contains_key(&peer_id)
+                {
+                    // Seed kad before closing: this is the one address our own
+                    // dial has proved. It is still a remote claim — AutoNAT
+                    // swaps in the observed IP, the peer chose the port — so it
+                    // takes the same gates as an identify listen address.
+                    let stripped = strip_dest_p2p(&addr);
+                    if self.speaks_kad(&peer_id)
+                        && is_announceable_with(&stripped, self.require_global_ips)
+                    {
+                        self.add_routing_address(&peer_id, stripped);
+                    }
+                    debug!(peer = %peer_id, ?connection_id, "closing autonat dial-back");
+                    self.swarm.close_connection(connection_id);
+                    return;
+                }
+
                 if self.last_connected.len() >= LAST_CONNECTED_CAP
                     && !self.last_connected.contains_key(&peer_id)
                 {
@@ -2310,6 +2365,47 @@ impl NetworkService {
         }
     }
 
+    /// Whether this connection is the one AutoNAT's server side opened purely
+    /// to dial a probing peer back, and is therefore ours to close. Consumes
+    /// the pending entry.
+    ///
+    /// A reachability probe is only meaningful if a *fresh* dial reaches the
+    /// peer, so AutoNAT dials with `PeerCondition::Always` and
+    /// `allocate_new_port()`, bypassing both the connection we already hold and
+    /// the port policy. It then never closes the result: `on_outbound_connection`
+    /// answers the probe over the *requester's* connection and drops the
+    /// dial-back for the idle timeout to reap. Ours never reaps it — identify's
+    /// 5-minute interval opens a stream on every connection at half the
+    /// 10-minute `idle_connection_timeout` — so each probe leaves a duplicate
+    /// connection behind for good, one per probing peer per refresh.
+    ///
+    /// `PortUse::New` is the discriminator: nothing else here allocates a new
+    /// port, DCUtR included. Narrowed to an address a probe actually named, so
+    /// a future behaviour reaching for the same port policy is not caught by it.
+    fn take_autonat_dialback(&mut self, endpoint: &ConnectedPoint) -> bool {
+        let ConnectedPoint::Dialer {
+            address,
+            port_use: PortUse::New,
+            ..
+        } = endpoint
+        else {
+            return false;
+        };
+        self.autonat_dialbacks.take(address, Instant::now())
+    }
+
+    /// Whether `peer` advertised one of our kad protocol names over identify.
+    /// No identify yet reads as no: a routing entry is only ever created for a
+    /// peer known to speak kad.
+    fn speaks_kad(&self, peer: &PeerId) -> bool {
+        let names = self.swarm.behaviour().kad.protocol_names();
+        self.peer_protocols.get(peer).is_some_and(|protocols| {
+            protocols
+                .iter()
+                .any(|p| names.iter().any(|name| name.as_ref() == p))
+        })
+    }
+
     /// AutoNAT status and probe outcomes.
     fn handle_autonat_event(&mut self, event: autonat::Event) {
         match event {
@@ -2331,6 +2427,15 @@ impl NetworkService {
             }
             autonat::Event::InboundProbe(probe) => {
                 trace!(?probe, "autonat inbound probe");
+                // Remembered only so the dial it is about to queue can be
+                // recognised when it connects. Not cleared on `Response` or
+                // `Error`: the probe times out at 30 s while its dial may still
+                // be walking, and a dial-back that lands late is no less a
+                // duplicate.
+                if let autonat::InboundProbeEvent::Request { addresses, .. } = &probe {
+                    self.autonat_dialbacks
+                        .note_request(addresses, Instant::now());
+                }
             }
         }
     }
@@ -2691,6 +2796,30 @@ mod tests {
         assert!(
             bootstraps_to_reseed(&[addr], &HashSet::new(), &HashMap::new(), now, TICK).is_empty()
         );
+    }
+
+    #[test]
+    fn a_dial_back_is_recognised_until_its_ttl_expires_not_until_the_probe_ends() {
+        let addr = addr_of(PeerId::random());
+        let now = base_instant();
+        let mut pending = PendingDialBacks::default();
+
+        pending.note_request(std::slice::from_ref(&addr), now);
+        // Past autonat's 30 s request timeout — the probe has already reported
+        // an error by now — the dial-back must still be recognised, once.
+        assert!(pending.take(&addr, now + Duration::from_secs(60)));
+        assert!(!pending.take(&addr, now + Duration::from_secs(60)));
+
+        pending.note_request(std::slice::from_ref(&addr), now);
+        assert!(!pending.take(&addr, now + AUTONAT_DIALBACK_TTL));
+    }
+
+    #[test]
+    fn a_dial_back_for_an_address_no_probe_named_is_not_recognised() {
+        let now = base_instant();
+        let mut pending = PendingDialBacks::default();
+        pending.note_request(&[addr_of(PeerId::random())], now);
+        assert!(!pending.take(&addr_of(PeerId::random()), now));
     }
 }
 

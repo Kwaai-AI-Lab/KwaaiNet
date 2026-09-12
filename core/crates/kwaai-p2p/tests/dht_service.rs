@@ -262,9 +262,18 @@ async fn ping_round_trips_over_the_wire() {
 async fn routing_peers_reach_the_storage() {
     let fx = Fixture::new().await;
 
-    // The client dialed us, but kad only admits a peer to a bucket once
-    // identify has confirmed it speaks the kad protocol — so this is a poll,
-    // not an immediate assertion.
+    // The client dialed us, but loopback is never announceable, so nothing it
+    // claims — identify listen address or AutoNAT dial-back — is admitted to a
+    // bucket. Seed what a public address would have passed.
+    let client_id = fx.client.peer_id();
+    let client_addr: libp2p::Multiaddr = dialable_addr(&fx.client, client_id)
+        .await
+        .parse()
+        .expect("valid multiaddr");
+    fx.server
+        .add_kad_address(client_id, client_addr)
+        .await
+        .expect("seed routing table");
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
     let peers = loop {
         let peers = fx
