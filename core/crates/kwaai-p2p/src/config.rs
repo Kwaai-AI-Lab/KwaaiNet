@@ -46,8 +46,10 @@ pub const KWAAI_BOOTSTRAP_SERVERS_DNS: &[&str] = &[
 ];
 
 /// Whether a node listens on and dials QUIC unless its config says otherwise.
-/// The single source for both crates' defaults, so they cannot drift.
-pub const DEFAULT_ENABLE_QUIC: bool = true;
+/// The single source for both crates' defaults, so they cannot drift. Off:
+/// some networks block or throttle UDP, and the installed base has the key
+/// written as `false` (#212), so a flip here alone would reach no one.
+pub const DEFAULT_ENABLE_QUIC: bool = false;
 
 /// Configuration for the P2P network
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,8 +86,8 @@ pub struct NetworkConfig {
     /// Maximum concurrent connections, inbound and outbound.
     pub max_connections: usize,
 
-    /// Listen on and dial QUIC as well as TCP. Off for networks that block or
-    /// throttle UDP. Defaulted so a config predating the field still loads.
+    /// Listen on and dial QUIC as well as TCP. Off by default: some networks
+    /// block or throttle UDP. Defaulted so a config predating the field still loads.
     #[serde(default = "default_enable_quic")]
     pub enable_quic: bool,
 

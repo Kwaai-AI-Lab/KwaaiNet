@@ -206,8 +206,8 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
-    /// Listen on and dial QUIC as well as TCP. Turn it off for a network that
-    /// blocks or throttles UDP. Bound at startup, so changing it needs a
+    /// Listen on and dial QUIC as well as TCP. Off by default: some networks
+    /// block or throttle UDP. Bound at startup, so changing it needs a
     /// restart.
     ///
     /// `None` until set explicitly, and never written while unset, so a
