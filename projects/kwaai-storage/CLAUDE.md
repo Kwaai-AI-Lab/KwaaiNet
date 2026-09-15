@@ -16,7 +16,7 @@ or P2P transport (kwaai-network) — VPK uses both.
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `vpk.rs` — `kwaainet vpk enable/disable/status/discover/shard/resolve`
 
-The PHE (Personal Homomorphic Encryption) service runs as a **separate process** (separate repo)
+The PHE (Partial Homomorphic Encryption) service runs as a **separate process** (separate repo)
 bound to the node's `PeerId`.
 
 ## VPK roles

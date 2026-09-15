@@ -39,6 +39,10 @@ sequenceDiagram
 
 ## Encrypted vector search
 
+*The sealed path below is implemented in the PHE project and tested, but not yet wired
+into VPK — today Bob uploads raw embeddings. ROME preserves inner products, so the host's
+cosine search is identical in both cases; only the vectors differ.*
+
 ```mermaid
 sequenceDiagram
     participant RAG as kwaai-knowledge\nretriever
@@ -47,7 +51,7 @@ sequenceDiagram
 
     RAG->>VPK: POST /api/query\n{tenant_id, query_embedding, top_k}
     VPK->>VPK: encrypt query with tenant key
-    VPK->>DB: cosine search\n(plaintext today)
+    VPK->>DB: cosine search over sealed vectors
     DB-->>VPK: top-k encrypted doc IDs + scores
     VPK->>VPK: decrypt scores for tenant
     VPK-->>RAG: [{doc_id, score, text}]

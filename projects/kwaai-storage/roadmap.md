@@ -17,9 +17,11 @@
 
 ## Planned
 
-- **Encrypted vectors at rest on the host** — integrate the PHE crate's ROME
+- **Encrypted vectors at rest on the host** — wire in the PHE crate's ROME
   (Random Orthogonal Matrix Encryption) so Bob scrambles vectors before upload and Eve
-  stores them without knowing whether they are scrambled. ROME is partially homomorphic:
+  stores them without knowing whether they are scrambled. ROME is **implemented in the
+  PHE project and tested; what is outstanding is the integration**, designed in
+  [#170](https://github.com/Kwaai-AI-Lab/KwaaiNet/pull/170). ROME is partially homomorphic:
   `E(v) = Q·pad(v)` with `Q` orthogonal preserves inner products exactly, so cosine
   ranking is unchanged and **the host needs no code change** — a padded vector is just a
   tenant declaring dimension `m`.

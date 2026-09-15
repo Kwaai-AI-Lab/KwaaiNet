@@ -3,15 +3,16 @@
 ## What it solves
 
 Personal knowledge should be queryable without exposing it to untrusted parties.
-kwaai-storage provides VPK: a multi-tenant vector store. Vectors are plaintext f32 today; encrypting
-them on the host is planned (see roadmap.md)
-so search can run on untrusted nodes without leaking the underlying documents.
+kwaai-storage provides VPK: a multi-tenant vector store. The host holds opaque `f32` vectors and
+ranks them with plain cosine. Sealing them client-side — so that search can run on untrusted nodes
+without leaking the underlying documents — is implemented in the PHE project and tested, but is not
+yet wired into VPK (see roadmap.md).
 
 ## How it fits the whitepaper architecture
 
 The whitepaper describes "Virtual Private Knowledge: multi-tenant knowledge base bound to node
 identity and credentials". kwaai-storage is the implementation of VPK Phase 1.
-The PHE (Personal Homomorphic Encryption) service runs as a separate process (separate repo)
+The PHE (Partial Homomorphic Encryption) service runs as a separate process (separate repo)
 binding to the node's `PeerId`; kwaai-storage manages DHT advertisement and CLI integration.
 
 ## Component diagram
