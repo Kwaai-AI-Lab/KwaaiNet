@@ -26,7 +26,7 @@ concurrent worker model, and evidence trimming — no new HTTP/LLM client needed
 | `call_llm()` + concurrent workers | `dream_tasks.rs:236` | Generate summaries with same LLM infrastructure |
 | `trim_evidence()` 8k-char limit | `dream_tasks.rs:200` | Keep context within LLM window |
 | `EmbedClient::embed_batch()` | `embedder.rs:66` | Embed summary text with `search_document:` prefix |
-| `retrieve_hybrid()`, RRF fusion | `retriever.rs:145` | Augment with summary-first expansion |
+| `retrieve_hybrid()`, RRF fusion | `retriever.rs:151` | Augment with summary-first expansion |
 | Round 2 gap-fill in `retrieve_iterative()` | `iterative.rs:222` | Insert summary expansion as Round 2.5 |
 | `DreamConfig` workers + semaphore | `dream.rs:29` | Re-use for summarize concurrency |
 
