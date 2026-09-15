@@ -190,9 +190,12 @@ impl KwaaiBehaviour {
             // Force server mode: answer queries and be inserted into other
             // peers' routing tables even before our reachability is confirmed.
             kad.set_mode(Some(kad::Mode::Server));
+        } else {
+            // A client for certain. Auto mode flips to Server the moment a relay
+            // reservation confirms an address, which put the map's observer
+            // into every node's routing table.
+            kad.set_mode(Some(kad::Mode::Client));
         }
-        // Otherwise leave `auto_mode` on: kad flips to Server once an external
-        // address is confirmed, Client until then.
 
         // The inbound protocol set starts empty — handlers register at runtime
         // through `NetworkHandle::add_unary_handler`. `max_concurrent_streams`
@@ -266,5 +269,36 @@ impl KwaaiBehaviour {
             dcutr,
             upnp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::NetworkConfig;
+
+    fn behaviour(dht_server: bool) -> KwaaiBehaviour {
+        let keypair = identity::Keypair::generate_ed25519();
+        let (_transport, relay_client) = relay::client::new(PeerId::from(keypair.public()));
+        let config = NetworkConfig {
+            dht_server,
+            ..NetworkConfig::for_tests()
+        };
+        KwaaiBehaviour::new(&keypair, &config, relay_client)
+    }
+
+    /// `false` must survive what auto mode cannot: a confirmed external
+    /// address (a relay reservation is one) flips auto mode to Server.
+    #[test]
+    fn dht_server_false_stays_client_once_an_address_is_confirmed() {
+        use libp2p::swarm::{behaviour::ExternalAddrConfirmed, FromSwarm};
+        let mut b = behaviour(false);
+        let addr: libp2p::Multiaddr = "/ip4/203.0.113.7/tcp/8080".parse().unwrap();
+        b.kad
+            .on_swarm_event(FromSwarm::ExternalAddrConfirmed(ExternalAddrConfirmed {
+                addr: &addr,
+            }));
+        assert_eq!(b.kad.mode(), kad::Mode::Client);
+        assert_eq!(behaviour(true).kad.mode(), kad::Mode::Server);
     }
 }
