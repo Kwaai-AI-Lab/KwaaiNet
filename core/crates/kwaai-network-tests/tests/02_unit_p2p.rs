@@ -27,7 +27,34 @@ fn config_default_has_sane_values() {
     assert!(cfg.enable_nat_traversal);
     assert_eq!(cfg.max_connections, 100);
     assert_eq!(cfg.dht_replication, 20);
-    assert!(!cfg.listen_addrs.is_empty());
+    // The fallback listen set always carries TCP; QUIC rides only on the flag.
+    let addrs = cfg.swarm_listen_addrs();
+    let tcp = format!("/tcp/{}", cfg.port);
+    let quic = format!("/udp/{}/quic-v1", cfg.port);
+    assert!(addrs.iter().any(|a| a.ends_with(&tcp)), "{addrs:?}");
+    assert_eq!(cfg.enable_quic, kwaai_p2p::config::DEFAULT_ENABLE_QUIC);
+    assert_eq!(
+        addrs.iter().any(|a| a.ends_with(&quic)),
+        cfg.enable_quic,
+        "the QUIC listener follows the flag: {addrs:?}"
+    );
+    let with_quic = NetworkConfig {
+        enable_quic: true,
+        ..NetworkConfig::default()
+    }
+    .swarm_listen_addrs();
+    assert!(
+        with_quic.iter().any(|a| a.ends_with(&quic)),
+        "{with_quic:?}"
+    );
+
+    let no_quic = NetworkConfig {
+        enable_quic: false,
+        ..NetworkConfig::default()
+    }
+    .swarm_listen_addrs();
+    assert!(no_quic.iter().any(|a| a.ends_with(&tcp)), "{no_quic:?}");
+    assert!(!no_quic.iter().any(|a| a.contains("quic")), "{no_quic:?}");
     rec.finish(true);
 }
 

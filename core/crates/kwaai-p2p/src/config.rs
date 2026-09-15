@@ -45,10 +45,18 @@ pub const KWAAI_BOOTSTRAP_SERVERS_DNS: &[&str] = &[
     "/dnsaddr/bootstrap.kwaai.ai/p2p/Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY",
 ];
 
+/// Whether a node listens on and dials QUIC unless its config says otherwise.
+/// The single source for both crates' defaults, so they cannot drift. Off:
+/// some networks block or throttle UDP, and the installed base has the key
+/// written as `false` (#212), so a flip here alone would reach no one.
+pub const DEFAULT_ENABLE_QUIC: bool = false;
+
 /// Configuration for the P2P network
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
-    /// Listen addresses for incoming connections
+    /// Listen addresses for incoming connections. Empty means
+    /// [`NetworkConfig::swarm_listen_addrs`] derives the set from `port`
+    /// and `enable_quic`; an explicit list is used as-is.
     pub listen_addrs: Vec<String>,
 
     /// Bootstrap peers to connect to on startup
@@ -80,7 +88,7 @@ pub struct NetworkConfig {
 
     /// Listen on and dial QUIC as well as TCP. Off by default: some networks
     /// block or throttle UDP. Defaulted so a config predating the field still loads.
-    #[serde(default)]
+    #[serde(default = "default_enable_quic")]
     pub enable_quic: bool,
 
     /// Whether to open IPv6 listeners, and how hard to insist.
@@ -224,6 +232,10 @@ pub struct NetworkConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_enable_quic() -> bool {
+    DEFAULT_ENABLE_QUIC
 }
 
 fn default_max_relay_reservations() -> usize {
@@ -411,7 +423,9 @@ fn default_kad_maintenance_interval() -> Duration {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            listen_addrs: vec!["/ip4/0.0.0.0/tcp/0".to_string()],
+            // Derived by `swarm_listen_addrs`, so the QUIC listener follows
+            // `enable_quic` rather than being pinned here.
+            listen_addrs: Vec::new(),
             bootstrap_peers: Vec::new(),
             enable_dht: true,
             dht_replication: 20,
@@ -421,7 +435,7 @@ impl Default for NetworkConfig {
             request_timeout: Duration::from_secs(60),
             kad_maintenance_interval: default_kad_maintenance_interval(),
             max_connections: 100,
-            enable_quic: false,
+            enable_quic: DEFAULT_ENABLE_QUIC,
             ipv6: Ipv6Mode::Auto,
             enable_nat_traversal: true,
             enable_relay_client: true,
@@ -669,6 +683,52 @@ mod relay_circuit_limits {
             old.relay_max_circuit_duration,
             Duration::from_secs(30 * 60),
             "an old config must pick up the new default, not libp2p's",
+        );
+    }
+}
+
+#[cfg(test)]
+mod quic_default {
+    use super::*;
+
+    /// Pins the in-process default to the shared constant, so a one-sided
+    /// edit here fails rather than quietly diverging from the CLI's default.
+    #[test]
+    fn the_default_is_the_shared_constant() {
+        assert_eq!(NetworkConfig::default().enable_quic, DEFAULT_ENABLE_QUIC);
+    }
+
+    /// A config written before the field existed takes the same default as
+    /// `Default`, not `bool::default()`.
+    #[test]
+    fn a_config_without_the_key_takes_the_same_default() {
+        let legacy = r#"{
+            "listen_addrs": [], "bootstrap_peers": [], "enable_dht": true,
+            "dht_replication": 20,
+            "idle_connection_timeout": {"secs": 600, "nanos": 0},
+            "request_timeout": {"secs": 60, "nanos": 0},
+            "max_connections": 100, "enable_nat_traversal": true,
+            "enable_relay_client": true, "protocol_version": "x",
+            "agent_version": "y"
+        }"#;
+        let old: NetworkConfig = serde_json::from_str(legacy).expect("legacy config");
+        assert_eq!(old.enable_quic, NetworkConfig::default().enable_quic);
+    }
+
+    /// `Default` must agree with itself: a node that dials QUIC by default
+    /// also listens on it by default.
+    #[test]
+    fn the_default_listen_set_follows_enable_quic() {
+        let cfg = NetworkConfig::default();
+        let addrs = cfg.swarm_listen_addrs();
+        assert!(
+            addrs.iter().any(|a| a.contains("/tcp/")),
+            "tcp is always listened on: {addrs:?}"
+        );
+        assert_eq!(
+            addrs.iter().any(|a| a.contains("/quic-v1")),
+            cfg.enable_quic,
+            "the quic listener must match the flag: {addrs:?}"
         );
     }
 }
