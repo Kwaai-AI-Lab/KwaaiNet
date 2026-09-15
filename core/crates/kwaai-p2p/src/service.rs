@@ -212,13 +212,9 @@ pub struct NetworkService {
     /// here. Dropped when the last connection to a peer closes, so an entry
     /// always describes a peer we can act on.
     peer_protocols: HashMap<PeerId, Vec<String>>,
-    /// Each kad-speaking peer's vouchable listen addresses from identify
-    /// (`vouchable_listen_addrs`), kept whether or not the peer got a k-bucket
-    /// slot: this is what kad's peerstore answer (KWAAI PATCH in libp2p-kad)
-    /// is fed from.
-    peer_listen_addrs: HashMap<PeerId, Vec<Multiaddr>>,
-    /// Peers holding a relay reservation on this node — answerable with a
-    /// circuit through us.
+    /// Peers holding a relay reservation on this node. Identify puts a
+    /// NATed peer's circuit through us into the k-bucket; it is dropped
+    /// again when the last reservation ends (`drop_own_circuits`).
     relay_reservations: RelayReservations,
     /// Most recent ping round-trip time per peer. Sampled: overwritten on every
     /// ping event rather than accumulated, so this is "latency now", not an
@@ -373,10 +369,6 @@ impl RelayReservations {
             }
             Entry::Vacant(_) => false,
         }
-    }
-
-    fn holds(&self, peer: &PeerId) -> bool {
-        self.held.contains_key(peer)
     }
 
     /// The last connection to `peer` closed; nothing can survive that.
@@ -635,7 +627,6 @@ impl NetworkService {
             ipv6_status,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
-            peer_listen_addrs: HashMap::new(),
             relay_reservations: RelayReservations::default(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
@@ -1324,46 +1315,42 @@ impl NetworkService {
         }
     }
 
-    /// Feed kad's peerstore answer for `peer`: a circuit through this node
-    /// when it reserved here, then its own vouchable listen addresses.
-    /// This is the go-libp2p `handleFindPeer` behaviour the Go bootstraps
-    /// had — a connected peer is findable whether or not a bucket has room
-    /// for it — restored via the KWAAI PATCH in libp2p-kad.
-    fn refresh_peerstore(&mut self, peer: PeerId) {
-        let mut addrs = Vec::new();
-        if self.relay_reservations.holds(&peer) {
-            // The relay hands out circuits on its external addresses, so
-            // those are the ones the reservation is good for.
-            let local = *self.swarm.local_peer_id();
-            for addr in self.swarm.external_addresses() {
-                if is_circuit(addr) {
-                    continue;
-                }
-                let circuit = strip_p2p(addr)
-                    .with(libp2p::multiaddr::Protocol::P2p(local))
-                    .with(libp2p::multiaddr::Protocol::P2pCircuit);
-                if !addrs.contains(&circuit) {
-                    addrs.push(circuit);
-                }
-            }
-        }
-        if let Some(listen) = self.peer_listen_addrs.get(&peer) {
-            for addr in listen {
-                if !addrs.contains(addr) {
-                    addrs.push(addr.clone());
-                }
-            }
-        }
-        addrs.truncate(MAX_ADDRESSES_PER_PEER);
+    /// Every address kad's routing table holds for `peer`.
+    fn table_addrs(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
         self.swarm
             .behaviour_mut()
             .kad
-            .set_peerstore_addresses(peer, addrs);
+            .kbucket(*peer)
+            .into_iter()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .filter(|entry| entry.node.key.preimage() == peer)
+                    .flat_map(|entry| entry.node.value.iter().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Forget every circuit through this node that kad holds for `peer`.
+    /// Identify puts a NATed peer's circuit into the k-bucket, which is how
+    /// a walk finds it; once the reservation behind it ends the address is
+    /// a dial that fails, and kad would keep serving it.
+    fn drop_own_circuits(&mut self, peer: PeerId) {
+        let local = *self.swarm.local_peer_id();
+        let stale: Vec<Multiaddr> = self
+            .table_addrs(&peer)
+            .into_iter()
+            .filter(|addr| circuit_relay(addr) == Some(local))
+            .collect();
+        for addr in stale {
+            self.swarm.behaviour_mut().kad.remove_address(&peer, &addr);
+        }
     }
 
     /// Keep what a walk learned about `target`. kad hands back each closer
     /// peer's addresses with the result but only tables the ones it managed
-    /// to connect to, so a peer answered from a bootstrap's peerstore — the
+    /// to connect to, so a NATed peer answered from a bootstrap's table — the
     /// one case a walk exists for — would be reported found and then dialed
     /// with nothing. Returns whether the walk found the target at all.
     fn seed_walk_addrs(
@@ -1690,20 +1677,7 @@ impl NetworkService {
         if failed.is_empty() {
             return;
         }
-        let remaining: Vec<Multiaddr> = self
-            .swarm
-            .behaviour_mut()
-            .kad
-            .kbucket(*peer)
-            .into_iter()
-            .flat_map(|bucket| {
-                bucket
-                    .iter()
-                    .filter(|entry| entry.node.key.preimage() == peer)
-                    .flat_map(|entry| entry.node.value.iter().cloned())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let remaining = self.table_addrs(peer);
         if remaining.is_empty() || !remaining.iter().all(|a| failed.contains(&strip_p2p(a))) {
             return;
         }
@@ -1840,20 +1814,7 @@ impl NetworkService {
     ///
     /// Returns whether the address was seeded.
     fn add_routing_address(&mut self, peer: &PeerId, addr: Multiaddr) -> bool {
-        let existing: Vec<Multiaddr> = self
-            .swarm
-            .behaviour_mut()
-            .kad
-            .kbucket(*peer)
-            .into_iter()
-            .flat_map(|bucket| {
-                bucket
-                    .iter()
-                    .filter(|entry| entry.node.key.preimage() == peer)
-                    .flat_map(|entry| entry.node.value.iter().cloned())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let existing = self.table_addrs(peer);
 
         // Already known. kad would dedupe this itself, but returning early
         // keeps a repeat identify from counting as churn.
@@ -2176,12 +2137,8 @@ impl NetworkService {
                     // The capability list describes a peer we can act on; a
                     // disconnected peer's is stale by definition.
                     self.peer_protocols.remove(&peer_id);
-                    self.peer_listen_addrs.remove(&peer_id);
                     self.relay_reservations.forget(&peer_id);
-                    self.swarm
-                        .behaviour_mut()
-                        .kad
-                        .set_peerstore_addresses(peer_id, Vec::new());
+                    self.drop_own_circuits(peer_id);
                     // Latency and build version are properties of a live
                     // connection too. Keeping them would let a reconnected peer
                     // briefly report the *previous* session's RTT.
@@ -2366,15 +2323,16 @@ impl NetworkService {
                     renewed,
                 } => {
                     self.relay_reservations.granted(src_peer_id, renewed);
-                    self.refresh_peerstore(src_peer_id);
                     trace!(peer = %src_peer_id, renewed, "relay reservation granted");
                 }
                 // Both are per connection: the peer may still hold one on
-                // another, and only `refresh_peerstore` knows the difference.
+                // another, and only the count knows the difference.
                 relay::Event::ReservationClosed { src_peer_id }
                 | relay::Event::ReservationTimedOut { src_peer_id } => {
                     let still_held = self.relay_reservations.released(&src_peer_id);
-                    self.refresh_peerstore(src_peer_id);
+                    if !still_held {
+                        self.drop_own_circuits(src_peer_id);
+                    }
                     trace!(peer = %src_peer_id, still_held, "relay reservation ended");
                 }
                 other => trace!(?other, "relay hop server event"),
@@ -2755,15 +2713,6 @@ impl NetworkService {
                 // it), but it is what makes a peer table diagnosable when one
                 // build in the mesh misbehaves.
                 self.peer_agent.insert(peer_id, info.agent_version.clone());
-                // The peerstore is what FIND_NODE hands out, so it gets the
-                // same admission as the table: kad speakers only, filtered.
-                if speaks_kad {
-                    let local = *self.swarm.local_peer_id();
-                    let listen =
-                        vouchable_listen_addrs(&info.listen_addrs, self.policy.strict, local);
-                    self.peer_listen_addrs.insert(peer_id, listen);
-                    self.refresh_peerstore(peer_id);
-                }
                 let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
                 // Recorded *before* the relay manager runs: `apply_relay_actions`
                 // reads this map to decide whether a reservation can be
@@ -2928,20 +2877,6 @@ fn bootstraps_to_reseed<'a>(
         .collect()
 }
 
-/// The listen addresses a peer's identify lets this node vouch for in a
-/// FIND_NODE answer: announceable, of a dialable shape, and not a circuit
-/// through us — that one is `refresh_peerstore`'s to synthesise while the
-/// reservation actually stands. Capped like the routing table.
-fn vouchable_listen_addrs(addrs: &[Multiaddr], strict: bool, local: PeerId) -> Vec<Multiaddr> {
-    addrs
-        .iter()
-        .filter(|a| is_announceable_with(a, strict) && is_dialable_shape(a))
-        .filter(|a| circuit_relay(a) != Some(local))
-        .take(MAX_ADDRESSES_PER_PEER)
-        .cloned()
-        .collect()
-}
-
 /// The addresses a walk answer for a peer may seed into the routing table:
 /// a remote claim, so filtered as identify's is, minus anything that just
 /// failed on every address (`evicted`).
@@ -3051,12 +2986,6 @@ mod tests {
         format!("/ip4/{ip}/tcp/{port}").parse().unwrap()
     }
 
-    fn circuit_via(relay: PeerId) -> Multiaddr {
-        format!("/ip4/198.51.100.7/tcp/4001/p2p/{relay}/p2p-circuit")
-            .parse()
-            .unwrap()
-    }
-
     #[test]
     fn a_reservation_on_another_connection_survives_one_closing() {
         let peer = PeerId::random();
@@ -3067,9 +2996,7 @@ mod tests {
             held.released(&peer),
             "the second connection still holds one"
         );
-        assert!(held.holds(&peer));
-        assert!(!held.released(&peer));
-        assert!(!held.holds(&peer));
+        assert!(!held.released(&peer), "the last one has now ended");
     }
 
     #[test]
@@ -3085,43 +3012,6 @@ mod tests {
     fn releasing_an_unknown_reservation_is_harmless() {
         let mut held = RelayReservations::default();
         assert!(!held.released(&PeerId::random()));
-    }
-
-    #[test]
-    fn vouchable_addrs_drop_lan_loopback_and_the_ephemeral_shapes() {
-        let local = PeerId::random();
-        let relay = PeerId::random();
-        let good = direct("198.51.100.1", 8080);
-        let addrs = vec![
-            direct("192.168.1.10", 8080),
-            direct("127.0.0.1", 8080),
-            good.clone(),
-            circuit_via(relay),
-            "/ip4/198.51.100.1/tcp/4001/p2p-circuit".parse().unwrap(),
-            circuit_via(local),
-        ];
-        assert_eq!(
-            vouchable_listen_addrs(&addrs, false, local),
-            vec![good, circuit_via(relay)]
-        );
-    }
-
-    #[test]
-    fn vouchable_addrs_honour_require_global_ips() {
-        let local = PeerId::random();
-        let addrs = vec![direct("198.18.0.10", 8080)];
-        assert_eq!(vouchable_listen_addrs(&addrs, false, local).len(), 1);
-        assert!(vouchable_listen_addrs(&addrs, true, local).is_empty());
-    }
-
-    #[test]
-    fn vouchable_addrs_are_capped_like_the_table() {
-        let local = PeerId::random();
-        let addrs: Vec<Multiaddr> = (0..10).map(|i| direct("198.51.100.1", 8000 + i)).collect();
-        assert_eq!(
-            vouchable_listen_addrs(&addrs, false, local).len(),
-            MAX_ADDRESSES_PER_PEER
-        );
     }
 
     #[test]
