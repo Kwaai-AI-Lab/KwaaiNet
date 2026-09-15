@@ -1,0 +1,270 @@
+{
+ "buckets": {
+  "run1": {
+   "declared": 89,
+   "escape": 10,
+   "nuance": 83,
+   "junk": 12,
+   "types": 88
+  },
+  "run2": {
+   "declared": 121,
+   "escape": 82,
+   "nuance": 5,
+   "junk": 0,
+   "types": 28
+  },
+  "run3": {
+   "declared": 120,
+   "escape": 42,
+   "nuance": 4,
+   "junk": 0,
+   "types": 26
+  },
+  "control": {
+   "declared": 142,
+   "escape": 48,
+   "nuance": 87,
+   "junk": 0,
+   "types": 47
+  }
+ },
+ "lost": [
+  [
+   "lived_in",
+   8
+  ],
+  [
+   "fostered_by",
+   6
+  ],
+  [
+   "taught_by",
+   5
+  ],
+  [
+   "addressed",
+   2
+  ],
+  [
+   "coped_with",
+   2
+  ],
+  [
+   "delivered",
+   2
+  ],
+  [
+   "founded_by",
+   2
+  ],
+  [
+   "friend_of",
+   2
+  ],
+  [
+   "honoured",
+   2
+  ],
+  [
+   "migrated_to",
+   2
+  ],
+  [
+   "segregated lives",
+   2
+  ],
+  [
+   "acquaintance_of",
+   1
+  ],
+  [
+   "advocated_by",
+   1
+  ],
+  [
+   "aimed_to_change",
+   1
+  ],
+  [
+   "applied_to",
+   1
+  ],
+  [
+   "authored",
+   1
+  ],
+  [
+   "believes_in",
+   1
+  ],
+  [
+   "brother_of",
+   1
+  ],
+  [
+   "delivered_at",
+   1
+  ],
+  [
+   "departed_from",
+   1
+  ],
+  [
+   "disagreed_with",
+   1
+  ],
+  [
+   "distributed",
+   1
+  ],
+  [
+   "father_of",
+   1
+  ],
+  [
+   "follower_of",
+   1
+  ],
+  [
+   "forced_to_obey",
+   1
+  ],
+  [
+   "had_prior_knowledge_of",
+   1
+  ],
+  [
+   "handed_over_to",
+   1
+  ],
+  [
+   "headed",
+   1
+  ],
+  [
+   "headmaster_of",
+   1
+  ],
+  [
+   "hero_of",
+   1
+  ],
+  [
+   "honored_by",
+   1
+  ],
+  [
+   "hoped_to_form_coalition_with",
+   1
+  ],
+  [
+   "hosted",
+   1
+  ],
+  [
+   "immigrated_to",
+   1
+  ],
+  [
+   "invaded",
+   1
+  ],
+  [
+   "located_at",
+   1
+  ],
+  [
+   "love_of",
+   1
+  ],
+  [
+   "nursed_by",
+   1
+  ],
+  [
+   "photographed_by",
+   1
+  ],
+  [
+   "programme_of",
+   1
+  ],
+  [
+   "promised_to_join",
+   1
+  ],
+  [
+   "published_by",
+   1
+  ],
+  [
+   "published_in",
+   1
+  ],
+  [
+   "read",
+   1
+  ],
+  [
+   "recommended",
+   1
+  ],
+  [
+   "resigned_under",
+   1
+  ],
+  [
+   "sent_letter_to",
+   1
+  ],
+  [
+   "spoke_to",
+   1
+  ],
+  [
+   "spoke_with",
+   1
+  ],
+  [
+   "supported",
+   1
+  ],
+  [
+   "transported_by",
+   1
+  ],
+  [
+   "transported_to",
+   1
+  ],
+  [
+   "travelled_in",
+   1
+  ],
+  [
+   "visited_with",
+   1
+  ],
+  [
+   "will be joining",
+   1
+  ],
+  [
+   "worked_for",
+   1
+  ],
+  [
+   "worked_in",
+   1
+  ],
+  [
+   "wrote",
+   1
+  ],
+  [
+   "wrote_preface_for",
+   1
+  ]
+ ]
+}

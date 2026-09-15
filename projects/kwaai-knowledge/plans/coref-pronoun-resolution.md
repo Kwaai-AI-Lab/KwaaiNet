@@ -47,7 +47,7 @@ Run after `graph build`, before `dream`. Can be re-run incrementally.
 | `EntityNode.aliases` | `src/graph.rs:212` | Match "Grandpa", "narrator", "the author" |
 | `MetaStore::all_chunks()` | `src/meta_store.rs:177` | Iterate all chunks with text + section_name |
 | `GraphStore::all_chunk_entity_pairs()` | `src/graph.rs:4832` | Candidate antecedents per chunk |
-| `FAMILY_TRIGGERS` constant | `src/rag_cmd.rs:5891` | Possessive-kinship detection |
+| `FAMILY_TRIGGERS` constant | `src/rag_cmd.rs:6508` | Possessive-kinship detection |
 
 No new DB tables. No schema changes to `EntityNode`.
 

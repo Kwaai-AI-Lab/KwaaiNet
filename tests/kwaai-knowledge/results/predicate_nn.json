@@ -1,0 +1,462 @@
+{
+ "declared": [
+  "lived_at",
+  "situated_in",
+  "traded_at",
+  "classified_as",
+  "belongs_to_community",
+  "may_not_marry",
+  "speaks",
+  "observes",
+  "worked_at",
+  "visited",
+  "member_of",
+  "led",
+  "founded",
+  "affiliated_with",
+  "opposed",
+  "enacted_by",
+  "advocates",
+  "rejects",
+  "denounced_as",
+  "attended",
+  "taught_at",
+  "played_for",
+  "played_against",
+  "said",
+  "reported_in",
+  "worships_at",
+  "occurred_at",
+  "attended_event",
+  "coincided_with",
+  "parent_of",
+  "child_of",
+  "spouse_of",
+  "sibling_of",
+  "half_sibling_of",
+  "grandparent_of",
+  "grandchild_of",
+  "uncle_of",
+  "aunt_of",
+  "niece_of",
+  "nephew_of",
+  "cousin_of",
+  "foster_parent_of",
+  "foster_child_of"
+ ],
+ "rows": [
+  {
+   "predicate": "brother_of",
+   "best": "sibling_of",
+   "sim": 0.9223303214336054,
+   "second": "half_sibling_of",
+   "sim2": 0.8154013518027571
+  },
+  {
+   "predicate": "founded_by",
+   "best": "founded",
+   "sim": 0.9176249933420927,
+   "second": "enacted_by",
+   "sim2": 0.5995155153885449
+  },
+  {
+   "predicate": "visited_with",
+   "best": "visited",
+   "sim": 0.9102523291175743,
+   "second": "attended",
+   "sim2": 0.7451817622228345
+  },
+  {
+   "predicate": "lived_in",
+   "best": "lived_at",
+   "sim": 0.8700512621454505,
+   "second": "situated_in",
+   "sim2": 0.6745058393705491
+  },
+  {
+   "predicate": "spoke_to",
+   "best": "speaks",
+   "sim": 0.8429173240765971,
+   "second": "said",
+   "sim2": 0.7784185631167169
+  },
+  {
+   "predicate": "father_of",
+   "best": "parent_of",
+   "sim": 0.8391413273758525,
+   "second": "child_of",
+   "sim2": 0.7150663722336197
+  },
+  {
+   "predicate": "worked_in",
+   "best": "worked_at",
+   "sim": 0.8340893297816436,
+   "second": "reported_in",
+   "sim2": 0.711531587325143
+  },
+  {
+   "predicate": "spoke_with",
+   "best": "speaks",
+   "sim": 0.8203209133514772,
+   "second": "said",
+   "sim2": 0.7252017826603735
+  },
+  {
+   "predicate": "worked_for",
+   "best": "worked_at",
+   "sim": 0.8150095170447913,
+   "second": "played_for",
+   "sim2": 0.7363718783498899
+  },
+  {
+   "predicate": "taught_by",
+   "best": "taught_at",
+   "sim": 0.8109036617603961,
+   "second": "enacted_by",
+   "sim2": 0.605977128221667
+  },
+  {
+   "predicate": "fostered_by",
+   "best": "foster_child_of",
+   "sim": 0.8098023135641432,
+   "second": "foster_parent_of",
+   "sim2": 0.808611558190256
+  },
+  {
+   "predicate": "advocated_by",
+   "best": "advocates",
+   "sim": 0.7949909818803231,
+   "second": "opposed",
+   "sim2": 0.6504071196347063
+  },
+  {
+   "predicate": "disagreed_with",
+   "best": "opposed",
+   "sim": 0.7813764082830801,
+   "second": "said",
+   "sim2": 0.6832320594696459
+  },
+  {
+   "predicate": "located_at",
+   "best": "situated_in",
+   "sim": 0.777187955830309,
+   "second": "occurred_at",
+   "sim2": 0.7592005213868037
+  },
+  {
+   "predicate": "travelled_in",
+   "best": "visited",
+   "sim": 0.7486384575547933,
+   "second": "situated_in",
+   "sim2": 0.6905819808303704
+  },
+  {
+   "predicate": "wrote",
+   "best": "said",
+   "sim": 0.7226865467124244,
+   "second": "speaks",
+   "sim2": 0.6241723296122066
+  },
+  {
+   "predicate": "published_in",
+   "best": "reported_in",
+   "sim": 0.7218057723043253,
+   "second": "situated_in",
+   "sim2": 0.6376371719070898
+  },
+  {
+   "predicate": "will be joining",
+   "best": "member_of",
+   "sim": 0.7099185800070229,
+   "second": "attended",
+   "sim2": 0.5676314346839628
+  },
+  {
+   "predicate": "supported",
+   "best": "opposed",
+   "sim": 0.6942860964951882,
+   "second": "said",
+   "sim2": 0.6265783459581188
+  },
+  {
+   "predicate": "read",
+   "best": "said",
+   "sim": 0.6892525064208407,
+   "second": "speaks",
+   "sim2": 0.6346457819792025
+  },
+  {
+   "predicate": "delivered_at",
+   "best": "occurred_at",
+   "sim": 0.6744212420918172,
+   "second": "worked_at",
+   "sim2": 0.6448916337872662
+  },
+  {
+   "predicate": "addressed",
+   "best": "denounced_as",
+   "sim": 0.6675814117593238,
+   "second": "said",
+   "sim2": 0.6648009878868052
+  },
+  {
+   "predicate": "promised_to_join",
+   "best": "member_of",
+   "sim": 0.6673208814659966,
+   "second": "attended",
+   "sim2": 0.5595901278245675
+  },
+  {
+   "predicate": "follower_of",
+   "best": "member_of",
+   "sim": 0.6632572396026979,
+   "second": "affiliated_with",
+   "sim2": 0.6028865592206558
+  },
+  {
+   "predicate": "invaded",
+   "best": "visited",
+   "sim": 0.6493611807159991,
+   "second": "played_against",
+   "sim2": 0.571075508917667
+  },
+  {
+   "predicate": "photographed_by",
+   "best": "observes",
+   "sim": 0.6418880070764049,
+   "second": "enacted_by",
+   "sim2": 0.5946182811113888
+  },
+  {
+   "predicate": "headmaster_of",
+   "best": "taught_at",
+   "sim": 0.6388620517556985,
+   "second": "child_of",
+   "sim2": 0.5872353355844738
+  },
+  {
+   "predicate": "authored",
+   "best": "enacted_by",
+   "sim": 0.635885572884119,
+   "second": "said",
+   "sim2": 0.6065272923269662
+  },
+  {
+   "predicate": "transported_to",
+   "best": "occurred_at",
+   "sim": 0.6339513113502322,
+   "second": "visited",
+   "sim2": 0.6289893300088298
+  },
+  {
+   "predicate": "believes_in",
+   "best": "said",
+   "sim": 0.6242874175621147,
+   "second": "worships_at",
+   "sim2": 0.5764072397577883
+  },
+  {
+   "predicate": "acquaintance_of",
+   "best": "cousin_of",
+   "sim": 0.6227561657685368,
+   "second": "coincided_with",
+   "sim2": 0.6204708074572056
+  },
+  {
+   "predicate": "friend_of",
+   "best": "cousin_of",
+   "sim": 0.6214285648960742,
+   "second": "member_of",
+   "sim2": 0.6211935543353191
+  },
+  {
+   "predicate": "hosted",
+   "best": "attended",
+   "sim": 0.6168607856981793,
+   "second": "visited",
+   "sim2": 0.5877613359135647
+  },
+  {
+   "predicate": "transported_by",
+   "best": "visited",
+   "sim": 0.6036929229579987,
+   "second": "occurred_at",
+   "sim2": 0.5829121238149023
+  },
+  {
+   "predicate": "honored_by",
+   "best": "enacted_by",
+   "sim": 0.6024739155996431,
+   "second": "attended",
+   "sim2": 0.6007581212316635
+  },
+  {
+   "predicate": "applied_to",
+   "best": "classified_as",
+   "sim": 0.6011214301947047,
+   "second": "occurred_at",
+   "sim2": 0.574046619741833
+  },
+  {
+   "predicate": "love_of",
+   "best": "child_of",
+   "sim": 0.6001721926521821,
+   "second": "spouse_of",
+   "sim2": 0.5654845708961588
+  },
+  {
+   "predicate": "hero_of",
+   "best": "child_of",
+   "sim": 0.5998961495345462,
+   "second": "member_of",
+   "sim2": 0.5632241286789753
+  },
+  {
+   "predicate": "departed_from",
+   "best": "visited",
+   "sim": 0.5984283008526802,
+   "second": "occurred_at",
+   "sim2": 0.543819172693376
+  },
+  {
+   "predicate": "headed",
+   "best": "visited",
+   "sim": 0.5973926700664446,
+   "second": "attended",
+   "sim2": 0.5681009757344888
+  },
+  {
+   "predicate": "honoured",
+   "best": "attended",
+   "sim": 0.5960148578084271,
+   "second": "attended_event",
+   "sim2": 0.5904560172383964
+  },
+  {
+   "predicate": "migrated_to",
+   "best": "lived_at",
+   "sim": 0.5946778612260398,
+   "second": "visited",
+   "sim2": 0.564524589662522
+  },
+  {
+   "predicate": "forced_to_obey",
+   "best": "enacted_by",
+   "sim": 0.5879633890351329,
+   "second": "opposed",
+   "sim2": 0.5676913266107897
+  },
+  {
+   "predicate": "coped_with",
+   "best": "coincided_with",
+   "sim": 0.5867010294617866,
+   "second": "lived_at",
+   "sim2": 0.5719690088675226
+  },
+  {
+   "predicate": "handed_over_to",
+   "best": "belongs_to_community",
+   "sim": 0.582344827189495,
+   "second": "traded_at",
+   "sim2": 0.5612726336139334
+  },
+  {
+   "predicate": "distributed",
+   "best": "denounced_as",
+   "sim": 0.5807461333454156,
+   "second": "opposed",
+   "sim2": 0.5760060748835661
+  },
+  {
+   "predicate": "published_by",
+   "best": "classified_as",
+   "sim": 0.5777554012856747,
+   "second": "enacted_by",
+   "sim2": 0.5770574175239328
+  },
+  {
+   "predicate": "immigrated_to",
+   "best": "lived_at",
+   "sim": 0.5732931964023714,
+   "second": "visited",
+   "sim2": 0.5562806684707451
+  },
+  {
+   "predicate": "delivered",
+   "best": "occurred_at",
+   "sim": 0.5721162107592647,
+   "second": "attended",
+   "sim2": 0.5699074680827692
+  },
+  {
+   "predicate": "resigned_under",
+   "best": "opposed",
+   "sim": 0.5654460451799797,
+   "second": "said",
+   "sim2": 0.5500131164779437
+  },
+  {
+   "predicate": "hoped_to_form_coalition_with",
+   "best": "opposed",
+   "sim": 0.5594483724308573,
+   "second": "coincided_with",
+   "sim2": 0.5574788999030428
+  },
+  {
+   "predicate": "programme_of",
+   "best": "child_of",
+   "sim": 0.5568261843124446,
+   "second": "member_of",
+   "sim2": 0.5378759513155962
+  },
+  {
+   "predicate": "recommended",
+   "best": "visited",
+   "sim": 0.5557840916523531,
+   "second": "said",
+   "sim2": 0.5124938183315646
+  },
+  {
+   "predicate": "sent_letter_to",
+   "best": "said",
+   "sim": 0.5535383258372983,
+   "second": "opposed",
+   "sim2": 0.5054901792784132
+  },
+  {
+   "predicate": "wrote_preface_for",
+   "best": "said",
+   "sim": 0.5479447819337105,
+   "second": "speaks",
+   "sim2": 0.5299366056457562
+  },
+  {
+   "predicate": "aimed_to_change",
+   "best": "said",
+   "sim": 0.534631987905407,
+   "second": "occurred_at",
+   "sim2": 0.4866801052414096
+  },
+  {
+   "predicate": "segregated lives",
+   "best": "opposed",
+   "sim": 0.5343674112899518,
+   "second": "belongs_to_community",
+   "sim2": 0.5241053883268717
+  },
+  {
+   "predicate": "had_prior_knowledge_of",
+   "best": "visited",
+   "sim": 0.5155592935965003,
+   "second": "occurred_at",
+   "sim2": 0.4901552161049207
+  },
+  {
+   "predicate": "nursed_by",
+   "best": "worked_at",
+   "sim": 0.5122012470624548,
+   "second": "foster_parent_of",
+   "sim2": 0.5004935677171364
+  }
+ ]
+}

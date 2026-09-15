@@ -28,7 +28,7 @@ Three facts already hold in `core/crates/kwaai-storage`:
 
 1. `vector_dimension` is **per-tenant and configurable** (`api.rs:112`, default 384).
 2. Vectors are opaque `Vec<f32>`; the store never interprets a coordinate.
-3. Search is cosine — exact below `BRUTE_FORCE_THRESHOLD`, HNSW above (`db.rs:131`).
+3. Search is cosine — exact below `BRUTE_FORCE_THRESHOLD`, HNSW above (`db.rs:56`).
 
 ROME's defining property is `⟨Q·pad(v₁), Q·pad(v₂)⟩ = ⟨v₁,v₂⟩` for orthogonal `Q`, so
 cosine is preserved exactly. A sealed vector is therefore just a tenant that declared
