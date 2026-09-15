@@ -180,4 +180,8 @@ One of the defect classes the review found five times — a new Rust item insert
 
 Its own development on 10 September illustrates rule 5. The first run reported "4/4 flagged". Reading the four showed two were edited signatures (`refresh_server_info` gained a parameter; `build_pinned_path` was renamed), which a diff shows as `-old`/`+new` and the checker had read as insertions. After correcting for that class it reports two, both confirmed true positives by reading the code — and one of them, in #202, is a *new* instance the contributor introduced while fixing the original. Ten of the twelve PRs it passed clean have not been individually inspected; those negatives are uncalibrated and are recorded here as such.
 
-It is not yet wired into CI.
+It was wired into CI in #214, merged on 11 September 2026 — about eleven hours
+after this document was opened for review. It has run on every pull request
+since. That this paragraph said "it is not yet wired into CI" for four days
+afterwards is the same failure the document is about: a claim that was true when
+written, never re-checked, and left standing as fact.
