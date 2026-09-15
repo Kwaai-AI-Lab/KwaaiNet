@@ -115,9 +115,9 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub initial_peers: Vec<String>,
 
-    /// Force Kademlia into server mode instead of letting it auto-detect from
-    /// confirmed external addresses. Needed for bootstrap-grade nodes and for
-    /// in-process tests where nothing confirms an external address.
+    /// Kademlia mode: `true` serves queries and is tabled by others from the
+    /// start; `false` is a pure client, never advertised or tabled. Auto mode
+    /// would flip a client to Server once a relay confirmed an address.
     #[serde(default)]
     pub dht_server: bool,
 
