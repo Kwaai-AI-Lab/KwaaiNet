@@ -27,11 +27,10 @@ output is gitignored, so `distrib/nix/crane.nix` materializes each patched crate
 the same pinned tarball and patch file. Adding a patched crate means adding it
 there too.
 
-## libp2p-kad (multi-protocol names, peerstore FIND_NODE answers)
+## libp2p-kad (multi-protocol names)
 
-`libp2p-kad 0.48.0` (from [rust-libp2p], MIT) with **two changes** — an API
-restoration and one behavioural change to the FIND_NODE handler — applied via
-`[patch.crates-io]` in `core/Cargo.toml`:
+`libp2p-kad 0.48.0` (from [rust-libp2p], MIT) with **one change** — an API
+restoration — applied via `[patch.crates-io]` in `core/Cargo.toml`:
 
 Kad's negotiation machinery holds a `Vec<StreamProtocol>` and offers every
 entry on both inbound and outbound streams, but upstream removed the public
@@ -56,22 +55,13 @@ routing-table/OOM vector — but foreign peers still connect below kad, so
 connection tables fill regardless; that half belongs to KwaaiNet#174.
 
 The entire delta is `libp2p-kad.patch` (two files): the two `set_protocol_names`
-setters above, and for the peerstore answer below a `Behaviour` field,
-`set_peerstore_addresses`, and the changed `FindNodeReq` handler.
+setters above. Regenerate with `diff -u` against the pristine crate.
 
-### FIND_NODE answers from a peerstore
-
-Upstream serves an inbound FIND_NODE from its k-buckets alone, so a peer
-that never got a bucket slot — every fleet peer, once the buckets filled
-with Amino entries — is unfindable while it sits connected to the node being
-asked. go-libp2p's `handleFindPeer` includes the target "if present in
-peerstore, even if it is self, the requester, or not a DHT server". The patch
-adds `Behaviour::set_peerstore_addresses` and prepends the target to the
-reply when the owner has vouched for it. kwaai-p2p feeds it only for peers
-that speak our kad, with the same address admission as the routing table
-(`is_announceable_with`, dialable shape, capped), plus a circuit through
-itself for peers holding a relay reservation here — tracked per connection,
-as libp2p-relay does. Regenerate with `diff -u` against the pristine crate.
+A NATed peer is findable through the node it reserved on without any patch:
+identify carries its circuit address into that node's k-bucket, and kad
+already returns a tabled peer first in a FIND_NODE for its own id. The
+peerstore answer that used to live here (PR #199) only mattered while
+foreign peers filled the buckets, which #197 stops.
 
 ### Upgrading / removing the kad patch
 

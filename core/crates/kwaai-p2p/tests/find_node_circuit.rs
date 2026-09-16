@@ -1,7 +1,7 @@
-//! FIND_NODE answers from the peerstore (KWAAI PATCH in libp2p-kad): a peer
-//! that is connected to a node but holds no k-bucket slot there is still
-//! returned by that node, which is what go-libp2p's `handleFindPeer` did and
-//! what made NATed peers findable through the Go bootstraps.
+//! A NATed peer is findable by an ordinary walk, unpatched: identify puts its
+//! circuit into the bootstrap's k-bucket, kad returns a tabled peer first in
+//! a FIND_NODE for its own id, and the circuit leaves the table again when
+//! the reservation behind it ends.
 //!
 //! Loopback swarms, fresh keys, ephemeral ports — see `swarm.rs`.
 
@@ -60,6 +60,7 @@ struct Rig {
     relay_id: PeerId,
     relay_listen: String,
     target_id: PeerId,
+    target: NetworkHandle,
     dialer: NetworkHandle,
     _handles: Vec<NetworkHandle>,
     _tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -67,15 +68,15 @@ struct Rig {
 
 /// Where the NATed target holds its reservation.
 enum Relay {
-    /// On the bootstrap itself — the answer must synthesise the circuit.
+    /// On the bootstrap itself.
     TheBootstrap,
-    /// On a third node — the circuit reaches the bootstrap only via identify.
+    /// On a third node.
     Elsewhere,
 }
 
 /// A NATed target speaking `kad` connected to a bootstrap, and a dialer that
-/// knows only the bootstrap. Loopback listeners are never vouched for, so
-/// the target's circuit is the one address the walk's answer can carry.
+/// knows only the bootstrap. Loopback listeners are never tabled, so the
+/// target's circuit is the one address the walk's answer can carry.
 async fn natted_target(relay: Relay, kad: Vec<StreamProtocol>) -> Rig {
     // A relay needs a declared external address for its hop server to hand
     // out circuits (see `dcutr.rs`).
@@ -101,13 +102,12 @@ async fn natted_target(relay: Relay, kad: Vec<StreamProtocol>) -> Rig {
         ..NetworkConfig::for_tests()
     });
     let (dialer, dt, _) = spawn();
-    let mut handles = vec![target];
-    // `handles[0]` is the target throughout.
+    let mut handles = Vec::new();
     let mut tasks = vec![rt, tt, dt];
 
     // The target reserves on the relay: its listen set gains a circuit.
     eventually("the target's reservation on the relay", || async {
-        handles[0]
+        target
             .listen_addrs()
             .await
             .ok()?
@@ -123,7 +123,7 @@ async fn natted_target(relay: Relay, kad: Vec<StreamProtocol>) -> Rig {
             let (bootstrap, bt, bootstrap_id) = spawn();
             tasks.push(bt);
             let bootstrap_addr = dialable_addr(&bootstrap, bootstrap_id).await;
-            handles[0]
+            target
                 .connect_peer(&bootstrap_addr.to_string())
                 .await
                 .expect("target → bootstrap");
@@ -142,6 +142,7 @@ async fn natted_target(relay: Relay, kad: Vec<StreamProtocol>) -> Rig {
         relay_id,
         relay_listen,
         target_id,
+        target,
         dialer,
         _handles: handles,
         _tasks: tasks,
@@ -149,23 +150,17 @@ async fn natted_target(relay: Relay, kad: Vec<StreamProtocol>) -> Rig {
 }
 
 impl Rig {
-    /// Evict the target from the bootstrap's routing table — what a bucket
-    /// full of foreign peers does to an inbound peer.
-    async fn evict_target(&self) {
-        eventually("the bootstrap to table the target", || async {
-            self.bootstrap
-                .routing_peers()
-                .await
-                .ok()?
-                .contains(&self.target_id)
-                .then_some(())
-        })
-        .await;
-        assert!(self
-            .bootstrap
-            .drop_routing_entry(self.target_id)
+    /// What the bootstrap's routing table holds for the target.
+    async fn tabled_target_addrs(&self) -> Vec<Multiaddr> {
+        self.bootstrap
+            .network_snapshot()
             .await
-            .unwrap());
+            .expect("snapshot")
+            .routing
+            .into_iter()
+            .find(|e| e.peer_id == self.target_id)
+            .map(|e| e.addrs)
+            .unwrap_or_default()
     }
 }
 
@@ -178,17 +173,16 @@ async fn walk_for(rig: &Rig) -> Vec<Multiaddr> {
         .expect("the evicted peer is answered from the bootstrap's peerstore")
 }
 
-/// The identify branch: what the target told the bootstrap it listens on is
-/// vouched for although no bucket holds the target any more.
+/// The reservation is on a third node: the circuit reaches the bootstrap
+/// only through the target's identify, and a plain walk returns it.
 #[tokio::test]
-async fn a_walk_finds_a_connected_peer_the_buckets_dropped() {
+async fn a_walk_finds_a_natted_peer_by_its_circuit() {
     let rig = natted_target(Relay::Elsewhere, kwaai_p2p::config::kad_protocols()).await;
-    rig.evict_target().await;
     let addrs = walk_for(&rig).await;
     let circuit = format!("{}/p2p/{}/p2p-circuit", rig.relay_listen, rig.relay_id);
     assert!(
         addrs.iter().any(|a| a.to_string() == circuit),
-        "the address the bootstrap vouched for: {addrs:?}"
+        "the circuit the bootstrap tabled: {addrs:?}"
     );
     let resolved = format!("{circuit}/p2p/{}", rig.target_id);
     let connected = rig
@@ -199,14 +193,11 @@ async fn a_walk_finds_a_connected_peer_the_buckets_dropped() {
     assert_eq!(connected, rig.target_id);
 }
 
-/// The reservation branch: the answer carries a circuit through the
-/// bootstrap, synthesised from its own reservation state. The circuit the
-/// target's identify reports is dropped from the feed (it would outlive the
-/// reservation), so only that branch can produce this address.
+/// The reservation is on the bootstrap itself: the answer carries a circuit
+/// through the bootstrap's own external address.
 #[tokio::test]
 async fn the_answer_carries_a_circuit_through_the_bootstrap_it_reserved_on() {
     let rig = natted_target(Relay::TheBootstrap, kwaai_p2p::config::kad_protocols()).await;
-    rig.evict_target().await;
     let addrs = walk_for(&rig).await;
     let circuit = format!("{}/p2p/{}/p2p-circuit", rig.relay_listen, rig.bootstrap_id);
     assert!(
@@ -215,9 +206,32 @@ async fn the_answer_carries_a_circuit_through_the_bootstrap_it_reserved_on() {
     );
 }
 
-/// A peer that does not speak our kad is never vouched for, reachable or
-/// not: the peerstore is what FIND_NODE hands out, and a bootstrap answering
-/// for foreign peers is how it re-enters the public DHT's serving path.
+/// A circuit through the bootstrap is only good while the reservation
+/// stands. kad keeps a disconnected peer's entry, so without an explicit
+/// removal the bootstrap would keep serving a dead circuit.
+#[tokio::test]
+async fn the_circuit_leaves_the_table_when_the_reservation_ends() {
+    let rig = natted_target(Relay::TheBootstrap, kwaai_p2p::config::kad_protocols()).await;
+    let circuit = format!("{}/p2p/{}/p2p-circuit", rig.relay_listen, rig.bootstrap_id);
+    // kad stores the entry with the target's own `/p2p/<id>` appended.
+    let holds_circuit =
+        |addrs: &[Multiaddr]| addrs.iter().any(|a| a.to_string().starts_with(&circuit));
+    eventually("the bootstrap to table the circuit", || async {
+        holds_circuit(&rig.tabled_target_addrs().await).then_some(())
+    })
+    .await;
+    // Shut down rather than disconnect: a live target would re-reserve on
+    // its trusted relay and put the circuit straight back.
+    rig.target.shutdown().await.expect("target shuts down");
+    eventually("the circuit to leave the table", || async {
+        (!holds_circuit(&rig.tabled_target_addrs().await)).then_some(())
+    })
+    .await;
+}
+
+/// A peer that does not speak our kad is never tabled, reachable or not:
+/// the table is what FIND_NODE hands out, and a bootstrap answering for
+/// foreign peers is how it re-enters the public DHT's serving path.
 #[tokio::test]
 async fn a_peer_that_does_not_speak_our_kad_is_not_answered() {
     let rig = natted_target(
@@ -226,7 +240,7 @@ async fn a_peer_that_does_not_speak_our_kad_is_not_answered() {
     )
     .await;
     // Give identify time to land on the bootstrap, which is when a kad
-    // speaker would be fed to the peerstore.
+    // speaker would be tabled.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let addrs = tokio::time::timeout(SETTLE_TIMEOUT, rig.dialer.dht_find_peer(rig.target_id))
         .await
@@ -234,6 +248,6 @@ async fn a_peer_that_does_not_speak_our_kad_is_not_answered() {
         .unwrap_or_default();
     assert!(
         addrs.is_empty(),
-        "a foreign peer was vouched for: {addrs:?}"
+        "a foreign peer was answered for: {addrs:?}"
     );
 }
