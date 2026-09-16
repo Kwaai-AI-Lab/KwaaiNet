@@ -178,7 +178,15 @@ async fn main() -> Result<()> {
             // ── Read the network map and select the best locally-available model ──
             if !explicit_model {
                 print_box_header("🗺  Reading Network Map");
-                let local_models = ollama::list_local_models();
+                // Prefer asking Ollama itself over the manifest-directory scan:
+                // a systemd-managed Ollama's model files are commonly unreadable
+                // to this process, which would silently look like no models at
+                // all. Only fall back to the filesystem scan if Ollama isn't
+                // reachable (e.g. not started yet).
+                let local_models = match ollama::readiness(cfg.ollama_port).await {
+                    Ok(models) => models,
+                    Err(_) => ollama::list_local_models(),
+                };
                 if local_models.is_empty() {
                     print_warning("No local Ollama models found — using configured model");
                 } else {
