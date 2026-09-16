@@ -431,6 +431,120 @@ async fn an_operator_supplied_address_outlives_the_purge() {
     assert_eq!(reply, b"ping");
 }
 
+/// Purging is not enough on its own: the neighbour that served B still
+/// serves it on every later walk, and eviction discards kad's memory of the
+/// failed address, so a purged peer is dialed *more* often, not less
+/// (measured 2026-09-06: 1002 kubo dials against a stock node's 328). A
+/// peer identify proved foreign is refused outright for a while, and the
+/// refusal lifts on its own. Fails without the `blocked` behaviour.
+#[tokio::test]
+async fn a_purged_foreign_peer_is_refused_until_its_block_expires() {
+    // `set_default` is per-thread and the swarms run on this test's runtime
+    // thread, so their logs land here.
+    let (_guard, logs) = capture_logs();
+    let block = Duration::from_secs(2);
+    let a_key = Keypair::generate_ed25519();
+    let (a, _a_task) = NetworkService::spawn(
+        NetworkConfig {
+            kad_protocols: vec![libp2p::StreamProtocol::new(kwaai_p2p::KWAAI_KAD_PROTOCOL)],
+            foreign_peer_block_duration: block,
+            // Blocks are lifted on this tick.
+            kad_maintenance_interval: Duration::from_secs(1),
+            ..NetworkConfig::for_tests()
+        },
+        a_key,
+    )
+    .expect("swarm should start");
+    let (c, _c_task, c_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::KWAAI_KAD_PROTOCOL]);
+    let (b, _b_task, b_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+
+    // B reaches A through a walk, never through an operator's dial — an
+    // address the operator supplied is exempt from the block by design.
+    let c_addr = dialable_addr(&c, c_id).await;
+    let b_addr = dialable_addr(&b, b_id).await;
+    a.connect_peer(&c_addr.to_string()).await.expect("A → C");
+    identified(&a, c_id).await;
+    c.add_kad_address(b_id, strip_p2p(&b_addr))
+        .await
+        .expect("C learns B by fiat");
+    let _ = tokio::time::timeout(SETTLE_TIMEOUT, a.dht_find_peer(b_id)).await;
+    // Not `identified`: the block closes the connection on the same identify
+    // that would satisfy it, faster than a poll can see.
+    eventually("A to block B", || async {
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+        text.contains("blocked a non-kad peer").then_some(())
+    })
+    .await;
+
+    // Blocking closes the connection, and a dial by address is refused
+    // before it leaves the swarm.
+    eventually("B to be dropped from A's connections", || async {
+        a.list_peers()
+            .await
+            .ok()?
+            .iter()
+            .all(|p| p.peer_id != b_id)
+            .then_some(())
+    })
+    .await;
+    let refused = a.connect_peer(&b_addr.to_string()).await;
+    assert!(
+        refused.is_err(),
+        "a blocked peer must not be dialable: {refused:?}"
+    );
+
+    // The block is not a verdict for life. Proven by the lift itself rather
+    // than a re-dial: A closed the connection, so A's TIME_WAIT on that
+    // 4-tuple refuses a re-dial from its listen port for longer than this
+    // test can wait (the same reason `an_operator_supplied_address_outlives_
+    // the_purge` has B hang up).
+    eventually("the block on B to expire", || async {
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+        text.contains("block expired").then_some(())
+    })
+    .await;
+}
+
+/// A peer that speaks no kad name of ours is still a peer the operator may
+/// have dialed on purpose, and blocking closes the connection.
+#[tokio::test]
+async fn an_operator_dialed_foreign_peer_is_not_blocked() {
+    let (a, _a_task) = NetworkService::spawn(
+        NetworkConfig {
+            kad_protocols: vec![libp2p::StreamProtocol::new(kwaai_p2p::KWAAI_KAD_PROTOCOL)],
+            foreign_peer_block_duration: Duration::from_secs(60 * 60),
+            ..NetworkConfig::for_tests()
+        },
+        Keypair::generate_ed25519(),
+    )
+    .expect("swarm should start");
+    let (b, _b_task, b_id) = spawn_swarm_with_kad_protocols(&[kwaai_p2p::LEGACY_KAD_PROTOCOL]);
+
+    let b_addr = dialable_addr(&b, b_id).await;
+    a.connect_peer(&b_addr.to_string()).await.expect("A → B");
+    identified(&a, b_id).await;
+    // Identify is what would have triggered the block; give it a beat to
+    // have closed the connection if it were going to.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let peers = a.list_peers().await.expect("peers");
+    assert!(
+        peers.iter().any(|p| p.peer_id == b_id),
+        "B was dialed by the operator and must stay connected: {peers:?}"
+    );
+}
+
+/// A multiaddr without its trailing `/p2p/<id>`, the form kad stores.
+fn strip_p2p(addr: &Multiaddr) -> Multiaddr {
+    let mut addr = addr.clone();
+    if matches!(
+        addr.iter().last(),
+        Some(libp2p::multiaddr::Protocol::P2p(_))
+    ) {
+        addr.pop();
+    }
+    addr
+}
+
 // ---------------------------------------------------------------------------
 // Handle semantics
 // ---------------------------------------------------------------------------

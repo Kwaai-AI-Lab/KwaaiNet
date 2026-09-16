@@ -53,6 +53,7 @@
 use std::time::Duration;
 
 use libp2p::{
+    allow_block_list::{self, BlockedPeers},
     autonat, connection_limits, dcutr, identify, kad,
     kad::store::MemoryStore,
     ping, relay,
@@ -82,6 +83,9 @@ pub struct KwaaiBehaviour {
     /// First so a refusal happens before anything else allocates for the
     /// connection.
     pub connection_limits: connection_limits::Behaviour,
+    /// Peers identify proved foreign, refused for a while so the kad walk
+    /// stops re-dialing them every cycle. Driven from the service loop.
+    pub blocked: allow_block_list::Behaviour<BlockedPeers>,
     pub ping: ping::Behaviour,
     pub identify: identify::Behaviour,
     pub kad: kad::Behaviour<MemoryStore>,
@@ -258,6 +262,7 @@ impl KwaaiBehaviour {
 
         Self {
             connection_limits,
+            blocked: allow_block_list::Behaviour::default(),
             ping,
             identify,
             kad,

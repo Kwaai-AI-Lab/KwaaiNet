@@ -212,6 +212,11 @@ pub struct NetworkService {
     /// here. Dropped when the last connection to a peer closes, so an entry
     /// always describes a peer we can act on.
     peer_protocols: HashMap<PeerId, Vec<String>>,
+    /// Foreign peers refused until the instant recorded; see
+    /// `NetworkConfig::foreign_peer_block_duration`. Expired on the
+    /// maintenance tick, so a block outlives its duration by up to one tick.
+    blocked: HashMap<PeerId, Instant>,
+    foreign_peer_block_duration: Duration,
     /// Peers holding a relay reservation on this node. Identify puts a
     /// NATed peer's circuit through us into the k-bucket; it is dropped
     /// again when the last reservation ends (`drop_own_circuits`).
@@ -627,6 +632,8 @@ impl NetworkService {
             ipv6_status,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
+            blocked: HashMap::new(),
+            foreign_peer_block_duration: config.foreign_peer_block_duration,
             relay_reservations: RelayReservations::default(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
@@ -720,6 +727,7 @@ impl NetworkService {
                     self.handle_swarm_event(event);
                 }
                 _ = maintenance.tick() => {
+                    self.expire_blocks();
                     self.reseed_lost_bootstraps();
                     self.refresh_routing_table();
                 }
@@ -1300,6 +1308,45 @@ impl NetworkService {
     /// like — but recovery used to depend on some *other* peer walking us back
     /// to it. On a small DHT, or when every bootstrap restarted at once (a
     /// fleet migration), no such peer exists and the node wedged: listeners
+    /// Refuse a peer identify proved foreign, for the configured duration.
+    ///
+    /// The purge above empties our table, but every neighbour still serving
+    /// the peer hands it back on the next walk, and eviction also discards
+    /// kad's failed-address memory — so without this a fixed node dials
+    /// *more* strangers than a stock one (measured 2026-09-06: 1002 kubo
+    /// dials against 328). Blocking closes the connection, so a relay we
+    /// depend on or an address the operator dialed is exempt: those are our
+    /// intent, whatever the peer speaks.
+    fn block_foreign_peer(&mut self, peer: PeerId, agent: &str) {
+        if self.foreign_peer_block_duration.is_zero()
+            || self.relays.relies_on(&peer)
+            || self.pinned_addrs.contains_key(&peer)
+            || self.blocked.contains_key(&peer)
+        {
+            return;
+        }
+        let until = Instant::now() + self.foreign_peer_block_duration;
+        self.blocked.insert(peer, until);
+        self.swarm.behaviour_mut().blocked.block_peer(peer);
+        debug!(%peer, %agent, for_secs = self.foreign_peer_block_duration.as_secs(), "blocked a non-kad peer");
+    }
+
+    /// Lift the blocks whose time is up.
+    fn expire_blocks(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<PeerId> = self
+            .blocked
+            .iter()
+            .filter(|(_, until)| **until <= now)
+            .map(|(peer, _)| *peer)
+            .collect();
+        for peer in expired {
+            self.blocked.remove(&peer);
+            self.swarm.behaviour_mut().blocked.unblock_peer(peer);
+            debug!(%peer, "block expired");
+        }
+    }
+
     /// up, announces and relay reservations dead until the node restarted.
     fn reseed_lost_bootstraps(&mut self) {
         if self.bootstrap_addrs.is_empty() {
@@ -2751,6 +2798,12 @@ impl NetworkService {
                     Instant::now(),
                 );
                 self.apply_relay_actions(actions);
+
+                // (e) After the relay manager has had its say, so a relay we
+                // just took a slot on is exempt whatever it speaks.
+                if !speaks_kad {
+                    self.block_foreign_peer(peer_id, &info.agent_version);
+                }
             }
             identify::Event::Error { peer_id, error, .. } => {
                 debug!(peer = %peer_id, error = %error, "identify failed");

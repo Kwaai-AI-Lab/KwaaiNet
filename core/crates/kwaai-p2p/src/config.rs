@@ -228,6 +228,13 @@ pub struct NetworkConfig {
     /// weakest claim worth acting on.
     #[serde(default = "default_identify_min_confirmations")]
     pub identify_min_confirmations: usize,
+
+    /// How long a peer that identify proved foreign (no kad name of ours)
+    /// is refused, inbound and outbound. Evicting it from the routing table
+    /// is not enough: a neighbour hands its address back on the next walk
+    /// and it is dialed again, every cycle. Zero disables the block.
+    #[serde(default = "default_foreign_peer_block_duration")]
+    pub foreign_peer_block_duration: Duration,
 }
 
 fn default_true() -> bool {
@@ -244,6 +251,12 @@ fn default_max_relay_reservations() -> usize {
 
 fn default_identify_min_confirmations() -> usize {
     2
+}
+
+/// One hour: longer than kubo's connection churn, shorter than a
+/// misidentified peer's operator would notice.
+fn default_foreign_peer_block_duration() -> Duration {
+    Duration::from_secs(60 * 60)
 }
 
 /// Default for [`NetworkConfig::kad_protocols`] — see [`kad_protocols()`].
@@ -455,6 +468,7 @@ impl Default for NetworkConfig {
             require_global_ips: true,
             max_relay_reservations: default_max_relay_reservations(),
             identify_min_confirmations: default_identify_min_confirmations(),
+            foreign_peer_block_duration: default_foreign_peer_block_duration(),
         }
     }
 }
@@ -497,6 +511,10 @@ impl NetworkConfig {
             // Loopback fixtures are tabled through AutoNAT's dial-back, which
             // the strict setting refuses to make to 127.0.0.1.
             require_global_ips: false,
+            // Every swarm in a test is this code. One given a foreign kad name
+            // stands in for kubo, which blocks nobody — left on, it would
+            // block the peer under test right back. Tests of the block opt in.
+            foreign_peer_block_duration: Duration::ZERO,
             ..Self::default()
         }
     }

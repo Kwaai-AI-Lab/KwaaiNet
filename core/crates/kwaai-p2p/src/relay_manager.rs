@@ -543,6 +543,14 @@ impl RelayManager {
         actions
     }
 
+    /// Whether `peer` is a relay the operator configured, or one we are
+    /// dialing or reserved on right now.
+    pub fn relies_on(&self, peer: &PeerId) -> bool {
+        self.configured.iter().any(|(p, _)| p == peer)
+            || self.pending.contains_key(peer)
+            || self.slots.values().any(|slot| slot.relay == *peer)
+    }
+
     /// The stored address for a candidate, configured or discovered.
     fn candidate_addr(&self, peer: &PeerId) -> Option<(PeerId, Multiaddr)> {
         self.configured

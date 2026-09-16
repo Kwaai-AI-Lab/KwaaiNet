@@ -77,6 +77,34 @@ async fn spawn_relay() -> (NetworkHandle, tokio::task::JoinHandle<()>, Multiaddr
     (handle, task, addr)
 }
 
+/// A relay that speaks only kubo's kad name — the kind a NATed node on the
+/// live network is offered by the dozen.
+async fn spawn_foreign_relay() -> (
+    NetworkHandle,
+    tokio::task::JoinHandle<()>,
+    PeerId,
+    Multiaddr,
+) {
+    init_tracing();
+    let keypair = Keypair::generate_ed25519();
+    let peer_id = keypair.public().to_peer_id();
+    let port = free_port();
+    let listen = format!("/ip4/127.0.0.1/tcp/{port}");
+    let (handle, task) = NetworkService::spawn(
+        NetworkConfig {
+            listen_addrs: vec![listen.clone()],
+            relay_server: true,
+            external_addr: Some(listen),
+            kad_protocols: vec![libp2p::StreamProtocol::new(kwaai_p2p::LEGACY_KAD_PROTOCOL)],
+            ..NetworkConfig::for_tests()
+        },
+        keypair,
+    )
+    .expect("relay should start");
+    let addr = dialable_addr(&handle, peer_id).await;
+    (handle, task, peer_id, addr)
+}
+
 /// A port nothing is listening on. Bound and released, so there is a small race
 /// window — acceptable here because the alternative (an ephemeral port) cannot
 /// be declared before it is known.
@@ -412,5 +440,44 @@ async fn a_loopback_relay_is_never_discovered_by_identify() {
     assert!(
         circuits(&client).await.is_empty(),
         "a loopback-only relay must not be adopted as a candidate"
+    );
+}
+
+/// The non-kad block must never take out a relay we are reserved on: the
+/// operator listed it, and closing that connection drops our only circuit.
+/// The client is pinned to the kwaai name so the relay really is foreign to
+/// it on every build.
+#[tokio::test]
+async fn a_foreign_relay_we_reserve_on_is_not_blocked() {
+    let (_relay, _relay_task, relay_id, relay_addr) = spawn_foreign_relay().await;
+    let keypair = Keypair::generate_ed25519();
+    let (client, _client_task) = NetworkService::spawn(
+        NetworkConfig {
+            force_private: true,
+            trusted_relays: vec![relay_addr.to_string()],
+            kad_protocols: vec![libp2p::StreamProtocol::new(kwaai_p2p::KWAAI_KAD_PROTOCOL)],
+            foreign_peer_block_duration: Duration::from_secs(60 * 60),
+            ..NetworkConfig::for_tests()
+        },
+        keypair,
+    )
+    .expect("client should start");
+
+    eventually("the client to hold a circuit address", || async {
+        let addrs = circuits(&client).await;
+        (!addrs.is_empty()).then_some(())
+    })
+    .await;
+    // Identify has landed by the time the reservation is confirmed; the
+    // block, if it fired, would close the connection right after.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let peers = client.list_peers().await.expect("peers");
+    assert!(
+        peers.iter().any(|p| p.peer_id == relay_id),
+        "the relay must stay connected: {peers:?}"
+    );
+    assert!(
+        !circuits(&client).await.is_empty(),
+        "the reservation must survive the relay's identify"
     );
 }
