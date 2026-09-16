@@ -218,7 +218,7 @@ impl DeviceType {
             let reinstall = if cfg!(target_os = "windows") {
                 "irm https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.ps1 | iex"
             } else {
-                "curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | bash"
+                "curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh"
             };
             let msg = if has_nvidia {
                 format!(
@@ -257,7 +257,7 @@ impl DeviceType {
                         let reinstall = if cfg!(target_os = "windows") {
                             "irm https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.ps1 | iex"
                         } else {
-                            "curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | bash"
+                            "curl -fsSL https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh | sh"
                         };
                         eprintln!(
                             "\n  ⚠ NVIDIA GPU detected ({gpu}) but this binary lacks CUDA support.\n    \
