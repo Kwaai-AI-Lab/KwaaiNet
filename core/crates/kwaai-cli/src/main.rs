@@ -639,6 +639,17 @@ async fn main() -> Result<()> {
                     }
                 }
                 Some(ConfigAction::Set { key, value }) => {
+                    // A live shard child can overwrite config.yaml on its own
+                    // (auto-rebalance re-persists start_block/blocks), racing a
+                    // plain load-mutate-save here with no lock between them —
+                    // this edit can appear to succeed and then be clobbered
+                    // minutes later, or clobber a concurrent write itself.
+                    // Refuse outright rather than risk either silently.
+                    if DaemonManager::new().is_running() || ShardManager::new().is_running() {
+                        anyhow::bail!(
+                            "kwaainet is running — stop it first: kwaainet stop"
+                        );
+                    }
                     // set_key mutates; persisting is the caller's job.
                     cfg.set_key(&key, &value)?;
                     cfg.save()?;
