@@ -405,6 +405,10 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         // assignment and what the running process announces.
         let assigned_blocks = (e - s) as u32;
         if Some(s as u32) != cfg.start_block || assigned_blocks != cfg.blocks {
+            // First-ever auto-assignment for this node — explain what just got
+            // written to config.yaml before it happens, since nothing else
+            // ever tells the operator this range now persists across restarts.
+            let first_assignment = cfg.start_block.is_none();
             let mut updated = cfg.reloaded();
             // Records a pin, so the next start keeps this range instead of
             // re-querying the DHT and possibly moving again.
@@ -417,6 +421,13 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             print_info(&format!(
                 "Updated config.yaml — pinned [{s}, {e}), signalling daemon to re-announce…"
             ));
+            if first_assignment {
+                print_info(
+                    "This range will be reused on future starts, but it can still move \
+                     automatically if the network's coverage needs change. To fix it in \
+                     place instead, run: kwaainet config set start_block <n>",
+                );
+            }
             crate::daemon::DaemonManager::new().signal_reannounce();
         }
 
