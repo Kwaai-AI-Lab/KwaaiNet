@@ -117,6 +117,11 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_port")]
     pub port: u16,
 
+    /// TCP port for the gRPC control surface. `None` means the default.
+    /// `start --grpc-port` and `KWAAINET_GRPC_PORT` both outrank it per launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_port: Option<u16>,
+
     #[serde(default = "default_true")]
     pub use_gpu: bool,
 
@@ -398,6 +403,12 @@ pub struct KwaaiNetConfig {
     #[serde(default, skip_serializing_if = "contribute_config_is_default")]
     pub contribute: ContributeConfig,
 
+    // ── Shard serving ─────────────────────────────────────────────────────────
+    /// How the daemon's `shard serve` child serves blocks. A manual
+    /// `shard serve --mlx` / `--force-blocks` overrides it for that run only.
+    #[serde(default, skip_serializing_if = "shard_config_is_default")]
+    pub shard: ShardConfig,
+
     // ── RAG (Bob role) ────────────────────────────────────────────────────────
     /// Named RAG knowledge bases. Key = KB name (e.g. "default", "work", "research").
     /// Use `kwaainet rag init --name <name>` to create additional KBs.
@@ -411,6 +422,46 @@ pub struct KwaaiNetConfig {
 
 fn reputation_config_is_default(r: &ReputationConfig) -> bool {
     r.enabled && r.max_observations_per_peer == 100
+}
+
+// ---------------------------------------------------------------------------
+// Shard config
+// ---------------------------------------------------------------------------
+
+/// Which engine `shard serve` uses for blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShardBackend {
+    /// Platform default: candle blocks, except on macOS where the node serves
+    /// the whole model through Ollama instead (#117).
+    #[default]
+    Auto,
+    /// candle blocks everywhere, macOS included (`--force-blocks`).
+    Candle,
+    /// MLX blocks on Apple Silicon; needs a `--features mlx` build (`--mlx`).
+    Mlx,
+}
+
+impl std::str::FromStr for ShardBackend {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "candle" | "blocks" => Ok(Self::Candle),
+            "mlx" => Ok(Self::Mlx),
+            other => anyhow::bail!("shard.backend must be auto, candle or mlx, got '{other}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardConfig {
+    #[serde(default)]
+    pub backend: ShardBackend,
+}
+
+fn shard_config_is_default(s: &ShardConfig) -> bool {
+    *s == ShardConfig::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -485,27 +536,13 @@ fn contribute_config_is_default(c: &ContributeConfig) -> bool {
     c.storage && c.shards.is_none() && c.auto_update
 }
 
-/// Resolved contribution policy after applying CLI overrides.
+/// Resolved contribution policy. `start` applies `--shard` / `--no-contribute`
+/// to the in-memory config before resolving this, so the policy takes no flag
+/// arguments of its own.
 pub struct ContributePolicy {
     pub storage: bool,
     pub shards: bool,
     pub auto_update: bool,
-}
-
-impl ContributePolicy {
-    /// Whether to start block-shard serving, given an explicit `--shard` flag.
-    ///
-    /// `--shard` is itself an opt-in and must win over an unset config. While
-    /// `contribute.shards` defaulted to true this distinction did not matter,
-    /// because `self.shards` was already true whenever the flag was plausible.
-    /// With shard serving opt-in it matters a great deal: without it,
-    /// `kwaainet start --daemon --shard` refuses and advises the operator to
-    /// set the config key for the thing they just asked for.
-    ///
-    /// `--no-contribute` still outranks both — it is the bigger hammer.
-    pub fn serve_shards(&self, shard_flag: bool, no_contribute: bool) -> bool {
-        self.shards || (shard_flag && !no_contribute)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -892,6 +929,7 @@ impl Default for KwaaiNetConfig {
             start_block: None,
             start_block_auto: false,
             port: default_port(),
+            grpc_port: None,
             use_gpu: true,
             log_level: default_log_level(),
             inference_url: default_inference_url(),
@@ -935,6 +973,7 @@ impl Default for KwaaiNetConfig {
             rebalance_min_redundancy: default_rebalance_min_redundancy(),
             reputation: ReputationConfig::default(),
             contribute: ContributeConfig::default(),
+            shard: ShardConfig::default(),
             rag_kbs: std::collections::HashMap::new(),
             rag: None,
         }
@@ -1222,11 +1261,11 @@ impl KwaaiNetConfig {
         (self.start_block() + self.blocks).min(total)
     }
 
-    /// Resolve the effective contribution policy, honouring the CLI override.
-    pub fn contribute_policy(&self, cli_no_contribute: bool) -> ContributePolicy {
+    /// Resolve the effective contribution policy from the config alone.
+    pub fn contribute_policy(&self) -> ContributePolicy {
         ContributePolicy {
-            storage: self.contribute.storage && !cli_no_contribute,
-            shards: self.contribute.shards() && !cli_no_contribute,
+            storage: self.contribute.storage,
+            shards: self.contribute.shards(),
             auto_update: self.contribute.auto_update && is_pre_release(),
         }
     }
@@ -1249,6 +1288,10 @@ impl KwaaiNetConfig {
             "model" => self.model = value.to_string(),
             "blocks" => self.blocks = value.parse().context("blocks must be a number")?,
             "port" => self.port = value.parse().context("port must be a number")?,
+            "grpc_port" => {
+                self.grpc_port = Some(value.parse().context("grpc_port must be a port number")?)
+            }
+            "shard.backend" => self.shard.backend = value.parse()?,
             "use_gpu" => self.use_gpu = parse_bool(value)?,
             "log_level" => {
                 self.log_level = parse_log_level(value)
@@ -1999,15 +2042,6 @@ mod contribute_shards_is_opt_in {
     }
 
     #[test]
-    fn no_contribute_still_overrides_an_explicit_opt_in() {
-        let mut cfg = KwaaiNetConfig::default();
-        cfg.set_key("contribute.shards", "true").expect("set");
-        let policy = cfg.contribute_policy(true);
-        assert!(!policy.shards, "--no-contribute wins over config");
-        assert!(!policy.storage);
-    }
-
-    #[test]
     fn unset_shards_is_omitted_from_yaml() {
         // `storage: false` forces the `contribute:` block to serialize at all —
         // a wholly default config is skipped by `contribute_config_is_default`,
@@ -2027,58 +2061,41 @@ mod contribute_shards_is_opt_in {
     }
 }
 
-/// `--shard` must win over an unset config. Regression for the opt-in flip.
 #[cfg(test)]
-mod shard_flag_is_an_opt_in {
+mod shard_backend_and_grpc_port_keys {
     use super::*;
 
-    fn policy(cfg_shards: Option<bool>, no_contribute: bool) -> ContributePolicy {
+    #[test]
+    fn defaults_stay_out_of_the_yaml() {
+        let y = serde_yaml::to_string(&KwaaiNetConfig::default()).expect("serialise");
+        assert!(!y.contains("grpc_port"), "{y}");
+        // Line-anchored: `announce_online_without_shard:` also ends in `shard:`.
+        assert!(!y.lines().any(|l| l.starts_with("shard:")), "{y}");
+    }
+
+    #[test]
+    fn both_round_trip() {
         let mut cfg = KwaaiNetConfig::default();
-        cfg.contribute.shards = cfg_shards;
-        cfg.contribute_policy(no_contribute)
+        cfg.set_key("grpc_port", "0")
+            .expect("ephemeral is a valid choice");
+        cfg.set_key("shard.backend", "mlx").expect("mlx parses");
+        let y = serde_yaml::to_string(&cfg).expect("serialise");
+        let back: KwaaiNetConfig = serde_yaml::from_str(&y).expect("reload");
+        assert_eq!(back.grpc_port, Some(0));
+        assert_eq!(back.shard.backend, ShardBackend::Mlx);
     }
 
     #[test]
-    fn the_flag_starts_shard_serving_on_an_unset_config() {
-        let p = policy(None, false);
-        assert!(!p.shards, "config alone would not serve");
-        assert!(
-            p.serve_shards(true, false),
-            "`--daemon --shard` must serve; telling the user to set a config \
-             key for what they just typed is not an acceptable answer"
+    fn backend_accepts_only_the_three_names() {
+        assert_eq!(
+            "candle".parse::<ShardBackend>().unwrap(),
+            ShardBackend::Candle
         );
-    }
-
-    #[test]
-    fn without_the_flag_an_unset_config_does_not_serve() {
-        assert!(!policy(None, false).serve_shards(false, false));
-    }
-
-    #[test]
-    fn config_opt_in_serves_without_the_flag() {
-        assert!(policy(Some(true), false).serve_shards(false, false));
-    }
-
-    #[test]
-    fn no_contribute_outranks_the_flag() {
-        let p = policy(None, true);
-        assert!(
-            !p.serve_shards(true, true),
-            "--no-contribute is the bigger hammer"
-        );
-    }
-
-    #[test]
-    fn no_contribute_outranks_a_config_opt_in_too() {
-        assert!(!policy(Some(true), true).serve_shards(false, true));
-    }
-
-    #[test]
-    fn the_flag_overrides_an_explicit_config_opt_out() {
-        // Deliberate: a flag typed now is a later decision than a config file.
-        let p = policy(Some(false), false);
-        assert!(!p.shards);
-        assert!(p.serve_shards(true, false));
+        assert_eq!("Auto".parse::<ShardBackend>().unwrap(), ShardBackend::Auto);
+        assert!("metal".parse::<ShardBackend>().is_err());
+        let cfg: Result<KwaaiNetConfig> =
+            serde_yaml::from_str("shard:\n  backend: metal\n").map_err(Into::into);
+        assert!(cfg.is_err(), "a misspelt backend must not load as auto");
     }
 }
 

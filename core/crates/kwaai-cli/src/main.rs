@@ -102,6 +102,88 @@ fn model_is_locally_available(model: &str) -> bool {
     crate::hf::resolve_snapshot(model).is_ok() || crate::ollama::resolve_model_blob(model).is_ok()
 }
 
+/// Spawn the daemon and, per the contribution policy, its shard and storage
+/// children. `overrides` must already be applied to `cfg`.
+async fn launch_daemon(
+    cfg: &KwaaiNetConfig,
+    overrides: &cli::StartOverrides,
+    verb: &str,
+) -> Result<()> {
+    // Record the flags first: a relaunch that raced this write would start bare.
+    DaemonManager::write_start_args(overrides);
+    let child_pid = DaemonManager::spawn_daemon_child(&overrides.to_argv())?;
+    println!();
+    print_success(&format!("KwaaiNet daemon {verb} (PID {})", child_pid));
+
+    // Wait for the control socket to be ready before spawning children.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // `overrides` are already applied to `cfg`, so the policy reflects them.
+    let policy = cfg.contribute_policy();
+
+    // --- Shard serving ---
+    let serve_shards = policy.shards;
+
+    // `--shard` also waives the model-present and RAM gates.
+    let shard_explicit = overrides.shard;
+    let shard_available = shard_explicit || model_is_locally_available(&cfg.model);
+    let enough_ram = shard_explicit || system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES;
+    if serve_shards && shard_available && enough_ram {
+        match ShardManager::spawn_shard_child() {
+            Ok(shard_pid) => {
+                ShardManager::new().write_pid(shard_pid);
+                print_success(&format!("Shard serving started  (PID {})", shard_pid));
+                print_info("Shard logs:   kwaainet logs --shard");
+            }
+            Err(e) => print_warning(&format!("Could not start shard serving: {e}")),
+        }
+    } else if serve_shards && shard_available && !enough_ram {
+        print_warning("Low memory (< 10 GB) — skipping shard serving to prevent OOM.");
+        print_info("Override: kwaainet start --daemon --shard");
+    } else if serve_shards && !shard_available {
+        print_info(&format!(
+            "No local model found for '{}' — skipping shard serving.",
+            cfg.model
+        ));
+        print_info("Download: kwaainet shard download");
+    } else if !serve_shards
+        && !overrides.no_contribute
+        && cfg.contribute.shards_unset()
+        && shard_available
+    {
+        // This node has a model and would have served blocks under
+        // the old opt-out default. Say so once, rather than letting
+        // its block contribution vanish silently on upgrade.
+        print_info("Block-shard serving is now opt-in (experimental) — not starting it.");
+        print_info("This node can still contribute whole-model inference via Ollama.");
+        print_info("Serve blocks anyway: kwaainet config set contribute.shards true");
+    }
+
+    // --- Storage serving ---
+    #[cfg(feature = "storage")]
+    if policy.storage && cfg.storage.is_some() {
+        match StorageApiManager::spawn_storage_child() {
+            Ok(storage_pid) => {
+                print_success(&format!("Storage serving started (PID {})", storage_pid));
+                print_info("Storage logs: kwaainet logs --storage");
+            }
+            Err(e) => print_warning(&format!("Could not start storage serving: {e}")),
+        }
+    } else if policy.storage {
+        print_info("Storage not initialised — skipping. Run: kwaainet storage init");
+    }
+
+    if overrides.no_contribute {
+        print_info("Contribution disabled for this instance (--no-contribute).");
+    }
+
+    print_info("Check status: kwaainet status");
+    print_info("View logs:    kwaainet logs");
+    print_info("Stop daemon:  kwaainet stop");
+    print_separator();
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_cuda_library_path();
@@ -133,8 +215,9 @@ async fn main() -> Result<()> {
         // Internal: run the native node (used in daemon mode)
         // -------------------------------------------------------------------
         Command::RunNode(args) => {
-            let cfg = KwaaiNetConfig::load_or_create()?;
-            node::run_node(&cfg, args.grpc_port).await?;
+            let mut cfg = KwaaiNetConfig::load_or_create()?;
+            args.overrides.apply_to(&mut cfg);
+            node::run_node(&cfg, &args.overrides).await?;
         }
 
         // -------------------------------------------------------------------
@@ -144,36 +227,10 @@ async fn main() -> Result<()> {
             let mut cfg = KwaaiNetConfig::load_or_create()?;
 
             // Track whether the user explicitly chose a model on the CLI.
-            let explicit_model = args.model.is_some();
+            let explicit_model = args.overrides.model.is_some();
 
-            // Apply CLI overrides to config
-            if let Some(m) = args.model {
-                cfg.model = m;
-            }
-            if let Some(b) = args.blocks {
-                cfg.blocks = b;
-            }
-            if let Some(p) = args.port {
-                cfg.port = p;
-            }
-            if args.no_gpu {
-                cfg.use_gpu = false;
-            }
-            if let Some(n) = args.public_name {
-                cfg.public_name = Some(n);
-            }
-            if let Some(ip) = args.public_ip {
-                cfg.public_ip = Some(ip);
-            }
-            if let Some(a) = args.announce_addr {
-                cfg.announce_addr = Some(a);
-            }
-            if let Some(p) = args.identity_key {
-                cfg.identity_key = Some(p);
-            }
-            if args.no_relay {
-                cfg.no_relay = true;
-            }
+            // In memory only; the flags reach the daemon child as argv.
+            args.overrides.apply_to(&mut cfg);
 
             // ── Read the network map and select the best locally-available model ──
             if !explicit_model {
@@ -250,7 +307,9 @@ async fn main() -> Result<()> {
                                         cfg.model_dht_prefix = None;
                                         cfg.model_repository = None;
                                     }
-                                    // Persist so the daemon child picks it up.
+                                    // Persist so the daemon child picks it up —
+                                    // only these fields; `cfg` also carries the
+                                    // ephemeral flags, which must not be saved.
                                     let mut persisted = cfg.reloaded();
                                     persisted.model = cfg.model.clone();
                                     persisted.model_dht_prefix = cfg.model_dht_prefix.clone();
@@ -300,94 +359,10 @@ async fn main() -> Result<()> {
             print_separator();
 
             if args.daemon {
-                // The child re-execs as `run-node`, so anything the node needs
-                // has to be forwarded — it inherits the environment, not argv.
-                let child_args: Vec<String> = args
-                    .grpc_port
-                    .map(|p| vec!["--grpc-port".to_string(), p.to_string()])
-                    .unwrap_or_default();
-                let child_pid = DaemonManager::spawn_daemon_child(&child_args)?;
-                println!();
-                print_success(&format!("KwaaiNet daemon started (PID {})", child_pid));
-
-                // Wait for the control socket to be ready before spawning children.
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-                let policy = cfg.contribute_policy(args.no_contribute);
-
-                // --- Shard serving ---
-                // `--shard` is itself an explicit opt-in. `args.shard` already
-                // overrode the model-present and RAM checks below, but not the
-                // policy — which was harmless while `contribute.shards`
-                // defaulted to true, and is not now: without this, someone who
-                // typed `--shard` would be told to go and set a config key for
-                // the thing they just asked for on the command line.
-                let serve_shards = policy.serve_shards(args.shard, args.no_contribute);
-
-                let shard_explicit = args.shard;
-                let shard_available = shard_explicit || model_is_locally_available(&cfg.model);
-                let enough_ram = shard_explicit || system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES;
-                if serve_shards && shard_available && enough_ram {
-                    match ShardManager::spawn_shard_child() {
-                        Ok(shard_pid) => {
-                            ShardManager::new().write_pid(shard_pid);
-                            print_success(&format!("Shard serving started  (PID {})", shard_pid));
-                            print_info("Shard logs:   kwaainet logs --shard");
-                        }
-                        Err(e) => print_warning(&format!("Could not start shard serving: {e}")),
-                    }
-                } else if serve_shards && shard_available && !enough_ram {
-                    print_warning("Low memory (< 10 GB) — skipping shard serving to prevent OOM.");
-                    print_info("Override: kwaainet start --daemon --shard");
-                } else if serve_shards && !shard_available {
-                    print_info(&format!(
-                        "No local model found for '{}' — skipping shard serving.",
-                        cfg.model
-                    ));
-                    print_info("Download: kwaainet shard download");
-                } else if !serve_shards
-                    && !args.no_contribute
-                    && cfg.contribute.shards_unset()
-                    && shard_available
-                {
-                    // This node has a model and would have served blocks under
-                    // the old opt-out default. Say so once, rather than letting
-                    // its block contribution vanish silently on upgrade.
-                    print_info(
-                        "Block-shard serving is now opt-in (experimental) — not starting it.",
-                    );
-                    print_info("This node can still contribute whole-model inference via Ollama.");
-                    print_info("Serve blocks anyway: kwaainet config set contribute.shards true");
-                }
-
-                // --- Storage serving ---
-                #[cfg(feature = "storage")]
-                if policy.storage && cfg.storage.is_some() {
-                    match StorageApiManager::spawn_storage_child() {
-                        Ok(storage_pid) => {
-                            print_success(&format!(
-                                "Storage serving started (PID {})",
-                                storage_pid
-                            ));
-                            print_info("Storage logs: kwaainet logs --storage");
-                        }
-                        Err(e) => print_warning(&format!("Could not start storage serving: {e}")),
-                    }
-                } else if policy.storage {
-                    print_info("Storage not initialised — skipping. Run: kwaainet storage init");
-                }
-
-                if args.no_contribute {
-                    print_info("Contribution disabled (--no-contribute). Re-enable: kwaainet config set contribute.shards true");
-                }
-
-                print_info("Check status: kwaainet status");
-                print_info("View logs:    kwaainet logs");
-                print_info("Stop daemon:  kwaainet stop");
-                print_separator();
+                launch_daemon(&cfg, &args.overrides, "started").await?;
             } else {
                 // Foreground – run until Ctrl-C
-                node::run_node(&cfg, args.grpc_port).await?;
+                node::run_node(&cfg, &args.overrides).await?;
             }
         }
 
@@ -409,6 +384,7 @@ async fn main() -> Result<()> {
                 print_success("Storage API stopped");
             }
             mgr.stop_process()?;
+            DaemonManager::remove_start_args();
             print_success("KwaaiNet daemon stopped");
             print_separator();
         }
@@ -434,35 +410,11 @@ async fn main() -> Result<()> {
                 mgr.stop_process()?;
             }
 
-            let child_pid = DaemonManager::spawn_daemon_child(&[])?;
-            print_success(&format!("KwaaiNet daemon restarted (PID {})", child_pid));
-
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-            let restart_cfg = KwaaiNetConfig::load_or_create().unwrap_or_default();
-            let policy = restart_cfg.contribute_policy(false);
-
-            if policy.shards
-                && model_is_locally_available(&restart_cfg.model)
-                && system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES
-            {
-                match ShardManager::spawn_shard_child() {
-                    Ok(pid) => {
-                        ShardManager::new().write_pid(pid);
-                        print_success(&format!("Shard serving restarted (PID {})", pid));
-                    }
-                    Err(e) => print_warning(&format!("Could not restart shard serving: {e}")),
-                }
-            }
-
-            #[cfg(feature = "storage")]
-            if policy.storage && restart_cfg.storage.is_some() {
-                match StorageApiManager::spawn_storage_child() {
-                    Ok(pid) => print_success(&format!("Storage serving restarted (PID {})", pid)),
-                    Err(e) => print_warning(&format!("Could not restart storage serving: {e}")),
-                }
-            }
-            print_separator();
+            // The same instance: config.yaml plus the flags it was started with.
+            let overrides = DaemonManager::read_start_args();
+            let mut cfg = KwaaiNetConfig::load_or_create()?;
+            overrides.apply_to(&mut cfg);
+            launch_daemon(&cfg, &overrides, "restarted").await?;
         }
 
         // -------------------------------------------------------------------
@@ -804,7 +756,8 @@ async fn main() -> Result<()> {
             let mgr = DaemonManager::new();
             if mgr.is_running() {
                 mgr.stop_process()?;
-                let pid = DaemonManager::spawn_daemon_child(&[])?;
+                let pid =
+                    DaemonManager::spawn_daemon_child(&DaemonManager::read_start_args().to_argv())?;
                 print_success(&format!(
                     "Node restarted (PID {}). Reconnecting to P2P network.",
                     pid
@@ -984,7 +937,7 @@ async fn main() -> Result<()> {
                                     let _ = std::process::Command::new(
                                         install_dir.join("kwaainet.exe"),
                                     )
-                                    .args(["start", "--daemon"])
+                                    .args(DaemonManager::relaunch_args())
                                     .stdin(std::process::Stdio::null())
                                     .stdout(std::process::Stdio::null())
                                     .stderr(std::process::Stdio::null())
@@ -998,7 +951,7 @@ async fn main() -> Result<()> {
                             println!();
                             if daemon_was_running {
                                 match std::process::Command::new(install_dir.join("kwaainet.exe"))
-                                    .args(["start", "--daemon"])
+                                    .args(DaemonManager::relaunch_args())
                                     .stdin(std::process::Stdio::null())
                                     .stdout(std::process::Stdio::null())
                                     .stderr(std::process::Stdio::null())
@@ -1027,7 +980,7 @@ async fn main() -> Result<()> {
                         #[cfg(not(windows))]
                         let restart_daemon = |label: &str| {
                             let _ = std::process::Command::new(&current_bin)
-                                .args(["start", "--daemon"])
+                                .args(DaemonManager::relaunch_args())
                                 .stdin(std::process::Stdio::null())
                                 .stdout(std::process::Stdio::null())
                                 .stderr(std::process::Stdio::null())

@@ -248,8 +248,45 @@ impl DaemonManager {
     // Daemonize
     // -----------------------------------------------------------------------
 
-    /// Re-launch the current binary with `run-node` as a detached child.
-    /// Returns immediately in the parent; the child runs the node.
+    /// The node flags this daemon was started with, beside the PID file (the
+    /// same idea as PostgreSQL's `postmaster.opts`): what `restart`,
+    /// `reconnect` and `update` relaunch. Removed by `stop`, never by a
+    /// restart, so the shape of the instance survives its own stop/start.
+    fn start_args_file() -> PathBuf {
+        run_dir().join("start-args.json")
+    }
+
+    pub fn write_start_args(overrides: &crate::cli::StartOverrides) {
+        let path = Self::start_args_file();
+        let _ = std::fs::create_dir_all(run_dir());
+        let json = serde_json::to_string_pretty(overrides).expect("flags serialise");
+        if let Err(e) = std::fs::write(&path, json) {
+            warn!("Could not record start flags at {}: {e}", path.display());
+        }
+    }
+
+    /// Flags recorded by the last `start --daemon`; none if never started or
+    /// stopped since.
+    pub fn read_start_args() -> crate::cli::StartOverrides {
+        std::fs::read_to_string(Self::start_args_file())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn remove_start_args() {
+        let _ = std::fs::remove_file(Self::start_args_file());
+    }
+
+    /// `start --daemon` plus the recorded flags: the argv every relaunch uses.
+    pub fn relaunch_args() -> Vec<String> {
+        let mut v = vec!["start".to_string(), "--daemon".to_string()];
+        v.extend(Self::read_start_args().to_argv());
+        v
+    }
+
+    /// Re-launch the current binary as a detached `run-node` with the given
+    /// node flags. Returns immediately in the parent.
     pub fn spawn_daemon_child(extra_args: &[String]) -> Result<u32> {
         let exe = std::env::current_exe().context("finding own executable")?;
         let log = log_dir().join("kwaainet.log");
@@ -262,9 +299,7 @@ impl DaemonManager {
 
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("run-node");
-        for a in extra_args {
-            cmd.arg(a);
-        }
+        cmd.args(extra_args);
 
         #[cfg(unix)]
         {

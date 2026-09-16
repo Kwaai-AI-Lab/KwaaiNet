@@ -246,7 +246,11 @@ The node will connect to bootstrap peers, announce itself on the DHT, auto-detec
 > kwaainet config set contribute.shards false
 > ```
 >
-> To serve blocks once it is opt-in, set that to `true` or pass `--shard`.
+> To serve blocks once it is opt-in, set that to `true` or pass `--shard`. The config key is
+> permanent; the flag is for this instance, but the instance remembers it: `kwaainet restart`,
+> `kwaainet update` and the auto-update respawn all relaunch with the flags the daemon was
+> started with (recorded beside its PID file until `kwaainet stop`). `--no-contribute` works
+> the same way.
 
 ### 3. Call the OpenAI-compatible API
 
@@ -332,7 +336,8 @@ Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). Fo
 inference without networking: `kwaainet shard run "prompt" --local`.
 
 On Apple Silicon, pass `--force-blocks` if you want the block path anyway for testing or
-benchmarking — it is not a useful way to contribute.
+benchmarking — it is not a useful way to contribute. The daemon's own shard child takes no
+flags; it reads `shard.backend` (`auto`, `candle` or `mlx`) from `config.yaml` instead.
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
 

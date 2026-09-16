@@ -623,7 +623,7 @@ pub async fn run_native_node(
                 // and breaks the loop so the respawn happens after our own
                 // cleanup. Identical to the p2pd path.
                 let auto_update = KwaaiNetConfig::load_or_create()
-                    .map(|c| c.contribute_policy(false).auto_update)
+                    .map(|c| c.contribute_policy().auto_update)
                     .unwrap_or(false);
                 if auto_update {
                     if let Some(version) = crate::node::maybe_auto_update().await {

@@ -1,6 +1,9 @@
 //! CLI argument definitions using clap
 
 use clap::{Args, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
+
+use crate::config::{KwaaiNetConfig, ShardBackend};
 
 #[derive(Parser)]
 #[command(
@@ -166,21 +169,26 @@ A coordinator discovers the chain via DHT and orchestrates inference hop-by-hop.
     RunNode(RunNodeArgs),
 }
 
-/// `run-node` is spawned by `start --daemon`, so anything `start` accepts and
-/// the node needs has to be forwarded here explicitly.
+/// `run-node` is what `start --daemon` spawns. It takes the same node flags
+/// as `start`, forwarded verbatim, so a daemon runs exactly what was typed.
 #[derive(Args, Debug)]
 pub struct RunNodeArgs {
-    /// TCP port for the gRPC control surface (0 = ephemeral)
-    #[arg(long)]
-    pub grpc_port: Option<u16>,
+    #[command(flatten)]
+    pub overrides: StartOverrides,
 }
 
 // ---------------------------------------------------------------------------
 // start
 // ---------------------------------------------------------------------------
 
-#[derive(Args)]
-pub struct StartArgs {
+/// The node flags `start` accepts. They are ephemeral: applied to the config
+/// in memory and never written to config.yaml. `start --daemon` forwards them
+/// to `run-node` as argv and records them beside the PID file, so `restart`,
+/// `reconnect`, `update` and the post-auto-update respawn relaunch the same
+/// instance; `stop` discards the record. Making a flag permanent is
+/// `kwaainet config set`.
+#[derive(Args, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StartOverrides {
     /// Model to serve (e.g. unsloth/Llama-3.1-8B-Instruct)
     #[arg(long)]
     pub model: Option<String>,
@@ -193,8 +201,8 @@ pub struct StartArgs {
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// TCP port for the gRPC control surface (0 = ephemeral). Forwarded to
-    /// the daemon child; also settable via KWAAINET_GRPC_PORT.
+    /// TCP port for the gRPC control surface (0 = ephemeral). Outranks
+    /// KWAAINET_GRPC_PORT and the `grpc_port` config key.
     #[arg(long)]
     pub grpc_port: Option<u16>,
 
@@ -224,6 +232,22 @@ pub struct StartArgs {
     #[arg(long)]
     pub no_relay: bool,
 
+    /// Also start the shard inference server in the background (auto-rebalancing).
+    /// Outranks `contribute.shards` in config.yaml for this instance.
+    #[arg(long)]
+    pub shard: bool,
+
+    /// Disable automatic storage and shard serving (opt out of contributing)
+    /// for this instance; outranks both `contribute.*` keys and `--shard`.
+    #[arg(long)]
+    pub no_contribute: bool,
+}
+
+#[derive(Args)]
+pub struct StartArgs {
+    #[command(flatten)]
+    pub overrides: StartOverrides,
+
     /// Run in background (daemon mode)
     #[arg(long)]
     pub daemon: bool,
@@ -231,14 +255,83 @@ pub struct StartArgs {
     /// Allow concurrent instances (don't stop existing processes)
     #[arg(long)]
     pub concurrent: bool,
+}
 
-    /// Also start the shard inference server in the background (auto-rebalancing)
-    #[arg(long)]
-    pub shard: bool,
+impl StartOverrides {
+    /// Apply the flags to `cfg` in memory. `--no-contribute` goes last: it
+    /// outranks `--shard` when both are typed.
+    pub fn apply_to(&self, cfg: &mut KwaaiNetConfig) {
+        if let Some(m) = &self.model {
+            cfg.model = m.clone();
+        }
+        if let Some(b) = self.blocks {
+            cfg.blocks = b;
+        }
+        if let Some(p) = self.port {
+            cfg.port = p;
+        }
+        if let Some(p) = self.grpc_port {
+            cfg.grpc_port = Some(p);
+        }
+        if self.no_gpu {
+            cfg.use_gpu = false;
+        }
+        if let Some(n) = &self.public_name {
+            cfg.public_name = Some(n.clone());
+        }
+        if let Some(ip) = &self.public_ip {
+            cfg.public_ip = Some(ip.clone());
+        }
+        if let Some(a) = &self.announce_addr {
+            cfg.announce_addr = Some(a.clone());
+        }
+        if let Some(p) = &self.identity_key {
+            cfg.identity_key = Some(p.clone());
+        }
+        if self.no_relay {
+            cfg.no_relay = true;
+        }
+        if self.shard {
+            cfg.contribute.shards = Some(true);
+        }
+        if self.no_contribute {
+            cfg.contribute.shards = Some(false);
+            cfg.contribute.storage = false;
+        }
+    }
 
-    /// Disable automatic storage and shard serving (opt out of contributing)
-    #[arg(long)]
-    pub no_contribute: bool,
+    /// The flags as argv, for forwarding to `run-node` or a relaunched `start`.
+    pub fn to_argv(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        let mut opt = |flag: &str, val: Option<String>| {
+            if let Some(val) = val {
+                v.push(format!("--{flag}"));
+                v.push(val);
+            }
+        };
+        opt("model", self.model.clone());
+        opt("blocks", self.blocks.map(|b| b.to_string()));
+        opt("port", self.port.map(|p| p.to_string()));
+        opt("grpc-port", self.grpc_port.map(|p| p.to_string()));
+        opt("public-name", self.public_name.clone());
+        opt("public-ip", self.public_ip.clone());
+        opt("announce-addr", self.announce_addr.clone());
+        opt(
+            "identity-key",
+            self.identity_key.as_ref().map(|p| p.display().to_string()),
+        );
+        for (flag, on) in [
+            ("no-gpu", self.no_gpu),
+            ("no-relay", self.no_relay),
+            ("shard", self.shard),
+            ("no-contribute", self.no_contribute),
+        ] {
+            if on {
+                v.push(format!("--{flag}"));
+            }
+        }
+        v
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +388,9 @@ pub enum ConfigAction {
     /// Set a config value.
     ///
     /// Valid keys:
-    ///   model, blocks, start_block, port, use_gpu, log_level,
+    ///   model, blocks, start_block, port, grpc_port, use_gpu, log_level,
+    ///   shard.backend (auto | candle | mlx),
+    ///   contribute.storage, contribute.shards, contribute.auto_update,
     ///   public_name, public_ip, announce_addr, no_relay,
     ///   announce_self, enable_upnp, enable_quic, ipv6, only_global_ips,
     ///   max_connections,
@@ -819,11 +914,13 @@ pub struct ShardServeArgs {
     /// than CPU for decode. A Mac normally serves whole models through its
     /// local Ollama instead — this forces the block path for testing or
     /// benchmarking. Ignored on other platforms, which always serve blocks.
+    /// For this run only; the daemon's own shard child reads `shard.backend`.
     #[arg(long)]
     pub force_blocks: bool,
 
     /// Serve the blocks with MLX on Apple Silicon (needs a binary built with
     /// `--features mlx`, and its `mlx.metallib` beside it). Implies --force-blocks.
+    /// For this run only; set `shard.backend: mlx` for the daemon's child.
     #[arg(long)]
     pub mlx: bool,
 
@@ -831,6 +928,19 @@ pub struct ShardServeArgs {
     /// Can also be set via the HF_TOKEN environment variable.
     #[arg(long, value_name = "TOKEN")]
     pub hf_token: Option<String>,
+}
+
+impl ShardServeArgs {
+    /// The backend this run uses: a flag if typed, else the config.
+    pub fn backend(&self, cfg: &KwaaiNetConfig) -> ShardBackend {
+        if self.mlx {
+            ShardBackend::Mlx
+        } else if self.force_blocks {
+            ShardBackend::Candle
+        } else {
+            cfg.shard.backend
+        }
+    }
 }
 
 #[derive(Args)]
@@ -2617,4 +2727,123 @@ pub enum PeersAction {
         #[arg(long, default_value = "10")]
         timeout: u64,
     },
+}
+
+/// `start` flags are ephemeral and travel by argv, never via config.yaml.
+#[cfg(test)]
+mod start_flags_are_ephemeral {
+    use super::*;
+
+    fn typed() -> StartOverrides {
+        StartOverrides {
+            model: Some("org/model".into()),
+            blocks: Some(4),
+            port: Some(9000),
+            grpc_port: Some(0),
+            no_gpu: true,
+            public_name: Some("alice".into()),
+            public_ip: None,
+            announce_addr: None,
+            identity_key: Some("/keys/id.key".into()),
+            no_relay: true,
+            shard: true,
+            no_contribute: false,
+        }
+    }
+
+    #[test]
+    fn argv_round_trips_through_the_flattened_flags() {
+        // Parsed through a minimal wrapper: the full `Cli` enum overflows a
+        // test thread's stack in a debug build.
+        #[derive(Parser)]
+        struct P {
+            #[command(flatten)]
+            o: StartOverrides,
+        }
+        let o = typed();
+        let mut argv = vec!["p".to_string()];
+        argv.extend(o.to_argv());
+        let p = P::try_parse_from(&argv).expect("run-node accepts what start emits");
+        assert_eq!(p.o, o);
+    }
+
+    #[test]
+    fn no_flags_is_an_empty_argv() {
+        assert!(StartOverrides::default().to_argv().is_empty());
+    }
+
+    #[test]
+    fn record_round_trips_as_json() {
+        let o = typed();
+        let back: StartOverrides =
+            serde_json::from_str(&serde_json::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back, o);
+    }
+
+    #[test]
+    fn shard_flag_serves_over_an_unset_or_opted_out_config() {
+        for shards in [None, Some(false)] {
+            let mut cfg = KwaaiNetConfig::default();
+            cfg.contribute.shards = shards;
+            StartOverrides {
+                shard: true,
+                ..Default::default()
+            }
+            .apply_to(&mut cfg);
+            assert!(cfg.contribute_policy().shards, "a flag typed now wins");
+        }
+    }
+
+    #[test]
+    fn no_contribute_outranks_the_shard_flag_and_stops_storage() {
+        let mut cfg = KwaaiNetConfig::default();
+        StartOverrides {
+            shard: true,
+            no_contribute: true,
+            ..Default::default()
+        }
+        .apply_to(&mut cfg);
+        let p = cfg.contribute_policy();
+        assert!(!p.shards, "--no-contribute is the bigger hammer");
+        assert!(!p.storage);
+    }
+
+    #[test]
+    fn overrides_apply_in_memory() {
+        let mut cfg = KwaaiNetConfig::default();
+        typed().apply_to(&mut cfg);
+        assert_eq!(cfg.grpc_port, Some(0));
+        assert_eq!(cfg.port, 9000);
+        assert!(!cfg.use_gpu);
+        assert_eq!(cfg.public_name.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn serve_flags_pick_the_backend_and_config_fills_in() {
+        let mut cfg = KwaaiNetConfig::default();
+        let mut a = ShardServeArgs {
+            model_path: None,
+            start_block: None,
+            blocks: None,
+            no_gpu: false,
+            use_gpu: false,
+            auto: false,
+            no_auto: false,
+            auto_rebalance: false,
+            force_blocks: false,
+            mlx: false,
+            hf_token: None,
+        };
+        assert_eq!(a.backend(&cfg), ShardBackend::Auto);
+        cfg.shard.backend = ShardBackend::Mlx;
+        assert_eq!(
+            a.backend(&cfg),
+            ShardBackend::Mlx,
+            "the daemon's child reads config"
+        );
+        a.force_blocks = true;
+        assert_eq!(a.backend(&cfg), ShardBackend::Candle);
+        a.mlx = true;
+        assert_eq!(a.backend(&cfg), ShardBackend::Mlx, "--mlx implies blocks");
+    }
 }
