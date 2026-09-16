@@ -422,103 +422,13 @@ impl ShardManager {
         }
     }
 
-    /// Stop the shard serve child, if running.
-    ///
-    /// Sends SIGTERM and waits up to 5 s for a clean exit, then sends SIGKILL
+    /// Stop the shard serve child, if running. SIGKILL after the grace period
     /// so the CUDA context (and VRAM) is always freed before returning.
     pub fn stop_process(&self) {
         let Some(pid) = self.read_pid() else { return };
         info!("Stopping shard server PID {}", pid);
-
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-            use nix::unistd::Pid as NixPid;
-            let nix_pid = NixPid::from_raw(pid as i32);
-            let _ = kill(nix_pid, Signal::SIGTERM);
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(500));
-                // Use waitpid(WNOHANG) rather than sysinfo — sysinfo sees zombies as
-                // still-running, causing the loop to exhaust and SIGKILL a dead process.
-                match waitpid(nix_pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) => {} // still running, keep waiting
-                    _ => {
-                        // Exited cleanly (or ECHILD — already reaped).
-                        self.remove_pid();
-                        return;
-                    }
-                }
-            }
-            warn!(
-                "Shard process {} did not exit after SIGTERM — sending SIGKILL",
-                pid
-            );
-            let _ = kill(nix_pid, Signal::SIGKILL);
-            // Reap the zombie; without this the child stays defunct until run-node exits.
-            let _ = waitpid(nix_pid, None);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
-        }
-
+        stop_pid(pid, Duration::from_secs(5));
         self.remove_pid();
-    }
-
-    /// Spawn `kwaainet shard serve --auto --auto-rebalance` as a detached
-    /// background process, appending output to `shard.log`.
-    ///
-    /// Kills any already-running shard child first so its CUDA context is freed
-    /// before the new process allocates GPU memory.
-    pub fn spawn_shard_child() -> Result<u32> {
-        let mgr = Self::new();
-        if mgr.is_running() {
-            info!("Existing shard child running — stopping it before respawn");
-            mgr.stop_process();
-        }
-        // Clear stale ready sentinel so callers don't see the old state.
-        let _ = std::fs::remove_file(Self::ready_file());
-
-        let exe = std::env::current_exe().context("finding own executable")?;
-        let log = log_dir().join("shard.log");
-        std::fs::create_dir_all(log.parent().unwrap()).ok();
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .with_context(|| format!("opening shard log {}", log.display()))?;
-
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.args(["shard", "serve", "--auto-rebalance"]);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            cmd.creation_flags(0x00000008); // DETACHED_PROCESS
-        }
-
-        let child = cmd.spawn().context("spawning shard child")?;
-        let pid = child.id();
-        debug!("Spawned shard child PID {}", pid);
-        std::mem::forget(child);
-        Ok(pid)
     }
 }
 
@@ -573,73 +483,50 @@ impl StorageApiManager {
     pub fn stop_process(&self) {
         let Some(pid) = self.read_pid() else { return };
         info!("Stopping storage API server PID {}", pid);
-
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid as NixPid;
-            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGTERM);
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(500));
-                let mut sys = System::new();
-                sys.refresh_process(Pid::from_u32(pid));
-                if sys.process(Pid::from_u32(pid)).is_none() {
-                    break;
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
-        }
-
+        stop_pid(pid, Duration::from_secs(5));
         self.remove_pid();
     }
+}
 
-    /// Spawn `kwaainet storage serve` as a detached background process,
-    /// appending output to `storage_serve.log`.
-    #[cfg(feature = "storage")]
-    pub fn spawn_storage_child() -> Result<u32> {
-        let exe = std::env::current_exe().context("finding own executable")?;
-        let log = log_dir().join("storage_serve.log");
-        std::fs::create_dir_all(log.parent().unwrap()).ok();
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .with_context(|| format!("opening storage log {}", log.display()))?;
-
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.args(["storage", "serve"]);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
+/// SIGTERM, wait up to `grace` for the process to go, then SIGKILL. Liveness
+/// is a PID probe that counts a zombie as gone, so it is right whether or not
+/// the process is our child — the old `waitpid` version returned ECHILD for
+/// a process another `kwaainet` had spawned and declared it stopped after
+/// half a second. If it is our child, the exit is reaped as well.
+fn stop_pid(pid: u32, grace: Duration) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::sys::wait::{waitpid, WaitPidFlag};
+        let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+        let _ = kill(nix_pid, Signal::SIGTERM);
+        let deadline = std::time::Instant::now() + grace;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = waitpid(nix_pid, Some(WaitPidFlag::WNOHANG));
+            if !pid_alive(pid) {
+                return;
             }
         }
-        #[cfg(not(unix))]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            cmd.creation_flags(0x00000008); // DETACHED_PROCESS
-        }
-
-        let child = cmd.spawn().context("spawning storage serve child")?;
-        let pid = child.id();
-        debug!("Spawned storage serve child PID {}", pid);
-        std::mem::forget(child);
-        Ok(pid)
+        warn!("Process {pid} did not exit after SIGTERM — sending SIGKILL");
+        let _ = kill(nix_pid, Signal::SIGKILL);
+        let _ = waitpid(nix_pid, None);
     }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
+    }
+}
+
+/// Whether `pid` is a live, non-zombie process.
+pub fn pid_alive(pid: u32) -> bool {
+    let mut sys = System::new();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_process(pid);
+    sys.process(pid)
+        .is_some_and(|p| p.status() != sysinfo::ProcessStatus::Zombie)
 }
 
 /// Returns true if something is already listening on `<port>`, on every
@@ -647,12 +534,6 @@ impl StorageApiManager {
 /// instead of an OS crash.
 pub fn port_in_use(port: u16, mode: kwaai_p2p::Ipv6Mode) -> bool {
     !crate::net::port_is_free(port, mode)
-}
-
-#[cfg(unix)]
-extern "C" {
-    #[allow(dead_code)]
-    fn libc_setsid() -> i32;
 }
 
 // On Unix we need libc for setsid

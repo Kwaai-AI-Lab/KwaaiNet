@@ -138,8 +138,13 @@ pub async fn run_node(
         warn!("`native_p2p: false` in config.yaml is ignored — the Go p2pd path was removed; delete the key");
     }
 
+    // The shard and storage children are this process's: spawned once the
+    // control socket answers, restarted on exit, stopped before we return.
+    let children =
+        crate::supervisor::Supervisor::start(&crate::supervisor::plan(config, overrides));
+
     // The node's whole lifecycle lives in `node_native`.
-    let pending_update_version = crate::node_native::run_native_node(
+    let node_result = crate::node_native::run_native_node(
         config,
         &bootstrap_peers,
         &public_name,
@@ -147,7 +152,9 @@ pub async fn run_node(
         &mut sighup,
         &grpc_handle,
     )
-    .await?;
+    .await;
+    children.shutdown().await;
+    let pending_update_version = node_result?;
 
     daemon_mgr.remove_pid();
     respawn_after_update(pending_update_version, overrides);
