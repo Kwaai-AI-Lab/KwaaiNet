@@ -37,7 +37,7 @@ use crate::addresses::{
     is_circuit, is_dialable_shape, peer_id_from_multiaddr, strip_dest_p2p, strip_p2p,
     uses_dialable_transport, AddrPolicy, OwnAddresses,
 };
-use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
+use crate::behaviour::{ForeignPeers, KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::{Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD};
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
@@ -212,6 +212,9 @@ pub struct NetworkService {
     /// here. Dropped when the last connection to a peer closes, so an entry
     /// always describes a peer we can act on.
     peer_protocols: HashMap<PeerId, Vec<String>>,
+    /// Peers identify proved foreign, read by the relay server's admission
+    /// check. See [`ForeignPeers`].
+    foreign_peers: ForeignPeers,
     /// Peers holding a relay reservation on this node. Identify puts a
     /// NATed peer's circuit through us into the k-bucket; it is dropped
     /// again when the last reservation ends (`drop_own_circuits`).
@@ -371,6 +374,10 @@ impl RelayReservations {
         }
     }
 
+    fn holds(&self, peer: &PeerId) -> bool {
+        self.held.contains_key(peer)
+    }
+
     /// The last connection to `peer` closed; nothing can survive that.
     fn forget(&mut self, peer: &PeerId) {
         self.held.remove(peer);
@@ -413,6 +420,10 @@ impl NetworkService {
     ) -> Result<(NetworkHandle, tokio::task::JoinHandle<()>)> {
         let local_peer_id = keypair.public().to_peer_id();
         let behaviour_config = config.clone();
+        // One list, two readers: the loop writes it from identify, the relay
+        // server's admission check reads it.
+        let foreign_peers = ForeignPeers::default();
+        let foreign_for_behaviour = foreign_peers.clone();
 
         // `SwarmBuilder` is a typestate: the chain's type differs with and
         // without QUIC, and only the finished swarm is one type. Hence a macro.
@@ -425,7 +436,12 @@ impl NetworkService {
                     .with_relay_client(noise::Config::new, yamux::Config::default)
                     .context("configuring the relay client transport")?
                     .with_behaviour(|kp, relay_client| {
-                        KwaaiBehaviour::new(kp, &behaviour_config, relay_client)
+                        KwaaiBehaviour::new(
+                            kp,
+                            &behaviour_config,
+                            relay_client,
+                            foreign_for_behaviour,
+                        )
                     })
                     .map_err(|e| anyhow::anyhow!("configuring behaviour: {e}"))?
                     .with_swarm_config(|c| {
@@ -627,6 +643,7 @@ impl NetworkService {
             ipv6_status,
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
+            foreign_peers,
             relay_reservations: RelayReservations::default(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
@@ -2718,6 +2735,16 @@ impl NetworkService {
                     // FIND_NODE caller. Table membership only: an address the
                     // operator supplied survives in `pinned_addrs`.
                     debug!(peer = %peer_id, agent = %info.agent_version, "dropped non-kad peer from the routing table");
+                }
+                if !speaks_kad {
+                    // Later reservation requests are refused at admission; one
+                    // that beat this identify is ended by closing its
+                    // connection, which is how libp2p-relay releases a slot.
+                    self.foreign_peers.note(peer_id, Instant::now());
+                    if self.relay_reservations.holds(&peer_id) {
+                        debug!(peer = %peer_id, agent = %info.agent_version, "a non-kad peer holds a reservation; closing its connections");
+                        let _ = self.swarm.disconnect_peer_id(peer_id);
+                    }
                 }
 
                 // (b) Record what this peer observed our address to be. Counting

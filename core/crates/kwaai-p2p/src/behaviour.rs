@@ -50,7 +50,9 @@
 //! - `upnp` behind a `Toggle` — port mapping via the local gateway. Off in
 //!   tests, where an SSDP broadcast would be noise at best.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use libp2p::{
     autonat, connection_limits, dcutr, identify, kad,
@@ -62,6 +64,47 @@ use libp2p::{
 
 use crate::config::{NetworkConfig, KAD_MULTI_PROTOCOL_BUILD};
 use crate::{raw_stream, unary};
+
+/// Peers identify has proved are not KwaaiNet nodes, shared between the
+/// service loop that learns it and the relay server that acts on it.
+///
+/// libp2p-relay's reservation admission is a chain of rate limiters keyed on
+/// peer id and address; this is one more link, denying any peer on the list.
+/// It outlives the connection on purpose: kubo's autorelay reconnects and
+/// re-reserves, and the point is that its second request is refused before
+/// its identify lands. Bounded, oldest out.
+#[derive(Clone, Default)]
+pub struct ForeignPeers {
+    inner: Arc<Mutex<HashMap<PeerId, Instant>>>,
+}
+
+/// Enough for every kubo peer a bootstrap meets in a day, and ~50 bytes each.
+const FOREIGN_PEERS_CAP: usize = 8192;
+
+impl ForeignPeers {
+    pub fn note(&self, peer: PeerId, now: Instant) {
+        let mut set = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if set.len() >= FOREIGN_PEERS_CAP && !set.contains_key(&peer) {
+            if let Some(oldest) = set.iter().min_by_key(|(_, at)| **at).map(|(p, _)| *p) {
+                set.remove(&oldest);
+            }
+        }
+        set.insert(peer, now);
+    }
+
+    pub fn contains(&self, peer: &PeerId) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(peer)
+    }
+}
+
+impl relay::RateLimiter for ForeignPeers {
+    fn try_next(&mut self, peer: PeerId, _addr: &libp2p::Multiaddr, _now: Instant) -> bool {
+        !self.contains(&peer)
+    }
+}
 
 /// The `protocol_version` advertised over identify.
 ///
@@ -106,6 +149,7 @@ impl KwaaiBehaviour {
         keypair: &identity::Keypair,
         config: &NetworkConfig,
         relay_client: relay::client::Behaviour,
+        foreign_peers: ForeignPeers,
     ) -> Self {
         let local_peer_id = PeerId::from(keypair.public());
 
@@ -237,15 +281,21 @@ impl KwaaiBehaviour {
             .relay_max_circuit_duration
             // libp2p converts this to u32 seconds and panics otherwise.
             .min(Duration::from_secs(u64::from(u32::MAX)));
+        // A reservation from a peer that is not a KwaaiNet node is refused:
+        // the server denies *renewals* too once `max_reservations` (128) is
+        // reached, so a pool full of kubo autorelay clients ends every fleet
+        // reservation at its next renewal — the bootstrap-side drops measured
+        // 2026-09-06 (mean 31 min, 21 of 31 inside 15 min).
         let relay_server = Toggle::from(config.relay_server.then(|| {
-            relay::Behaviour::new(
-                local_peer_id,
-                relay::Config {
-                    max_circuit_bytes: config.relay_max_circuit_bytes,
-                    max_circuit_duration,
-                    ..relay::Config::default()
-                },
-            )
+            let mut relay_config = relay::Config {
+                max_circuit_bytes: config.relay_max_circuit_bytes,
+                max_circuit_duration,
+                ..relay::Config::default()
+            };
+            relay_config
+                .reservation_rate_limiters
+                .push(Box::new(foreign_peers.clone()));
+            relay::Behaviour::new(local_peer_id, relay_config)
         }));
 
         // dcutr has no Config in 0.11 — it acts on relayed connections by
@@ -284,7 +334,7 @@ mod tests {
             dht_server,
             ..NetworkConfig::for_tests()
         };
-        KwaaiBehaviour::new(&keypair, &config, relay_client)
+        KwaaiBehaviour::new(&keypair, &config, relay_client, ForeignPeers::default())
     }
 
     /// `false` must survive what auto mode cannot: a confirmed external

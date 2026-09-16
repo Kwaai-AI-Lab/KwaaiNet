@@ -88,10 +88,14 @@ async fn natted_target(relay: Relay, kad: Vec<StreamProtocol>) -> Rig {
             .unwrap()
             .port()
     );
+    // The relay speaks what the target speaks: a fleet relay admits only
+    // fleet peers, and a foreign target models a kubo peer, which is
+    // reserved on a kubo relay.
     let (relay_handle, rt, relay_id) = spawn_with(NetworkConfig {
         listen_addrs: vec![relay_listen.clone()],
         relay_server: true,
         external_addr: Some(relay_listen.clone()),
+        kad_protocols: kad.clone(),
         ..NetworkConfig::for_tests()
     });
     let relay_addr = dialable_addr(&relay_handle, relay_id).await;

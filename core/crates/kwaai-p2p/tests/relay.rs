@@ -414,3 +414,74 @@ async fn a_loopback_relay_is_never_discovered_by_identify() {
         "a loopback-only relay must not be adopted as a candidate"
     );
 }
+
+/// A reservation is a slot in a pool of 128 that the server refuses to
+/// *renew* into once full — so a pool of kubo autorelay clients ends every
+/// fleet reservation at its next renewal. A peer that speaks no kad name of
+/// ours does not get one. The client here is our own code pinned to kubo's
+/// kad name, standing in for a foreign autorelay client; the relay is pinned
+/// to the kwaai name so the client is foreign to it on every build.
+#[tokio::test]
+async fn a_peer_outside_the_fleet_is_refused_a_reservation() {
+    init_tracing();
+    let relay_key = Keypair::generate_ed25519();
+    let relay_id = relay_key.public().to_peer_id();
+    let port = free_port();
+    let listen = format!("/ip4/127.0.0.1/tcp/{port}");
+    let (relay, _relay_task) = NetworkService::spawn(
+        NetworkConfig {
+            listen_addrs: vec![listen.clone()],
+            relay_server: true,
+            external_addr: Some(listen),
+            kad_protocols: vec![libp2p::StreamProtocol::new(kwaai_p2p::KWAAI_KAD_PROTOCOL)],
+            ..NetworkConfig::for_tests()
+        },
+        relay_key,
+    )
+    .expect("relay should start");
+    let relay_addr = dialable_addr(&relay, relay_id).await;
+
+    let (client, _client_task, client_id) = {
+        let keypair = Keypair::generate_ed25519();
+        let peer_id = keypair.public().to_peer_id();
+        let (handle, task) = NetworkService::spawn(
+            NetworkConfig {
+                force_private: true,
+                trusted_relays: vec![relay_addr.to_string()],
+                kad_protocols: vec![libp2p::StreamProtocol::new(kwaai_p2p::LEGACY_KAD_PROTOCOL)],
+                ..NetworkConfig::for_tests()
+            },
+            keypair,
+        )
+        .expect("client should start");
+        (handle, task, peer_id)
+    };
+
+    // The relay learns what the client is from identify.
+    eventually("the relay to identify the client", || async {
+        relay
+            .list_peers()
+            .await
+            .ok()?
+            .into_iter()
+            .find(|p| p.peer_id == client_id && p.agent_version.is_some())
+            .map(|_| ())
+    })
+    .await;
+    // Long enough for a reservation that raced identify to have been granted
+    // and then ended, and for the client's retry to have been refused.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        circuits(&client).await.is_empty(),
+        "a foreign peer must hold no reservation on a fleet relay"
+    );
+    let relay_view = relay.network_snapshot().await.expect("snapshot");
+    assert!(
+        relay_view
+            .listen_addrs
+            .iter()
+            .chain(relay_view.relay_addrs.iter())
+            .all(|a| !a.to_string().contains(&client_id.to_base58())),
+        "the relay must advertise no circuit to the foreign peer: {relay_view:?}"
+    );
+}
