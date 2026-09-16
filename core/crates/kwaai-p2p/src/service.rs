@@ -2748,6 +2748,7 @@ impl NetworkService {
                     peer_id,
                     &protocols,
                     &info.listen_addrs,
+                    speaks_kad,
                     Instant::now(),
                 );
                 self.apply_relay_actions(actions);

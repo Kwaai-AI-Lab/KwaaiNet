@@ -274,11 +274,20 @@ impl RelayManager {
     /// Probing the routing table is the `-relayDiscovery` behaviour the p2pd
     /// path always ran with disabled: it turns every DHT peer into a
     /// reservation attempt.
+    ///
+    /// `fleet` is whether the peer speaks our kad name — the service's test
+    /// for a KwaaiNet node. Only fleet peers are *discovered*: a kubo relay
+    /// introduces us fine, but its reservation outlives the bootstraps'
+    /// (104 min against 31, measured 2026-09-06), every fleet node that
+    /// reserves on one advertises a circuit through it, and the addresses
+    /// then ride the DHT to every walk. A configured relay is the operator's
+    /// call and is taken whatever it speaks.
     pub fn note_identify(
         &mut self,
         peer: PeerId,
         protocols: &[String],
         listen_addrs: &[Multiaddr],
+        fleet: bool,
         now: Instant,
     ) -> Vec<RelayAction> {
         if !protocols.iter().any(|p| p == RELAY_HOP_PROTOCOL) {
@@ -289,6 +298,10 @@ impl RelayManager {
         // reservation negotiable, so hand it to `on_relay_ready`.
         if self.configured.iter().any(|(p, _)| *p == peer) {
             return self.on_relay_ready(peer, now);
+        }
+        if !fleet {
+            debug!(%peer, "peer offers relay hop but is not a KwaaiNet node; not a candidate");
+            return Vec::new();
         }
         let policy = self.policy;
         if let Some(entry) = self.discovered.iter_mut().find(|(p, _)| *p == peer) {
@@ -541,6 +554,11 @@ impl RelayManager {
             actions.push(RelayAction::Dial { relay, relay_addr });
         }
         actions
+    }
+
+    #[cfg(test)]
+    fn relies_on_for_test(&self, peer: &PeerId) -> bool {
+        self.candidate_addr(peer).is_some()
     }
 
     /// The stored address for a candidate, configured or discovered.
@@ -831,6 +849,7 @@ mod tests {
             peer(n),
             &[RELAY_HOP_PROTOCOL.to_string()],
             std::slice::from_ref(&addr),
+            true,
             now,
         )
     }
@@ -977,6 +996,7 @@ mod tests {
             peer(2),
             &[RELAY_HOP_PROTOCOL.to_string()],
             std::slice::from_ref(&discovered_addr),
+            true,
             now,
         );
         // Three failures in a row: 30 s, 60 s, then a 120 s backoff that is
@@ -1136,11 +1156,11 @@ mod tests {
         let v6: Multiaddr = "/ip6/2606:4700::1/tcp/8080".parse().unwrap();
         let v4: Multiaddr = "/ip4/1.1.1.1/tcp/8080".parse().unwrap();
 
-        let actions = mgr.note_identify(peer(7), &hop, &[lan, v6.clone()], now);
+        let actions = mgr.note_identify(peer(7), &hop, &[lan, v6.clone()], true, now);
         assert!(actions.is_empty(), "nothing we can dial: {actions:?}");
 
         // The v6 address is listed first; the v4 one must still be the pick.
-        let actions = mgr.note_identify(peer(7), &hop, &[v6, v4.clone()], now);
+        let actions = mgr.note_identify(peer(7), &hop, &[v6, v4.clone()], true, now);
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             RelayAction::Dial { relay, relay_addr } => {
@@ -1163,6 +1183,7 @@ mod tests {
             peer(7),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert_eq!(actions.len(), 1);
@@ -1191,6 +1212,7 @@ mod tests {
             peer(7),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert_eq!(dial_target(&actions[0]), peer(7));
@@ -1202,6 +1224,7 @@ mod tests {
             peer(7),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.8/tcp/9090".parse().unwrap()],
+            true,
             now,
         );
         assert!(refresh.is_empty(), "not pending, so nothing to do yet");
@@ -1231,6 +1254,7 @@ mod tests {
             peer(7),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert_eq!(dial_target(&actions[0]), peer(7));
@@ -1244,6 +1268,7 @@ mod tests {
                 "/ip4/198.51.100.9/tcp/9999".parse().unwrap(),
                 "/ip4/198.51.100.7/tcp/8080".parse().unwrap(),
             ],
+            true,
             now,
         );
 
@@ -1266,9 +1291,59 @@ mod tests {
             peer(7),
             &["/ipfs/kad/1.0.0".to_string()],
             &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn a_relay_outside_the_fleet_is_not_discovered() {
+        // The live-network shape: a NATed node meets dozens of kubo peers
+        // advertising hop, none of which speak our kad name.
+        let now = Instant::now();
+        let mut mgr = RelayManager::new(&[], 1, lenient());
+        mgr.set_enabled(true, now);
+        let actions = mgr.note_identify(
+            peer(7),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.7/tcp/4001".parse().unwrap()],
+            false,
+            now,
+        );
+        assert!(actions.is_empty(), "a foreign relay must not be dialed");
+        assert!(
+            !mgr.relies_on_for_test(&peer(7)),
+            "and must not be remembered as a candidate"
+        );
+
+        // The same identify from a fleet peer is the normal supply.
+        let actions = mgr.note_identify(
+            peer(8),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.8/tcp/8080".parse().unwrap()],
+            true,
+            now,
+        );
+        assert_eq!(dial_target(&actions[0]), peer(8));
+    }
+
+    #[test]
+    fn a_configured_relay_is_taken_whatever_it_speaks() {
+        // `trusted_relays` is the operator's word; the fleet test does not
+        // second-guess it.
+        let (mut mgr, now) = enabled(&[relay_entry(1)], 1);
+        let actions = mgr.note_identify(
+            peer(1),
+            &[RELAY_HOP_PROTOCOL.to_string()],
+            &["/ip4/198.51.100.1/tcp/8080".parse().unwrap()],
+            false,
+            now,
+        );
+        assert!(
+            matches!(actions.first(), Some(RelayAction::Listen { relay, .. }) if *relay == peer(1)),
+            "a configured relay's identify should request the reservation: {actions:?}"
+        );
     }
 
     #[test]
@@ -1290,6 +1365,7 @@ mod tests {
                     .parse()
                     .unwrap(),
             ],
+            true,
             now,
         );
         assert!(
@@ -1308,6 +1384,7 @@ mod tests {
             peer(7),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.7/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert!(
@@ -1329,6 +1406,7 @@ mod tests {
                 "/ip4/192.168.1.7/tcp/8080".parse().unwrap(),
                 "/ip4/127.0.0.1/tcp/8080".parse().unwrap(),
             ],
+            true,
             now,
         );
         assert!(actions.is_empty());
@@ -1344,6 +1422,7 @@ mod tests {
             peer(1),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.1/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert!(
@@ -1357,6 +1436,7 @@ mod tests {
             peer(1),
             &[RELAY_HOP_PROTOCOL.to_string()],
             &["/ip4/198.51.100.1/tcp/8080".parse().unwrap()],
+            true,
             now,
         );
         assert!(again.is_empty(), "{again:?}");
@@ -1372,6 +1452,7 @@ mod tests {
                 peer(n),
                 &[RELAY_HOP_PROTOCOL.to_string()],
                 &[format!("/ip4/198.51.100.{n}/tcp/8080").parse().unwrap()],
+                true,
                 now,
             );
         }
