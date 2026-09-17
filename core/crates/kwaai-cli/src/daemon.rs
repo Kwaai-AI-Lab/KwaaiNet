@@ -512,8 +512,10 @@ fn stop_pid(pid: u32, grace: Duration) {
         let _ = kill(nix_pid, Signal::SIGKILL);
         let _ = waitpid(nix_pid, None);
     }
-    #[cfg(not(unix))]
+    // `taskkill` is a Windows program, so this is `windows`, not `not(unix)`.
+    #[cfg(windows)]
     {
+        let _ = grace; // a hard kill: there is no graceful signal to wait out
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .output();
