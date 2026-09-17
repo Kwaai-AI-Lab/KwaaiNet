@@ -646,9 +646,7 @@ async fn main() -> Result<()> {
                     // minutes later, or clobber a concurrent write itself.
                     // Refuse outright rather than risk either silently.
                     if DaemonManager::new().is_running() || ShardManager::new().is_running() {
-                        anyhow::bail!(
-                            "kwaainet is running — stop it first: kwaainet stop"
-                        );
+                        anyhow::bail!("kwaainet is running — stop it first: kwaainet stop");
                     }
                     // set_key mutates; persisting is the caller's job.
                     cfg.set_key(&key, &value)?;
