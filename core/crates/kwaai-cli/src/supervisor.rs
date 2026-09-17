@@ -384,12 +384,17 @@ async fn wait_for_parent_exit(pid: u32) {
     if handle.is_null() {
         return; // no such process: already gone
     }
+    // A plain detached thread, not `spawn_blocking`: the runtime joins its
+    // blocking pool when it is dropped, so a child exiting for its own
+    // reasons would hang here until the parent died.
     let handle = handle as usize;
-    let _ = tokio::task::spawn_blocking(move || unsafe {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || unsafe {
         WaitForSingleObject(handle as _, INFINITE);
         CloseHandle(handle as _);
-    })
-    .await;
+        let _ = tx.send(());
+    });
+    let _ = rx.await;
 }
 
 static PARENT_GONE: std::sync::OnceLock<watch::Sender<bool>> = std::sync::OnceLock::new();
