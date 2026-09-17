@@ -22,10 +22,18 @@ cat > "$CUDA_FUNC" <<'CUDA_PATCH'
 _cuda_selected=""
 _cuda_libs_staged=""
 _try_cuda_upgrade() {
-    # Only applies to x86_64 linux targets (gnu or musl fallback)
+    # Only applies to the x86_64 gnu-linux target. No musl-linked CUDA build
+    # is published, so a musl-fallback host (glibc too old for the gnu
+    # build) must not be "upgraded" to the gnu-cuda archive — it would
+    # install a binary that can't run there (missing libcudart at runtime).
     case "${_artifact_name:-}" in
         kwaainet-x86_64-unknown-linux-gnu*) ;;
-        kwaainet-x86_64-unknown-linux-musl*) ;;
+        kwaainet-x86_64-unknown-linux-musl*)
+            if command -v nvidia-smi >/dev/null 2>&1 && [ -n "$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)" ]; then
+                say "NVIDIA GPU detected, but this system's glibc is too old for the CUDA-enabled build — installing CPU build instead"
+            fi
+            return 0
+            ;;
         *) return 0 ;;
     esac
     if ! command -v nvidia-smi >/dev/null 2>&1; then
