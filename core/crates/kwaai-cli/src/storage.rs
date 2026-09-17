@@ -180,6 +180,7 @@ async fn status() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn serve() -> Result<()> {
+    crate::supervisor::watch_parent_from_start();
     let cfg = KwaaiNetConfig::load_or_create()?;
     let Some(ref storage) = cfg.storage else {
         print_warning("Storage not initialized. Run: kwaainet storage init");

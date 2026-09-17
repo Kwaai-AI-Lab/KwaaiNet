@@ -312,6 +312,7 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
 }
 
 async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
+    crate::supervisor::watch_parent_from_start();
     let cfg = KwaaiNetConfig::load_or_create()?;
 
     if crate::daemon::ShardManager::new().is_running() {
