@@ -356,20 +356,48 @@ pub async fn refresh_whole_model_ready(port: u16) {
     }
 }
 
+/// Shape of Ollama's `GET /api/tags` response — just enough to read the
+/// installed model names back out.
+#[derive(serde::Deserialize)]
+struct TagsResponse {
+    #[serde(default)]
+    models: Vec<TagsModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct TagsModel {
+    name: String,
+}
+
 pub async fn readiness(port: u16) -> Result<Vec<String>, OllamaNotReady> {
     let url = format!("http://localhost:{port}/api/tags");
-    let up = match reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
     {
-        Ok(c) => matches!(c.get(&url).send().await, Ok(r) if r.status().is_success()),
-        Err(_) => false,
+        Ok(c) => c,
+        Err(_) => return Err(OllamaNotReady::Unreachable { port }),
     };
-    if !up {
-        return Err(OllamaNotReady::Unreachable { port });
-    }
+    let response = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Err(OllamaNotReady::Unreachable { port }),
+    };
 
-    let models = list_local_models();
+    // The API response is authoritative and, unlike the manifest-directory
+    // scan in `list_local_models`, isn't blind to a systemd-managed Ollama
+    // whose model files a regular user can't read. Only fall back to the
+    // filesystem scan if the body doesn't parse or names nothing — never
+    // trust it over an API that just told us what's actually installed.
+    let models = match response.json::<TagsResponse>().await {
+        Ok(body) => body.models.into_iter().map(|m| m.name).collect(),
+        Err(_) => Vec::new(),
+    };
+    let models = if models.is_empty() {
+        list_local_models()
+    } else {
+        models
+    };
+
     if models.is_empty() {
         Err(OllamaNotReady::NoModels)
     } else {
