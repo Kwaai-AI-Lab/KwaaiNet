@@ -492,8 +492,10 @@ fn stop_pid(pid: u32, grace: Duration) {
     }
 }
 
-/// Whether `pid` is a live, non-zombie process.
-pub fn pid_alive(pid: u32) -> bool {
+/// Whether `pid` is a live, non-zombie process. Unix only: on Windows a PID
+/// probe reads a dead process as alive while anyone holds a handle to it.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
     let mut sys = System::new();
     let pid = Pid::from_u32(pid);
     sys.refresh_process(pid);
