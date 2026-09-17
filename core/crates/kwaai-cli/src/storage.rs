@@ -264,8 +264,16 @@ async fn serve() -> Result<()> {
     ));
     print_separator();
 
-    let listeners = crate::net::bind_dual_stack(crate::net::Scope::Loopback, vpk_port, cfg.ipv6())?
-        .into_tokio()?;
+    let bound = crate::net::bind_dual_stack(crate::net::Scope::Loopback, vpk_port, cfg.ipv6())
+        .map_err(anyhow::Error::from)
+        .and_then(|l| l.into_tokio());
+    let listeners = match bound {
+        Ok(l) => l,
+        Err(e) => {
+            mgr.remove_pid();
+            return Err(e).with_context(|| format!("binding the storage API on port {vpk_port}"));
+        }
+    };
     let result = tokio::select! {
         r = kwaai_storage::run_storage_api_on(db, listeners, capacity_gb, peer_id) => r,
         _ = crate::supervisor::stop_requested() => {
