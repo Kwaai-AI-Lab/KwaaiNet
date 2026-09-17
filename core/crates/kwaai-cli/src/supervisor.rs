@@ -291,7 +291,7 @@ async fn wait_for_control_socket() {
     let addr = crate::shard_cmd::daemon_socket();
     let deadline = Instant::now() + SOCKET_WAIT;
     loop {
-        if kwaai_p2p_daemon::P2PClient::connect(&addr).await.is_ok() {
+        if socket_answers(&addr).await {
             return;
         }
         if Instant::now() >= deadline {
@@ -300,6 +300,36 @@ async fn wait_for_control_socket() {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// A bare connect with a short timeout. `P2PClient::connect` retries eleven
+/// times, and on Windows each refused loopback connect costs ~2 s, so a
+/// probe through it lagged readiness by ~23 s.
+async fn socket_answers(addr: &str) -> bool {
+    let probe = Duration::from_secs(1);
+    if let Some(path) = addr.strip_prefix("/unix/") {
+        #[cfg(unix)]
+        return tokio::time::timeout(probe, tokio::net::UnixStream::connect(path))
+            .await
+            .is_ok_and(|r| r.is_ok());
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            return false;
+        }
+    }
+    let mut parts = addr.split('/').filter(|s| !s.is_empty());
+    let (Some(_ip4), Some(host), Some(_tcp), Some(port)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    tokio::time::timeout(
+        probe,
+        tokio::net::TcpStream::connect((host, port.parse().unwrap_or(0))),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -311,23 +341,91 @@ pub fn is_supervised() -> bool {
     std::env::var_os(SUPERVISOR_PID_ENV).is_some()
 }
 
+fn supervisor_pid() -> Option<u32> {
+    std::env::var(SUPERVISOR_PID_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+}
+
 /// Resolves when the supervising parent is gone. Pending forever when not
 /// supervised (a manual `kwaainet shard serve`).
 async fn parent_gone() {
-    let Some(pid) = std::env::var(SUPERVISOR_PID_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-    else {
+    let Some(pid) = supervisor_pid() else {
         return std::future::pending().await;
     };
+    wait_for_parent_exit(pid).await;
+    info!("supervising daemon (PID {pid}) is gone — stopping");
+}
+
+#[cfg(unix)]
+async fn wait_for_parent_exit(pid: u32) {
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         // A fresh probe each time: a reused `System` keeps a stale entry for
         // a PID that has been reaped (seen on macOS), so it never reads gone.
         if !crate::daemon::pid_alive(pid) {
-            info!("supervising daemon (PID {pid}) is gone — stopping");
             return;
         }
+    }
+}
+
+/// A PID probe is wrong on Windows: a dead process stays "alive" to sysinfo
+/// for as long as anyone holds a handle to it (a launcher's `Process` object,
+/// say), and the PID can be reused. Waiting on our own handle to the process
+/// object is exact.
+#[cfg(windows)]
+async fn wait_for_parent_exit(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
+    };
+    // SAFETY: plain Win32 calls; the handle is closed after the wait.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return; // no such process: already gone
+    }
+    let handle = handle as usize;
+    let _ = tokio::task::spawn_blocking(move || unsafe {
+        WaitForSingleObject(handle as _, INFINITE);
+        CloseHandle(handle as _);
+    })
+    .await;
+}
+
+static PARENT_GONE: std::sync::OnceLock<watch::Sender<bool>> = std::sync::OnceLock::new();
+
+/// Call once at the top of a child's `main` path. Watches the parent for the
+/// whole run — including the minutes of DHT startup before the child reaches
+/// its `stop_requested` select — and, if that select is not reached within a
+/// few seconds of the parent going, exits outright.
+pub fn watch_parent_from_start() {
+    if supervisor_pid().is_none() {
+        return;
+    }
+    let (tx, _) = watch::channel(false);
+    if PARENT_GONE.set(tx).is_err() {
+        return;
+    }
+    tokio::spawn(async {
+        parent_gone().await;
+        if let Some(tx) = PARENT_GONE.get() {
+            let _ = tx.send(true);
+        }
+        tokio::time::sleep(TERM_GRACE).await;
+        warn!("no graceful stop within {TERM_GRACE:?} of the parent going — exiting");
+        std::process::exit(0);
+    });
+}
+
+/// Resolves once the background watcher has seen the parent go, or, without
+/// a watcher, when the parent goes.
+async fn parent_gone_signal() {
+    match PARENT_GONE.get() {
+        Some(tx) => {
+            let mut rx = tx.subscribe();
+            stopped(&mut rx).await;
+        }
+        None => parent_gone().await,
     }
 }
 
@@ -349,7 +447,7 @@ pub async fn stop_requested() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term => {}
-        _ = parent_gone() => {}
+        _ = parent_gone_signal() => {}
     }
 }
 

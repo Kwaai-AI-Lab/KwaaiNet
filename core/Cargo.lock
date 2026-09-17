@@ -3259,6 +3259,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "uuid",
+ "windows-sys 0.59.0",
  "zip 2.4.2",
 ]
 

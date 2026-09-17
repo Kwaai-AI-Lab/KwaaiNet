@@ -139,6 +139,15 @@ async fn launch_daemon(
 /// Children a pre-supervision binary spawned detached, or that outlived a
 /// SIGKILLed daemon before the parent watch noticed. Normally there are none.
 fn stop_orphaned_children() {
+    // A child of a daemon that just died is on its way out by itself (it
+    // watches its parent). Give it a moment before calling it an orphan —
+    // on Windows `stop` is a hard kill, so this is the normal path there.
+    let mut grace = 0;
+    while grace < 20 && (ShardManager::new().is_running() || StorageApiManager::new().is_running())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        grace += 1;
+    }
     let shard_mgr = ShardManager::new();
     if shard_mgr.is_running() {
         shard_mgr.stop_process();
@@ -173,7 +182,8 @@ async fn main() -> Result<()> {
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
     // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_));
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_))
+        || std::env::var_os("KWAAINET_NO_AUTO_UPDATE").is_some_and(|v| !v.is_empty());
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
