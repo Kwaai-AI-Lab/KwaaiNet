@@ -97,9 +97,6 @@ uuid = { workspace = true, optional = true }
 # Trust graph dependencies
 dirs = { workspace = true }
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
-
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["signal", "process", "fs"] }
 

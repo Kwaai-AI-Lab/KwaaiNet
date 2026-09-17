@@ -6,10 +6,10 @@
 //! socket that no longer existed. Here the node is their parent: it decides
 //! from the contribution policy which to run ([`plan`]), spawns them once the
 //! control socket answers, restarts them with backoff when they exit, and
-//! terminates them on shutdown. A child watches its parent's PID and exits
-//! when it disappears ([`stop_requested`]), so a SIGKILLed daemon leaves no
-//! orphans either. Same mechanism on every platform; no process groups, no
-//! job objects.
+//! terminates them on shutdown. A child's stdin is a lifeline pipe held by
+//! the daemon; it exits on EOF ([`stop_requested`]), so a SIGKILLed daemon
+//! leaves no orphans either. Same mechanism on every platform; no PID
+//! probes, no process groups, no job objects.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -22,7 +22,8 @@ use tracing::{info, warn};
 use crate::cli::StartOverrides;
 use crate::config::{log_dir, KwaaiNetConfig};
 
-/// Set on every child so it can watch for its parent going away.
+/// Set on every child: marks its stdin as the lifeline pipe (see
+/// [`parent_gone`]). The value is the daemon's PID, for the logs.
 pub const SUPERVISOR_PID_ENV: &str = "KWAAINET_SUPERVISOR_PID";
 
 const SHARD_MIN_RAM_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -224,6 +225,9 @@ async fn supervise(spec: &'static ChildSpec, mut stop: watch::Receiver<bool>) {
             }
         };
         info!("{} started (PID {})", spec.name, child.id().unwrap_or(0));
+        // The write end of the child's lifeline. Held, never written: the
+        // child reads EOF when it closes, by our hand or by our death.
+        let lifeline = child.stdin.take();
 
         tokio::select! {
             status = child.wait() => {
@@ -240,7 +244,7 @@ async fn supervise(spec: &'static ChildSpec, mut stop: watch::Receiver<bool>) {
                 }
             }
             _ = stopped(&mut stop) => {
-                terminate(spec.name, &mut child).await;
+                terminate(spec.name, &mut child, lifeline).await;
                 return;
             }
         }
@@ -258,11 +262,11 @@ fn spawn(spec: &ChildSpec) -> Result<tokio::process::Child> {
         .with_context(|| format!("opening {}", log.display()))?;
 
     // No setsid: the child shares the daemon's session and process group,
-    // so a signal to the group reaches it too.
+    // so a signal to the group reaches it too. Stdin is the lifeline pipe.
     let mut cmd = tokio::process::Command::new(exe);
     cmd.args(spec.args)
         .env(SUPERVISOR_PID_ENV, std::process::id().to_string())
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(log_file.try_clone()?)
         .stderr(log_file)
         .kill_on_drop(true);
@@ -270,17 +274,24 @@ fn spawn(spec: &ChildSpec) -> Result<tokio::process::Child> {
         .with_context(|| format!("spawning {}", spec.name))
 }
 
-async fn terminate(name: &str, child: &mut tokio::process::Child) {
+/// Closing the lifeline is the stop request on every platform (it is the
+/// only graceful one Windows has); SIGTERM backs it up on Unix.
+async fn terminate(
+    name: &str,
+    child: &mut tokio::process::Child,
+    lifeline: Option<tokio::process::ChildStdin>,
+) {
+    drop(lifeline);
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         use nix::sys::signal::{kill, Signal};
         let _ = kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGTERM);
-        if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_ok() {
-            info!("{name} stopped");
-            return;
-        }
-        warn!("{name} did not exit after SIGTERM — killing");
     }
+    if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_ok() {
+        info!("{name} stopped");
+        return;
+    }
+    warn!("{name} did not exit within {TERM_GRACE:?} — killing");
     let _ = child.kill().await;
     info!("{name} killed");
 }
@@ -341,60 +352,37 @@ pub fn is_supervised() -> bool {
     std::env::var_os(SUPERVISOR_PID_ENV).is_some()
 }
 
-fn supervisor_pid() -> Option<u32> {
-    std::env::var(SUPERVISOR_PID_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-}
-
-/// Resolves when the supervising parent is gone. Pending forever when not
-/// supervised (a manual `kwaainet shard serve`).
+/// Resolves when the supervising parent is gone or has closed our lifeline.
+/// Pending forever when not supervised (a manual `kwaainet shard serve`).
+///
+/// A supervised child's stdin is a pipe whose only write end the daemon
+/// holds. The kernel closes that end when the daemon dies, however it dies,
+/// so EOF is exact and immediate on every platform: no PID to probe or reuse,
+/// no zombie case, no handle to wait on.
 async fn parent_gone() {
-    let Some(pid) = supervisor_pid() else {
+    if !is_supervised() {
         return std::future::pending().await;
-    };
-    wait_for_parent_exit(pid).await;
-    info!("supervising daemon (PID {pid}) is gone — stopping");
-}
-
-#[cfg(unix)]
-async fn wait_for_parent_exit(pid: u32) {
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        // A fresh probe each time: a reused `System` keeps a stale entry for
-        // a PID that has been reaped (seen on macOS), so it never reads gone.
-        if !crate::daemon::pid_alive(pid) {
-            return;
-        }
     }
-}
-
-/// A PID probe is wrong on Windows: a dead process stays "alive" to sysinfo
-/// for as long as anyone holds a handle to it (a launcher's `Process` object,
-/// say), and the PID can be reused. Waiting on our own handle to the process
-/// object is exact.
-#[cfg(windows)]
-async fn wait_for_parent_exit(pid: u32) {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
-    };
-    // SAFETY: plain Win32 calls; the handle is closed after the wait.
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-    if handle.is_null() {
-        return; // no such process: already gone
-    }
-    // A plain detached thread, not `spawn_blocking`: the runtime joins its
-    // blocking pool when it is dropped, so a child exiting for its own
-    // reasons would hang here until the parent died.
-    let handle = handle as usize;
+    // A plain detached thread, not tokio's stdin or `spawn_blocking`: the
+    // runtime joins its blocking pool when dropped, so a child exiting for
+    // its own reasons would hang in this read until the parent died.
     let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || unsafe {
-        WaitForSingleObject(handle as _, INFINITE);
-        CloseHandle(handle as _);
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        let mut stdin = std::io::stdin();
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
         let _ = tx.send(());
     });
     let _ = rx.await;
+    info!("supervising daemon is gone or asked us to stop — stopping");
 }
 
 static PARENT_GONE: std::sync::OnceLock<watch::Sender<bool>> = std::sync::OnceLock::new();
@@ -404,7 +392,7 @@ static PARENT_GONE: std::sync::OnceLock<watch::Sender<bool>> = std::sync::OnceLo
 /// its `stop_requested` select — and, if that select is not reached within a
 /// few seconds of the parent going, exits outright.
 pub fn watch_parent_from_start() {
-    if supervisor_pid().is_none() {
+    if !is_supervised() {
         return;
     }
     let (tx, _) = watch::channel(false);
