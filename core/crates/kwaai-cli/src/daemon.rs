@@ -204,42 +204,12 @@ impl DaemonManager {
     // Stop
     // -----------------------------------------------------------------------
 
+    /// SIGTERM, up to 10 s for the node's own shutdown (DHT unannounce, its
+    /// children), then SIGKILL. On Windows a hard kill: see [`stop_pid`].
     pub fn stop_process(&self) -> Result<()> {
         let pid = self.read_pid().context("No daemon is running")?;
-        info!("Sending SIGTERM to PID {}", pid);
-
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid as NixPid;
-
-            kill(NixPid::from_raw(pid as i32), Signal::SIGTERM)
-                .with_context(|| format!("SIGTERM to PID {}", pid))?;
-
-            // Wait up to 10 seconds then SIGKILL
-            for _ in 0..20 {
-                std::thread::sleep(Duration::from_millis(500));
-                let mut sys = System::new();
-                sys.refresh_process(Pid::from_u32(pid));
-                if sys.process(Pid::from_u32(pid)).is_none() {
-                    info!("Process {} exited cleanly", pid);
-                    self.remove_pid();
-                    return Ok(());
-                }
-            }
-
-            warn!("Process {} did not exit, sending SIGKILL", pid);
-            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGKILL);
-        }
-
-        #[cfg(not(unix))]
-        {
-            // Windows: use taskkill
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
-        }
-
+        info!("Stopping daemon PID {}", pid);
+        stop_pid(pid, Duration::from_secs(10));
         self.remove_pid();
         Ok(())
     }
@@ -315,7 +285,7 @@ impl DaemonManager {
             }
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             cmd.stdout(log_file.try_clone()?);
