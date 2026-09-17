@@ -492,6 +492,26 @@ fn stop_pid(pid: u32, grace: Duration) {
     }
 }
 
+/// Remove `path` if it records `me`. Returns whether it did.
+fn remove_pid_file_if_ours(path: &std::path::Path, me: u32) -> bool {
+    let ours = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        == Some(me);
+    ours && std::fs::remove_file(path).is_ok()
+}
+
+/// For a child about to exit without unwinding (the supervisor watchdog):
+/// drop the PID file and ready sentinel this process wrote, so nothing
+/// later mistakes a recycled PID for a live server.
+pub fn remove_own_child_state() {
+    let me = std::process::id();
+    if remove_pid_file_if_ours(&ShardManager::new().pid_file, me) {
+        let _ = std::fs::remove_file(ShardManager::ready_file());
+    }
+    remove_pid_file_if_ours(&StorageApiManager::new().pid_file, me);
+}
+
 /// Whether `pid` is a live, non-zombie process. Unix only: on Windows a PID
 /// probe reads a dead process as alive while anyone holds a handle to it.
 #[cfg(unix)]
@@ -515,6 +535,32 @@ pub fn port_in_use(port: u16, mode: kwaai_p2p::Ipv6Mode) -> bool {
 mod libc {
     extern "C" {
         pub fn setsid() -> i32;
+    }
+}
+
+#[cfg(test)]
+mod own_pid_file_tests {
+    use super::remove_pid_file_if_ours;
+
+    #[test]
+    fn removes_only_a_file_that_records_this_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("ours.pid");
+        let theirs = dir.path().join("theirs.pid");
+        let junk = dir.path().join("junk.pid");
+        std::fs::write(&ours, "4242\n").unwrap();
+        std::fs::write(&theirs, "4243").unwrap();
+        std::fs::write(&junk, "not a pid").unwrap();
+
+        assert!(remove_pid_file_if_ours(&ours, 4242));
+        assert!(!ours.exists());
+        assert!(!remove_pid_file_if_ours(&theirs, 4242));
+        assert!(theirs.exists(), "another process's file is left alone");
+        assert!(!remove_pid_file_if_ours(&junk, 4242));
+        assert!(!remove_pid_file_if_ours(
+            &dir.path().join("missing.pid"),
+            4242
+        ));
     }
 }
 

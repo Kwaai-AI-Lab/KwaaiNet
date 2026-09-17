@@ -406,6 +406,8 @@ pub fn watch_parent_from_start() {
         }
         tokio::time::sleep(TERM_GRACE).await;
         warn!("no graceful stop within {TERM_GRACE:?} of the parent going — exiting");
+        // `exit` skips the normal return path, so clean up what it would have.
+        crate::daemon::remove_own_child_state();
         std::process::exit(0);
     });
 }
