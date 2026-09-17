@@ -529,7 +529,8 @@ async fn main() -> Result<()> {
                     println!("  🟢 Shard:   Running (PID {})", shard_pid.unwrap_or(0));
                 } else {
                     println!("  ⚫ Shard:   Not running");
-                    print_info("Start: kwaainet start --daemon");
+                    print_info("Block-shard serving is opt-in — enable with: kwaainet start --daemon --shard");
+                    print_info("Or persist it: kwaainet config set contribute.shards true");
                 }
 
                 // Show storage API status (only when storage is configured)
