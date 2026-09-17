@@ -82,6 +82,19 @@ that fails or reads the wrong thing, and reports it as an ordinary negative.
 
 ## Merging PRs
 
+**Cap a pass at five PRs.** Rule 8 of
+[`docs/REVIEW_INTEGRITY_RETROSPECTIVE.md`](docs/REVIEW_INTEGRITY_RETROSPECTIVE.md)
+proposes "no more than about five PRs per review batch"; this adopts that number and
+applies it to merging too, so the repository states one cap rather than two. When the
+queue is longer, take five, run `cargo check --workspace --all-targets` on `main`, and
+stop — the rest waits for the next session, against a base that has settled.
+
+This is the quantity missing from *Merge the churn first, then review* above: that
+rule says to land the churn before reviewing, but not how much to take at once. A
+corollary follows from the same evidence — **do not open a review you cannot finish
+and act on in the same session**, because care per item fell as volume rose
+(retrospective §3.5).
+
 **Four checks before each merge**, in this order:
 
 1. **The head still matches the API** — `gh pr view <n> --json headRefOid`. A
