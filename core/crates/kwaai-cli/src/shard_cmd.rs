@@ -305,13 +305,14 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
     print_info("This node does not advertise a block range — by design on macOS.");
     print_separator();
 
-    tokio::signal::ctrl_c().await.ok();
+    crate::supervisor::stop_requested().await;
     println!();
     print_info("Stopping whole-model server…");
     Ok(ShardServeExit::UserStop)
 }
 
 async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
+    crate::supervisor::watch_parent_from_start();
     let cfg = KwaaiNetConfig::load_or_create()?;
 
     if crate::daemon::ShardManager::new().is_running() {
@@ -854,10 +855,9 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             Box::pin(futures::future::pending::<()>())
         };
 
-    // ── Wait: Ctrl-C or rebalance signal ─────────────────────────────────────
+    // ── Wait: stop request (Ctrl-C, SIGTERM, parent gone) or rebalance ───────
     let exit = tokio::select! {
-        res = tokio::signal::ctrl_c() => {
-            res.context("ctrl-c handler")?;
+        _ = crate::supervisor::stop_requested() => {
             ShardServeExit::UserStop
         }
         _ = rebalance_fut => {
