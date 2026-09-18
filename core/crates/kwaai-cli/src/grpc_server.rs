@@ -1955,16 +1955,18 @@ pub fn grpc_port_file() -> PathBuf {
 }
 
 /// Resolve the TCP port: explicit request, then [`GRPC_PORT_ENV`], then the
-/// default. The flag says the port was *asked for* rather than defaulted,
-/// which is what makes a bind failure fatal instead of a warning.
-fn resolve_tcp_port(requested: Option<u16>) -> (u16, bool) {
+/// `grpc_port` config key, then the default. The env var sits above the file
+/// because it is a per-launch override (the GUI allocates a port per spawn).
+/// The flag says the port was *asked for* rather than defaulted, which is
+/// what makes a bind failure fatal instead of a warning.
+fn resolve_tcp_port(requested: Option<u16>, configured: Option<u16>) -> (u16, bool) {
     if let Some(p) = requested {
         return (p, true);
     }
-    match std::env::var(GRPC_PORT_ENV)
+    let from_env = std::env::var(GRPC_PORT_ENV)
         .ok()
-        .and_then(|s| s.trim().parse::<u16>().ok())
-    {
+        .and_then(|s| s.trim().parse::<u16>().ok());
+    match from_env.or(configured) {
         Some(p) => (p, true),
         None => (DEFAULT_GRPC_TCP_PORT, false),
     }
@@ -1973,11 +1975,11 @@ fn resolve_tcp_port(requested: Option<u16>) -> (u16, bool) {
 /// Spawn the gRPC server task(s) and return a handle that, when dropped,
 /// signals graceful shutdown.
 ///
-/// `requested_port` is the `--grpc-port` flag; absent, [`GRPC_PORT_ENV`] then
-/// [`DEFAULT_GRPC_TCP_PORT`] apply. Port 0 binds an ephemeral port and reports
-/// the real one in [`grpc_port_file`].
+/// `requested_port` is the `--grpc-port` flag; absent, [`GRPC_PORT_ENV`], the
+/// config's `grpc_port`, then [`DEFAULT_GRPC_TCP_PORT`] apply. Port 0 binds an
+/// ephemeral port and reports the real one in [`grpc_port_file`].
 pub fn spawn(config: KwaaiNetConfig, requested_port: Option<u16>) -> Result<GrpcServerHandle> {
-    let (tcp_port, explicit) = resolve_tcp_port(requested_port);
+    let (tcp_port, explicit) = resolve_tcp_port(requested_port, config.grpc_port);
     spawn_bound(config, tcp_port, explicit)
 }
 
@@ -2309,7 +2311,7 @@ mod tests {
     /// Precedence: explicit flag, then the env var, then the default. The
     /// bool is what makes a failed bind fatal, so it is asserted too.
     #[test]
-    fn tcp_port_resolves_flag_then_env_then_default() {
+    fn tcp_port_resolves_flag_then_env_then_config_then_default() {
         let _serial = TEST_LOCK.blocking_lock();
         let prev = std::env::var_os(GRPC_PORT_ENV);
         let restore = || match prev.clone() {
@@ -2318,17 +2320,21 @@ mod tests {
         };
 
         std::env::remove_var(GRPC_PORT_ENV);
-        assert_eq!(resolve_tcp_port(None), (DEFAULT_GRPC_TCP_PORT, false));
-        assert_eq!(resolve_tcp_port(Some(9101)), (9101, true));
+        assert_eq!(resolve_tcp_port(None, None), (DEFAULT_GRPC_TCP_PORT, false));
+        assert_eq!(resolve_tcp_port(Some(9101), None), (9101, true));
+        // The config key is a persisted request, so a clash on it is fatal too.
+        assert_eq!(resolve_tcp_port(None, Some(9104)), (9104, true));
 
         std::env::set_var(GRPC_PORT_ENV, "9102");
-        assert_eq!(resolve_tcp_port(None), (9102, true));
-        // A flag still outranks the env var.
-        assert_eq!(resolve_tcp_port(Some(9103)), (9103, true));
+        assert_eq!(resolve_tcp_port(None, None), (9102, true));
+        // A flag still outranks the env var, and the env var outranks config.
+        assert_eq!(resolve_tcp_port(Some(9103), None), (9103, true));
+        assert_eq!(resolve_tcp_port(None, Some(9104)), (9102, true));
 
-        // Garbage falls back to the default rather than failing to start.
+        // Garbage falls back to config, then the default, rather than failing to start.
         std::env::set_var(GRPC_PORT_ENV, "not-a-port");
-        assert_eq!(resolve_tcp_port(None), (DEFAULT_GRPC_TCP_PORT, false));
+        assert_eq!(resolve_tcp_port(None, Some(9104)), (9104, true));
+        assert_eq!(resolve_tcp_port(None, None), (DEFAULT_GRPC_TCP_PORT, false));
 
         restore();
     }

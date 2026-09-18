@@ -337,10 +337,13 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // (`mlx_shard.rs`) already implements sharding and failed only on graph
     // recompilation, and `llama_local.rs` wraps the same llama.cpp engine Ollama
     // uses. See `projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`.
-    if cfg!(target_os = "macos") && !args.force_blocks && !args.mlx {
+    // A flag applies to this run; the daemon's child gets `shard.backend`.
+    let backend = args.backend(&cfg);
+    let mlx = backend == crate::config::ShardBackend::Mlx;
+    if cfg!(target_os = "macos") && backend == crate::config::ShardBackend::Auto {
         return serve_whole_model_via_ollama(&cfg).await;
     }
-    if args.mlx && !cfg!(feature = "mlx") {
+    if mlx && !cfg!(feature = "mlx") {
         bail!("--mlx needs a binary built with `cargo build -p kwaainet --features mlx`");
     }
 
@@ -573,7 +576,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
     print_box_header("🧩 KwaaiNet Shard Server");
     println!("  Blocks:      [{}, {})", start_block, end_block);
-    if args.mlx {
+    if mlx {
         println!("  Device:      MLX (Apple Silicon)");
     } else {
         println!("  Device:      {}", device_type);
@@ -607,7 +610,7 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     let model_path_bg = args.model_path.clone();
     let hf_token_bg = args.hf_token.clone();
     let device_bg = device.clone();
-    let mlx_bg = args.mlx;
+    let mlx_bg = mlx;
     let total_blocks_bg = cfg.model_total_blocks() as usize;
 
     tokio::spawn(async move {

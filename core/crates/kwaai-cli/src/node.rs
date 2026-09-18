@@ -18,7 +18,11 @@ use crate::identity::NodeIdentity;
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result<()> {
+pub async fn run_node(
+    config: &KwaaiNetConfig,
+    overrides: &crate::cli::StartOverrides,
+) -> Result<()> {
+    let grpc_port = overrides.grpc_port;
     // Register the SIGHUP handler BEFORE writing the PID file — see
     // [`SigHup::register`] for why the ordering is load-bearing.
     let mut sighup = SigHup::register();
@@ -146,7 +150,7 @@ pub async fn run_node(config: &KwaaiNetConfig, grpc_port: Option<u16>) -> Result
     .await?;
 
     daemon_mgr.remove_pid();
-    respawn_after_update(pending_update_version);
+    respawn_after_update(pending_update_version, overrides);
     info!("KwaaiNet node stopped");
     Ok(())
 }
@@ -163,14 +167,17 @@ fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Relaunch `kwaainet start --daemon` after an auto-update installed a new
-/// binary, or do nothing when none was.
+/// Relaunch `kwaainet start --daemon` with this instance's own node flags
+/// after an auto-update installed a new binary, or do nothing when none was.
 ///
 /// **Call only after this process's own cleanup has fully completed** — the PID
 /// file gone, the transport down. The new process reads the PID file before
 /// doing anything else, so spawning any earlier makes it see a live daemon and
 /// exit(1), leaving no daemon running at all.
-fn respawn_after_update(pending_update_version: Option<String>) {
+fn respawn_after_update(
+    pending_update_version: Option<String>,
+    overrides: &crate::cli::StartOverrides,
+) {
     let Some(version) = pending_update_version else {
         return;
     };
@@ -195,6 +202,7 @@ fn respawn_after_update(pending_update_version: Option<String>) {
         .unwrap_or_else(|| std::path::PathBuf::from(bin_name));
     match std::process::Command::new(&new_bin)
         .args(["start", "--daemon"])
+        .args(overrides.to_argv())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
