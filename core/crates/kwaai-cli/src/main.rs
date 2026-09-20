@@ -138,26 +138,31 @@ async fn launch_daemon(
 
 /// Children a pre-supervision binary spawned detached, or that outlived a
 /// SIGKILLed daemon before the parent watch noticed. Normally there are none.
-fn stop_orphaned_children() {
+/// Returns whether it stopped any.
+fn stop_orphaned_children(daemon_just_stopped: bool) -> bool {
     // A child of a daemon that just died is on its way out by itself (it
     // watches its parent). Give it a moment before calling it an orphan —
     // on Windows `stop` is a hard kill, so this is the normal path there.
-    let mut grace = 0;
+    let mut grace = if daemon_just_stopped { 0 } else { 20 };
     while grace < 20 && (ShardManager::new().is_running() || StorageApiManager::new().is_running())
     {
         std::thread::sleep(std::time::Duration::from_millis(250));
         grace += 1;
     }
+    let mut stopped = false;
     let shard_mgr = ShardManager::new();
     if shard_mgr.is_running() {
         shard_mgr.stop_process();
         print_success("Orphaned shard server stopped");
+        stopped = true;
     }
     let storage_mgr = StorageApiManager::new();
     if storage_mgr.is_running() {
         storage_mgr.stop_process();
         print_success("Orphaned storage API stopped");
+        stopped = true;
     }
+    stopped
 }
 
 #[tokio::main]
@@ -359,10 +364,16 @@ async fn main() -> Result<()> {
             print_box_header("🛑 Stopping KwaaiNet Node");
             // The daemon stops its own children on the way down. Stopping
             // them first would only have the supervisor restart them.
-            mgr.stop_process()?;
+            let daemon = mgr.stop_process();
+            if daemon.is_ok() {
+                print_success("KwaaiNet daemon stopped");
+            }
             DaemonManager::remove_start_args();
-            print_success("KwaaiNet daemon stopped");
-            stop_orphaned_children();
+            // Orphans can outlive the daemon's PID file, so "no daemon" is
+            // an error only when there was nothing else to stop either.
+            if !stop_orphaned_children(daemon.is_ok()) {
+                daemon?;
+            }
             print_separator();
         }
 
@@ -376,10 +387,11 @@ async fn main() -> Result<()> {
             // Daemon first (it takes its children with it), then any orphans
             // an older binary left behind, so the new daemon's children do
             // not hit port-in-use guards.
-            if mgr.is_running() {
+            let was_running = mgr.is_running();
+            if was_running {
                 mgr.stop_process()?;
             }
-            stop_orphaned_children();
+            stop_orphaned_children(was_running);
 
             // The same instance: config.yaml plus the flags it was started with.
             let overrides = DaemonManager::read_start_args();
@@ -876,7 +888,7 @@ async fn main() -> Result<()> {
                                 let _ = node_mgr.stop_process();
                                 print_info("Daemon stopping…");
                             }
-                            stop_orphaned_children();
+                            stop_orphaned_children(was);
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                             was
                         };
