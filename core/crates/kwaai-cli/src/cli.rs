@@ -188,6 +188,9 @@ pub struct RunNodeArgs {
 /// instance; `stop` discards the record. Making a flag permanent is
 /// `kwaainet config set`.
 #[derive(Args, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+// start-args.json outlives the binary that wrote it: a flag added later
+// must read as unset, not fail the parse and drop every recorded flag.
+#[serde(default)]
 pub struct StartOverrides {
     /// Model to serve (e.g. unsloth/Llama-3.1-8B-Instruct)
     #[arg(long)]
@@ -2778,6 +2781,17 @@ mod start_flags_are_ephemeral {
         let back: StartOverrides =
             serde_json::from_str(&serde_json::to_string(&o).unwrap()).unwrap();
         assert_eq!(back, o);
+    }
+
+    #[test]
+    fn a_record_from_an_older_binary_keeps_its_flags() {
+        // No `no_gpu`, `no_relay` or `no_contribute`: written before they existed.
+        let back: StartOverrides = serde_json::from_str(r#"{"shard": true}"#).unwrap();
+        let want = StartOverrides {
+            shard: true,
+            ..Default::default()
+        };
+        assert_eq!(back, want);
     }
 
     #[test]

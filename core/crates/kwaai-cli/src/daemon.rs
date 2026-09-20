@@ -238,10 +238,14 @@ impl DaemonManager {
     /// Flags recorded by the last `start --daemon`; none if never started or
     /// stopped since.
     pub fn read_start_args() -> crate::cli::StartOverrides {
-        std::fs::read_to_string(Self::start_args_file())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let path = Self::start_args_file();
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            return Default::default();
+        };
+        serde_json::from_str(&json).unwrap_or_else(|e| {
+            warn!("Ignoring unreadable start flags at {}: {e}", path.display());
+            Default::default()
+        })
     }
 
     pub fn remove_start_args() {
