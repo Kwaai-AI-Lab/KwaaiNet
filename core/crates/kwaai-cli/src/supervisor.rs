@@ -127,22 +127,37 @@ struct ChildSpec {
     name: &'static str,
     args: &'static [&'static str],
     log: &'static str,
+    /// Stops the instance its PID file names, if one is running.
+    stop_orphan: fn() -> bool,
 }
 
 const SHARD: ChildSpec = ChildSpec {
     name: "shard serve",
     args: &["shard", "serve", "--auto-rebalance"],
     log: "shard.log",
+    stop_orphan: || {
+        let m = crate::daemon::ShardManager::new();
+        m.is_running() && {
+            m.stop_process();
+            true
+        }
+    },
 };
 const STORAGE: ChildSpec = ChildSpec {
     name: "storage serve",
     args: &["storage", "serve"],
     log: "storage_serve.log",
+    stop_orphan: || {
+        let m = crate::daemon::StorageApiManager::new();
+        m.is_running() && {
+            m.stop_process();
+            true
+        }
+    },
 };
 
-/// Handle on the running children. Dropping it without `shutdown` leaves the
-/// supervise tasks running; `kill_on_drop` still reaps the children when the
-/// runtime goes down.
+/// Handle on the running children. Dropping it without `shutdown` stops them
+/// too (a closed channel reads as a stop); nothing then waits for them to go.
 pub struct Supervisor {
     stop: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -150,13 +165,16 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn start(plan: &ChildPlan) -> Self {
-        sweep_orphans();
         let (stop, rx) = watch::channel(false);
         let mut tasks = Vec::new();
         for (decision, spec) in [(&plan.shard, &SHARD), (&plan.storage, &STORAGE)] {
             match decision {
                 Decision::Start => tasks.push(tokio::spawn(supervise(spec, rx.clone()))),
-                Decision::Skip(why) => info!("{}: {why}", spec.name),
+                Decision::Skip(why) => {
+                    info!("{}: {why}", spec.name);
+                    // Not ours to run, but an older daemon's may still be up.
+                    tokio::spawn(sweep_orphan(spec));
+                }
             }
         }
         Self { stop, tasks }
@@ -178,17 +196,11 @@ impl Supervisor {
 /// `start` spawned them detached and nothing stopped them when the daemon
 /// went — so the first start after an upgrade finds the previous shard still
 /// holding its memory and the previous storage server still on its port.
-/// Their PID files are the only handle on them.
-fn sweep_orphans() {
-    let shard = crate::daemon::ShardManager::new();
-    if shard.is_running() {
-        warn!("stopping a shard server left by a previous daemon");
-        shard.stop_process();
-    }
-    let storage = crate::daemon::StorageApiManager::new();
-    if storage.is_running() {
-        warn!("stopping a storage server left by a previous daemon");
-        storage.stop_process();
+/// Their PID files are the only handle on them. The stop sleeps through a
+/// grace period of seconds, so it runs on the blocking pool.
+async fn sweep_orphan(spec: &'static ChildSpec) {
+    if let Ok(true) = tokio::task::spawn_blocking(spec.stop_orphan).await {
+        warn!("stopped a {} left by a previous daemon", spec.name);
     }
 }
 
@@ -200,10 +212,26 @@ async fn stopped(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn supervise(spec: &'static ChildSpec, mut stop: watch::Receiver<bool>) {
+/// The stop flag, or this process's own SIGTERM / Ctrl-C. The flag is only
+/// set once the node has shut down; a signal to the process group reaches the
+/// children at once, and one exiting for that reason must not be restarted.
+async fn stopping(mut rx: watch::Receiver<bool>) {
+    tokio::select! {
+        _ = stopped(&mut rx) => {}
+        _ = stop_requested() => {}
+    }
+}
+
+async fn supervise(spec: &'static ChildSpec, stop: watch::Receiver<bool>) {
+    // One future for the whole task: a signal listener made afresh per
+    // `select!` would miss a signal delivered between two of them.
+    let stopping = stopping(stop);
+    tokio::pin!(stopping);
+
+    sweep_orphan(spec).await;
     tokio::select! {
         _ = wait_for_control_socket() => {}
-        _ = stopped(&mut stop) => return,
+        _ = &mut stopping => return,
     }
 
     let mut backoff = BACKOFF_MIN;
@@ -218,7 +246,7 @@ async fn supervise(spec: &'static ChildSpec, mut stop: watch::Receiver<bool>) {
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
-                    _ = stopped(&mut stop) => return,
+                    _ = &mut stopping => return,
                 }
                 backoff = (backoff * 2).min(BACKOFF_MAX);
                 continue;
@@ -240,10 +268,10 @@ async fn supervise(spec: &'static ChildSpec, mut stop: watch::Receiver<bool>) {
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
-                    _ = stopped(&mut stop) => return,
+                    _ = &mut stopping => return,
                 }
             }
-            _ = stopped(&mut stop) => {
+            _ = &mut stopping => {
                 terminate(spec.name, &mut child, lifeline).await;
                 return;
             }
@@ -522,6 +550,31 @@ mod tests {
             plan_with(&cfg_with(None, true, true), &o, true, PLENTY).storage,
             Decision::Start
         );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_supervisor_reads_as_a_stop() {
+        let (tx, rx) = watch::channel(false);
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(1), stopping(rx))
+            .await
+            .expect("closed channel must resolve");
+    }
+
+    /// The group-signal case: the daemon's SIGTERM stops the supervise loop
+    /// while the stop flag is still unset.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_daemons_own_sigterm_reads_as_a_stop() {
+        let (_tx, rx) = watch::channel(false);
+        let stopping = stopping(rx);
+        tokio::pin!(stopping);
+        // First poll installs the handler; without it the raise kills the test.
+        assert!(futures::poll!(&mut stopping).is_pending());
+        nix::sys::signal::raise(nix::sys::signal::Signal::SIGTERM).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), stopping)
+            .await
+            .expect("SIGTERM must resolve");
     }
 
     #[test]
