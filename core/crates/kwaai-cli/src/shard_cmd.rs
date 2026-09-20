@@ -319,6 +319,11 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         print_warning("A shard server is already running (started via `kwaainet start --shard`).");
         print_info("If intentional, proceed — DHT announcements will overlap.");
     }
+    // Tracked from the first moment, not from model load minutes later:
+    // `status` and the orphan sweep know a child only by this file.
+    if crate::supervisor::is_supervised() {
+        crate::daemon::ShardManager::new().write_pid(std::process::id());
+    }
 
     // ── macOS: serve the whole model through Ollama, never blocks ───────────
     //
@@ -688,10 +693,9 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             // Signal daemon that inference is live — daemon will re-announce
             // with real block coverage instead of [0, 0).
             //
-            // The PID file normally comes from the supervised launch path, but
-            // `shard_is_ready()` requires it (ready sentinel AND live process),
-            // so a standalone `kwaainet shard serve` must write its own or the
-            // node announces state 1 (JOINING) forever.
+            // A supervised child wrote its PID file at start; a standalone
+            // `kwaainet shard serve` needs one too, or `shard_is_ready()`
+            // (ready sentinel AND live process) keeps the node at JOINING.
             crate::daemon::ShardManager::new().write_pid(std::process::id());
             let ready_file = crate::daemon::ShardManager::ready_file();
             let _ = std::fs::write(&ready_file, "");
