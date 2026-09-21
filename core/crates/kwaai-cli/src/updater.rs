@@ -39,11 +39,8 @@ async fn client_builder() -> reqwest::ClientBuilder {
     let roots = OS_ROOTS
         .get_or_init(|| async {
             tokio::task::spawn_blocking(|| {
-                rustls_native_certs::load_native_certs()
-                    .certs
-                    .iter()
-                    .filter_map(|c| reqwest::Certificate::from_der(c.as_ref()).ok())
-                    .collect()
+                let ders = rustls_native_certs::load_native_certs().certs;
+                usable_roots(ders.iter().map(|c| c.as_ref()))
             })
             .await
             .unwrap_or_default()
@@ -53,6 +50,20 @@ async fn client_builder() -> reqwest::ClientBuilder {
         reqwest::Client::builder().user_agent(format!("kwaainet/{CURRENT_VERSION}")),
         |b, cert| b.add_root_certificate(cert),
     )
+}
+
+/// The certs a client can be built with. OS stores hold malformed roots, and
+/// `add_root_certificate` fails the whole `build()` on the first one.
+fn usable_roots<'a>(ders: impl Iterator<Item = &'a [u8]>) -> Vec<reqwest::Certificate> {
+    ders.filter_map(|der| reqwest::Certificate::from_der(der).ok())
+        .filter(|cert| {
+            reqwest::Client::builder()
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(cert.clone())
+                .build()
+                .is_ok()
+        })
+        .collect()
 }
 
 fn cache_file() -> PathBuf {
@@ -500,8 +511,8 @@ impl UpdateChecker {
         Ok(())
     }
 
-    /// Stream `url` to `path`. Once the body flows the deadline bounds silence,
-    /// not total time: a whole-request timeout killed the ~1 GB CUDA archive.
+    /// Stream `url` to `path`. The timeouts bound connecting and silence, never
+    /// the transfer as a whole: the largest archive is ~1 GB.
     async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
         download_with_stall_timeout(url, path, DOWNLOAD_STALL_TIMEOUT, &CANCEL_DOWNLOADS).await
     }
@@ -509,8 +520,8 @@ impl UpdateChecker {
 
 static CANCEL_DOWNLOADS: AtomicBool = AtomicBool::new(false);
 
-/// Make an in-flight update download fail at its next chunk. For shutdown.
-pub fn cancel_downloads() {
+/// Make update downloads fail at their next chunk. One-way: for shutdown.
+pub(crate) fn cancel_downloads() {
     CANCEL_DOWNLOADS.store(true, Ordering::Relaxed);
 }
 
@@ -1142,14 +1153,14 @@ mod tests {
     /// silent for that long, must complete.
     #[tokio::test]
     async fn download_outlasts_the_stall_timeout_while_bytes_flow() {
-        let stall = std::time::Duration::from_millis(400);
-        let url = trickle_server(8, std::time::Duration::from_millis(100), false).await;
+        let stall = std::time::Duration::from_secs(2);
+        let url = trickle_server(10, std::time::Duration::from_millis(250), false).await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.zip");
         download_with_stall_timeout(&url, &path, stall, &AtomicBool::new(false))
             .await
-            .expect("800 ms of steady bytes must survive a 400 ms stall timeout");
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), 8 * 1024);
+            .expect("2.5 s of steady bytes must survive a 2 s stall timeout");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 10 * 1024);
     }
 
     #[tokio::test]
@@ -1186,6 +1197,22 @@ mod tests {
         let err = result.expect_err("a cancelled download must not report success");
         assert!(format!("{err:#}").contains("cancelled"), "got: {err:#}");
         assert!(!path.exists());
+    }
+
+    /// One malformed root in the OS store must not take the updater down.
+    #[test]
+    fn a_malformed_os_root_is_dropped_not_fatal() {
+        let garbage: &[u8] = b"not a certificate";
+        let roots = usable_roots([garbage].into_iter());
+        assert!(roots.is_empty());
+        let unfiltered = reqwest::Certificate::from_der(garbage).expect("from_der is lazy");
+        assert!(
+            reqwest::Client::builder()
+                .add_root_certificate(unfiltered)
+                .build()
+                .is_err(),
+            "reqwest stopped failing on a bad root: usable_roots may be redundant"
+        );
     }
 
     /// A rate-limited check must say so: it used to decode GitHub's error

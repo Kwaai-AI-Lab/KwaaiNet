@@ -286,6 +286,7 @@ fn note_check_result(
     result: Result<Option<crate::updater::UpdateInfo>>,
 ) -> Option<crate::updater::UpdateInfo> {
     match result {
+        // The count stands, so repeated install failures keep doubling.
         Ok(Some(update)) => Some(update),
         Ok(None) => {
             backoff.lock().unwrap().succeeded();
@@ -299,9 +300,14 @@ fn note_check_result(
     }
 }
 
+/// A panic in the update thread backs off like any other failed attempt.
+pub(crate) fn note_update_panicked() {
+    let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+    warn!("Auto-update panicked, no retry for at least {retry:?}");
+}
+
 /// Run [`maybe_auto_update`] on its own thread and runtime, sending the
-/// installed version to `done`. The install blocks for as long as an
-/// installer script or a 1 GB extract takes, which no runtime worker should.
+/// installed version to `done`: the install blocks, for minutes at worst.
 pub(crate) fn spawn_auto_update(
     done: tokio::sync::mpsc::Sender<String>,
 ) -> Option<std::thread::JoinHandle<()>> {
@@ -312,7 +318,7 @@ pub(crate) fn spawn_auto_update(
         match runtime {
             Ok(rt) => {
                 if let Some(version) = rt.block_on(maybe_auto_update()) {
-                    // try_send: a node already shutting down never reads it.
+                    // Never block here: a node shutting down is not reading.
                     let _ = done.try_send(version);
                 }
             }
@@ -802,8 +808,14 @@ mod update_backoff_tests {
             url: None,
             body: None,
         };
+        backoff.lock().unwrap().failed();
         let found = note_check_result(&backoff, Ok(Some(update)));
         assert_eq!(found.map(|u| u.version).as_deref(), Some("9.9.9"));
+        assert_eq!(
+            backoff.lock().unwrap().failed(),
+            Duration::from_secs(30 * 60),
+            "finding an update must not reset the count: install failures double"
+        );
     }
 
     #[test]

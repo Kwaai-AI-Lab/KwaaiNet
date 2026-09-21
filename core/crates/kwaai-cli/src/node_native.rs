@@ -70,6 +70,9 @@ use crate::node::SigHup;
 /// timeout of its own.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long shutdown waits for an update that is past its download.
+const UPDATE_STOP_GRACE: Duration = Duration::from_secs(8);
+
 /// How long to let reachability settle before acting on a change.
 ///
 /// At startup a reservation being confirmed and AutoNAT confirming an address
@@ -633,7 +636,12 @@ pub async fn run_native_node(
                     .unwrap_or(false);
                 // On its own thread: a slow download or a blocking install
                 // must not starve shutdown or the re-announce below.
-                if auto_update && update_thread.as_ref().is_none_or(|t| t.is_finished()) {
+                if let Some(finished) = update_thread.take_if(|t| t.is_finished()) {
+                    if finished.join().is_err() {
+                        crate::node::note_update_panicked();
+                    }
+                }
+                if auto_update && update_thread.is_none() {
                     update_thread = crate::node::spawn_auto_update(update_tx.clone());
                 }
 
@@ -737,8 +745,7 @@ pub async fn run_native_node(
         }
     }
 
-    // Stopping mid-update: a download gives up at its next chunk. An install
-    // already swapping the binary is waited for below, never cut short.
+    // Stopping mid-update: a download gives up at its next chunk.
     crate::updater::cancel_downloads();
 
     // A final write, so the peers this run met survive even if the last timer
@@ -756,9 +763,17 @@ pub async fn run_native_node(
     }
     node.shutdown().await;
 
+    // An install cannot be interrupted, only waited for, and `kwaainet stop`
+    // kills us 10 s after SIGTERM: give it most of that, then leave.
     if let Some(thread) = update_thread.filter(|t| !t.is_finished()) {
         info!("Waiting for the in-progress update to stop...");
-        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+        let deadline = tokio::time::Instant::now() + UPDATE_STOP_GRACE;
+        while !thread.is_finished() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !thread.is_finished() {
+            warn!("Auto-update is still installing; exiting without waiting for it");
+        }
     }
 
     Ok(pending_update_version)
