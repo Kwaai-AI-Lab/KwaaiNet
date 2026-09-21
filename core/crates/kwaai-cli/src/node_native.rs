@@ -572,7 +572,7 @@ pub async fn run_native_node(
     }
     let mut pending_update_version: Option<String> = None;
     let (update_tx, mut update_done) = tokio::sync::mpsc::channel::<String>(1);
-    let mut update_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut update_thread: Option<std::thread::JoinHandle<()>> = None;
     // Deadline for the reachability-change settle window; None = no change pending.
     let mut announce_settle: Option<tokio::time::Instant> = None;
     // Peer-cache writer, flag-gated. An interval rather than a spawned task so
@@ -631,15 +631,10 @@ pub async fn run_native_node(
                 let auto_update = KwaaiNetConfig::load_or_create()
                     .map(|c| c.contribute_policy().auto_update)
                     .unwrap_or(false);
-                // Off the loop: a slow download must not starve shutdown or
-                // the re-announce below. `update_done` breaks the loop.
-                if auto_update && update_task.as_ref().is_none_or(|t| t.is_finished()) {
-                    let done = update_tx.clone();
-                    update_task = Some(tokio::spawn(async move {
-                        if let Some(version) = crate::node::maybe_auto_update().await {
-                            let _ = done.send(version).await;
-                        }
-                    }));
+                // On its own thread: a slow download or a blocking install
+                // must not starve shutdown or the re-announce below.
+                if auto_update && update_thread.as_ref().is_none_or(|t| t.is_finished()) {
+                    update_thread = crate::node::spawn_auto_update(update_tx.clone());
                 }
 
                 if config.announce_self {
@@ -742,11 +737,9 @@ pub async fn run_native_node(
         }
     }
 
-    // Stopping mid-download: drop it. The binary swap itself has no await
-    // point, so an abort cannot land between the rename and the copy.
-    if let Some(task) = update_task {
-        task.abort();
-    }
+    // Stopping mid-update: a download gives up at its next chunk. An install
+    // already swapping the binary is waited for below, never cut short.
+    crate::updater::cancel_downloads();
 
     // A final write, so the peers this run met survive even if the last timer
     // tick was up to 60 s ago.
@@ -762,6 +755,11 @@ pub async fn run_native_node(
         node.unannounce(&ctx, &server_info, bootstrap_peers).await;
     }
     node.shutdown().await;
+
+    if let Some(thread) = update_thread.filter(|t| !t.is_finished()) {
+        info!("Waiting for the in-progress update to stop...");
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
 
     Ok(pending_update_version)
 }
