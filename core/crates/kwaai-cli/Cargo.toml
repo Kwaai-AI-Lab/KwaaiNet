@@ -40,7 +40,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 
 # HTTP (IP detection, health check, update check)
 reqwest = { workspace = true }
-# OS trust store for the updater's clients only: loading it costs ~100 ms.
+# OS trust store, for the updater's clients only: loading it takes 100-300 ms.
 rustls-native-certs = "0.8"
 
 # Logging
