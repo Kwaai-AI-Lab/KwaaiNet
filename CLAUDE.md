@@ -26,8 +26,8 @@ signals the process *group* — Ctrl-C on a foreground node is a group signal,
 
 **A clean environment for anything that touches start-up.** A change to config
 defaults, first-run paths, migrations or what `start` does before the node is up is
-tested from nothing: a fresh `KWAAINET_HOME` with no `config.yaml`, no identity key,
-no `run/` state. A developer's long-lived `~/.kwaainet` already holds every key and
+tested from nothing: a fresh `KWAAINET_HOME` with no config file, no identity key, no
+`run/` state. A developer's long-lived `~/.kwaainet` already holds every key and
 file the code goes looking for, so it cannot show what a new install sees.
 
 **A fresh-context review of the whole diff against the base** — `git diff
