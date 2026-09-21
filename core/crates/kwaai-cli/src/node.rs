@@ -267,7 +267,7 @@ impl UpdateBackoff {
     /// 15 min, doubling per consecutive failure, capped at 6 h.
     fn failed(&mut self) -> Duration {
         let delay = Self::BASE
-            .saturating_mul(1u32 << self.failures.min(8))
+            .saturating_mul(1u32 << self.failures.min(8)) // min: no shift overflow
             .min(Self::MAX);
         self.failures += 1;
         self.not_before = Some(std::time::Instant::now() + delay);
@@ -277,6 +277,53 @@ impl UpdateBackoff {
     fn succeeded(&mut self) {
         *self = Self::default();
     }
+}
+
+/// The update a check found, after logging a failed check and recording the
+/// outcome in `backoff`.
+fn note_check_result(
+    backoff: &std::sync::Mutex<UpdateBackoff>,
+    result: Result<Option<crate::updater::UpdateInfo>>,
+) -> Option<crate::updater::UpdateInfo> {
+    match result {
+        Ok(Some(update)) => Some(update),
+        Ok(None) => {
+            backoff.lock().unwrap().succeeded();
+            None
+        }
+        Err(e) => {
+            let retry = backoff.lock().unwrap().failed();
+            warn!("Auto-update check failed, no retry for at least {retry:?}: {e:#}");
+            None
+        }
+    }
+}
+
+/// Run [`maybe_auto_update`] on its own thread and runtime, sending the
+/// installed version to `done`. The install blocks for as long as an
+/// installer script or a 1 GB extract takes, which no runtime worker should.
+pub(crate) fn spawn_auto_update(
+    done: tokio::sync::mpsc::Sender<String>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let run = move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        match runtime {
+            Ok(rt) => {
+                if let Some(version) = rt.block_on(maybe_auto_update()) {
+                    // try_send: a node already shutting down never reads it.
+                    let _ = done.try_send(version);
+                }
+            }
+            Err(e) => warn!("Auto-update: could not start a runtime: {e}"),
+        }
+    };
+    std::thread::Builder::new()
+        .name("auto-update".into())
+        .spawn(run)
+        .map_err(|e| warn!("Auto-update: could not start a thread: {e}"))
+        .ok()
 }
 
 /// Check for a newer release and, if found, install it automatically.
@@ -318,18 +365,7 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     }
 
     let checker = crate::updater::UpdateChecker::new();
-    let update = match checker.check(false).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            UPDATE_BACKOFF.lock().unwrap().succeeded();
-            return None;
-        }
-        Err(e) => {
-            let retry = UPDATE_BACKOFF.lock().unwrap().failed();
-            warn!("Auto-update check failed, no retry for at least {retry:?}: {e:#}");
-            return None;
-        }
-    };
+    let update = note_check_result(&UPDATE_BACKOFF, checker.check(false).await)?;
 
     info!(
         "Auto-update: new version {} available — installing…",
@@ -341,6 +377,8 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
         warn!("Auto-update install failed, no retry for at least {retry:?}: {e:?}");
         return None;
     }
+
+    UPDATE_BACKOFF.lock().unwrap().succeeded();
 
     // Windows can rename a running executable in place — the OS loader opens
     // EXEs with FILE_SHARE_DELETE, so the memory mapping stays valid after the
@@ -745,6 +783,28 @@ mod capacity_lease_dht_tests {
 #[cfg(test)]
 mod update_backoff_tests {
     use super::*;
+
+    /// A failed check must arm the backoff, and "no update" must clear it.
+    #[test]
+    fn check_results_drive_the_backoff() {
+        let backoff = std::sync::Mutex::new(UpdateBackoff::default());
+        let now = std::time::Instant::now();
+
+        assert!(note_check_result(&backoff, Err(anyhow::anyhow!("dns"))).is_none());
+        assert!(!backoff.lock().unwrap().ready(now), "a failure backs off");
+
+        assert!(note_check_result(&backoff, Ok(None)).is_none());
+        assert!(backoff.lock().unwrap().ready(now), "a clean check resets");
+
+        let update = crate::updater::UpdateInfo {
+            version: "9.9.9".into(),
+            name: None,
+            url: None,
+            body: None,
+        };
+        let found = note_check_result(&backoff, Ok(Some(update)));
+        assert_eq!(found.map(|u| u.version).as_deref(), Some("9.9.9"));
+    }
 
     #[test]
     fn update_backoff_doubles_caps_and_resets() {
