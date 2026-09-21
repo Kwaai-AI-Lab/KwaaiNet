@@ -804,6 +804,12 @@ fn default_true() -> bool {
     true
 }
 
+/// Drop a leading UTF-8 BOM: PowerShell 5.1 and Notepad write one, and
+/// serde_yaml reports it as "more than one document".
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 /// Returns true when the running binary is a pre-v1.0 build (major version == 0).
 pub fn is_pre_release() -> bool {
     crate::updater::CURRENT_VERSION
@@ -1118,7 +1124,9 @@ impl KwaaiNetConfig {
             log_level: Option<String>,
         }
         let text = std::fs::read_to_string(config_file()).ok()?;
-        serde_yaml::from_str::<LogLevelOnly>(&text).ok()?.log_level
+        serde_yaml::from_str::<LogLevelOnly>(strip_bom(&text))
+            .ok()?
+            .log_level
     }
 
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
@@ -1129,7 +1137,7 @@ impl KwaaiNetConfig {
         if cfg_file.exists() {
             let text = std::fs::read_to_string(&cfg_file)
                 .with_context(|| format!("reading {}", cfg_file.display()))?;
-            let mut cfg: KwaaiNetConfig = serde_yaml::from_str(&text)
+            let mut cfg: KwaaiNetConfig = serde_yaml::from_str(strip_bom(&text))
                 .with_context(|| format!("parsing {}", cfg_file.display()))?;
             // Map-derived fields are only valid for the model that was active when
             // the map was consulted. If the configured model is an explicit HF path,
@@ -1588,6 +1596,16 @@ mod tests {
             blocks,
             ..KwaaiNetConfig::default()
         }
+    }
+
+    /// PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM; unstripped, any
+    /// multi-line config fails as "more than one document".
+    #[test]
+    fn config_with_utf8_bom_parses() {
+        let text = "\u{feff}port: 8080\r\nblocks: 4\r\n";
+        assert!(serde_yaml::from_str::<KwaaiNetConfig>(text).is_err());
+        let cfg: KwaaiNetConfig = serde_yaml::from_str(strip_bom(text)).expect("BOM stripped");
+        assert_eq!((cfg.port, cfg.blocks), (8080, 4));
     }
 
     #[test]

@@ -571,6 +571,8 @@ pub async fn run_native_node(
         ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     }
     let mut pending_update_version: Option<String> = None;
+    let (update_tx, mut update_done) = tokio::sync::mpsc::channel::<String>(1);
+    let mut update_task: Option<tokio::task::JoinHandle<()>> = None;
     // Deadline for the reachability-change settle window; None = no change pending.
     let mut announce_settle: Option<tokio::time::Instant> = None;
     // Peer-cache writer, flag-gated. An interval rather than a spawned task so
@@ -597,6 +599,12 @@ pub async fn run_native_node(
                 }
             }
 
+            // The background auto-update installed a new binary.
+            Some(version) = update_done.recv() => {
+                pending_update_version = Some(version);
+                break;
+            }
+
             // Periodic re-announcement.
             _ = &mut next_announce => {
                 reload_block_range(&mut config);
@@ -619,17 +627,19 @@ pub async fn run_native_node(
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 crate::node::refresh_vpk_info(&mut server_info, &config, public_name).await;
 
-                // Auto-update — installs a new binary when available (pre-v1.0)
-                // and breaks the loop so the respawn happens after our own
-                // cleanup. Identical to the p2pd path.
+                // Auto-update — installs a new binary when available (pre-v1.0).
                 let auto_update = KwaaiNetConfig::load_or_create()
                     .map(|c| c.contribute_policy().auto_update)
                     .unwrap_or(false);
-                if auto_update {
-                    if let Some(version) = crate::node::maybe_auto_update().await {
-                        pending_update_version = Some(version);
-                        break;
-                    }
+                // Off the loop: a slow download must not starve shutdown or
+                // the re-announce below. `update_done` breaks the loop.
+                if auto_update && update_task.as_ref().is_none_or(|t| t.is_finished()) {
+                    let done = update_tx.clone();
+                    update_task = Some(tokio::spawn(async move {
+                        if let Some(version) = crate::node::maybe_auto_update().await {
+                            let _ = done.send(version).await;
+                        }
+                    }));
                 }
 
                 if config.announce_self {
@@ -730,6 +740,12 @@ pub async fn run_native_node(
                 break;
             }
         }
+    }
+
+    // Stopping mid-download: drop it. The binary swap itself has no await
+    // point, so an abort cannot land between the rename and the copy.
+    if let Some(task) = update_task {
+        task.abort();
     }
 
     // A final write, so the peers this run met survive even if the last timer
