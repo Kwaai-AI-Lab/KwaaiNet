@@ -243,6 +243,42 @@ pub(crate) fn jitter_secs(base: u64, spread: u64) -> u64 {
 // Auto-update
 // ---------------------------------------------------------------------------
 
+/// Spaces out auto-update attempts after a failure: a tick is every ~5 min,
+/// and a doomed install otherwise re-downloads the archive on each one.
+#[derive(Default)]
+struct UpdateBackoff {
+    failures: u32,
+    not_before: Option<std::time::Instant>,
+}
+
+static UPDATE_BACKOFF: std::sync::Mutex<UpdateBackoff> = std::sync::Mutex::new(UpdateBackoff {
+    failures: 0,
+    not_before: None,
+});
+
+impl UpdateBackoff {
+    const BASE: Duration = Duration::from_secs(15 * 60);
+    const MAX: Duration = Duration::from_secs(6 * 60 * 60);
+
+    fn ready(&self, now: std::time::Instant) -> bool {
+        self.not_before.is_none_or(|t| now >= t)
+    }
+
+    /// 15 min, doubling per consecutive failure, capped at 6 h.
+    fn failed(&mut self) -> Duration {
+        let delay = Self::BASE
+            .saturating_mul(1u32 << self.failures.min(8))
+            .min(Self::MAX);
+        self.failures += 1;
+        self.not_before = Some(std::time::Instant::now() + delay);
+        delay
+    }
+
+    fn succeeded(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Check for a newer release and, if found, install it automatically.
 /// After a successful install the daemon exits cleanly so the OS service
 /// manager (systemd, launchd) or the user can restart it with the new binary.
@@ -273,10 +309,26 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
         return None;
     }
 
+    if !UPDATE_BACKOFF
+        .lock()
+        .unwrap()
+        .ready(std::time::Instant::now())
+    {
+        return None;
+    }
+
     let checker = crate::updater::UpdateChecker::new();
     let update = match checker.check(false).await {
         Ok(Some(u)) => u,
-        _ => return None,
+        Ok(None) => {
+            UPDATE_BACKOFF.lock().unwrap().succeeded();
+            return None;
+        }
+        Err(e) => {
+            let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+            warn!("Auto-update check failed, next attempt in {retry:?}: {e:#}");
+            return None;
+        }
     };
 
     info!(
@@ -285,7 +337,8 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     );
 
     if let Err(e) = checker.install_update(&update.version).await {
-        warn!("Auto-update install failed: {e:?}");
+        let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+        warn!("Auto-update install failed, next attempt in {retry:?}: {e:?}");
         return None;
     }
 
@@ -686,5 +739,28 @@ mod capacity_lease_dht_tests {
 
         let lease_v1 = find_field(&fields, "lease_v1").expect("lease_v1 key present");
         assert_eq!(lease_v1.as_bool(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod update_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn update_backoff_doubles_caps_and_resets() {
+        let mut b = UpdateBackoff::default();
+        let now = std::time::Instant::now();
+        assert!(b.ready(now), "no failure yet: every tick may try");
+        assert_eq!(b.failed(), Duration::from_secs(15 * 60));
+        assert!(!b.ready(now), "the next ~5 min tick must be skipped");
+        assert!(b.ready(now + Duration::from_secs(16 * 60)));
+        assert_eq!(b.failed(), Duration::from_secs(30 * 60));
+        for _ in 0..40 {
+            assert!(b.failed() <= UpdateBackoff::MAX);
+        }
+        assert_eq!(b.failed(), UpdateBackoff::MAX);
+        b.succeeded();
+        assert!(b.ready(std::time::Instant::now()));
+        assert_eq!(b.failed(), Duration::from_secs(15 * 60));
     }
 }

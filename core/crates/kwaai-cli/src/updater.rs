@@ -10,6 +10,10 @@ const RELEASES_URL: &str = "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/r
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Longest a download may go without receiving a byte.
+const DOWNLOAD_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
@@ -67,7 +71,8 @@ impl UpdateChecker {
             return Ok(None);
         }
 
-        let release: GithubRelease = resp.json().await?;
+        // A rate-limit 403 otherwise surfaces as "missing field `tag_name`".
+        let release: GithubRelease = resp.error_for_status()?.json().await?;
         debug!("Latest release tag: {}", release.tag_name);
         let latest = release.tag_name.trim_start_matches('v').to_string();
 
@@ -466,20 +471,44 @@ impl UpdateChecker {
         Ok(())
     }
 
+    /// Stream `url` to `path`. Once the body flows the deadline bounds silence,
+    /// not total time: a whole-request timeout killed the ~1 GB CUDA archive.
     async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
-        let resp = client.get(url).send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("Download failed (HTTP {}): {}", resp.status(), url);
-        }
-        let bytes = resp.bytes().await?;
-        std::fs::write(path, &bytes)
-            .with_context(|| format!("Failed to write installer to {}", path.display()))?;
-        Ok(())
+        download_with_stall_timeout(url, path, DOWNLOAD_STALL_TIMEOUT).await
     }
+}
+
+async fn download_with_stall_timeout(
+    url: &str,
+    path: &std::path::Path,
+    stall: std::time::Duration,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .read_timeout(stall)
+        .build()?;
+    let mut resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Download failed (HTTP {}): {}", resp.status(), url);
+    }
+    let streamed = async {
+        let file = tokio::fs::File::create(path).await?;
+        let mut file = tokio::io::BufWriter::with_capacity(1 << 20, file);
+        while let Some(chunk) = resp.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = streamed {
+        let _ = std::fs::remove_file(path);
+        return Err(e).with_context(|| format!("Downloading {url} to {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Query nvidia-smi asynchronously with a 4-second timeout.
@@ -1047,5 +1076,56 @@ mod tests {
     async fn nvidia_smi_detects_gpu_on_linux() {
         let has_gpu = nvidia_smi_async().await;
         println!("nvidia_smi_async() = {has_gpu}");
+    }
+
+    /// Serve `chunks` of 1 KiB, `gap` apart, then optionally hang mid-body.
+    async fn trickle_server(chunks: usize, gap: std::time::Duration, hang: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _ = sock.read(&mut [0u8; 1024]).await;
+            let total = (chunks + usize::from(hang)) * 1024;
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\n\r\n");
+            sock.write_all(head.as_bytes()).await.unwrap();
+            for _ in 0..chunks {
+                sock.write_all(&[7u8; 1024]).await.unwrap();
+                tokio::time::sleep(gap).await;
+            }
+            if hang {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+        format!("http://{addr}/archive.zip")
+    }
+
+    /// The regression: a download slower than the deadline overall, but never
+    /// silent for that long, must complete.
+    #[tokio::test]
+    async fn download_outlasts_the_stall_timeout_while_bytes_flow() {
+        let stall = std::time::Duration::from_millis(400);
+        let url = trickle_server(8, std::time::Duration::from_millis(100), false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zip");
+        download_with_stall_timeout(&url, &path, stall)
+            .await
+            .expect("800 ms of steady bytes must survive a 400 ms stall timeout");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 8 * 1024);
+    }
+
+    #[tokio::test]
+    async fn stalled_download_fails_and_leaves_no_partial_file() {
+        let stall = std::time::Duration::from_millis(300);
+        let url = trickle_server(2, std::time::Duration::from_millis(10), true).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zip");
+        assert!(download_with_stall_timeout(&url, &path, stall)
+            .await
+            .is_err());
+        assert!(
+            !path.exists(),
+            "a truncated archive must not be left behind"
+        );
     }
 }
