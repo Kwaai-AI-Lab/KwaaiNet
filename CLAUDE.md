@@ -14,6 +14,32 @@ Flag any PR that has been open longer than 7 days as overdue.
 
 ---
 
+## Before opening a PR
+
+The author's side of the review below. Verifying that the new code works is not a
+review of the diff, and a branch is not ready to propose until these are done.
+
+**Negative variants in the end-to-end scenarios.** Every command also runs with its
+state file missing (no PID file, no `start-args.json`), and every signal test also
+signals the process *group* — Ctrl-C on a foreground node is a group signal,
+`kill <pid>` is not.
+
+**A clean environment for anything that touches start-up.** A change to config
+defaults, first-run paths, migrations or what `start` does before the node is up is
+tested from nothing: a fresh `KWAAINET_HOME` with no `config.yaml`, no identity key,
+no `run/` state. A developer's long-lived `~/.kwaainet` already holds every key and
+file the code goes looking for, so it cannot show what a new install sees.
+
+**A fresh-context review of the whole diff against the base** — `git diff
+origin/main...`, not the last commit's delta. Use `/code-review`, or a subagent that
+has not seen the work: the context that wrote the code carries its assumptions into
+reading it. Fix what it finds first.
+
+CI's own list still applies on top: `cargo fmt --all --check`, `cargo clippy
+--all-targets -- -D warnings`, `cargo test -p kwaainet`.
+
+---
+
 ## Reviewing PRs
 
 Lessons from the 2026-09-08/09 pass over 20 open PRs, where the entire review went
