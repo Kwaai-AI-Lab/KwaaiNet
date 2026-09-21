@@ -333,7 +333,7 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
         }
         Err(e) => {
             let retry = UPDATE_BACKOFF.lock().unwrap().failed();
-            warn!("Auto-update check failed, next attempt in {retry:?}: {e:#}");
+            warn!("Auto-update check failed, no retry for at least {retry:?}: {e:#}");
             return None;
         }
     };
@@ -345,7 +345,7 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
 
     if let Err(e) = checker.install_update(&update.version).await {
         let retry = UPDATE_BACKOFF.lock().unwrap().failed();
-        warn!("Auto-update install failed, next attempt in {retry:?}: {e:?}");
+        warn!("Auto-update install failed, no retry for at least {retry:?}: {e:?}");
         return None;
     }
 
