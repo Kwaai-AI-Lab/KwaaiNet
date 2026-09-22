@@ -250,6 +250,95 @@ pub(crate) fn jitter_secs(base: u64, spread: u64) -> u64 {
 // Auto-update
 // ---------------------------------------------------------------------------
 
+/// Spaces out auto-update attempts after a failure: a tick is every ~5 min,
+/// and a doomed install otherwise re-downloads the archive on each one.
+#[derive(Default)]
+struct UpdateBackoff {
+    failures: u32,
+    not_before: Option<std::time::Instant>,
+}
+
+static UPDATE_BACKOFF: std::sync::Mutex<UpdateBackoff> = std::sync::Mutex::new(UpdateBackoff {
+    failures: 0,
+    not_before: None,
+});
+
+impl UpdateBackoff {
+    const BASE: Duration = Duration::from_secs(15 * 60);
+    const MAX: Duration = Duration::from_secs(6 * 60 * 60);
+
+    fn ready(&self, now: std::time::Instant) -> bool {
+        self.not_before.is_none_or(|t| now >= t)
+    }
+
+    /// 15 min, doubling per consecutive failure, capped at 6 h.
+    fn failed(&mut self) -> Duration {
+        let delay = Self::BASE
+            .saturating_mul(1u32 << self.failures.min(8)) // min: no shift overflow
+            .min(Self::MAX);
+        self.failures += 1;
+        self.not_before = Some(std::time::Instant::now() + delay);
+        delay
+    }
+
+    fn succeeded(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The update a check found, after logging a failed check and recording the
+/// outcome in `backoff`.
+fn note_check_result(
+    backoff: &std::sync::Mutex<UpdateBackoff>,
+    result: Result<Option<crate::updater::UpdateInfo>>,
+) -> Option<crate::updater::UpdateInfo> {
+    match result {
+        // The count stands, so repeated install failures keep doubling.
+        Ok(Some(update)) => Some(update),
+        Ok(None) => {
+            backoff.lock().unwrap().succeeded();
+            None
+        }
+        Err(e) => {
+            let retry = backoff.lock().unwrap().failed();
+            warn!("Auto-update check failed, no retry for at least {retry:?}: {e:#}");
+            None
+        }
+    }
+}
+
+/// A panic in the update thread backs off like any other failed attempt.
+pub(crate) fn note_update_panicked() {
+    let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+    warn!("Auto-update panicked, no retry for at least {retry:?}");
+}
+
+/// Run [`maybe_auto_update`] on its own thread and runtime, sending the
+/// installed version to `done`: the install blocks, for minutes at worst.
+pub(crate) fn spawn_auto_update(
+    done: tokio::sync::mpsc::Sender<String>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let run = move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        match runtime {
+            Ok(rt) => {
+                if let Some(version) = rt.block_on(maybe_auto_update()) {
+                    // Never block here: a node shutting down is not reading.
+                    let _ = done.try_send(version);
+                }
+            }
+            Err(e) => warn!("Auto-update: could not start a runtime: {e}"),
+        }
+    };
+    std::thread::Builder::new()
+        .name("auto-update".into())
+        .spawn(run)
+        .map_err(|e| warn!("Auto-update: could not start a thread: {e}"))
+        .ok()
+}
+
 /// Check for a newer release and, if found, install it automatically.
 /// After a successful install the daemon exits cleanly so the OS service
 /// manager (systemd, launchd) or the user can restart it with the new binary.
@@ -280,11 +369,16 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
         return None;
     }
 
+    if !UPDATE_BACKOFF
+        .lock()
+        .unwrap()
+        .ready(std::time::Instant::now())
+    {
+        return None;
+    }
+
     let checker = crate::updater::UpdateChecker::new();
-    let update = match checker.check(false).await {
-        Ok(Some(u)) => u,
-        _ => return None,
-    };
+    let update = note_check_result(&UPDATE_BACKOFF, checker.check(false).await)?;
 
     info!(
         "Auto-update: new version {} available — installing…",
@@ -292,9 +386,12 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     );
 
     if let Err(e) = checker.install_update(&update.version).await {
-        warn!("Auto-update install failed: {e:?}");
+        let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+        warn!("Auto-update install failed, no retry for at least {retry:?}: {e:?}");
         return None;
     }
+
+    UPDATE_BACKOFF.lock().unwrap().succeeded();
 
     // Windows can rename a running executable in place — the OS loader opens
     // EXEs with FILE_SHARE_DELETE, so the memory mapping stays valid after the
@@ -693,5 +790,56 @@ mod capacity_lease_dht_tests {
 
         let lease_v1 = find_field(&fields, "lease_v1").expect("lease_v1 key present");
         assert_eq!(lease_v1.as_bool(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod update_backoff_tests {
+    use super::*;
+
+    /// A failed check must arm the backoff, and "no update" must clear it.
+    #[test]
+    fn check_results_drive_the_backoff() {
+        let backoff = std::sync::Mutex::new(UpdateBackoff::default());
+        let now = std::time::Instant::now();
+
+        assert!(note_check_result(&backoff, Err(anyhow::anyhow!("dns"))).is_none());
+        assert!(!backoff.lock().unwrap().ready(now), "a failure backs off");
+
+        assert!(note_check_result(&backoff, Ok(None)).is_none());
+        assert!(backoff.lock().unwrap().ready(now), "a clean check resets");
+
+        let update = crate::updater::UpdateInfo {
+            version: "9.9.9".into(),
+            name: None,
+            url: None,
+            body: None,
+        };
+        backoff.lock().unwrap().failed();
+        let found = note_check_result(&backoff, Ok(Some(update)));
+        assert_eq!(found.map(|u| u.version).as_deref(), Some("9.9.9"));
+        assert_eq!(
+            backoff.lock().unwrap().failed(),
+            Duration::from_secs(30 * 60),
+            "finding an update must not reset the count: install failures double"
+        );
+    }
+
+    #[test]
+    fn update_backoff_doubles_caps_and_resets() {
+        let mut b = UpdateBackoff::default();
+        let now = std::time::Instant::now();
+        assert!(b.ready(now), "no failure yet: every tick may try");
+        assert_eq!(b.failed(), Duration::from_secs(15 * 60));
+        assert!(!b.ready(now), "the next ~5 min tick must be skipped");
+        assert!(b.ready(now + Duration::from_secs(16 * 60)));
+        assert_eq!(b.failed(), Duration::from_secs(30 * 60));
+        for _ in 0..40 {
+            assert!(b.failed() <= UpdateBackoff::MAX);
+        }
+        assert_eq!(b.failed(), UpdateBackoff::MAX);
+        b.succeeded();
+        assert!(b.ready(std::time::Instant::now()));
+        assert_eq!(b.failed(), Duration::from_secs(15 * 60));
     }
 }

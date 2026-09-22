@@ -57,6 +57,13 @@ The historical record up to v0.3.7 follows.
 - `port_in_use` probes both address families, so the "already running" message is not defeated by a squatter holding only the v6 half.
 - `kwaai-p2p`: `is_announceable` now applies the strict (`only_global_ips: true`) tier, with no signature change — a caller outside this repo that relied on it admitting reserved space should switch to `is_announceable_with(addr, false)`.
 
+### Fixed
+- **Auto-update no longer fails silently.** A release check that could not reach GitHub logged nothing at any level and cached nothing, so the node looked exactly like one with auto-update off. It now logs a warning with the full error, and check or install failures back off (15 min, doubling, capped at 6 h) instead of retrying every announce tick.
+- The update download streams to disk under a stall timeout. It used a 120 s whole-request deadline with the body held in RAM, which the 970 MB Windows `cuda-full` archive cannot meet below ~68 Mbit/s: an NVIDIA Windows node re-downloaded it every ~5 min and never upgraded. The download also runs off the node's event loop.
+- The release check and download trust the OS certificate store as well as the bundled roots, so TLS inspection no longer breaks them.
+- A GitHub rate-limit response is reported as HTTP 403 instead of `missing field tag_name`.
+- `config.yaml` saved with a UTF-8 BOM (PowerShell 5.1 `Set-Content -Encoding utf8`, Notepad) parses; it used to stop the node starting with "more than one document".
+
 ## [v0.3.7] - 2026-03-04
 
 ### Fixed

@@ -70,6 +70,9 @@ use crate::node::SigHup;
 /// timeout of its own.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long shutdown waits for an update that is past its download.
+const UPDATE_STOP_GRACE: Duration = Duration::from_secs(8);
+
 /// How long to let reachability settle before acting on a change.
 ///
 /// At startup a reservation being confirmed and AutoNAT confirming an address
@@ -571,6 +574,8 @@ pub async fn run_native_node(
         ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     }
     let mut pending_update_version: Option<String> = None;
+    let (update_tx, mut update_done) = tokio::sync::mpsc::channel::<String>(1);
+    let mut update_thread: Option<std::thread::JoinHandle<()>> = None;
     // Deadline for the reachability-change settle window; None = no change pending.
     let mut announce_settle: Option<tokio::time::Instant> = None;
     // Peer-cache writer, flag-gated. An interval rather than a spawned task so
@@ -597,6 +602,12 @@ pub async fn run_native_node(
                 }
             }
 
+            // The background auto-update installed a new binary.
+            Some(version) = update_done.recv() => {
+                pending_update_version = Some(version);
+                break;
+            }
+
             // Periodic re-announcement.
             _ = &mut next_announce => {
                 reload_block_range(&mut config);
@@ -619,17 +630,19 @@ pub async fn run_native_node(
                 crate::node::refresh_throughput(&mut server_info, &config.model, dl_bps, using_relay);
                 crate::node::refresh_vpk_info(&mut server_info, &config, public_name).await;
 
-                // Auto-update — installs a new binary when available (pre-v1.0)
-                // and breaks the loop so the respawn happens after our own
-                // cleanup. Identical to the p2pd path.
+                // Auto-update — installs a new binary when available (pre-v1.0).
                 let auto_update = KwaaiNetConfig::load_or_create()
                     .map(|c| c.contribute_policy().auto_update)
                     .unwrap_or(false);
-                if auto_update {
-                    if let Some(version) = crate::node::maybe_auto_update().await {
-                        pending_update_version = Some(version);
-                        break;
+                // On its own thread: a slow download or a blocking install
+                // must not starve shutdown or the re-announce below.
+                if let Some(finished) = update_thread.take_if(|t| t.is_finished()) {
+                    if finished.join().is_err() {
+                        crate::node::note_update_panicked();
                     }
+                }
+                if auto_update && update_thread.is_none() {
+                    update_thread = crate::node::spawn_auto_update(update_tx.clone());
                 }
 
                 if config.announce_self {
@@ -732,6 +745,9 @@ pub async fn run_native_node(
         }
     }
 
+    // Stopping mid-update: a download gives up at its next chunk.
+    crate::updater::cancel_downloads();
+
     // A final write, so the peers this run met survive even if the last timer
     // tick was up to 60 s ago.
     if config.decentralized_dht {
@@ -746,6 +762,19 @@ pub async fn run_native_node(
         node.unannounce(&ctx, &server_info, bootstrap_peers).await;
     }
     node.shutdown().await;
+
+    // An install cannot be interrupted, only waited for, and `kwaainet stop`
+    // kills us 10 s after SIGTERM: give it most of that, then leave.
+    if let Some(thread) = update_thread.filter(|t| !t.is_finished()) {
+        info!("Waiting for the in-progress update to stop...");
+        let deadline = tokio::time::Instant::now() + UPDATE_STOP_GRACE;
+        while !thread.is_finished() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !thread.is_finished() {
+            warn!("Auto-update is still installing; exiting without waiting for it");
+        }
+    }
 
     Ok(pending_update_version)
 }
