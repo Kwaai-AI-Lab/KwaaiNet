@@ -305,18 +305,24 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
     print_info("This node does not advertise a block range — by design on macOS.");
     print_separator();
 
-    tokio::signal::ctrl_c().await.ok();
+    crate::supervisor::stop_requested().await;
     println!();
     print_info("Stopping whole-model server…");
     Ok(ShardServeExit::UserStop)
 }
 
 async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
+    crate::supervisor::watch_parent_from_start();
     let cfg = KwaaiNetConfig::load_or_create()?;
 
     if crate::daemon::ShardManager::new().is_running() {
         print_warning("A shard server is already running (started via `kwaainet start --shard`).");
         print_info("If intentional, proceed — DHT announcements will overlap.");
+    }
+    // Tracked from the first moment, not from model load minutes later:
+    // `status` and the orphan sweep know a child only by this file.
+    if crate::supervisor::is_supervised() {
+        crate::daemon::ShardManager::new().write_pid(std::process::id());
     }
 
     // ── macOS: serve the whole model through Ollama, never blocks ───────────
@@ -687,10 +693,9 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             // Signal daemon that inference is live — daemon will re-announce
             // with real block coverage instead of [0, 0).
             //
-            // The PID file normally comes from the supervised launch path, but
-            // `shard_is_ready()` requires it (ready sentinel AND live process),
-            // so a standalone `kwaainet shard serve` must write its own or the
-            // node announces state 1 (JOINING) forever.
+            // A supervised child wrote its PID file at start; a standalone
+            // `kwaainet shard serve` needs one too, or `shard_is_ready()`
+            // (ready sentinel AND live process) keeps the node at JOINING.
             crate::daemon::ShardManager::new().write_pid(std::process::id());
             let ready_file = crate::daemon::ShardManager::ready_file();
             let _ = std::fs::write(&ready_file, "");
@@ -854,10 +859,9 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             Box::pin(futures::future::pending::<()>())
         };
 
-    // ── Wait: Ctrl-C or rebalance signal ─────────────────────────────────────
+    // ── Wait: stop request (Ctrl-C, SIGTERM, parent gone) or rebalance ───────
     let exit = tokio::select! {
-        res = tokio::signal::ctrl_c() => {
-            res.context("ctrl-c handler")?;
+        _ = crate::supervisor::stop_requested() => {
             ShardServeExit::UserStop
         }
         _ = rebalance_fut => {

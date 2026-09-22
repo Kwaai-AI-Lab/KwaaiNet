@@ -1,0 +1,593 @@
+//! `run-node` owns its `shard serve` and `storage serve` children.
+//!
+//! The children used to be spawned detached by the short-lived `kwaainet
+//! start` process and tracked by PID file only: nothing waited on them, a
+//! crashed shard stayed crashed, and a killed daemon left them serving into a
+//! socket that no longer existed. Here the node is their parent: it decides
+//! from the contribution policy which to run ([`plan`]), spawns them once the
+//! control socket answers, restarts them with backoff when they exit, and
+//! terminates them on shutdown. A child's stdin is a lifeline pipe held by
+//! the daemon; it exits on EOF ([`stop_requested`]), so a SIGKILLed daemon
+//! leaves no orphans either. Same mechanism on every platform; no PID
+//! probes, no process groups, no job objects.
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tracing::{info, warn};
+
+use crate::cli::StartOverrides;
+use crate::config::{log_dir, KwaaiNetConfig};
+
+/// Set on every child: marks its stdin as the lifeline pipe (see
+/// [`parent_gone`]). The value is the daemon's PID, for the logs.
+pub const SUPERVISOR_PID_ENV: &str = "KWAAINET_SUPERVISOR_PID";
+
+const SHARD_MIN_RAM_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const BACKOFF_MIN: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// A child that lived this long before exiting gets a fresh backoff.
+const STABLE_AFTER: Duration = Duration::from_secs(60);
+const SOCKET_WAIT: Duration = Duration::from_secs(60);
+const TERM_GRACE: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    Start,
+    Skip(String),
+}
+
+/// Which children this instance runs, with the reason for each skip so
+/// `start` can print it and `run-node` can log it.
+#[derive(Debug, Clone)]
+pub struct ChildPlan {
+    pub shard: Decision,
+    pub storage: Decision,
+}
+
+pub fn model_is_locally_available(model: &str) -> bool {
+    crate::hf::resolve_snapshot(model).is_ok() || crate::ollama::resolve_model_blob(model).is_ok()
+}
+
+fn system_total_ram_bytes() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.total_memory()
+}
+
+/// `overrides` must already be applied to `cfg`.
+pub fn plan(cfg: &KwaaiNetConfig, overrides: &StartOverrides) -> ChildPlan {
+    plan_with(
+        cfg,
+        overrides,
+        model_is_locally_available(&cfg.model),
+        system_total_ram_bytes(),
+    )
+}
+
+/// The decision given the probes' answers. `--shard` waives the model-present
+/// and RAM gates: the operator asked, so the node tries.
+fn plan_with(
+    cfg: &KwaaiNetConfig,
+    overrides: &StartOverrides,
+    model_available: bool,
+    total_ram: u64,
+) -> ChildPlan {
+    let policy = cfg.contribute_policy();
+    let explicit = overrides.shard;
+    let available = explicit || model_available;
+    let enough_ram = explicit || total_ram >= SHARD_MIN_RAM_BYTES;
+
+    let shard = if policy.shards && available && enough_ram {
+        Decision::Start
+    } else if policy.shards && available {
+        Decision::Skip(
+            "Low memory (< 10 GB) — skipping shard serving to prevent OOM. \
+             Override: kwaainet start --daemon --shard"
+                .into(),
+        )
+    } else if policy.shards {
+        Decision::Skip(format!(
+            "No local model found for '{}' — skipping shard serving. \
+             Download: kwaainet shard download",
+            cfg.model
+        ))
+    } else if !overrides.no_contribute && cfg.contribute.shards_unset() && available {
+        // Has a model and would have sharded under the old opt-out default:
+        // say so rather than let its block contribution vanish on upgrade.
+        Decision::Skip(
+            "Block-shard serving is opt-in (experimental) — not starting it. \
+             This node still serves whole-model inference via Ollama. \
+             Serve blocks anyway: kwaainet config set contribute.shards true"
+                .into(),
+        )
+    } else if overrides.no_contribute {
+        Decision::Skip("Contribution disabled for this instance (--no-contribute).".into())
+    } else {
+        Decision::Skip("Shard serving is off (contribute.shards).".into())
+    };
+
+    let storage = if !cfg!(feature = "storage") {
+        Decision::Skip("Built without the storage feature.".into())
+    } else if policy.storage && cfg.storage.is_some() {
+        Decision::Start
+    } else if policy.storage {
+        Decision::Skip("Storage not initialised — skipping. Run: kwaainet storage init".into())
+    } else {
+        Decision::Skip("Storage serving is off (contribute.storage / --no-contribute).".into())
+    };
+
+    ChildPlan { shard, storage }
+}
+
+struct ChildSpec {
+    name: &'static str,
+    args: &'static [&'static str],
+    log: &'static str,
+    /// Stops the instance its PID file names, if one is running.
+    stop_orphan: fn() -> bool,
+}
+
+const SHARD: ChildSpec = ChildSpec {
+    name: "shard serve",
+    args: &["shard", "serve", "--auto-rebalance"],
+    log: "shard.log",
+    stop_orphan: || {
+        let m = crate::daemon::ShardManager::new();
+        m.is_running() && {
+            m.stop_process();
+            true
+        }
+    },
+};
+const STORAGE: ChildSpec = ChildSpec {
+    name: "storage serve",
+    args: &["storage", "serve"],
+    log: "storage_serve.log",
+    stop_orphan: || {
+        let m = crate::daemon::StorageApiManager::new();
+        m.is_running() && {
+            m.stop_process();
+            true
+        }
+    },
+};
+
+/// Handle on the running children. Dropping it without `shutdown` stops them
+/// too (a closed channel reads as a stop); nothing then waits for them to go.
+pub struct Supervisor {
+    stop: watch::Sender<bool>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl Supervisor {
+    pub fn start(plan: &ChildPlan) -> Self {
+        let (stop, rx) = watch::channel(false);
+        let mut tasks = Vec::new();
+        for (decision, spec) in [(&plan.shard, &SHARD), (&plan.storage, &STORAGE)] {
+            match decision {
+                Decision::Start => tasks.push(tokio::spawn(supervise(spec, rx.clone()))),
+                Decision::Skip(why) => {
+                    info!("{}: {why}", spec.name);
+                    // Not ours to run, but an older daemon's may still be up.
+                    tokio::spawn(sweep_orphan(spec));
+                }
+            }
+        }
+        Self { stop, tasks }
+    }
+
+    /// Terminate every child (SIGTERM, then kill after a grace period) and
+    /// wait for the supervise tasks to finish.
+    pub async fn shutdown(self) {
+        let _ = self.stop.send(true);
+        for t in self.tasks {
+            if tokio::time::timeout(TERM_GRACE * 3, t).await.is_err() {
+                warn!("a child supervisor did not finish in time");
+            }
+        }
+    }
+}
+
+/// Children an older binary left running. Before the supervisor existed,
+/// `start` spawned them detached and nothing stopped them when the daemon
+/// went — so the first start after an upgrade finds the previous shard still
+/// holding its memory and the previous storage server still on its port.
+/// Their PID files are the only handle on them. The stop sleeps through a
+/// grace period of seconds, so it runs on the blocking pool.
+async fn sweep_orphan(spec: &'static ChildSpec) {
+    if let Ok(true) = tokio::task::spawn_blocking(spec.stop_orphan).await {
+        warn!("stopped a {} left by a previous daemon", spec.name);
+    }
+}
+
+async fn stopped(rx: &mut watch::Receiver<bool>) {
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// The stop flag, or this process's own SIGTERM / Ctrl-C. The flag is only
+/// set once the node has shut down; a signal to the process group reaches the
+/// children at once, and one exiting for that reason must not be restarted.
+async fn stopping(mut rx: watch::Receiver<bool>) {
+    tokio::select! {
+        _ = stopped(&mut rx) => {}
+        _ = stop_requested() => {}
+    }
+}
+
+async fn supervise(spec: &'static ChildSpec, stop: watch::Receiver<bool>) {
+    // One future for the whole task: a signal listener made afresh per
+    // `select!` would miss a signal delivered between two of them.
+    let stopping = stopping(stop);
+    tokio::pin!(stopping);
+
+    sweep_orphan(spec).await;
+    tokio::select! {
+        _ = wait_for_control_socket() => {}
+        _ = &mut stopping => return,
+    }
+
+    let mut backoff = BACKOFF_MIN;
+    loop {
+        let started = Instant::now();
+        let mut child = match spawn(spec) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "{}: could not spawn: {e:#}; retrying in {backoff:?}",
+                    spec.name
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = &mut stopping => return,
+                }
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+                continue;
+            }
+        };
+        info!("{} started (PID {})", spec.name, child.id().unwrap_or(0));
+        // The write end of the child's lifeline. Held, never written: the
+        // child reads EOF when it closes, by our hand or by our death.
+        let lifeline = child.stdin.take();
+
+        tokio::select! {
+            status = child.wait() => {
+                let ran = started.elapsed();
+                backoff = if ran >= STABLE_AFTER { BACKOFF_MIN } else { (backoff * 2).min(BACKOFF_MAX) };
+                warn!(
+                    "{} exited after {ran:?} ({}); restarting in {backoff:?}",
+                    spec.name,
+                    status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string())
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = &mut stopping => return,
+                }
+            }
+            _ = &mut stopping => {
+                terminate(spec.name, &mut child, lifeline).await;
+                return;
+            }
+        }
+    }
+}
+
+fn spawn(spec: &ChildSpec) -> Result<tokio::process::Child> {
+    let exe = std::env::current_exe().context("finding own executable")?;
+    let log: PathBuf = log_dir().join(spec.log);
+    std::fs::create_dir_all(log_dir()).ok();
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .with_context(|| format!("opening {}", log.display()))?;
+
+    // No setsid: the child shares the daemon's session and process group,
+    // so a signal to the group reaches it too. Stdin is the lifeline pipe.
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.args(spec.args)
+        .env(SUPERVISOR_PID_ENV, std::process::id().to_string())
+        .stdin(std::process::Stdio::piped())
+        .stdout(log_file.try_clone()?)
+        .stderr(log_file)
+        .kill_on_drop(true);
+    cmd.spawn()
+        .with_context(|| format!("spawning {}", spec.name))
+}
+
+/// Closing the lifeline is the stop request on every platform (it is the
+/// only graceful one Windows has); SIGTERM backs it up on Unix.
+async fn terminate(
+    name: &str,
+    child: &mut tokio::process::Child,
+    lifeline: Option<tokio::process::ChildStdin>,
+) {
+    drop(lifeline);
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        use nix::sys::signal::{kill, Signal};
+        let _ = kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGTERM);
+    }
+    if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_ok() {
+        info!("{name} stopped");
+        return;
+    }
+    warn!("{name} did not exit within {TERM_GRACE:?} — killing");
+    let _ = child.kill().await;
+    info!("{name} killed");
+}
+
+/// The children register handlers over the control socket, so it must answer
+/// first. Gives up after [`SOCKET_WAIT`] and lets the spawn/backoff loop cope.
+async fn wait_for_control_socket() {
+    let addr = crate::shard_cmd::daemon_socket();
+    let deadline = Instant::now() + SOCKET_WAIT;
+    loop {
+        if socket_answers(&addr).await {
+            return;
+        }
+        if Instant::now() >= deadline {
+            warn!("control socket {addr} not answering after {SOCKET_WAIT:?}; spawning anyway");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// A bare connect with a short timeout. `P2PClient::connect` retries eleven
+/// times, and on Windows each refused loopback connect costs ~2 s, so a
+/// probe through it lagged readiness by ~23 s.
+async fn socket_answers(addr: &str) -> bool {
+    let probe = Duration::from_secs(1);
+    if let Some(path) = addr.strip_prefix("/unix/") {
+        #[cfg(unix)]
+        return tokio::time::timeout(probe, tokio::net::UnixStream::connect(path))
+            .await
+            .is_ok_and(|r| r.is_ok());
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            return false;
+        }
+    }
+    let mut parts = addr.split('/').filter(|s| !s.is_empty());
+    let (Some(_ip4), Some(host), Some(_tcp), Some(port)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    tokio::time::timeout(
+        probe,
+        tokio::net::TcpStream::connect((host, port.parse().unwrap_or(0))),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok())
+}
+
+// ---------------------------------------------------------------------------
+// Child side
+// ---------------------------------------------------------------------------
+
+/// Whether this process was spawned by a `run-node` supervisor.
+pub fn is_supervised() -> bool {
+    std::env::var_os(SUPERVISOR_PID_ENV).is_some()
+}
+
+/// Resolves when the supervising parent is gone or has closed our lifeline.
+/// Pending forever when not supervised (a manual `kwaainet shard serve`).
+///
+/// A supervised child's stdin is a pipe whose only write end the daemon
+/// holds. The kernel closes that end when the daemon dies, however it dies,
+/// so EOF is exact and immediate on every platform: no PID to probe or reuse,
+/// no zombie case, no handle to wait on.
+async fn parent_gone() {
+    if !is_supervised() {
+        return std::future::pending().await;
+    }
+    // A plain detached thread, not tokio's stdin or `spawn_blocking`: the
+    // runtime joins its blocking pool when dropped, so a child exiting for
+    // its own reasons would hang in this read until the parent died.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        let mut stdin = std::io::stdin();
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(());
+    });
+    let _ = rx.await;
+    info!("supervising daemon is gone or asked us to stop — stopping");
+}
+
+static PARENT_GONE: std::sync::OnceLock<watch::Sender<bool>> = std::sync::OnceLock::new();
+
+/// Call once at the top of a child's `main` path. Watches the parent for the
+/// whole run — including the minutes of DHT startup before the child reaches
+/// its `stop_requested` select — and, if that select is not reached within a
+/// few seconds of the parent going, exits outright.
+pub fn watch_parent_from_start() {
+    if !is_supervised() {
+        return;
+    }
+    let (tx, _) = watch::channel(false);
+    if PARENT_GONE.set(tx).is_err() {
+        return;
+    }
+    tokio::spawn(async {
+        parent_gone().await;
+        if let Some(tx) = PARENT_GONE.get() {
+            let _ = tx.send(true);
+        }
+        tokio::time::sleep(TERM_GRACE).await;
+        warn!("no graceful stop within {TERM_GRACE:?} of the parent going — exiting");
+        // `exit` skips the normal return path, so clean up what it would have.
+        crate::daemon::remove_own_child_state();
+        std::process::exit(0);
+    });
+}
+
+/// Resolves once the background watcher has seen the parent go, or, without
+/// a watcher, when the parent goes.
+async fn parent_gone_signal() {
+    match PARENT_GONE.get() {
+        Some(tx) => {
+            let mut rx = tx.subscribe();
+            stopped(&mut rx).await;
+        }
+        None => parent_gone().await,
+    }
+}
+
+/// Ctrl-C, SIGTERM (unix) or the parent disappearing: everything that should
+/// make a child stop cleanly.
+pub async fn stop_requested() {
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term => {}
+        _ = parent_gone_signal() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with(shards: Option<bool>, storage: bool, has_store: bool) -> KwaaiNetConfig {
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.contribute.shards = shards;
+        cfg.contribute.storage = storage;
+        if has_store {
+            cfg.storage = serde_yaml::from_str("data_dir: /tmp/x\ncapacity_gb: 1.0\n").ok();
+        }
+        cfg
+    }
+
+    const PLENTY: u64 = 64 << 30;
+
+    #[test]
+    fn shard_flag_starts_the_shard_regardless_of_model_and_ram() {
+        let mut cfg = cfg_with(None, true, false);
+        let o = StartOverrides {
+            shard: true,
+            ..Default::default()
+        };
+        o.apply_to(&mut cfg);
+        assert_eq!(plan_with(&cfg, &o, false, 0).shard, Decision::Start);
+    }
+
+    #[test]
+    fn config_opt_in_still_needs_a_model_and_ram() {
+        let cfg = cfg_with(Some(true), true, false);
+        let o = StartOverrides::default();
+        assert_eq!(plan_with(&cfg, &o, true, PLENTY).shard, Decision::Start);
+        assert!(matches!(
+            plan_with(&cfg, &o, false, PLENTY).shard,
+            Decision::Skip(_)
+        ));
+        assert!(matches!(
+            plan_with(&cfg, &o, true, 0).shard,
+            Decision::Skip(_)
+        ));
+    }
+
+    #[test]
+    fn opted_out_shard_is_skipped_with_a_reason() {
+        let cfg = cfg_with(Some(false), true, false);
+        match plan_with(&cfg, &StartOverrides::default(), true, PLENTY).shard {
+            Decision::Skip(why) => assert!(why.contains("contribute.shards"), "{why}"),
+            Decision::Start => panic!("must not start"),
+        }
+    }
+
+    #[test]
+    fn no_contribute_skips_both() {
+        let mut cfg = cfg_with(Some(true), true, true);
+        let o = StartOverrides {
+            no_contribute: true,
+            ..Default::default()
+        };
+        o.apply_to(&mut cfg);
+        let p = plan_with(&cfg, &o, true, PLENTY);
+        assert!(matches!(p.shard, Decision::Skip(_)));
+        assert!(matches!(p.storage, Decision::Skip(_)));
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn storage_needs_an_initialised_store() {
+        let o = StartOverrides::default();
+        assert!(matches!(
+            plan_with(&cfg_with(None, true, false), &o, true, PLENTY).storage,
+            Decision::Skip(_)
+        ));
+        assert_eq!(
+            plan_with(&cfg_with(None, true, true), &o, true, PLENTY).storage,
+            Decision::Start
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_supervisor_reads_as_a_stop() {
+        let (tx, rx) = watch::channel(false);
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(1), stopping(rx))
+            .await
+            .expect("closed channel must resolve");
+    }
+
+    /// The group-signal case: the daemon's SIGTERM stops the supervise loop
+    /// while the stop flag is still unset.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_daemons_own_sigterm_reads_as_a_stop() {
+        let (_tx, rx) = watch::channel(false);
+        let stopping = stopping(rx);
+        tokio::pin!(stopping);
+        // First poll installs the handler; without it the raise kills the test.
+        assert!(futures::poll!(&mut stopping).is_pending());
+        nix::sys::signal::raise(nix::sys::signal::Signal::SIGTERM).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), stopping)
+            .await
+            .expect("SIGTERM must resolve");
+    }
+
+    #[test]
+    fn a_skipped_plan_starts_no_tasks() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let plan = ChildPlan {
+                shard: Decision::Skip("no".into()),
+                storage: Decision::Skip("no".into()),
+            };
+            let s = Supervisor::start(&plan);
+            assert!(s.tasks.is_empty());
+            s.shutdown().await;
+        });
+    }
+}

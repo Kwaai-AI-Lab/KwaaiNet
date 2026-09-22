@@ -44,6 +44,7 @@ mod shard_cmd;
 mod storage;
 #[cfg(feature = "storage")]
 mod storage_rpc;
+mod supervisor;
 mod throughput;
 mod uninstall;
 mod updater;
@@ -98,12 +99,9 @@ fn setup_cuda_library_path() {
 
 /// Returns true when the configured model weights are already on disk.
 /// Checks both HuggingFace snapshot cache and Ollama blob store.
-fn model_is_locally_available(model: &str) -> bool {
-    crate::hf::resolve_snapshot(model).is_ok() || crate::ollama::resolve_model_blob(model).is_ok()
-}
-
-/// Spawn the daemon and, per the contribution policy, its shard and storage
-/// children. `overrides` must already be applied to `cfg`.
+/// Spawn the daemon. It supervises its own shard and storage children, so all
+/// `start` does is record the flags, launch `run-node`, and tell the operator
+/// what the daemon is about to do. `overrides` must already be applied to `cfg`.
 async fn launch_daemon(
     cfg: &KwaaiNetConfig,
     overrides: &cli::StartOverrides,
@@ -115,66 +113,20 @@ async fn launch_daemon(
     println!();
     print_success(&format!("KwaaiNet daemon {verb} (PID {})", child_pid));
 
-    // Wait for the control socket to be ready before spawning children.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    // `overrides` are already applied to `cfg`, so the policy reflects them.
-    let policy = cfg.contribute_policy();
-
-    // --- Shard serving ---
-    let serve_shards = policy.shards;
-
-    // `--shard` also waives the model-present and RAM gates.
-    let shard_explicit = overrides.shard;
-    let shard_available = shard_explicit || model_is_locally_available(&cfg.model);
-    let enough_ram = shard_explicit || system_total_ram_bytes() >= SHARD_MIN_RAM_BYTES;
-    if serve_shards && shard_available && enough_ram {
-        match ShardManager::spawn_shard_child() {
-            Ok(shard_pid) => {
-                ShardManager::new().write_pid(shard_pid);
-                print_success(&format!("Shard serving started  (PID {})", shard_pid));
-                print_info("Shard logs:   kwaainet logs --shard");
-            }
-            Err(e) => print_warning(&format!("Could not start shard serving: {e}")),
+    let plan = supervisor::plan(cfg, overrides);
+    match &plan.shard {
+        supervisor::Decision::Start => {
+            print_success("Shard serving: the daemon starts and supervises it");
+            print_info("Shard logs:   kwaainet logs --shard");
         }
-    } else if serve_shards && shard_available && !enough_ram {
-        print_warning("Low memory (< 10 GB) — skipping shard serving to prevent OOM.");
-        print_info("Override: kwaainet start --daemon --shard");
-    } else if serve_shards && !shard_available {
-        print_info(&format!(
-            "No local model found for '{}' — skipping shard serving.",
-            cfg.model
-        ));
-        print_info("Download: kwaainet shard download");
-    } else if !serve_shards
-        && !overrides.no_contribute
-        && cfg.contribute.shards_unset()
-        && shard_available
-    {
-        // This node has a model and would have served blocks under
-        // the old opt-out default. Say so once, rather than letting
-        // its block contribution vanish silently on upgrade.
-        print_info("Block-shard serving is now opt-in (experimental) — not starting it.");
-        print_info("This node can still contribute whole-model inference via Ollama.");
-        print_info("Serve blocks anyway: kwaainet config set contribute.shards true");
+        supervisor::Decision::Skip(why) => print_info(why),
     }
-
-    // --- Storage serving ---
-    #[cfg(feature = "storage")]
-    if policy.storage && cfg.storage.is_some() {
-        match StorageApiManager::spawn_storage_child() {
-            Ok(storage_pid) => {
-                print_success(&format!("Storage serving started (PID {})", storage_pid));
-                print_info("Storage logs: kwaainet logs --storage");
-            }
-            Err(e) => print_warning(&format!("Could not start storage serving: {e}")),
+    match &plan.storage {
+        supervisor::Decision::Start => {
+            print_success("Storage serving: the daemon starts and supervises it");
+            print_info("Storage logs: kwaainet logs --storage");
         }
-    } else if policy.storage {
-        print_info("Storage not initialised — skipping. Run: kwaainet storage init");
-    }
-
-    if overrides.no_contribute {
-        print_info("Contribution disabled for this instance (--no-contribute).");
+        supervisor::Decision::Skip(why) => print_info(why),
     }
 
     print_info("Check status: kwaainet status");
@@ -182,6 +134,35 @@ async fn launch_daemon(
     print_info("Stop daemon:  kwaainet stop");
     print_separator();
     Ok(())
+}
+
+/// Children a pre-supervision binary spawned detached, or that outlived a
+/// SIGKILLed daemon before the parent watch noticed. Normally there are none.
+/// Returns whether it stopped any.
+fn stop_orphaned_children(daemon_just_stopped: bool) -> bool {
+    // A child of a daemon that just died is on its way out by itself (it
+    // watches its parent). Give it a moment before calling it an orphan —
+    // on Windows `stop` is a hard kill, so this is the normal path there.
+    let mut grace = if daemon_just_stopped { 0 } else { 20 };
+    while grace < 20 && (ShardManager::new().is_running() || StorageApiManager::new().is_running())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        grace += 1;
+    }
+    let mut stopped = false;
+    let shard_mgr = ShardManager::new();
+    if shard_mgr.is_running() {
+        shard_mgr.stop_process();
+        print_success("Orphaned shard server stopped");
+        stopped = true;
+    }
+    let storage_mgr = StorageApiManager::new();
+    if storage_mgr.is_running() {
+        storage_mgr.stop_process();
+        print_success("Orphaned storage API stopped");
+        stopped = true;
+    }
+    stopped
 }
 
 #[tokio::main]
@@ -206,7 +187,8 @@ async fn main() -> Result<()> {
     // Spawn a background update check that runs concurrently with the command.
     // Uses a 24-hour on-disk cache so it only hits the network once per day.
     // Skipped for `update` (redundant) and `run-node` (internal daemon process).
-    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_));
+    let skip_update_hint = matches!(cli.command, Command::Update(_) | Command::RunNode(_))
+        || std::env::var_os("KWAAINET_NO_AUTO_UPDATE").is_some_and(|v| !v.is_empty());
     let update_task = (!skip_update_hint)
         .then(|| tokio::spawn(async { updater::UpdateChecker::new().check(false).await }));
 
@@ -380,20 +362,18 @@ async fn main() -> Result<()> {
         Command::Stop => {
             let mgr = DaemonManager::new();
             print_box_header("🛑 Stopping KwaaiNet Node");
-            // Stop dependents first before the main daemon
-            let shard_mgr = ShardManager::new();
-            if shard_mgr.is_running() {
-                shard_mgr.stop_process();
-                print_success("Shard server stopped");
+            // The daemon stops its own children on the way down. Stopping
+            // them first would only have the supervisor restart them.
+            let daemon = mgr.stop_process();
+            if daemon.is_ok() {
+                print_success("KwaaiNet daemon stopped");
             }
-            let storage_mgr = StorageApiManager::new();
-            if storage_mgr.is_running() {
-                storage_mgr.stop_process();
-                print_success("Storage API stopped");
-            }
-            mgr.stop_process()?;
             DaemonManager::remove_start_args();
-            print_success("KwaaiNet daemon stopped");
+            // Orphans can outlive the daemon's PID file, so "no daemon" is
+            // an error only when there was nothing else to stop either.
+            if !stop_orphaned_children(daemon.is_ok()) {
+                daemon?;
+            }
             print_separator();
         }
 
@@ -404,19 +384,14 @@ async fn main() -> Result<()> {
             let mgr = DaemonManager::new();
             print_box_header("🔄 Restarting KwaaiNet Node");
 
-            // Stop dependents first (same order as Stop) so the new daemon
-            // can spawn fresh children without hitting port-in-use guards.
-            let shard_mgr = ShardManager::new();
-            if shard_mgr.is_running() {
-                shard_mgr.stop_process();
-            }
-            let storage_mgr = StorageApiManager::new();
-            if storage_mgr.is_running() {
-                storage_mgr.stop_process();
-            }
-            if mgr.is_running() {
+            // Daemon first (it takes its children with it), then any orphans
+            // an older binary left behind, so the new daemon's children do
+            // not hit port-in-use guards.
+            let was_running = mgr.is_running();
+            if was_running {
                 mgr.stop_process()?;
             }
+            stop_orphaned_children(was_running);
 
             // The same instance: config.yaml plus the flags it was started with.
             let overrides = DaemonManager::read_start_args();
@@ -907,22 +882,13 @@ async fn main() -> Result<()> {
                         // unannounce from DHT before the binary swap.
                         #[cfg(windows)]
                         let daemon_was_running = {
-                            let shard_mgr = ShardManager::new();
-                            if shard_mgr.is_running() {
-                                shard_mgr.stop_process();
-                                print_info("Shard server stopping…");
-                            }
-                            let storage_mgr = StorageApiManager::new();
-                            if storage_mgr.is_running() {
-                                storage_mgr.stop_process();
-                                print_info("Storage API stopping…");
-                            }
                             let node_mgr = DaemonManager::new();
                             let was = node_mgr.is_running();
                             if was {
                                 let _ = node_mgr.stop_process();
                                 print_info("Daemon stopping…");
                             }
+                            stop_orphaned_children(was);
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                             was
                         };
@@ -1857,15 +1823,6 @@ async fn serve_command(args: ServeArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const SHARD_MIN_RAM_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
-
-fn system_total_ram_bytes() -> u64 {
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    sys.total_memory()
-}
 
 fn print_last_lines(path: &std::path::Path, n: usize) {
     match std::fs::read_to_string(path) {

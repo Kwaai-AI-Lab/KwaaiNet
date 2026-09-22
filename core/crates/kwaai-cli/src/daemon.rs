@@ -204,42 +204,12 @@ impl DaemonManager {
     // Stop
     // -----------------------------------------------------------------------
 
+    /// SIGTERM, up to 10 s for the node's own shutdown (DHT unannounce, its
+    /// children), then SIGKILL. On Windows a hard kill: see [`stop_pid`].
     pub fn stop_process(&self) -> Result<()> {
         let pid = self.read_pid().context("No daemon is running")?;
-        info!("Sending SIGTERM to PID {}", pid);
-
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid as NixPid;
-
-            kill(NixPid::from_raw(pid as i32), Signal::SIGTERM)
-                .with_context(|| format!("SIGTERM to PID {}", pid))?;
-
-            // Wait up to 10 seconds then SIGKILL
-            for _ in 0..20 {
-                std::thread::sleep(Duration::from_millis(500));
-                let mut sys = System::new();
-                sys.refresh_process(Pid::from_u32(pid));
-                if sys.process(Pid::from_u32(pid)).is_none() {
-                    info!("Process {} exited cleanly", pid);
-                    self.remove_pid();
-                    return Ok(());
-                }
-            }
-
-            warn!("Process {} did not exit, sending SIGKILL", pid);
-            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGKILL);
-        }
-
-        #[cfg(not(unix))]
-        {
-            // Windows: use taskkill
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
-        }
-
+        info!("Stopping daemon PID {}", pid);
+        stop_pid(pid, Duration::from_secs(10));
         self.remove_pid();
         Ok(())
     }
@@ -268,10 +238,14 @@ impl DaemonManager {
     /// Flags recorded by the last `start --daemon`; none if never started or
     /// stopped since.
     pub fn read_start_args() -> crate::cli::StartOverrides {
-        std::fs::read_to_string(Self::start_args_file())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let path = Self::start_args_file();
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            return Default::default();
+        };
+        serde_json::from_str(&json).unwrap_or_else(|e| {
+            warn!("Ignoring unreadable start flags at {}: {e}", path.display());
+            Default::default()
+        })
     }
 
     pub fn remove_start_args() {
@@ -315,7 +289,7 @@ impl DaemonManager {
             }
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             cmd.stdout(log_file.try_clone()?);
@@ -422,103 +396,13 @@ impl ShardManager {
         }
     }
 
-    /// Stop the shard serve child, if running.
-    ///
-    /// Sends SIGTERM and waits up to 5 s for a clean exit, then sends SIGKILL
+    /// Stop the shard serve child, if running. SIGKILL after the grace period
     /// so the CUDA context (and VRAM) is always freed before returning.
     pub fn stop_process(&self) {
         let Some(pid) = self.read_pid() else { return };
         info!("Stopping shard server PID {}", pid);
-
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-            use nix::unistd::Pid as NixPid;
-            let nix_pid = NixPid::from_raw(pid as i32);
-            let _ = kill(nix_pid, Signal::SIGTERM);
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(500));
-                // Use waitpid(WNOHANG) rather than sysinfo — sysinfo sees zombies as
-                // still-running, causing the loop to exhaust and SIGKILL a dead process.
-                match waitpid(nix_pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) => {} // still running, keep waiting
-                    _ => {
-                        // Exited cleanly (or ECHILD — already reaped).
-                        self.remove_pid();
-                        return;
-                    }
-                }
-            }
-            warn!(
-                "Shard process {} did not exit after SIGTERM — sending SIGKILL",
-                pid
-            );
-            let _ = kill(nix_pid, Signal::SIGKILL);
-            // Reap the zombie; without this the child stays defunct until run-node exits.
-            let _ = waitpid(nix_pid, None);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
-        }
-
+        stop_pid(pid, Duration::from_secs(5));
         self.remove_pid();
-    }
-
-    /// Spawn `kwaainet shard serve --auto --auto-rebalance` as a detached
-    /// background process, appending output to `shard.log`.
-    ///
-    /// Kills any already-running shard child first so its CUDA context is freed
-    /// before the new process allocates GPU memory.
-    pub fn spawn_shard_child() -> Result<u32> {
-        let mgr = Self::new();
-        if mgr.is_running() {
-            info!("Existing shard child running — stopping it before respawn");
-            mgr.stop_process();
-        }
-        // Clear stale ready sentinel so callers don't see the old state.
-        let _ = std::fs::remove_file(Self::ready_file());
-
-        let exe = std::env::current_exe().context("finding own executable")?;
-        let log = log_dir().join("shard.log");
-        std::fs::create_dir_all(log.parent().unwrap()).ok();
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .with_context(|| format!("opening shard log {}", log.display()))?;
-
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.args(["shard", "serve", "--auto-rebalance"]);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            cmd.creation_flags(0x00000008); // DETACHED_PROCESS
-        }
-
-        let child = cmd.spawn().context("spawning shard child")?;
-        let pid = child.id();
-        debug!("Spawned shard child PID {}", pid);
-        std::mem::forget(child);
-        Ok(pid)
     }
 }
 
@@ -573,73 +457,74 @@ impl StorageApiManager {
     pub fn stop_process(&self) {
         let Some(pid) = self.read_pid() else { return };
         info!("Stopping storage API server PID {}", pid);
-
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid as NixPid;
-            let _ = kill(NixPid::from_raw(pid as i32), Signal::SIGTERM);
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(500));
-                let mut sys = System::new();
-                sys.refresh_process(Pid::from_u32(pid));
-                if sys.process(Pid::from_u32(pid)).is_none() {
-                    break;
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
-        }
-
+        stop_pid(pid, Duration::from_secs(5));
         self.remove_pid();
     }
+}
 
-    /// Spawn `kwaainet storage serve` as a detached background process,
-    /// appending output to `storage_serve.log`.
-    #[cfg(feature = "storage")]
-    pub fn spawn_storage_child() -> Result<u32> {
-        let exe = std::env::current_exe().context("finding own executable")?;
-        let log = log_dir().join("storage_serve.log");
-        std::fs::create_dir_all(log.parent().unwrap()).ok();
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .with_context(|| format!("opening storage log {}", log.display()))?;
-
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.args(["storage", "serve"]);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
+/// SIGTERM, wait up to `grace` for the process to go, then SIGKILL. Liveness
+/// is a PID probe that counts a zombie as gone, so it is right whether or not
+/// the process is our child — the old `waitpid` version returned ECHILD for
+/// a process another `kwaainet` had spawned and declared it stopped after
+/// half a second. If it is our child, the exit is reaped as well.
+fn stop_pid(pid: u32, grace: Duration) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::sys::wait::{waitpid, WaitPidFlag};
+        let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+        let _ = kill(nix_pid, Signal::SIGTERM);
+        let deadline = std::time::Instant::now() + grace;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = waitpid(nix_pid, Some(WaitPidFlag::WNOHANG));
+            if !pid_alive(pid) {
+                return;
             }
         }
-        #[cfg(not(unix))]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.stdout(log_file.try_clone()?);
-            cmd.stderr(log_file);
-            cmd.creation_flags(0x00000008); // DETACHED_PROCESS
-        }
-
-        let child = cmd.spawn().context("spawning storage serve child")?;
-        let pid = child.id();
-        debug!("Spawned storage serve child PID {}", pid);
-        std::mem::forget(child);
-        Ok(pid)
+        warn!("Process {pid} did not exit after SIGTERM — sending SIGKILL");
+        let _ = kill(nix_pid, Signal::SIGKILL);
+        let _ = waitpid(nix_pid, None);
     }
+    // `taskkill` is a Windows program, so this is `windows`, not `not(unix)`.
+    #[cfg(windows)]
+    {
+        let _ = grace; // a hard kill: there is no graceful signal to wait out
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
+    }
+}
+
+/// Remove `path` if it records `me`. Returns whether it did.
+fn remove_pid_file_if_ours(path: &std::path::Path, me: u32) -> bool {
+    let ours = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        == Some(me);
+    ours && std::fs::remove_file(path).is_ok()
+}
+
+/// For a child about to exit without unwinding (the supervisor watchdog):
+/// drop the PID file and ready sentinel this process wrote, so nothing
+/// later mistakes a recycled PID for a live server.
+pub fn remove_own_child_state() {
+    let me = std::process::id();
+    if remove_pid_file_if_ours(&ShardManager::new().pid_file, me) {
+        let _ = std::fs::remove_file(ShardManager::ready_file());
+    }
+    remove_pid_file_if_ours(&StorageApiManager::new().pid_file, me);
+}
+
+/// Whether `pid` is a live, non-zombie process. Unix only: on Windows a PID
+/// probe reads a dead process as alive while anyone holds a handle to it.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    let mut sys = System::new();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_process(pid);
+    sys.process(pid)
+        .is_some_and(|p| p.status() != sysinfo::ProcessStatus::Zombie)
 }
 
 /// Returns true if something is already listening on `<port>`, on every
@@ -649,17 +534,37 @@ pub fn port_in_use(port: u16, mode: kwaai_p2p::Ipv6Mode) -> bool {
     !crate::net::port_is_free(port, mode)
 }
 
-#[cfg(unix)]
-extern "C" {
-    #[allow(dead_code)]
-    fn libc_setsid() -> i32;
-}
-
 // On Unix we need libc for setsid
 #[cfg(unix)]
 mod libc {
     extern "C" {
         pub fn setsid() -> i32;
+    }
+}
+
+#[cfg(test)]
+mod own_pid_file_tests {
+    use super::remove_pid_file_if_ours;
+
+    #[test]
+    fn removes_only_a_file_that_records_this_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("ours.pid");
+        let theirs = dir.path().join("theirs.pid");
+        let junk = dir.path().join("junk.pid");
+        std::fs::write(&ours, "4242\n").unwrap();
+        std::fs::write(&theirs, "4243").unwrap();
+        std::fs::write(&junk, "not a pid").unwrap();
+
+        assert!(remove_pid_file_if_ours(&ours, 4242));
+        assert!(!ours.exists());
+        assert!(!remove_pid_file_if_ours(&theirs, 4242));
+        assert!(theirs.exists(), "another process's file is left alone");
+        assert!(!remove_pid_file_if_ours(&junk, 4242));
+        assert!(!remove_pid_file_if_ours(
+            &dir.path().join("missing.pid"),
+            4242
+        ));
     }
 }
 

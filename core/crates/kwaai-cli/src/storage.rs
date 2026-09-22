@@ -180,6 +180,7 @@ async fn status() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn serve() -> Result<()> {
+    crate::supervisor::watch_parent_from_start();
     let cfg = KwaaiNetConfig::load_or_create()?;
     let Some(ref storage) = cfg.storage else {
         print_warning("Storage not initialized. Run: kwaainet storage init");
@@ -223,6 +224,10 @@ async fn serve() -> Result<()> {
     // the handler registration when the persistent connection closes.
     let handler =
         crate::storage_rpc::make_storage_rpc_handler(db.clone(), capacity_gb, peer_id.clone());
+    // Under the supervisor a store nobody can reach is a failure to restart,
+    // not a mode to run in: exit, and let the daemon's backoff retry until
+    // the socket answers. A manual `storage serve` keeps HTTP-only mode.
+    let supervised = crate::supervisor::is_supervised();
     let daemon_addr = crate::shard_cmd::daemon_socket();
     let _p2p_client = match kwaai_p2p_daemon::P2PClient::connect(&daemon_addr).await {
         Ok(p2p_client) => {
@@ -234,9 +239,17 @@ async fn serve() -> Result<()> {
                     "P2P relay handler registered ({})",
                     crate::storage_rpc::STORAGE_PROTO
                 )),
+                Err(e) if supervised => {
+                    mgr.remove_pid();
+                    return Err(e).context("registering the storage handler on the node");
+                }
                 Err(e) => print_warning(&format!("P2P handler registration failed: {e}")),
             }
             Some(p2p_client)
+        }
+        Err(e) if supervised => {
+            mgr.remove_pid();
+            return Err(e).context("connecting to the node's control socket");
         }
         Err(_) => {
             print_info("KwaaiNet node not running — P2P relay unavailable (HTTP-only mode)");
@@ -251,9 +264,25 @@ async fn serve() -> Result<()> {
     ));
     print_separator();
 
-    let listeners = crate::net::bind_dual_stack(crate::net::Scope::Loopback, vpk_port, cfg.ipv6())?
-        .into_tokio()?;
-    kwaai_storage::run_storage_api_on(db, listeners, capacity_gb, peer_id).await?;
+    let bound = crate::net::bind_dual_stack(crate::net::Scope::Loopback, vpk_port, cfg.ipv6())
+        .map_err(anyhow::Error::from)
+        .and_then(|l| l.into_tokio());
+    let listeners = match bound {
+        Ok(l) => l,
+        Err(e) => {
+            mgr.remove_pid();
+            return Err(e).with_context(|| format!("binding the storage API on port {vpk_port}"));
+        }
+    };
+    let result = tokio::select! {
+        r = kwaai_storage::run_storage_api_on(db, listeners, capacity_gb, peer_id) => r,
+        _ = crate::supervisor::stop_requested() => {
+            print_info("Storage API stopping.");
+            Ok(())
+        }
+    };
+    mgr.remove_pid();
+    result?;
 
     Ok(())
 }
