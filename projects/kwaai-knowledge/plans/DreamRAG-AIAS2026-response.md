@@ -12,9 +12,9 @@
 We thank both reviewers for their careful reading. Both noted that the original submission was an
 extended abstract that did not give enough detail to judge novelty, contribution or rigour. We agree.
 The revision is a complete paper within the four-page limit. To fit that limit we prioritized the
-evaluation and the algorithm over related work and per-corpus detail. ⟦decide: "An extended version,
-with the full algorithm, parameters, prompts and per-corpus results, will be released with the source
-code at camera-ready."⟧ Before the point-by-point replies, we summarize three changes that affect
+evaluation and the algorithm over related work and per-corpus detail. An extended version, with the
+full algorithm, parameters, prompts, related work and per-corpus results, will be released with the
+source code at camera-ready. Before the point-by-point replies, we summarize three changes that affect
 several comments.
 
 **1. We narrowed the claims to the system we evaluate.** The original abstract described components
@@ -100,8 +100,9 @@ Section 2 now specifies each stage with its parameters:
   completion, the acceptance gate, the three merge tiers with their thresholds (Jaro–Winkler 0.60,
   cosine 0.92), the prune rule, the failure guard and convergence.
 
-The prompts and the complete configuration did not fit the page limit. We will release them with the
-source code at camera-ready; the code is withheld now only to preserve anonymity.
+The prompts and the complete configuration did not fit the page limit. They will be in the extended
+version released with the source code at camera-ready; the code is withheld now only to preserve
+anonymity.
 
 > **R1.4** *The evaluation appears to use only a relatively small document corpus (~430 chunks),
 > raising questions about scalability.*
