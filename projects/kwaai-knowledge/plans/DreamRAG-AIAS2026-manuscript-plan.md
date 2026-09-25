@@ -4,6 +4,12 @@
 > the corpora and the result files. The anonymized manuscript and response are produced from it.
 > The response draft is in [`DreamRAG-AIAS2026-response.md`](DreamRAG-AIAS2026-response.md).
 
+**Page limit: 4 pages** on the EasyChair template, references included. The submission text is
+[`DreamRAG-AIAS2026-short.md`](DreamRAG-AIAS2026-short.md), built with
+`build_manuscript_docx.py --short`; it fit in 4 pages with about 8 lines to spare on 2026-09-25.
+[`DreamRAG-AIAS2026-manuscript.md`](DreamRAG-AIAS2026-manuscript.md) is the extended version it
+condenses. **The response letter still cites the extended version's sections, figures and tables.**
+
 **Deadline 2026-10-01**: anonymized manuscript (corrected EasyChair/ACM template),
 anonymized point-by-point response, and Accepted Author registration.
 

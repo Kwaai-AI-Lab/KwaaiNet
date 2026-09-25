@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Build the anonymized AIAS+ 2026 manuscript (.docx) on the EasyChair Word template.
 
-    python3 projects/kwaai-knowledge/plans/build_manuscript_docx.py
+    python3 projects/kwaai-knowledge/plans/build_manuscript_docx.py           # extended version
+    python3 projects/kwaai-knowledge/plans/build_manuscript_docx.py --short   # 4-page submission
+
+--short builds DreamRAG-AIAS2026-short.md, which carries its own figures and captions inline, into
+submission54-4page.docx.
 
 Source of truth: DreamRAG-AIAS2026-manuscript.md (text) and the "Draft captions" section of
 DreamRAG-AIAS2026-manuscript-plan.md (figure captions). Figures: figures/fig*.pdf|png, produced by
@@ -19,13 +23,16 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -34,6 +41,7 @@ PLAN = HERE / "DreamRAG-AIAS2026-manuscript-plan.md"
 TEMPLATE = HERE / "_easychair_template.docx"
 FIGS = HERE / "figures"
 OUT = REPO / "rendered/projects/kwaai-knowledge/plans/submission54-manuscript.docx"
+SHORT = False
 
 # Figure n goes after the first paragraph of the manuscript containing this anchor.
 FIGURE_ANCHORS = {
@@ -104,6 +112,8 @@ def preprocess(md: str) -> str:
                   lambda m: div("Bibliography", " ".join(m[1].split())), refs, flags=re.S | re.M)
     md = head + refs
 
+    if SHORT:  # the short text places its own figures
+        return "\n".join(front) + "\n" + md
     # Figures, each after its anchor paragraph.
     caps = captions()
     paras = md.split("\n\n")
@@ -147,6 +157,24 @@ def ensure_style(doc, name: str, *, size: float, mono: bool = False):
         return st
 
 
+# Column widths (inches) for tables whose column count matches; the text area is 5.7 in wide.
+COL_WIDTHS = {4: [2.7, 1.3, 1.1, 0.6]}
+
+
+def set_col_widths(table, widths_in) -> None:
+    """Fixed layout, with widths written to both tblGrid and every cell, so Word honours them."""
+    tbl = table._tbl
+    tblPr = tbl.tblPr
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tblPr.append(layout)
+    for col, w in zip(tbl.find(qn("w:tblGrid")).findall(qn("w:gridCol")), widths_in):
+        col.set(qn("w:w"), str(int(w * 1440)))
+    for row in table.rows:
+        for cell, w in zip(row.cells, widths_in):
+            cell.width = Inches(w)
+
+
 def postprocess(path: Path) -> None:
     doc = Document(path)
     mono = ensure_style(doc, "Code block", size=8, mono=True)
@@ -163,6 +191,8 @@ def postprocess(path: Path) -> None:
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for t in doc.tables:
         t.style = doc.styles["Table Grid"]
+        if len(t.columns) in COL_WIDTHS:
+            set_col_widths(t, COL_WIDTHS[len(t.columns)])
         for row in t.rows:
             for c in row.cells:
                 for p in c.paragraphs:
@@ -174,12 +204,17 @@ def postprocess(path: Path) -> None:
 
 
 def main() -> None:
+    global SRC, OUT, SHORT
+    SHORT = "--short" in sys.argv[1:]
+    if SHORT:
+        SRC = HERE / "DreamRAG-AIAS2026-short.md"
+        OUT = OUT.with_name("submission54-4page.docx")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         mid = Path(tmp) / "manuscript.md"
         mid.write_text(preprocess(SRC.read_text()))
         subprocess.run(["pandoc", str(mid), "-f", "markdown", "--reference-doc", str(TEMPLATE),
-                        "-o", str(OUT)], check=True)
+                        "--resource-path", str(HERE), "-o", str(OUT)], check=True)
     postprocess(OUT)
     print("wrote", OUT.relative_to(REPO))
 

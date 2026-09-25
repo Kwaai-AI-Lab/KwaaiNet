@@ -77,7 +77,9 @@ NAMES = {
 
 def save(fig, stem: str) -> None:
     for ext in ("pdf", "png"):
-        fig.savefig(HERE / f"{stem}.{ext}", bbox_inches="tight", facecolor="white")
+        # No CreationDate, so regenerating an unchanged figure leaves the PDF byte-identical.
+        meta = {"CreationDate": None} if ext == "pdf" else {}
+        fig.savefig(HERE / f"{stem}.{ext}", bbox_inches="tight", facecolor="white", metadata=meta)
     plt.close(fig)
     print("wrote", stem)
 
@@ -342,7 +344,7 @@ def milestones() -> list[tuple[str, float]]:
     raise ValueError("MILESTONES not found")
 
 
-def fig7() -> None:
+def fig7(figsize=(7.0, 3.0), stem="fig7_development_history", legend_loc="lower right") -> None:
     ms = milestones()
     idx = {lab: i for i, (lab, _) in enumerate(ms)}
     # Milestones whose only change was running dream cycles (d6_accuracy_progress.md rows).
@@ -359,7 +361,7 @@ def fig7() -> None:
 
     xs = list(range(len(ms)))
     ys = [y for _, y in ms]
-    fig, ax = plt.subplots(figsize=(7.0, 3.0))
+    fig, ax = plt.subplots(figsize=figsize)
     for lab, text in MARKS:
         x = idx[lab] + 0.5
         ax.axvline(x, color=MUTED, lw=0.8, ls="--", zorder=1)
@@ -387,11 +389,46 @@ def fig7() -> None:
         Line2D([], [], ls="none", marker="o", color=MUTED, ms=3.5, label="code or configuration change"),
         Line2D([], [], ls="none", marker="o", color=ORANGE, ms=5.5, label="dream cycles only"),
         Line2D([], [], ls="none", marker="o", color=AQUA, ms=5.5, label="curated seed edits only"),
-    ], loc="lower right", fontsize=7)
-    save(fig, "fig7_development_history")
+    ], loc=legend_loc, fontsize=7)
+    save(fig, stem)
     for lab in sorted(DREAM | SEED, key=lambda l: idx[l]):
         i = idx[lab]
         print(f"  fig7: {lab:4s} {'dream' if lab in DREAM else 'seed '} {ys[i - 1]:5.1f} -> {ys[i]:5.1f}")
+
+
+# ── 4-page paper: short1 = memoir cycles side by side; short2 = compact Figure 7 ─
+def short1() -> None:
+    rows = json.loads((RES / "dream_scores.json").read_text())
+    comp = [(r["cycle"], r["graph_score"]) for r in rows if r.get("graph_score") is not None]
+    ev = [(r["cycle"], r["eval_score"]) for r in rows if r.get("eval_score") and r["cycle"] != 12]
+    vals = [e for _, e in ev]
+    mu, sd = st.mean(vals), st.stdev(vals)
+    fig, (a, b) = plt.subplots(1, 2, figsize=(5.7, 1.8), gridspec_kw={"wspace": 0.3})
+    for ax in (a, b):
+        ax.axvspan(0.5, 9.5, color="#f1f0ec", zorder=0, lw=0)
+        ax.set_xlim(-0.5, 31.5)
+        ax.set_xticks(range(0, 32, 8))
+        ax.set_xlabel("Dream cycle")
+    a.plot(*zip(*comp), color=BLUE, lw=2, marker="o", ms=2.5, markeredgewidth=0)
+    a.set_ylabel("Completeness (%)")
+    a.set_title("(a) Graph completeness")
+    a.set_ylim(48, 82)
+    a.text(5, 78, "3B", ha="center", fontsize=7, color=INK2)
+    a.text(20, 52, "8B completion model", ha="center", fontsize=7, color=INK2)
+    b.axhspan(mu - sd, mu + sd, color=ORANGE, alpha=0.12, lw=0)
+    b.axhline(mu, color=ORANGE, lw=1, ls="--")
+    b.plot(*zip(*ev), ls="none", marker="o", ms=4.5, color=ORANGE, markeredgecolor="white",
+           markeredgewidth=0.8)
+    b.text(12, 43.5, f"mean {mu:.1f} ± {sd:.1f} (1 SD)", ha="left", fontsize=7, color=INK2,
+           fontfamily="DejaVu Sans")
+    b.set_ylabel("Answer recall (%)")
+    b.set_title("(b) Answer keyword recall")
+    b.set_ylim(40, 70)
+    save(fig, "short1_memoir_cycles")
+
+
+def short2() -> None:
+    fig7(figsize=(5.7, 2.05), stem="short2_development_history", legend_loc="upper left")
 
 
 if __name__ == "__main__":
@@ -401,3 +438,5 @@ if __name__ == "__main__":
     fig5()
     fig6()
     fig7()
+    short1()
+    short2()
