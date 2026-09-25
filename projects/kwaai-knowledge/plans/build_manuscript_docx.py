@@ -158,7 +158,7 @@ def ensure_style(doc, name: str, *, size: float, mono: bool = False):
 
 
 # Column widths (inches) for tables whose column count matches; the text area is 5.7 in wide.
-COL_WIDTHS = {4: [2.7, 1.3, 1.1, 0.6]}
+COL_WIDTHS = {4: [2.5, 1.3, 1.35, 0.55]}
 
 
 def set_col_widths(table, widths_in) -> None:

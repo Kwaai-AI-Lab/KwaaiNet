@@ -29,8 +29,7 @@ negative results
 
 Graph-based RAG systems add an entity graph to a passage index so that retrieval can follow
 relationships [Edge et al. 2024; Gutiérrez et al. 2024; Guo et al. 2024]. They build the graph at
-ingestion; what extraction gets wrong (a missing type, an empty description, one person under three
-spellings) stays wrong. Biological memory, by contrast, is consolidated offline [McClelland et al.
+ingestion; what extraction gets wrong (a missing type, a duplicate) stays wrong. Biological memory, by contrast, is consolidated offline [McClelland et al.
 1995], and the free-energy principle [Friston 2010] frames the trade-off such a process manages:
 explain the evidence with as little model complexity as possible. We use these ideas as design
 heuristics, not formal models, and derive one measurable objective, **fact density**: the same evidence
@@ -130,12 +129,12 @@ changes to retrieval and query handling drove most of the rise to 74.7% (milesto
 recall by −4.5 to +0.9 points. The eight that only edited curated seed data all raised it (+0.4 to +8.7),
 several in response to specific questions, and account for about 25 points.
 
-![**Figure 2.** Memoir answer recall across 88 development milestones. Dashed lines: changes to the
-instrument. Orange: dream cycles only. Green: curated seed edits only.](figures/short2_development_history.png){width=100%}
-
 **Cost.** Graph construction ran at 0.17–0.83 passages/s on two commodity GPUs (15,018 passages in
 18 h), depending on entity density. A dream cycle of 200 completions took 3–21 min (median 13), with no
 trend in graph size; a converged cycle takes seconds.
+
+![**Figure 2.** Memoir answer recall across 88 development milestones. Dashed lines: changes to the
+instrument. Orange: dream cycles only. Green: curated seed edits only.](figures/short2_development_history.png){width=100%}
 
 ## 5 Discussion and limitations
 
@@ -153,15 +152,17 @@ graph structure.
 
 ## References
 
-<!-- ⟦verify all entries against the published versions⟧ -->
+<!-- Verified 2026-09-25 against arXiv, DBLP, ACL Anthology, ACM DL, Nature, PubMed. -->
 
 - Cormack, G. V., Clarke, C. L. A., Büttcher, S. 2009. Reciprocal rank fusion outperforms Condorcet and
-  individual rank learning methods. SIGIR.
-- Edge, D., et al. 2024. From local to global: A graph RAG approach to query-focused summarization.
-  arXiv:2404.16130.
+  individual rank learning methods. In Proc. SIGIR '09, 758–759.
+- Edge, D., et al. 2024. From local to global: A graph RAG approach to
+  query-focused summarization. arXiv:2404.16130.
 - Friston, K. 2010. The free-energy principle: a unified brain theory? Nat. Rev. Neurosci. 11, 127–138.
-- Guo, Z., et al. 2024. LightRAG: Simple and fast retrieval-augmented generation. arXiv:2410.05779.
-- Gutiérrez, B. J., et al. 2024. HippoRAG: Neurobiologically inspired long-term memory for large
-  language models. NeurIPS.
+- Guo, Z., et al. 2025. LightRAG: Simple and fast retrieval-augmented
+  generation. In Findings of EMNLP 2025, 10746–10761.
+- Gutiérrez, B. J., et al. 2024. HippoRAG: Neurobiologically inspired
+  long-term memory for large language models. In NeurIPS 2024.
 - McClelland, J. L., McNaughton, B. L., O'Reilly, R. C. 1995. Why there are complementary learning
-  systems in the hippocampus and neocortex. Psychol. Rev. 102(3), 419–457.
+  systems in the hippocampus and neocortex: Insights from the successes and failures of connectionist
+  models of learning and memory. Psychol. Rev. 102(3), 419–457.

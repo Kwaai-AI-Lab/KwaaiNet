@@ -38,7 +38,7 @@ enrichment, fact density, evaluation methodology, negative results
 Retrieval-augmented generation grounds a language model's answers in passages retrieved from a document
 collection [Lewis et al. 2020]. Graph-based variants add a knowledge graph of the entities those passages
 mention, so that retrieval can follow relationships a passage-level index cannot see [Edge et al. 2024;
-Gutiérrez et al. 2024; Guo et al. 2024]. In almost all of these systems the index is built once. Entity
+Gutiérrez et al. 2024; Guo et al. 2025]. In almost all of these systems the index is built once. Entity
 extraction runs at ingestion, and whatever it gets wrong — a missed type, an empty description, the same
 person recorded under three spellings — stays wrong until the collection is re-ingested.
 
@@ -77,7 +77,7 @@ easy to compute and easy to improve, and in our system they did not predict whet
 **Graph-augmented retrieval.** GraphRAG [Edge et al. 2024] extracts an entity graph from the corpus,
 clusters it into communities and pre-computes community summaries for global, query-focused
 summarization. HippoRAG [Gutiérrez et al. 2024] builds a schemaless graph and retrieves by personalized
-PageRank from query entities, motivated by hippocampal indexing theory. LightRAG [Guo et al. 2024] couples
+PageRank from query entities, motivated by hippocampal indexing theory. LightRAG [Guo et al. 2025] couples
 graph and vector retrieval at two levels of granularity and supports incremental updates. RAPTOR
 [Sarthi et al. 2024] recursively clusters and summarizes passages into a tree. All four construct their
 index structure at ingestion. They may add to it when documents arrive, but they do not revisit what was
@@ -512,26 +512,27 @@ we expect to change the outcome is typed relation extraction.
 
 ## References
 
-⟦verify all entries; format in ACM reference style⟧
+⟦Cormack, Edge, Friston, Guo, Gutiérrez and McClelland verified 2026-09-25; verify the rest⟧
 
 - Asai, A., Wu, Z., Wang, Y., Sil, A., Hajishirzi, H. 2024. Self-RAG: Learning to retrieve, generate,
   and critique through self-reflection. ICLR 2024.
 - Cormack, G. V., Clarke, C. L. A., Büttcher, S. 2009. Reciprocal rank fusion outperforms Condorcet and
-  individual rank learning methods. SIGIR 2009.
+  individual rank learning methods. In Proc. SIGIR '09, 758–759. doi:10.1145/1571941.1572114
 - Diekelmann, S., Born, J. 2010. The memory function of sleep. Nature Reviews Neuroscience 11, 114–126.
-- Edge, D., et al. 2024. From local to global: A graph RAG approach to query-focused summarization.
-  arXiv:2404.16130.
+- Edge, D., Trinh, H., Cheng, N., et al. 2024. From local to global: A graph RAG approach to
+  query-focused summarization. arXiv:2404.16130.
 - Es, S., James, J., Espinosa-Anke, L., Schockaert, S. 2024. RAGAS: Automated evaluation of retrieval
   augmented generation. EACL 2024 (demonstrations).
-- Friston, K. 2010. The free-energy principle: a unified brain theory? Nature Reviews Neuroscience 11,
-  127–138.
-- Guo, Z., Xia, L., Yu, Y., Ao, T., Huang, C. 2024. LightRAG: Simple and fast retrieval-augmented
-  generation. arXiv:2410.05779.
+- Friston, K. 2010. The free-energy principle: a unified brain theory? Nat. Rev. Neurosci. 11, 127–138.
+  doi:10.1038/nrn2787
+- Guo, Z., Xia, L., Yu, Y., Ao, T., Huang, C. 2025. LightRAG: Simple and fast retrieval-augmented
+  generation. In Findings of EMNLP 2025, 10746–10761.
 - Gutiérrez, B. J., Shu, Y., Gu, Y., Yasunaga, M., Su, Y. 2024. HippoRAG: Neurobiologically inspired
-  long-term memory for large language models. NeurIPS 2024.
+  long-term memory for large language models. In NeurIPS 2024.
 - Lewis, P., et al. 2020. Retrieval-augmented generation for knowledge-intensive NLP tasks. NeurIPS 2020.
 - McClelland, J. L., McNaughton, B. L., O'Reilly, R. C. 1995. Why there are complementary learning
-  systems in the hippocampus and neocortex. Psychological Review 102(3), 419–457.
+  systems in the hippocampus and neocortex: Insights from the successes and failures of connectionist
+  models of learning and memory. Psychol. Rev. 102(3), 419–457. doi:10.1037/0033-295X.102.3.419
 - Packer, C., et al. 2023. MemGPT: Towards LLMs as operating systems. arXiv:2310.08560.
 - Park, J. S., et al. 2023. Generative agents: Interactive simulacra of human behavior. UIST 2023.
 - Robertson, S., Zaragoza, H. 2009. The probabilistic relevance framework: BM25 and beyond. Foundations
