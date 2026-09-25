@@ -1,0 +1,42 @@
+%% Figure 1 — anonymized system overview for the paper.
+%% Render: mmdc -i fig1_architecture.mmd -o fig1_architecture.pdf -b white
+%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 40}, "themeVariables": {"fontFamily": "Helvetica, Arial, sans-serif", "fontSize": "14px"}}}%%
+flowchart TB
+    classDef proc fill:#eaf2fc,stroke:#2a78d6,color:#0b0b0b
+    classDef store fill:#f4f3ef,stroke:#52514e,color:#0b0b0b
+    classDef dream fill:#fdf0ea,stroke:#eb6834,color:#0b0b0b
+    classDef ext fill:#ffffff,stroke:#8a8984,color:#0b0b0b
+
+    subgraph ING["① Ingestion (online)"]
+        direction LR
+        DOC["Documents"]:::ext --> C1["Paragraph passages<br/>≤ 800 characters"]:::proc
+        C1 --> C3["NER pre-screen:<br/>skip passages with<br/>no candidates"]:::proc
+        C3 --> C4["LLM entity extraction<br/>typed, ≤ 20 per passage,<br/>adjacent-passage context"]:::proc
+    end
+
+    KB[("Knowledge store<br/>passages · vectors · BM25 · entity graph")]:::store
+
+    subgraph RET["② Retrieval and generation (online)"]
+        direction LR
+        Q["Query"]:::ext --> R1["Hybrid retrieval<br/>BM25 + dense (RRF)"]:::proc
+        R1 --> R2["Iterative gap-filling<br/>+ graph entity context"]:::proc
+        R2 --> R3["LLM generation"]:::proc --> A["Answer"]:::ext
+    end
+
+    subgraph DRM["③ Dream loop (offline, one cycle per run, in idle time)"]
+        direction LR
+        D1["Score entities<br/>for completeness"]:::dream --> D2["Select least complete<br/>(per-cycle budget)"]:::dream
+        D2 --> D3["Complete from own<br/>evidence passages (LLM)"]:::dream
+        D3 --> D4["Improvement gate:<br/>accept / reject"]:::dream
+        D4 --> D5["Merge duplicates ·<br/>prune unevidenced, unconnected<br/>single-mention entities"]:::dream
+    end
+
+    C1 -- "embeddings, BM25" --> KB
+    C4 -- "entities" --> KB
+    KB --> R1
+    KB -- "entity graph" --> D1
+    D5 -- "denser graph" --> KB
+
+    style ING fill:#fafaf8,stroke:#c9c8c2
+    style RET fill:#fafaf8,stroke:#c9c8c2
+    style DRM fill:#fffaf7,stroke:#eb6834
