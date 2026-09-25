@@ -1,13 +1,16 @@
 # Dream RAG: AIAS+ 2026 revision plan (submission 54)
 
+> The paper itself (sources, letter, figures, template, build script and the submission .docx) is in
+> [`../papers/aias2026/`](../papers/aias2026/). This plan stays here.
+>
 > Internal working document. **It is not the anonymized submission.** It names the repository,
 > the corpora and the result files. The anonymized manuscript and response are produced from it.
-> The response draft is in [`DreamRAG-AIAS2026-response.md`](DreamRAG-AIAS2026-response.md).
+> The response draft is in [`DreamRAG-AIAS2026-response.md`](../papers/aias2026/DreamRAG-AIAS2026-response.md).
 
 **Page limit: 4 pages** on the EasyChair template, references included. The submission text is
-[`DreamRAG-AIAS2026-short.md`](DreamRAG-AIAS2026-short.md), built with
+[`DreamRAG-AIAS2026-short.md`](../papers/aias2026/DreamRAG-AIAS2026-short.md), built with
 `build_manuscript_docx.py --short`; it fit in 4 pages with about 8 lines to spare on 2026-09-25.
-[`DreamRAG-AIAS2026-manuscript.md`](DreamRAG-AIAS2026-manuscript.md) is the extended version it
+[`DreamRAG-AIAS2026-manuscript.md`](../papers/aias2026/DreamRAG-AIAS2026-manuscript.md) is the extended version it
 condenses. **The response letter still cites the extended version's sections, figures and tables.**
 
 **Deadline 2026-10-01**: anonymized manuscript (corrected EasyChair/ACM template),
@@ -89,20 +92,20 @@ enrichment, fact density, free-energy principle, evaluation methodology, negativ
 
 | ID | Content | Source | Status |
 |---|---|---|---|
-| F1 | System overview | `design/architecture/dfd-0.mmd`, redrawn generically; stores = SQLite | ✓ `figures/` |
-| F2 | Graph completeness vs eval accuracy over 31 cycles | `tests/kwaai-knowledge/results/dream_scores.json`. Drop cycle 12 (eval 0.0, failed run). Mark cycles 1–9 as the 3B model | ✓ `figures/` |
-| F3 | **Fact density**: entity count vs mean completeness over 5 cycles on 12 corpora (paired before/after per corpus) | `results/rebuild_dream_*.log`, `results/warpeace_rebuild_dream_timeline.log`; cycles 6–10 in `overnight_dream_timeline_*.log` | ✓ `figures/` |
-| F4 | Retrieval / generation / judge on 11 corpora | `results/multi_corpus_eval_full_driver.log` (2026-08-04) | ✓ `figures/` |
-| F5 | Build time vs passages; minutes per dream cycle | (a) last progress line of each `rebuild_dream_*.log` (same builds as F3/F4); (b) `overnight_dream_timeline_driver*.log` | ✓ `figures/` |
-| F6 | Completeness per dream cycle, 12 corpora (small multiples, shared y) | `Overall:` lines of `rebuild_dream_*.log` + `overnight_dream_timeline_<KB>.log` | ✓ `figures/` |
-| F7 | Development history on the memoir, 88 milestones, instrument changes and dream-only / seed-only milestones marked | `projects/kwaai-knowledge/d6_progress_chart.py` `MILESTONES`; classification from `d6_accuracy_progress.md` rows and commit diffs (M83, M85–M88 touch only `d6_family_tree.yaml`) | ✓ `figures/` |
+| F1 | System overview | `design/architecture/dfd-0.mmd`, redrawn generically; stores = SQLite | ✓ `papers/aias2026/figures/` |
+| F2 | Graph completeness vs eval accuracy over 31 cycles | `tests/kwaai-knowledge/results/dream_scores.json`. Drop cycle 12 (eval 0.0, failed run). Mark cycles 1–9 as the 3B model | ✓ `papers/aias2026/figures/` |
+| F3 | **Fact density**: entity count vs mean completeness over 5 cycles on 12 corpora (paired before/after per corpus) | `results/rebuild_dream_*.log`, `results/warpeace_rebuild_dream_timeline.log`; cycles 6–10 in `overnight_dream_timeline_*.log` | ✓ `papers/aias2026/figures/` |
+| F4 | Retrieval / generation / judge on 11 corpora | `results/multi_corpus_eval_full_driver.log` (2026-08-04) | ✓ `papers/aias2026/figures/` |
+| F5 | Build time vs passages; minutes per dream cycle | (a) last progress line of each `rebuild_dream_*.log` (same builds as F3/F4); (b) `overnight_dream_timeline_driver*.log` | ✓ `papers/aias2026/figures/` |
+| F6 | Completeness per dream cycle, 12 corpora (small multiples, shared y) | `Overall:` lines of `rebuild_dream_*.log` + `overnight_dream_timeline_<KB>.log` | ✓ `papers/aias2026/figures/` |
+| F7 | Development history on the memoir, 88 milestones, instrument changes and dream-only / seed-only milestones marked | `projects/kwaai-knowledge/d6_progress_chart.py` `MILESTONES`; classification from `d6_accuracy_progress.md` rows and commit diffs (M83, M85–M88 touch only `d6_family_tree.yaml`) | ✓ `papers/aias2026/figures/` |
 | T1 | Corpus statistics | `rebuild_dream_*.log`, `warpeace_rebuild_dream_timeline.log`, `<KB>/eval_questions.json` | ✓ drafted below |
 | T2 | Controlled comparisons with n and noise band | ledger below | ✓ drafted below |
 | T3 | Consolidation harms | ledger below | ✓ drafted below |
 
 ### Draft captions
 
-All figures are produced by `figures/gen_paper_figures.py` (Figure 1: `figures/fig1_architecture.mmd`
+All figures are produced by `../papers/aias2026/figures/gen_paper_figures.py` (Figure 1: `figures/fig1_architecture.mmd`
 via `mmdc`). Each is written as PDF with embedded TrueType fonts, as ACM requires, plus a PNG.
 
 - **Figure 1.** System overview. Ingestion builds passages, a hybrid lexical-dense index and an entity

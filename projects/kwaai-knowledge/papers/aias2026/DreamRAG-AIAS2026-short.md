@@ -4,8 +4,8 @@ title: "Dream RAG: Offline Consolidation of a Retrieval Knowledge Graph, and Whe
 
 <!--
 4-page submission text (anonymized). A précis of DreamRAG-AIAS2026-manuscript.md, the extended
-version; every number traces to the evidence ledger in DreamRAG-AIAS2026-manuscript-plan.md.
-Build: python3 projects/kwaai-knowledge/plans/build_manuscript_docx.py --short
+version; every number traces to the evidence ledger in ../../plans/DreamRAG-AIAS2026-manuscript-plan.md.
+Build: python3 projects/kwaai-knowledge/papers/aias2026/build_manuscript_docx.py --short
 Items in ⟦double brackets⟧ must be resolved before submission.
 -->
 

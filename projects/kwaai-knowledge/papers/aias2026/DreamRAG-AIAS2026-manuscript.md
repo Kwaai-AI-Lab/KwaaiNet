@@ -5,7 +5,7 @@ subtitle: "AIAS+ 2026, submission 54 — revised manuscript (anonymized draft)"
 
 <!--
 Anonymized manuscript draft. Source of truth for the text until it is moved onto the ACM template.
-Every number traces to the evidence ledger in DreamRAG-AIAS2026-manuscript-plan.md.
+Every number traces to the evidence ledger in ../../plans/DreamRAG-AIAS2026-manuscript-plan.md.
 Items in ⟦double brackets⟧ must be resolved before submission.
 No project, product, network, machine, author or memoir names may appear in this file.
 -->

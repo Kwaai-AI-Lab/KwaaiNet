@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Figures for the Dream RAG AIAS+ 2026 revision (see ../DreamRAG-AIAS2026-manuscript-plan.md).
+"""Figures for the Dream RAG AIAS+ 2026 revision (see ../../../plans/DreamRAG-AIAS2026-manuscript-plan.md).
 
 Every number is parsed from, or copied with a citation to, a result file under
 tests/kwaai-knowledge/results/. Output: fig{2..7}_*.{pdf,png} next to this script, named by
@@ -7,7 +7,7 @@ paper figure number (order of first mention). Function names fig2()..fig7() are 
 fig2→Figure 5, fig3→3, fig4→2, fig5→6, fig6→4, fig7→7.
 Labels are anonymized: no project, machine or memoir names.
 
-    python3 projects/kwaai-knowledge/plans/figures/gen_paper_figures.py
+    python3 projects/kwaai-knowledge/papers/aias2026/figures/gen_paper_figures.py
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[3]
+REPO = HERE.parents[4]
 RES = REPO / "tests/kwaai-knowledge/results"
 
 # Reference palette (dataviz skill), slots 1-3 validated all-pairs in light mode.

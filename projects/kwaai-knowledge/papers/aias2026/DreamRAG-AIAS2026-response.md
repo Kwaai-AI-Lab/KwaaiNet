@@ -3,7 +3,7 @@
 > **Draft.** Items in ⟦double brackets⟧ must be resolved before submission. Section, figure and
 > table numbers refer to the **4-page revised paper**, `DreamRAG-AIAS2026-short.md`; check them against
 > the final PDF. This file must stay free of identifying information. Sources for every number are in
-> the evidence ledger of `DreamRAG-AIAS2026-manuscript-plan.md`.
+> the evidence ledger of `../../plans/DreamRAG-AIAS2026-manuscript-plan.md`.
 
 ---
 

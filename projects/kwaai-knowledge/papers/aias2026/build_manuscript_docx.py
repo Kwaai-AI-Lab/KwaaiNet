@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Build the anonymized AIAS+ 2026 manuscript (.docx) on the EasyChair Word template.
 
-    python3 projects/kwaai-knowledge/plans/build_manuscript_docx.py           # extended version
-    python3 projects/kwaai-knowledge/plans/build_manuscript_docx.py --short   # 4-page submission
+    python3 projects/kwaai-knowledge/papers/aias2026/build_manuscript_docx.py           # extended version
+    python3 projects/kwaai-knowledge/papers/aias2026/build_manuscript_docx.py --short   # 4-page submission
 
 --short builds DreamRAG-AIAS2026-short.md, which carries its own figures and captions inline, into
 submission54-4page.docx.
 
 Source of truth: DreamRAG-AIAS2026-manuscript.md (text) and the "Draft captions" section of
-DreamRAG-AIAS2026-manuscript-plan.md (figure captions). Figures: figures/fig*.pdf|png, produced by
+../../plans/DreamRAG-AIAS2026-manuscript-plan.md (figure captions). Figures: figures/fig*.pdf|png, produced by
 figures/gen_paper_figures.py. Template: _easychair_template.docx, the EasyChair "Microsoft Word
 Manuscript Template" (an input to this build; styles only, its content is discarded).
 
@@ -36,9 +36,9 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
+REPO = HERE.parents[3]
 SRC = HERE / "DreamRAG-AIAS2026-manuscript.md"
-PLAN = HERE / "DreamRAG-AIAS2026-manuscript-plan.md"
+PLAN = HERE.parents[1] / "plans/DreamRAG-AIAS2026-manuscript-plan.md"
 TEMPLATE = HERE / "_easychair_template.docx"
 FIGS = HERE / "figures"
 OUT = HERE / "submission54-manuscript.docx"
