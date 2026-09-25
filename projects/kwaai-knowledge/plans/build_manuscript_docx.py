@@ -12,8 +12,9 @@ DreamRAG-AIAS2026-manuscript-plan.md (figure captions). Figures: figures/fig*.pd
 figures/gen_paper_figures.py. Template: _easychair_template.docx, the EasyChair "Microsoft Word
 Manuscript Template" (an input to this build; styles only, its content is discarded).
 
-Output: rendered/projects/kwaai-knowledge/plans/submission54-manuscript.docx (gitignored build output,
-neutral file name, author metadata blanked). Edit the .md, never the .docx.
+Output: submission54-manuscript.docx (or submission54-4page.docx with --short) next to this script,
+tracked so the submission is in the repo. Neutral file name, author metadata blanked. Edit the .md,
+never the .docx.
 
 pandoc writes its own style names; the post-pass maps them onto the template's: Heading 1/2 ->
 Section/Subsection (auto-numbered by the template, so the .md's manual numbers are stripped), body
@@ -40,7 +41,7 @@ SRC = HERE / "DreamRAG-AIAS2026-manuscript.md"
 PLAN = HERE / "DreamRAG-AIAS2026-manuscript-plan.md"
 TEMPLATE = HERE / "_easychair_template.docx"
 FIGS = HERE / "figures"
-OUT = REPO / "rendered/projects/kwaai-knowledge/plans/submission54-manuscript.docx"
+OUT = HERE / "submission54-manuscript.docx"
 SHORT = False
 
 # Figure n goes after the first paragraph of the manuscript containing this anchor.
