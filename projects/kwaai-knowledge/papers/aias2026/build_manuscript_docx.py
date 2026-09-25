@@ -166,9 +166,18 @@ def set_col_widths(table, widths_in) -> None:
     """Fixed layout, with widths written to both tblGrid and every cell, so Word honours them."""
     tbl = table._tbl
     tblPr = tbl.tblPr
+    for old in tblPr.findall(qn("w:tblLayout")):
+        tblPr.remove(old)
     layout = OxmlElement("w:tblLayout")
     layout.set(qn("w:type"), "fixed")
-    tblPr.append(layout)
+    # Schema order: tblLayout precedes tblCellMar, tblLook, tblCaption, tblDescription. Appending it
+    # after them makes Word report "unreadable content".
+    later = [tblPr.find(qn(f"w:{t}")) for t in ("tblCellMar", "tblLook", "tblCaption", "tblDescription")]
+    later = [e for e in later if e is not None]
+    if later:
+        later[0].addprevious(layout)
+    else:
+        tblPr.append(layout)
     for col, w in zip(tbl.find(qn("w:tblGrid")).findall(qn("w:gridCol")), widths_in):
         col.set(qn("w:w"), str(int(w * 1440)))
     for row in table.rows:
