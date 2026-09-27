@@ -90,13 +90,21 @@ let
       filter = sourceFilter;
     };
 
-  # The patched crate must live inside the source derivation itself (not be
-  # copied in by a build hook): crane's deps-only phase parses the manifest
-  # from a dummified copy of `src`, and `[patch.crates-io]` needs the path
-  # present there too.
-  src = pkgs.runCommand "kwaainet-src-with-patches" { } ''
-    cp -r ${filteredSrc} $out
-    chmod -R u+w $out
+  # Drops the three patched crates into $out/patches/*, overwriting whatever
+  # (if anything) is already there. Shared between the real `src` derivation
+  # below and `extraDummyScript` (see commonArgs): crane's `mkDummySrc` has no
+  # concept of `[workspace] exclude` — it discovers every Cargo.toml reachable
+  # from `src`, including these excluded-but-still-a-crate patch directories,
+  # and replaces each one's real source with a generic placeholder, same as
+  # it does for actual workspace members. That silently truncated
+  # multistream-select's ~300-line lib.rs (real exports: Version,
+  # NegotiationError, etc.) down to a 14-line stub during buildDepsOnly,
+  # which is why libp2p-core failed to compile against it with unresolved
+  # imports (https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/237). Re-running
+  # this after crane's own dummy generation restores the real patched source
+  # for exactly these three crates without disabling dummying for anything
+  # crane got right (i.e. the actual workspace members).
+  restorePatchedDeps = ''
     mkdir -p $out/patches
     rm -rf $out/patches/multistream-select
     cp -r ${multistreamSelectPatched} $out/patches/multistream-select
@@ -104,6 +112,16 @@ let
     cp -r ${libp2pKadPatched} $out/patches/libp2p-kad
     rm -rf $out/patches/cudarc
     cp -r ${cudarcPatched} $out/patches/cudarc
+  '';
+
+  # The patched crate must live inside the source derivation itself (not be
+  # copied in by a build hook): crane's deps-only phase parses the manifest
+  # from a dummified copy of `src`, and `[patch.crates-io]` needs the path
+  # present there too.
+  src = pkgs.runCommand "kwaainet-src-with-patches" { } ''
+    cp -r ${filteredSrc} $out
+    chmod -R u+w $out
+    ${restorePatchedDeps}
   '';
 
   commonArgs = {
@@ -114,6 +132,10 @@ let
 
     nativeBuildInputs = packages.nativeBuildInputs ++ [ makeWrapper ];
     inherit (packages) buildInputs;
+
+    # Runs after crane's own `mkDummySrc` stubbing (buildDepsOnly and
+    # anything else that dummies `src`) — see restorePatchedDeps above.
+    extraDummyScript = restorePatchedDeps;
 
     # Environment variables consumed by the patched build.rs.
     P2PD_PROTO_RS = "${protoRs}/p2pd.pb.rs";

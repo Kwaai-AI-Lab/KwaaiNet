@@ -6,6 +6,10 @@ in
 {
   nativeBuildInputs = with pkgs; [
     pkg-config
+    # kwaai-rpc's build.rs uses tonic-build against kwaai.proto; it only
+    # falls back to downloading protoc over the network (which the Nix
+    # sandbox blocks) when `protoc` isn't already on PATH.
+    protobuf
   ];
 
   buildInputs =
