@@ -132,6 +132,28 @@ struct CompletionRelation {
     target: String,
 }
 
+/// The relations a completion may add: a known type and a non-empty target, and
+/// none at all under `--no-relations`. That flag only changes the prompt, and the
+/// model sometimes returns relations anyway; they used to be written to the graph,
+/// so a "no relations" dream arm still gained a dozen per cycle.
+fn accepted_relations(
+    proposed: Vec<CompletionRelation>,
+    no_relations: bool,
+) -> Vec<(String, String)> {
+    if no_relations {
+        return Vec::new();
+    }
+    proposed
+        .into_iter()
+        .filter(|r| {
+            !r.target.is_empty()
+                && !r.relation_type.is_empty()
+                && RELATION_TYPES.contains(&r.relation_type.as_str())
+        })
+        .map(|r| (r.relation_type, r.target))
+        .collect()
+}
+
 static VALID_SCHEMA_TYPES: OnceLock<Vec<&'static str>> = OnceLock::new();
 
 fn valid_schema_types() -> &'static [&'static str] {
@@ -324,17 +346,7 @@ pub async fn complete_entity(
         None
     };
 
-    // Filter relations: type must be valid, target must be non-empty.
-    let relations: Vec<(String, String)> = payload
-        .relations
-        .into_iter()
-        .filter(|r| {
-            !r.target.is_empty()
-                && !r.relation_type.is_empty()
-                && RELATION_TYPES.contains(&r.relation_type.as_str())
-        })
-        .map(|r| (r.relation_type, r.target))
-        .collect();
+    let relations = accepted_relations(payload.relations, no_relations);
 
     EntityCompletion {
         entity_id: eid,
@@ -1036,6 +1048,33 @@ pub async fn run_dream_cycle(
 mod tests {
     use super::*;
     use crate::mentions::{MentionKind, MentionSpan, SentenceMentions};
+
+    /// Regression: `--no-relations` changed only the prompt, and relations the model
+    /// returned anyway were still added to the graph.
+    #[test]
+    fn no_relations_drops_proposed_relations() {
+        let proposed = || {
+            vec![
+                CompletionRelation {
+                    relation_type: RELATION_TYPES[0].to_string(),
+                    target: "Target Entity".to_string(),
+                },
+                CompletionRelation {
+                    relation_type: "not_a_relation_type".to_string(),
+                    target: "Target Entity".to_string(),
+                },
+                CompletionRelation {
+                    relation_type: RELATION_TYPES[0].to_string(),
+                    target: String::new(),
+                },
+            ]
+        };
+        assert!(accepted_relations(proposed(), true).is_empty());
+        assert_eq!(
+            accepted_relations(proposed(), false),
+            vec![(RELATION_TYPES[0].to_string(), "Target Entity".to_string())]
+        );
+    }
 
     fn sm(sentence: &str, entity_id: i64) -> SentenceMentions {
         SentenceMentions {
