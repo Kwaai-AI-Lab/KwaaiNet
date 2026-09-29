@@ -7,6 +7,7 @@ mean larger than the cycle-0 retest spread. Secondary: arm B minus arm A at cycl
 correlation of graph score with coverage across checkpoints, answer recall and keyword recall.
 
     .venv/bin/python pilot/d6_noseed_analyze.py        # prints the report, writes report.json / report.md
+    .venv/bin/python pilot/d6_noseed_analyze.py --mode graph-only   # -> report_graph-only.{json,md}
 
 `gold_in_prompt` is a retrieval measure without NLI: the share of a question's reachable nuggets
 whose gold passage is among the prompt's chunks. It exists because coverage has a ceiling here:
@@ -29,7 +30,10 @@ from common import RESULTS, WORK, read_jsonl  # noqa: E402
 
 OUT = RESULTS.parent / "d6_noseed_s10"
 CYCLES = (0, 1, 2, 4, 8, 12, 16, 20, 24)
-MEASURES = ("coverage", "gold_in_prompt", "answer_recall", "keyword_recall")
+MODE = sys.argv[sys.argv.index("--mode") + 1] if "--mode" in sys.argv else "iterative"
+# No chunk reaches a graph-only prompt, so gold_in_prompt is 0 by construction there.
+MEASURES = (("coverage", "answer_recall", "keyword_recall") if MODE == "graph-only"
+            else ("coverage", "gold_in_prompt", "answer_recall", "keyword_recall"))
 BOOT = 5000
 
 
@@ -118,10 +122,10 @@ def main() -> None:
     scores = graph_scores()
     rep: dict = {"measures": {}, "graph": {f"{a}:c{c:02d}": s for (a, c), s in sorted(scores.items())}}
     for m in MEASURES:
-        base = values(rows, ("0", 0, 1, "iterative"), m)
+        base = values(rows, ("0", 0, 1, MODE), m)
         if not base:
             continue
-        retest = [st.mean(v.values()) for r in (1, 2, 3) if (v := values(rows, ("0", 0, r, "iterative"), m))]
+        retest = [st.mean(v.values()) for r in (1, 2, 3) if (v := values(rows, ("0", 0, r, MODE), m))]
         mr: dict = {"cycle0_mean": round(st.mean(base.values()), 4),
                     "cycle0_retest_means": [round(x, 4) for x in retest],
                     "cycle0_retest_spread": round(max(retest) - min(retest), 4) if len(retest) > 1 else None,
@@ -131,17 +135,17 @@ def main() -> None:
         for arm in "AB":
             traj = []
             for c in CYCLES:
-                v = base if c == 0 else values(rows, (arm, c, 1, "iterative"), m)
+                v = base if c == 0 else values(rows, (arm, c, 1, MODE), m)
                 if v:
                     traj.append({"cycle": c, "mean": round(st.mean(v.values()), 4),
                                  "delta_vs_c0": paired_delta(base, v) if c else None,
                                  "graph_score": scores.get((arm if c else "0", c), {}).get("overall")})
-            end = [st.mean(v.values()) for r in (1, 2, 3) if (v := values(rows, (arm, 24, r, "iterative"), m))]
+            end = [st.mean(v.values()) for r in (1, 2, 3) if (v := values(rows, (arm, 24, r, MODE), m))]
             pts = [(t["graph_score"], t["mean"]) for t in traj if t["graph_score"] is not None]
             mr["arms"][arm] = {"trajectory": traj,
                                "c24_repeat_means": [round(x, 4) for x in end],
                                "spearman_graph_score_vs_measure": spearman(*zip(*pts)) if len(pts) >= 3 else None}
-        a24, b24 = values(rows, ("A", 24, 1, "iterative"), m), values(rows, ("B", 24, 1, "iterative"), m)
+        a24, b24 = values(rows, ("A", 24, 1, MODE), m), values(rows, ("B", 24, 1, MODE), m)
         mr["B_minus_A_c24"] = paired_delta(a24, b24) if a24 and b24 else None
         rep["measures"][m] = mr
 
@@ -155,8 +159,10 @@ def main() -> None:
     else:
         rep["verdict"] = {"pass": None, "note": "coverage for arm B at cycle 24 not scored yet"}
 
-    (OUT / "report.json").write_text(json.dumps(rep, indent=1))
-    lines = ["# D6 no-seed trial: recall vs dream cycles (first 10%)", ""]
+    stem = "report" if MODE == "iterative" else f"report_{MODE}"
+    rep["mode"] = MODE
+    (OUT / f"{stem}.json").write_text(json.dumps(rep, indent=1))
+    lines = [f"# D6 no-seed trial: recall vs dream cycles (first 10%, retrieval: {MODE})", ""]
     for m, mr in rep["measures"].items():
         lines += [f"## {m}", "", f"cycle 0: {mr['cycle0_mean']} (retest {mr['cycle0_retest_means']}, "
                   f"spread {mr['cycle0_retest_spread']}); vector-only {mr['vector_c0']}", "",
@@ -168,7 +174,7 @@ def main() -> None:
                 lines.append(f"| {arm} | {t['cycle']} | {t['mean']:.3f} | {ds} | {t['graph_score']} |")
         lines += ["", f"B − A at c24: {mr['B_minus_A_c24']}", ""]
     lines += ["## Verdict", "", json.dumps(rep["verdict"]), ""]
-    (OUT / "report.md").write_text("\n".join(lines))
+    (OUT / f"{stem}.md").write_text("\n".join(lines))
     print("\n".join(lines))
 
 

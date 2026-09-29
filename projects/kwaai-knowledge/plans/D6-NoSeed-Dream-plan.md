@@ -171,3 +171,23 @@ What the trial shows:
 Not tested here: whether relations help *answers* when the graph is built from the whole book. The slice's vector search still covers all 1,152 chunks, and it finds most slice gold passages without the graph (vector-only gold-in-prompt 0.724).
 
 Analysis: `tests/kwaai-knowledge/eval2/pilot/d6_noseed_analyze.py` → `results/d6_noseed_s10/report.{md,json}`.
+
+## Follow-up: graph-only retrieval (pre-registered 2026-09-29, before any graph-only eval)
+
+Reza, 2026-09-29: DreamRAG's thesis is that short-term memory (the vector store) is indexed and
+transferred into long-term memory (the graph), and that short-term memory is then forgotten. The
+trial above never tested that, because every retrieval mode still read the chunks. `--mode
+graph-only` (`ce804064`) gives the model entity fact cards only, with every relation listed.
+
+- **Snapshots:** the trial's saved snapshots; nothing is rebuilt or re-dreamed.
+  - Cycle 0: r1 and r2.
+  - Arms A and B: cycles 1, 4, 12 and 24, plus an r2 at cycle 24.
+  - The same 31 questions and 108 slice nuggets.
+- **Primary:** coverage under graph-only retrieval.
+  - **Pass** if arm B's paired Δcoverage from c0 to c24 has a 95% bootstrap CI above 0 and a mean
+    larger than the graph-only cycle-0 retest spread.
+- **Secondary:** B − A at c24; answer recall; keyword recall.
+- **Expectation stated in advance:** graph-only coverage is far below the chunk-retrieval figure
+  (0.564). A cycle-0 card holds only what extraction wrote. Without the seed's alias merges, the
+  graph also splits entities: the author appears as "Joe Rassool", "Rassool" and "Y.S.". If
+  dreaming transfers knowledge into the graph, it shows up here or nowhere.

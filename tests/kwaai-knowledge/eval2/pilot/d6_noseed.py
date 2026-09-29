@@ -18,6 +18,7 @@ Ollama never share memory.
 
     .venv/bin/python pilot/d6_noseed.py            # full run, resumable
     .venv/bin/python pilot/d6_noseed.py --smoke    # build, one cycle per arm, one eval; then stop
+    .venv/bin/python pilot/d6_noseed.py --graph-only   # re-evaluate saved snapshots, graph only
 
 State: results/d6_noseed_s10/state.json (a finished step is never redone; a failed step is retried
 once). Progress: results/d6_noseed_s10/progress.json. Log: results/d6_noseed_s10/run.log.
@@ -292,6 +293,29 @@ def do_metrics() -> dict:
     return {"rows": len(read_jsonl(out))}
 
 
+# Graph-only follow-up (2026-09-29): the same snapshots, retrieved with `--mode graph-only`, so the
+# model sees entity cards and no chunk text. Tests the thesis that dreaming moves what the chunk
+# store holds (short-term memory) into the graph (long-term memory).
+GRAPH_ONLY_CYCLES = (1, 4, 12, 24)
+GRAPH_ONLY_REPEATS = 2  # at cycle 0, and at cycle 24 per arm
+
+
+def run_graph_only(st: dict) -> None:
+    missing = [p for p in [snap("0", 0)] + [snap(a, c) for a in "AB" for c in GRAPH_ONLY_CYCLES] if not p.exists()]
+    if missing:
+        raise SystemExit(f"graph-only needs the trial's snapshots; missing {[p.name for p in missing]}")
+    for rep in range(1, GRAPH_ONLY_REPEATS + 1):
+        step(st, f"eval:0:c00:r{rep}:graph-only", lambda rep=rep: do_eval("0", 0, rep, "graph-only"))
+    for arm in "AB":
+        for c in GRAPH_ONLY_CYCLES:
+            step(st, f"eval:{arm}:c{c:02d}:r1:graph-only", lambda arm=arm, c=c: do_eval(arm, c, 1, "graph-only"))
+        for rep in range(2, GRAPH_ONLY_REPEATS + 1):
+            step(st, f"eval:{arm}:c{MAX_CYCLE}:r{rep}:graph-only",
+                 lambda arm=arm, rep=rep: do_eval(arm, MAX_CYCLE, rep, "graph-only"))
+    step(st, "metrics:graph-only", do_metrics)  # metrics.py skips rows it already scored
+    log("graph-only evals finished")
+
+
 # -- the queue -----------------------------------------------------------------------------------
 def main(argv: list[str]) -> None:
     smoke = "--smoke" in argv
@@ -305,7 +329,11 @@ def main(argv: list[str]) -> None:
             v["status"] = "pending"       # don't count the interruption as a failed attempt
             v["attempts"] = max(0, v.get("attempts", 1) - 1)
     save_state(st)
-    log(f"d6_noseed start{' (smoke)' if smoke else ''}; binary {BIN}")
+    log(f"d6_noseed start{' (smoke)' if smoke else ''}{' (graph-only)' if '--graph-only' in argv else ''}; "
+        f"binary {BIN}")
+    if "--graph-only" in argv:
+        run_graph_only(st)
+        return
 
     cutoff, slice_keys = slice_chunks()
     step(st, "gold", lambda: make_gold(cutoff))
