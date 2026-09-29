@@ -1299,7 +1299,8 @@ pub enum RagAction {
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration), "smart" (iterative for most queries,
-        /// graph+replace for family-relation queries)
+        /// graph+replace for family-relation queries), "graph-only" (entity cards from the graph,
+        /// no chunk text: tests what dreaming moved into long-term memory)
         #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
 
@@ -1666,7 +1667,8 @@ pub enum RagAction {
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration), "smart" (iterative for most queries,
-        /// graph+replace for family-relation queries)
+        /// graph+replace for family-relation queries), "graph-only" (entity cards from the graph,
+        /// no chunk text: tests what dreaming moved into long-term memory)
         #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
 

@@ -17,7 +17,7 @@ use kwaai_rag::{
     iterative::retrieve_iterative,
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
-    retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
+    retriever::{retrieve_graph_anchored, retrieve_graph_only, retrieve_hybrid, RetrieveConfig},
     seed_json,
 };
 
@@ -1240,6 +1240,12 @@ async fn cmd_query(
                             chunks.insert(0, seq);
                         }
                         chunks
+                    } else if effective_mode == "graph-only" {
+                        // Long-term memory alone: entity cards, no chunk text.
+                        let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .context("opening graph store for graph-only retrieval")?;
+                        drop(vs);
+                        retrieve_graph_only(&query, &retrieve_cfg, &embed, &graph).await?
                     } else if effective_mode == "graph" {
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store for graph-anchored retrieval")?;
@@ -8852,6 +8858,14 @@ async fn cmd_eval(
                     chunks.insert(0, seq);
                 }
                 chunks
+            } else if effective_mode == "graph-only" {
+                // Long-term memory alone: entity cards, no chunk text. A failure here is
+                // an error, not an empty context, so an eval can't quietly score nothing.
+                let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                retrieve_graph_only(&q.question, &retrieve_cfg, &embed, &graph)
+                    .await
+                    .with_context(|| format!("graph-only retrieval for {}", q.id))?
             } else if effective_mode == "graph" {
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
