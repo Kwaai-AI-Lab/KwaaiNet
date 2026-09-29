@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -191,6 +191,56 @@ pub async fn retrieve_hybrid(
     assemble_results(merged, cfg, meta)
 }
 
+/// Order the graph side of `retrieve_graph_anchored` before RRF fusion.
+///
+/// `rrf_merge` reads only list position, so this order *is* the ranking. Chunks of
+/// the seed entities score 1.0 and come first; chunks reached only through a
+/// neighbour score 0.6. Ties go to the chunk mentioning more of the traversed
+/// entities, then to the lower chunk id, so the order never depends on hash-set
+/// iteration. Before this, the list came straight from a `HashSet`, and adding
+/// relations to a graph randomly reshuffled what was retrieved.
+fn rank_graph_chunks(
+    mentions: &HashMap<i64, usize>,
+    seed_entity_chunks: &HashSet<i64>,
+) -> Vec<(i64, f64)> {
+    let mut ranked: Vec<(i64, f64, usize)> = mentions
+        .iter()
+        .map(|(&cid, &n)| {
+            let score = if seed_entity_chunks.contains(&cid) {
+                1.0
+            } else {
+                0.6
+            };
+            (cid, score, n)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+    ranked
+        .into_iter()
+        .map(|(cid, score, _)| (cid, score))
+        .collect()
+}
+
+/// The chunks mentioning any `traversed` entity, ranked by [`rank_graph_chunks`]
+/// with the chunks of `seeds` first.
+pub(crate) fn rank_traversed_chunks(
+    graph: &GraphStore,
+    traversed: &[i64],
+    seeds: &[i64],
+) -> Vec<(i64, f64)> {
+    let mut mentions: HashMap<i64, usize> = HashMap::new();
+    for &eid in traversed {
+        for &cid in graph.chunks_for_entity(eid) {
+            *mentions.entry(cid).or_default() += 1;
+        }
+    }
+    let seed_chunks: HashSet<i64> = seeds
+        .iter()
+        .flat_map(|&eid| graph.chunks_for_entity(eid).iter().copied())
+        .collect();
+    rank_graph_chunks(&mentions, &seed_chunks)
+}
+
 /// Graph-anchored retrieval: entity similarity search → BFS traversal → chunk lookup,
 /// fused with hybrid vector+BM25 results via RRF.
 ///
@@ -302,28 +352,8 @@ pub async fn retrieve_graph_anchored(
         let seed_ids: Vec<i64> = seed_hits.iter().map(|(id, _)| *id).collect();
         let neighbor_ids = graph.bfs_neighbors(&seed_ids, 2);
 
-        // 3. Collect all chunk IDs that mention any of these entities.
-        let chunk_ids = graph.entity_chunks(&neighbor_ids);
-
-        // 4. Score each chunk: base = 1.0 (presence), boost seed entity hits.
-        let seed_set: HashSet<i64> = seed_ids.into_iter().collect();
-        let seed_entity_chunks: HashSet<i64> = seed_hits
-            .iter()
-            .flat_map(|(eid, _)| graph.chunks_for_entity(*eid).iter().copied())
-            .collect();
-
-        chunk_ids
-            .into_iter()
-            .map(|cid| {
-                let score = if seed_entity_chunks.contains(&cid) {
-                    1.0
-                } else {
-                    0.6
-                };
-                let _ = &seed_set;
-                (cid, score)
-            })
-            .collect()
+        // 3–4. Every chunk that mentions any of these entities, seed entities' chunks first.
+        rank_traversed_chunks(graph, &neighbor_ids, &seed_ids)
     };
 
     // 5. Hybrid vector+BM25 retrieval. Same index-or-rebuild choice as
@@ -1092,6 +1122,35 @@ mod tests {
         // "TGT" should not match inside "XTGTX"
         let result = canonicalize_query("Tell me about XTGTX.", &store);
         assert_eq!(result, "Tell me about XTGTX.");
+    }
+
+    /// Regression: the graph list reached RRF in hash-set order, so its ranking was
+    /// random and more relations meant more reshuffling (Eval v2, Manhattan arm B:
+    /// prompt overlap with cycle 0 fell to 0.51 against 0.84–0.87 for repeats).
+    #[test]
+    fn graph_chunks_rank_seed_first_then_by_mentions() {
+        let mentions: HashMap<i64, usize> = [(50, 1), (10, 3), (30, 1), (20, 1), (40, 2)]
+            .into_iter()
+            .collect();
+        let seed: HashSet<i64> = [30, 20].into_iter().collect();
+        let ids: Vec<i64> = rank_graph_chunks(&mentions, &seed)
+            .into_iter()
+            .map(|(cid, _)| cid)
+            .collect();
+        // Seed chunks (tie on mentions → lower id first), then neighbours by mentions, then id.
+        assert_eq!(ids, vec![20, 30, 10, 40, 50]);
+    }
+
+    #[test]
+    fn graph_chunk_order_does_not_depend_on_insertion_order() {
+        let pairs: Vec<(i64, usize)> = (0..200).map(|i| (i * 7919 % 1000, 1)).collect();
+        let forward: HashMap<i64, usize> = pairs.iter().copied().collect();
+        let reverse: HashMap<i64, usize> = pairs.iter().rev().copied().collect();
+        let seed: HashSet<i64> = pairs.iter().take(20).map(|(c, _)| *c).collect();
+        assert_eq!(
+            rank_graph_chunks(&forward, &seed),
+            rank_graph_chunks(&reverse, &seed)
+        );
     }
 }
 

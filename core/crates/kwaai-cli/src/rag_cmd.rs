@@ -3617,6 +3617,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
                 let mut all_chunks = meta.all_chunks()?;
+                // Windows are built from list neighbours, and --limit/--sample-pct keep a
+                // prefix of the list: both need reading order, not key order.
+                kwaai_rag::meta_store::sort_document_order(&mut all_chunks);
 
                 // Filter by document name patterns if --docs is set
                 if let Some(ref patterns) = docs {

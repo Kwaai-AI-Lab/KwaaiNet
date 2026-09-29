@@ -693,6 +693,30 @@ pub fn description_from_fields(
     }
 }
 
+/// Combine an entity's prose description with a fresh [`description_from_fields`]
+/// summary: the prose is kept and the summary line is appended, or replaced if an
+/// earlier one is there.
+///
+/// Dream field completion and reembed used to replace the description with the
+/// summary outright, so "…was the mother of the memoir's author, Yousuf (Joe)
+/// Rassool" became "Ayesha Rassool — birthPlace: Rander; nationality: South
+/// African" and the fact the eval needed was gone. Idempotent: applying it every
+/// cycle leaves exactly one summary line.
+pub fn merge_field_summary(existing: &str, name: &str, summary: &str) -> String {
+    let marker = format!("{name} — ");
+    let prose = existing
+        .split("\n\n")
+        .filter(|p| !p.trim_start().starts_with(&marker))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let prose = prose.trim();
+    match (prose.is_empty(), summary.is_empty()) {
+        (true, _) => summary.to_string(),
+        (false, true) => prose.to_string(),
+        (false, false) => format!("{prose}\n\n{summary}"),
+    }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Strip punctuation, collapse whitespace, lowercase — used for fuzzy name matching.
@@ -5409,7 +5433,8 @@ impl GraphStore {
                     let fresh =
                         description_from_fields(&node.name, &node.entity_type, &node.fields);
                     if !fresh.is_empty() {
-                        node.description = fresh;
+                        node.description =
+                            merge_field_summary(&node.description, &node.name, &fresh);
                     }
                 }
             }
@@ -6253,6 +6278,34 @@ fn update_adj(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: Eval v2 arm B's field completion replaced this prose with the
+    /// summary line, and the "mother of the memoir's author" nugget was lost.
+    #[test]
+    fn field_summary_keeps_prose_and_stays_single() {
+        let prose = "Ayesha Rassool, known as Lallie, was the mother of the memoir's author.";
+        let s1 = "Ayesha Rassool — birthPlace: Rander";
+        let s2 = "Ayesha Rassool — birthPlace: Rander; nationality: South African";
+        let once = merge_field_summary(prose, "Ayesha Rassool", s1);
+        assert_eq!(once, format!("{prose}\n\n{s1}"));
+        // A later cycle refreshes the summary instead of stacking another one.
+        let twice = merge_field_summary(&once, "Ayesha Rassool", s2);
+        assert_eq!(twice, format!("{prose}\n\n{s2}"));
+        assert_eq!(merge_field_summary(&twice, "Ayesha Rassool", s2), twice);
+    }
+
+    #[test]
+    fn field_summary_alone_when_there_is_no_prose() {
+        let s = "Rander — country: India";
+        assert_eq!(merge_field_summary("", "Rander", s), s);
+        // An old summary on its own is replaced, not kept as "prose".
+        assert_eq!(merge_field_summary("Rander — country: ?", "Rander", s), s);
+        // Nothing new to add: the prose is left as it is.
+        assert_eq!(
+            merge_field_summary("A town in Gujarat.", "Rander", ""),
+            "A town in Gujarat."
+        );
+    }
 
     #[test]
     fn test_clean_entity_name_chained_initials() {

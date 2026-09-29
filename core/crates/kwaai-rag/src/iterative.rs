@@ -9,11 +9,17 @@ use crate::embedder::EmbedClient;
 use crate::graph::GraphStore;
 use crate::meta_store::MetaStore;
 use crate::retriever::{
-    assemble_results, inject_entity_descriptions, RetrieveConfig, RetrievedChunk,
+    assemble_results, inject_entity_descriptions, rank_traversed_chunks, RetrieveConfig,
+    RetrievedChunk,
 };
 
 const COVERAGE_R2: f32 = 0.70;
 const COVERAGE_R3: f32 = 0.75;
+/// Most chunks round-2 gap-fill may add. Gap-fill chunks score 0.45, above every
+/// round-1 RRF score, so an uncapped fill let a denser graph push its whole 2-hop
+/// neighbourhood ahead of the vector hits. Same bound as the level-2 summary
+/// expansion in round 3.
+const GAP_FILL_MAX: usize = 10;
 
 static STOP_WORDS: &[&str] = &[
     "the", "and", "was", "were", "had", "has", "have", "been", "what", "who", "which", "when",
@@ -226,24 +232,7 @@ where
     } else {
         let seed_ids: Vec<i64> = seed_hits.iter().map(|(id, _)| *id).collect();
         let neighbors = graph.bfs_neighbors(&seed_ids, 2);
-        let chunk_ids = graph.entity_chunks(&neighbors);
-        let seed_chunk_set: HashSet<i64> = seed_hits
-            .iter()
-            .flat_map(|(eid, _)| graph.chunks_for_entity(*eid).iter().copied())
-            .collect();
-        chunk_ids
-            .into_iter()
-            .map(|cid| {
-                (
-                    cid,
-                    if seed_chunk_set.contains(&cid) {
-                        1.0
-                    } else {
-                        0.6
-                    },
-                )
-            })
-            .collect()
+        rank_traversed_chunks(graph, &neighbors, &seed_ids)
     };
 
     let fused_raw = rrf_merge(&graph_raw, &vector_raw, candidate_k);
@@ -297,7 +286,12 @@ where
         let gap_added = if !gap_hits.is_empty() {
             let gap_ids: Vec<i64> = gap_hits.iter().map(|(id, _)| *id).collect();
             let gap_neighbors = graph.bfs_neighbors(&gap_ids, 2);
-            let gap_chunk_ids = graph.entity_chunks(&gap_neighbors);
+            // Ranked (the gap entities' own chunks first) and capped, so a denser graph
+            // changes which chunks fill the gap, not how many.
+            let gap_chunk_ids: Vec<i64> = rank_traversed_chunks(graph, &gap_neighbors, &gap_ids)
+                .into_iter()
+                .map(|(cid, _)| cid)
+                .collect();
             let new_metas = meta.get_chunks(&gap_chunk_ids)?;
             let new_chunks: Vec<RetrievedChunk> = gap_chunk_ids
                 .into_iter()
@@ -316,6 +310,7 @@ where
                         rerank_score: None,
                     })
                 })
+                .take(GAP_FILL_MAX)
                 .collect();
             let added = new_chunks.len();
             pool.extend(new_chunks);
