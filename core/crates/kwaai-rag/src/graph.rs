@@ -703,18 +703,56 @@ pub fn description_from_fields(
 /// African" and the fact the eval needed was gone. Idempotent: applying it every
 /// cycle leaves exactly one summary line.
 pub fn merge_field_summary(existing: &str, name: &str, summary: &str) -> String {
-    let marker = format!("{name} — ");
-    let prose = existing
-        .split("\n\n")
-        .filter(|p| !p.trim_start().starts_with(&marker))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let prose = prose.trim();
+    let prose = description_prose(existing, name);
     match (prose.is_empty(), summary.is_empty()) {
         (true, _) => summary.to_string(),
-        (false, true) => prose.to_string(),
+        (false, true) => prose,
         (false, false) => format!("{prose}\n\n{summary}"),
     }
+}
+
+/// An entity's description without its [`description_from_fields`] summary line.
+///
+/// A summary is a one-line paragraph "Name — key: value; …" whose first key is a
+/// field name. Prose that merely starts "Name — known as …" is kept.
+pub fn description_prose(existing: &str, name: &str) -> String {
+    let marker = format!("{} — ", name.trim());
+    let is_summary = |p: &str| {
+        let p = p.trim();
+        !p.contains('\n')
+            && p.strip_prefix(&marker).is_some_and(|rest| {
+                rest.split_once(": ").is_some_and(|(key, _)| {
+                    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+    };
+    existing
+        .split("\n\n")
+        .filter(|p| !is_summary(p))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+/// The description dream field completion stores when the entity has field values.
+///
+/// The existing prose wins; when there is none (empty, or only an old summary
+/// line) the completion's own prose is used. Either way the field summary is
+/// refreshed via [`merge_field_summary`].
+pub fn field_completion_description(
+    existing: &str,
+    completion_prose: Option<&str>,
+    name: &str,
+    summary: &str,
+) -> String {
+    let prose = description_prose(existing, name);
+    let prose = if prose.is_empty() {
+        completion_prose.unwrap_or_default()
+    } else {
+        prose.as_str()
+    };
+    merge_field_summary(prose, name, summary)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -6305,6 +6343,39 @@ mod tests {
             merge_field_summary("A town in Gujarat.", "Rander", ""),
             "A town in Gujarat."
         );
+    }
+
+    /// Prose that happens to open "Name — …" is not a field summary.
+    #[test]
+    fn field_summary_leaves_prose_that_starts_with_the_name() {
+        let prose = "Ayesha Rassool — known as Lallie — was the mother of the author.";
+        let s = "Ayesha Rassool — birthPlace: Rander";
+        assert_eq!(
+            merge_field_summary(prose, "Ayesha Rassool", s),
+            format!("{prose}\n\n{s}")
+        );
+    }
+
+    /// Regression (review of the first fix): when the stored description was only an
+    /// old summary line, the completion's new prose was dropped.
+    #[test]
+    fn field_completion_uses_new_prose_only_when_there_is_none() {
+        let name = "Ayesha Rassool";
+        let s = "Ayesha Rassool — birthPlace: Rander";
+        let llm = "Ayesha Rassool was the mother of the memoir's author.";
+        // Stored description is only a summary: the completion's prose fills in.
+        assert_eq!(
+            field_completion_description(s, Some(llm), name, s),
+            format!("{llm}\n\n{s}")
+        );
+        // Stored prose exists: it is kept over the completion's.
+        let old = "Known as Lallie; a daughter of J.M.H. Gool.";
+        assert_eq!(
+            field_completion_description(old, Some(llm), name, s),
+            format!("{old}\n\n{s}")
+        );
+        // No prose anywhere: the summary alone.
+        assert_eq!(field_completion_description("", None, name, s), s);
     }
 
     #[test]

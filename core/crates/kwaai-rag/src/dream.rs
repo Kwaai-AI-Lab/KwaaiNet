@@ -828,12 +828,12 @@ pub async fn run_dream_cycle(
                             .unwrap_or_else(|| node.description.clone())
                     } else if !computed.is_empty() {
                         // Keep the prose, refresh the field summary line.
-                        let prose = if node.description.is_empty() {
-                            completion.description.as_deref().unwrap_or_default()
-                        } else {
-                            node.description.as_str()
-                        };
-                        crate::graph::merge_field_summary(prose, &node.name, &computed)
+                        crate::graph::field_completion_description(
+                            &node.description,
+                            completion.description.as_deref(),
+                            &node.name,
+                            &computed,
+                        )
                     } else if let Some(ref d) = completion.description {
                         d.clone()
                     } else {

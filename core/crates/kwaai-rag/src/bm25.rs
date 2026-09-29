@@ -287,7 +287,10 @@ pub fn rrf_merge(semantic: &[(i64, f64)], keyword: &[(i64, f64)], top_k: usize) 
     }
 
     let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
-    merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Equal scores are common (rank r in one list scores the same as rank r in the
+    // other), and `truncate` often cuts through a tie: break ties by id so the
+    // result does not depend on HashMap iteration order.
+    merged.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     merged.truncate(top_k);
     merged
 }
@@ -409,5 +412,20 @@ mod tests {
         assert_eq!(merged.len(), 3);
         // chunk 1 appears at rank-2 semantic + rank-1 keyword → should be top-ranked
         assert_eq!(merged[0].0, 1, "chunk 1 should win RRF");
+    }
+
+    /// Regression: rank r in one list ties with rank r in the other, and the tie used
+    /// to be broken by HashMap order, so a truncation through it varied between runs.
+    #[test]
+    fn rrf_ties_break_by_id() {
+        let graph: Vec<(i64, f64)> = (0..40).map(|i| (1000 + i, 1.0)).collect();
+        let vector: Vec<(i64, f64)> = (0..40).map(|i| (-(i + 1), 1.0)).collect();
+        let first = rrf_merge(&graph, &vector, 25);
+        for _ in 0..20 {
+            assert_eq!(rrf_merge(&graph, &vector, 25), first);
+        }
+        // Rank 0 of each list ties; the lower id wins.
+        assert_eq!(first[0].0, -1);
+        assert_eq!(first[1].0, 1000);
     }
 }

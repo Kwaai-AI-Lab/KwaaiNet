@@ -1124,6 +1124,45 @@ mod tests {
         assert_eq!(result, "Tell me about XTGTX.");
     }
 
+    /// End to end through a real store: chunk mention links, seed first, then by the
+    /// number of traversed entities a chunk mentions.
+    #[test]
+    fn traversed_chunks_ranked_from_the_store() {
+        let dir = tempdir().unwrap();
+        let mut store = GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
+        let mut ids = Vec::new();
+        for name in ["Seed Person", "Other One", "Other Two"] {
+            let id = crate::graph::entity_id(name, "Person");
+            store
+                .upsert_entity(EntityNode {
+                    id,
+                    name: name.to_string(),
+                    entity_type: "Person".to_string(),
+                    description: String::new(),
+                    embedding: vec![],
+                    mention_count: 1,
+                    first_chunk_id: 0,
+                    aliases: vec![],
+                    schema_type: None,
+                    evidence: Vec::new(),
+                    gender: None,
+                    fields: Default::default(),
+                    confidence: 0.0,
+                    extraction_confidence: 0.0,
+                })
+                .unwrap();
+            ids.push(id);
+        }
+        store.link_chunk(5, &[ids[0]]).unwrap();
+        store.link_chunk(7, &[ids[1], ids[2]]).unwrap();
+        store.link_chunk(3, &[ids[2]]).unwrap();
+        let ranked: Vec<i64> = rank_traversed_chunks(&store, &ids, &ids[..1])
+            .into_iter()
+            .map(|(cid, _)| cid)
+            .collect();
+        assert_eq!(ranked, vec![5, 7, 3]);
+    }
+
     /// Regression: the graph list reached RRF in hash-set order, so its ranking was
     /// random and more relations meant more reshuffling (Eval v2, Manhattan arm B:
     /// prompt overlap with cycle 0 fell to 0.51 against 0.84–0.87 for repeats).
