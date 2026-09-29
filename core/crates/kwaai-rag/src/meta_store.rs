@@ -42,8 +42,8 @@ pub struct ChunkMeta {
 /// Put chunks in reading order: by document, then position in the document.
 ///
 /// `MetaStore::all_chunks` returns key order, and a key ends in the chunk id's
-/// little-endian bytes, so consecutive chunks are almost never neighbours (1 of
-/// 3,722 pairs in Legal, 1 of 1,151 in D6). `graph build` builds its
+/// little-endian bytes, so consecutive chunks are almost never neighbours (about
+/// one adjacent pair per thousand in a single-document KB). `graph build` builds its
 /// `--graph-window` context from list neighbours, so every window was a chunk
 /// from somewhere else in the KB, and entities from it were attributed to the
 /// centre chunk.

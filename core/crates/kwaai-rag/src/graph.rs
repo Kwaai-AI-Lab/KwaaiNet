@@ -698,9 +698,8 @@ pub fn description_from_fields(
 /// earlier one is there.
 ///
 /// Dream field completion and reembed used to replace the description with the
-/// summary outright, so "…was the mother of the memoir's author, Yousuf (Joe)
-/// Rassool" became "Ayesha Rassool — birthPlace: Rander; nationality: South
-/// African" and the fact the eval needed was gone. Idempotent: applying it every
+/// summary outright, so a sentence of prose stating how the entity relates to
+/// others was lost to a line of field values. Idempotent: applying it every
 /// cycle leaves exactly one summary line.
 pub fn merge_field_summary(existing: &str, name: &str, summary: &str) -> String {
     let prose = description_prose(existing, name);
@@ -6317,41 +6316,44 @@ fn update_adj(
 mod tests {
     use super::*;
 
-    /// Regression: Eval v2 arm B's field completion replaced this prose with the
-    /// summary line, and the "mother of the memoir's author" nugget was lost.
+    /// Regression: dream field completion replaced prose with the summary line, so a
+    /// fact stated only in the prose (how the entity relates to others) was lost.
     #[test]
     fn field_summary_keeps_prose_and_stays_single() {
-        let prose = "Ayesha Rassool, known as Lallie, was the mother of the memoir's author.";
-        let s1 = "Ayesha Rassool — birthPlace: Rander";
-        let s2 = "Ayesha Rassool — birthPlace: Rander; nationality: South African";
-        let once = merge_field_summary(prose, "Ayesha Rassool", s1);
+        let prose = "Jane Doe, known as JD, was the founder of the Example Society.";
+        let s1 = "Jane Doe — birthPlace: Springfield";
+        let s2 = "Jane Doe — birthPlace: Springfield; nationality: Examplean";
+        let once = merge_field_summary(prose, "Jane Doe", s1);
         assert_eq!(once, format!("{prose}\n\n{s1}"));
         // A later cycle refreshes the summary instead of stacking another one.
-        let twice = merge_field_summary(&once, "Ayesha Rassool", s2);
+        let twice = merge_field_summary(&once, "Jane Doe", s2);
         assert_eq!(twice, format!("{prose}\n\n{s2}"));
-        assert_eq!(merge_field_summary(&twice, "Ayesha Rassool", s2), twice);
+        assert_eq!(merge_field_summary(&twice, "Jane Doe", s2), twice);
     }
 
     #[test]
     fn field_summary_alone_when_there_is_no_prose() {
-        let s = "Rander — country: India";
-        assert_eq!(merge_field_summary("", "Rander", s), s);
+        let s = "Springfield — country: Exampleland";
+        assert_eq!(merge_field_summary("", "Springfield", s), s);
         // An old summary on its own is replaced, not kept as "prose".
-        assert_eq!(merge_field_summary("Rander — country: ?", "Rander", s), s);
+        assert_eq!(
+            merge_field_summary("Springfield — country: ?", "Springfield", s),
+            s
+        );
         // Nothing new to add: the prose is left as it is.
         assert_eq!(
-            merge_field_summary("A town in Gujarat.", "Rander", ""),
-            "A town in Gujarat."
+            merge_field_summary("A town on the river.", "Springfield", ""),
+            "A town on the river."
         );
     }
 
     /// Prose that happens to open "Name — …" is not a field summary.
     #[test]
     fn field_summary_leaves_prose_that_starts_with_the_name() {
-        let prose = "Ayesha Rassool — known as Lallie — was the mother of the author.";
-        let s = "Ayesha Rassool — birthPlace: Rander";
+        let prose = "Jane Doe — known as JD — founded the Example Society.";
+        let s = "Jane Doe — birthPlace: Springfield";
         assert_eq!(
-            merge_field_summary(prose, "Ayesha Rassool", s),
+            merge_field_summary(prose, "Jane Doe", s),
             format!("{prose}\n\n{s}")
         );
     }
@@ -6360,16 +6362,16 @@ mod tests {
     /// old summary line, the completion's new prose was dropped.
     #[test]
     fn field_completion_uses_new_prose_only_when_there_is_none() {
-        let name = "Ayesha Rassool";
-        let s = "Ayesha Rassool — birthPlace: Rander";
-        let llm = "Ayesha Rassool was the mother of the memoir's author.";
+        let name = "Jane Doe";
+        let s = "Jane Doe — birthPlace: Springfield";
+        let llm = "Jane Doe was the founder of the Example Society.";
         // Stored description is only a summary: the completion's prose fills in.
         assert_eq!(
             field_completion_description(s, Some(llm), name, s),
             format!("{llm}\n\n{s}")
         );
         // Stored prose exists: it is kept over the completion's.
-        let old = "Known as Lallie; a daughter of J.M.H. Gool.";
+        let old = "Known as JD; a daughter of John Doe.";
         assert_eq!(
             field_completion_description(old, Some(llm), name, s),
             format!("{old}\n\n{s}")

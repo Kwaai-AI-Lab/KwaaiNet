@@ -1164,8 +1164,7 @@ mod tests {
     }
 
     /// Regression: the graph list reached RRF in hash-set order, so its ranking was
-    /// random and more relations meant more reshuffling (Eval v2, Manhattan arm B:
-    /// prompt overlap with cycle 0 fell to 0.51 against 0.84–0.87 for repeats).
+    /// random, and adding relations to a graph reshuffled what was retrieved.
     #[test]
     fn graph_chunks_rank_seed_first_then_by_mentions() {
         let mentions: HashMap<i64, usize> = [(50, 1), (10, 3), (30, 1), (20, 1), (40, 2)]
