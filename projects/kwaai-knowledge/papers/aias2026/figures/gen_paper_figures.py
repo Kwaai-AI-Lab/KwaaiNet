@@ -431,6 +431,31 @@ def short2() -> None:
     fig7(figsize=(5.7, 2.05), stem="short2_development_history", legend_loc="upper left")
 
 
+# ── short3: the no-seed consolidation trial, hybrid retrieval next to graph-only ─
+TRIAL = RES / "d6_noseed_s10"
+
+
+def short3() -> None:
+    reports = {"hybrid": json.loads((TRIAL / "report.json").read_text()),
+               "graph": json.loads((TRIAL / "report_graph-only.json").read_text())}
+    fig, (a, b) = plt.subplots(1, 2, figsize=(5.7, 1.75), sharey=True, gridspec_kw={"wspace": 0.12})
+    titles = {"hybrid": "(a) Hybrid retrieval (passages + graph)", "graph": "(b) Graph only (passages withheld)"}
+    for ax, key in ((a, "hybrid"), (b, "graph")):
+        cov = reports[key]["measures"]["coverage"]
+        for arm, col, lab in (("A", BLUE, "descriptions only"), ("B", ORANGE, "+ relations")):
+            t = cov["arms"][arm]["trajectory"]
+            ax.plot([p["cycle"] for p in t], [100 * p["mean"] for p in t], color=col, lw=1.8, marker="o",
+                    ms=3.5, markeredgecolor="white", markeredgewidth=0.6, label=f"Arm {arm}: {lab}")
+        ax.set_title(titles[key])
+        ax.set_xlabel("Dream cycle")
+        ax.set_xticks([0, 4, 8, 12, 16, 20, 24])
+        ax.set_xlim(-1, 25)
+    a.set_ylabel("Nugget coverage (%)")
+    a.set_ylim(0, 70)
+    a.legend(loc="lower right", fontsize=6.5, frameon=False)
+    save(fig, "short3_consolidation_trial")
+
+
 if __name__ == "__main__":
     fig2()
     fig3()
@@ -440,3 +465,4 @@ if __name__ == "__main__":
     fig7()
     short1()
     short2()
+    short3()

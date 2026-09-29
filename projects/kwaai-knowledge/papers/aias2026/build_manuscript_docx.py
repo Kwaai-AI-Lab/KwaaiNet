@@ -80,7 +80,8 @@ def preprocess(md: str) -> str:
     title = re.search(r'^title: "(.*)"$', SRC.read_text(), re.M)[1]
 
     abstract = re.search(r"^## Abstract\n\n(.*?)(?=^## )", md, re.S | re.M)[1].strip()
-    md = md[:md.index("## Abstract")] + md[md.index("## 1 Introduction"):]
+    start = md.index("## Abstract")
+    md = md[:start] + md[md.index("\n## ", start) + 1:]  # drop the abstract up to the next section
     abs_paras, kw = [], ""
     for para in abstract.split("\n\n"):
         (kw := para) if para.startswith("**Keywords:**") else abs_paras.append(para)

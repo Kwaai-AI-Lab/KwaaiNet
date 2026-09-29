@@ -1,46 +1,61 @@
 # Response to Reviewers: Submission 54
 
-> **Draft.** Items in ⟦double brackets⟧ must be resolved before submission. Section, figure and
-> table numbers refer to the **4-page revised paper**, `DreamRAG-AIAS2026-short.md`; check them against
-> the final PDF. This file must stay free of identifying information. Sources for every number are in
-> the evidence ledger of `../../plans/DreamRAG-AIAS2026-manuscript-plan.md`.
+<!--
+Internal note, not part of the letter: delete this comment before pasting or converting the letter.
+Section, figure and table numbers refer to the 4-page revised paper, DreamRAG-AIAS2026-short.md;
+check them against the final PDF. Sources: the evidence ledger of
+../../plans/DreamRAG-AIAS2026-manuscript-plan.md (multi-corpus and development numbers) and
+../../plans/D6-NoSeed-Dream-plan.md (the consolidation trial's pre-registration and results).
+-->
 
 ---
 
-**Title of revised submission:** Dream RAG: Offline Consolidation of a Retrieval Knowledge Graph, and When It Helps
+**Title of revised submission:** Dream RAG: Offline Consolidation of Passage Memory into a Knowledge Graph
 
-We thank both reviewers for their careful reading. Both noted that the original submission was an
-extended abstract that did not give enough detail to judge novelty, contribution or rigour. We agree.
-The revision is a complete paper within the four-page limit. To fit that limit we prioritized the
-evaluation and the algorithm over related work and per-corpus detail. An extended version, with the
-full algorithm, parameters, prompts, related work and per-corpus results, will be released with the
-source code at camera-ready. Before the point-by-point replies, we summarize three changes that affect
-several comments.
+We thank both reviewers for their careful reading. Both noted that the original submission did not give
+enough detail to judge novelty, contribution or rigour. We agree. The revision is an extended abstract
+built around a stated hypothesis and a pre-registered experiment designed to test it. To fit four
+pages, it gives the hypothesis, the setup and the results priority over related work and per-corpus
+detail. An extended version will be released with the source code at camera-ready. It will contain the
+full algorithm, parameters, prompts, related work, per-corpus results and the controlled comparisons
+cited below. Before the point-by-point replies, we summarize four changes that affect several comments.
 
 **1. We narrowed the claims to the system we evaluate.** The original abstract described components
 (an Ebbinghaus-style memory-strength model with long-term, short-term and dormant tiers; Bayesian
 uncertainty estimation for abstention; query-likelihood reranking) and results (rank-AUC 0.66;
 MRR 0.57 → 0.70; 94% of gold evidence retained after a 25% prune). Those components reflected the
-architecture as planned when the abstract was written. They are not part of the system evaluated in
-this paper, so we have removed them together with the results the abstract associated with them. Every
-result in the revision is measured on the implemented system. We also no longer imply a formal
-free-energy model. The principle's actual role is as a design heuristic for **fact density** (§1): the
-system removes redundant and weakly supported entities (lower complexity) and completes the remaining
-ones from their evidence (better fit to the source text). The dream loop is defined operationally (§2),
-and its effect on density is measured (§4).
+architecture as planned when the abstract was written. They are not part of the system evaluated here,
+so we have removed them together with the results associated with them. Every result in the revision is
+measured on the implemented system; the multi-corpus results (§4.1) predate the retrieval fixes
+described in §2. We no longer imply a formal free-energy model; the principle serves
+as a design heuristic for **fact density** (§1).
 
-**2. We replaced the single small corpus with a multi-corpus evaluation.** The system is now evaluated
-on eleven corpora from seven domain types, ranging from 773 to 15,018 passages (§3). A twelfth corpus
-joins the consolidation study, fifteen corpora enter a cross-corpus correlation, and a single-author
-memoir is used to study the dream loop cycle by cycle (§3–4).
+**2. We state the hypothesis and test it directly.** The biological analogy makes a specific claim. A
+fast, capacity-limited store is consolidated offline into a slower structured one, after which the
+fast store is no longer needed. In RAG terms, the passage index is short-term memory and the graph is
+long-term memory. Section 1 separates two hypotheses:
+- **H1 (transfer):** after consolidation, the graph *alone* supports more of the facts needed to
+  answer.
+- **H2 (hybrid benefit):** consolidation improves retrieval while the passage index remains in use.
 
-**3. We report what dreaming does and does not improve, including negative results.** The dream loop
-reliably increases the fact density of the knowledge graph. Over three to five cycles on twelve
-corpora, it cut the number of entities by 7–26% and raised mean completeness on eleven of the twelve;
-almost all of the reduction came from duplicate merging in the first cycle. Retrieval accuracy did not
-follow, and two consolidation operations reduced it (§4). We think this is the most useful finding for
-the community. It answers both reviewers' question of which component drives performance and whether
-the complexity is warranted, and we have built the paper around it.
+Our earlier evaluations, and most graph-RAG evaluations, test only H2.
+
+**3. We ran a pre-registered, controlled trial** (§3.2).
+- **Corpus:** a memoir with no curated seed data.
+- **Ablation:** two arms, descriptions-only against relation completion.
+- **Baseline:** single-pass passage retrieval with no graph.
+- **Measure:** retrieval scored as coverage of gold answer facts (nuggets), with paired bootstrap
+  intervals.
+- **Pass rule:** fixed in advance.
+
+**Result:** H2 fails and H1 passes (§4.2–4.3, Table 1, Figure 1). With the passage index in use, 24
+cycles moved coverage by +1.0 points (95% CI −2.0 to +5.3). From the graph alone, the same cycles raised
+it from 14.0% to 32.3% (+18.3, CI +8.7 to +29.6).
+
+**4. We kept the multi-corpus evaluation** (§3.1, §4.1). Twelve corpora of 773–15,018 passages from
+the domains listed in §3.1 were consolidated, and fifteen enter a cross-corpus correlation. Consolidation
+improved graph structure on eleven of the twelve, while answer accuracy under hybrid retrieval did not
+follow. That is the H2 result, observed at scale.
 
 ---
 
@@ -49,66 +64,59 @@ the complexity is warranted, and we have built the paper around it.
 > **R1.1** *The technical novelty is difficult to assess because many components (GraphRAG, Bayesian
 > uncertainty estimation, graph completion, context optimization) already exist individually.*
 
-We agree that most building blocks exist individually. Section 1 now states the contribution precisely:
+We agree that most building blocks exist individually. The contribution is now stated as a hypothesis
+and its test (§1):
 
-- **(a)** an implemented offline consolidation loop for a RAG knowledge graph. It scores every entity
-  for structural completeness, completes the weakest from its own evidence passages, merges duplicates
-  and prunes unsupported nodes, and it converges: once no candidate remains, a cycle makes no
-  language-model calls (§2);
-- **(b)** a multi-corpus study showing that the loop improves graph structure but not retrieval
-  accuracy, measured against an explicit noise floor (§3–4);
-- **(c)** two documented ways in which consolidation reduces accuracy (§4, Table 1).
+- **(a)** an offline consolidation loop for a RAG knowledge graph, which completes weak entities from
+  their own evidence, merges duplicates and prunes unsupported nodes (§2);
+- **(b)** a separation of two claims that graph-RAG evaluations usually conflate: transfer into the
+  graph (H1) and benefit to hybrid retrieval (H2);
+- **(c)** a pre-registered trial showing that consolidation transfers knowledge into the graph while
+  giving the hybrid system almost nothing, and why (§4.2–4.3, §5).
 
 Bayesian uncertainty estimation and context-window optimization are no longer claimed (general change
-1). Section 1 positions the work against GraphRAG, HippoRAG and LightRAG: those systems build their
-graph at ingestion, whereas ours revises it offline and repeatedly.
+1). GraphRAG, HippoRAG and LightRAG build their graph at ingestion; ours revises it offline and
+repeatedly (§1).
 
 > **R1.2** *It is unclear which component contributes most to the reported improvements.*
 
-Table 1 collects the controlled comparisons available for our system, each with its number of runs, to
-be read against the noise floor in §3:
+The trial isolates the two components of the dream loop, each against the same cycle-0 graph
+(§3.2, Table 1):
 
-- **Retrieval strategy matters most.** Multi-round iterative retrieval scored 57.8% keyword recall
-  (mean of 3 runs) against 39.7% for single-pass retrieval (1 run).
-- **Curated structure helps.** Adding seven curated organization and place nodes raised recall from
-  54.4% (mean of 3; 95% CI 50.7–58.0%) to 63.1% (1 run).
-- **Automatically extracted graph structure contributes little.** Turning off graph-context injection
-  *raised* recall from 53.4% to 56.9%, and a corpus-specific ontology scored 55.5% against 59.3% for the
-  generic one (1 run each; both within noise).
-- **Dream cycles do not measurably change accuracy.** The five development milestones whose only change
-  was running dream cycles moved recall by −1.7 points on average (−4.5 to +0.9).
+- **Consolidation itself** drives the transfer. From the graph alone, coverage rose from 14.0% to
+  31.0% in arm A (+17.0, CI +7.7 to +28.1) and 32.3% in arm B (+18.3, CI +8.7 to +29.6).
+- **Relation completion** made no detectable difference by cycle 24 (B − A = +1.3, CI −7.8 to +8.9).
+  Arm B was ahead after one cycle (33.2% against 25.7%, one run each), but that is untested, and the
+  trial cannot separate relations from better descriptions.
+- **Consolidation adds nothing detectable while the passage index is available.** Hybrid coverage
+  stayed at 56.4–58.5% in every arm and cycle. Single-pass passage retrieval with no graph reached
+  52.8%; that gap also includes the hybrid mode's extra retrieval rounds.
 
-Figure 2 adds the development history of the system: 88 milestones, with the changes to the
-instrument marked. Code and configuration changes to retrieval and query handling drove most of the
-rise to 74.7%; curated seed edits account for about 25 points; dream-only milestones for none. Across
-fifteen corpora, neither graph completeness (ρ = 0.28) nor the number of relations (r = 0.08) predicted
-recall (§4). Section 5 attributes this to the graphs carrying almost no relations: the corpora were
-built without relation extraction, which an 8B model could not do precisely enough in our earlier
-experiments.
+The extended version adds the controlled comparisons from the system's development. For example,
+multi-round iterative retrieval scored 57.8% keyword recall against 39.7% for single-pass, and turning
+off graph-context injection moved recall within noise. Across 88 development milestones, retrieval and
+curated knowledge moved accuracy, and dream-only milestones did not.
 
 > **R1.3** *There is little information about the actual algorithm, making reproducibility impossible.*
 
-Section 2 now specifies each stage with its parameters:
+Section 2 defines ingestion, the completeness score, the dream loop and both retrieval modes. The
+parameters that did not fit are in the extended version, with the prompts and configuration:
+- passages of at most 800 characters with 200 of overlap, and at most 20 entities per passage (25
+  when three or fewer entity types are declared);
+- reciprocal-rank fusion with k = 60, and coverage thresholds of 0.70 and 0.75 for the second and
+  third retrieval rounds;
+- a selection threshold of 0.6 and a budget of 100–200 completions per cycle;
+- the acceptance gate, the three merge tiers (Jaro–Winkler 0.60, cosine 0.92) and the prune rule.
 
-- **chunking**: paragraph-based passages of at most 800 characters, with 200 characters of overlap;
-- **entity extraction**: a candidate scan that sends only passages with candidates to the model, then
-  typed extraction with at most 20 entities per passage and the adjacent passages as context;
-- **retrieval**: BM25 and dense retrieval fused by reciprocal rank (k = 60), graph expansion within two
-  hops, coverage-triggered second and third rounds (thresholds 0.70 and 0.75), top 20 passages;
-- **the completeness score**: the mean of a type, a content and a relation component, each defined;
-- **the dream loop**: selection (score below 0.6, weakest first, budget 100–200), evidence-only
-  completion, the acceptance gate, the three merge tiers with their thresholds (Jaro–Winkler 0.60,
-  cosine 0.92), the prune rule, the failure guard and convergence.
-
-The prompts and the complete configuration did not fit the page limit. They will be in the extended
-version released with the source code at camera-ready; the code is withheld now only to preserve
-anonymity.
+The trial's setup (§3.2) is fully specified: the slice, the arms, the cycle budget, the gold
+construction, the NLI model and threshold, the bootstrap, and the pre-registered rule. The code is
+withheld now only to preserve anonymity.
 
 > **R1.4** *The evaluation appears to use only a relatively small document corpus (~430 chunks),
 > raising questions about scalability.*
 
-See general change 2. The eleven corpora of the main evaluation are, for the reviewers' reference:
-
+See general change 4. The twelve corpora of the consolidation study are, for the reviewers'
+reference:
 - Manhattan Project history
 - legal opinions
 - meeting transcripts
@@ -120,111 +128,95 @@ See general change 2. The eleven corpora of the main evaluation are, for the rev
 - academic papers on sleep and memory
 - astrophysics
 - *Moby-Dick* and companion works
+- a novel
 
-They range from 773 to 15,018 passages (§3). Section 4 ("Cost") and our reply to R1.9 discuss
-scalability.
+They range from 773 to 15,018 passages (§3.1). The controlled trial deliberately uses a small slice
+(116 passages of a 1,152-passage memoir), so that both arms could run 24 cycles with evaluation at nine
+checkpoints. Section 5 names scaling the trial to the whole memoir and to the other corpora as the
+first next step.
 
 > **R1.5** *There is no comparison against recent state-of-the-art dynamic or GraphRAG systems.*
 
-We did not re-implement GraphRAG, HippoRAG or LightRAG, and we did not run a separate static-RAG
-baseline across the corpora. Section 5 states both as limitations. We think this matters less for the
-revised paper than for the original abstract, because the revision does not claim that the system
-outperforms other systems. Its central claim is internal: offline consolidation improves the graph's
-structure without improving retrieval accuracy. That claim is tested by comparing the same system
-before and after consolidation, and by correlating structural completeness with accuracy within one
-corpus and across fifteen (§4, Figure 1).
+We did not re-implement GraphRAG, HippoRAG or LightRAG, and §5 lists this among the next steps. The
+revision's claims are internal: the graph alone improves with consolidation (H1), and the hybrid
+system does not (H2). Both are tested within one system, against its own cycle-0 graph and a
+vector-only baseline (Table 1). Comparing external systems is part of the next step on the evaluation
+instrument in §5.
 
 > **R1.6** *The reported experimental results are limited and lack statistical significance or broader
 > benchmarking.*
 
-Section 3 now quantifies the evaluation noise floor before any effect is interpreted:
+The revision states each test in advance and reports intervals (§3.2):
+- **Pre-registration.** Arm B passes if its change in coverage has a 95% interval above zero and
+  larger than the cycle-0 retest spread. This was registered for H2 before the trial, and for H1 before
+  any graph-only evaluation.
+- **Paired intervals.** Every change is paired per question against cycle 0, with a bootstrap
+  interval (5,000 resamples).
+- **Retest.** After the fixes in §2, repeated hybrid runs on the same graph give identical prompts
+  (retest spread 0). Graph-only runs return the same cards, with field lines that can reorder; their
+  coverage retest spread was 0.65 points.
+- **Retrieval, not wording.** Coverage scores whether the retrieved context entails each gold fact,
+  independently of how the answer is phrased.
 
-- two evaluations of the *same* graph differed by 7.6 points (70.2% vs 77.8%);
-- ten runs of one configuration had a standard deviation of 1.6 points.
-
-Where we have repeated runs, Table 1 reports means, a confidence interval and a significance test (the
-pruning comparison, p = 0.055, Welch's t = 2.50). The correlations between completeness and accuracy
-are reported with their p-values (§4). We treat single-run differences below about 5 points as
-inconclusive, and we note (§4) that at our sample sizes only a strong correlation would have been
-detectable. Section 5 acknowledges that most comparisons have one to four runs and that
-keyword-overlap scoring is a coarse instrument, which is why §4 also reports an LLM-judge score.
+The multi-corpus results (§4.1) come with their correlations (ρ = 0.17 over 31 cycles on one corpus;
+ρ = 0.28 across fifteen). Section 5 notes the remaining limits: one trial corpus, a single run per
+intermediate checkpoint, and one 8B model throughout.
 
 > **R1.7** *Claims regarding "dreaming" and biological inspiration appear largely conceptual rather than
 > mathematically grounded.*
 
-We agree that the original abstract overstated this. The revision does not claim a formal model of
-memory consolidation or of the free-energy principle. Section 1 states what the analogy contributed to
-the design. The free-energy principle trades model complexity against fit to evidence; we use that
-trade-off as a heuristic, and the system optimizes a measurable counterpart, **fact density**: the same
-source evidence represented by fewer, more complete entities. At ingestion, a per-passage entity cap
-limits over-extraction (§2). The dream loop then applies three operations, each defined in §2:
+We agree that the original abstract overstated this. The revision uses the analogy only for what it
+predicts, and tests that prediction.
+- **Consolidation.** Complementary learning systems [McClelland et al. 1995] predict that offline
+  consolidation moves what a fast store holds into a structured one. H1 tests this, and it passes
+  (§4.3).
+- **The free-energy principle** is used only as a design heuristic, not as a model: *fact density*,
+  the same evidence held by fewer, more complete entities. Section 4.1 measures it: entity counts fell
+  by 7–26% and completeness rose on eleven of twelve corpora.
 
-- **duplicate merging** in three tiers: identical normalized names; the same type with Jaro–Winkler
-  similarity ≥ 0.60 and embedding cosine ≥ 0.92; and names differing only by an honorific;
-- **pruning** of entities with a single mention, no evidence passages, no relations and a completeness
-  score below 0.3;
-- **evidence-grounded completion** of the least complete entities, accepted only through the
-  improvement gate.
-
-Section 4 measures the result. The entity count fell by 7–26%, and mean completeness rose on eleven of
-twelve corpora. 92–100% of each reduction occurred in the first cycle, when duplicates are merged;
-later cycles raised completeness by about 0.1–0.5 points each. Section 4 also reports where density
-optimization stops helping: pruning entities that lacked direct evidence but were connected removed
-half the graph's relations and lowered recall. Density must therefore be pursued without cutting
-connectivity.
+The analogy also names what is still missing. The fast store is capacity-limited and is released after
+consolidation. Our passage index is neither, and §5 proposes making it so ("Forgetting") once graph
+coverage approaches that of the passage index.
 
 > **R1.8** *What is the computational cost of the offline dreaming phase? How often should consolidation
 > occur in practice?*
 
-Section 4 ("Cost") reports that a dream cycle of 200 language-model completions took 3–21 minutes
-(median 13) with no trend in graph size, and that a converged cycle takes seconds because no candidates
-remain. On frequency (§4): almost all of the density gain arrives in the first cycle, later cycles add
-0.1–0.5 completeness points each, and on the memoir completeness plateaued after about two hours of
-cycles (Figure 1a). We therefore recommend running the loop after ingestion until it converges, and
-again when new documents arrive. Because a converged cycle makes no model calls, re-running it costs
-little.
+A dream cycle is bounded by its completion budget, not by corpus size. On the full corpora, a cycle of
+200 completions took 3–21 minutes (median 13); a converged cycle takes seconds. In the trial, most of
+the transfer arrived in the first cycle (§4.3), and graph completeness plateaued within about a dozen
+cycles. We therefore recommend running the loop after ingestion until it converges, and again when new
+documents arrive. Graph-construction and cycle costs per corpus are in the extended version.
 
 > **R1.9** *Can the framework scale to millions of documents?*
 
-We have not tested at that scale, and §5 says so; our largest corpus has 15,018 passages. What we can
-report (§4, "Cost"):
-
-- **Graph construction** ran at 0.17–0.83 passages per second on two commodity GPUs with an 8B model,
-  and took 18 hours for the largest corpus. Throughput depends on entity density as well as size,
-  because passages with no entity candidates skip the language model. It is the dominant cost.
-- **Dream-cycle cost** is bounded by the per-cycle completion budget, not by corpus size, so
-  consolidation can be spread over idle time on large corpora.
+We have not tested at that scale; our largest corpus has 15,018 passages, and §5 lists scale as the
+first next step. Graph
+construction ran at 0.17–0.83 passages per second on two commodity GPUs, and took 18 hours for the
+largest corpus. It is the dominant cost. Dream-cycle cost is bounded by the per-cycle budget, so
+consolidation can be spread over idle time.
 
 > **R1.10** *How are synthesized facts verified to avoid introducing hallucinations?*
 
-Section 2 describes the safeguards, and §5 their limits:
+Section 2 describes the first three safeguards; the fourth is in the extended version:
+1. Each completion sees only the entity's own evidence passages.
+2. Relations may target only entities that already exist.
+3. Prose descriptions are kept, with the generated field summary appended.
+4. A cycle whose model calls all failed stops before merging.
 
-1. Each completion is conditioned only on that entity's own evidence passages.
-2. A completion replaces an existing description only if it passes an improvement gate: a higher
-   description tier, or the same tier and more than 20 characters longer.
-3. A completion may add a relation only to an entity that already exists in the graph, so it cannot
-   invent entities.
-4. A cycle whose model calls all failed stops before merging and pruning.
-
-We do not independently fact-check generated descriptions, and hand-curated descriptions are protected
-only by the gate in item 2. Section 2 states both, and §5 lists fact-checking as a limitation. The
-curated-description failure in §4 was repaired by re-seeding the curated data, not prevented.
+Generated content is not independently fact-checked; the extended version discusses this. The
+trial's coverage measure checks, by entailment, whether the consolidated graph states gold facts. It
+does not check what else the graph states.
 
 > **R1.11** *Does the dreaming process ever degrade retrieval quality after repeated consolidation?*
 
-Yes. Section 4 and the last two rows of Table 1 report two cases:
+In the trial, no: hybrid coverage stayed within +1.0 to +2.1 points of cycle 0 through 24 cycles in
+both arms (Figure 1a). During development we did observe two degradations, both since fixed.
+- Pruning connected but weakly evidenced entities deleted about half of a graph's relations and
+  lowered recall (56.7% to 52.6%, p = 0.055).
+- In one cycle, generated summaries overwrote curated descriptions. The loop now keeps prose and
+  appends the field summary (§2).
 
-- **Pruning connected, weakly evidenced entities.** A maintenance prune of 361 entities that had no
-  direct textual evidence but were linked to evidenced ones deleted 2,972 of 6,164 relations. Recall
-  fell from a mean of 56.7% (4 runs) to 52.6% (3 runs; p = 0.055). Pruning now leaves connected
-  entities alone unless explicitly asked.
-- **Overwriting curated descriptions.** In one cycle, generated summaries replaced curated
-  descriptions and recall fell to 155/225 keywords, from 166–173 in the preceding cycles. Re-seeding
-  the curated data restored 178/225.
-
-We also show (Figure 1) that across 31 cycles on the memoir, graph completeness rose from 51.5% to
-78.1% while accuracy stayed within its noise band (Spearman ρ = 0.17, p = 0.62). We therefore caution
-against using structural graph metrics as a proxy for retrieval quality.
+The extended version documents both.
 
 ---
 
@@ -234,47 +226,42 @@ against using structural graph metrics as a proxy for retrieval quality.
 > limited benchmark … does Dream RAG perform similarly across diverse domains, languages, document types,
 > or larger corpora?*
 
-See general change 2 and our reply to R1.4. The eleven corpora span seven domain types (§3):
-historical narrative, legal opinions, conversational transcripts, technical documentation and
-standards, scientific literature, academic papers, and literary fiction.
-
-**Performance is not uniform** (§4). Retrieval recall ranged from 77.6% (meeting transcripts) to 94.3%,
-answer recall from 68.5% to 86.1%, and judge scores from 1.20 to 1.85 out of 2. All corpora are in
-English; §5 states this as a limitation, and we make no multilingual claims.
+See general change 4 and our reply to R1.4. The twelve corpora span historical narrative, legal
+opinions, meeting transcripts, technical documentation and standards, scientific papers and fiction
+(§3.1). Consolidation behaved
+consistently across them: entity counts fell and completeness rose on eleven of twelve (§4.1). All
+corpora are in English; §5 states this, and we make no multilingual claims. The controlled trial uses
+one corpus, and extending it across the corpora is the first next step (§5).
 
 > **R2.2** *Explicit baseline comparisons. The reported metrics (MRR 0.57 → 0.70, Rank-AUC 0.66) are
 > presented without comparison to standard RAG baselines.*
 
-We have removed those metrics; general change 1 explains why. We did not run a like-for-like
-static-RAG baseline (BM25 and dense retrieval fused by reciprocal rank, with no graph and no dream loop)
-across the corpora, and §5 lists it as a limitation. Because the revision no longer claims an
-improvement over standard RAG, its conclusions do not depend on that comparison. What we can report
-are controlled comparisons within the system (Table 1). The largest is retrieval strategy:
-multi-round iterative retrieval over the hybrid index scored 57.8% keyword recall (mean of 3 runs)
-against 39.7% for single-pass retrieval (1 run). Section 5 also notes that we did not re-implement
-external GraphRAG systems (see R1.5).
+We have removed those metrics (general change 1). The trial now includes the requested baselines
+(Table 1):
+- **Static RAG:** single-pass BM25 and dense retrieval with no graph, at 52.8% coverage. It is not
+  exactly like-for-like, because the hybrid mode also runs extra retrieval rounds.
+- **Hybrid retrieval before consolidation:** the cycle-0 graph, at 56.4%.
+- **The graph alone before consolidation:** at 14.0%.
+
+Each consolidated condition is compared, paired per question, with its own cycle-0 baseline. External
+GraphRAG systems are not compared (see R1.5).
 
 > **R2.3** *A clearer articulation of which architectural components are driving the observed gains …
 > it is difficult to assess whether the complexity is warranted.*
 
-We agree this was the central gap. Table 1 gives the component comparisons (summarized in our reply to
-R1.2), §4 isolates the dream loop within one corpus and across fifteen, and Figure 2 shows which kinds
-of change moved accuracy over the system's development. Our answer is direct:
+We agree this was the central gap. Our answer, from the trial (§4, Table 1) and the multi-corpus
+study (§4.1):
 
-- **Retrieval accuracy** is driven mainly by hybrid lexical-plus-dense retrieval with multi-round
-  iterative retrieval.
-- **Curated knowledge** gave clear gains, although on questions it was curated against, which Figure 2
-  makes explicit.
-- **Automatically extracted graph structure, and its offline consolidation,** did not improve accuracy
-  measurably with an 8B extraction model, and some consolidation steps harmed it.
-
-On current evidence, the added complexity is warranted for graph quality, inspectability and the
-maintenance of curated knowledge, not for retrieval accuracy (§5). Section 5 identifies why: the
-multi-corpus graphs were built without relation extraction and carry almost no relations, so the graph
-adds little that the passages do not already say. Precise, typed relation extraction is the
-prerequisite for consolidation to improve retrieval. Query decomposition and context-window
-optimization, listed in the original abstract, are no longer presented as contributions, because we
-have no isolated measurement of them.
+- **Consolidation works as a transfer mechanism in this trial.** It more than doubled what the graph
+  alone can support. Relation completion made no detectable difference by the end.
+- **It does not yet pay off for hybrid RAG.** The passage index already supplies most of what the
+  graph learns: with the consolidated graph, hybrid coverage was no better than with the cycle-0
+  graph (+1.0 points, CI −2.0 to +5.3), so the added complexity buys no accuracy while the index
+  remains.
+- **The complexity is warranted where the passage index cannot be kept.** That is the case when it
+  must be pruned or forgotten, or where the graph itself is the product. The graph alone currently
+  reaches about half of the passage index's coverage (32% against 56%), so §5 makes closing that gap,
+  and then evicting passages, the next steps.
 
 ---
 
@@ -282,14 +269,11 @@ have no isolated measurement of them.
 
 | Change | Location |
 |---|---|
-| Extended abstract replaced by a complete four-page paper | whole paper |
-| Planned-but-unimplemented components removed, with their associated results (memory-strength tiers, Bayesian abstention, query-likelihood reranking) | Abstract, §1 |
-| Contribution restated and positioned against graph RAG systems | §1 |
-| Algorithm and parameters specified | §2 |
-| Eleven-corpus evaluation, a twelve-corpus consolidation study and a fifteen-corpus correlation | §3, §4 |
-| Noise floor measured; comparisons reported with run counts | §3, Table 1 |
-| Dream loop: structure vs accuracy | §4, Figure 1 |
-| Failure modes of consolidation | §4, Table 1 |
-| Development history: what moved accuracy | §4, Figure 2 |
-| Cost, scheduling and scalability | §4 |
-| Limitations: no static-RAG or external GraphRAG baselines, one before/after corpus, few runs, keyword metric with a same-model judge, no fact-checking, English only | §5 |
+| Hypothesis stated: transfer (H1) vs hybrid benefit (H2) | §1 |
+| Planned-but-unimplemented components removed, with their associated results | Abstract, §1 |
+| Dream loop, completeness and both retrieval modes defined; determinism fixes noted | §2 |
+| Twelve-corpus consolidation study and fifteen-corpus correlation | §3.1, §4.1 |
+| Pre-registered controlled trial: two arms, vector-only baseline, paired bootstrap CIs | §3.2, §4.2–4.3, Table 1, Figure 1 |
+| Graph-only retrieval, which tests transfer directly | §2, §4.3 |
+| Next steps: scale, entity resolution, answer use, forgetting, instrument and baselines | §5 |
+| Algorithm parameters, prompts, per-corpus results, development history, cost detail | extended version (camera-ready) |
