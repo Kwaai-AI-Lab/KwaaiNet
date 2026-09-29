@@ -142,3 +142,32 @@ Hypothesis: without seeding, and with the bugs fixed, arm B's coverage rises wit
   queue.
 - **Monitoring:** step results, failures, and memory or disk warnings
   (`tail -F … | grep --line-buffered …`, no `cut` in the pipe).
+
+## Result (2026-09-29, first-10% trial)
+
+Run: 2026-09-28 19:04 → 2026-09-29 07:00 on this Mac, binary `9e7349eb`.
+- **Graph:** 116 chunks, no seed.
+  - Arm A (`--no-relations`) stayed at **0 relations**; graph score 42.2 → 53.4.
+  - Arm B reached **497 relations**; graph score 42.2 → 75.4, flattening by cycle ~12.
+- **Retrieval is deterministic.** The three cycle-0 repeats produced identical prompts (Jaccard 1.00), so the retest spread is 0.
+
+**Pre-registered verdict: FAIL.**
+- Arm B's Δcoverage from cycle 0 to 24 was +0.010 (95% CI −0.020 to +0.053).
+- Arm A: +0.021 (CI 0.000 to +0.048).
+- B − A at cycle 24: −0.010 (CI −0.053 to +0.038).
+
+| Measure (31 questions) | c0 | A c24 | B c24 | Note |
+|---|---|---|---|---|
+| Coverage (NLI, primary) | 0.564 | 0.585 | 0.575 | B is flat from cycle 1 on |
+| Gold passage in prompt | 0.796 | 0.801 | 0.791 | Pooled over nuggets: 81 → 85 of 108 (+5 / −1) |
+| Keyword recall | 0.711 | 0.683 | 0.714 | Retest spread 0.047 |
+| Answer recall (NLI) | 0.390 | 0.338 | 0.392 | Retest spread 0.049 |
+
+What the trial shows:
+1. **Relations change what is retrieved, once.** Arm B's prompts differ from cycle 0 (Jaccard 0.71, against 0.88 for arm A). They bring about 2 more slice chunks per question (8.4 against 6.4). After cycle 1 the prompts stop changing, although relations grow from 288 to 497.
+2. **The change is a net wash on gold passages.** Arm B gained a gold passage for 5 nuggets (q30 0/6 → 3/6; q09 and q39 +1 each) and lost one (q22, 1/1 → 0/1). The per-question mean is therefore flat.
+3. **Coverage has a ceiling that retrieval cannot pass.** At B cycle 24, 32 nuggets have their gold passage in the prompt but score below 0.5 against it, 10 of them at 0.0. Many gold passages were accepted by Claude adjudication at NLI 0.3–0.9. The primary measure under-reads retrieval by about 20 points here: 0.564 coverage against 0.796 gold-in-prompt at cycle 0.
+
+Not tested here: whether relations help *answers* when the graph is built from the whole book. The slice's vector search still covers all 1,152 chunks, and it finds most slice gold passages without the graph (vector-only gold-in-prompt 0.724).
+
+Analysis: `tests/kwaai-knowledge/eval2/pilot/d6_noseed_analyze.py` → `results/d6_noseed_s10/report.{md,json}`.
