@@ -85,8 +85,8 @@ prompts; graph-only runs return the same cards, though field lines within a card
 
 Twelve English corpora of 773–15,018 passages (historical narrative, legal opinions, meeting
 transcripts, technical documentation, scientific papers, fiction) were each consolidated for three to
-five cycles. Eleven of them have 20 questions each with gold keywords; answer recall is the fraction
-of gold keywords that appear in the generated answer.
+five cycles. Eleven of them (48,214 passages in all) have 20 questions each with gold keywords; answer
+recall is the fraction of gold keywords that appear in the generated answer.
 
 ### 3.2 A pre-registered consolidation trial
 
