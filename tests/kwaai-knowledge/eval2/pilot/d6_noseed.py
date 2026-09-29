@@ -38,12 +38,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "driver"))
+import build  # noqa: E402
 from build import LOCAL_URL, clone, graph_score, restore_metadata, sqlite_copy  # noqa: E402
 from common import KNOWLEDGE_TESTS, RESULTS, WORK, data_dir, read_jsonl, tenant_of  # noqa: E402
 from run_experiment import restore_graph  # noqa: E402
 
 EVAL2 = Path(__file__).resolve().parents[1]
 BIN = str(Path.home() / ".cargo/bin/kwaainet-d6s")
+build.KWAAINET = BIN  # graph_score runs `rag graph score`: use the binary that built and dreamed
 MODEL = "llama3.1:8b"
 SRC = "D6"          # the original KB; only read (cloned), never written
 BASE = "D6_s10"     # clones: D6_s10 (build), D6_s10A / D6_s10B (arms), D6_s10E (evals)
@@ -55,6 +57,7 @@ C0_REPEATS = 3      # cycle 0, iterative
 END_REPEATS = 3     # cycle 24 per arm: r1 plus two repeats
 COMPLETIONS = 200   # per cycle, as Eval v2
 DREAM_WORKERS = 2
+GENERATION_FAILURES = ("(error:", "(inference error:", "(no response")
 MIN_FREE_PCT = 20
 MIN_FREE_GB = 15
 
@@ -63,10 +66,9 @@ SNAP, DUMPS, LOGS = OUT / "snapshots", OUT / "dumps", OUT / "logs"
 STATE, PROGRESS = OUT / "state.json", OUT / "progress.json"
 GOLD = WORK / "gold" / f"{BASE}_gold.json"
 QUESTIONS = OUT / f"{BASE}_questions.json"
-# Distinctive phrases from d6_family_tree.yaml's hand-written descriptions: none may appear in
-# the no-seed graph.
-SEED_FINGERPRINTS = ["founding trustee of the Hanaffi Quwatul Islam Mosque",
-                     "Peari Beghum"]
+# The seed file Eval v2 applied after the build. Its hand-written descriptions must not appear in
+# the no-seed graph (slice_check); the phrases are read from the file, not written out here.
+SEED_FILE = KNOWLEDGE_TESTS / "d6_family_tree.yaml"
 
 
 # -- bookkeeping ---------------------------------------------------------------------------------
@@ -101,6 +103,8 @@ def step(st: dict, key: str, fn):
     log(f"start {key}")
     try:
         res = fn()
+    except KeyboardInterrupt:
+        raise  # left "running": the next start retries it without counting an attempt
     except BaseException as e:  # noqa: BLE001
         st["steps"][key].update(status="failed", error=f"{e!r}\n{traceback.format_exc()[-1500:]}")
         save_state(st)
@@ -154,6 +158,8 @@ def slice_chunks() -> tuple[int, set[bytes]]:
     rows.sort(key=lambda r: (r[1]["doc_name"], r[1]["chunk_index"]))
     n = math.ceil(len(rows) * PCT / 100)  # rag_cmd: (len * pct).div_ceil(100)
     assert len({r[1]["doc_name"] for r in rows}) == 1, "slice logic assumes a single document"
+    # make_gold compares gold passages' chunk_index with this count: valid only without gaps.
+    assert [r[1]["chunk_index"] for r in rows] == list(range(len(rows))), "chunk_index has gaps"
     return n, {k for k, _ in rows[:n]}
 
 
@@ -174,6 +180,16 @@ def make_gold(cutoff: int) -> dict:
     return {"cutoff": cutoff, "questions": len(qs), "reachable_nuggets": reach}
 
 
+def seed_fingerprints() -> list[str]:
+    """The opening of every hand-written description in SEED_FILE, whitespace-normalised."""
+    import yaml
+
+    seed = yaml.safe_load(SEED_FILE.read_text())
+    return [" ".join(e["description"].split())[:60]
+            for group in seed.values() if isinstance(group, list)
+            for e in group if isinstance(e, dict) and e.get("description")]
+
+
 def graph_db(name: str) -> Path:
     return data_dir(name) / f"graph-{tenant_of(name)}.db"
 
@@ -183,10 +199,11 @@ def slice_check(snapshot: Path, slice_keys: set[bytes]) -> dict:
     con = sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True)
     chunk_keys = [bytes(k) for (k,) in con.execute("SELECT key FROM chunk_entity")]
     relations = con.execute("SELECT count(*) FROM relations").fetchone()[0]
-    blobs = b"".join(bytes(v) for (v,) in con.execute("SELECT value FROM entities"))
+    blobs = b" ".join(bytes(v) for (v,) in con.execute("SELECT value FROM entities"))
     con.close()
     outside = [k.hex() for k in chunk_keys if k not in slice_keys]
-    seeded = [p for p in SEED_FINGERPRINTS if p.encode() in blobs]
+    text = " ".join(blobs.decode("utf-8", "ignore").split())
+    seeded = [p for p in seed_fingerprints() if p in text]
     if outside or relations or seeded:
         raise RuntimeError(f"slice check failed: {len(outside)} chunks outside the slice, "
                            f"{relations} relations, seed phrases {seeded}")
@@ -255,9 +272,15 @@ def do_eval(arm: str, c: int, rep: int, mode: str) -> dict:
          "--progress-file", str(DUMPS / f"{stem}.progress.json"), "--dump-jsonl", str(dump),
          "--run-tag", tag], LOGS / "eval.log")
     recs = read_jsonl(dump)
-    bad = [r["qid"] for r in recs if r["answer"].startswith("(error:")]
+    # `rag eval` records a failed generation as its answer: "(error: ...)", "(inference error: ...)",
+    # or "(no response...)" when Ollama answers without content (e.g. it shed the request under
+    # memory pressure). Each would be scored as a wrong answer inside a "done" step.
+    bad = [r["qid"] for r in recs if r["answer"].startswith(GENERATION_FAILURES)]
     if bad:
-        raise RuntimeError(f"{len(bad)} generation errors in {stem}.jsonl: {bad[:5]}")
+        raise RuntimeError(f"{len(bad)} generation failures in {stem}.jsonl: {bad[:5]}")
+    expected = len(json.loads(QUESTIONS.read_text()))
+    if len(recs) != expected:
+        raise RuntimeError(f"{stem}.jsonl has {len(recs)} records, expected {expected}")
     return {"seconds": round(time.time() - t0), "records": len(recs)}
 
 
@@ -278,8 +301,9 @@ def main(argv: list[str]) -> None:
         raise SystemExit(f"{BIN} not installed")
     st = load_state()
     for v in st["steps"].values():
-        if v.get("status") == "running":  # killed mid-step: run it again
-            v["status"] = "pending"
+        if v.get("status") == "running":  # killed mid-step (reboot, kill): run it again, and
+            v["status"] = "pending"       # don't count the interruption as a failed attempt
+            v["attempts"] = max(0, v.get("attempts", 1) - 1)
     save_state(st)
     log(f"d6_noseed start{' (smoke)' if smoke else ''}; binary {BIN}")
 

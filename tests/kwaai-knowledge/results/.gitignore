@@ -1,0 +1,9 @@
+# Private text. Eval dumps carry retrieved passages and the rendered prompts; graph snapshots
+# carry entity descriptions; run logs echo both. For D6 that is the memoir, which must never be
+# published, so these directories are never tracked for any KB.
+d6_noseed_s10/dumps/
+d6_noseed_s10/snapshots/
+d6_noseed_s10/logs/
+eval2/dumps/
+eval2/snapshots/
+eval2/logs/

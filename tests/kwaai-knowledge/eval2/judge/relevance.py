@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import claude  # noqa: E402
-from common import WORK, require_public  # noqa: E402
+from common import WORK, read_jsonl, require_public  # noqa: E402
 from corpus import clean_text  # noqa: E402
 
 PROMPT_VERSION = "relevance-v1"
@@ -94,8 +94,7 @@ def pending_pairs(dumps: list[Path], con: sqlite3.Connection) -> dict[str, dict]
     todo: dict[str, dict] = {}
     gold_cache: dict[str, dict] = {}
     for path in dumps:
-        for line in path.read_text().splitlines():
-            rec = json.loads(line)
+        for rec in read_jsonl(path):
             kb = rec["kb"].removesuffix("_e2E").removesuffix("_e2A").removesuffix("_e2B").removesuffix("_e2")
             require_public(kb)
             gold = gold_cache.setdefault(kb, load_gold(kb))
