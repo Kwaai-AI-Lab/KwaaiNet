@@ -191,3 +191,25 @@ graph-only` (`ce804064`) gives the model entity fact cards only, with every rela
   (0.564). A cycle-0 card holds only what extraction wrote. Without the seed's alias merges, the
   graph also splits entities: the author appears as "Joe Rassool", "Rassool" and "Y.S.". If
   dreaming transfers knowledge into the graph, it shows up here or nowhere.
+
+### Graph-only result (2026-09-29, 09:43)
+
+**Pre-registered verdict: PASS.**
+- Arm B's graph-only Δcoverage from c0 to c24 was **+0.183** (95% CI +0.087 to +0.296), against a
+  cycle-0 retest spread of 0.0065.
+
+| Graph-only coverage | c0 | c1 | c4 | c12 | c24 |
+|---|---|---|---|---|---|
+| Arm A (descriptions only) | 0.140 | 0.257 | 0.259 | 0.248 | 0.310 |
+| Arm B (+ relations) | 0.140 | 0.332 | 0.329 | 0.366 | 0.323 |
+
+- **Dreaming more than doubles what the graph alone holds**: 0.140 → 0.32. It is the transfer the
+  thesis claims.
+- **Most of the gain comes in cycle 1.** Arm B gets there faster (0.332 at c1 against A's 0.257),
+  but by c24 the arms are level: B − A = +0.013 (CI −0.078 to +0.089). So relations speed the
+  transfer up, but this trial cannot separate their effect from better descriptions.
+- **The graph alone still falls short of the chunks.** Graph-only coverage at c24 is 0.32, against
+  0.56 for chunks + graph. Graph-only answer recall rose 0.144 → 0.188 in arm B, and its CI
+  includes zero. Graph-only keyword recall is flat (0.592 → 0.580).
+
+Chart: https://claude.ai/artifact/CemutmjtBcZi26hiboKpP5 (retrieval switch).
