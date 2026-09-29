@@ -71,6 +71,16 @@ def text_hash(text: str) -> str:
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    """JSON Lines records, split on "\\n" only.
+
+    Not `str.splitlines()`: it also breaks on U+2028, U+0085, \\x1c and friends, which serde
+    (the `--dump-jsonl` writer) leaves unescaped inside strings, so a record containing one is
+    cut in half. Manhattan's text has them.
+    """
+    return [json.loads(line) for line in path.read_text().split("\n") if line.strip()]
+
+
 def load_questions(kb: str) -> list[dict]:
     raw = json.loads((KNOWLEDGE_TESTS / KBS[kb].questions).read_text())
     return raw if isinstance(raw, list) else raw["questions"]
