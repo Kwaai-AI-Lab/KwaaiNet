@@ -17,7 +17,7 @@ use kwaai_rag::{
     iterative::retrieve_iterative,
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
-    retriever::{retrieve_graph_anchored, retrieve_hybrid, RetrieveConfig},
+    retriever::{retrieve_graph_anchored, retrieve_graph_only, retrieve_hybrid, RetrieveConfig},
     seed_json,
 };
 
@@ -302,6 +302,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
             semantic_score,
             semantic_low,
             semantic_high,
+            dump_jsonl,
+            run_tag,
         } => {
             cmd_eval(
                 questions,
@@ -325,6 +327,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 semantic_score,
                 semantic_low,
                 semantic_high,
+                dump_jsonl,
+                run_tag,
             )
             .await
         }
@@ -1236,6 +1240,12 @@ async fn cmd_query(
                             chunks.insert(0, seq);
                         }
                         chunks
+                    } else if effective_mode == "graph-only" {
+                        // Long-term memory alone: entity cards, no chunk text.
+                        let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .context("opening graph store for graph-only retrieval")?;
+                        drop(vs);
+                        retrieve_graph_only(&query, &retrieve_cfg, &embed, &graph).await?
                     } else if effective_mode == "graph" {
                         let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                             .context("opening graph store for graph-anchored retrieval")?;
@@ -3613,6 +3623,9 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
 
                 let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
                 let mut all_chunks = meta.all_chunks()?;
+                // Windows are built from list neighbours, and --limit/--sample-pct keep a
+                // prefix of the list: both need reading order, not key order.
+                kwaai_rag::meta_store::sort_document_order(&mut all_chunks);
 
                 // Filter by document name patterns if --docs is set
                 if let Some(ref patterns) = docs {
@@ -8442,6 +8455,10 @@ struct EvalQuestion {
     numeric_answer: Option<NumericAnswer>,
 }
 
+/// Character budget for the eval prompt's context block. `--dump-jsonl` reads it
+/// too, so the recorded manifest is the plan the generator actually saw.
+const EVAL_CONTEXT_CHARS: usize = 24_000;
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_eval(
     questions_path: std::path::PathBuf,
@@ -8465,6 +8482,8 @@ async fn cmd_eval(
     semantic_score: bool,
     semantic_low: f32,
     semantic_high: f32,
+    dump_jsonl: Option<std::path::PathBuf>,
+    run_tag: Option<String>,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
     bail!("RAG requires the 'storage' feature.");
@@ -8623,6 +8642,19 @@ async fn cmd_eval(
             }
         } else {
             mode.as_str()
+        };
+
+        // --dump-jsonl: one record per question, for offline re-scoring. The graph
+        // size is read once here so every record says which snapshot it ran against.
+        let (graph_entities, graph_relations) = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+            .map(|g| (g.node_count(), g.relation_count()))
+            .unwrap_or((0, 0));
+        let mut dump_file = match &dump_jsonl {
+            Some(path) => Some(
+                std::fs::File::create(path)
+                    .with_context(|| format!("creating {}", path.display()))?,
+            ),
+            None => None,
         };
 
         print_box_header(&format!(
@@ -8826,6 +8858,14 @@ async fn cmd_eval(
                     chunks.insert(0, seq);
                 }
                 chunks
+            } else if effective_mode == "graph-only" {
+                // Long-term memory alone: entity cards, no chunk text. A failure here is
+                // an error, not an empty context, so an eval can't quietly score nothing.
+                let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                    .context("opening graph store")?;
+                retrieve_graph_only(&q.question, &retrieve_cfg, &embed, &graph)
+                    .await
+                    .with_context(|| format!("graph-only retrieval for {}", q.id))?
             } else if effective_mode == "graph" {
                 let graph = GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
@@ -8962,7 +9002,7 @@ async fn cmd_eval(
                 &answer_question,
                 &chunks,
                 &[],
-                24000,
+                EVAL_CONTEXT_CHARS,
                 eval_doc_context.as_deref(),
             );
             let payload = serde_json::json!({
@@ -9110,6 +9150,32 @@ async fn cmd_eval(
                 println!("         → {kw_display} keywords{judge_str}  {latency_ms}ms");
             } else {
                 println!("{kw_display} keywords{judge_str}  {latency_ms}ms");
+            }
+
+            if let Some(file) = dump_file.as_mut() {
+                let record = crate::eval_dump::EvalDumpRecord {
+                    schema_version: crate::eval_dump::SCHEMA_VERSION,
+                    run_tag: run_tag.as_deref(),
+                    kb: &kb,
+                    model: &model,
+                    mode: effective_mode,
+                    top_k,
+                    inference_url: &inference_url,
+                    graph_entities,
+                    graph_relations,
+                    qid: &q.id,
+                    question: &q.question,
+                    question_sent: &answer_question,
+                    answer: &answer,
+                    latency_ms,
+                    retrieved: crate::eval_dump::dump_chunks(&chunks, EVAL_CONTEXT_CHARS),
+                    messages: &messages,
+                    keyword_hits,
+                    retrieval_hits,
+                    total_keywords,
+                    judge_score,
+                };
+                crate::eval_dump::append(file, &record)?;
             }
 
             rows.push(Row {

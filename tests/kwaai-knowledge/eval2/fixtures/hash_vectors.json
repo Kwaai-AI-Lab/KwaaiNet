@@ -1,0 +1,30 @@
+[
+ [
+  "",
+  "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+ ],
+ [
+  "plain text",
+  "9f9443b8f3d8361541f8792562b3050f721ee534"
+ ],
+ [
+  "  leading and trailing  ",
+  "9f3f755800d7e6ed7ef593d0525882e29372975a"
+ ],
+ [
+  "tabs\tand\nnewlines\r\nmixed",
+  "2a15ee1b7bd9a6d85f80e648bb025fef427473f7"
+ ],
+ [
+  "Unicode — ‘quotes’ and é",
+  "5e45504421f576ec67bb5d09d6f46ae7b6218dd4"
+ ],
+ [
+  "The Manhattan Project began in 1942.\n\nIt was led by Groves.",
+  "6c42d96d46685e1326f50920bdf1a85d8cf1608e"
+ ],
+ [
+  "non breaking space",
+  "60e08cfd824a28ed13a8efe292ad2d4e265b999b"
+ ]
+]

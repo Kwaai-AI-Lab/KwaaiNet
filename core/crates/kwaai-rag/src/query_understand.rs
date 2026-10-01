@@ -529,10 +529,7 @@ fn resolve_entity_by_name(name_raw: &str, graph: &GraphStore) -> Option<i64> {
         }
     }
 
-    scores
-        .into_iter()
-        .max_by_key(|(_, score)| *score)
-        .map(|(id, _)| id)
+    crate::sequence::best_by_count(scores)
 }
 
 /// Count outgoing graph relations that match the query intent's relation type.

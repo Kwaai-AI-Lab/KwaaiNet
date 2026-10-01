@@ -396,7 +396,26 @@ fn resolve_name(name: &str, graph: &GraphStore) -> Option<i64> {
             *scores.entry(id).or_default() += 1;
         }
     }
-    scores.into_iter().max_by_key(|(_, s)| *s).map(|(id, _)| id)
+    best_by_count(scores)
+}
+
+/// The entity with the most token hits; on a tie, the lowest id.
+///
+/// `scores` is a `HashMap`, whose iteration order changes from one process to the next,
+/// so picking by count alone resolved a tied name to a different entity on different runs.
+pub(crate) fn best_by_count(scores: std::collections::HashMap<i64, usize>) -> Option<i64> {
+    scores
+        .into_iter()
+        .max_by_key(|&(id, hits)| (hits, std::cmp::Reverse(id)))
+        .map(|(id, _)| id)
+}
+
+/// The `n` entities with the most token hits, most first; ties by lowest id (see
+/// [`best_by_count`]).
+pub(crate) fn top_by_count(scores: std::collections::HashMap<i64, usize>, n: usize) -> Vec<i64> {
+    let mut ranked: Vec<(i64, usize)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked.into_iter().take(n).map(|(id, _)| id).collect()
 }
 
 /// Convert raw LLM events+interactions for a specific chunk into typed structs,
@@ -1119,9 +1138,8 @@ pub fn extract_temporal_entity_ids(query: &str, graph: &GraphStore) -> Vec<i64> 
     // Allow ≥1 hit — temporal queries name specific entities (places, historical figures)
     // whose tokens are rare enough that a single match is high-confidence. The ≥2 threshold
     // was silently dropping "JMH Gool" (only token: "gool") and short place names.
-    let mut candidates: Vec<(i64, usize)> = scores.into_iter().filter(|(_, s)| *s >= 1).collect();
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
-    candidates.into_iter().map(|(id, _)| id).take(3).collect()
+    scores.retain(|_, s| *s >= 1);
+    top_by_count(scores, 3)
 }
 
 /// Build a map from first-person kinship role phrases (e.g. "my grandfather") to the
@@ -1901,6 +1919,7 @@ pub async fn extract_events_for_uncertain(
 
 #[cfg(test)]
 mod utf8_boundary_regression_tests {
+
     use super::*;
 
     // Regression tests for a class of panics ("byte index N is not a char
@@ -1995,5 +2014,28 @@ mod utf8_boundary_regression_tests {
             0.5,
         );
         assert_eq!(high.len() + low.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod count_tie_tests {
+    use super::*;
+    #[test]
+    fn count_ties_resolve_to_the_lowest_id() {
+        // Regression (review of #239): ties went to whichever id a HashMap yielded first.
+        use std::collections::HashMap;
+        for _ in 0..20 {
+            let scores: HashMap<i64, usize> = [(30, 2), (10, 2), (20, 2), (5, 1)].into();
+            assert_eq!(best_by_count(scores.clone()), Some(10));
+            assert_eq!(top_by_count(scores, 3), vec![10, 20, 30]);
+        }
+        let scores: HashMap<i64, usize> = [(30, 3), (10, 2), (20, 2)].into();
+        assert_eq!(
+            best_by_count(scores.clone()),
+            Some(30),
+            "count still comes first"
+        );
+        assert_eq!(top_by_count(scores, 2), vec![30, 10]);
+        assert_eq!(best_by_count(HashMap::new()), None);
     }
 }

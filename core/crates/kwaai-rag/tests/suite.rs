@@ -1243,6 +1243,81 @@ fn graph_find_ids_by_name_token() {
     assert_eq!(ids2.len(), 1);
 }
 
+/// Forty entities sharing one surname: enough that a `HashMap`'s iteration order is
+/// all but certain to differ from id order, so an unsorted result shows up here.
+fn graph_of_namesakes(dir: &TempDir) -> GraphStore {
+    let mut g = open_graph(dir);
+    for i in 0..40 {
+        g.upsert_entity(make_entity(&format!("Person{i} Gool"), "Person"))
+            .unwrap();
+    }
+    g
+}
+
+#[test]
+fn graph_find_ids_by_name_token_is_in_id_order() {
+    let dir = TempDir::new().unwrap();
+    let g = graph_of_namesakes(&dir);
+    let ids = g.find_ids_by_name_token("gool");
+    assert_eq!(ids.len(), 40);
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        ids, sorted,
+        "tied name-token seeds must not arrive in hash order"
+    );
+}
+
+#[test]
+fn graph_alias_token_index_is_sorted_and_keeps_hit_counts() {
+    let dir = TempDir::new().unwrap();
+    let mut g = graph_of_namesakes(&dir);
+    g.rebuild_in_memory().unwrap();
+    let ids = g.find_ids_by_alias_token("gool").to_vec();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "id order, not hash order");
+    // "gool" is both the raw and the trimmed form of the token, so each entity is listed
+    // twice. The resolvers score by these hits, so the repeats are kept.
+    let mut distinct = ids.clone();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 40);
+    assert_eq!(ids.len(), 80);
+}
+
+/// Regression (review of #239): merging kept the alias's longer description whole,
+/// so its "Alias — key: value" summary line stayed for good as prose beside the
+/// canonical's own summary.
+#[test]
+fn graph_merge_drops_the_alias_summary_line() {
+    let dir = TempDir::new().unwrap();
+    let mut g = open_graph(&dir);
+    let mut canonical = make_entity("Jane Doe", "Person");
+    canonical.description = "Jane Doe — birthPlace: Y".to_string();
+    let mut alias = make_entity("J Doe", "Person");
+    let prose = "She founded the Example Society and ran it for thirty years.";
+    alias.description = format!("{prose}\n\nJ Doe — birthPlace: X");
+    let (cid, aid) = (canonical.id, alias.id);
+    g.upsert_entity(canonical).unwrap();
+    g.upsert_entity(alias).unwrap();
+
+    g.merge_entity_into(aid, cid).unwrap();
+    // Only what this regression is about: the alias's prose survives and its summary line
+    // does not. Whether the canonical's own summary is kept at merge time is left open
+    // (the next reembed or dream cycle rewrites it from the canonical's fields).
+    let check = |d: &str, when: &str| {
+        assert!(d.contains(prose), "{when}: alias prose kept: {d:?}");
+        assert!(
+            !d.contains("J Doe — "),
+            "{when}: alias summary dropped: {d:?}"
+        );
+    };
+    check(&g.get_entity(cid).unwrap().description, "in memory");
+    drop(g);
+    let g2 = GraphStore::open(dir.path(), test_tid()).unwrap();
+    check(&g2.get_entity(cid).unwrap().description, "stored");
+}
+
 #[test]
 fn graph_merge_entity_into_transfers_relations() {
     let dir = TempDir::new().unwrap();

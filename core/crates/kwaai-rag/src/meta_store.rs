@@ -39,6 +39,22 @@ pub struct ChunkMeta {
     pub section_type: crate::doc_schema::SectionType,
 }
 
+/// Put chunks in reading order: by document, then position in the document.
+///
+/// `MetaStore::all_chunks` returns key order, and a key ends in the chunk id's
+/// little-endian bytes, so consecutive chunks are almost never neighbours (about
+/// one adjacent pair per thousand in a single-document KB). `graph build` builds its
+/// `--graph-window` context from list neighbours, so every window was a chunk
+/// from somewhere else in the KB, and entities from it were attributed to the
+/// centre chunk.
+pub fn sort_document_order(chunks: &mut [(i64, ChunkMeta)]) {
+    chunks.sort_by(|(_, a), (_, b)| {
+        a.doc_name
+            .cmp(&b.doc_name)
+            .then(a.chunk_index.cmp(&b.chunk_index))
+    });
+}
+
 // Newtype wrapper so we can implement Send on rusqlite::Connection.
 // Safe because SQLite in serialized mode (the default) is thread-safe; the Mutex
 // in MetaStore ensures only one thread accesses the connection at a time.
@@ -428,5 +444,52 @@ impl MetaStore {
             out.push((name, meta));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod document_order_tests {
+    use super::*;
+
+    fn cm(doc: &str, i: u32) -> ChunkMeta {
+        ChunkMeta {
+            doc_name: doc.into(),
+            chunk_index: i,
+            text: String::new(),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: Default::default(),
+        }
+    }
+
+    /// Key order scatters a document; reading order puts neighbours together.
+    #[test]
+    fn chunks_come_back_in_reading_order() {
+        let mut v = vec![
+            (9, cm("b", 1)),
+            (-3, cm("a", 2)),
+            (7, cm("a", 0)),
+            (1, cm("b", 0)),
+            (4, cm("a", 1)),
+        ];
+        sort_document_order(&mut v);
+        let order: Vec<(String, u32)> = v
+            .iter()
+            .map(|(_, c)| (c.doc_name.clone(), c.chunk_index))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("a".into(), 0),
+                ("a".into(), 1),
+                ("a".into(), 2),
+                ("b".into(), 0),
+                ("b".into(), 1)
+            ]
+        );
     }
 }

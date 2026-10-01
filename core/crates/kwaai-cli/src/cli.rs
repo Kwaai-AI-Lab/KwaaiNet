@@ -1299,7 +1299,8 @@ pub enum RagAction {
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration), "smart" (iterative for most queries,
-        /// graph+replace for family-relation queries)
+        /// graph+replace for family-relation queries), "graph-only" (entity cards from the graph,
+        /// no chunk text: tests what dreaming moved into long-term memory)
         #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
 
@@ -1666,7 +1667,8 @@ pub enum RagAction {
 
         /// Retrieval mode: "vector" (hybrid), "graph" (entity-anchored), "auto" (router),
         /// "iterative" (multi-round gap-fill with narration), "smart" (iterative for most queries,
-        /// graph+replace for family-relation queries)
+        /// graph+replace for family-relation queries), "graph-only" (entity cards from the graph,
+        /// no chunk text: tests what dreaming moved into long-term memory)
         #[arg(long, default_value = "iterative", value_name = "MODE")]
         mode: String,
 
@@ -1744,6 +1746,17 @@ pub enum RagAction {
         /// Upper cosine threshold for semantic scoring: cosine at or above this = full credit.
         #[arg(long, default_value_t = 0.85, value_name = "FLOAT")]
         semantic_high: f32,
+
+        /// Append one JSON line per question to FILE: the ranked retrieved chunks
+        /// (ids, text, text hash, scores, whether each reached the prompt), the
+        /// rendered messages, the answer and the keyword scores. For re-scoring a
+        /// run offline. The file is truncated at the start of the run.
+        #[arg(long, value_name = "FILE")]
+        dump_jsonl: Option<std::path::PathBuf>,
+
+        /// Free-form label stored in every --dump-jsonl record (e.g. a snapshot id).
+        #[arg(long, value_name = "TAG")]
+        run_tag: Option<String>,
     },
 
     /// Autonomous knowledge graph completion (Dream RAG)

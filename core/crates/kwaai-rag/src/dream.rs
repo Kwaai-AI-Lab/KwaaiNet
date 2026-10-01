@@ -132,6 +132,40 @@ struct CompletionRelation {
     target: String,
 }
 
+/// The completion's relations the cycle writes: none under `--no-relations`,
+/// whichever task produced them. `accepted_relations` covers `complete_entity`, but
+/// the typed tasks in dream_tasks.rs parse relations without seeing the flag, and
+/// still added about six `located_in` / `part_of` edges per cycle.
+fn relations_to_add(no_relations: bool, relations: &[(String, String)]) -> &[(String, String)] {
+    if no_relations {
+        &[]
+    } else {
+        relations
+    }
+}
+
+/// The relations a completion may add: a known type and a non-empty target, and
+/// none at all under `--no-relations`. That flag only changes the prompt, and the
+/// model sometimes returns relations anyway; they used to be written to the graph,
+/// so a "no relations" dream arm still gained a dozen per cycle.
+fn accepted_relations(
+    proposed: Vec<CompletionRelation>,
+    no_relations: bool,
+) -> Vec<(String, String)> {
+    if no_relations {
+        return Vec::new();
+    }
+    proposed
+        .into_iter()
+        .filter(|r| {
+            !r.target.is_empty()
+                && !r.relation_type.is_empty()
+                && RELATION_TYPES.contains(&r.relation_type.as_str())
+        })
+        .map(|r| (r.relation_type, r.target))
+        .collect()
+}
+
 static VALID_SCHEMA_TYPES: OnceLock<Vec<&'static str>> = OnceLock::new();
 
 fn valid_schema_types() -> &'static [&'static str] {
@@ -324,17 +358,7 @@ pub async fn complete_entity(
         None
     };
 
-    // Filter relations: type must be valid, target must be non-empty.
-    let relations: Vec<(String, String)> = payload
-        .relations
-        .into_iter()
-        .filter(|r| {
-            !r.target.is_empty()
-                && !r.relation_type.is_empty()
-                && RELATION_TYPES.contains(&r.relation_type.as_str())
-        })
-        .map(|r| (r.relation_type, r.target))
-        .collect();
+    let relations = accepted_relations(payload.relations, no_relations);
 
     EntityCompletion {
         entity_id: eid,
@@ -827,7 +851,13 @@ pub async fn run_dream_cycle(
                             .clone()
                             .unwrap_or_else(|| node.description.clone())
                     } else if !computed.is_empty() {
-                        computed
+                        // Keep the prose, refresh the field summary line.
+                        crate::graph::field_completion_description(
+                            &node.description,
+                            completion.description.as_deref(),
+                            &node.name,
+                            &computed,
+                        )
                     } else if let Some(ref d) = completion.description {
                         d.clone()
                     } else {
@@ -861,8 +891,11 @@ pub async fn run_dream_cycle(
                 }
             }
 
-            // Relation completion — only add if both endpoints exist in graph
-            for (rel_type, target_name) in &completion.relations {
+            // Relation completion — only add if both endpoints exist in graph. Under
+            // --no-relations nothing is added, whichever task produced the completion:
+            // the typed tasks in dream_tasks.rs parse relations without seeing the flag.
+            for (rel_type, target_name) in relations_to_add(cfg.no_relations, &completion.relations)
+            {
                 let dst_id = match store
                     .find_by_name(target_name)
                     .or_else(|| store.find_by_name_normalized(target_name))
@@ -1030,6 +1063,42 @@ pub async fn run_dream_cycle(
 mod tests {
     use super::*;
     use crate::mentions::{MentionKind, MentionSpan, SentenceMentions};
+
+    /// Regression: typed dream tasks returned relations under `--no-relations`, and the
+    /// cycle wrote them.
+    #[test]
+    fn cycle_writes_no_relations_under_no_relations() {
+        let rels = vec![("located_in".to_string(), "Somewhere".to_string())];
+        assert!(relations_to_add(true, &rels).is_empty());
+        assert_eq!(relations_to_add(false, &rels), rels.as_slice());
+    }
+
+    /// Regression: `--no-relations` changed only the prompt, and relations the model
+    /// returned anyway were still added to the graph.
+    #[test]
+    fn no_relations_drops_proposed_relations() {
+        let proposed = || {
+            vec![
+                CompletionRelation {
+                    relation_type: RELATION_TYPES[0].to_string(),
+                    target: "Target Entity".to_string(),
+                },
+                CompletionRelation {
+                    relation_type: "not_a_relation_type".to_string(),
+                    target: "Target Entity".to_string(),
+                },
+                CompletionRelation {
+                    relation_type: RELATION_TYPES[0].to_string(),
+                    target: String::new(),
+                },
+            ]
+        };
+        assert!(accepted_relations(proposed(), true).is_empty());
+        assert_eq!(
+            accepted_relations(proposed(), false),
+            vec![(RELATION_TYPES[0].to_string(), "Target Entity".to_string())]
+        );
+    }
 
     fn sm(sentence: &str, entity_id: i64) -> SentenceMentions {
         SentenceMentions {

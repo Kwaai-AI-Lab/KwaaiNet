@@ -12,6 +12,8 @@ mod cli;
 mod config;
 mod daemon;
 mod display;
+#[cfg(feature = "rag")]
+mod eval_dump;
 mod grpc_server;
 mod health;
 mod hf;

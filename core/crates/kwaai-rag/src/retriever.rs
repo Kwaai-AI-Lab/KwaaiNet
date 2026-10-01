@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -191,45 +191,70 @@ pub async fn retrieve_hybrid(
     assemble_results(merged, cfg, meta)
 }
 
-/// Graph-anchored retrieval: entity similarity search → BFS traversal → chunk lookup,
-/// fused with hybrid vector+BM25 results via RRF.
+/// Order the graph side of `retrieve_graph_anchored` before RRF fusion.
 ///
-/// Falls back gracefully to `retrieve_hybrid` if the graph has no entities.
-pub async fn retrieve_graph_anchored(
-    query: &str,
-    cfg: &RetrieveConfig,
-    embed: &EmbedClient,
-    meta: &MetaStore,
+/// `rrf_merge` reads only list position, so this order *is* the ranking. Chunks of
+/// the seed entities score 1.0 and come first; chunks reached only through a
+/// neighbour score 0.6. Ties go to the chunk mentioning more of the traversed
+/// entities, then to the lower chunk id, so the order never depends on hash-set
+/// iteration. Before this, the list came straight from a `HashSet`, and adding
+/// relations to a graph randomly reshuffled what was retrieved.
+fn rank_graph_chunks(
+    mentions: &HashMap<i64, usize>,
+    seed_entity_chunks: &HashSet<i64>,
+) -> Vec<(i64, f64)> {
+    let mut ranked: Vec<(i64, f64, usize)> = mentions
+        .iter()
+        .map(|(&cid, &n)| {
+            let score = if seed_entity_chunks.contains(&cid) {
+                1.0
+            } else {
+                0.6
+            };
+            (cid, score, n)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+    ranked
+        .into_iter()
+        .map(|(cid, score, _)| (cid, score))
+        .collect()
+}
+
+/// The chunks mentioning any `traversed` entity, ranked by [`rank_graph_chunks`]
+/// with the chunks of `seeds` first.
+pub(crate) fn rank_traversed_chunks(
     graph: &GraphStore,
-    search_fn: impl Fn(Vec<f32>, usize) -> Pin<Box<dyn Future<Output = Result<Vec<(i64, f64)>>> + Send>>,
-) -> Result<Vec<RetrievedChunk>> {
-    let candidate_k = cfg.top_k * 4;
+    traversed: &[i64],
+    seeds: &[i64],
+) -> Vec<(i64, f64)> {
+    let mut mentions: HashMap<i64, usize> = HashMap::new();
+    for &eid in traversed {
+        for &cid in graph.chunks_for_entity(eid) {
+            *mentions.entry(cid).or_default() += 1;
+        }
+    }
+    let seed_chunks: HashSet<i64> = seeds
+        .iter()
+        .flat_map(|&eid| graph.chunks_for_entity(eid).iter().copied())
+        .collect();
+    rank_graph_chunks(&mentions, &seed_chunks)
+}
 
-    // Substitute entity alias forms with canonical names before embedding so the
-    // query vector clusters near the correctly-normalised entity descriptions.
-    // BM25 still runs against the original query (alias forms match source text better).
-    let canonical_query = canonicalize_query(query, graph);
-    let embed_query = if canonical_query != query {
-        canonical_query.as_str()
-    } else {
-        query
-    };
-
-    // Dense embedding — use HyDE (optionally blended) if configured, else plain query embedding.
-    let embedding = match (&cfg.hyde_inference_url, &cfg.hyde_model) {
-        (Some(url), Some(model)) => match cfg.hyde_alpha {
-            Some(alpha) => embed_with_hyde_blend(embed_query, embed, url, model, alpha).await,
-            None => embed_with_hyde(embed_query, embed, url, model).await,
-        },
-        _ => embed.embed_one(embed_query).await?,
-    };
-
+/// Seed entities for a query: the top embedding matches plus every entity whose
+/// name or alias contains a significant query word (scored 0.85). Returns the seeds
+/// and the ids found by name, which callers use to prefer named entities.
+fn seed_entities(
+    query: &str,
+    embedding: &[f32],
+    graph: &GraphStore,
+) -> (Vec<(i64, f64)>, std::collections::HashSet<i64>) {
     // 1. Find seed entities: embedding similarity + name-token matching.
     //    Embedding search alone fails for abbreviations/acronyms (e.g. "J.M.H. Gool"
     //    doesn't match the description embedding of the canonical entity). Name-token
     //    matching catches those cases by finding entities whose name contains any
     //    significant query word as a whole token.
-    let mut seed_hits = graph.search_entities(&embedding, 5);
+    let mut seed_hits = graph.search_entities(embedding, 5);
     let name_stop: &[&str] = &[
         "who",
         "what",
@@ -294,6 +319,136 @@ pub async fn retrieve_graph_anchored(
             }
         }
     }
+    (seed_hits, name_matched_ids)
+}
+
+/// Graph-only retrieval: answer from the graph alone, with no chunk text.
+///
+/// DreamRAG's thesis is that dreaming transfers what the chunk store holds
+/// (short-term memory) into the graph (long-term memory). This mode tests the
+/// transfer: it returns entity fact cards (name, aliases, relations, fields,
+/// description) and never a corpus chunk, so the model sees only what the graph
+/// itself holds. Every relation is listed (`min_evidence` 1): here the card is the
+/// whole context.
+///
+/// Up to `cfg.top_k` cards, ordered by [`order_graph_only_entities`]; entities whose
+/// card would be empty are skipped.
+pub async fn retrieve_graph_only(
+    query: &str,
+    cfg: &RetrieveConfig,
+    embed: &EmbedClient,
+    graph: &GraphStore,
+) -> Result<Vec<RetrievedChunk>> {
+    let canonical_query = canonicalize_query(query, graph);
+    let embedding = embed.embed_one(&canonical_query).await?;
+    let (seed_hits, _) = seed_entities(query, &embedding, graph);
+
+    let seed_ids: Vec<i64> = seed_hits.iter().map(|(id, _)| *id).collect();
+    let sim = |id: i64| {
+        graph
+            .get_entity(id)
+            .map(|e| cosine(&embedding, &e.embedding))
+            .unwrap_or(0.0)
+    };
+    let neighbours: Vec<(i64, f64)> = graph
+        .bfs_neighbors(&seed_ids, 1)
+        .into_iter()
+        .map(|id| (id, sim(id)))
+        .collect();
+    let nearest = graph.search_entities(&embedding, cfg.top_k * 3);
+
+    let mut out = Vec::new();
+    for (eid, score) in order_graph_only_entities(&seed_hits, neighbours, nearest) {
+        if out.len() >= cfg.top_k {
+            break;
+        }
+        let Some(entity) = graph.get_entity(eid) else {
+            continue;
+        };
+        let (card, has_content) = build_entity_fact_card_min_evidence(entity, eid, graph, 1);
+        if has_content {
+            out.push(make_synthetic_chunk(
+                format!("[Graph: {}]", entity.name),
+                card,
+                score,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Order candidates for graph-only retrieval: seed entities first (by score, then
+/// id), then their neighbours by similarity to the query, then the remaining
+/// nearest entities by similarity. Each entity appears once, and ties break by id,
+/// so the order never depends on hash-map iteration.
+fn order_graph_only_entities(
+    seeds: &[(i64, f64)],
+    mut neighbours: Vec<(i64, f64)>,
+    mut nearest: Vec<(i64, f64)>,
+) -> Vec<(i64, f64)> {
+    let by_score = |a: &(i64, f64), b: &(i64, f64)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+    let mut seeds = seeds.to_vec();
+    seeds.sort_by(by_score);
+    neighbours.sort_by(by_score);
+    nearest.sort_by(by_score);
+    let mut seen = HashSet::new();
+    seeds
+        .into_iter()
+        .chain(neighbours)
+        .chain(nearest)
+        .filter(|(id, _)| seen.insert(*id))
+        .collect()
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
+    let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
+}
+
+/// Graph-anchored retrieval: entity similarity search → BFS traversal → chunk lookup,
+/// fused with hybrid vector+BM25 results via RRF.
+///
+/// Falls back gracefully to `retrieve_hybrid` if the graph has no entities.
+pub async fn retrieve_graph_anchored(
+    query: &str,
+    cfg: &RetrieveConfig,
+    embed: &EmbedClient,
+    meta: &MetaStore,
+    graph: &GraphStore,
+    search_fn: impl Fn(Vec<f32>, usize) -> Pin<Box<dyn Future<Output = Result<Vec<(i64, f64)>>> + Send>>,
+) -> Result<Vec<RetrievedChunk>> {
+    let candidate_k = cfg.top_k * 4;
+
+    // Substitute entity alias forms with canonical names before embedding so the
+    // query vector clusters near the correctly-normalised entity descriptions.
+    // BM25 still runs against the original query (alias forms match source text better).
+    let canonical_query = canonicalize_query(query, graph);
+    let embed_query = if canonical_query != query {
+        canonical_query.as_str()
+    } else {
+        query
+    };
+
+    // Dense embedding — use HyDE (optionally blended) if configured, else plain query embedding.
+    let embedding = match (&cfg.hyde_inference_url, &cfg.hyde_model) {
+        (Some(url), Some(model)) => match cfg.hyde_alpha {
+            Some(alpha) => embed_with_hyde_blend(embed_query, embed, url, model, alpha).await,
+            None => embed_with_hyde(embed_query, embed, url, model).await,
+        },
+        _ => embed.embed_one(embed_query).await?,
+    };
+
+    // 1. Find seed entities: embedding similarity + name-token matching.
+    let (seed_hits, name_matched_ids) = seed_entities(query, &embedding, graph);
 
     let graph_chunks: Vec<(i64, f64)> = if seed_hits.is_empty() {
         vec![]
@@ -302,28 +457,8 @@ pub async fn retrieve_graph_anchored(
         let seed_ids: Vec<i64> = seed_hits.iter().map(|(id, _)| *id).collect();
         let neighbor_ids = graph.bfs_neighbors(&seed_ids, 2);
 
-        // 3. Collect all chunk IDs that mention any of these entities.
-        let chunk_ids = graph.entity_chunks(&neighbor_ids);
-
-        // 4. Score each chunk: base = 1.0 (presence), boost seed entity hits.
-        let seed_set: HashSet<i64> = seed_ids.into_iter().collect();
-        let seed_entity_chunks: HashSet<i64> = seed_hits
-            .iter()
-            .flat_map(|(eid, _)| graph.chunks_for_entity(*eid).iter().copied())
-            .collect();
-
-        chunk_ids
-            .into_iter()
-            .map(|cid| {
-                let score = if seed_entity_chunks.contains(&cid) {
-                    1.0
-                } else {
-                    0.6
-                };
-                let _ = &seed_set;
-                (cid, score)
-            })
-            .collect()
+        // 3–4. Every chunk that mentions any of these entities, seed entities' chunks first.
+        rank_traversed_chunks(graph, &neighbor_ids, &seed_ids)
     };
 
     // 5. Hybrid vector+BM25 retrieval. Same index-or-rebuild choice as
@@ -606,6 +741,18 @@ fn build_entity_fact_card(
     entity_id: i64,
     graph: &GraphStore,
 ) -> (String, bool) {
+    build_entity_fact_card_min_evidence(entity, entity_id, graph, 2)
+}
+
+/// [`build_entity_fact_card`] with the relation filter as a parameter: a relation is
+/// listed when it is seeded or backed by at least `min_evidence` chunks. The injected
+/// card uses 2; graph-only retrieval uses 1, since there the card is all the model sees.
+fn build_entity_fact_card_min_evidence(
+    entity: &crate::graph::EntityNode,
+    entity_id: i64,
+    graph: &GraphStore,
+    min_evidence: usize,
+) -> (String, bool) {
     let mut lines: Vec<String> = Vec::new();
 
     // Header: canonical name + entity type
@@ -630,7 +777,7 @@ fn build_entity_fact_card(
         let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for (dst_id, rel_type, _strength, evid) in rels {
-            if evid < 2 && !graph.is_relation_seeded(entity_id, dst_id, &rel_type) {
+            if evid < min_evidence && !graph.is_relation_seeded(entity_id, dst_id, &rel_type) {
                 continue;
             }
             if let Some(dst) = graph.get_entity(dst_id) {
@@ -960,12 +1107,7 @@ pub(crate) fn inject_entity_descriptions(
                 (*id, *s, overlap, conf)
             })
             .collect();
-        nm.sort_by(|a, b| {
-            // a.2/b.2 = name_overlap, a.3/b.3 = extraction_confidence, a.1/b.1 = embedding
-            b.2.cmp(&a.2)
-                .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
-                .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        order_name_matched(&mut nm);
         let nm: Vec<(i64, f64)> = nm.into_iter().map(|(id, s, _, _)| (id, s)).collect();
 
         // 1. Name-matched candidates first (sorted by overlap, so JMH Gool beats Wahida Gool
@@ -1034,6 +1176,21 @@ pub(crate) fn assemble_results(
     Ok(results)
 }
 
+/// Order name-matched description candidates: name overlap desc, then extraction confidence
+/// desc (YAML-seeded beats extracted fragments), then embedding score desc, then entity id.
+///
+/// The id is the last key because the rest tie often: name-matched seeds all carry one flat
+/// score, and without it the winner was whichever came first in a `HashMap`'s iteration —
+/// a different fact card injected on different runs of the same query.
+fn order_name_matched(nm: &mut [(i64, f64, usize, f32)]) {
+    nm.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+            .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then(a.0.cmp(&b.0))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1092,6 +1249,157 @@ mod tests {
         // "TGT" should not match inside "XTGTX"
         let result = canonicalize_query("Tell me about XTGTX.", &store);
         assert_eq!(result, "Tell me about XTGTX.");
+    }
+
+    #[test]
+    fn graph_only_orders_seeds_then_neighbours_then_nearest() {
+        let seeds = vec![(3, 0.70), (1, 0.85), (2, 0.85)];
+        // 1 is a seed and also reached as a neighbour; it must appear once, as a seed.
+        let neighbours = vec![(9, 0.20), (1, 0.99), (8, 0.40)];
+        let nearest = vec![(7, 0.95), (8, 0.90), (6, 0.95)];
+        let ids: Vec<i64> = order_graph_only_entities(&seeds, neighbours, nearest)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3, 8, 9, 6, 7]);
+    }
+
+    /// Graph-only cards list every relation: the injected card's two-chunk filter hid
+    /// most dream-added relations once nothing was seeded.
+    #[test]
+    fn graph_only_card_lists_single_evidence_relations() {
+        let dir = tempdir().unwrap();
+        let mut store = GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
+        let mut ids = Vec::new();
+        for name in ["Jane Doe", "Example Society"] {
+            let id = crate::graph::entity_id(name, "Person");
+            store
+                .upsert_entity(EntityNode {
+                    id,
+                    name: name.to_string(),
+                    entity_type: "Person".to_string(),
+                    description: String::new(),
+                    embedding: vec![],
+                    mention_count: 1,
+                    first_chunk_id: 0,
+                    aliases: vec![],
+                    schema_type: None,
+                    evidence: Vec::new(),
+                    gender: None,
+                    fields: Default::default(),
+                    confidence: 0.0,
+                    extraction_confidence: 0.0,
+                })
+                .unwrap();
+            ids.push(id);
+        }
+        store
+            .upsert_relation(ids[0], ids[1], "member_of", 42)
+            .unwrap();
+        let jane = store.get_entity(ids[0]).unwrap().clone();
+        let (all, _) = build_entity_fact_card_min_evidence(&jane, ids[0], &store, 1);
+        let (filtered, _) = build_entity_fact_card(&jane, ids[0], &store);
+        assert!(all.contains("Member of: Example Society."), "{all}");
+        assert!(!filtered.contains("Member of"), "{filtered}");
+    }
+
+    /// End to end through a real store: chunk mention links, seed first, then by the
+    /// number of traversed entities a chunk mentions.
+    #[test]
+    fn traversed_chunks_ranked_from_the_store() {
+        let dir = tempdir().unwrap();
+        let mut store = GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
+        let mut ids = Vec::new();
+        for name in ["Seed Person", "Other One", "Other Two"] {
+            let id = crate::graph::entity_id(name, "Person");
+            store
+                .upsert_entity(EntityNode {
+                    id,
+                    name: name.to_string(),
+                    entity_type: "Person".to_string(),
+                    description: String::new(),
+                    embedding: vec![],
+                    mention_count: 1,
+                    first_chunk_id: 0,
+                    aliases: vec![],
+                    schema_type: None,
+                    evidence: Vec::new(),
+                    gender: None,
+                    fields: Default::default(),
+                    confidence: 0.0,
+                    extraction_confidence: 0.0,
+                })
+                .unwrap();
+            ids.push(id);
+        }
+        store.link_chunk(5, &[ids[0]]).unwrap();
+        store.link_chunk(7, &[ids[1], ids[2]]).unwrap();
+        store.link_chunk(3, &[ids[2]]).unwrap();
+        let ranked: Vec<i64> = rank_traversed_chunks(&store, &ids, &ids[..1])
+            .into_iter()
+            .map(|(cid, _)| cid)
+            .collect();
+        assert_eq!(ranked, vec![5, 7, 3]);
+    }
+
+    /// Regression: the graph list reached RRF in hash-set order, so its ranking was
+    /// random, and adding relations to a graph reshuffled what was retrieved.
+    #[test]
+    fn graph_chunks_rank_seed_first_then_by_mentions() {
+        let mentions: HashMap<i64, usize> = [(50, 1), (10, 3), (30, 1), (20, 1), (40, 2)]
+            .into_iter()
+            .collect();
+        let seed: HashSet<i64> = [30, 20].into_iter().collect();
+        let ids: Vec<i64> = rank_graph_chunks(&mentions, &seed)
+            .into_iter()
+            .map(|(cid, _)| cid)
+            .collect();
+        // Seed chunks (tie on mentions → lower id first), then neighbours by mentions, then id.
+        assert_eq!(ids, vec![20, 30, 10, 40, 50]);
+    }
+
+    #[test]
+    fn graph_chunk_order_does_not_depend_on_insertion_order() {
+        let pairs: Vec<(i64, usize)> = (0..200).map(|i| (i * 7919 % 1000, 1)).collect();
+        let forward: HashMap<i64, usize> = pairs.iter().copied().collect();
+        let reverse: HashMap<i64, usize> = pairs.iter().rev().copied().collect();
+        let seed: HashSet<i64> = pairs.iter().take(20).map(|(c, _)| *c).collect();
+        assert_eq!(
+            rank_graph_chunks(&forward, &seed),
+            rank_graph_chunks(&reverse, &seed)
+        );
+    }
+
+    #[test]
+    fn name_matched_ties_break_by_id_whatever_the_input_order() {
+        // Three candidates tie on overlap, confidence and the flat 0.85 name-match score.
+        let mut a = vec![
+            (30, 0.85, 1, 0.5f32),
+            (10, 0.85, 1, 0.5),
+            (20, 0.85, 1, 0.5),
+        ];
+        let mut b = vec![
+            (20, 0.85, 1, 0.5f32),
+            (30, 0.85, 1, 0.5),
+            (10, 0.85, 1, 0.5),
+        ];
+        order_name_matched(&mut a);
+        order_name_matched(&mut b);
+        let ids = |v: &[(i64, f64, usize, f32)]| v.iter().map(|c| c.0).collect::<Vec<_>>();
+        assert_eq!(ids(&a), vec![10, 20, 30]);
+        assert_eq!(ids(&a), ids(&b), "input order must not pick the winner");
+    }
+
+    #[test]
+    fn name_matched_order_keeps_overlap_confidence_score_ahead_of_id() {
+        let mut v = vec![
+            (1, 0.90, 1, 1.0f32), // low overlap
+            (2, 0.85, 2, 0.5),    // high overlap, low confidence
+            (3, 0.80, 2, 1.0),    // high overlap, YAML-seeded
+            (4, 0.95, 2, 1.0),    // high overlap, seeded, best score
+        ];
+        order_name_matched(&mut v);
+        assert_eq!(v.iter().map(|c| c.0).collect::<Vec<_>>(), vec![4, 3, 2, 1]);
     }
 }
 

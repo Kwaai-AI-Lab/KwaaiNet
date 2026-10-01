@@ -683,7 +683,13 @@ pub fn description_from_fields(
                             | "unspecified"
                     )
                 })
-                .map(|fv| format!("{}: {}", key, fv.value))
+                // One line, always: a value with a line break (a multi-line
+                // `historicalNote`) made the summary read as prose to
+                // `description_prose`, and every cycle appended another copy.
+                .map(|fv| {
+                    let value = fv.value.split_whitespace().collect::<Vec<_>>().join(" ");
+                    format!("{key}: {value}")
+                })
         })
         .collect();
     if parts.is_empty() {
@@ -691,6 +697,79 @@ pub fn description_from_fields(
     } else {
         format!("{} — {}", name, parts.join("; "))
     }
+}
+
+/// Combine an entity's prose description with a fresh [`description_from_fields`]
+/// summary: the prose is kept and the summary line is appended, or replaced if an
+/// earlier one is there.
+///
+/// Dream field completion and reembed used to replace the description with the
+/// summary outright, so a sentence of prose stating how the entity relates to
+/// others was lost to a line of field values. Idempotent: applying it every
+/// cycle leaves exactly one summary line.
+pub fn merge_field_summary(existing: &str, name: &str, summary: &str) -> String {
+    let prose = description_prose(existing, name);
+    match (prose.is_empty(), summary.is_empty()) {
+        (true, _) => summary.to_string(),
+        (false, true) => prose,
+        (false, false) => format!("{prose}\n\n{summary}"),
+    }
+}
+
+/// An entity's description without its [`description_from_fields`] summary line.
+///
+/// A summary is a paragraph "Name — key: value; …" whose first key is a field
+/// name. Prose that merely starts "Name — known as …" is kept. Summaries are
+/// written on one line, but one stored before values were flattened may hold a
+/// line break, so that is not required: it is still replaced, not kept as prose.
+pub fn description_prose(existing: &str, name: &str) -> String {
+    let marker = format!("{} — ", name.trim());
+    let is_summary = |p: &str| {
+        let p = p.trim();
+        p.strip_prefix(&marker).is_some_and(|rest| {
+            rest.split_once(": ")
+                .is_some_and(|(key, _)| is_field_key(key))
+        })
+    };
+    existing
+        .split("\n\n")
+        .filter(|p| !is_summary(p))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+/// Whether `key` is a field name some entity type's [`expected_fields`] declares — the only
+/// keys [`description_from_fields`] writes. An identifier-shaped word is not enough: prose
+/// such as "Jane Doe — Note: she was born in 1901." would be taken for a summary and dropped.
+///
+/// Reads the compiled table because that is what `description_from_fields` reads; if it ever
+/// takes per-KB ontology fields (`expected_fields_for`), this must take the same ontology.
+fn is_field_key(key: &str) -> bool {
+    ENTITY_TYPES
+        .iter()
+        .any(|t| expected_fields(t).iter().any(|(k, _)| *k == key))
+}
+
+/// The description dream field completion stores when the entity has field values.
+///
+/// The existing prose wins; when there is none (empty, or only an old summary
+/// line) the completion's own prose is used. Either way the field summary is
+/// refreshed via [`merge_field_summary`].
+pub fn field_completion_description(
+    existing: &str,
+    completion_prose: Option<&str>,
+    name: &str,
+    summary: &str,
+) -> String {
+    let prose = description_prose(existing, name);
+    let prose = if prose.is_empty() {
+        completion_prose.unwrap_or_default()
+    } else {
+        prose.as_str()
+    };
+    merge_field_summary(prose, name, summary)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1023,6 +1102,13 @@ impl GraphStore {
                     }
                 }
             }
+        }
+        // Built by iterating a HashMap, so each list arrives in a per-process order; sort it.
+        // Repeats are kept on purpose: an id appears once per name form and raw/trimmed
+        // spelling carrying the token, and the resolvers in `sequence` and `query_understand`
+        // score entities by that hit count.
+        for ids in self.alias_token_index.values_mut() {
+            ids.sort_unstable();
         }
 
         tracing::info!(
@@ -2014,12 +2100,17 @@ impl GraphStore {
 
     /// Return all entity IDs whose normalized name (or any alias) contains `token` as a whole word.
     /// Used to augment embedding-based seed search with query name-token matching.
+    ///
+    /// Ascending by id: `nodes` is a `HashMap`, so its iteration order differs from one process
+    /// to the next, and callers that push these ids into a seed list (all at one flat score)
+    /// would otherwise rank tied entities differently on every run.
     pub fn find_ids_by_name_token(&self, token: &str) -> Vec<i64> {
         if token.len() < 3 {
             return vec![];
         }
         let token_lc = token.to_lowercase();
-        self.nodes
+        let mut ids: Vec<i64> = self
+            .nodes
             .values()
             .filter(|n| {
                 let name_match = normalize_name(&n.name)
@@ -2032,7 +2123,9 @@ impl GraphStore {
                 name_match || alias_match
             })
             .map(|n| n.id)
-            .collect()
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Look up entity IDs by a raw (non-normalized) lowercased token.
@@ -2072,10 +2165,14 @@ impl GraphStore {
             .get(&alias_id)
             .map(|n| n.aliases.clone())
             .unwrap_or_default();
+        // The alias's own field-summary line ("Alias — key: value") is dropped before its
+        // description can replace the canonical one: kept, it would sit beside the
+        // canonical's summary as a permanent line of "prose", since the canonical
+        // name no longer matches it.
         let alias_description = self
             .nodes
             .get(&alias_id)
-            .map(|n| n.description.clone())
+            .map(|n| description_prose(&n.description, &n.name))
             .unwrap_or_default();
 
         // ── 1. Collect relations involving alias_id ─────────────────────────
@@ -5409,7 +5506,8 @@ impl GraphStore {
                     let fresh =
                         description_from_fields(&node.name, &node.entity_type, &node.fields);
                     if !fresh.is_empty() {
-                        node.description = fresh;
+                        node.description =
+                            merge_field_summary(&node.description, &node.name, &fresh);
                     }
                 }
             }
@@ -6253,6 +6351,110 @@ fn update_adj(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: dream field completion replaced prose with the summary line, so a
+    /// fact stated only in the prose (how the entity relates to others) was lost.
+    #[test]
+    fn field_summary_keeps_prose_and_stays_single() {
+        let prose = "Jane Doe, known as JD, was the founder of the Example Society.";
+        let s1 = "Jane Doe — birthPlace: Springfield";
+        let s2 = "Jane Doe — birthPlace: Springfield; nationality: Examplean";
+        let once = merge_field_summary(prose, "Jane Doe", s1);
+        assert_eq!(once, format!("{prose}\n\n{s1}"));
+        // A later cycle refreshes the summary instead of stacking another one.
+        let twice = merge_field_summary(&once, "Jane Doe", s2);
+        assert_eq!(twice, format!("{prose}\n\n{s2}"));
+        assert_eq!(merge_field_summary(&twice, "Jane Doe", s2), twice);
+    }
+
+    #[test]
+    fn field_summary_alone_when_there_is_no_prose() {
+        let s = "Springfield — locationType: town";
+        assert_eq!(merge_field_summary("", "Springfield", s), s);
+        // An old summary on its own is replaced, not kept as "prose".
+        assert_eq!(
+            merge_field_summary("Springfield — locationType: ?", "Springfield", s),
+            s
+        );
+        // Nothing new to add: the prose is left as it is.
+        assert_eq!(
+            merge_field_summary("A town on the river.", "Springfield", ""),
+            "A town on the river."
+        );
+    }
+
+    /// Regression (review of #239): a field value with a line break made the summary
+    /// look like prose, so every cycle appended another copy.
+    #[test]
+    fn field_summary_with_a_multiline_value_stays_single() {
+        let fields = HashMap::from([(
+            "birthPlace".to_string(),
+            FieldValue::new("line one\nline two", 0),
+        )]);
+        let s = description_from_fields("Jane Doe", "Person", &fields);
+        assert_eq!(s, "Jane Doe — birthPlace: line one line two");
+        let prose = "Jane Doe founded the Example Society.";
+        let once = merge_field_summary(prose, "Jane Doe", &s);
+        assert_eq!(merge_field_summary(&once, "Jane Doe", &s), once);
+    }
+
+    /// A summary stored before values were flattened still counts as a summary.
+    #[test]
+    fn field_summary_replaces_an_old_multiline_summary() {
+        let old =
+            "Jane Doe founded the Example Society.\n\nJane Doe — birthPlace: line one\nline two";
+        let s = "Jane Doe — birthPlace: Springfield";
+        assert_eq!(
+            merge_field_summary(old, "Jane Doe", s),
+            format!("Jane Doe founded the Example Society.\n\n{s}")
+        );
+    }
+
+    /// Regression (review of the #239 fixes): with the one-line rule gone, any
+    /// identifier before ": " passed as a field key, so this prose was deleted.
+    #[test]
+    fn field_summary_keeps_prose_whose_first_word_is_not_a_field() {
+        let prose =
+            "Jane Doe — Note: she was born in 1901.\nShe later founded the Example Society.";
+        let s = "Jane Doe — birthPlace: Springfield";
+        assert_eq!(
+            merge_field_summary(prose, "Jane Doe", s),
+            format!("{prose}\n\n{s}")
+        );
+    }
+
+    /// Prose that happens to open "Name — …" is not a field summary.
+    #[test]
+    fn field_summary_leaves_prose_that_starts_with_the_name() {
+        let prose = "Jane Doe — known as JD — founded the Example Society.";
+        let s = "Jane Doe — birthPlace: Springfield";
+        assert_eq!(
+            merge_field_summary(prose, "Jane Doe", s),
+            format!("{prose}\n\n{s}")
+        );
+    }
+
+    /// Regression (review of the first fix): when the stored description was only an
+    /// old summary line, the completion's new prose was dropped.
+    #[test]
+    fn field_completion_uses_new_prose_only_when_there_is_none() {
+        let name = "Jane Doe";
+        let s = "Jane Doe — birthPlace: Springfield";
+        let llm = "Jane Doe was the founder of the Example Society.";
+        // Stored description is only a summary: the completion's prose fills in.
+        assert_eq!(
+            field_completion_description(s, Some(llm), name, s),
+            format!("{llm}\n\n{s}")
+        );
+        // Stored prose exists: it is kept over the completion's.
+        let old = "Known as JD; a daughter of John Doe.";
+        assert_eq!(
+            field_completion_description(old, Some(llm), name, s),
+            format!("{old}\n\n{s}")
+        );
+        // No prose anywhere: the summary alone.
+        assert_eq!(field_completion_description("", None, name, s), s);
+    }
 
     #[test]
     fn test_clean_entity_name_chained_initials() {
