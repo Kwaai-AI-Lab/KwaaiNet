@@ -95,12 +95,28 @@ def paired_delta(a: dict[str, float], b: dict[str, float]) -> dict | None:
             "ci95": [round(boots[int(0.025 * BOOT)], 4), round(boots[int(0.975 * BOOT)], 4)]}
 
 
+def average_ranks(v: list[float]) -> list[float]:
+    """Rank each value, tied values sharing the mean of the ranks they span (as scipy does).
+
+    Ties are common here: a saturated arm leaves the graph score unchanged across cycles.
+    """
+    order = sorted(range(len(v)), key=lambda i: v[i])
+    ranks = [0.0] * len(v)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2
+        i = j + 1
+    return ranks
+
+
 def spearman(xs: list[float], ys: list[float]) -> float | None:
     if len(xs) < 3:
         return None
-    rank = lambda v: {x: i for i, x in enumerate(sorted(v))}  # noqa: E731  (ties are rare here)
-    rx, ry = rank(xs), rank(ys)
-    a, b = [rx[x] for x in xs], [ry[y] for y in ys]
+    a, b = average_ranks(xs), average_ranks(ys)
     ma, mb = st.mean(a), st.mean(b)
     num = sum((p - ma) * (q - mb) for p, q in zip(a, b))
     den = (sum((p - ma) ** 2 for p in a) * sum((q - mb) ** 2 for q in b)) ** 0.5

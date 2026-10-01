@@ -92,8 +92,10 @@ def question_metrics(rec: dict, nuggets: list[dict], scorer, grades) -> dict:
         contra = sum(a.contradict >= THETA for a in ans)
         row.update(coverage=cov / len(nuggets), answer_recall=rec_hits / len(nuggets),
                    contradiction=contra / len(nuggets))
-        # Gold-passage recall@20: nuggets with at least one gold passage among the retrieved chunks.
-        got_ids = set(row["retrieved_ids"]) | set(row["retrieved_hashes"])
+        # Gold-passage recall@20: nuggets with at least one gold passage among the top 20 retrieved
+        # chunks (the run's -k bounds the pool, but the metric's name should not depend on it).
+        top20 = rec["retrieved"][:20]
+        got_ids = {c["chunk_id"] for c in top20 if c["chunk_id"] is not None} | {c["text_hash"] for c in top20}
         # Only NLI-verified gold passages (entailment ≥ 0.7 in gold/verify.py) anchor this metric:
         # Claude's adjudication cites passages as a set, which can include non-supporting chunks.
         def nli_gold(n: dict) -> list[dict]:
