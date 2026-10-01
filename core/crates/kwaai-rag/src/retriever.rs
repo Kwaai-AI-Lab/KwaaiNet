@@ -1107,12 +1107,7 @@ pub(crate) fn inject_entity_descriptions(
                 (*id, *s, overlap, conf)
             })
             .collect();
-        nm.sort_by(|a, b| {
-            // a.2/b.2 = name_overlap, a.3/b.3 = extraction_confidence, a.1/b.1 = embedding
-            b.2.cmp(&a.2)
-                .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
-                .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        order_name_matched(&mut nm);
         let nm: Vec<(i64, f64)> = nm.into_iter().map(|(id, s, _, _)| (id, s)).collect();
 
         // 1. Name-matched candidates first (sorted by overlap, so JMH Gool beats Wahida Gool
@@ -1179,6 +1174,21 @@ pub(crate) fn assemble_results(
     });
     results.truncate(cfg.top_k);
     Ok(results)
+}
+
+/// Order name-matched description candidates: name overlap desc, then extraction confidence
+/// desc (YAML-seeded beats extracted fragments), then embedding score desc, then entity id.
+///
+/// The id is the last key because the rest tie often: name-matched seeds all carry one flat
+/// score, and without it the winner was whichever came first in a `HashMap`'s iteration —
+/// a different fact card injected on different runs of the same query.
+fn order_name_matched(nm: &mut [(i64, f64, usize, f32)]) {
+    nm.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+            .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then(a.0.cmp(&b.0))
+    });
 }
 
 #[cfg(test)]
@@ -1358,6 +1368,38 @@ mod tests {
             rank_graph_chunks(&forward, &seed),
             rank_graph_chunks(&reverse, &seed)
         );
+    }
+
+    #[test]
+    fn name_matched_ties_break_by_id_whatever_the_input_order() {
+        // Three candidates tie on overlap, confidence and the flat 0.85 name-match score.
+        let mut a = vec![
+            (30, 0.85, 1, 0.5f32),
+            (10, 0.85, 1, 0.5),
+            (20, 0.85, 1, 0.5),
+        ];
+        let mut b = vec![
+            (20, 0.85, 1, 0.5f32),
+            (30, 0.85, 1, 0.5),
+            (10, 0.85, 1, 0.5),
+        ];
+        order_name_matched(&mut a);
+        order_name_matched(&mut b);
+        let ids = |v: &[(i64, f64, usize, f32)]| v.iter().map(|c| c.0).collect::<Vec<_>>();
+        assert_eq!(ids(&a), vec![10, 20, 30]);
+        assert_eq!(ids(&a), ids(&b), "input order must not pick the winner");
+    }
+
+    #[test]
+    fn name_matched_order_keeps_overlap_confidence_score_ahead_of_id() {
+        let mut v = vec![
+            (1, 0.90, 1, 1.0f32), // low overlap
+            (2, 0.85, 2, 0.5),    // high overlap, low confidence
+            (3, 0.80, 2, 1.0),    // high overlap, YAML-seeded
+            (4, 0.95, 2, 1.0),    // high overlap, seeded, best score
+        ];
+        order_name_matched(&mut v);
+        assert_eq!(v.iter().map(|c| c.0).collect::<Vec<_>>(), vec![4, 3, 2, 1]);
     }
 }
 

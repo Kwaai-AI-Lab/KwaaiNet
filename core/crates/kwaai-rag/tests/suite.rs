@@ -1243,6 +1243,48 @@ fn graph_find_ids_by_name_token() {
     assert_eq!(ids2.len(), 1);
 }
 
+/// Forty entities sharing one surname: enough that a `HashMap`'s iteration order is
+/// all but certain to differ from id order, so an unsorted result shows up here.
+fn graph_of_namesakes(dir: &TempDir) -> GraphStore {
+    let mut g = open_graph(dir);
+    for i in 0..40 {
+        g.upsert_entity(make_entity(&format!("Person{i} Gool"), "Person"))
+            .unwrap();
+    }
+    g
+}
+
+#[test]
+fn graph_find_ids_by_name_token_is_in_id_order() {
+    let dir = TempDir::new().unwrap();
+    let g = graph_of_namesakes(&dir);
+    let ids = g.find_ids_by_name_token("gool");
+    assert_eq!(ids.len(), 40);
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        ids, sorted,
+        "tied name-token seeds must not arrive in hash order"
+    );
+}
+
+#[test]
+fn graph_alias_token_index_is_sorted_and_keeps_hit_counts() {
+    let dir = TempDir::new().unwrap();
+    let mut g = graph_of_namesakes(&dir);
+    g.rebuild_in_memory().unwrap();
+    let ids = g.find_ids_by_alias_token("gool").to_vec();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "id order, not hash order");
+    // "gool" is both the raw and the trimmed form of the token, so each entity is listed
+    // twice. The resolvers score by these hits, so the repeats are kept.
+    let mut distinct = ids.clone();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 40);
+    assert_eq!(ids.len(), 80);
+}
+
 #[test]
 fn graph_merge_entity_into_transfers_relations() {
     let dir = TempDir::new().unwrap();

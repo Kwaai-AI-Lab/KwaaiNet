@@ -1085,6 +1085,13 @@ impl GraphStore {
                 }
             }
         }
+        // Built by iterating a HashMap, so each list arrives in a per-process order; sort it.
+        // Repeats are kept on purpose: an id appears once per name form and raw/trimmed
+        // spelling carrying the token, and the resolvers in `sequence` and `query_understand`
+        // score entities by that hit count.
+        for ids in self.alias_token_index.values_mut() {
+            ids.sort_unstable();
+        }
 
         tracing::info!(
             entities = self.nodes.len(),
@@ -2075,12 +2082,17 @@ impl GraphStore {
 
     /// Return all entity IDs whose normalized name (or any alias) contains `token` as a whole word.
     /// Used to augment embedding-based seed search with query name-token matching.
+    ///
+    /// Ascending by id: `nodes` is a `HashMap`, so its iteration order differs from one process
+    /// to the next, and callers that push these ids into a seed list (all at one flat score)
+    /// would otherwise rank tied entities differently on every run.
     pub fn find_ids_by_name_token(&self, token: &str) -> Vec<i64> {
         if token.len() < 3 {
             return vec![];
         }
         let token_lc = token.to_lowercase();
-        self.nodes
+        let mut ids: Vec<i64> = self
+            .nodes
             .values()
             .filter(|n| {
                 let name_match = normalize_name(&n.name)
@@ -2093,7 +2105,9 @@ impl GraphStore {
                 name_match || alias_match
             })
             .map(|n| n.id)
-            .collect()
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Look up entity IDs by a raw (non-normalized) lowercased token.
