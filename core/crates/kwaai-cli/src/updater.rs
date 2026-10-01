@@ -127,10 +127,18 @@ impl UpdateChecker {
     pub async fn install_update(&self, version: &str) -> Result<()> {
         #[cfg(unix)]
         {
-            // On Linux, prefer the CUDA-enabled binary for NVIDIA GPU machines.
-            // Falls back to the CPU installer when the CUDA archive isn't published yet.
+            // On Linux, prefer the CUDA-enabled binary for NVIDIA GPU machines —
+            // but only when this binary is itself a gnu build. A musl build only
+            // ever runs because the original install found glibc too old for
+            // gnu (see scripts/patch-installer-cuda.sh's matching guard); the
+            // only CUDA archive ever published is gnu-linked, so self-updating
+            // a musl host straight to it would install a binary that can't run
+            // (missing libcudart at runtime) — the exact bug that guard exists
+            // to prevent in the shell installer. Falls through to
+            // install_cpu_linux, which re-runs that installer and makes the
+            // same glibc-aware decision fresh each time.
             #[cfg(not(target_os = "macos"))]
-            if nvidia_smi_async().await {
+            if !cfg!(target_env = "musl") && nvidia_smi_async().await {
                 return self.install_cuda_linux(version).await;
             }
 
