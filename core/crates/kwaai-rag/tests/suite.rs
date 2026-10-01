@@ -1248,7 +1248,7 @@ fn graph_find_ids_by_name_token() {
 fn graph_of_namesakes(dir: &TempDir) -> GraphStore {
     let mut g = open_graph(dir);
     for i in 0..40 {
-        g.upsert_entity(make_entity(&format!("Person{i} Gool"), "Person"))
+        g.upsert_entity(make_entity(&format!("Person{i} Doe"), "Person"))
             .unwrap();
     }
     g
@@ -1258,7 +1258,7 @@ fn graph_of_namesakes(dir: &TempDir) -> GraphStore {
 fn graph_find_ids_by_name_token_is_in_id_order() {
     let dir = TempDir::new().unwrap();
     let g = graph_of_namesakes(&dir);
-    let ids = g.find_ids_by_name_token("gool");
+    let ids = g.find_ids_by_name_token("doe");
     assert_eq!(ids.len(), 40);
     let mut sorted = ids.clone();
     sorted.sort_unstable();
@@ -1273,11 +1273,11 @@ fn graph_alias_token_index_is_sorted_and_keeps_hit_counts() {
     let dir = TempDir::new().unwrap();
     let mut g = graph_of_namesakes(&dir);
     g.rebuild_in_memory().unwrap();
-    let ids = g.find_ids_by_alias_token("gool").to_vec();
+    let ids = g.find_ids_by_alias_token("doe").to_vec();
     let mut sorted = ids.clone();
     sorted.sort_unstable();
     assert_eq!(ids, sorted, "id order, not hash order");
-    // "gool" is both the raw and the trimmed form of the token, so each entity is listed
+    // "doe" is both the raw and the trimmed form of the token, so each entity is listed
     // twice. The resolvers score by these hits, so the repeats are kept.
     let mut distinct = ids.clone();
     distinct.dedup();
