@@ -3,12 +3,17 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tracing::debug;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/Kwaai-AI-Lab/KwaaiNet/releases/latest";
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Longest a download may go without receiving a byte.
+const DOWNLOAD_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -24,6 +29,41 @@ pub struct UpdateInfo {
     pub name: Option<String>,
     pub url: Option<String>,
     pub body: Option<String>,
+}
+
+/// Builder for the updater's clients: the bundled roots plus the OS trust
+/// store, so a TLS-inspecting proxy or AV does not break the release check.
+async fn client_builder() -> reqwest::ClientBuilder {
+    static OS_ROOTS: tokio::sync::OnceCell<Vec<reqwest::Certificate>> =
+        tokio::sync::OnceCell::const_new();
+    let roots = OS_ROOTS
+        .get_or_init(|| async {
+            tokio::task::spawn_blocking(|| {
+                let ders = rustls_native_certs::load_native_certs().certs;
+                usable_roots(ders.iter().map(|c| c.as_ref()))
+            })
+            .await
+            .unwrap_or_default()
+        })
+        .await;
+    roots.iter().cloned().fold(
+        reqwest::Client::builder().user_agent(format!("kwaainet/{CURRENT_VERSION}")),
+        |b, cert| b.add_root_certificate(cert),
+    )
+}
+
+/// The certs a client can be built with. OS stores hold malformed roots, and
+/// `add_root_certificate` fails the whole `build()` on the first one.
+fn usable_roots<'a>(ders: impl Iterator<Item = &'a [u8]>) -> Vec<reqwest::Certificate> {
+    ders.filter_map(|der| reqwest::Certificate::from_der(der).ok())
+        .filter(|cert| {
+            reqwest::Client::builder()
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(cert.clone())
+                .build()
+                .is_ok()
+        })
+        .collect()
 }
 
 fn cache_file() -> PathBuf {
@@ -49,25 +89,30 @@ impl UpdateChecker {
 
     /// Check for a newer release. Returns `Some(UpdateInfo)` if one exists.
     pub async fn check(&self, force: bool) -> Result<Option<UpdateInfo>> {
+        self.check_at(RELEASES_URL, force).await
+    }
+
+    async fn check_at(&self, releases_url: &str, force: bool) -> Result<Option<UpdateInfo>> {
         if !force {
             if let Some(cached) = self.load_cache() {
                 return Ok(cached);
             }
         }
 
-        let client = reqwest::Client::builder()
-            .user_agent("kwaainet/".to_string() + CURRENT_VERSION)
+        let client = client_builder()
+            .await
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
 
-        let resp = client.get(RELEASES_URL).send().await?;
+        let resp = client.get(releases_url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             // No releases published yet
             self.save_cache(&None)?;
             return Ok(None);
         }
 
-        let release: GithubRelease = resp.json().await?;
+        // A rate-limit 403 otherwise surfaces as "missing field `tag_name`".
+        let release: GithubRelease = resp.error_for_status()?.json().await?;
         debug!("Latest release tag: {}", release.tag_name);
         let latest = release.tag_name.trim_start_matches('v').to_string();
 
@@ -186,8 +231,8 @@ impl UpdateChecker {
                         "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-pc-windows-msvc-cuda-full.zip"
                     )
                 };
-                let client = reqwest::Client::builder()
-                    .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
+                let client = client_builder()
+                    .await
                     .timeout(std::time::Duration::from_secs(10))
                     .build()?;
                 let available = client
@@ -354,8 +399,8 @@ impl UpdateChecker {
             "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-unknown-linux-gnu-cuda.tar.xz"
         );
 
-        let client = reqwest::Client::builder()
-            .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
+        let client = client_builder()
+            .await
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
         let cuda_available = client
@@ -466,20 +511,53 @@ impl UpdateChecker {
         Ok(())
     }
 
+    /// Stream `url` to `path`. The timeouts bound connecting and silence, never
+    /// the transfer as a whole: the largest archive is ~1 GB.
     async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .user_agent(format!("kwaainet/{}", CURRENT_VERSION))
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
-        let resp = client.get(url).send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("Download failed (HTTP {}): {}", resp.status(), url);
-        }
-        let bytes = resp.bytes().await?;
-        std::fs::write(path, &bytes)
-            .with_context(|| format!("Failed to write installer to {}", path.display()))?;
-        Ok(())
+        download_with_stall_timeout(url, path, DOWNLOAD_STALL_TIMEOUT, &CANCEL_DOWNLOADS).await
     }
+}
+
+static CANCEL_DOWNLOADS: AtomicBool = AtomicBool::new(false);
+
+/// Make update downloads fail at their next chunk. One-way: for shutdown.
+pub(crate) fn cancel_downloads() {
+    CANCEL_DOWNLOADS.store(true, Ordering::Relaxed);
+}
+
+async fn download_with_stall_timeout(
+    url: &str,
+    path: &std::path::Path,
+    stall: std::time::Duration,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let client = client_builder()
+        .await
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .read_timeout(stall)
+        .build()?;
+    let mut resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Download failed (HTTP {}): {}", resp.status(), url);
+    }
+    let streamed = async {
+        let file = tokio::fs::File::create(path).await?;
+        let mut file = tokio::io::BufWriter::with_capacity(1 << 20, file);
+        while let Some(chunk) = resp.chunk().await? {
+            anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled by shutdown");
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = streamed {
+        let _ = std::fs::remove_file(path);
+        return Err(e).with_context(|| format!("Downloading {url} to {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Query nvidia-smi asynchronously with a 4-second timeout.
@@ -1047,5 +1125,115 @@ mod tests {
     async fn nvidia_smi_detects_gpu_on_linux() {
         let has_gpu = nvidia_smi_async().await;
         println!("nvidia_smi_async() = {has_gpu}");
+    }
+
+    /// Serve `chunks` of 1 KiB, `gap` apart, then optionally hang mid-body.
+    async fn trickle_server(chunks: usize, gap: std::time::Duration, hang: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _ = sock.read(&mut [0u8; 1024]).await;
+            let total = (chunks + usize::from(hang)) * 1024;
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\n\r\n");
+            sock.write_all(head.as_bytes()).await.unwrap();
+            for _ in 0..chunks {
+                sock.write_all(&[7u8; 1024]).await.unwrap();
+                tokio::time::sleep(gap).await;
+            }
+            if hang {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+        format!("http://{addr}/archive.zip")
+    }
+
+    /// The regression: a download slower than the deadline overall, but never
+    /// silent for that long, must complete.
+    #[tokio::test]
+    async fn download_outlasts_the_stall_timeout_while_bytes_flow() {
+        let stall = std::time::Duration::from_secs(2);
+        let url = trickle_server(10, std::time::Duration::from_millis(250), false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zip");
+        download_with_stall_timeout(&url, &path, stall, &AtomicBool::new(false))
+            .await
+            .expect("2.5 s of steady bytes must survive a 2 s stall timeout");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 10 * 1024);
+    }
+
+    #[tokio::test]
+    async fn stalled_download_fails_and_leaves_no_partial_file() {
+        let stall = std::time::Duration::from_millis(300);
+        let url = trickle_server(2, std::time::Duration::from_millis(10), true).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zip");
+        assert!(
+            download_with_stall_timeout(&url, &path, stall, &AtomicBool::new(false))
+                .await
+                .is_err()
+        );
+        assert!(
+            !path.exists(),
+            "a truncated archive must not be left behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_download_stops_and_leaves_no_partial_file() {
+        let stall = std::time::Duration::from_secs(5);
+        let url = trickle_server(50, std::time::Duration::from_millis(50), false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zip");
+        let cancel = AtomicBool::new(false);
+        let (result, ()) = tokio::join!(
+            download_with_stall_timeout(&url, &path, stall, &cancel),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                cancel.store(true, Ordering::Relaxed);
+            }
+        );
+        let err = result.expect_err("a cancelled download must not report success");
+        assert!(format!("{err:#}").contains("cancelled"), "got: {err:#}");
+        assert!(!path.exists());
+    }
+
+    /// One malformed root in the OS store must not take the updater down.
+    #[test]
+    fn a_malformed_os_root_is_dropped_not_fatal() {
+        let garbage: &[u8] = b"not a certificate";
+        let roots = usable_roots([garbage].into_iter());
+        assert!(roots.is_empty());
+        let unfiltered = reqwest::Certificate::from_der(garbage).expect("from_der is lazy");
+        assert!(
+            reqwest::Client::builder()
+                .add_root_certificate(unfiltered)
+                .build()
+                .is_err(),
+            "reqwest stopped failing on a bad root: usable_roots may be redundant"
+        );
+    }
+
+    /// A rate-limited check must say so: it used to decode GitHub's error
+    /// body and report a missing `tag_name`.
+    #[tokio::test]
+    async fn rate_limited_check_reports_the_http_status() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/latest", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _ = sock.read(&mut [0u8; 1024]).await;
+            let body = r#"{"message":"API rate limit exceeded"}"#;
+            let resp = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        });
+        // `force` skips the cache read; the error path never writes it.
+        let err = UpdateChecker::new().check_at(&url, true).await.unwrap_err();
+        assert!(format!("{err:#}").contains("403"), "got: {err:#}");
     }
 }
