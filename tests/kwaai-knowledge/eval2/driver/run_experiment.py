@@ -20,6 +20,7 @@ State: results/eval2/state.json (resumable). Progress: results/eval2/eval2_progr
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -32,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import LOCAL, PEERS, SNAP, build, clone, graph_score, sqlite_copy, url, _file_sha1  # noqa: E402
-from common import KBS, KNOWLEDGE_TESTS, RESULTS, data_dir, tenant_of  # noqa: E402
+from common import KBS, KNOWLEDGE_TESTS, RESULTS, data_dir, read_jsonl, tenant_of  # noqa: E402
 
 KWAAINET = "kwaainet"
 KWAAINET_EVAL = str(Path.home() / ".cargo/bin/kwaainet-eval2")
@@ -40,13 +41,17 @@ MODEL = "llama3.1:8b"
 MAX_CYCLE = 12
 EVAL_CYCLES = (0, 1, 2, 4, 8, 12)
 REPEATS = 3  # cycle-0 evaluations per corpus (noise floor)
+MAX_ATTEMPTS = 3  # per job per driver run; a job failing more often waits for a human
 COMPLETIONS = 200
 DREAM_WORKERS = 2  # per peer
 ARM_PEER = {"A": "metro-linux", "B": "metro-win"}
 # D6 (the memoir) runs entirely on this Mac: build, both arms and evals. One machine per
 # trajectory, and the private text never leaves the Mac.
 LOCAL_KBS = {"D6"}
-WORKERS = [*PEERS, LOCAL]
+# EVAL2_WORKERS=metro-linux,local runs only those workers, e.g. while a peer is down: its jobs
+# would otherwise "succeed" with "(error: ...)" answers or empty dream cycles.
+WORKERS = [w for w in [*PEERS, LOCAL]
+           if w in os.environ.get("EVAL2_WORKERS", ",".join([*PEERS, LOCAL])).split(",")]
 EVAL_PEER = {"Manhattan": "metro-linux", "DeepSea": "metro-linux", "Climate": "metro-win",
              "D6": LOCAL, "Legal": "metro-win"}
 ORDER = ["Manhattan", "D6", "DeepSea", "Legal", "Climate"]
@@ -122,9 +127,10 @@ def ready(j: dict, state: dict) -> bool:
 
 
 def ensure_clone(kb: str, suffix: str) -> str:
+    """Clone <KB>_e2 to <KB>_e2<suffix> if needed, and (re)register it: called before every use."""
     name = f"{kb}_e2{suffix}"
-    with _lock:  # clone() edits config.yaml
-        clone(f"{kb}_e2", name)
+    with _lock:
+        clone(f"{kb}_e2", name)  # also takes the cross-process config lock
     return name
 
 
@@ -158,12 +164,18 @@ def do_dream(j: dict) -> dict:
     t0 = time.time()
     run_logged(args, LOGS / f"dream_{kb}_{arm}.log")
     secs = time.time() - t0
+    # `dream run` exits 0 when every completion failed; a cycle like that must not be snapshotted.
+    report = data_dir(name) / f"dream-report-{tenant_of(name)}.json"
+    if not report.exists() or report.stat().st_mtime < t0:
+        raise RuntimeError(f"dream wrote no fresh report ({report})")
+    rep = json.loads(report.read_text())
+    work = rep["entities_summary_completed"] + rep["entities_type_completed"] + rep["entities_relations_added"]
+    if rep["cycle_errors"] or work == 0:
+        raise RuntimeError(f"dream cycle did no work or had errors: work={work} errors={rep['cycle_errors'][:3]}")
     snap = snap_path(kb, arm, c)
     sqlite_copy(data_dir(name) / f"graph-{tenant_of(name)}.db", snap)
     score = graph_score(name, save_to=snap.with_suffix(".scores.json"))
-    report = data_dir(name) / f"dream-report-{tenant_of(name)}.json"
-    if report.exists():
-        shutil.copy(report, snap.with_suffix(".dream.json"))
+    shutil.copy(report, snap.with_suffix(".dream.json"))
     meta = {"kb": kb, "arm": arm, "cycle": c, "seconds": round(secs), "peer": j["peer"], "score": score,
             "sha1": _file_sha1(snap), "ts": time.time()}
     snap.with_suffix(".json").write_text(json.dumps(meta, indent=1))
@@ -190,7 +202,12 @@ def do_eval(j: dict) -> dict:
             "--dump-jsonl", str(DUMPS / f"{stem}.jsonl"), "--run-tag", tag]
     t0 = time.time()
     run_logged(args, LOGS / f"eval_{kb}.log")
-    n = sum(1 for _ in (DUMPS / f"{stem}.jsonl").open())
+    recs = read_jsonl(DUMPS / f"{stem}.jsonl")
+    # `rag eval` records a failed generation as the answer "(error: ...)" and still exits 0.
+    bad = [r["qid"] for r in recs if r["answer"].startswith("(error:")]
+    if bad:
+        raise RuntimeError(f"{len(bad)} generation errors in {stem}.jsonl: {bad[:5]}")
+    n = len(recs)
     return {"seconds": round(time.time() - t0), "records": n, "snapshot_sha1": _file_sha1(snap)}
 
 
@@ -201,6 +218,7 @@ def worker(peer: str, kbs: list[str], state: dict, stop: threading.Event) -> Non
         with _lock:
             pending = [j for j in all_jobs(kbs) if j["peer"] == peer
                        and state["jobs"].get(job_key(j), {}).get("status") not in ("done", "running")
+                       and state["jobs"].get(job_key(j), {}).get("attempts", 0) < MAX_ATTEMPTS
                        and ready(j, state)]
             # Earlier corpora first; within a corpus, evals of ready snapshots before further dreaming
             # so results for the minimum viable set arrive early.
@@ -212,11 +230,15 @@ def worker(peer: str, kbs: list[str], state: dict, stop: threading.Event) -> Non
                 job = None
             else:
                 job = pending[0]
-                state["jobs"][job_key(job)] = {"status": "running", "peer": peer, "started": time.time()}
+                prev = state["jobs"].get(job_key(job), {})
+                state["jobs"][job_key(job)] = {"status": "running", "peer": peer, "started": time.time(),
+                                               "attempts": prev.get("attempts", 0) + 1,
+                                               "last_error": prev.get("error", prev.get("last_error"))}
                 save_state(state)
         if job is None:
             outstanding = [j for j in all_jobs(kbs) if j["peer"] == peer
-                           and state["jobs"].get(job_key(j), {}).get("status") != "done"]
+                           and state["jobs"].get(job_key(j), {}).get("status") != "done"
+                           and state["jobs"].get(job_key(j), {}).get("attempts", 0) < MAX_ATTEMPTS]
             if not outstanding:
                 return
             time.sleep(60)
@@ -230,9 +252,10 @@ def worker(peer: str, kbs: list[str], state: dict, stop: threading.Event) -> Non
             else:
                 result = do_eval(job)
             status = {"status": "done", "peer": peer, "finished": time.time(), **result}
-        except Exception as e:  # noqa: BLE001 — record and move on; a failed job is retried on restart
-            status = {"status": "failed", "peer": peer, "error": f"{e}\n{traceback.format_exc()[-800:]}"}
+        except BaseException as e:  # noqa: BLE001 — incl. SystemExit: a worker thread must never die silently
+            status = {"status": "failed", "peer": peer, "error": f"{e!r}\n{traceback.format_exc()[-1500:]}"}
         with _lock:
+            status["attempts"] = state["jobs"][job_key(job)].get("attempts", 1)
             state["jobs"][job_key(job)] = status
             save_state(state)
         print(f"[{peer}] {job_key(job)} -> {status['status']} {({k: v for k, v in status.items() if k not in ('error',)})}",
@@ -245,6 +268,7 @@ def main(argv: list[str]) -> None:
     for k, v in state["jobs"].items():  # a job left "running" by a crash is redone
         if v["status"] in ("running", "failed"):
             v["status"] = "pending"
+            v["attempts"] = 0  # a fresh driver run gets fresh attempts
     save_state(state)
     stop = threading.Event()
     threads = [threading.Thread(target=worker, args=(p, kbs, state, stop), daemon=True) for p in WORKERS]
