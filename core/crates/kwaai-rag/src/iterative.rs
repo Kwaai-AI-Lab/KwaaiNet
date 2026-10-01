@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::bm25::{rrf_merge, BM25Index};
 use crate::embedder::EmbedClient;
 use crate::graph::GraphStore;
-use crate::meta_store::MetaStore;
+use crate::meta_store::{ChunkMeta, MetaStore};
 use crate::retriever::{
     assemble_results, inject_entity_descriptions, rank_traversed_chunks, RetrieveConfig,
     RetrievedChunk,
@@ -77,6 +77,34 @@ pub fn compute_coverage(terms: &[String], chunks: &[RetrievedChunk]) -> (f32, Ve
 /// and reordering. Relevance marks key on this.
 pub fn chunk_key(c: &RetrievedChunk) -> (String, u32) {
     (c.chunk_meta.doc_name.clone(), c.chunk_meta.chunk_index)
+}
+
+/// Round-2 gap-fill: walk the ranked candidates in order, skip any chunk already in the
+/// pool (or with no stored meta), and keep at most [`GAP_FILL_MAX`].
+///
+/// The skip comes before the cap, so chunks the pool already holds never use up a slot,
+/// and ranked order is kept, so the gap entities' own chunks come first.
+fn select_gap_fill(
+    ranked: impl IntoIterator<Item = (i64, Option<ChunkMeta>)>,
+    existing_keys: &HashSet<(String, u32)>,
+) -> Vec<RetrievedChunk> {
+    ranked
+        .into_iter()
+        .filter_map(|(cid, meta_opt)| {
+            let cm = meta_opt?;
+            if existing_keys.contains(&(cm.doc_name.clone(), cm.chunk_index)) {
+                return None;
+            }
+            Some(RetrievedChunk {
+                chunk_id: Some(cid),
+                chunk_meta: cm,
+                score: 0.45,
+                source_kb: None,
+                rerank_score: None,
+            })
+        })
+        .take(GAP_FILL_MAX)
+        .collect()
 }
 
 async fn reformulate_query(
@@ -293,25 +321,8 @@ where
                 .map(|(cid, _)| cid)
                 .collect();
             let new_metas = meta.get_chunks(&gap_chunk_ids)?;
-            let new_chunks: Vec<RetrievedChunk> = gap_chunk_ids
-                .into_iter()
-                .zip(new_metas)
-                .filter_map(|(cid, meta_opt)| {
-                    let cm = meta_opt?;
-                    let key = (cm.doc_name.clone(), cm.chunk_index);
-                    if existing_keys.contains(&key) {
-                        return None;
-                    }
-                    Some(RetrievedChunk {
-                        chunk_id: Some(cid),
-                        chunk_meta: cm,
-                        score: 0.45,
-                        source_kb: None,
-                        rerank_score: None,
-                    })
-                })
-                .take(GAP_FILL_MAX)
-                .collect();
+            let new_chunks =
+                select_gap_fill(gap_chunk_ids.into_iter().zip(new_metas), &existing_keys);
             let added = new_chunks.len();
             pool.extend(new_chunks);
             added
@@ -487,4 +498,54 @@ where
     ));
 
     Ok(pool)
+}
+
+#[cfg(test)]
+mod gap_fill_tests {
+    use super::*;
+
+    fn meta(doc: &str, idx: u32) -> ChunkMeta {
+        ChunkMeta {
+            doc_name: doc.to_string(),
+            chunk_index: idx,
+            text: String::new(),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: Default::default(),
+        }
+    }
+
+    fn ranked(n: u32) -> Vec<(i64, Option<ChunkMeta>)> {
+        (0..n).map(|i| (i as i64, Some(meta("d", i)))).collect()
+    }
+
+    fn ids(v: &[RetrievedChunk]) -> Vec<i64> {
+        v.iter().map(|c| c.chunk_id.unwrap()).collect()
+    }
+
+    #[test]
+    fn gap_fill_takes_at_most_the_cap_in_ranked_order() {
+        let got = select_gap_fill(ranked(25), &HashSet::new());
+        assert_eq!(ids(&got), (0..GAP_FILL_MAX as i64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn gap_fill_skips_pooled_chunks_before_capping() {
+        // The first five ranked chunks are already in the pool: they must not use up slots.
+        let existing: HashSet<(String, u32)> = (0..5).map(|i| ("d".to_string(), i)).collect();
+        let got = select_gap_fill(ranked(25), &existing);
+        assert_eq!(got.len(), GAP_FILL_MAX);
+        assert_eq!(ids(&got), (5..5 + GAP_FILL_MAX as i64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn gap_fill_skips_chunks_without_meta() {
+        let mut r = ranked(3);
+        r[1].1 = None;
+        assert_eq!(ids(&select_gap_fill(r, &HashSet::new())), vec![0, 2]);
+    }
 }
