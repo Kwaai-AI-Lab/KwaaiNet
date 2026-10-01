@@ -683,7 +683,13 @@ pub fn description_from_fields(
                             | "unspecified"
                     )
                 })
-                .map(|fv| format!("{}: {}", key, fv.value))
+                // One line, always: a value with a line break (a multi-line
+                // `historicalNote`) made the summary read as prose to
+                // `description_prose`, and every cycle appended another copy.
+                .map(|fv| {
+                    let value = fv.value.split_whitespace().collect::<Vec<_>>().join(" ");
+                    format!("{key}: {value}")
+                })
         })
         .collect();
     if parts.is_empty() {
@@ -712,18 +718,18 @@ pub fn merge_field_summary(existing: &str, name: &str, summary: &str) -> String 
 
 /// An entity's description without its [`description_from_fields`] summary line.
 ///
-/// A summary is a one-line paragraph "Name — key: value; …" whose first key is a
-/// field name. Prose that merely starts "Name — known as …" is kept.
+/// A summary is a paragraph "Name — key: value; …" whose first key is a field
+/// name. Prose that merely starts "Name — known as …" is kept. Summaries are
+/// written on one line, but one stored before values were flattened may hold a
+/// line break, so that is not required: it is still replaced, not kept as prose.
 pub fn description_prose(existing: &str, name: &str) -> String {
     let marker = format!("{} — ", name.trim());
     let is_summary = |p: &str| {
         let p = p.trim();
-        !p.contains('\n')
-            && p.strip_prefix(&marker).is_some_and(|rest| {
-                rest.split_once(": ").is_some_and(|(key, _)| {
-                    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                })
-            })
+        p.strip_prefix(&marker).is_some_and(|rest| {
+            rest.split_once(": ")
+                .is_some_and(|(key, _)| is_field_key(key))
+        })
     };
     existing
         .split("\n\n")
@@ -732,6 +738,18 @@ pub fn description_prose(existing: &str, name: &str) -> String {
         .join("\n\n")
         .trim()
         .to_string()
+}
+
+/// Whether `key` is a field name some entity type's [`expected_fields`] declares — the only
+/// keys [`description_from_fields`] writes. An identifier-shaped word is not enough: prose
+/// such as "Jane Doe — Note: she was born in 1901." would be taken for a summary and dropped.
+///
+/// Reads the compiled table because that is what `description_from_fields` reads; if it ever
+/// takes per-KB ontology fields (`expected_fields_for`), this must take the same ontology.
+fn is_field_key(key: &str) -> bool {
+    ENTITY_TYPES
+        .iter()
+        .any(|t| expected_fields(t).iter().any(|(k, _)| *k == key))
 }
 
 /// The description dream field completion stores when the entity has field values.
@@ -2147,10 +2165,14 @@ impl GraphStore {
             .get(&alias_id)
             .map(|n| n.aliases.clone())
             .unwrap_or_default();
+        // The alias's own field-summary line ("Alias — key: value") is dropped before its
+        // description can replace the canonical one: kept, it would sit beside the
+        // canonical's summary as a permanent line of "prose", since the canonical
+        // name no longer matches it.
         let alias_description = self
             .nodes
             .get(&alias_id)
-            .map(|n| n.description.clone())
+            .map(|n| description_prose(&n.description, &n.name))
             .unwrap_or_default();
 
         // ── 1. Collect relations involving alias_id ─────────────────────────
@@ -6347,17 +6369,57 @@ mod tests {
 
     #[test]
     fn field_summary_alone_when_there_is_no_prose() {
-        let s = "Springfield — country: Exampleland";
+        let s = "Springfield — locationType: town";
         assert_eq!(merge_field_summary("", "Springfield", s), s);
         // An old summary on its own is replaced, not kept as "prose".
         assert_eq!(
-            merge_field_summary("Springfield — country: ?", "Springfield", s),
+            merge_field_summary("Springfield — locationType: ?", "Springfield", s),
             s
         );
         // Nothing new to add: the prose is left as it is.
         assert_eq!(
             merge_field_summary("A town on the river.", "Springfield", ""),
             "A town on the river."
+        );
+    }
+
+    /// Regression (review of #239): a field value with a line break made the summary
+    /// look like prose, so every cycle appended another copy.
+    #[test]
+    fn field_summary_with_a_multiline_value_stays_single() {
+        let fields = HashMap::from([(
+            "birthPlace".to_string(),
+            FieldValue::new("line one\nline two", 0),
+        )]);
+        let s = description_from_fields("Jane Doe", "Person", &fields);
+        assert_eq!(s, "Jane Doe — birthPlace: line one line two");
+        let prose = "Jane Doe founded the Example Society.";
+        let once = merge_field_summary(prose, "Jane Doe", &s);
+        assert_eq!(merge_field_summary(&once, "Jane Doe", &s), once);
+    }
+
+    /// A summary stored before values were flattened still counts as a summary.
+    #[test]
+    fn field_summary_replaces_an_old_multiline_summary() {
+        let old =
+            "Jane Doe founded the Example Society.\n\nJane Doe — birthPlace: line one\nline two";
+        let s = "Jane Doe — birthPlace: Springfield";
+        assert_eq!(
+            merge_field_summary(old, "Jane Doe", s),
+            format!("Jane Doe founded the Example Society.\n\n{s}")
+        );
+    }
+
+    /// Regression (review of the #239 fixes): with the one-line rule gone, any
+    /// identifier before ": " passed as a field key, so this prose was deleted.
+    #[test]
+    fn field_summary_keeps_prose_whose_first_word_is_not_a_field() {
+        let prose =
+            "Jane Doe — Note: she was born in 1901.\nShe later founded the Example Society.";
+        let s = "Jane Doe — birthPlace: Springfield";
+        assert_eq!(
+            merge_field_summary(prose, "Jane Doe", s),
+            format!("{prose}\n\n{s}")
         );
     }
 
