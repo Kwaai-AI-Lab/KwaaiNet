@@ -1,5 +1,7 @@
 # kwaai-trust — adopt the DTGWG trust stack (plan, re-synced 2026-10-01)
 
+Diagrams (data flow, entities, sequences): [`design/DTGWG-TrustStack-diagrams.md`](../design/DTGWG-TrustStack-diagrams.md).
+
 ## Context
 
 Kwaai proposed a libp2p binding for Trust Tasks to the LF ToIP Decentralized Trust
