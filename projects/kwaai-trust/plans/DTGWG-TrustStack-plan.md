@@ -1,6 +1,6 @@
 # kwaai-trust — adopt the DTGWG trust stack (plan, re-synced 2026-10-01)
 
-Diagrams (data flow, entities, sequences): [`design/DTGWG-TrustStack-diagrams.md`](../design/DTGWG-TrustStack-diagrams.md).
+Diagrams are walked through in [The design in five diagrams](#the-design-in-five-diagrams); their Mermaid source is [`design/DTGWG-TrustStack-diagrams.md`](../design/DTGWG-TrustStack-diagrams.md).
 
 ## Context
 
@@ -62,6 +62,89 @@ OWF CLA 1.0; conventional commits. SPEC §9.1 (carriage, correlation, lifecycle 
   BindingVCs tying the old DID form to passkey `did:key`s; Darren's
   `chore/remove-summit-server-and-verida` and `feat/kwaai-ledger` (146 behind main)
   are pending.
+
+## The design in five diagrams
+
+The diagrams show the target state after Phase 3 (Q1 2027). They are coloured by owner,
+because ownership is the design: **blue** is code in the KwaaiNet tree, **green** is the
+`trust-tasks-libp2p` crate Kwaai contributes to the upstream workspace and co-maintains,
+**grey** is upstream core and third-party crates (OpenVTC, Affinidi). Anything marked
+*(proposed)* does not exist yet in any codebase.
+
+### Data flow: what crosses into our code
+
+![Data flow of one Trust Task between two nodes](../design/img/dtgwg-trust-stack/1-data-flow.png)
+
+A task handler on node A hands a Trust Task to the crate's `send()`. The crate stamps the
+issuer as a `did:key` derived from the node's own PeerId, attaches any credential signed
+by `dtg-credentials`, frames the envelope, and writes it to a stream that `kwaai-p2p` opened
+on `/trust-tasks/0.1`. The stream crosses the libp2p fabric directly or through a circuit
+relay; either way it stays end-to-end Noise.
+
+On node B, `kwaai-p2p` accepts the stream and passes three things to the crate: the
+stream, the Noise-authenticated PeerId, and whether the path was relayed. From there the
+crate rejects oversize frames, cross-checks the document's issuer against the transport
+identity (SPEC §4.8.1), and hands the document to upstream's `consume_inbound` for replay
+and freshness checks before our handler sees it. A mismatched issuer is answered with
+`identity_mismatch` on the same stream. Credentials count toward the trust score only
+after they verify.
+
+**The point to take away:** the only things that cross the blue boundary are a stream, a
+PeerId and a mode flag. Every part of the Trust Tasks protocol sits in green or grey, so
+an upstream release changes their code, not ours.
+
+### Entities: identity, tasks and credentials
+
+![Entity relationships](../design/img/dtgwg-trust-stack/2-entity-relationships.png)
+
+Each node has exactly one **VID**, a `did:key` derived deterministically from its PeerId,
+which is what Trust Tasks compares by exact string. A node may also publish an optional
+`did:peer:2` **routing DID** for the bridge; its dialable addresses otherwise keep travelling
+in **signed peer records** as today. A **Trust Task** names an issuer and a recipient VID,
+belongs to a **thread** that carries its lifecycle state, and travels inside a binding
+**envelope**.
+
+Credentials follow the DTG model: a **DTG credential** has an issuer and a subject VID, a
+required `issuerScope`, and one `eddsa-jcs-2022` **Data Integrity proof**; statement
+credentials (VSC) carry a **predicate** that must be on our accept-list. It can be bound to
+the Trust Task that produced it. The **wallet** holds DTG credentials and keeps today's
+**legacy VCs** read-only, never scored. The **trust score** counts only verified credentials;
+**peer reputation** (observed availability, throughput, latency) is unchanged.
+
+### Sequence: a request, its response, and a rejected sender
+
+![Request, response and identity mismatch](../design/img/dtgwg-trust-stack/3-sequence-request-response.png)
+
+The coloured bands repeat the ownership split. Steps 1–5 open the stream: node A's client
+derives its issuer VID and asks `kwaai-p2p` for a stream; node B's `kwaai-p2p` hands the
+crate the stream with the remote PeerId and mode. The crate then checks the frame size and
+resolves the parties. If the issuer matches the transport identity (or was omitted and is
+filled in from it), upstream checks replay and freshness and the handler answers on the
+same stream. If it does not match, the crate's `reject()` returns `identity_mismatch` and
+nothing reaches the handler. Closing the stream ends the exchange but changes no task
+state.
+
+### Sequence: work that outlives its stream
+
+![Late response on a fresh stream](../design/img/dtgwg-trust-stack/4-sequence-late-response.png)
+
+Trust Tasks can run longer than one connection. Node B can report `executing` and the
+first stream can close. When the result is ready, B opens a new stream to A, and A matches
+it to the task by `id` and `threadId`; libp2p has no correlation of its own, so the binding
+specification says this explicitly. Either side can open a stream later, for example A
+sending a `trust-task-control` suspend or cancel.
+
+### Sequence: issuing and verifying a credential
+
+![Credential issued and verified](../design/img/dtgwg-trust-stack/5-sequence-credential-issue-verify.png)
+
+An issuer node builds a statement credential (VSC) whose issuer and subject are both
+`did:key` VIDs, and `dtg-credentials` canonicalises it with JCS and signs it with
+`eddsa-jcs-2022`. That fixes the bug where today's credentials fail verification at random.
+The credential travels to the subject as a Trust Task payload. The subject verifies the
+proof, the required `issuerScope` and the predicate; only then is it stored and counted,
+and even then its weight in reputation stays at zero until we have an issuer policy. A
+credential that fails is neither stored nor scored.
 
 ## Approach
 

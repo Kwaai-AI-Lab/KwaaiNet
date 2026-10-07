@@ -5,6 +5,12 @@ show the **target state after Phase 3 (Q1 2027)**. Names marked *(proposed)* do 
 yet in any codebase; everything else exists today in KwaaiNet `main` or in upstream
 `trustoverip/dtgwg-trust-tasks-tf` at `trust-tasks-rs` 0.26.0.
 
+PNG renderings live in [`img/dtgwg-trust-stack/`](img/dtgwg-trust-stack/) for the plan's
+narrative. **The Mermaid below is the source of truth**; after changing it, regenerate the
+PNGs (each block saved as a `.mmd`, then
+`mmdc -i <name>.mmd -o img/dtgwg-trust-stack/<name>.png -b white -s 2 -w 1600`)
+in the same commit, or they go stale.
+
 Ownership is the point of the design, so every diagram keeps it visible:
 
 | Colour | Owner | Changes when Trust Tasks changes? |
