@@ -91,7 +91,8 @@ after they verify.
 
 **The point to take away:** the only things that cross the blue boundary are a stream, a
 PeerId and a mode flag. Every part of the Trust Tasks protocol sits in green or grey, so
-an upstream release changes their code, not ours.
+an upstream release does not change our transport code. Our task handlers do use Trust
+Tasks types, so a breaking change to those can still reach them (see the caveat in §2).
 
 ### Entities: identity, tasks and credentials
 
@@ -170,7 +171,19 @@ credential that fails is neither stored nor scored.
 holds only a seam that never changes when Trust Tasks does.** Upstream maintainers carry
 it through their lockstep releases (their ask-4 commitment); Kwaai co-maintains it
 (CODEOWNERS for the crate, one of our four WG volunteers as reviewer) and owns libp2p-side
-changes. Our re-sync cost becomes a version-group bump, not code.
+changes. For the transport glue, our re-sync cost becomes a version-group bump, not code.
+
+The seam is a **passive, in-process interface**, not a service: inside the existing node
+process, `kwaai-p2p` hands each `/trust-tasks/0.1` stream to the crate as a function call
+on a task in the node's Tokio runtime. No new process, socket or IPC.
+
+**Caveat — the handlers are not behind the seam.** The seam keeps the *transport glue*
+stable. Our task handlers still receive Trust Task documents and build responses with the
+crate's and core's types (`TrustTask<P>`, payload and error types), so a breaking change to
+those types touches the handlers. That is inherent to speaking the protocol at all. We
+contain it by keeping the handlers few and in one place (`kwaai-cli` now, `kwaai-twin`
+later), converting to our own types at the handler boundary rather than passing Trust
+Tasks types deeper into the codebase, and batching upgrades with the version group.
 
 Options considered:
 
