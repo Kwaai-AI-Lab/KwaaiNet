@@ -153,3 +153,20 @@ tests/kwaai-knowledge/results/*_progress.json
 **/*_export/
 tests/kwaai-knowledge/archive/
 core/crates/kwaai-rag/tests/kwaai-knowledge/
+
+# ── D6 — private corpus (family memoir). Never commit. ─────────────────────────
+# The manuscript and anything that reproduces its knowledge base stay off this
+# public repo: graph/entity exports, eval and coref outputs, questions, gold,
+# family tree, schemas and ontology, test fixtures. Keep them in a private location.
+*LEST WE FORGET*
+*lest_we_forget*
+tests/kwaai-knowledge/d6_*.yaml
+tests/kwaai-knowledge/d6_*.json
+tests/kwaai-knowledge/d6_*.md
+tests/kwaai-knowledge/d6_*export*/
+tests/kwaai-knowledge/d6_graph_export/
+tests/kwaai-knowledge/archive/
+tests/kwaai-knowledge/ontologies/D6.yaml
+tests/kwaai-knowledge/rag-bench/*questions.json
+tests/kwaai-knowledge/results/*[Dd]6*
+core/crates/kwaai-rag/tests/kwaai-knowledge/
