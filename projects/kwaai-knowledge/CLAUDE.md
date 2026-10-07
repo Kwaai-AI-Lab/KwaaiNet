@@ -27,6 +27,11 @@ CLI entry points in `core/crates/kwaai-cli/src/`:
 **D6** = "District Six — Lest We Forget" by Yousuf (Joe) Rassool.
 This is the primary eval document. Accuracy target: 80–90% on `d6_eval_questions.json`.
 
+**D6 is a private corpus and must never be committed to this public repo.** Its inputs (the
+manuscript, family tree, eval questions, doc schema, ontology, gold) and everything derived
+from it (graph exports, eval and coref results) are gitignored and kept in a private local copy.
+The paths in the commands below are where that copy is placed; they do not exist in a fresh clone.
+
 **D6 rebuild command** (optimal settings, GPU via p2p relay):
 ```bash
 kwaainet rag rebuild "docs/LEST WE FORGET -rev25.pdf" --kb D6 \
@@ -78,7 +83,7 @@ the only trustworthy source for seeded relations.
 
 ## Document schema (d6_doc_schema.yaml)
 
-Located at `tests/kwaai-knowledge/d6_doc_schema.yaml`. Sections:
+Kept in the private D6 copy (placed at tests/kwaai-knowledge/d6_doc_schema.yaml locally, gitignored). Sections:
 - `CONTENTS`, `Acknowledgements`, `APPENDIX`, `ENDNOTES` → `skip: true`
 - `Editor's Note` → `narrator_note` override (editor ≠ Yousuf Rassool)
 - `INDEX` → `skip: true`, `index_seeds: true` (parse index entries as entity name seeds)
