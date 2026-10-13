@@ -107,10 +107,6 @@ message ClientFrame {
         // DhtRecordsReply, then Done. Reads the local store only — see
         // DhtRecordsRequest for why there is no network-wide listing.
         DhtRecordsRequest dht_records = 26;
-
-        // Resolve one known key across the network. One DhtLookupReply,
-        // then Done.
-        DhtLookupRequest dht_lookup = 27;
     }
 }
 
@@ -159,9 +155,6 @@ message ServerFrame {
 
         // Reply to a DhtRecordsRequest.
         DhtRecordsReply dht_records = 26;
-
-        // Reply to a DhtLookupRequest.
-        DhtLookupReply dht_lookup = 27;
     }
 }
 
@@ -845,8 +838,7 @@ message ConnectReply {
 
 // List the DHT records this node holds locally — the only listing that
 // exists. Kademlia has no key-enumeration operation, so what a node
-// holds is answerable in full while "what is in the DHT" is not; use
-// DhtLookupRequest for a key you already know the name of.
+// holds is answerable in full while "what is in the DHT" is not.
 message DhtRecordsRequest {
     // Fill in `value` and `subkeys`. Requires a non-empty `key_ids`:
     // values run to a megabyte each, so a whole-store listing carrying
@@ -873,9 +865,8 @@ message DhtRecordsReply {
     repeated DhtRecord records = 2;
 
     // The keys this node can name: the registries plus one per block of
-    // its configured prefix. Both the reverse table for
-    // DhtRecord.key_name — a DHT id is SHA1(msgpack(name)) and cannot be
-    // inverted — and the candidate list for DhtLookupRequest.
+    // its configured prefix. The reverse table for DhtRecord.key_name:
+    // a DHT id is SHA1(msgpack(name)) and cannot be inverted.
     repeated DhtKnownKey known_keys = 3;
 
     // Records matching the filter before `limit` was applied. Greater
@@ -933,11 +924,9 @@ message DhtRecord {
     // `latest_expiration`.
     double expiration = 7;
 
-    // Seconds until `expiration`, as of `server_time`. Never negative
-    // in a local listing, which filters expired records; a lookup
-    // result can be, since it is stamped with the answering peer's
-    // clock. Sent alongside the absolute time because a client's clock
-    // is not the daemon's.
+    // Seconds until `expiration`, as of `server_time`. Never negative:
+    // the listing filters expired records. Sent alongside the absolute
+    // time because a client's clock is not the daemon's.
     double expires_in_secs = 8;
 
     // `DictionaryDHTValue.latest_expiration_time` — the running maximum
@@ -1020,75 +1009,6 @@ enum DhtRecordKind {
     DHT_RECORD_KIND_UNSPECIFIED = 0;
     DHT_RECORD_KIND_REGULAR = 1;
     DHT_RECORD_KIND_DICTIONARY = 2;
-}
-
-// Resolve one key across the network — the counterpart to
-// DhtRecordsRequest, and only ever possible for a key whose *name* is
-// known, since the id is SHA1(msgpack(name)).
-message DhtLookupRequest {
-    // The plaintext key name — `_petals.models`, `_kwaai.vpk.nodes`,
-    // `_kwaai.inference.nodes`, `prefix.N`, or anything else.
-    // Hashed to its DHT id here.
-    string key = 1;
-
-    // Peers to ask, base58 peer ids. Empty means the node's configured
-    // peers plus its routing table — whoever it was already going to
-    // talk to. A node configured with an explicitly empty peer list
-    // gets UNAVAILABLE, never a fallback to a compiled-in bootstrap.
-    // Both lists are capped at 16 peers.
-    repeated string peers = 2;
-
-    // Per-peer budget. 0 uses the daemon's default.
-    uint32 timeout_secs = 3;
-}
-
-message DhtLookupReply {
-    string server_time = 1;
-
-    // Echoed back with the id it hashed to, so a client can show what
-    // was actually asked for.
-    string key = 2;
-    string key_id = 3;
-
-    // One entry per peer asked, in the order asked. A peer that
-    // answered NOT_FOUND is a real result — it is how you tell "nobody
-    // has this" from "nobody was reachable".
-    repeated DhtLookupPeer peers = 4;
-
-    // The freshest answer across every peer that returned one, by outer
-    // expiration. Absent when no peer had the key.
-    //
-    // Its `in_cache` is meaningless here (nothing was stored locally)
-    // and is always false; `key_name` is the requested key.
-    optional DhtRecord record = 5;
-}
-
-message DhtLookupPeer {
-    string peer_id = 1;
-    DhtLookupOutcome outcome = 2;
-
-    // Failure detail when `outcome` is ERROR, empty otherwise. A dial
-    // failure and a protocol refusal both land here — the text
-    // distinguishes them.
-    string error = 3;
-
-    // Round trip for this peer, including any dial it had to make.
-    uint32 elapsed_ms = 4;
-
-    // What this peer returned, when `outcome` is FOUND. Kept per peer
-    // rather than only merged, because peers disagreeing about a record
-    // is exactly what a reader is looking for.
-    optional DhtRecord record = 5;
-}
-
-enum DhtLookupOutcome {
-    DHT_LOOKUP_OUTCOME_UNSPECIFIED = 0;
-    // The peer answered and had the key.
-    DHT_LOOKUP_OUTCOME_FOUND = 1;
-    // The peer answered and did not have it.
-    DHT_LOOKUP_OUTCOME_NOT_FOUND = 2;
-    // We never got an answer: dial failure, timeout, or a refusal.
-    DHT_LOOKUP_OUTCOME_ERROR = 3;
 }
 
 // =====================================================================
