@@ -300,6 +300,7 @@ impl UpdateChecker {
                 let zip_file = std::fs::File::open(&zip_path).context("Opening downloaded zip")?;
                 let mut archive = zip::ZipArchive::new(zip_file).context("Reading zip archive")?;
                 for i in 0..archive.len() {
+                    ensure_not_cancelled(&CANCEL_UPDATE)?;
                     let mut entry = archive.by_index(i)?;
                     let raw_name = entry.name().to_string();
                     // Strip directory structure — prevents path-traversal writes.
@@ -579,7 +580,8 @@ fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<()> {
 /// Install every file in `extracted` into `install_dir`, moving `exe` aside to
 /// `exe_bak`. Files are copied to `<name>.new` beside their destination first:
 /// the copy is the slow part (~1 GB for cuda-full), so a shutdown either stops
-/// before anything installed is touched or waits only on renames.
+/// before anything installed is touched (checked per file) or waits only on
+/// renames.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn swap_in_staged(
     extracted: &std::path::Path,
@@ -591,6 +593,7 @@ fn swap_in_staged(
     let mut staged = Vec::new();
     let mut stage = || -> Result<()> {
         for entry in std::fs::read_dir(extracted).context("Reading extract dir")? {
+            ensure_not_cancelled(cancel)?;
             let entry = entry?;
             let name = entry.file_name();
             let staging = install_dir.join(format!("{}.new", name.to_string_lossy()));
