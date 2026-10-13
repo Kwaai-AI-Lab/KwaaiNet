@@ -245,6 +245,8 @@ impl KwaaiNet for KwaaiNetService {
         let rag_lock = self.rag_lock.clone();
         #[cfg(feature = "rag")]
         let rag_stores = self.rag_stores.clone();
+        #[cfg(feature = "rag")]
+        let rag_uploads: RagUploads = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(async move {
             loop {
@@ -422,8 +424,19 @@ impl KwaaiNet for KwaaiNetService {
                             cancels.clone(),
                             rag_lock.clone(),
                             rag_stores.clone(),
+                            rag_uploads.clone(),
                         )
                         .await;
+                    }
+
+                    // Awaiting the send is the backpressure. No upload under
+                    // this id means the ingest already ended; drop the piece.
+                    #[cfg(feature = "rag")]
+                    client_frame::Body::RagIngestData(piece) => {
+                        let tx = rag_uploads.lock().await.get(&id).cloned();
+                        if let Some(tx) = tx {
+                            let _ = tx.send(piece.data).await;
+                        }
                     }
 
                     #[cfg(feature = "rag")]
@@ -468,6 +481,10 @@ impl KwaaiNet for KwaaiNetService {
                             )))
                             .await;
                     }
+
+                    // Its ingest was already answered UNIMPLEMENTED.
+                    #[cfg(not(feature = "rag"))]
+                    client_frame::Body::RagIngestData(_) => {}
                 }
             }
         });
@@ -633,6 +650,23 @@ const RAG_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_mil
 #[cfg(feature = "rag")]
 const RAG_EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Largest document `rag_ingest` accepts.
+#[cfg(feature = "rag")]
+const RAG_INGEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// An upload that sends nothing for this long is abandoned.
+#[cfg(feature = "rag")]
+const RAG_UPLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Pieces buffered between the session loop and an upload's spool file.
+/// Bounds an upload's memory; a full buffer backpressures the client.
+#[cfg(feature = "rag")]
+const RAG_UPLOAD_BUFFER: usize = 8;
+
+/// In-flight uploads by ingest op id; `rag_ingest_data` frames are routed here.
+#[cfg(feature = "rag")]
+type RagUploads = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
+
 /// The service's per-data-dir cache of opened local vector stores.
 /// See the `rag_stores` field comment for semantics.
 #[cfg(feature = "rag")]
@@ -680,12 +714,9 @@ fn classify_rag_error(msg: &str) -> ErrorCode {
     if msg.contains("not initialised") || msg.contains("is not in KB") {
         return ErrorCode::NotFound;
     }
-    // Caller-supplied arguments we rejected before touching any store.
-    // A nonexistent ingest path is INVALID_ARGUMENT rather than NOT_FOUND:
-    // that path is the client's own filesystem claim, not a name it looked
-    // up in a reply we sent it.
-    if msg.contains("no such file on the daemon host")
-        || msg.contains("requires a path")
+    // Caller-supplied arguments we rejected before touching any store,
+    // including an upload that broke its own declared size or stalled.
+    if msg.contains("rag_ingest upload")
         || msg.contains("requires non-empty query text")
         || msg.contains("requires a document name")
     {
@@ -898,7 +929,8 @@ fn single_rag_kb(kb: &str) -> Result<RagKb> {
         .with_context(|| format!("KB '{kb}' missing from config immediately after init"))
 }
 
-/// `rag_ingest` — chunk, embed and store one document from the daemon's disk.
+/// `rag_ingest` — receive one document over the session, then chunk, embed
+/// and store it.
 #[cfg(feature = "rag")]
 async fn spawn_session_rag_ingest(
     id: u64,
@@ -907,16 +939,18 @@ async fn spawn_session_rag_ingest(
     cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
     rag_lock: Arc<Mutex<()>>,
     rag_stores: RagStores,
+    rag_uploads: RagUploads,
 ) {
     // Register the cancel channel BEFORE spawning, so a Cancel frame that
     // arrives immediately after this one can still find it. Registering
     // inside the task would race the dispatch loop.
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
     cancels.lock().await.insert(id, cancel_tx);
+    // Likewise the upload, or the first data frame could arrive before it.
+    let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(RAG_UPLOAD_BUFFER);
+    rag_uploads.lock().await.insert(id, data_tx);
 
     tokio::spawn(async move {
-        let _guard = rag_lock.lock().await;
-
         let result = tokio::select! {
             biased;
 
@@ -925,14 +959,16 @@ async fn spawn_session_rag_ingest(
                     .send(Ok(error_frame(id, ErrorCode::Cancelled, "ingest cancelled by client")))
                     .await;
                 cancels.lock().await.remove(&id);
+                rag_uploads.lock().await.remove(&id);
                 return;
             }
 
-            r = run_rag_ingest(id, req, out_tx.clone(), rag_stores) => r,
+            r = run_rag_ingest(id, req, data_rx, out_tx.clone(), rag_lock, rag_stores) => r,
         };
 
         // Whatever happened, this id is no longer cancellable.
         cancels.lock().await.remove(&id);
+        rag_uploads.lock().await.remove(&id);
 
         match result {
             Ok(reply) => {
@@ -955,7 +991,9 @@ async fn spawn_session_rag_ingest(
 async fn run_rag_ingest(
     id: u64,
     req: RagIngestRequest,
+    data_rx: mpsc::Receiver<Vec<u8>>,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    rag_lock: Arc<Mutex<()>>,
     rag_stores: RagStores,
 ) -> Result<RagIngestReply> {
     use kwaai_rag::{
@@ -970,25 +1008,25 @@ async fn run_rag_ingest(
     let (rag_cfg, tenant_id) = crate::rag_cmd::load_rag_config_for(&kb)?;
     reject_if_remote(&kb, &rag_cfg)?;
 
-    let path = std::path::PathBuf::from(&req.path);
-    if req.path.trim().is_empty() {
-        anyhow::bail!("rag_ingest requires a path");
+    let doc_name = req.doc_name.trim().to_string();
+    if doc_name.is_empty() {
+        anyhow::bail!("rag_ingest upload requires a document name: its extension picks the parser");
     }
-    // Checked up front so a missing file is INVALID_ARGUMENT rather than
-    // whatever extract_text happens to bail with. `classify_rag_error`
-    // keys off "no such file" to pick the code.
-    if !path.is_file() {
-        anyhow::bail!("no such file on the daemon host: {}", path.display());
+    if req.size == 0 {
+        anyhow::bail!("rag_ingest upload is empty: size must be above 0");
+    }
+    if req.size > RAG_INGEST_MAX_BYTES {
+        anyhow::bail!(
+            "rag_ingest upload of {} bytes exceeds the {}-byte limit",
+            req.size,
+            RAG_INGEST_MAX_BYTES
+        );
     }
 
-    let doc_name = if req.doc_name.trim().is_empty() {
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
-    } else {
-        req.doc_name.trim().to_string()
-    };
+    // Received before taking the RAG lock, so another ingest's pipeline
+    // cannot hold this upload's pieces up in the session loop.
+    let spool = receive_upload(id, &doc_name, req.size, data_rx, &out_tx).await?;
+    let _guard = rag_lock.lock().await;
 
     // Extraction is sync and can be slow on big PDFs.
     let _ = out_tx
@@ -1001,7 +1039,7 @@ async fn run_rag_ingest(
         )))
         .await;
 
-    let extract_path = path.clone();
+    let extract_path = spool.path().to_path_buf();
     let extract = tokio::task::spawn_blocking(move || document::extract_text(&extract_path));
     let text = match tokio::time::timeout(RAG_EXTRACT_TIMEOUT, extract).await {
         Ok(joined) => joined.context("text extraction task panicked")??,
@@ -1012,6 +1050,8 @@ async fn run_rag_ingest(
             RAG_EXTRACT_TIMEOUT.as_secs()
         ),
     };
+    // The spool file is only for the parsers; delete it now, not after embedding.
+    drop(spool);
 
     let data_dir = rag_cfg.data_dir();
     let meta_dir = data_dir.clone();
@@ -1115,6 +1155,66 @@ async fn run_rag_ingest(
         chunks_ingested: result.chunks_ingested as u32,
         vectors_uploaded: result.vectors_uploaded as u32,
     })
+}
+
+/// Spool an upload to a private temp file carrying the document's extension,
+/// which is what the parsers dispatch on. Only buffered pieces are in memory.
+#[cfg(feature = "rag")]
+async fn receive_upload(
+    id: u64,
+    doc_name: &str,
+    size: u64,
+    mut data_rx: mpsc::Receiver<Vec<u8>>,
+    out_tx: &mpsc::Sender<Result<ServerFrame, Status>>,
+) -> Result<tempfile::NamedTempFile> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let suffix = std::path::Path::new(doc_name)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let spool = tempfile::Builder::new()
+        .prefix("kwaai-rag-ingest-")
+        .suffix(&suffix)
+        .tempfile()
+        .context("creating the upload spool file")?;
+    let mut file =
+        tokio::fs::File::from_std(spool.reopen().context("opening the upload spool file")?);
+
+    let mut received: u64 = 0;
+    while received < size {
+        let piece = match tokio::time::timeout(RAG_UPLOAD_IDLE_TIMEOUT, data_rx.recv()).await {
+            Ok(Some(piece)) => piece,
+            Ok(None) => anyhow::bail!("rag_ingest upload ended after {received} of {size} bytes"),
+            Err(_) => anyhow::bail!(
+                "rag_ingest upload stalled: nothing for {}s after {received} of {size} bytes",
+                RAG_UPLOAD_IDLE_TIMEOUT.as_secs()
+            ),
+        };
+        received += piece.len() as u64;
+        if received > size {
+            anyhow::bail!("rag_ingest upload sent more than the declared {size} bytes");
+        }
+        file.write_all(&piece)
+            .await
+            .context("writing the upload spool file")?;
+
+        // Every piece is acknowledged, unthrottled: clients bound what they
+        // have in flight by it, and a throttled ack could leave one waiting.
+        let _ = out_tx
+            .send(Ok(rag_progress_frame(
+                id,
+                RagPhase::Receiving,
+                received as u32,
+                size as u32,
+                doc_name,
+            )))
+            .await;
+    }
+    file.flush()
+        .await
+        .context("writing the upload spool file")?;
+    Ok(spool)
 }
 
 #[cfg(feature = "rag")]
@@ -3904,8 +4004,8 @@ mod tests {
     mod rag {
         use super::*;
         use kwaai_rpc::v1::{
-            client_frame, kwaai_net_client::KwaaiNetClient, server_frame, ClientFrame,
-            RagIngestRequest, RagQueryRequest, RagStatusRequest,
+            client_frame, kwaai_net_client::KwaaiNetClient, rag_progress::RagPhase, server_frame,
+            ClientFrame, RagIngestData, RagIngestRequest, RagQueryRequest, RagStatusRequest,
         };
         use tokio_stream::wrappers::ReceiverStream;
         use tokio_stream::StreamExt as _;
@@ -3924,6 +4024,15 @@ mod tests {
         /// port — dialing it would silently interrogate *that* daemon and
         /// assert against the wrong process.
         async fn round_trip(port: u16, body: client_frame::Body) -> Vec<server_frame::Body> {
+            round_trip_frames(port, vec![body]).await
+        }
+
+        /// [`round_trip`] for an op that sends more than one frame, all
+        /// under id 1 — an ingest followed by its data.
+        async fn round_trip_frames(
+            port: u16,
+            bodies_out: Vec<client_frame::Body>,
+        ) -> Vec<server_frame::Body> {
             let endpoint = format!("http://127.0.0.1:{port}");
             let channel = tonic::transport::Endpoint::from_shared(endpoint)
                 .expect("valid endpoint")
@@ -3932,13 +4041,17 @@ mod tests {
                 .expect("connect to the test server");
             let mut client = KwaaiNetClient::new(channel);
 
-            let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
-            tx.send(ClientFrame {
-                id: 1,
-                body: Some(body),
-            })
-            .await
-            .expect("send request frame");
+            // Sized to hold every frame, so all are queued before the
+            // session opens.
+            let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(bodies_out.len().max(1));
+            for body in bodies_out {
+                tx.send(ClientFrame {
+                    id: 1,
+                    body: Some(body),
+                })
+                .await
+                .expect("send request frame");
+            }
             // Keep the send half open: dropping it closes the session
             // before the server has replied.
 
@@ -4062,47 +4175,154 @@ mod tests {
             drop(handle);
         }
 
-        /// A bad path is INVALID_ARGUMENT (NOT_FOUND is reserved for a
-        /// missing KB), and it is reported *before* any embedding work,
-        /// so this needs no Ollama.
-        #[tokio::test]
-        async fn rag_ingest_missing_file_is_invalid_argument() {
-            let _serial = TEST_LOCK.lock().await;
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let _env = EnvGuard::set(tmp.path());
-
-            // Give the KB a real local config so we get past the
-            // not-initialised gate and reach the path check.
+        /// Save a local KB named "default" so an op gets past the
+        /// not-initialised gate. `embed_url` points embedding somewhere.
+        fn save_local_kb(tmp: &std::path::Path, embed_url: Option<&str>) {
             let mut cfg = KwaaiNetConfig::load_or_create().expect("load config");
             cfg.set_rag_kb(
                 "default",
                 crate::config::RagConfig {
                     tenant_id: Some(uuid::Uuid::new_v4().to_string()),
                     storage_url: Some("local".to_string()),
-                    rag_data_dir: Some(tmp.path().join("ragdata").to_string_lossy().into_owned()),
+                    rag_data_dir: Some(tmp.join("ragdata").to_string_lossy().into_owned()),
+                    embed_url: embed_url.map(str::to_string),
                     ..crate::config::RagConfig::default()
                 },
             );
             cfg.save().expect("save config");
+        }
+
+        fn ingest(doc_name: &str, size: u64) -> client_frame::Body {
+            client_frame::Body::RagIngest(RagIngestRequest {
+                kb: "default".into(),
+                doc_name: doc_name.into(),
+                size,
+            })
+        }
+
+        fn piece(data: &[u8]) -> client_frame::Body {
+            client_frame::Body::RagIngestData(RagIngestData {
+                data: data.to_vec(),
+            })
+        }
+
+        /// Spool files left in the temp dir, to check an ingest cleans up.
+        fn spool_files() -> usize {
+            std::fs::read_dir(std::env::temp_dir())
+                .map(|d| {
+                    d.flatten()
+                        .filter(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .starts_with("kwaai-rag-ingest-")
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        }
+
+        /// The name picks the parser, so an ingest without one is refused
+        /// before any bytes are read.
+        #[tokio::test]
+        async fn rag_ingest_without_doc_name_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
 
             let (handle, port) = spawn_test_server().await;
-            let missing = tmp.path().join("definitely-not-here.txt");
-            let bodies = round_trip(
+            let bodies = round_trip_frames(port, vec![ingest("  ", 5), piece(b"hello")]).await;
+
+            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+            assert!(msg.contains("document name"), "got {msg:?}");
+            drop(handle);
+        }
+
+        /// A declared size over the limit is refused before the client
+        /// has to send any of it.
+        #[tokio::test]
+        async fn rag_ingest_over_the_size_limit_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
+
+            let (handle, port) = spawn_test_server().await;
+            let bodies = round_trip(port, ingest("big.pdf", RAG_INGEST_MAX_BYTES + 1)).await;
+
+            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+            assert!(msg.contains("exceeds"), "got {msg:?}");
+            drop(handle);
+        }
+
+        /// A piece that runs past the declared size fails the ingest and
+        /// leaves no spool file behind.
+        #[tokio::test]
+        async fn rag_ingest_piece_past_the_declared_size_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
+            let spools_before = spool_files();
+
+            let (handle, port) = spawn_test_server().await;
+            let bodies =
+                round_trip_frames(port, vec![ingest("notes.txt", 4), piece(b"too long")]).await;
+
+            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+            assert!(msg.contains("more than the declared"), "got {msg:?}");
+            assert_eq!(spool_files(), spools_before, "spool file left behind");
+            drop(handle);
+        }
+
+        /// The document arrives in pieces, is reported as received in
+        /// bytes, and reaches extraction and embedding — which fails here
+        /// on an unreachable embedder, so this needs no Ollama.
+        #[tokio::test]
+        async fn rag_ingest_receives_the_upload_then_extracts_it() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), Some("http://127.0.0.1:1"));
+            let spools_before = spool_files();
+
+            let doc = b"KwaaiNet is a distributed inference network. ".repeat(40);
+            let (first, second) = doc.split_at(doc.len() / 2);
+            let (handle, port) = spawn_test_server().await;
+            let bodies = round_trip_frames(
                 port,
-                client_frame::Body::RagIngest(RagIngestRequest {
-                    kb: "default".into(),
-                    path: missing.to_string_lossy().into_owned(),
-                    doc_name: String::new(),
-                }),
+                vec![
+                    ingest("notes.txt", doc.len() as u64),
+                    piece(first),
+                    piece(second),
+                ],
             )
             .await;
 
-            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
-            assert!(
-                msg.contains("no such file"),
-                "message should name the problem, got {msg:?}"
+            let phases: Vec<(i32, u32, u32)> = bodies
+                .iter()
+                .filter_map(|b| match b {
+                    server_frame::Body::RagProgress(p) => Some((p.phase, p.done, p.total)),
+                    _ => None,
+                })
+                .collect();
+            let len = doc.len() as u32;
+            let acks: Vec<u32> = phases
+                .iter()
+                .filter(|p| p.0 == RagPhase::Receiving as i32)
+                .map(|p| p.1)
+                .collect();
+            assert_eq!(
+                acks,
+                vec![first.len() as u32, len],
+                "every piece should be acknowledged, got {phases:?}"
             );
-
+            assert!(
+                phases.iter().any(|p| p.0 == RagPhase::Extracting as i32),
+                "extraction should follow the upload, got {phases:?}"
+            );
+            expect_error(&bodies, ErrorCode::Unavailable);
+            assert_eq!(spool_files(), spools_before, "spool file left behind");
             drop(handle);
         }
 

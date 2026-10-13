@@ -99,10 +99,14 @@ message ClientFrame {
         // UNAVAILABLE when Ollama isn't reachable.
         RagInitRequest rag_init = 21;
 
-        // Ingest one document from a path on the *daemon's* filesystem.
-        // Emits zero or more ServerFrame.rag_progress frames before the
-        // terminal rag_ingest reply. Cancellable.
+        // Ingest one document, whose bytes follow as rag_ingest_data
+        // frames under this op's id. Emits ServerFrame.rag_progress
+        // frames before the terminal rag_ingest reply. Cancellable.
         RagIngestRequest rag_ingest = 22;
+
+        // One piece of an ingest's document, sent in order with
+        // ClientFrame.id set to that ingest's id. Has no reply of its own.
+        RagIngestData rag_ingest_data = 24;
 
         // Retrieve chunks for a query. One ServerFrame.rag_query reply,
         // then Done.
@@ -831,9 +835,9 @@ message ConnectReply {
 // =====================================================================
 // RAG bodies (feat/grpc-rag)
 //
-// These mirror the `kwaainet rag …` subcommands. The daemon and the
-// client are assumed to share a filesystem (the GUI runs on the same
-// machine), so ingest takes a path rather than streaming bytes.
+// These mirror the `kwaainet rag …` subcommands, except that ingest
+// carries the document itself rather than a path: the client and the
+// daemon need not share a filesystem.
 //
 // Transport note: phase 1 serves only knowledge bases whose
 // storage_url is "local" (the embedded vector store). KBs outsourced
@@ -907,12 +911,20 @@ message RagIngestRequest {
     // KB to ingest into. Empty means "default".
     string kb = 1;
 
-    // Absolute path on the *daemon's* filesystem. The daemon reads
-    // this directly; nothing is streamed over the wire.
-    string path = 2;
+    // Display name for the document, required. Its extension picks the
+    // parser (`.pdf`, `.docx`, …), so send the original file name.
+    string doc_name = 2;
 
-    // Display name for the document. Empty means the file's basename.
-    string doc_name = 3;
+    // Total bytes the rag_ingest_data frames will carry. The ingest
+    // starts once exactly this many have arrived; a piece that runs past
+    // it fails the ingest, as does a size above the limit (256 MiB).
+    uint64 size = 3;
+}
+
+// A piece of the document an ingest is uploading. Keep each well under
+// the 4 MiB gRPC frame limit; 256 KiB is a good size.
+message RagIngestData {
+    bytes data = 1;
 }
 
 // Progress for an in-flight ingest. Deliberately ONE flat message with
@@ -925,16 +937,16 @@ message RagProgress {
     enum RagPhase {
         RAG_PHASE_UNSPECIFIED = 0;
 
-        // Reading and decoding the source file into plain text.
-        // done/total are not meaningful here (both 0) — this phase is
-        // a single indivisible step.
-        RAG_PHASE_EXTRACTING = 1;
+        // Receiving the document. done/total count bytes. Sent once per
+        // piece written, so a client can bound the bytes it has in flight.
+        RAG_PHASE_RECEIVING = 1;
 
-        // Chunking + embedding. done/total count chunks.
-        RAG_PHASE_EMBEDDING = 2;
+        // Decoding the document into plain text. done/total are both 0:
+        // this phase is a single indivisible step.
+        RAG_PHASE_EXTRACTING = 2;
 
-        // Writing vectors to the store. done/total count chunks.
-        RAG_PHASE_UPLOADING = 3;
+        // Chunking, embedding and storing. done/total count chunks.
+        RAG_PHASE_EMBEDDING = 3;
     }
 
     RagPhase phase = 1;
