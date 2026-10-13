@@ -278,70 +278,65 @@ impl UpdateChecker {
             let _ = std::io::Write::flush(&mut std::io::stdout());
             self.download_to(&archive_url, &zip_path).await?;
             println!(" done.");
-            if let Err(e) = ensure_not_cancelled(&CANCEL_UPDATE) {
-                let _ = std::fs::remove_file(&zip_path);
-                return Err(e);
-            }
-
             let kwaainet_exe = install_dir.join("kwaainet.exe");
-
-            // ── Extract zip ──────────────────────────────────────────────────
             // Canonicalize removes 8.3 short names (e.g. METRO_~1) so that
             // zip::ZipArchive can open the file on all Windows configurations.
             let tmp = canonical_temp.join("kwaainet-upd-extract");
-            if tmp.exists() {
-                std::fs::remove_dir_all(&tmp).context("Clearing old extract dir")?;
-            }
-            std::fs::create_dir_all(&tmp).context("Creating extract dir")?;
+            let installed = (|| -> Result<()> {
+                ensure_not_cancelled(&CANCEL_UPDATE)?;
 
-            print!("  Extracting…");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-            {
-                let zip_file = std::fs::File::open(&zip_path).context("Opening downloaded zip")?;
-                let mut archive = zip::ZipArchive::new(zip_file).context("Reading zip archive")?;
-                for i in 0..archive.len() {
-                    ensure_not_cancelled(&CANCEL_UPDATE)?;
-                    let mut entry = archive.by_index(i)?;
-                    let raw_name = entry.name().to_string();
-                    // Strip directory structure — prevents path-traversal writes.
-                    let fname = std::path::Path::new(&raw_name)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if fname.is_empty() {
-                        continue;
-                    }
-                    // Only extract executables; include DLLs for CUDA zips.
-                    if !fname.ends_with(".exe") && !(is_cuda && fname.ends_with(".dll")) {
-                        continue;
-                    }
-                    let dest = tmp.join(&fname);
-                    let mut out = std::fs::File::create(&dest)
-                        .with_context(|| format!("Creating {fname}"))?;
-                    std::io::copy(&mut entry, &mut out)
-                        .with_context(|| format!("Extracting {fname}"))?;
+                // ── Extract zip ──────────────────────────────────────────────────
+                if tmp.exists() {
+                    std::fs::remove_dir_all(&tmp).context("Clearing old extract dir")?;
                 }
-            }
-            println!(" done.");
+                std::fs::create_dir_all(&tmp).context("Creating extract dir")?;
 
-            // ── Swap binary ──────────────────────────────────────────────────
-            // On Windows Vista+ the OS loader opens EXEs with FILE_SHARE_DELETE,
-            // so a running process can rename its own executable — the memory
-            // mapping stays valid because it points to the file data, not the name.
-            // The .old file is kept so that the user can manually restore it if
-            // the daemon fails to start with the new binary.
-            let exe_bak = backup_path(&install_dir)?;
-            let swapped =
-                swap_in_staged(&tmp, &install_dir, &kwaainet_exe, &exe_bak, &CANCEL_UPDATE);
-            if swapped.is_err() {
-                let _ = std::fs::remove_file(&zip_path);
-                let _ = std::fs::remove_dir_all(&tmp);
-            }
-            swapped?;
+                print!("  Extracting…");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                {
+                    let zip_file =
+                        std::fs::File::open(&zip_path).context("Opening downloaded zip")?;
+                    let mut archive =
+                        zip::ZipArchive::new(zip_file).context("Reading zip archive")?;
+                    for i in 0..archive.len() {
+                        ensure_not_cancelled(&CANCEL_UPDATE)?;
+                        let mut entry = archive.by_index(i)?;
+                        let raw_name = entry.name().to_string();
+                        // Strip directory structure — prevents path-traversal writes.
+                        let fname = std::path::Path::new(&raw_name)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        if fname.is_empty() {
+                            continue;
+                        }
+                        // Only extract executables; include DLLs for CUDA zips.
+                        if !fname.ends_with(".exe") && !(is_cuda && fname.ends_with(".dll")) {
+                            continue;
+                        }
+                        let dest = tmp.join(&fname);
+                        let mut out = std::fs::File::create(&dest)
+                            .with_context(|| format!("Creating {fname}"))?;
+                        std::io::copy(&mut entry, &mut out)
+                            .with_context(|| format!("Extracting {fname}"))?;
+                    }
+                }
+                println!(" done.");
 
-            // ── Clean up ─────────────────────────────────────────────────────
+                // ── Swap binary ──────────────────────────────────────────────────
+                // On Windows Vista+ the OS loader opens EXEs with FILE_SHARE_DELETE,
+                // so a running process can rename its own executable — the memory
+                // mapping stays valid because it points to the file data, not the name.
+                // The .old file is kept so that the user can manually restore it if
+                // the daemon fails to start with the new binary.
+                let exe_bak = backup_path(&install_dir)?;
+                swap_in_staged(&tmp, &install_dir, &kwaainet_exe, &exe_bak, &CANCEL_UPDATE)
+            })();
+
+            // ── Clean up, installed or not ───────────────────────────────────
             let _ = std::fs::remove_file(&zip_path);
             let _ = std::fs::remove_dir_all(&tmp);
+            installed?;
             // kwaainet.exe.old intentionally kept for manual rollback.
         }
 
@@ -616,9 +611,19 @@ fn swap_in_staged(
         }
         return Err(e);
     }
-    for (staging, dest) in staged {
-        std::fs::rename(&staging, &dest)
-            .with_context(|| format!("Installing {}", dest.display()))?;
+    // The exe first, so it is missing for one rename; if that rename fails,
+    // put the old one back rather than leave no kwaainet.exe at all.
+    staged.sort_by_key(|(_, dest)| dest != exe);
+    for (i, (staging, dest)) in staged.iter().enumerate() {
+        if let Err(e) = std::fs::rename(staging, dest) {
+            if dest == exe {
+                let _ = std::fs::rename(exe_bak, exe);
+                for (staging, _) in &staged[i..] {
+                    let _ = std::fs::remove_file(staging);
+                }
+            }
+            return Err(e).with_context(|| format!("Installing {}", dest.display()));
+        }
         println!("  Installed {}", dest.display());
     }
     Ok(())
