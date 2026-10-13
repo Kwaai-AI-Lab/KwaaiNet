@@ -16,9 +16,8 @@
 
 use kwaai_rpc::v1::{
     client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtKnownKey,
-    DhtLookupOutcome, DhtLookupPeer, DhtLookupReply, DhtLookupRequest, DhtRecord, DhtRecordKind,
-    DhtRecordsReply, DhtRecordsRequest, DhtRole, DhtSubkey, DhtValueView, KadStatus,
-    NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
+    DhtRecord, DhtRecordKind, DhtRecordsReply, DhtRecordsRequest, DhtRole, DhtSubkey, DhtValueView,
+    KadStatus, NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
     UpdateReason,
 };
 use prost::Message;
@@ -540,62 +539,12 @@ fn dht_record_roundtrip_regular_value_absent_optionals() {
     assert!(decoded.subkeys.is_empty());
 }
 
-/// A lookup reply. NOT_FOUND and ERROR both carry no record, so only `outcome`
-/// separates "nobody has this" from "nobody was reachable".
-#[test]
-fn dht_lookup_reply_roundtrip_distinguishes_not_found_from_error() {
-    let original = DhtLookupReply {
-        server_time: "2026-09-03T12:00:00.000Z".to_string(),
-        key: "_petals.models".to_string(),
-        key_id: "ab".repeat(20),
-        peers: vec![
-            DhtLookupPeer {
-                peer_id: "12D3KooWBootstrapOne".to_string(),
-                outcome: DhtLookupOutcome::Found as i32,
-                error: String::new(),
-                elapsed_ms: 42,
-                record: Some(DhtRecord {
-                    key_id: "ab".repeat(20),
-                    key_name: "_petals.models".to_string(),
-                    kind: DhtRecordKind::Dictionary as i32,
-                    subkey_count: 1,
-                    ..Default::default()
-                }),
-            },
-            DhtLookupPeer {
-                peer_id: "12D3KooWBootstrapTwo".to_string(),
-                outcome: DhtLookupOutcome::NotFound as i32,
-                error: String::new(),
-                elapsed_ms: 17,
-                record: None,
-            },
-            DhtLookupPeer {
-                peer_id: "12D3KooWUnreachable".to_string(),
-                outcome: DhtLookupOutcome::Error as i32,
-                error: "timed out after 10s".to_string(),
-                elapsed_ms: 10_000,
-                record: None,
-            },
-        ],
-        record: None,
-    };
-
-    let decoded = DhtLookupReply::decode(original.encode_to_vec().as_slice()).expect("must decode");
-    assert_eq!(decoded, original);
-    assert_ne!(decoded.peers[1].outcome, decoded.peers[2].outcome);
-    assert!(
-        decoded.record.is_none(),
-        "no merged record when none was best"
-    );
-}
-
-/// Both new bodies must serialise at tags 26 and 27, asserted as wire bytes:
+/// The new body must serialise at tag 26, asserted as wire bytes:
 /// a decode-back-into-the-same-variant check passes for any tag protoc
 /// accepts, so only the bytes catch a renumbering.
 #[test]
-fn dht_frames_occupy_oneof_tags_26_and_27() {
+fn dht_frames_occupy_oneof_tag_26() {
     // Tag 26, wire type 2 (LEN) => (26 << 3) | 2 = 210 => varint [0xd2, 0x01].
-    // Tag 27 => (27 << 3) | 2 = 218 => varint [0xda, 0x01].
     let records_req = ClientFrame {
         id: 0,
         body: Some(client_frame::Body::DhtRecords(DhtRecordsRequest::default())),
@@ -606,16 +555,6 @@ fn dht_frames_occupy_oneof_tags_26_and_27() {
         "ClientFrame.dht_records must serialise at proto tag 26"
     );
 
-    let lookup_req = ClientFrame {
-        id: 0,
-        body: Some(client_frame::Body::DhtLookup(DhtLookupRequest::default())),
-    };
-    assert_eq!(
-        lookup_req.encode_to_vec().as_slice(),
-        &[0xda, 0x01, 0x00],
-        "ClientFrame.dht_lookup must serialise at proto tag 27"
-    );
-
     let records_reply = ServerFrame {
         id: 1,
         body: Some(server_frame::Body::DhtRecords(DhtRecordsReply::default())),
@@ -624,16 +563,6 @@ fn dht_frames_occupy_oneof_tags_26_and_27() {
         records_reply.encode_to_vec().as_slice(),
         &[0x08, 0x01, 0xd2, 0x01, 0x00],
         "ServerFrame.dht_records must serialise at proto tag 26"
-    );
-
-    let lookup_reply = ServerFrame {
-        id: 1,
-        body: Some(server_frame::Body::DhtLookup(DhtLookupReply::default())),
-    };
-    assert_eq!(
-        lookup_reply.encode_to_vec().as_slice(),
-        &[0x08, 0x01, 0xda, 0x01, 0x00],
-        "ServerFrame.dht_lookup must serialise at proto tag 27"
     );
 }
 

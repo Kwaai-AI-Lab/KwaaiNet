@@ -1,12 +1,9 @@
 //! Projecting hivemind DHT records onto the gRPC surface.
 //!
-//! A locally-held record and one a remote peer returned share the [`DhtRecord`]
-//! shape deliberately, so a client can put them side by side.
-//!
 //! [`render_value`] is structural and schema-free: it decodes msgpack and shows
 //! what is there, never guessing at field names it cannot verify.
 
-use kwaai_hivemind_dht::{DHTExpiration, LocalRecord, ParsedDictionary, Stored};
+use kwaai_hivemind_dht::{DHTExpiration, LocalRecord, Stored};
 use kwaai_rpc::v1::{DhtKnownKey, DhtRecord, DhtRecordKind, DhtSubkey, DhtValueView};
 
 use crate::announce::{dht_id, PETALS_MODELS_KEY, VPK_NODES_KEY};
@@ -17,7 +14,7 @@ use crate::config::KwaaiNetConfig;
 const MAX_KNOWN_BLOCK_KEYS: u32 = 1024;
 
 /// Every key this node can name, with the DHT id each hashes to — the reverse
-/// table for `key_name`, and the candidate list for a lookup.
+/// table for `key_name`.
 pub fn known_keys(config: &KwaaiNetConfig) -> Vec<DhtKnownKey> {
     let prefix = config.effective_dht_prefix();
     let blocks = config.model_total_blocks().max(0) as u32;
@@ -77,54 +74,6 @@ pub fn local_record(
         dict_maxsize: s.maxsize,
         value,
         subkeys,
-    }
-}
-
-/// Project a `FindResult` value returned by a remote peer.
-///
-/// A remote sends bytes and an expiration, no shape flag, so the shape is
-/// recovered by parsing for hivemind's `Ext(0x50)` — the same test
-/// `handle_store` applies on receipt.
-pub fn remote_record(
-    key: &str,
-    key_id: &[u8],
-    value: &[u8],
-    expiration: DHTExpiration,
-    now: f64,
-) -> DhtRecord {
-    let dict = kwaai_hivemind_dht::parse_dictionary(value);
-
-    let base = DhtRecord {
-        key_id: hex::encode(key_id),
-        key_name: key.to_string(),
-        expiration,
-        expires_in_secs: expiration - now,
-        ..Default::default()
-    };
-
-    match dict {
-        Some(ParsedDictionary {
-            entries,
-            maxsize,
-            latest_expiration,
-        }) => DhtRecord {
-            kind: DhtRecordKind::Dictionary as i32,
-            subkey_count: entries.len() as u32,
-            value_bytes: entries.values().map(|(v, _)| v.len() as u64).sum(),
-            latest_expiration: Some(latest_expiration),
-            dict_maxsize: maxsize,
-            subkeys: entries
-                .iter()
-                .map(|(subkey, (v, exp))| subkey_view(subkey, v, *exp, now))
-                .collect(),
-            ..base
-        },
-        None => DhtRecord {
-            kind: DhtRecordKind::Regular as i32,
-            value_bytes: value.len() as u64,
-            value: Some(render_value(value)),
-            ..base
-        },
     }
 }
 
@@ -546,58 +495,6 @@ mod tests {
         };
         assert_eq!(render_value(&raw).rendered, r#"{"$hex":"fffe"}"#);
         assert_json(&render_value(&raw));
-    }
-
-    /// A remote dictionary arrives as opaque bytes — `FindResult` carries no
-    /// shape flag — so the shape is recovered by parsing.
-    #[test]
-    fn a_remote_dictionary_is_recovered_from_its_bytes() {
-        use std::collections::BTreeMap;
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            rmp_serde::to_vec("peer-a").unwrap(),
-            (b"va".to_vec(), 100.0),
-        );
-        entries.insert(
-            rmp_serde::to_vec("peer-b").unwrap(),
-            (b"vbvb".to_vec(), 200.0),
-        );
-        let bytes = kwaai_hivemind_dht::serialize_dictionary(&entries, Some(20), 200.0);
-
-        let rec = remote_record(
-            "_petals.models",
-            &dht_id("_petals.models"),
-            &bytes,
-            150.0,
-            50.0,
-        );
-        assert_eq!(rec.kind, DhtRecordKind::Dictionary as i32);
-        assert_eq!(rec.subkey_count, 2);
-        assert_eq!(rec.value_bytes, 6);
-        assert_eq!(rec.dict_maxsize, Some(20));
-        assert_eq!(rec.latest_expiration, Some(200.0));
-        assert_eq!(rec.expires_in_secs, 100.0);
-        // The record's own value slot stays empty — a dictionary's values are
-        // per-subkey, and filling both would show them twice.
-        assert!(rec.value.is_none());
-        assert_eq!(rec.subkeys[0].subkey, r#""peer-a""#);
-        assert_eq!(rec.subkeys[1].expiration, 200.0);
-        assert_eq!(rec.subkeys[1].value_bytes, 4);
-    }
-
-    /// A regular value under a shared key is not a one-entry dictionary: it is
-    /// a peer that overwrote every other announcer.
-    #[test]
-    fn a_remote_regular_value_is_not_mistaken_for_a_dictionary() {
-        let value = rmp_serde::to_vec("solo").unwrap();
-        let rec = remote_record("k", &dht_id("k"), &value, 10.0, 0.0);
-        assert_eq!(rec.kind, DhtRecordKind::Regular as i32);
-        assert_eq!(rec.subkey_count, 0);
-        assert!(rec.subkeys.is_empty());
-        assert_eq!(
-            rec.value.expect("regular values are rendered").rendered,
-            r#""solo""#
-        );
     }
 
     /// The ids must be the same `SHA1(msgpack(name))` the announce path
