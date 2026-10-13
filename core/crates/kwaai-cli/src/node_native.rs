@@ -745,8 +745,9 @@ pub async fn run_native_node(
         }
     }
 
-    // Stopping mid-update: a download gives up at its next chunk.
-    crate::updater::cancel_downloads();
+    // Stopping mid-update: a download gives up at its next chunk, an install
+    // before it touches the installed binary.
+    crate::updater::cancel_update();
 
     // A final write, so the peers this run met survive even if the last timer
     // tick was up to 60 s ago.
@@ -763,7 +764,7 @@ pub async fn run_native_node(
     }
     node.shutdown().await;
 
-    // An install cannot be interrupted, only waited for, and `kwaainet stop`
+    // A swap already under way cannot be interrupted, and `kwaainet stop`
     // kills us 10 s after SIGTERM: give it most of that, then leave.
     if let Some(thread) = update_thread.filter(|t| !t.is_finished()) {
         info!("Waiting for the in-progress update to stop...");

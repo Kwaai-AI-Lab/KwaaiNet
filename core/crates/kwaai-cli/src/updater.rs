@@ -278,6 +278,10 @@ impl UpdateChecker {
             let _ = std::io::Write::flush(&mut std::io::stdout());
             self.download_to(&archive_url, &zip_path).await?;
             println!(" done.");
+            if let Err(e) = ensure_not_cancelled(&CANCEL_UPDATE) {
+                let _ = std::fs::remove_file(&zip_path);
+                return Err(e);
+            }
 
             let kwaainet_exe = install_dir.join("kwaainet.exe");
 
@@ -323,22 +327,16 @@ impl UpdateChecker {
             // On Windows Vista+ the OS loader opens EXEs with FILE_SHARE_DELETE,
             // so a running process can rename its own executable — the memory
             // mapping stays valid because it points to the file data, not the name.
-            // We rename the old binary aside first, then copy the new files in.
             // The .old file is kept so that the user can manually restore it if
             // the daemon fails to start with the new binary.
             let exe_bak = backup_path(&install_dir)?;
-            std::fs::rename(&kwaainet_exe, &exe_bak).with_context(|| {
-                format!("Could not move kwaainet.exe aside to {}", exe_bak.display())
-            })?;
-
-            for entry in std::fs::read_dir(&tmp).context("Reading extract dir")? {
-                let entry = entry?;
-                let name = entry.file_name();
-                let dest = install_dir.join(&name);
-                std::fs::copy(entry.path(), &dest)
-                    .with_context(|| format!("Installing {}", name.to_string_lossy()))?;
-                println!("  Installed {}", name.to_string_lossy());
+            let swapped =
+                swap_in_staged(&tmp, &install_dir, &kwaainet_exe, &exe_bak, &CANCEL_UPDATE);
+            if swapped.is_err() {
+                let _ = std::fs::remove_file(&zip_path);
+                let _ = std::fs::remove_dir_all(&tmp);
             }
+            swapped?;
 
             // ── Clean up ─────────────────────────────────────────────────────
             let _ = std::fs::remove_file(&zip_path);
@@ -358,6 +356,10 @@ impl UpdateChecker {
         let url = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/latest/download/kwaainet-installer.sh";
         let tmp = std::env::temp_dir().join("kwaainet-installer.sh");
         self.download_to(url, &tmp).await?;
+        if let Err(e) = ensure_not_cancelled(&CANCEL_UPDATE) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
 
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
@@ -480,6 +482,11 @@ impl UpdateChecker {
             anyhow::bail!("tar exited with {status}");
         }
 
+        if let Err(e) = ensure_not_cancelled(&CANCEL_UPDATE) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+
         let subdir = tmp.join("kwaainet-x86_64-unknown-linux-gnu-cuda");
         use std::os::unix::fs::PermissionsExt;
         for entry in std::fs::read_dir(&subdir)
@@ -519,7 +526,7 @@ impl UpdateChecker {
     /// Stream `url` to `path`. The timeouts bound connecting and silence, never
     /// the transfer as a whole: the largest archive is ~1 GB.
     async fn download_to(&self, url: &str, path: &std::path::Path) -> Result<()> {
-        download_with_stall_timeout(url, path, DOWNLOAD_STALL_TIMEOUT, &CANCEL_DOWNLOADS).await
+        download_with_stall_timeout(url, path, DOWNLOAD_STALL_TIMEOUT, &CANCEL_UPDATE).await
     }
 }
 
@@ -556,11 +563,62 @@ fn linux_update_variant(is_musl: bool, is_x86_64: bool, has_nvidia: bool) -> Lin
     }
 }
 
-static CANCEL_DOWNLOADS: AtomicBool = AtomicBool::new(false);
+static CANCEL_UPDATE: AtomicBool = AtomicBool::new(false);
 
-/// Make update downloads fail at their next chunk. One-way: for shutdown.
-pub(crate) fn cancel_downloads() {
-    CANCEL_DOWNLOADS.store(true, Ordering::Relaxed);
+/// Make an update stop at its next download chunk, or before it touches the
+/// installed binary. One-way: for shutdown.
+pub(crate) fn cancel_update() {
+    CANCEL_UPDATE.store(true, Ordering::Relaxed);
+}
+
+fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<()> {
+    anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled by shutdown");
+    Ok(())
+}
+
+/// Install every file in `extracted` into `install_dir`, moving `exe` aside to
+/// `exe_bak`. Files are copied to `<name>.new` beside their destination first:
+/// the copy is the slow part (~1 GB for cuda-full), so a shutdown either stops
+/// before anything installed is touched or waits only on renames.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn swap_in_staged(
+    extracted: &std::path::Path,
+    install_dir: &std::path::Path,
+    exe: &std::path::Path,
+    exe_bak: &std::path::Path,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let mut staged = Vec::new();
+    let mut stage = || -> Result<()> {
+        for entry in std::fs::read_dir(extracted).context("Reading extract dir")? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let staging = install_dir.join(format!("{}.new", name.to_string_lossy()));
+            staged.push((staging.clone(), install_dir.join(&name)));
+            std::fs::copy(entry.path(), &staging)
+                .with_context(|| format!("Staging {}", staging.display()))?;
+        }
+        ensure_not_cancelled(cancel)?;
+        std::fs::rename(exe, exe_bak).with_context(|| {
+            format!(
+                "Could not move {} aside to {}",
+                exe.display(),
+                exe_bak.display()
+            )
+        })
+    };
+    if let Err(e) = stage() {
+        for (staging, _) in &staged {
+            let _ = std::fs::remove_file(staging);
+        }
+        return Err(e);
+    }
+    for (staging, dest) in staged {
+        std::fs::rename(&staging, &dest)
+            .with_context(|| format!("Installing {}", dest.display()))?;
+        println!("  Installed {}", dest.display());
+    }
+    Ok(())
 }
 
 async fn download_with_stall_timeout(
@@ -1255,6 +1313,56 @@ mod tests {
         let err = result.expect_err("a cancelled download must not report success");
         assert!(format!("{err:#}").contains("cancelled"), "got: {err:#}");
         assert!(!path.exists());
+    }
+
+    fn install_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let extracted = dir.path().join("extract");
+        let install = dir.path().join("bin");
+        std::fs::create_dir_all(&extracted).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(extracted.join("kwaainet.exe"), "new").unwrap();
+        std::fs::write(extracted.join("cublas64_12.dll"), "new").unwrap();
+        std::fs::write(install.join("kwaainet.exe"), "old").unwrap();
+        (dir, extracted, install)
+    }
+
+    /// A shutdown that lands after the download must leave the installed
+    /// binary exactly where it was, with no staged leftovers beside it.
+    #[test]
+    fn cancelled_swap_leaves_the_install_untouched() {
+        let (_dir, extracted, install) = install_fixture();
+        let (exe, bak) = (
+            install.join("kwaainet.exe"),
+            install.join("kwaainet.exe.old"),
+        );
+        let err = swap_in_staged(&extracted, &install, &exe, &bak, &AtomicBool::new(true))
+            .expect_err("a cancelled swap must not report success");
+        assert!(format!("{err:#}").contains("cancelled"), "got: {err:#}");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        let mut left: Vec<_> = std::fs::read_dir(&install)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["kwaainet.exe"]);
+    }
+
+    #[test]
+    fn swap_installs_every_file_and_keeps_the_old_exe() {
+        let (_dir, extracted, install) = install_fixture();
+        let (exe, bak) = (
+            install.join("kwaainet.exe"),
+            install.join("kwaainet.exe.old"),
+        );
+        swap_in_staged(&extracted, &install, &exe, &bak, &AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(install.join("cublas64_12.dll")).unwrap(),
+            "new"
+        );
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "old");
+        assert!(!install.join("kwaainet.exe.new").exists());
     }
 
     /// One malformed root in the OS store must not take the updater down.
