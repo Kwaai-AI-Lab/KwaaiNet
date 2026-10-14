@@ -2,6 +2,11 @@
 REVISION 4, DRAFT, NOT POSTED (2026-10-14). Adds the decision that KwaaiNet becomes a
 Verifiable Trust Community, peer endorsement via vtc/relationships/request as the first task,
 diagrams 5 and 6, a correction of the framework version, and three new questions.
+A SHORT FOLLOW-UP drawn from it (the "What changed" points, diagrams 5 and 6, the three
+questions, and a link to this file at 259d1f7c) was POSTED on 2026-10-14 (18:59 UTC) as a
+reply under revision 3:
+https://github.com/trustoverip/dtgwg-trust-tasks-tf/discussions/248#discussioncomment-18932049
+The full revision 4 has not been posted.
 REVISION 3 was POSTED to dtgwg-trust-tasks-tf#248 on 2026-10-14 (16:53 UTC) from commit
 8a7792ce, without this HTML header:
 https://github.com/trustoverip/dtgwg-trust-tasks-tf/discussions/248#discussioncomment-18929785
