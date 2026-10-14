@@ -5110,6 +5110,25 @@ mod tests {
         assert!(sink.take().is_empty());
     }
 
+    /// Every emit site goes through `emit_progress`, so this is the gate that
+    /// keeps `events: false` silent past the point the gRPC test can reach.
+    #[test]
+    fn emit_progress_without_a_sink_never_builds_the_event() {
+        let built = std::cell::Cell::new(false);
+        emit_progress(None, || {
+            built.set(true);
+            progress(ProgressPhase::HopStart)
+        });
+        assert!(!built.get());
+
+        let sink = HopTimingSink::new();
+        emit_progress(Some(&sink), || {
+            built.set(true);
+            progress(ProgressPhase::HopStart)
+        });
+        assert!(built.get(), "a present sink must build the event");
+    }
+
     #[test]
     fn hop_timing_sink_ignores_non_hop_ok_phases() {
         let sink = HopTimingSink::new();
