@@ -77,7 +77,8 @@ because ownership is the design: **blue** is code in the KwaaiNet tree, **green*
 
 A task handler on node A hands a Trust Task to the crate's `send()`. The crate stamps the
 issuer as a `did:key` derived from the node's own PeerId, attaches any credential signed
-by `dtg-credentials`, frames the envelope, and writes it to a stream that `kwaai-p2p` opened
+by `dtg-credentials`, wraps the document in a protobuf frame (DEFLATE-compressed when worthwhile),
+and writes it to a stream that `kwaai-p2p` opened
 on `/trust-tasks/0.1`. The stream crosses the libp2p fabric directly or through a circuit
 relay; either way it stays end-to-end Noise.
 
@@ -103,7 +104,7 @@ which is what Trust Tasks compares by exact string. A node may also publish an o
 `did:peer:2` **routing DID** for the bridge; its dialable addresses otherwise keep travelling
 in **signed peer records** as today. A **Trust Task** names an issuer and a recipient VID,
 belongs to a **thread** that carries its lifecycle state, and travels inside a binding
-**envelope**.
+**frame**: the document as JSON bytes, plus a compression flag.
 
 Credentials follow the DTG model: a **DTG credential** has an issuer and a subject VID, a
 required `issuerScope`, and one `eddsa-jcs-2022` **Data Integrity proof**; statement
@@ -210,8 +211,44 @@ Options considered:
   `open_raw_stream(peer, ...)` → `send(...)`. Our `RawStream` already implements the seam.
 - Credentials likewise by crate: `dtg-credentials` consumed as-is (OpenVTC); no fork, no
   wrapper beyond mapping our types.
-- **Wire (spec):** protocol ID proposed `/trust-tasks/0.1` (confirm with WG); a stream
-  carries a sequence of unsigned-varint-framed JSON envelopes until half-close; late
+- **Wire (spec):** protocol ID proposed `/trust-tasks/0.1` (confirm with WG). Each frame is
+  an unsigned-varint length prefix and a protobuf `TrustTaskFrame` — the libp2p convention
+  (identify, kad and relay frame protobuf the same way):
+
+  ```proto
+  syntax = "proto3";
+
+  message TrustTaskFrame {
+    bytes       document    = 1;  // the Trust Task document: UTF-8 JSON (SPEC §4.1), encoded per `compression`
+    Compression compression = 2;  // how `document` is encoded on the wire
+  }
+
+  enum Compression {
+    COMPRESSION_NONE    = 0;  // the document bytes exactly as the producer serialised them
+    COMPRESSION_DEFLATE = 1;  // raw DEFLATE (RFC 1951) of those bytes
+  }
+  ```
+
+  - **No envelope type.** The negotiated protocol ID already says what the stream carries;
+    TSP and DIDComm need a `{type, document}` envelope only because their payloads have no
+    content type. Dropping it removes 73 B, 15% of a median document (measured below).
+  - **The document stays JSON** (SPEC §4.1). After decompression the receiver holds exactly
+    the bytes the producer serialised, so proofs, task digests and `idConflict` work as
+    specified, and a bridge can hand documents to TSP/DIDComm untouched. Transcoding the
+    document itself to protobuf is ruled out: `payload`/`ext` are open JSON, and
+    `google.protobuf.Struct` turns every number into a double, breaking JCS signatures.
+  - **Compression flag.** Receivers MUST support `NONE` and `DEFLATE`, so no negotiation is
+    needed; the sender chooses per frame. DEFLATE is the baseline because Go (`compress/flate`),
+    Rust (`flate2`) and browsers (`CompressionStream("deflate-raw")`) have it without extra
+    dependencies; zstd can be added later as value 2. An unknown value is a binding error.
+  - **Limits.** 1 MiB applies to the frame **and** to the decompressed document, enforced while
+    inflating (a decompression-bomb guard); both rejected before allocation.
+  - **When to compress.** Measured on 256 upstream example documents: median 497 B (p90
+    936 B, max 2.6 KB); DEFLATE saves ~38%. So: `NONE` by default, `DEFLATE` above a size
+    threshold (start at 1 KiB; the spike sets it from KwaaiNet's own documents). Senders
+    SHOULD NOT compress documents that mix secret values with attacker-influenced content:
+    inside an encrypted channel, compressed length can leak (the CRIME/BREACH class).
+  - A stream carries a sequence of frames until half-close; late
   responses, `trust-task-next-step`, control and errors after `executing` go on a fresh
   stream opened by whichever side sends, correlated by `id`/`threadId` (libp2p has no
   correlation of its own — say so); stream reset / connection drop / half-close map to
@@ -275,7 +312,7 @@ Options considered:
 | Phase | When | Deliverable | Exit criterion |
 |---|---|---|---|
 | 0 · Re-sync the record | Oct 2026 | Correct `-response.md`, `PublicRelease-plan.md` trust sections (versions, the contributed crate supersedes rule 2, `ssi` → Affinidi, credential set), kwaai-trust `CLAUDE.md`/`roadmap.md`/`TODO.md`; #248 reply: correct the did:peer claim, ask Glenn to confirm in writing (slug; a complete `trust-tasks-libp2p` crate over a `(PeerId, stream)` seam in their workspace, published in the `core` group; Kwaai as co-maintainer; VID form; protocol ID) | Written maintainer confirmation incl. VID form and co-maintenance |
-| 1 · Toolchain + spike | Oct–Nov 2026 | PR bumping `rust-toolchain.toml` to ≥ 1.95 with all release jobs green; `trust-tasks-libp2p` developed **in a fork of the upstream workspace** (so it is born in their layout and CI), consumed by a KwaaiNet spike branch through a git dependency, two local nodes | (a) round trip direct **and** through a default-limit relay; (b) mismatched in-band issuer rejected with `identity_mismatch`, error routed to the sender; (c) oversize frame rejected; (d) `dtg-credentials` issue→verify, plus one upstream vector verifies; (e) one real node-to-node interaction expressed as a Trust Task with a defined lifecycle end — else no-go |
+| 1 · Toolchain + spike | Oct–Nov 2026 | PR bumping `rust-toolchain.toml` to ≥ 1.95 with all release jobs green; `trust-tasks-libp2p` developed **in a fork of the upstream workspace** (so it is born in their layout and CI), consumed by a KwaaiNet spike branch through a git dependency, two local nodes | (a) round trip direct **and** through a default-limit relay; (b) mismatched in-band issuer rejected with `identity_mismatch`, error routed to the sender; (c) oversize frame and oversize *decompressed* document (decompression bomb) rejected; (c2) measurement: KwaaiNet document sizes and a per-task latency split (network, proof verification, JSON parse, compression) that sets the compression threshold; (d) `dtg-credentials` issue→verify, plus one upstream vector verifies; (e) one real node-to-node interaction expressed as a Trust Task with a defined lifecycle end — else no-go |
 | 2 · Upstream PR | Nov–Dec 2026 | OWF CLA signed first; security review of the §9.1.1 text; `bindings/libp2p/0.1/spec.md` + `trust-tasks-libp2p` (+ `libp2p` facade feature, release-plz `core` group, CODEOWNERS naming a Kwaai maintainer); vectors exercised by a second implementation (go-libp2p or js-libp2p, or Affinidi/OpenVTC) | Merged and **published on crates.io in their `core` group**; Kwaai listed as co-maintainer |
 | 3 · Node integration | Q1 2027 | Switch the git dependency to the crates.io release; stream seam + relayed flag in `kwaai-p2p`; did:key VID via the crate; DTG credential stack; verified attestations; summit-server decision; docs match code | Fresh-`KWAAINET_HOME` start-up; tasks exchanged on the fleet over direct and relayed paths; credentials verify against upstream's implementation |
 | 4 · Bridge | after Q1 2027 | Design note → decision | — |
@@ -293,7 +330,8 @@ Options considered:
 
 ## Verification
 
-- Spike: `trust-tasks-libp2p` unit tests (frame codec limits, envelope round trip, §4.8.1 mismatch,
+- Spike: `trust-tasks-libp2p` unit tests (frame codec limits, frame round trip with and without
+  DEFLATE — document bytes identical after inflate — decompression-bomb guard, §4.8.1 mismatch,
   replay guard); two-node test with paired `KWAAINET_HOME`s, then via a relay with libp2p
   default limits; `dtg-credentials` round trip and upstream vectors.
 - Upstream: their CI (`cargo test --workspace`, clippy `-D warnings`, `cargo deny`,

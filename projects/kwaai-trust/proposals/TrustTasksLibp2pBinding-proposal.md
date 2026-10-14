@@ -50,7 +50,7 @@ The diagrams are coloured by owner. **Green** is the crate we would contribute t
 
 ![Data flow of one Trust Task between two peers](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/90e772d85a6e3521499f31fa7c16491e09e59e47/projects/kwaai-trust/design/img/dtgwg-trust-stack/1-data-flow.png)
 
-The sending application hands a Trust Task to the crate. The crate sets the issuer to the `did:key` derived from the node's own PeerId, attaches any credential, frames the envelope and writes it to a libp2p stream on the binding's protocol ID. The stream crosses the network directly or through a circuit relay; either way it is end-to-end Noise. On the receiving side the application passes three things to the crate: the stream, the Noise-authenticated PeerId, and whether the path was relayed. The crate rejects oversize frames, cross-checks the document's issuer against the transport identity per §4.8.1, and hands the document to `consume_inbound` for replay and freshness checks before the application sees it. A mismatched issuer gets an `identity_mismatch` error back on the same stream.
+The sending application hands a Trust Task to the crate. The crate sets the issuer to the `did:key` derived from the node's own PeerId, attaches any credential, wraps the document in a small protobuf frame (compressed when worthwhile) and writes it to a libp2p stream on the binding's protocol ID. The stream crosses the network directly or through a circuit relay; either way it is end-to-end Noise. On the receiving side the application passes three things to the crate: the stream, the Noise-authenticated PeerId, and whether the path was relayed. The crate rejects oversize frames (and oversize documents after decompression), cross-checks the document's issuer against the transport identity per §4.8.1, and hands the document to `consume_inbound` for replay and freshness checks before the application sees it. A mismatched issuer gets an `identity_mismatch` error back on the same stream.
 
 What matters for maintenance is the boundary: **the application's networking code only ever touches a stream, a PeerId and a direct/relayed flag.** It is an in-process interface, function calls inside the application, not a separate service. Everything that is Trust Tasks transport lives in the crate or in core, so when the framework changes the binding, the crate changes and the applications' networking code does not. One honest caveat: an application's task handlers still read and build Trust Task documents using the framework's types, so a breaking change to those types does reach them. That is inherent to speaking the protocol, and it is the same for every binding; what the crate removes is everything below the handlers.
 
@@ -58,7 +58,7 @@ What matters for maintenance is the boundary: **the application's networking cod
 
 ![Entity relationships](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/90e772d85a6e3521499f31fa7c16491e09e59e47/projects/kwaai-trust/design/img/dtgwg-trust-stack/2-entity-relationships.png)
 
-Each node has exactly one VID, a `did:key` derived from its PeerId, and optionally a `did:peer:2` routing DID; dialable addresses otherwise travel in libp2p signed peer records. A Trust Task names an issuer and a recipient VID, belongs to a thread that carries its lifecycle state, and travels in a binding envelope. Credentials follow the DTG credential specification: an issuer and a subject VID, the required `issuerScope`, an `eddsa-jcs-2022` Data Integrity proof, and for statement credentials a predicate the verifier accepts. A credential can be bound to the Trust Task that produced it through `taskContext`.
+Each node has exactly one VID, a `did:key` derived from its PeerId, and optionally a `did:peer:2` routing DID; dialable addresses otherwise travel in libp2p signed peer records. A Trust Task names an issuer and a recipient VID, belongs to a thread that carries its lifecycle state, and travels in a binding frame that carries the document's JSON bytes and a compression flag. Credentials follow the DTG credential specification: an issuer and a subject VID, the required `issuerScope`, an `eddsa-jcs-2022` Data Integrity proof, and for statement credentials a predicate the verifier accepts. A credential can be bound to the Trust Task that produced it through `taskContext`.
 
 ### 3. A request, its response, and a rejected sender
 
@@ -105,6 +105,32 @@ That said, you raised it, so you may have a reason to prefer otherwise.
 
 `did:key` for the VID, derived from the PeerId; `did:peer:2` as an optional routing DID, for the routing reason you gave. See the two corrections above for why we changed this.
 
+## Wire format: binary framing, JSON document — please weigh in
+
+The document stays exactly what §4.1 says it is: a UTF-8 JSON object, so proofs, task digests and `idConflict` behave as specified and a bridge can pass documents to TSP or DIDComm untouched. What we propose to make binary is only the framing around it, following libp2p's own convention (identify, kad and relay all send unsigned-varint length-prefixed protobuf):
+
+```proto
+syntax = "proto3";
+
+message TrustTaskFrame {
+  bytes       document    = 1;  // the Trust Task document: UTF-8 JSON (SPEC §4.1), encoded per `compression`
+  Compression compression = 2;  // how `document` is encoded on the wire
+}
+
+enum Compression {
+  COMPRESSION_NONE    = 0;  // the document bytes exactly as the producer serialised them
+  COMPRESSION_DEFLATE = 1;  // raw DEFLATE (RFC 1951) of those bytes
+}
+```
+
+Three choices in that, each open to your view:
+
+- **No envelope type.** On TSP and DIDComm the `{type, document}` envelope exists because the payload has no content type. On libp2p, the protocol ID negotiated for the stream already identifies the content, so the frame carries the document directly. Across 256 example documents from the registry (median 497 B), the JSON envelope would have been 15% of the bytes.
+- **A compression flag.** Receivers must support `NONE` and `DEFLATE`, so nothing needs negotiating; the sender decides per frame. DEFLATE is the baseline because Go, Rust and browsers all ship it; zstd could be added later. Compression saves about 38% on those examples, so we would use it above a size threshold rather than by default, and the binding would advise against compressing documents that mix secrets with attacker-influenced content, since compressed length can leak inside an encrypted channel.
+- **Limits.** 1 MiB for the frame and for the document after decompression, enforced while decompressing.
+
+The document is never transcoded: `payload` and `ext` are open JSON, and a protobuf representation of them (`google.protobuf.Struct`) turns every number into a double, which would break JCS-based signatures.
+
 ## What we would contribute
 
 - **`trust-tasks-libp2p`**, built in your workspace layout and CI from the start, released in your `core` group, with `bindings/libp2p/0.1/spec.md` and its registry entry.
@@ -121,6 +147,7 @@ Your approval on the call is what we are working from. Since this discussion is 
 3. Kwaai as co-maintainer of that crate.
 4. `did:key` derived from the PeerId as the VID, with `did:peer:2` optional for routing.
 5. Protocol ID `/trust-tasks/0.1`.
+6. The wire format above: a protobuf frame with no envelope type, the JSON document carried as bytes, and a `NONE`/`DEFLATE` compression flag.
 
 ## Still open
 

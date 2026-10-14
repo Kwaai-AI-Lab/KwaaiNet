@@ -35,7 +35,7 @@ flowchart TB
         AC["dtg-credentials<br/>sign eddsa-jcs-2022"]:::ext
         AV["VID helper (proposed)<br/>PeerId to did:key"]:::crate
         AS["send() (proposed)<br/>trust-tasks-libp2p client"]:::crate
-        AF["Frame codec (proposed)<br/>unsigned-varint + JSON envelope"]:::crate
+        AF["Frame codec (proposed)<br/>protobuf frame, JSON document<br/>DEFLATE if worthwhile"]:::crate
         AP["kwaai-p2p seam<br/>open_raw_stream"]:::kwaai
         AW --> AC
         AH -- "TrustTask" --> AS
@@ -53,7 +53,7 @@ flowchart TB
     subgraph B["Node B — consumer"]
         direction LR
         BP["kwaai-p2p seam<br/>accept_streams<br/>+ relayed flag (proposed)"]:::kwaai
-        BF["Frame codec<br/>over 1 MiB: reset"]:::crate
+        BF["Frame codec<br/>inflate if flagged<br/>over 1 MiB either way: reset"]:::crate
         BR["resolve_parties<br/>SPEC 4.8.1 cross-check"]:::crate
         BC["consume_inbound<br/>replay guard, freshness"]:::ext
         BH["Task handler"]:::kwaai
@@ -61,7 +61,7 @@ flowchart TB
         BS[("TrustScore<br/>VC weight alpha = 0")]:::store
         BE["reject(): identity_mismatch<br/>back to A, same stream"]:::crate
         BO["response frame<br/>back to A, same stream"]:::crate
-        BP -- "stream, PeerId, mode" --> BF -- "envelope" --> BR
+        BP -- "stream, PeerId, mode" --> BF -- "document" --> BR
         BR -- "parties agree" --> BC -- "fresh" --> BH
         BR -. "mismatch" .-> BE
         BH --> BO
@@ -89,8 +89,8 @@ erDiagram
     VID ||--o{ TRUST_TASK : "issues"
     VID ||--o{ TRUST_TASK : "receives"
     TRUST_TASK }o--|| THREAD : "belongs to"
-    TRUST_TASK ||--|| ENVELOPE : "carried in"
-    ENVELOPE }o--|| BINDING : "framed by"
+    TRUST_TASK ||--|| FRAME : "carried in"
+    FRAME }o--|| BINDING : "defined by"
     TRUST_TASK |o--o{ DTG_CREDENTIAL : "binds via taskContext"
     WALLET ||--o{ DTG_CREDENTIAL : "holds"
     WALLET ||--o{ LEGACY_VC : "keeps read-only"
@@ -128,10 +128,10 @@ erDiagram
         string thread_id PK "correlates follow-up streams"
         string state "lifecycle per SPEC 4.12 and 11"
     }
-    ENVELOPE {
-        string type "binding envelope type URI"
-        json document "the Trust Task"
-        int max_bytes "1 MiB frame limit"
+    FRAME {
+        bytes document "UTF-8 JSON, possibly compressed"
+        string compression "NONE or DEFLATE"
+        int max_bytes "1 MiB, framed and inflated"
     }
     BINDING {
         string binding_uri PK "trusttasks.org binding libp2p 0.1"
@@ -214,8 +214,8 @@ sequenceDiagram
     LA->>PA: open stream on /trust-tasks/0.1
     PA->>PB: Noise-authenticated libp2p stream, direct or relayed
     PB->>LB: serve(stream, remote PeerId, mode)
-    LA->>LB: frame 1: envelope with the TrustTask
-    LB->>LB: frame length under 1 MiB, else reset the stream
+    LA->>LB: frame 1: TrustTaskFrame, document + compression flag
+    LB->>LB: frame and inflated document under 1 MiB, else reset
     LB->>LB: resolve_parties: in-band issuer vs did:key of remote PeerId
     alt issuer matches, or omitted and filled from transport
         LB->>CB: document with resolved parties
