@@ -1,5 +1,6 @@
 <!--
-POST AS: a new reply comment in dtgwg-trust-tasks-tf#248 — REVISION 3, NOT YET POSTED.
+REVISION 3, POSTED to dtgwg-trust-tasks-tf#248 on 2026-10-14 (16:53 UTC) from commit 8a7792ce,
+without this HTML header: https://github.com/trustoverip/dtgwg-trust-tasks-tf/discussions/248#discussioncomment-18929785
 Revision 2 was posted as a reply on 2026-08-19 (17:02 UTC); its text is this file at
 commit aec4a589 (`git show aec4a589:projects/kwaai-trust/proposals/TrustTasksLibp2pBinding-proposal.md`).
 These HTML comments do not render on GitHub — paste the whole file.
