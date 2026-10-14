@@ -63,13 +63,15 @@ OWF CLA 1.0; conventional commits. SPEC §9.1 (carriage, correlation, lifecycle 
   `chore/remove-summit-server-and-verida` and `feat/kwaai-ledger` (146 behind main)
   are pending.
 
-## The design in five diagrams
+## The design in six diagrams
 
 The diagrams show the target state after Phase 3 (Q1 2027). They are coloured by owner,
 because ownership is the design: **blue** is code in the KwaaiNet tree, **green** is the
 `trust-tasks-libp2p` crate Kwaai contributes to the upstream workspace and co-maintains,
-**grey** is upstream core and third-party crates (OpenVTC, Affinidi). Anything marked
-*(proposed)* does not exist yet in any codebase.
+**grey** is upstream core and third-party crates and services (OpenVTC, Affinidi). Anything
+marked *(proposed)* does not exist yet in any codebase; a dashed outline is an open decision.
+Diagrams 2, 5 and 6 were updated on 2026-10-14 for two decisions: KwaaiNet becomes a
+Verifiable Trust Community, and the first Trust Task is peer endorsement.
 
 ### Data flow: what crosses into our code
 
@@ -113,6 +115,10 @@ the Trust Task that produced it. The **wallet** holds DTG credentials and keeps 
 **legacy VCs** read-only, never scored. The **trust score** counts only verified credentials;
 **peer reputation** (observed availability, throughput, latency) is unchanged.
 
+A node may be a member of the **community**, the Kwaai VTC. The community issues membership
+(VMC) and node statement (VSC) credentials, and publishes members' relationship credentials
+(VRCs) as its trust graph. Its keys are held by a **VTA**, which is still an open decision.
+
 ### Sequence: a request, its response, and a rejected sender
 
 ![Request, response and identity mismatch](../design/img/dtgwg-trust-stack/3-sequence-request-response.png)
@@ -136,17 +142,49 @@ it to the task by `id` and `threadId`; libp2p has no correlation of its own, so 
 specification says this explicitly. Either side can open a stream later, for example A
 sending a `trust-task-control` suspend or cancel.
 
-### Sequence: issuing and verifying a credential
+### Sequence: peer endorsement, the first Trust Task
 
-![Credential issued and verified](../design/img/dtgwg-trust-stack/5-sequence-credential-issue-verify.png)
+![Peer endorsement via vtc/relationships/request](../design/img/dtgwg-trust-stack/5-sequence-peer-endorsement.png)
 
-An issuer node builds a statement credential (VSC) whose issuer and subject are both
-`did:key` VIDs, and `dtg-credentials` canonicalises it with JCS and signs it with
-`eddsa-jcs-2022`. That fixes the bug where today's credentials fail verification at random.
-The credential travels to the subject as a Trust Task payload. The subject verifies the
-proof, the required `issuerScope` and the predicate; only then is it stored and counted,
-and even then its weight in reputation stays at zero until we have an issuer policy. A
-credential that fails is neither stored nor scored.
+A node asks a peer to endorse it with upstream's `vtc/relationships/request` 0.2, used
+unchanged. The request may carry a reason, which is only a hint, and an `expiresAt`. The
+issuing node runs the inbound checks and then decides by its own policy.
+
+If it agrees, `dtg-credentials` builds a Verifiable Relationship Credential (VRC) whose
+issuer is the issuing node's `did:key` and whose subject is the requester's. It
+canonicalises the credential with JCS and signs it with `eddsa-jcs-2022`, which fixes the
+bug where today's credentials fail verification at random. The signed VRC comes back in the
+response on the same stream. The requester verifies the proof and that the issuer and subject
+match the task's parties. Only then is the credential stored and counted, and even then its
+weight in reputation stays at zero until we have an issuer policy. A credential that fails is
+neither stored nor scored. Publishing the VRC to the community with
+`vtc/relationships/publish` is a separate, optional step that adds an edge to the trust
+graph.
+
+If the issuing node declines, it returns `trust-task-error` with
+`vtc/relationships/request:declined`.
+
+### KwaaiNet as a Verifiable Trust Community
+
+![KwaaiNet as a VTC](../design/img/dtgwg-trust-stack/6-kwaainet-vtc.png)
+
+Nodes are the community's members. Node-to-node tasks, such as endorsement and credential
+presentation, ride our libp2p binding. Tasks with the community go to the VTC service:
+- joining (`vtc/join-requests/submit`),
+- publishing relationship credentials,
+- receiving membership and node credentials (`vtc/endorsements/issue`),
+- recognition checks before routing (`registry/recognition`).
+
+`summit-server`, our first and abortive VTC attempt, is replaced by the VTC. In OpenVTC's
+reference implementation every VTC sits on top of a VTA that mints its keys, so the VTA is
+drawn dashed. Still open:
+- whether we adopt OpenVTC or build our own VTC,
+- whether any node needs a VTA (proposed: no),
+- where the VTC runs and who operates it,
+- whether nodes reach it over HTTPS or libp2p,
+- whether a node joins with its public `did:key` or a pairwise identifier.
+
+These are listed in `TrustTasksLibp2p-implementation-plan.md` under "Still open".
 
 ## Approach
 

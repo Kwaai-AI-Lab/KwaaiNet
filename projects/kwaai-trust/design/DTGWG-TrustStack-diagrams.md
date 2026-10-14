@@ -3,7 +3,10 @@
 Diagrams for [`plans/DTGWG-TrustStack-plan.md`](../plans/DTGWG-TrustStack-plan.md). They
 show the **target state after Phase 3 (Q1 2027)**. Names marked *(proposed)* do not exist
 yet in any codebase; everything else exists today in KwaaiNet `main` or in upstream
-`trustoverip/dtgwg-trust-tasks-tf` at `trust-tasks-rs` 0.26.0.
+`trustoverip/dtgwg-trust-tasks-tf` (`trust-tasks-rs` 0.31.1, `15b91d1f`, read 2026-10-14).
+Diagrams 2, 5 and 6 carry the 2026-10-14 decisions: KwaaiNet becomes a Verifiable Trust
+Community (VTC), and the first Trust Task is peer endorsement via upstream's
+`vtc/relationships/request`. Dashed outlines mark what is still open.
 
 PNG renderings live in [`img/dtgwg-trust-stack/`](img/dtgwg-trust-stack/) for the plan's
 narrative. **The Mermaid below is the source of truth**; after changing it, regenerate the
@@ -17,7 +20,9 @@ Ownership is the point of the design, so every diagram keeps it visible:
 |---|---|---|
 | Blue | KwaaiNet tree | **No** — only the `(PeerId, stream)` seam lives here |
 | Green | `trust-tasks-libp2p` — contributed by Kwaai, in the upstream workspace, co-maintained | Yes, carried by upstream's lockstep releases |
-| Grey | Upstream core (`trust-tasks-rs`) and third-party crates (OpenVTC, Affinidi) | Their releases |
+| Grey | Upstream core (`trust-tasks-rs`) and third-party crates and services (OpenVTC, Affinidi) | Their releases |
+| Dashed | An open decision (diagram 6: the VTA) | — |
+| Red, dashed | Being retired (`summit-server`) | — |
 
 ## 1. Data flow — one Trust Task between two nodes
 
@@ -99,6 +104,10 @@ erDiagram
     DTG_CREDENTIAL ||--|| DATA_INTEGRITY_PROOF : "signed by"
     DTG_CREDENTIAL }o--o| VSC_PREDICATE : "states, if VSC"
     DTG_CREDENTIAL }o--o{ TRUST_SCORE : "counts toward once verified"
+    NODE }o--o| COMMUNITY : "is a member of"
+    COMMUNITY ||--o| VTA : "keys held by (open)"
+    COMMUNITY ||--o{ DTG_CREDENTIAL : "issues VMC and VSC"
+    COMMUNITY ||--o{ DTG_CREDENTIAL : "publishes VRCs in its graph"
 
     NODE {
         string peer_id PK "libp2p PeerId, Noise-authenticated"
@@ -153,7 +162,7 @@ erDiagram
         string proof_value
     }
     VSC_PREDICATE {
-        string iri PK "endorses/1 or Kwaai-namespaced"
+        string iri PK "Kwaai-namespaced, accept-listed"
         bool on_accept_list
     }
     LEGACY_VC {
@@ -167,6 +176,14 @@ erDiagram
         float score
         string tier "Unknown Known Verified Trusted"
     }
+    COMMUNITY {
+        string did PK "the Kwaai VTC's DID (proposed)"
+        string registry "trust registry for recognition checks"
+    }
+    VTA {
+        string did PK "custodies the community's keys"
+        string status "open: required under OpenVTC"
+    }
     PEER_REPUTATION {
         string peer_id FK
         string observations "availability, throughput, latency"
@@ -177,12 +194,12 @@ Mapping of today's credential types to DTG subtypes (from the plan):
 
 | Today | DTG credential | Notes |
 |---|---|---|
-| PeerEndorsementVC | VSC `endorses/1` | |
+| PeerEndorsementVC | **VRC** | Delivered by `vtc/relationships/request` (diagram 5); was VSC `endorses/1` until 2026-10-14 |
 | UptimeVC, ThroughputVC | VSC, Kwaai-namespaced predicate | `witnessed/1` needs a `taskContext`; ours are self-measured |
 | FiduciaryPledgeVC | VSC | |
-| SummitAttendeeVC | VMC, `issuerScope: public` | |
-| VerifiedNodeVC | VMC | |
-| BindingVC | VDC grant/accept | Re-issue depends on summit-server's removal |
+| SummitAttendeeVC | VMC, `issuerScope: public` | Issued by the Kwaai VTC in place of summit-server |
+| VerifiedNodeVC | VMC | Issued by the Kwaai VTC (`vtc/endorsements/issue`) |
+| BindingVC | VDC grant/accept | summit-server, the old issuer, is replaced by the VTC |
 
 ## 3. Sequence — request, response, and a rejected sender
 
@@ -251,27 +268,81 @@ sequenceDiagram
     end
 ```
 
-## 5. Sequence — credential issued and verified
+## 5. Sequence — peer endorsement, the first Trust Task
+
+Upstream's `vtc/relationships/request` 0.2, used unchanged: the requesting member asks, the
+issuing member decides, and the signed VRC comes back in the response.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant I as Issuer node
-    participant DI as dtg-credentials (issuer)
-    participant S as Subject node
+    participant S as Requesting node, subject
     participant DV as dtg-credentials (subject)
     participant TS as TrustScore (subject)
+    participant I as Issuing node
+    participant DI as dtg-credentials (issuer)
+    participant C as Kwaai VTC (proposed)
 
-    I->>DI: build VSC, issuer and subject are did:key VIDs
-    DI->>DI: JCS-canonicalise, sign eddsa-jcs-2022
-    DI-->>I: DTGCredential with DataIntegrityProof
-    I->>S: deliver as a Trust Task payload over /trust-tasks/0.1
-    S->>DV: verify proof, issuerScope present, predicate on accept-list
-    alt valid
-        DV-->>S: verified credential
-        S->>S: store in wallet
-        S->>TS: count it, with VC weight alpha = 0 until issuer policy exists
-    else invalid
-        DV-->>S: rejected, never stored or scored
+    S->>I: vtc/relationships/request 0.2 over /trust-tasks/0.1<br/>optional reason (a hint), expiresAt
+    I->>I: consume_inbound, then its own policy decides
+    alt issues
+        I->>DI: build VRC: issuer = I's did:key, subject = S's did:key
+        DI->>DI: JCS-canonicalise, sign eddsa-jcs-2022
+        DI-->>I: signed VRC
+        I-->>S: response carrying the signed VRC, same stream
+        S->>DV: verify proof, check issuer and subject match the parties
+        alt valid
+            DV-->>S: verified credential
+            S->>S: store in wallet
+            S->>TS: count it, VC weight alpha = 0 until issuer policy exists
+            opt make it visible to the community
+                S->>C: vtc/relationships/publish, adds an edge to the trust graph
+            end
+        else invalid
+            DV-->>S: rejected, never stored or scored
+        end
+    else declines
+        I-->>S: trust-task-error vtc/relationships/request:declined
     end
 ```
+
+## 6. KwaaiNet as a Verifiable Trust Community
+
+Decided 2026-10-14. Node-to-node tasks ride our libp2p binding; tasks with the community
+go to the VTC. In OpenVTC's reference implementation every VTC sits on top of a VTA, so
+whether we need one, and whose, is the open question (dashed).
+
+```mermaid
+flowchart LR
+    classDef kwaai fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
+    classDef crate fill:#dcfce7,stroke:#15803d,color:#0f172a
+    classDef ext fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    classDef open fill:#f8fafc,stroke:#64748b,stroke-dasharray: 6 4,color:#0f172a
+    classDef retired fill:#fee2e2,stroke:#b91c1c,stroke-dasharray: 3 3,color:#0f172a
+
+    subgraph MESH["KwaaiNet mesh: members"]
+        direction TB
+        NA["Node A<br/>VID: did:key from PeerId<br/>key in identity.key, no VTA"]:::kwaai
+        NB["Node B<br/>same"]:::kwaai
+        NA <-->|"libp2p binding, /trust-tasks/0.1<br/>vtc/relationships/request<br/>credential-exchange/query, present"| NB
+    end
+
+    subgraph COMM["Kwaai Verifiable Trust Community (proposed)"]
+        direction TB
+        VTC["VTC service<br/>members and ACL, endorsements,<br/>relationship graph, trust registry"]:::ext
+        VTA["VTA: custodies the community's keys and DIDs<br/>open: adopt OpenVTC, or build our own"]:::open
+        VTA -->|"mints the VTC's keys at first boot"| VTC
+    end
+
+    NA -->|"join: vtc/join-requests/submit<br/>vtc/relationships/publish<br/>transport open: HTTPS binding or libp2p"| VTC
+    VTC -->|"membership VMC, node VSCs<br/>vtc/endorsements/issue"| NA
+    NB -.->|"before routing: registry/recognition<br/>vtc/recognition/check"| VTC
+
+    SS["summit-server<br/>first, abortive VTC attempt<br/>to be removed"]:::retired
+    SS -.->|"replaced by"| VTC
+```
+
+Open questions this diagram leaves visible: does the community need a VTA (yes, if we adopt
+OpenVTC); does any node need one (proposed: no); where the VTC runs and who operates it;
+whether nodes reach it over HTTPS or libp2p; and whether a node joins with its public
+`did:key` or a pairwise identifier, which `vtc/join-requests/submit` expects.
