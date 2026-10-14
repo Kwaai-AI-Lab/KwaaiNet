@@ -270,7 +270,7 @@ Options considered:
 
   | Ours | DTG |
   |---|---|
-  | PeerEndorsementVC | VSC `endorses/1` |
+  | PeerEndorsementVC | VRC, delivered by upstream's `vtc/relationships/request` (was VSC `endorses/1`; changed 2026-10-14, see the implementation plan) |
   | UptimeVC, ThroughputVC (self-measured) | VSC with **Kwaai-namespaced** predicates + verifier accept-list (`witnessed/1` requires `taskContext`) |
   | FiduciaryPledgeVC | VSC |
   | SummitAttendeeVC | VMC, `issuerScope: public` |
@@ -279,7 +279,10 @@ Options considered:
 
   No signature migration: re-issue; legacy files read-only. BindingVC re-issue depends on
   summit-server's fate — decide re-issue vs a one-time server-signed bridge attestation
-  once Darren's removal PR is settled.
+  once Darren's removal PR is settled. **Decided 2026-10-14: KwaaiNet becomes a
+  Verifiable Trust Community.** `summit-server` was our first, abortive attempt at one,
+  so its replacement is a VTC (and, if we adopt OpenVTC, the VTA under it); see "Still
+  open" in `TrustTasksLibp2p-implementation-plan.md`.
 - **Verification mandatory** in `TrustScore::from_credentials` and for `trust_attestations`;
   VC weight in reputation stays α = 0 until issuer policy exists (`TokenEconomy-plan.md` (branch `feat/kwaai-ledger`)).
 - Hygiene: key file 0600 + atomic writes; wallet honours `$KWAAINET_HOME`.
