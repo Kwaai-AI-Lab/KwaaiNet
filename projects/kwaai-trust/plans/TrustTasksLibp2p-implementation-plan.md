@@ -232,6 +232,9 @@ settled the first two:
    - **Capacity lease** has no upstream task. If it becomes one, it will be a Kwaai-authored
      spec covering only the negotiation; renewal stays inside the existing exchange.
 
+3. **Darren leads the implementation** (agreed 2026-10-14): the binding in the fork (steps
+   1–5), the toolchain bump and the KwaaiNet spike. Anyone can take the relayed flag (step 7).
+
 ## Still open
 
 1. **Do we need a Verifiable Trust Agent (VTA), and where?** To discuss. The facts:
@@ -260,8 +263,7 @@ settled the first two:
    - give the prose justification the spec requires for a `public` identifier.
 
    Ask Glenn.
-4. **Who builds steps 1–5** (Darren knows the upstream crates; anyone can do 7).
-5. **Target framework version** — ask Glenn alongside the written confirmation.
+4. **Target framework version** — asked on #248 on 2026-10-14, with the identifier and VTA questions.
 
 ## Verification
 
