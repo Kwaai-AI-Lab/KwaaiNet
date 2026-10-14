@@ -311,7 +311,7 @@ impl UpdateChecker {
                             continue;
                         }
                         // Only extract executables; include DLLs for CUDA zips.
-                        if !fname.ends_with(".exe") && !(is_cuda && fname.ends_with(".dll")) {
+                        if !(fname.ends_with(".exe") || (is_cuda && fname.ends_with(".dll"))) {
                             continue;
                         }
                         let dest = tmp.join(&fname);
