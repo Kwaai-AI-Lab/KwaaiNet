@@ -113,6 +113,14 @@ pub struct KwaaiNetService {
     /// Captured at service construction so StatusReply.uptime_secs can
     /// report a process-level uptime without a separate clock.
     started_at: Instant,
+    #[cfg(feature = "rag")]
+    rag: RagShared,
+}
+
+/// RAG state shared by every session of the service.
+#[cfg(feature = "rag")]
+#[derive(Clone)]
+struct RagShared {
     /// Serialises RAG data operations across the whole service.
     ///
     /// `MetaStore` / `StorageDb` are embedded, file-backed stores. The
@@ -124,20 +132,23 @@ pub struct KwaaiNetService {
     /// but it cannot deadlock and it matches the access pattern the
     /// storage layer was written against. Revisit if RAG ops on
     /// distinct KBs ever need to overlap.
-    #[cfg(feature = "rag")]
-    rag_lock: Arc<Mutex<()>>,
+    lock: Arc<Mutex<()>>,
+    /// Orders `rag_init`'s config write against `rag_status`'s read, so
+    /// status never parses a half-written file yet never waits on `lock`.
+    config_lock: Arc<Mutex<()>>,
     /// Opened local vector stores, cached per data dir for the daemon's
     /// lifetime.
     ///
     /// `StorageDb::open` replays every stored vector into an in-memory
     /// HNSW graph — O(corpus) work that would otherwise run on every
     /// RAG op. The daemon is long-lived, so open once and reuse, exactly
-    /// as `rag serve` does. All users hold `rag_lock`, so the map itself
+    /// as `rag serve` does. All users hold `lock`, so the map itself
     /// sees no contention. Inherited trade-off from `rag serve`: vectors
     /// written by another process (e.g. a CLI ingest) aren't visible
     /// until the daemon restarts.
-    #[cfg(feature = "rag")]
-    rag_stores: Arc<Mutex<HashMap<PathBuf, Arc<kwaai_storage::VectorStore>>>>,
+    stores: RagStores,
+    /// Caps uploads in flight across all sessions; each spools to disk.
+    upload_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl KwaaiNetService {
@@ -148,9 +159,12 @@ impl KwaaiNetService {
             net: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
             #[cfg(feature = "rag")]
-            rag_lock: Arc::new(Mutex::new(())),
-            #[cfg(feature = "rag")]
-            rag_stores: Arc::new(Mutex::new(HashMap::new())),
+            rag: RagShared {
+                lock: Arc::new(Mutex::new(())),
+                config_lock: Arc::new(Mutex::new(())),
+                stores: Arc::new(Mutex::new(HashMap::new())),
+                upload_slots: Arc::new(tokio::sync::Semaphore::new(RAG_MAX_UPLOADS)),
+            },
         }
     }
 
@@ -243,9 +257,7 @@ impl KwaaiNet for KwaaiNetService {
         let net_slot = self.net.clone();
         let started_at = self.started_at;
         #[cfg(feature = "rag")]
-        let rag_lock = self.rag_lock.clone();
-        #[cfg(feature = "rag")]
-        let rag_stores = self.rag_stores.clone();
+        let rag = self.rag.clone();
         #[cfg(feature = "rag")]
         let rag_uploads: RagUploads = Arc::new(Mutex::new(HashMap::new()));
 
@@ -404,16 +416,16 @@ impl KwaaiNet for KwaaiNetService {
                     // --- RAG ops ---
                     //
                     // Each spawns its own task so a slow ingest can't
-                    // stall the dispatch loop, and each takes `rag_lock`
-                    // inside that task (see the field comment).
+                    // stall the dispatch loop, and takes its locks inside
+                    // that task (see `RagShared`). Upload pieces never wait.
                     #[cfg(feature = "rag")]
                     client_frame::Body::RagStatus(_) => {
-                        spawn_session_rag_status(id, out_tx.clone(), rag_lock.clone()).await;
+                        spawn_session_rag_status(id, out_tx.clone(), rag.config_lock.clone());
                     }
 
                     #[cfg(feature = "rag")]
                     client_frame::Body::RagInit(req) => {
-                        spawn_session_rag_init(id, req, out_tx.clone(), rag_lock.clone()).await;
+                        spawn_session_rag_init(id, req, out_tx.clone(), rag.clone());
                     }
 
                     #[cfg(feature = "rag")]
@@ -423,45 +435,25 @@ impl KwaaiNet for KwaaiNetService {
                             req,
                             out_tx.clone(),
                             cancels.clone(),
-                            rag_lock.clone(),
-                            rag_stores.clone(),
+                            rag.clone(),
                             rag_uploads.clone(),
                         )
                         .await;
                     }
 
-                    // Awaiting the send is the backpressure. No upload under
-                    // this id means the ingest already ended; drop the piece.
                     #[cfg(feature = "rag")]
                     client_frame::Body::RagIngestData(piece) => {
-                        let tx = rag_uploads.lock().await.get(&id).cloned();
-                        if let Some(tx) = tx {
-                            let _ = tx.send(piece.data).await;
-                        }
+                        route_rag_piece(&rag_uploads, id, piece.data).await;
                     }
 
                     #[cfg(feature = "rag")]
                     client_frame::Body::RagQuery(req) => {
-                        spawn_session_rag_query(
-                            id,
-                            req,
-                            out_tx.clone(),
-                            rag_lock.clone(),
-                            rag_stores.clone(),
-                        )
-                        .await;
+                        spawn_session_rag_query(id, req, out_tx.clone(), rag.clone());
                     }
 
                     #[cfg(feature = "rag")]
                     client_frame::Body::RagDelete(req) => {
-                        spawn_session_rag_delete(
-                            id,
-                            req,
-                            out_tx.clone(),
-                            rag_lock.clone(),
-                            rag_stores.clone(),
-                        )
-                        .await;
+                        spawn_session_rag_delete(id, req, out_tx.clone(), rag.clone());
                     }
 
                     // Built without the `rag` feature: the frames still
@@ -488,6 +480,10 @@ impl KwaaiNet for KwaaiNetService {
                     client_frame::Body::RagIngestData(_) => {}
                 }
             }
+
+            // Uploads still waiting on pieces can never get them now.
+            #[cfg(feature = "rag")]
+            end_session_uploads(&rag_uploads, &cancels).await;
         });
 
         Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
@@ -696,9 +692,10 @@ fn classify_shard_error(msg: &str) -> ErrorCode {
 // loads config from disk itself, exactly as the CLI does — the snapshot is
 // never consulted on the RAG path.
 //
-// Blocking: MetaStore / StorageDb opens, text extraction and the BM25 build
-// inside retrieve_hybrid are all sync and CPU/IO-heavy. Anything sync runs
-// under `spawn_blocking` so it stays off the gRPC reactor.
+// Blocking: MetaStore / StorageDb opens, vector-store calls, text extraction
+// and the BM25 build are sync and CPU/IO-heavy, so they run under
+// `spawn_blocking`. Two kinds stay on the reactor: config loads (one small
+// file) and the metadata/BM25 writes `ingest_text` makes inline.
 
 /// Default `top_k` when the client sends 0.
 #[cfg(feature = "rag")]
@@ -730,21 +727,67 @@ const RAG_EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 #[cfg(feature = "rag")]
 const RAG_INGEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-/// An upload that sends nothing for this long is abandoned.
+/// An upload that sends nothing, or reads no acknowledgement, for this long
+/// is abandoned.
 #[cfg(feature = "rag")]
 const RAG_UPLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Pieces buffered between the session loop and an upload's spool file.
-/// Bounds an upload's memory; a full buffer backpressures the client.
+/// The upload window: pieces a client may have unacknowledged. The server
+/// buffers exactly this many, so a client that overruns it fails the ingest.
 #[cfg(feature = "rag")]
 const RAG_UPLOAD_BUFFER: usize = 8;
 
+/// Uploads a daemon runs at once, across sessions; each spools to disk.
+#[cfg(feature = "rag")]
+const RAG_MAX_UPLOADS: usize = 4;
+
+/// Name prefix of upload spool files in the temp dir.
+#[cfg(feature = "rag")]
+const RAG_SPOOL_PREFIX: &str = "kwaai-rag-ingest-";
+
+/// A spool file older than this belongs to no live upload.
+#[cfg(feature = "rag")]
+const RAG_SPOOL_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// One in-flight upload, as the session loop sees it.
+#[cfg(feature = "rag")]
+struct RagUpload {
+    tx: mpsc::Sender<Vec<u8>>,
+    /// Set when a piece found the buffer full. Also identifies the upload.
+    overrun: Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// In-flight uploads by ingest op id; `rag_ingest_data` frames are routed here.
 #[cfg(feature = "rag")]
-type RagUploads = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
+type RagUploads = Arc<Mutex<HashMap<u64, RagUpload>>>;
+
+/// The ingest's end of one upload.
+#[cfg(feature = "rag")]
+struct UploadRx {
+    pieces: mpsc::Receiver<Vec<u8>>,
+    overrun: Arc<std::sync::atomic::AtomicBool>,
+    /// Held until the spool file is deleted.
+    slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Vectors an ingest stored before committing their metadata.
+#[cfg(feature = "rag")]
+#[derive(Default)]
+struct IngestResidue {
+    store: Option<(Arc<kwaai_storage::VectorStore>, uuid::Uuid, PathBuf)>,
+    ids: Vec<i64>,
+}
+
+#[cfg(feature = "rag")]
+type Residue = Arc<std::sync::Mutex<IngestResidue>>;
+
+#[cfg(feature = "rag")]
+fn residue_lock(r: &Residue) -> std::sync::MutexGuard<'_, IngestResidue> {
+    r.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The service's per-data-dir cache of opened local vector stores.
-/// See the `rag_stores` field comment for semantics.
+/// See [`RagShared::stores`] for semantics.
 #[cfg(feature = "rag")]
 type RagStores = Arc<Mutex<HashMap<PathBuf, Arc<kwaai_storage::VectorStore>>>>;
 
@@ -752,7 +795,7 @@ type RagStores = Arc<Mutex<HashMap<PathBuf, Arc<kwaai_storage::VectorStore>>>>;
 ///
 /// The open replays every stored vector into the in-memory HNSW graph,
 /// so it runs off the reactor and only on first use. Callers hold
-/// `rag_lock`, which is what makes the get-then-insert sequence safe.
+/// the RAG lock, which is what makes the get-then-insert sequence safe.
 #[cfg(feature = "rag")]
 async fn cached_local_vs(
     stores: &RagStores,
@@ -793,6 +836,7 @@ fn classify_rag_error(msg: &str) -> ErrorCode {
     // Caller-supplied arguments we rejected before touching any store,
     // including an upload that broke its own declared size or stalled.
     if msg.contains("rag_ingest upload")
+        || msg.contains("rag_init cannot switch")
         || msg.contains("requires non-empty query text")
         || msg.contains("requires a document name")
     {
@@ -860,19 +904,49 @@ fn reject_if_remote(kb: &str, rag: &crate::config::RagConfig) -> Result<()> {
     Ok(())
 }
 
+/// Delete upload spool files left by an earlier daemon: on Windows an
+/// abandoned extraction thread keeps its file open, so the drop-time delete fails.
+#[cfg(feature = "rag")]
+fn sweep_stale_spools(dir: &std::path::Path, older_than: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(RAG_SPOOL_PREFIX)
+        })
+        .filter(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age > older_than)
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
 /// `rag_status` — snapshot every configured KB.
 ///
 /// Best-effort per KB: one KB whose MetaStore won't open (wiped data dir,
 /// schema from an older build) is reported with an empty doc list instead
 /// of failing the status of every other KB.
+///
+/// Takes only the config lock, not the RAG lock: it only reads, and an
+/// ingest holds the RAG lock for minutes. SQLite (WAL) serves its reads
+/// alongside the ingest's writes.
 #[cfg(feature = "rag")]
-async fn spawn_session_rag_status(
+fn spawn_session_rag_status(
     id: u64,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
-    rag_lock: Arc<Mutex<()>>,
+    config_lock: Arc<Mutex<()>>,
 ) {
     tokio::spawn(async move {
-        let _guard = rag_lock.lock().await;
+        let _guard = config_lock.lock().await;
 
         let kbs = tokio::task::spawn_blocking(collect_rag_kbs).await;
 
@@ -939,27 +1013,36 @@ fn collect_rag_kbs() -> Result<Vec<RagKb>> {
 
 /// `rag_init` — create or idempotently refresh a knowledge base.
 #[cfg(feature = "rag")]
-async fn spawn_session_rag_init(
+fn spawn_session_rag_init(
     id: u64,
     req: RagInitRequest,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
-    rag_lock: Arc<Mutex<()>>,
+    rag: RagShared,
 ) {
     tokio::spawn(async move {
-        let _guard = rag_lock.lock().await;
+        let _guard = rag.lock.lock().await;
+        let _config = rag.config_lock.lock().await;
 
         let kb = rag_kb_or_default(&req.kb);
-        let embed_model = if req.embed_model.trim().is_empty() {
-            crate::config::RagConfig::default().embed_model
-        } else {
-            req.embed_model.trim().to_string()
+        let requested = req.embed_model.trim().to_string();
+        let kb_for_args = kb.clone();
+        let args = tokio::task::spawn_blocking(move || rag_init_args(&kb_for_args, &requested))
+            .await
+            .context("rag init task panicked")
+            .and_then(|r| r);
+        let (embed_model, rag_dir) = match args {
+            Ok(args) => args,
+            Err(e) => return send_rag_error(id, &e, &out_tx).await,
         };
 
         // init_kb is async (it awaits the Ollama probe and the tenant
         // create), so it is driven directly rather than via spawn_blocking;
         // the sync store work inside it is short.
-        match crate::rag_cmd::init_kb(&kb, embed_model, None, |_| {}).await {
-            Ok(_) => {
+        match crate::rag_cmd::init_kb(&kb, embed_model, rag_dir, |_| {}).await {
+            Ok(outcome) => {
+                // A tenant init created is absent from a store cached before it.
+                rag.stores.lock().await.remove(&outcome.data_dir);
+
                 // Re-read so the reply reflects persisted state rather
                 // than what we think we just wrote.
                 let kb_for_task = kb.clone();
@@ -994,6 +1077,46 @@ async fn spawn_session_rag_init(
     });
 }
 
+/// `init_kb`'s model and data dir for `kb`. An existing KB keeps its data
+/// dir, and its model unless the request names another and it holds no
+/// documents, whose vectors the new model could not be compared against.
+#[cfg(feature = "rag")]
+fn rag_init_args(kb: &str, requested: &str) -> Result<(String, Option<PathBuf>)> {
+    use kwaai_rag::meta_store::MetaStore;
+
+    let cfg = KwaaiNetConfig::load_or_create()?;
+    let Some(existing) = cfg.get_rag_kb(kb) else {
+        let model = if requested.is_empty() {
+            crate::config::RagConfig::default().embed_model
+        } else {
+            requested.to_string()
+        };
+        return Ok((model, None));
+    };
+    // init_kb would replace a remote KB with a fresh local one.
+    reject_if_remote(kb, existing)?;
+    let data_dir = existing.data_dir();
+    if requested.is_empty() || requested == existing.embed_model {
+        return Ok((existing.embed_model.clone(), Some(data_dir)));
+    }
+    let holds_docs = existing
+        .tenant_id
+        .as_deref()
+        .and_then(|t| t.parse::<uuid::Uuid>().ok())
+        .and_then(|tid| MetaStore::open(&data_dir, tid).ok())
+        .and_then(|ms| ms.list_docs().ok())
+        .is_some_and(|docs| !docs.is_empty());
+    if holds_docs {
+        anyhow::bail!(
+            "rag_init cannot switch KB '{kb}' from {} to {requested}: its documents were \
+             embedded with {}. Delete them first, or init a new KB",
+            existing.embed_model,
+            existing.embed_model
+        );
+    }
+    Ok((requested.to_string(), Some(data_dir)))
+}
+
 /// Build one [`RagKb`] from persisted config. Sync; run on the blocking pool.
 #[cfg(feature = "rag")]
 fn single_rag_kb(kb: &str) -> Result<RagKb> {
@@ -1001,6 +1124,44 @@ fn single_rag_kb(kb: &str) -> Result<RagKb> {
         .into_iter()
         .find(|k| k.name == kb)
         .with_context(|| format!("KB '{kb}' missing from config immediately after init"))
+}
+
+/// Route a piece to its upload without waiting: a full buffer means the
+/// client overran its window, which ends the upload. Pieces for no upload,
+/// or for one already complete, are dropped.
+#[cfg(feature = "rag")]
+async fn route_rag_piece(uploads: &RagUploads, id: u64, data: Vec<u8>) {
+    let mut uploads = uploads.lock().await;
+    let Some(up) = uploads.get(&id) else {
+        return;
+    };
+    if let Err(mpsc::error::TrySendError::Full(_)) = up.tx.try_send(data) {
+        up.overrun.store(true, Ordering::SeqCst);
+        // Closing the channel wakes an ingest waiting on a piece that was dropped.
+        uploads.remove(&id);
+    }
+}
+
+/// Cancel a closed session's uploads that are still waiting on pieces.
+/// Ingests already past their upload run to completion.
+#[cfg(feature = "rag")]
+async fn end_session_uploads(
+    uploads: &RagUploads,
+    cancels: &Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
+) {
+    let waiting: Vec<u64> = uploads
+        .lock()
+        .await
+        .iter()
+        .filter(|(_, up)| !up.tx.is_closed())
+        .map(|(id, _)| *id)
+        .collect();
+    let mut cancels = cancels.lock().await;
+    for id in waiting {
+        if let Some(tx) = cancels.remove(&id) {
+            let _ = tx.send(());
+        }
+    }
 }
 
 /// `rag_ingest` — receive one document over the session, then chunk, embed
@@ -1011,41 +1172,94 @@ async fn spawn_session_rag_ingest(
     req: RagIngestRequest,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
     cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
-    rag_lock: Arc<Mutex<()>>,
-    rag_stores: RagStores,
+    rag: RagShared,
     rag_uploads: RagUploads,
 ) {
+    // A reused id would cross-wire this op's pieces and cancel with another's.
+    let in_flight =
+        rag_uploads.lock().await.contains_key(&id) || cancels.lock().await.contains_key(&id);
+    if in_flight {
+        let msg = format!("rag_ingest id {id} is already in flight");
+        let _ = out_tx
+            .send(Ok(error_frame(id, ErrorCode::InvalidArgument, &msg)))
+            .await;
+        return;
+    }
+    let Ok(slot) = rag.upload_slots.clone().try_acquire_owned() else {
+        let msg = format!("{RAG_MAX_UPLOADS} uploads already in flight; retry when one ends");
+        let _ = out_tx
+            .send(Ok(error_frame(id, ErrorCode::Unavailable, &msg)))
+            .await;
+        return;
+    };
+
     // Register the cancel channel BEFORE spawning, so a Cancel frame that
     // arrives immediately after this one can still find it. Registering
     // inside the task would race the dispatch loop.
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
     cancels.lock().await.insert(id, cancel_tx);
     // Likewise the upload, or the first data frame could arrive before it.
-    let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(RAG_UPLOAD_BUFFER);
-    rag_uploads.lock().await.insert(id, data_tx);
+    let (data_tx, pieces) = mpsc::channel::<Vec<u8>>(RAG_UPLOAD_BUFFER);
+    let overrun = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    rag_uploads.lock().await.insert(
+        id,
+        RagUpload {
+            tx: data_tx,
+            overrun: overrun.clone(),
+        },
+    );
 
     tokio::spawn(async move {
+        let residue = Residue::default();
+        let upload = UploadRx {
+            pieces,
+            overrun: overrun.clone(),
+            slot,
+        };
+        let ingest = run_rag_ingest(
+            id,
+            req,
+            upload,
+            out_tx.clone(),
+            rag.clone(),
+            residue.clone(),
+        );
         let result = tokio::select! {
             biased;
-
-            _ = cancel_rx => {
-                let _ = out_tx
-                    .send(Ok(error_frame(id, ErrorCode::Cancelled, "ingest cancelled by client")))
-                    .await;
-                cancels.lock().await.remove(&id);
-                rag_uploads.lock().await.remove(&id);
-                return;
-            }
-
-            r = run_rag_ingest(id, req, data_rx, out_tx.clone(), rag_lock, rag_stores) => r,
+            _ = cancel_rx => None,
+            r = ingest => Some(r),
         };
 
-        // Whatever happened, this id is no longer cancellable.
-        cancels.lock().await.remove(&id);
-        rag_uploads.lock().await.remove(&id);
+        // Free the id before the terminal frame tells the client it may reuse
+        // it. Only this op's entries go: its cancel receiver is gone, so a
+        // sender still open is another op's.
+        {
+            let mut cancels = cancels.lock().await;
+            if cancels.get(&id).is_some_and(|tx| tx.is_closed()) {
+                cancels.remove(&id);
+            }
+        }
+        {
+            let mut uploads = rag_uploads.lock().await;
+            if uploads
+                .get(&id)
+                .is_some_and(|up| Arc::ptr_eq(&up.overrun, &overrun))
+            {
+                uploads.remove(&id);
+            }
+        }
 
         match result {
-            Ok(reply) => {
+            None => {
+                let _ = out_tx
+                    .send(Ok(error_frame(
+                        id,
+                        ErrorCode::Cancelled,
+                        "ingest cancelled by client",
+                    )))
+                    .await;
+            }
+            Some(Ok(reply)) => {
                 let _ = out_tx
                     .send(Ok(ServerFrame {
                         id,
@@ -1054,9 +1268,47 @@ async fn spawn_session_rag_ingest(
                     .await;
                 let _ = out_tx.send(Ok(done_frame(id))).await;
             }
-            Err(e) => send_rag_error(id, &e, &out_tx).await,
+            Some(Err(e)) => send_rag_error(id, &e, &out_tx).await,
         }
+
+        discard_unindexed_vectors(&residue, &rag.lock).await;
     });
+}
+
+/// Best-effort removal of vectors a failed or cancelled ingest stored
+/// without their metadata, which leaves them unreachable even by
+/// `rag_delete`. Ids the metadata store knows (a re-ingest) are kept.
+#[cfg(feature = "rag")]
+async fn discard_unindexed_vectors(residue: &Residue, lock: &Arc<Mutex<()>>) {
+    let Some((vs, tenant_id, data_dir)) = residue_lock(residue).store.take() else {
+        return;
+    };
+    // Before reading the ids: a cancelled ingest's last upload may still be
+    // running, and it holds the lock until it has recorded them.
+    let _guard = lock.lock().await;
+    let ids = std::mem::take(&mut residue_lock(residue).ids);
+    if ids.is_empty() {
+        return;
+    }
+    let removed = tokio::task::spawn_blocking(move || -> Result<usize> {
+        let meta = kwaai_rag::meta_store::MetaStore::open(&data_dir, tenant_id)?;
+        let orphans: Vec<i64> = ids
+            .iter()
+            .zip(meta.get_chunks(&ids)?)
+            .filter(|(_, known)| known.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        futures::executor::block_on(vs.delete(tenant_id, &orphans))
+    })
+    .await;
+    match removed {
+        Ok(Ok(n)) => info!(vectors = n, "discarded the vectors of an unfinished ingest"),
+        Ok(Err(e)) => warn!(
+            error = format!("{e:#}"),
+            "could not discard the vectors of an unfinished ingest"
+        ),
+        Err(e) => warn!("vector discard task panicked: {e}"),
+    }
 }
 
 /// The ingest pipeline proper. Emits progress frames as it goes and
@@ -1065,10 +1317,10 @@ async fn spawn_session_rag_ingest(
 async fn run_rag_ingest(
     id: u64,
     req: RagIngestRequest,
-    data_rx: mpsc::Receiver<Vec<u8>>,
+    upload: UploadRx,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
-    rag_lock: Arc<Mutex<()>>,
-    rag_stores: RagStores,
+    rag: RagShared,
+    residue: Residue,
 ) -> Result<RagIngestReply> {
     use kwaai_rag::{
         document,
@@ -1099,8 +1351,15 @@ async fn run_rag_ingest(
 
     // Received before taking the RAG lock, so another ingest's pipeline
     // cannot hold this upload's pieces up in the session loop.
-    let spool = receive_upload(id, &doc_name, req.size, data_rx, &out_tx).await?;
-    let _guard = rag_lock.lock().await;
+    let UploadRx {
+        pieces,
+        overrun,
+        slot,
+    } = upload;
+    let spool = receive_upload(id, &doc_name, req.size, pieces, &overrun, &out_tx).await?;
+    // Shared with each vector upload, so one this op abandons on cancel
+    // still lands under the lock.
+    let guard = Arc::new(rag.lock.clone().lock_owned().await);
 
     // Extraction is sync and can be slow on big PDFs.
     let _ = out_tx
@@ -1126,6 +1385,7 @@ async fn run_rag_ingest(
     };
     // The spool file is only for the parsers; delete it now, not after embedding.
     drop(spool);
+    drop(slot);
 
     let data_dir = rag_cfg.data_dir();
     let meta_dir = data_dir.clone();
@@ -1133,7 +1393,8 @@ async fn run_rag_ingest(
         .await
         .context("metadata store task panicked")??;
 
-    let vs = cached_local_vs(&rag_stores, &data_dir).await?;
+    let vs = cached_local_vs(&rag.stores, &data_dir).await?;
+    residue_lock(&residue).store = Some((vs.clone(), tenant_id, data_dir.clone()));
 
     // Persistent keyword index, kept in step with this ingest so queries
     // never rebuild it from the full corpus. Opening may backfill a
@@ -1164,19 +1425,19 @@ async fn run_rag_ingest(
     cfg.bm25 = bm25;
 
     // `ingest_text`'s progress callback is sync and called from inside the
-    // ingest future, so it can't await. Hand frames to a forwarder task
-    // over an unbounded channel and throttle on the receiving side.
+    // ingest future, so it can't await. Hand counts to a forwarder over an
+    // unbounded channel and throttle there. The forwarder is joined with the
+    // ingest, not spawned, so no progress frame can outlive this op.
     let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<(usize, usize)>();
-    let progress_out = out_tx.clone();
     let progress_doc = doc_name.clone();
-    let forwarder = tokio::spawn(async move {
+    let forward = async {
         let mut last_sent = std::time::Instant::now() - RAG_PROGRESS_INTERVAL;
         let mut pending: Option<(usize, usize)> = None;
 
         while let Some((done, total)) = prog_rx.recv().await {
             pending = Some((done, total));
             if last_sent.elapsed() >= RAG_PROGRESS_INTERVAL {
-                let _ = progress_out
+                let _ = out_tx
                     .send(Ok(rag_progress_frame(
                         id,
                         RagPhase::Embedding,
@@ -1193,7 +1454,7 @@ async fn run_rag_ingest(
         // Always flush the final count, even if the throttle just fired —
         // otherwise the client's last frame could show 97/100 forever.
         if let Some((done, total)) = pending {
-            let _ = progress_out
+            let _ = out_tx
                 .send(Ok(rag_progress_frame(
                     id,
                     RagPhase::Embedding,
@@ -1203,27 +1464,41 @@ async fn run_rag_ingest(
                 )))
                 .await;
         }
-    });
+    };
 
     let upload_vs = vs.clone();
-    let result = ingest_text(
+    let upload_residue = residue.clone();
+    let ingest = ingest_text(
         &cfg,
         &meta,
         &doc_name,
         &text,
         move |vectors| {
             let vs = upload_vs.clone();
-            Box::pin(async move { vs.upload(tenant_id, &vectors).await })
-                as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
+            let residue = upload_residue.clone();
+            let held = guard.clone();
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    let _held = held;
+                    let n = futures::executor::block_on(vs.upload(tenant_id, &vectors))?;
+                    residue_lock(&residue)
+                        .ids
+                        .extend(vectors.iter().map(|(id, _)| *id));
+                    Ok(n)
+                })
+                .await
+                .context("vector upload task panicked")?
+            }) as Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send>>
         },
+        // Dropped when the ingest future completes, which ends the forwarder.
         Some(move |done: usize, total: usize| {
             let _ = prog_tx.send((done, total));
         }),
-    )
-    .await?;
-
-    // Dropping the sender ends the forwarder's recv loop.
-    let _ = forwarder.await;
+    );
+    let (result, ()) = tokio::join!(ingest, forward);
+    let result = result?;
+    // Metadata committed: the vectors are no longer residue.
+    residue_lock(&residue).store = None;
 
     Ok(RagIngestReply {
         chunks_ingested: result.chunks_ingested as u32,
@@ -1238,17 +1513,19 @@ async fn receive_upload(
     id: u64,
     doc_name: &str,
     size: u64,
-    mut data_rx: mpsc::Receiver<Vec<u8>>,
+    mut pieces: mpsc::Receiver<Vec<u8>>,
+    overrun: &std::sync::atomic::AtomicBool,
     out_tx: &mpsc::Sender<Result<ServerFrame, Status>>,
 ) -> Result<tempfile::NamedTempFile> {
     use tokio::io::AsyncWriteExt as _;
+    use tokio::sync::mpsc::error::SendTimeoutError;
 
     let suffix = std::path::Path::new(doc_name)
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
     let spool = tempfile::Builder::new()
-        .prefix("kwaai-rag-ingest-")
+        .prefix(RAG_SPOOL_PREFIX)
         .suffix(&suffix)
         .tempfile()
         .context("creating the upload spool file")?;
@@ -1257,7 +1534,11 @@ async fn receive_upload(
 
     let mut received: u64 = 0;
     while received < size {
-        let piece = match tokio::time::timeout(RAG_UPLOAD_IDLE_TIMEOUT, data_rx.recv()).await {
+        let next = tokio::time::timeout(RAG_UPLOAD_IDLE_TIMEOUT, pieces.recv()).await;
+        if overrun.load(Ordering::SeqCst) {
+            anyhow::bail!("rag_ingest upload exceeded the {RAG_UPLOAD_BUFFER}-piece window");
+        }
+        let piece = match next {
             Ok(Some(piece)) => piece,
             Ok(None) => anyhow::bail!("rag_ingest upload ended after {received} of {size} bytes"),
             Err(_) => anyhow::bail!(
@@ -1273,17 +1554,25 @@ async fn receive_upload(
             .await
             .context("writing the upload spool file")?;
 
-        // Every piece is acknowledged, unthrottled: clients bound what they
-        // have in flight by it, and a throttled ack could leave one waiting.
-        let _ = out_tx
-            .send(Ok(rag_progress_frame(
-                id,
-                RagPhase::Receiving,
-                received as u32,
-                size as u32,
-                doc_name,
-            )))
-            .await;
+        // Every piece is acknowledged, unthrottled: each ack reopens one slot
+        // of the client's window. Bounded, so an unread session can't wedge us.
+        let ack = rag_progress_frame(
+            id,
+            RagPhase::Receiving,
+            received as u32,
+            size as u32,
+            doc_name,
+        );
+        match out_tx.send_timeout(Ok(ack), RAG_UPLOAD_IDLE_TIMEOUT).await {
+            Ok(()) => {}
+            Err(SendTimeoutError::Timeout(_)) => anyhow::bail!(
+                "rag_ingest upload stalled: acknowledgements unread for {}s",
+                RAG_UPLOAD_IDLE_TIMEOUT.as_secs()
+            ),
+            Err(SendTimeoutError::Closed(_)) => {
+                anyhow::bail!("rag_ingest upload abandoned: the session closed")
+            }
+        }
     }
     file.flush()
         .await
@@ -1312,17 +1601,16 @@ fn rag_progress_frame(
 
 /// `rag_query` — hybrid retrieval over a local KB.
 #[cfg(feature = "rag")]
-async fn spawn_session_rag_query(
+fn spawn_session_rag_query(
     id: u64,
     req: RagQueryRequest,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
-    rag_lock: Arc<Mutex<()>>,
-    rag_stores: RagStores,
+    rag: RagShared,
 ) {
     tokio::spawn(async move {
-        let _guard = rag_lock.lock().await;
+        let _guard = rag.lock.lock().await;
 
-        match run_rag_query(req, rag_stores).await {
+        match run_rag_query(req, rag.stores.clone()).await {
             Ok(chunks) => {
                 let _ = out_tx
                     .send(Ok(ServerFrame {
@@ -1407,12 +1695,15 @@ async fn run_rag_query(req: RagQueryRequest, rag_stores: RagStores) -> Result<Ve
 
     // retrieve_hybrid embeds the query (async HTTP); with cfg.bm25 set the
     // keyword half searches the persistent index rather than loading and
-    // indexing every chunk. The residual sync work is small, and the
-    // service-wide rag_lock keeps only one of these in flight.
+    // indexing every chunk. The HNSW search is sync, so it runs off the reactor.
     let chunks = retrieve_hybrid(&req.text, &cfg, &embed, &meta, move |emb, k| {
         let vs = vs.clone();
         Box::pin(async move {
-            let raw = vs.search(tenant_id, &emb, k).await?;
+            let raw = tokio::task::spawn_blocking(move || {
+                futures::executor::block_on(vs.search(tenant_id, &emb, k))
+            })
+            .await
+            .context("vector search task panicked")??;
             Ok(raw.into_iter().map(|r| (r.id, r.score)).collect())
         }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<(i64, f64)>>> + Send>>
     })
@@ -1433,17 +1724,16 @@ async fn run_rag_query(req: RagQueryRequest, rag_stores: RagStores) -> Result<Ve
 
 /// `rag_delete` — drop one document and everything derived from it.
 #[cfg(feature = "rag")]
-async fn spawn_session_rag_delete(
+fn spawn_session_rag_delete(
     id: u64,
     req: RagDeleteRequest,
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
-    rag_lock: Arc<Mutex<()>>,
-    rag_stores: RagStores,
+    rag: RagShared,
 ) {
     tokio::spawn(async move {
-        let _guard = rag_lock.lock().await;
+        let _guard = rag.lock.lock().await;
 
-        match run_rag_delete(req, rag_stores).await {
+        match run_rag_delete(req, rag.stores.clone()).await {
             Ok(reply) => {
                 let _ = out_tx
                     .send(Ok(ServerFrame {
@@ -1502,7 +1792,7 @@ async fn run_rag_delete(req: RagDeleteRequest, rag_stores: RagStores) -> Result<
     // transaction and a std Mutex over the in-memory index, with nothing
     // to await. Awaiting it directly blocks a reactor thread for one
     // statement per chunk — ~900 for a single book-sized document — while
-    // this op holds `rag_lock`, which stalls every other RAG request and
+    // this op holds the RAG lock, which stalls every other RAG request and
     // reads to the user as a hang. Hand it to the blocking pool like the
     // other sync work on this path.
     let vs = cached_local_vs(&rag_stores, &data_dir).await?;
@@ -3049,6 +3339,13 @@ fn resolve_tcp_port(requested: Option<u16>, configured: Option<u16>) -> (u16, bo
 /// config's `grpc_port`, then [`DEFAULT_GRPC_TCP_PORT`] apply. Port 0 binds an
 /// ephemeral port and reports the real one in [`grpc_port_file`].
 pub fn spawn(config: KwaaiNetConfig, requested_port: Option<u16>) -> Result<GrpcServerHandle> {
+    #[cfg(feature = "rag")]
+    std::thread::spawn(|| {
+        let swept = sweep_stale_spools(&std::env::temp_dir(), RAG_SPOOL_STALE_AFTER);
+        if swept > 0 {
+            info!(files = swept, "removed stale RAG upload spool files");
+        }
+    });
     let (tcp_port, explicit) = resolve_tcp_port(requested_port, config.grpc_port);
     spawn_bound(config, tcp_port, explicit)
 }
@@ -4292,6 +4589,24 @@ mod tests {
             port: u16,
             bodies_out: Vec<client_frame::Body>,
         ) -> Vec<server_frame::Body> {
+            let frames = bodies_out.into_iter().map(|b| (1, b)).collect();
+            session_frames(port, frames, 1, 1, false)
+                .await
+                .into_iter()
+                .map(|(_, b)| b)
+                .collect()
+        }
+
+        /// Send `frames` on one session and collect every reply until op
+        /// `id` has ended `terminals` times. With `close`, the client
+        /// half-closes the session once everything is sent.
+        async fn session_frames(
+            port: u16,
+            frames: Vec<(u64, client_frame::Body)>,
+            id: u64,
+            terminals: usize,
+            close: bool,
+        ) -> Vec<(u64, server_frame::Body)> {
             let endpoint = format!("http://127.0.0.1:{port}");
             let channel = tonic::transport::Endpoint::from_shared(endpoint)
                 .expect("valid endpoint")
@@ -4302,17 +4617,18 @@ mod tests {
 
             // Sized to hold every frame, so all are queued before the
             // session opens.
-            let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(bodies_out.len().max(1));
-            for body in bodies_out {
+            let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(frames.len().max(1));
+            for (frame_id, body) in frames {
                 tx.send(ClientFrame {
-                    id: 1,
+                    id: frame_id,
                     body: Some(body),
                 })
                 .await
                 .expect("send request frame");
             }
-            // Keep the send half open: dropping it closes the session
-            // before the server has replied.
+            // Otherwise keep the send half open: dropping it closes the
+            // session before the server has replied.
+            let _open = (!close).then_some(tx);
 
             let mut stream = client
                 .session(ReceiverStream::new(rx))
@@ -4321,9 +4637,10 @@ mod tests {
                 .into_inner();
 
             let mut bodies = Vec::new();
+            let mut ended = 0;
             // Bounded so a hang fails loudly instead of blocking the suite.
             let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            loop {
+            while ended < terminals {
                 let next = tokio::time::timeout_at(deadline, stream.next()).await;
                 let frame = match next {
                     Ok(Some(Ok(f))) => f,
@@ -4336,13 +4653,28 @@ mod tests {
                         b,
                         server_frame::Body::Done(_) | server_frame::Body::Error(_)
                     );
-                    bodies.push(b);
-                    if terminal {
-                        break;
+                    if terminal && frame.id == id {
+                        ended += 1;
                     }
+                    bodies.push((frame.id, b));
                 }
             }
             bodies
+        }
+
+        /// The terminal frames op `id` ended with, in order.
+        fn terminals_of(bodies: &[(u64, server_frame::Body)], id: u64) -> Vec<server_frame::Body> {
+            bodies
+                .iter()
+                .filter(|(i, b)| {
+                    *i == id
+                        && matches!(
+                            b,
+                            server_frame::Body::Done(_) | server_frame::Body::Error(_)
+                        )
+                })
+                .map(|(_, b)| b.clone())
+                .collect()
         }
 
         /// Spawn a server on an OS-allocated port and return it with the
@@ -4781,6 +5113,285 @@ mod tests {
             expect_error(&bodies, ErrorCode::InvalidArgument);
 
             drop(handle);
+        }
+
+        /// Cancelling mid-upload ends the ingest at once and deletes its spool.
+        #[tokio::test]
+        async fn rag_ingest_cancel_during_upload_is_cancelled() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
+
+            let (handle, port) = spawn_test_server().await;
+            let spools_before = spool_files();
+            let frames = vec![
+                (1, ingest("notes.txt", 100)),
+                (1, piece(b"0123456789")),
+                (2, client_frame::Body::Cancel(Cancel { target_id: 1 })),
+            ];
+            let bodies = session_frames(port, frames, 1, 1, false).await;
+
+            match terminals_of(&bodies, 1).as_slice() {
+                [server_frame::Body::Error(e)] => {
+                    assert_eq!(e.code, ErrorCode::Cancelled as i32, "got {e:?}")
+                }
+                other => panic!("expected one Cancelled error, got {other:?}"),
+            }
+            assert_eq!(spool_files(), spools_before, "spool file left behind");
+            drop(handle);
+        }
+
+        /// A session that closes mid-upload ends the ingest promptly rather
+        /// than after the idle timeout.
+        #[tokio::test]
+        async fn rag_ingest_session_close_mid_upload_ends_the_ingest() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
+
+            let (handle, port) = spawn_test_server().await;
+            let frames = vec![(1, ingest("notes.txt", 100)), (1, piece(b"0123456789"))];
+            let started = std::time::Instant::now();
+            let bodies = session_frames(port, frames, 1, 1, true).await;
+
+            assert!(
+                started.elapsed() < RAG_UPLOAD_IDLE_TIMEOUT / 2,
+                "the ingest waited out the idle timeout"
+            );
+            match terminals_of(&bodies, 1).as_slice() {
+                [server_frame::Body::Error(e)] => {
+                    assert_eq!(e.code, ErrorCode::Cancelled as i32, "got {e:?}")
+                }
+                other => panic!("expected one Cancelled error, got {other:?}"),
+            }
+            drop(handle);
+        }
+
+        /// Pieces after exactly `size` bytes are discarded, not an error:
+        /// the ingest goes on to extraction (then fails on the embedder).
+        #[tokio::test]
+        async fn rag_ingest_trailing_piece_is_discarded() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), Some("http://127.0.0.1:1"));
+
+            let doc = b"KwaaiNet is a distributed inference network. ".repeat(40);
+            let (handle, port) = spawn_test_server().await;
+            let bodies = round_trip_frames(
+                port,
+                vec![
+                    ingest("notes.txt", doc.len() as u64),
+                    piece(&doc),
+                    piece(b"zz"),
+                ],
+            )
+            .await;
+
+            let acks: Vec<u32> = bodies
+                .iter()
+                .filter_map(|b| match b {
+                    server_frame::Body::RagProgress(p) if p.phase == RagPhase::Receiving as i32 => {
+                        Some(p.done)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(acks, vec![doc.len() as u32], "got {bodies:?}");
+            expect_error(&bodies, ErrorCode::Unavailable);
+            drop(handle);
+        }
+
+        /// A RagIngest reusing an id in flight is refused, and the original
+        /// keeps its pieces.
+        #[tokio::test]
+        async fn rag_ingest_duplicate_id_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), Some("http://127.0.0.1:1"));
+
+            let doc = b"KwaaiNet is a distributed inference network. ".repeat(40);
+            let size = doc.len() as u64;
+            let (handle, port) = spawn_test_server().await;
+            let frames = vec![
+                (1, ingest("notes.txt", size)),
+                (1, ingest("other.txt", size)),
+                (1, piece(&doc)),
+            ];
+            let bodies = session_frames(port, frames, 1, 2, false).await;
+
+            match terminals_of(&bodies, 1).as_slice() {
+                [server_frame::Body::Error(dup), server_frame::Body::Error(orig)] => {
+                    assert_eq!(dup.code, ErrorCode::InvalidArgument as i32, "got {dup:?}");
+                    assert!(dup.message.contains("already in flight"), "got {dup:?}");
+                    // The original received the whole document and reached the embedder.
+                    assert_eq!(orig.code, ErrorCode::Unavailable as i32, "got {orig:?}");
+                }
+                other => panic!("expected two errors, got {other:?}"),
+            }
+            drop(handle);
+        }
+
+        /// A client that sends far past the 8-piece window, without waiting
+        /// for acknowledgements, fails the ingest instead of stalling the session.
+        #[tokio::test]
+        async fn rag_ingest_overrunning_the_window_is_invalid_argument() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), Some("http://127.0.0.1:1"));
+
+            let (handle, port) = spawn_test_server().await;
+            let pieces = 64;
+            let mut bodies_out = vec![ingest("notes.txt", pieces)];
+            bodies_out.extend((0..pieces).map(|_| piece(b"x")));
+            let bodies = round_trip_frames(port, bodies_out).await;
+
+            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+            assert!(msg.contains("8-piece window"), "got {msg:?}");
+            drop(handle);
+        }
+
+        /// A daemon runs at most `RAG_MAX_UPLOADS` uploads; one more is refused.
+        #[tokio::test]
+        async fn rag_ingest_beyond_the_upload_cap_is_unavailable() {
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
+
+            let (handle, port) = spawn_test_server().await;
+            let last = RAG_MAX_UPLOADS as u64 + 1;
+            let frames = (1..=last)
+                .map(|id| (id, ingest("notes.txt", 100)))
+                .collect();
+            let bodies = session_frames(port, frames, last, 1, false).await;
+
+            match terminals_of(&bodies, last).as_slice() {
+                [server_frame::Body::Error(e)] => {
+                    assert_eq!(e.code, ErrorCode::Unavailable as i32, "got {e:?}")
+                }
+                other => panic!("expected one Unavailable error, got {other:?}"),
+            }
+            for id in 1..last {
+                assert!(terminals_of(&bodies, id).is_empty(), "op {id} ended early");
+            }
+            drop(handle);
+        }
+
+        /// Switching the model of a KB that holds documents is refused before
+        /// Ollama is asked anything: the stored vectors would stop matching.
+        #[tokio::test]
+        async fn rag_init_switching_the_model_of_a_kb_with_documents_is_invalid_argument() {
+            use kwaai_rag::meta_store::MetaStore;
+            use kwaai_rpc::v1::RagInitRequest;
+
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            save_local_kb(tmp.path(), None);
+            let (rag_cfg, tenant_id) =
+                crate::rag_cmd::load_rag_config_for("default").expect("KB saved");
+            MetaStore::open(&rag_cfg.data_dir(), tenant_id)
+                .expect("open meta store")
+                .put_chunks(&[chunk_meta("handbook.txt")], &[7])
+                .expect("store a chunk");
+
+            let (handle, port) = spawn_test_server().await;
+            let other = if rag_cfg.embed_model == "mxbai-embed-large" {
+                "nomic-embed-text"
+            } else {
+                "mxbai-embed-large"
+            };
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagInit(RagInitRequest {
+                    kb: "default".into(),
+                    embed_model: other.into(),
+                }),
+            )
+            .await;
+
+            let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+            assert!(msg.contains("cannot switch"), "got {msg:?}");
+            drop(handle);
+        }
+
+        fn chunk_meta(doc: &str) -> kwaai_rag::meta_store::ChunkMeta {
+            kwaai_rag::meta_store::ChunkMeta {
+                doc_name: doc.into(),
+                chunk_index: 0,
+                text: "text".into(),
+                surrounding: String::new(),
+                page_num: None,
+                ingested_at: String::new(),
+                section_name: None,
+                skip_extraction: false,
+                section_note: None,
+                section_type: Default::default(),
+            }
+        }
+
+        /// An unfinished ingest's vectors are removed unless the metadata
+        /// store knows them, as it does for a document being re-ingested.
+        #[tokio::test]
+        async fn discard_unindexed_vectors_keeps_only_known_ids() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let dir = tmp.path().to_path_buf();
+            let db = kwaai_storage::StorageDb::open(&dir).expect("open store");
+            let tenant_id = kwaai_storage::TenantManager::new(db.clone())
+                .create("peer", 0, None, 2)
+                .await
+                .expect("create tenant")
+                .tenant_id;
+            let vs = Arc::new(kwaai_storage::VectorStore::new(db));
+            let vectors: Vec<(i64, Vec<f32>)> =
+                (1..=3).map(|id| (id, vec![1.0, id as f32])).collect();
+            vs.upload(tenant_id, &vectors).await.expect("upload");
+            kwaai_rag::meta_store::MetaStore::open(&dir, tenant_id)
+                .expect("open meta store")
+                .put_chunks(&[chunk_meta("kept.txt")], &[1])
+                .expect("store a chunk");
+
+            let residue = Residue::default();
+            *residue_lock(&residue) = IngestResidue {
+                store: Some((vs.clone(), tenant_id, dir)),
+                ids: vec![1, 2, 3],
+            };
+            discard_unindexed_vectors(&residue, &Arc::new(Mutex::new(()))).await;
+
+            let left: Vec<i64> = vs
+                .search(tenant_id, &[1.0, 2.0], 10)
+                .await
+                .expect("search")
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+            assert_eq!(left, vec![1]);
+        }
+
+        /// Only spool files past the age limit are swept.
+        #[test]
+        fn sweep_removes_only_stale_spool_files() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let make = |name: &str, age: Duration| {
+                let path = tmp.path().join(name);
+                let file = std::fs::File::create(&path).expect("create");
+                file.set_modified(std::time::SystemTime::now() - age)
+                    .expect("set mtime");
+                path
+            };
+            let day = Duration::from_secs(24 * 60 * 60);
+            let stale = make(&format!("{RAG_SPOOL_PREFIX}old.pdf"), 2 * day);
+            let live = make(&format!("{RAG_SPOOL_PREFIX}new.pdf"), Duration::ZERO);
+            let other = make("someone-elses.pdf", 2 * day);
+
+            assert_eq!(sweep_stale_spools(tmp.path(), day), 1);
+            assert!(!stale.exists());
+            assert!(live.exists() && other.exists());
         }
     }
 }
