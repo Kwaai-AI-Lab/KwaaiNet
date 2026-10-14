@@ -574,6 +574,10 @@ pub async fn run_native_node(
         ollama_recovery_rx = crate::node::spawn_ollama_watcher(&config);
     }
     let mut pending_update_version: Option<String> = None;
+    // Say once why this node will never update itself. The gates are all
+    // silent returns, which leaves a node that cannot update looking exactly
+    // like one already on the latest release.
+    crate::node::log_auto_update_off();
     let (update_tx, mut update_done) = tokio::sync::mpsc::channel::<String>(1);
     let mut update_thread: Option<std::thread::JoinHandle<()>> = None;
     // Deadline for the reachability-change settle window; None = no change pending.
