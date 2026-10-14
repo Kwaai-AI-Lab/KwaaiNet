@@ -16,6 +16,7 @@ use crate::storage::{parse_dictionary, EntrySummary, LocalStorage, Stored};
 use crate::value::{get_dht_time, DHTExpiration};
 use crate::Result;
 use libp2p::PeerId;
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace, warn};
 
@@ -222,21 +223,43 @@ impl DHTStorage {
     /// Every live record this node holds, primary tier first, then cache.
     ///
     /// A key present in both tiers appears twice: the copies carry independent
-    /// expirations and values, and [`Self::lookup`] serves whichever expires
-    /// later, so collapsing them would hide one that really is there.
+    /// expirations and values, and `lookup` serves whichever expires later, so
+    /// collapsing them would hide one that really is there.
     pub fn local_records(&self) -> Vec<LocalRecord> {
+        self.local_records_page(usize::MAX).0
+    }
+
+    /// The first `limit` rows of [`Self::local_records`], and how many rows it
+    /// has in all. Rows past `limit` are counted without being summarised.
+    pub fn local_records_page(&self, limit: usize) -> (Vec<LocalRecord>, usize) {
         let mut out = Vec::new();
-        let mut take = |tier: &RwLock<LocalStorage>, in_cache: bool| {
+        let mut total = 0;
+        for (tier, in_cache) in [(&self.inner.storage, false), (&self.inner.cache, true)] {
+            if let Ok(s) = tier.read() {
+                let (page, n) = s.summaries_page(limit - out.len());
+                out.extend(
+                    page.into_iter()
+                        .map(|summary| LocalRecord { summary, in_cache }),
+                );
+                total += n;
+            }
+        }
+        (out, total)
+    }
+
+    /// The rows of [`Self::local_records`] whose key is in `keys`, by point
+    /// lookup rather than a walk of the store. Same order: primary tier first.
+    pub fn local_records_for(&self, keys: &BTreeSet<Vec<u8>>) -> Vec<LocalRecord> {
+        let mut out = Vec::new();
+        for (tier, in_cache) in [(&self.inner.storage, false), (&self.inner.cache, true)] {
             if let Ok(s) = tier.read() {
                 out.extend(
-                    s.summaries()
-                        .into_iter()
+                    keys.iter()
+                        .filter_map(|key| s.summary(key))
                         .map(|summary| LocalRecord { summary, in_cache }),
                 );
             }
-        };
-        take(&self.inner.storage, false);
-        take(&self.inner.cache, true);
+        }
         out
     }
 
@@ -247,6 +270,19 @@ impl DHTStorage {
     /// value already knows which one it wants. Choosing a tier internally would
     /// let a cache row be captioned with the primary tier's value.
     pub fn local_record(&self, key: &[u8], in_cache: bool) -> Option<(Stored, DHTExpiration)> {
+        self.with_local_record(key, in_cache, |value, expiration| {
+            (value.clone(), expiration)
+        })
+    }
+
+    /// [`Self::local_record`] without the clone: `f` sees the value under the
+    /// tier's read lock, so it should copy out only what it needs and return.
+    pub fn with_local_record<R>(
+        &self,
+        key: &[u8],
+        in_cache: bool,
+        f: impl FnOnce(&Stored, DHTExpiration) -> R,
+    ) -> Option<R> {
         let tier = if in_cache {
             &self.inner.cache
         } else {
@@ -254,7 +290,7 @@ impl DHTStorage {
         };
         let guard = tier.read().ok()?;
         let (value, expiration) = guard.get(key)?;
-        Some((value.clone(), expiration))
+        Some(f(value, expiration))
     }
 
     // ── STORE ───────────────────────────────────────────────────────────────
@@ -1247,5 +1283,31 @@ mod tests {
         assert!(s.local_record(b"cached-only", false).is_none());
         assert!(s.local_record(b"cached-only", true).is_some());
         assert!(s.local_record(b"absent", false).is_none());
+    }
+
+    /// Paging and point lookups must return exactly the rows a full listing
+    /// would, in the same order, with the total still counting every row.
+    #[test]
+    fn local_record_pages_and_point_lookups_agree_with_the_full_listing() {
+        let s = DHTStorage::new(PeerId::random());
+        s.handle_store(store_req(
+            vec![b"a".to_vec(), b"b".to_vec(), b"a".to_vec()],
+            vec![IS_REGULAR_VALUE.to_vec(); 3],
+            vec![b"1".to_vec(), b"2".to_vec(), b"3".to_vec()],
+            vec![future(); 3],
+            vec![false, false, true],
+        ));
+        let all = s.local_records();
+        assert_eq!(all.len(), 3);
+
+        for limit in 0..=4 {
+            let (page, total) = s.local_records_page(limit);
+            assert_eq!(total, 3, "limit={limit}");
+            assert_eq!(page, all[..limit.min(3)], "limit={limit}");
+        }
+
+        let wanted: BTreeSet<Vec<u8>> = [b"a".to_vec(), b"absent".to_vec()].into();
+        let rows = s.local_records_for(&wanted);
+        assert_eq!(rows, vec![all[0].clone(), all[2].clone()]);
     }
 }
